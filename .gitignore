@@ -1,0 +1,8 @@
+/.cache
+/build/
+/build_linux/
+/build_windows/
+/research/
+/tmp/
+/tools/
+/utils/
