@@ -126,6 +126,10 @@ void ScanTask::execute() {
             }
         }
     }
+    
+    context_->scan_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[SCAN] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->scan_tasks_spawned.load(), context_->scan_tasks_completed.load());
 }
 
 void ExpandTask::execute() {
@@ -246,7 +250,9 @@ void ExpandTask::execute() {
         }
     }
 
-    context_->expand_tasks_spawned.fetch_add(1);
+    context_->expand_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[EXPAND] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->expand_tasks_spawned.load(), context_->expand_tasks_completed.load());
 }
 
 void SinkTask::execute() {
@@ -278,9 +284,12 @@ void SinkTask::execute() {
 
     context_->job_system->submit(std::move(rewrite_job), job_system::ScheduleMode::FIFO);
     context_->rewrite_tasks_spawned.fetch_add(1);
-    context_->sink_tasks_spawned.fetch_add(1);
 
     DEBUG_LOG("[SINK] REWRITE task submitted successfully");
+    
+    context_->sink_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[SINK] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->sink_tasks_spawned.load(), context_->sink_tasks_completed.load());
 }
 
 void RewriteTask::execute() {
@@ -410,42 +419,38 @@ void RewriteTask::execute() {
         if (event_opt) {
             StateId new_state_id = event_opt->output_state_id;
             
-            // Check step limit BEFORE incrementing to prevent infinite cascade
-            std::size_t current_step = 0;
+            // Increment step and check limit atomically to prevent race conditions
+            std::size_t new_step = 0;
             if (context_->wolfram_evolution) {
-                current_step = context_->wolfram_evolution->get_current_step();
+                new_step = context_->wolfram_evolution->increment_step();  // Returns new value after increment
             } else {
-                current_step = context_->current_step.load();
+                new_step = context_->current_step.fetch_add(1) + 1;  // fetch_add returns old value, add 1 for new
             }
 
-            DEBUG_LOG("[REWRITE] Step check: current_step=%zu, max_steps=%zu, state=%zu→%zu",
-                      current_step, context_->max_steps, context_->current_state_id, new_state_id);
+            DEBUG_LOG("[REWRITE] Step check: new_step=%zu, max_steps=%zu, state=%zu→%zu",
+                      new_step, context_->max_steps, context_->current_state_id, new_state_id);
 
             // PATCH-BASED MATCHING: Search for new matches around newly added edges
-            // Check limit BEFORE spawning to prevent cascade
-            if (current_step < context_->max_steps) {
-                // Now increment the step after checking the limit
-                if (context_->wolfram_evolution) {
-                    context_->wolfram_evolution->increment_step();
-                } else {
-                    context_->current_step.fetch_add(1);
-                }
+            // Only spawn if we haven't exceeded step limit
+            if (new_step < context_->max_steps) {
                 try {
-                    spawn_patch_based_matching_around_new_edges(new_state_id, new_edges, current_step);
+                    spawn_patch_based_matching_around_new_edges(new_state_id, new_edges, new_step);
                 } catch (const std::exception& e) {
                     DEBUG_LOG("[REWRITE] Exception in patch-based matching: %s", e.what());
                 }
             } else {
-                DEBUG_LOG("[REWRITE] NOT SPAWNING patch-based matching: step %zu >= max_steps %zu", current_step, context_->max_steps);
+                DEBUG_LOG("[REWRITE] NOT SPAWNING patch-based matching: step %zu >= max_steps %zu", new_step, context_->max_steps);
             }
 
             DEBUG_LOG("[REWRITE] Event %zu completed, state %zu created", event_id, new_state_id);
         }
     }
 
-    context_->rewrite_tasks_spawned.fetch_add(1);
-
     DEBUG_LOG("[REWRITE] REWRITE task completed");
+    
+    context_->rewrite_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[REWRITE] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->rewrite_tasks_spawned.load(), context_->rewrite_tasks_completed.load());
 }
 
 void RewriteTask::spawn_patch_based_matching_around_new_edges(
@@ -624,7 +629,7 @@ void RewriteTask::spawn_patch_based_matching_around_new_edges(
             // Create new pattern matching context for this patch
             // The original rules remain in scope for the entire evolution, so we can reference them directly
             auto patch_context = std::make_shared<PatternMatchingContext>(
-                target_hg_ptr.get(), &rule.lhs, &signature_index, label_func,
+                target_hg_ptr.get(), std::make_shared<const PatternHypergraph>(rule.lhs), std::make_shared<EdgeSignatureIndex>(std::move(signature_index)), label_func,
                 context_->multiway_graph, context_->job_system);
             patch_context->current_state_id = new_state_id;
             // Reference the original rules directly - they remain in scope
@@ -727,6 +732,10 @@ void CausalTask::execute() {
     // For demonstration, we just count causal computations
     static std::atomic<std::size_t> causal_count{0};
     causal_count.fetch_add(1);
+    
+    context_->causal_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[CAUSAL] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->causal_tasks_spawned.load(), context_->causal_tasks_completed.load());
 }
 
 void BranchialTask::execute() {
@@ -744,6 +753,10 @@ void BranchialTask::execute() {
     // For demonstration, we just count branchial computations
     static std::atomic<std::size_t> branchial_count{0};
     branchial_count.fetch_add(1);
+    
+    context_->branchial_tasks_completed.fetch_add(1);
+    DEBUG_LOG("[BRANCHIAL] Task completed. Spawned: %zu, Completed: %zu", 
+              context_->branchial_tasks_spawned.load(), context_->branchial_tasks_completed.load());
 }
 
 // Helper functions for task execution

@@ -35,7 +35,7 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
 
         // Create pattern matching context and let the task system handle the evolution
         auto context = std::make_shared<PatternMatchingContext>(
-            target_hg.get(), &rule.lhs, signature_index.get(), label_func, multiway_graph_, job_system_.get(), this);
+            target_hg.get(), std::make_shared<const PatternHypergraph>(rule.lhs), signature_index, label_func, multiway_graph_, job_system_.get(), this);
         context->current_state_id = initial_state;
         context->rewrite_rules = {rule};
         context->max_steps = max_steps_;

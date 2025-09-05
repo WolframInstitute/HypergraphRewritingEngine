@@ -76,8 +76,8 @@ struct PartialMatch {
  */
 struct PatternMatchingContext {
     const Hypergraph* target_hypergraph;
-    const PatternHypergraph* pattern;
-    const EdgeSignatureIndex* signature_index;
+    std::shared_ptr<const PatternHypergraph> pattern;
+    std::shared_ptr<const EdgeSignatureIndex> signature_index;
     std::function<VertexLabel(VertexId)> label_function;
 
     // Multiway graph for state and event tracking
@@ -111,9 +111,17 @@ struct PatternMatchingContext {
     std::atomic<std::size_t> rewrite_tasks_spawned{0};
     std::atomic<std::size_t> causal_tasks_spawned{0};
     std::atomic<std::size_t> branchial_tasks_spawned{0};
+    
+    // Completion counters for debugging
+    std::atomic<std::size_t> scan_tasks_completed{0};
+    std::atomic<std::size_t> expand_tasks_completed{0};
+    std::atomic<std::size_t> sink_tasks_completed{0};
+    std::atomic<std::size_t> rewrite_tasks_completed{0};
+    std::atomic<std::size_t> causal_tasks_completed{0};
+    std::atomic<std::size_t> branchial_tasks_completed{0};
 
-    PatternMatchingContext(const Hypergraph* hg, const PatternHypergraph* pat,
-                          const EdgeSignatureIndex* idx,
+    PatternMatchingContext(const Hypergraph* hg, std::shared_ptr<const PatternHypergraph> pat,
+                          std::shared_ptr<const EdgeSignatureIndex> idx,
                           std::function<VertexLabel(VertexId)> label_func,
                           std::shared_ptr<MultiwayGraph> mg,
                           job_system::JobSystem<PatternMatchingTaskType>* js,
