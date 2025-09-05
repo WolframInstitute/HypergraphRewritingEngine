@@ -26,7 +26,6 @@ add_executable(unified_tests
     test_core_hypergraph.cpp
     test_edge_signature.cpp
     test_pattern_matching_comprehensive.cpp  
-    test_rewriting_engine.cpp
     test_wolfram_states.cpp  
     test_parallel_tasks.cpp
     test_wolfram_evolution.cpp

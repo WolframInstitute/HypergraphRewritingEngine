@@ -5,8 +5,6 @@
 #include <hypergraph/pattern_matching.hpp>
 #include <vector>
 #include <unordered_set>
-#include <random>
-#include <memory>
 
 namespace hypergraph {
 
@@ -53,105 +51,6 @@ struct RewritingResult {
     std::size_t num_changes() const { return removed_edges.size() + added_edges.size(); }
 };
 
-/**
- * Single-threaded hypergraph rewriting engine.
- */
-class RewritingEngine {
-private:
-    PatternMatcher pattern_matcher_;
-    std::mt19937 rng_;  // For random rule selection
-
-    /**
-     * Apply RHS pattern to hypergraph using variable assignment.
-     */
-    std::vector<EdgeId> apply_rhs_pattern(
-        Hypergraph& target,
-        const PatternHypergraph& rhs,
-        const VariableAssignment& assignment) const;
-
-    /**
-     * Create fresh vertices for RHS variables not bound by LHS.
-     */
-    VariableAssignment extend_assignment_for_rhs(
-        Hypergraph& target,
-        const VariableAssignment& lhs_assignment,
-        const PatternHypergraph& rhs) const;
-
-    /**
-     * Remove matched edges from hypergraph.
-     */
-    void remove_matched_edges(Hypergraph& target, const std::vector<EdgeId>& edge_ids) const;
-
-public:
-    RewritingEngine(unsigned int seed = std::random_device{}()) : rng_(seed) {}
-
-    /**
-     * Apply a single rewriting rule at a specific location.
-     */
-    RewritingResult apply_rule_at(
-        Hypergraph& target,
-        const RewritingRule& rule,
-        VertexId anchor_vertex,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Find and apply the first applicable rule at a location.
-     */
-    RewritingResult apply_first_rule_at(
-        Hypergraph& target,
-        const std::vector<RewritingRule>& rules,
-        VertexId anchor_vertex,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Apply rules randomly across the hypergraph for a number of steps.
-     */
-    std::vector<RewritingResult> evolve_random(
-        Hypergraph& target,
-        const std::vector<RewritingRule>& rules,
-        std::size_t num_steps,
-        std::size_t search_radius = 0);
-
-    /**
-     * Apply rules systematically (try every vertex as anchor).
-     */
-    std::vector<RewritingResult> evolve_systematic(
-        Hypergraph& target,
-        const std::vector<RewritingRule>& rules,
-        std::size_t max_steps,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Find all possible rule applications in the hypergraph.
-     */
-    std::vector<std::pair<RewritingRule, PatternMatch>> find_all_applications(
-        const Hypergraph& target,
-        const std::vector<RewritingRule>& rules,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Check if any rules can be applied.
-     */
-    bool can_apply_any_rule(
-        const Hypergraph& target,
-        const std::vector<RewritingRule>& rules,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Get multiway evolution states (apply all possible rules).
-     */
-    std::vector<Hypergraph> get_multiway_states(
-        const Hypergraph& initial_state,
-        const std::vector<RewritingRule>& rules,
-        std::size_t search_radius = 0) const;
-
-    /**
-     * Set random seed for deterministic evolution.
-     */
-    void set_seed(unsigned int seed) {
-        rng_.seed(seed);
-    }
-};
 
 
 /**

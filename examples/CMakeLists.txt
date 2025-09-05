@@ -13,7 +13,6 @@ find_package(Threads REQUIRED)
 set(EXAMPLE_SOURCES
     hypergraph_basics
     pattern_matching
-    rewriting_engine
     job_system_usage
     basic_evolution
     multiway_graph_usage
@@ -72,7 +71,6 @@ add_custom_target(list_examples
     COMMAND ${CMAKE_COMMAND} -E echo "Available examples:"
     COMMAND ${CMAKE_COMMAND} -E echo "  example_hypergraph_basics     - Basic hypergraph operations"  
     COMMAND ${CMAKE_COMMAND} -E echo "  example_pattern_matching      - Pattern matching with variables"
-    COMMAND ${CMAKE_COMMAND} -E echo "  example_rewriting_engine      - Graph rewriting rules"
     COMMAND ${CMAKE_COMMAND} -E echo "  example_job_system_usage      - Task-based parallelism"
     COMMAND ${CMAKE_COMMAND} -E echo "  example_basic_evolution       - Simple Wolfram evolution"
     COMMAND ${CMAKE_COMMAND} -E echo "  example_multiway_graph_usage  - Multiway graph operations"
