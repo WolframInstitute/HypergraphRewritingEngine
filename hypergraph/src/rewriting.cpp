@@ -65,24 +65,6 @@ void RewritingEngine::remove_matched_edges(Hypergraph& target, const std::vector
     }
 }
 
-void RewritingEngine::notify_rule_applied(const RewritingResult& result, const Hypergraph& hypergraph) const {
-    for (const auto& listener : listeners_) {
-        listener->on_rule_applied(result, hypergraph);
-    }
-}
-
-void RewritingEngine::notify_rule_failed(const RewritingRule& rule, VertexId anchor_vertex) const {
-    for (const auto& listener : listeners_) {
-        listener->on_rule_failed(rule, anchor_vertex);
-    }
-}
-
-void RewritingEngine::notify_step_completed(std::size_t step_number, const Hypergraph& hypergraph) const {
-    for (const auto& listener : listeners_) {
-        listener->on_step_completed(step_number, hypergraph);
-    }
-}
-
 RewritingResult RewritingEngine::apply_rule_at(
     Hypergraph& target,
     const RewritingRule& rule,
@@ -93,7 +75,6 @@ RewritingResult RewritingEngine::apply_rule_at(
     result.anchor_vertex = anchor_vertex;
     
     if (!rule.is_well_formed()) {
-        notify_rule_failed(rule, anchor_vertex);
         return result;  // Rule has unbound RHS variables
     }
     
@@ -101,7 +82,6 @@ RewritingResult RewritingEngine::apply_rule_at(
     auto matches = pattern_matcher_.find_matches_around(target, rule.lhs, anchor_vertex, search_radius);
     
     if (matches.empty()) {
-        notify_rule_failed(rule, anchor_vertex);
         return result;  // No match found
     }
     
@@ -120,7 +100,6 @@ RewritingResult RewritingEngine::apply_rule_at(
     result.variable_assignment = extended_assignment;
     result.applied = true;
     
-    notify_rule_applied(result, target);
     return result;
 }
 
@@ -176,8 +155,6 @@ std::vector<RewritingResult> RewritingEngine::evolve_random(
         RewritingResult result = apply_rule_at(target, rule, anchor_vertex, search_radius);
         results.push_back(result);
         
-        notify_step_completed(step + 1, target);
-        
         // If no rule could be applied and hypergraph is small, might be stuck
         if (!result.was_applied() && target.num_vertices() < 3) {
             break;
@@ -213,8 +190,6 @@ std::vector<RewritingResult> RewritingEngine::evolve_systematic(
             if (result.was_applied()) {
                 any_applied = true;
             }
-            
-            notify_step_completed(++step, target);
         }
         
         if (!any_applied) {
@@ -320,27 +295,6 @@ std::string result_to_string(const RewritingResult& result) {
         oss << "  Variable assignments: " << result.variable_assignment.variable_to_concrete.size();
     }
     return oss.str();
-}
-
-class LoggingListener : public RewritingEventListener {
-public:
-    void on_rule_applied(const RewritingResult& result, const Hypergraph& hypergraph) override {
-        std::cout << "✓ Applied rule at vertex " << result.anchor_vertex;
-        std::cout << " (removed " << result.removed_edges.size() << ", added " << result.added_edges.size() << ")\n";
-    }
-    
-    void on_rule_failed(const RewritingRule& rule, VertexId anchor_vertex) override {
-        std::cout << "✗ Failed to apply rule at vertex " << anchor_vertex << "\n";
-    }
-    
-    void on_step_completed(std::size_t step_number, const Hypergraph& hypergraph) override {
-        std::cout << "Step " << step_number << ": " << hypergraph.num_vertices() << " vertices, " 
-                  << hypergraph.num_edges() << " edges\n";
-    }
-};
-
-std::unique_ptr<RewritingEventListener> create_logging_listener() {
-    return std::make_unique<LoggingListener>();
 }
 
 } // namespace debug

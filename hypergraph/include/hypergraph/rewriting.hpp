@@ -54,24 +54,11 @@ struct RewritingResult {
 };
 
 /**
- * Event listener interface for rewriting operations.
- */
-class RewritingEventListener {
-public:
-    virtual ~RewritingEventListener() = default;
-
-    virtual void on_rule_applied(const RewritingResult& result, const Hypergraph& hypergraph) {}
-    virtual void on_rule_failed(const RewritingRule& rule, VertexId anchor_vertex) {}
-    virtual void on_step_completed(std::size_t step_number, const Hypergraph& hypergraph) {}
-};
-
-/**
  * Single-threaded hypergraph rewriting engine.
  */
 class RewritingEngine {
 private:
     PatternMatcher pattern_matcher_;
-    std::vector<std::unique_ptr<RewritingEventListener>> listeners_;
     std::mt19937 rng_;  // For random rule selection
 
     /**
@@ -95,22 +82,8 @@ private:
      */
     void remove_matched_edges(Hypergraph& target, const std::vector<EdgeId>& edge_ids) const;
 
-    /**
-     * Notify all listeners of an event.
-     */
-    void notify_rule_applied(const RewritingResult& result, const Hypergraph& hypergraph) const;
-    void notify_rule_failed(const RewritingRule& rule, VertexId anchor_vertex) const;
-    void notify_step_completed(std::size_t step_number, const Hypergraph& hypergraph) const;
-
 public:
     RewritingEngine(unsigned int seed = std::random_device{}()) : rng_(seed) {}
-
-    /**
-     * Add event listener for rewriting operations.
-     */
-    void add_listener(std::unique_ptr<RewritingEventListener> listener) {
-        listeners_.push_back(std::move(listener));
-    }
 
     /**
      * Apply a single rewriting rule at a specific location.
@@ -195,10 +168,6 @@ namespace debug {
      */
     std::string result_to_string(const RewritingResult& result);
 
-    /**
-     * Create a logging event listener.
-     */
-    std::unique_ptr<RewritingEventListener> create_logging_listener();
 }
 
 } // namespace hypergraph

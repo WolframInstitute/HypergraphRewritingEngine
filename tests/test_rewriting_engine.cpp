@@ -227,45 +227,6 @@ TEST_F(RewritingEngineTest, RewritingPerformance) {
     EXPECT_LT(elapsed, 50.0);  // Should complete within 50ms
 }
 
-// === LISTENERS AND EVENTS ===
-
-class TestRewritingListener : public hypergraph::RewritingEventListener {
-public:
-    int rules_applied = 0;
-    int rules_failed = 0;
-    int steps_completed = 0;
-    
-    void on_rule_applied(const hypergraph::RewritingResult& result, 
-                        const hypergraph::Hypergraph& hypergraph) override {
-        rules_applied++;
-    }
-    
-    void on_rule_failed(const hypergraph::RewritingRule& rule, 
-                       hypergraph::VertexId anchor_vertex) override {
-        rules_failed++;
-    }
-    
-    void on_step_completed(std::size_t step_number, 
-                          const hypergraph::Hypergraph& hypergraph) override {
-        steps_completed++;
-    }
-};
-
-TEST_F(RewritingEngineTest, EventListenerIntegration) {
-    auto target = test_utils::create_test_hypergraph({{1, 2}, {2, 3}});
-    auto rule = create_simple_rule();
-    
-    auto listener_ptr = std::make_unique<TestRewritingListener>();
-    auto& listener_ref = *listener_ptr;
-    engine.add_listener(std::move(listener_ptr));
-    
-    auto result = engine.apply_rule_at(target, rule, 1, 2);
-    
-    if (result.applied) {
-        EXPECT_GT(listener_ref.rules_applied, 0);
-    }
-    EXPECT_EQ(listener_ref.rules_failed, 0);  // No failures expected
-}
 
 // === COMPLEX RULE PATTERNS ===
 
