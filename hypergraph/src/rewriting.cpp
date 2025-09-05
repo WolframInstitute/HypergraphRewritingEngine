@@ -293,67 +293,6 @@ std::vector<Hypergraph> RewritingEngine::get_multiway_states(
     return states;
 }
 
-namespace rules {
-
-RewritingRule create_substitution(
-    const std::vector<std::vector<PatternVertex>>& lhs_edges,
-    const std::vector<std::vector<PatternVertex>>& rhs_edges) {
-    
-    PatternHypergraph lhs, rhs;
-    
-    for (const auto& edge_vertices : lhs_edges) {
-        lhs.add_edge(PatternEdge(edge_vertices));
-    }
-    
-    for (const auto& edge_vertices : rhs_edges) {
-        rhs.add_edge(PatternEdge(edge_vertices));
-    }
-    
-    return RewritingRule(lhs, rhs);
-}
-
-RewritingRule create_edge_split() {
-    // LHS: {A, B}
-    PatternHypergraph lhs;
-    lhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(2)}));
-    
-    // RHS: {A, X}, {X, B} where X is a fresh variable
-    PatternHypergraph rhs;
-    rhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(3)}));
-    rhs.add_edge(PatternEdge({PatternVertex::variable(3), PatternVertex::variable(2)}));
-    
-    return RewritingRule(lhs, rhs);
-}
-
-RewritingRule create_edge_merge() {
-    // LHS: {A, X}, {X, B}
-    PatternHypergraph lhs;
-    lhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(3)}));
-    lhs.add_edge(PatternEdge({PatternVertex::variable(3), PatternVertex::variable(2)}));
-    
-    // RHS: {A, B}
-    PatternHypergraph rhs;
-    rhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(2)}));
-    
-    return RewritingRule(lhs, rhs);
-}
-
-RewritingRule create_triangle_completion() {
-    // LHS: {A, B}, {B, C}
-    PatternHypergraph lhs;
-    lhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(2)}));
-    lhs.add_edge(PatternEdge({PatternVertex::variable(2), PatternVertex::variable(3)}));
-    
-    // RHS: {A, B}, {B, C}, {A, C}
-    PatternHypergraph rhs;
-    rhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(2)}));
-    rhs.add_edge(PatternEdge({PatternVertex::variable(2), PatternVertex::variable(3)}));
-    rhs.add_edge(PatternEdge({PatternVertex::variable(1), PatternVertex::variable(3)}));
-    
-    return RewritingRule(lhs, rhs);
-}
-
-} // namespace rules
 
 namespace debug {
 

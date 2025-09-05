@@ -180,32 +180,6 @@ public:
     }
 };
 
-/**
- * Utility functions for creating common rewriting rules.
- */
-namespace rules {
-    /**
-     * Create a simple substitution rule: pattern → replacement
-     */
-    RewritingRule create_substitution(
-        const std::vector<std::vector<PatternVertex>>& lhs_edges,
-        const std::vector<std::vector<PatternVertex>>& rhs_edges);
-
-    /**
-     * Create edge splitting rule: {A,B} → {A,X}, {X,B}
-     */
-    RewritingRule create_edge_split();
-
-    /**
-     * Create edge merging rule: {A,X}, {X,B} → {A,B} (where X has degree 2)
-     */
-    RewritingRule create_edge_merge();
-
-    /**
-     * Create triangle completion rule: {A,B}, {B,C} → {A,B}, {B,C}, {A,C}
-     */
-    RewritingRule create_triangle_completion();
-}
 
 /**
  * Debug utilities for rewriting.
