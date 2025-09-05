@@ -44,7 +44,7 @@ TEST_F(EdgeSignatureTest, EdgeSignatureConsistency) {
     // Test that edge signatures are consistent
     auto edge1 = target.get_edge(0);  
     auto edge2 = target.get_edge(1);
-    auto edge3 = target.get_edge(3);  // 3-ary edge
+    auto edge3 = target.get_edge(4);  // 3-ary edge
     
     ASSERT_NE(edge1, nullptr);
     ASSERT_NE(edge2, nullptr);  
@@ -57,7 +57,7 @@ TEST_F(EdgeSignatureTest, EdgeSignatureConsistency) {
 }
 
 TEST_F(EdgeSignatureTest, SelfLoopSignature) {
-    auto self_loop_edge = target.get_edge(2);  // Should be {4, 4}
+    auto self_loop_edge = target.get_edge(3);  // Should be {4, 4}
     ASSERT_NE(self_loop_edge, nullptr);
     EXPECT_EQ(self_loop_edge->arity(), 2);
     
