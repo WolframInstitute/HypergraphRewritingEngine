@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -31,6 +32,12 @@ private:
     std::atomic<size_t> round_robin_{0};
     std::atomic<bool> is_running_{false};
     size_t num_threads_;
+    
+    // Global work tracking for robust completion detection
+    std::atomic<size_t> total_submitted_{0};
+    std::atomic<size_t> total_completed_{0};
+    std::mutex completion_mutex_;
+    std::condition_variable completion_cv_;
     
     void worker_loop(WorkerData* data) {
         while (true) {
@@ -57,6 +64,10 @@ private:
                 job->execute();
                 data->jobs_executing.fetch_sub(1);
                 data->jobs_executed.fetch_add(1);
+                
+                // Notify completion for robust tracking
+                total_completed_.fetch_add(1);
+                completion_cv_.notify_all();
             }
         }
     }
@@ -79,6 +90,10 @@ public:
     
     void start() {
         if (is_running_.load()) return;
+        
+        // Reset counters for new session
+        total_submitted_.store(0);
+        total_completed_.store(0);
         
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
@@ -115,6 +130,9 @@ public:
             throw std::runtime_error("FastJobSystem is not running");
         }
         
+        // Track submission for robust completion detection
+        total_submitted_.fetch_add(1);
+        
         size_t worker_idx = round_robin_.fetch_add(1) % workers_.size();
         auto* worker = workers_[worker_idx].get();
         
@@ -133,6 +151,9 @@ public:
         if (worker_id >= workers_.size()) {
             throw std::out_of_range("Invalid worker ID");
         }
+        
+        // Track submission for robust completion detection
+        total_submitted_.fetch_add(1);
         
         auto* worker = workers_[worker_id].get();
         
@@ -160,35 +181,46 @@ public:
     
     void wait_for_completion() {
         int debug_count = 0;
+        
         while (true) {
-            bool has_work = false;
-            size_t total_queue_size = 0;
-            size_t total_executing = 0;
+            // Use condition variable to wait efficiently
+            std::unique_lock<std::mutex> lock(completion_mutex_);
             
-            for (const auto& worker : workers_) {
-                std::lock_guard<std::mutex> lock(worker->mutex);
-                size_t queue_size = worker->queue.size();
-                size_t executing = worker->jobs_executing.load();
-                total_queue_size += queue_size;
-                total_executing += executing;
-                
-                if (!worker->queue.empty() || worker->jobs_executing.load() > 0) {
-                    has_work = true;
-                }
-            }
+            // Wait until all submitted jobs are completed OR timeout for debug
+            completion_cv_.wait_for(lock, std::chrono::milliseconds(10), [this] {
+                return total_submitted_.load() == total_completed_.load();
+            });
+            
+            size_t submitted = total_submitted_.load();
+            size_t completed = total_completed_.load();
             
             // Debug output every 1000 iterations
             if (++debug_count % 1000 == 0) {
-                printf("[JOB_SYSTEM DEBUG] wait_for_completion loop %d: total_queue=%zu, total_executing=%zu, has_work=%s\n", 
-                       debug_count, total_queue_size, total_executing, has_work ? "true" : "false");
+                printf("[JOB_SYSTEM DEBUG] wait_for_completion loop %d: submitted=%zu, completed=%zu, pending=%zu\n", 
+                       debug_count, submitted, completed, submitted - completed);
                 fflush(stdout);
             }
             
-            if (!has_work) break;
-            
-            std::this_thread::yield();
+            // Check if all work is done
+            if (submitted == completed) {
+                // Double-check that no jobs are executing or queued
+                bool truly_done = true;
+                for (const auto& worker : workers_) {
+                    std::lock_guard<std::mutex> worker_lock(worker->mutex);
+                    if (!worker->queue.empty() || worker->jobs_executing.load() > 0) {
+                        truly_done = false;
+                        break;
+                    }
+                }
+                
+                if (truly_done) {
+                    break;
+                }
+            }
         }
-        printf("[JOB_SYSTEM DEBUG] wait_for_completion FINISHED after %d iterations\n", debug_count);
+        
+        printf("[JOB_SYSTEM DEBUG] wait_for_completion FINISHED after %d iterations (submitted=%zu, completed=%zu)\n", 
+               debug_count, total_submitted_.load(), total_completed_.load());
         fflush(stdout);
     }
     

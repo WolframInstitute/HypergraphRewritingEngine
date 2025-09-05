@@ -54,9 +54,11 @@ int main() {
         // Run evolution
         std::cout << "Running evolution for 2 steps...\n\n";
         evolution.evolve(initial_state);
+        std::cout << "Evolution.evolve() completed\n";
         
         // Get results from multiway graph
         const MultiwayGraph& graph = evolution.get_multiway_graph();
+        std::cout << "Got multiway graph reference\n";
         
         std::cout << "Evolution Results:\n";
         std::cout << "------------------\n";
@@ -65,13 +67,9 @@ int main() {
         std::cout << "Causal edges: " << graph.get_causal_edge_count() << "\n";
         std::cout << "Branchial edges: " << graph.get_branchial_edge_count() << "\n";
         
-        // Explain what happened
-        std::cout << "\nWhat happened:\n";
-        std::cout << "1. Initial state {{1, 2}} was created\n";
-        std::cout << "2. Rule applied: {{1, 2}} -> {{1, 2}, {2, z}}\n";
-        std::cout << "3. This creates one new edge from vertex 2 to a new vertex z\n";
-        std::cout << "4. Evolution stopped after 2 steps as requested\n";
-        std::cout << "5. Multiway graph tracks the evolution path\n";
+        // Print detailed states and events
+        std::cout << "\n";
+        graph.print_summary();
         
         std::cout << "\nMultiway graph exploration complete!\n";
         

@@ -29,6 +29,11 @@ private:
     std::size_t max_steps_;
     std::size_t num_threads_;
     
+    // Store evolution context objects to keep them alive
+    std::vector<std::shared_ptr<Hypergraph>> target_graphs_;
+    std::vector<std::shared_ptr<EdgeSignatureIndex>> signature_indices_;
+    std::vector<std::shared_ptr<PatternMatchingContext>> contexts_;
+    
 public:
     WolframEvolution(std::size_t max_steps, std::size_t num_threads = std::thread::hardware_concurrency(), 
                      bool canonicalization_enabled = true, bool full_capture = false,
@@ -47,6 +52,8 @@ public:
     
     ~WolframEvolution() {
         if (job_system_) {
+            // Wait for any remaining tasks to complete before shutdown
+            job_system_->wait_for_completion();
             job_system_->shutdown();
         }
     }

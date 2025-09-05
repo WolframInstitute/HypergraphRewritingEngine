@@ -11,16 +11,19 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     StateId initial_state = multiway_graph_->create_initial_state(initial_edges);
     DEBUG_LOG("Created initial state %zu", initial_state);
 
-    // Store objects that need to live until tasks complete
-    std::vector<std::shared_ptr<Hypergraph>> target_graphs;
-    std::vector<std::shared_ptr<EdgeSignatureIndex>> signature_indices;
-    std::vector<std::shared_ptr<PatternMatchingContext>> contexts;
+    // Clear any previous evolution context objects
+    target_graphs_.clear();
+    signature_indices_.clear();
+    contexts_.clear();
     
     // Use the task-based system - let the tasks handle the parallel evolution flow
     for (const auto& rule : rules_) {
         // Create edge signature index for the initial state
         auto state_opt = multiway_graph_->get_state(initial_state);
-        if (!state_opt) continue;
+        if (!state_opt) {
+            DEBUG_LOG("ERROR: Could not get initial state %zu", initial_state);
+            continue;
+        }
 
         // Create shared objects that will live until tasks complete
         auto target_hg = std::make_shared<Hypergraph>(state_opt->to_canonical_hypergraph());
@@ -41,10 +44,10 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
         context->max_steps = max_steps_;
         context->current_step = 0;
 
-        // Keep shared objects alive
-        target_graphs.push_back(target_hg);
-        signature_indices.push_back(signature_index);
-        contexts.push_back(context);
+        // Keep shared objects alive as member variables
+        target_graphs_.push_back(target_hg);
+        signature_indices_.push_back(signature_index);
+        contexts_.push_back(context);
 
         // Submit to task system - let the tasks handle parallel evolution
         pattern_matching_tasks::spawn_scan_tasks(*job_system_, context, num_threads_);

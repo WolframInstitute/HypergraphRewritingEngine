@@ -1468,6 +1468,33 @@ public:
         for (const auto& event : events) {
             std::cout << "  Event " << event.event_id << ": State " << event.input_state_id
                       << " → State " << event.output_state_id << " (rule " << event.rule_index << ")\n";
+            
+            // Show consumed edges
+            std::cout << "    Consumed edges: ";
+            if (event.consumed_edges.empty()) {
+                std::cout << "(none)";
+            } else {
+                for (size_t i = 0; i < event.consumed_edges.size(); ++i) {
+                    if (i > 0) std::cout << ", ";
+                    std::cout << event.consumed_edges[i];
+                }
+            }
+            std::cout << "\n";
+            
+            // Show produced edges  
+            std::cout << "    Produced edges: ";
+            if (event.produced_edges.empty()) {
+                std::cout << "(none)";
+            } else {
+                for (size_t i = 0; i < event.produced_edges.size(); ++i) {
+                    if (i > 0) std::cout << ", ";
+                    std::cout << event.produced_edges[i];
+                }
+            }
+            std::cout << "\n";
+            
+            // Show anchor vertex
+            std::cout << "    Anchor vertex: " << event.anchor_vertex << "\n";
         }
 
         std::cout << "\nRelationships: " << causal_count << " causal, " << branchial_count << " branchial\n";
