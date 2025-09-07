@@ -358,7 +358,6 @@ public:
      * Get total number of indexed edges.
      */
     std::size_t size() const {
-        std::size_t total = 0;
         std::unordered_set<EdgeId> counted_edges;  // Avoid double counting
         
         for (const auto& [arity, arity_partition] : by_arity_) {

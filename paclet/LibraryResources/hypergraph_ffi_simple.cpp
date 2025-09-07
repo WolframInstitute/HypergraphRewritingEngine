@@ -196,6 +196,9 @@ EXTERN_C DLLEXPORT int testHypergraphCanonical(WolframLibraryData libData, mint 
  * Get version information
  */
 EXTERN_C DLLEXPORT int getVersion(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+    (void)libData; // Unused
+    (void)argc;    // Unused
+    (void)argv;    // Unused
     try {
         // Return version as a string
         char* version = const_cast<char*>("HypergraphRewriting v1.0.0");
@@ -211,10 +214,12 @@ EXTERN_C DLLEXPORT int getVersion(WolframLibraryData libData, mint argc, MArgume
  * Initialize and cleanup functions
  */
 EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData libData) {
+    (void)libData; // Unused
     return LIBRARY_NO_ERROR;
 }
 
 EXTERN_C DLLEXPORT void WolframLibrary_uninitialize(WolframLibraryData libData) {
+    (void)libData; // Unused
 }
 
 /**
@@ -246,7 +251,7 @@ EXTERN_C DLLEXPORT int performRewritingWXF(WolframLibraryData libData, mint argc
         
         // Simple WXF parser for our specific data structure
         // Expected: Association["InitialEdges" -> {{...}}, "Rules" -> {rule -> rule}, "Steps" -> n]
-        bool parse_success = false;
+        // Parse success tracking removed - not needed
         if (input_length >= 2 && wxf_input[0] == '8' && wxf_input[1] == ':') {
             // WXF header found, attempt to parse actual data
             std::string parse_msg = "WXF header detected, parsing actual input data";
@@ -262,9 +267,9 @@ EXTERN_C DLLEXPORT int performRewritingWXF(WolframLibraryData libData, mint argc
             auto steps_pos = wxf_str.find("Steps");
             if (steps_pos != std::string::npos) {
                 // Look for next byte that could be an integer value
-                for (size_t i = steps_pos + 5; i < input_length - 1; ++i) {
+                for (size_t i = steps_pos + 5; i < static_cast<size_t>(input_length - 1); ++i) {
                     if (wxf_input[i] == 'C') { // WXF integer marker
-                        if (i + 1 < input_length) {
+                        if (i + 1 < static_cast<size_t>(input_length)) {
                             steps = wxf_input[i + 1];
                             break;
                         }
@@ -301,7 +306,7 @@ EXTERN_C DLLEXPORT int performRewritingWXF(WolframLibraryData libData, mint argc
             });
             
             rules.push_back(RewritingRule(lhs, rhs));
-            parse_success = true;
+            // Parse successful
         } else {
             // No WXF header or unrecognized format
             std::string error_msg = "No valid WXF header found, using fallback values";

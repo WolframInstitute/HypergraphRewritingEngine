@@ -75,6 +75,7 @@ private:
 public:
     explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = 1024)
         : num_threads_(num_threads == 0 ? std::thread::hardware_concurrency() : num_threads) {
+        (void)queue_capacity; // Unused - kept for API compatibility
         
         if (num_threads_ == 0) num_threads_ = 1;
         
@@ -180,7 +181,9 @@ public:
     // No futures/promises - keep it simple
     
     void wait_for_completion() {
+#ifdef JOBSYSTEM_DEBUG
         int debug_count = 0;
+#endif
         
         while (true) {
             // Use condition variable to wait efficiently
@@ -195,11 +198,13 @@ public:
             size_t completed = total_completed_.load();
             
             // Debug output every 1000 iterations
+#ifdef JOBSYSTEM_DEBUG
             if (++debug_count % 1000 == 0) {
                 printf("[JOB_SYSTEM DEBUG] wait_for_completion loop %d: submitted=%zu, completed=%zu, pending=%zu\n", 
                        debug_count, submitted, completed, submitted - completed);
                 fflush(stdout);
             }
+#endif
             
             // Check if all work is done
             if (submitted == completed) {
@@ -219,9 +224,11 @@ public:
             }
         }
         
+#ifdef JOBSYSTEM_DEBUG
         printf("[JOB_SYSTEM DEBUG] wait_for_completion FINISHED after %d iterations (submitted=%zu, completed=%zu)\n", 
                debug_count, total_submitted_.load(), total_completed_.load());
         fflush(stdout);
+#endif
     }
     
     size_t get_num_workers() const {

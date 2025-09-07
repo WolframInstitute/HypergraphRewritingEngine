@@ -110,6 +110,19 @@ public:
         return current_step_.fetch_add(1);
     }
     
+    /**
+     * Get all rewriting rules for applying to states.
+     */
+    const std::vector<RewritingRule>& get_rules() const {
+        return rules_;
+    }
+    
+    /**
+     * Apply all rules to a target state (unified method for initial and produced states).
+     */
+    void apply_all_rules_to_state(StateId target_state_id, std::size_t current_step);
+    
+    
 private:
     /**
      * Compute the maximum radius needed for all rules in the rule set

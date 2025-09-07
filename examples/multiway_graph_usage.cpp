@@ -4,79 +4,100 @@
 
 using namespace hypergraph;
 
-/**
- * Multiway Graph Usage Example
- * 
- * This example demonstrates how to use the WolframEvolution class
- * to perform hypergraph rewriting and explore multiway spaces.
- * 
- * Key concepts:
- * - Creating evolution with rules
- * - Running evolution steps
- * - Accessing multiway graph results
- */
 int main() {
     std::cout << "Multiway Graph Usage Example\n";
     std::cout << "================================\n\n";
-    
+
     try {
-        // Create a Wolfram evolution system - TEST: 2 steps to see patch-based matching
-        std::cout << "Creating WolframEvolution (2 steps, 1 thread)...\n";
-        WolframEvolution evolution(2, 1, true, false);  // 2 steps, 1 thread, canonicalization on
-        
-        // Create a SIMPLE rewriting rule: {{x, y}} -> {{x, y}, {y, z}}
-        std::cout << "Setting up SIMPLE rewriting rule: {{x, y}} -> {{x, y}, {y, z}}\n";
-        PatternHypergraph lhs, rhs;
-        
-        // Left-hand side: {{x, y}} - simple single-edge pattern
-        lhs.add_edge(PatternEdge{
-            PatternVertex::variable(1),  // x
-            PatternVertex::variable(2)   // y
-        });
-        
-        // Right-hand side: {{x, y}, {y, z}} - keep original edge, add one new edge
-        rhs.add_edge(PatternEdge{
-            PatternVertex::variable(1),  // x
-            PatternVertex::variable(2)   // y
-        });
-        rhs.add_edge(PatternEdge{
-            PatternVertex::variable(2),  // y  
-            PatternVertex::variable(3)   // z (fresh variable - doesn't appear in LHS)
-        });
-        
-        RewritingRule rule(lhs, rhs);
-        evolution.add_rule(rule);
-        
-        // Set initial state: single edge {{1, 2}}
-        std::cout << "Initial state: {{1, 2}}\n";
-        std::vector<std::vector<GlobalVertexId>> initial_state = {{1, 2}};
-        
+        const auto nSteps = 2;
+        const auto nThreads = std::thread::hardware_concurrency();
+
+        std::cout << "Creating WolframEvolution (" << nSteps << " steps, " << nThreads << " threads)...\n";
+        WolframEvolution evolution(nSteps, std::thread::hardware_concurrency(), true, false);
+
+        {
+            // Create rule: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
+            std::cout << "Setting up rewriting rule: {{1,2,3}} -> {{1,2},{1,3},{1,4}}\n";
+            PatternHypergraph lhs, rhs;
+
+            // Left-hand side: {{1,2,3}}
+            lhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(2),
+                PatternVertex::variable(3)
+            });
+
+            // Right-hand side: {{1,2},{1,3},{1,4}}
+            rhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(2)
+            });
+            rhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(3)
+            });
+            rhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(4),
+            });
+
+            RewritingRule rule(lhs, rhs);
+            evolution.add_rule(rule);
+        }
+
+        {
+            // Create rule: {{1,2}} -> {{1,2},{1,3}}
+            std::cout << "Setting up rewriting rule: {{1,2}} -> {{1,2},{1,3}}\n";
+            PatternHypergraph lhs, rhs;
+
+            lhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(2)
+            });
+
+            rhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(2)
+            });
+            rhs.add_edge(PatternEdge{
+                PatternVertex::variable(1),
+                PatternVertex::variable(3)
+            });
+
+            RewritingRule rule(lhs, rhs);
+            evolution.add_rule(rule);
+        }
+
+        // Set initial state: {{1,2,3}}
+        std::cout << "Initial state: {{1,2,3}}\n";
+        std::vector<std::vector<GlobalVertexId>> initial_state = {{1,2,3}};
+
         // Run evolution
-        std::cout << "Running evolution for 2 steps...\n\n";
+        std::cout << "Running evolution for " << nSteps << " steps...\n\n";
         evolution.evolve(initial_state);
         std::cout << "Evolution.evolve() completed\n";
-        
+
         // Get results from multiway graph
         const MultiwayGraph& graph = evolution.get_multiway_graph();
         std::cout << "Got multiway graph reference\n";
-        
+
         std::cout << "Evolution Results:\n";
         std::cout << "------------------\n";
         std::cout << "Total states: " << graph.num_states() << "\n";
         std::cout << "Total events: " << graph.num_events() << "\n";
         std::cout << "Causal edges: " << graph.get_causal_edge_count() << "\n";
         std::cout << "Branchial edges: " << graph.get_branchial_edge_count() << "\n";
-        
+
         // Print detailed states and events
         std::cout << "\n";
         graph.print_summary();
-        
+
         std::cout << "\nMultiway graph exploration complete!\n";
-        
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
-    
+
     return 0;
 }

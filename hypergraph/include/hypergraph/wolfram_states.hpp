@@ -1,6 +1,7 @@
 #ifndef HYPERGRAPH_WOLFRAM_STATES_HPP
 #define HYPERGRAPH_WOLFRAM_STATES_HPP
 
+#include "hypergraph/debug_log.hpp"
 #include <hypergraph/hypergraph.hpp>
 #include <hypergraph/canonicalization.hpp>
 #include <hypergraph/pattern_matching.hpp>
@@ -169,7 +170,7 @@ public:
         }
         return canonical_id; // Fallback - shouldn't happen
     }
-    
+
     /**
      * Get mapping from global vertex ID to canonical vertex ID.
      */
@@ -178,13 +179,13 @@ public:
             // Force computation of canonical form to populate mapping
             to_canonical_hypergraph(); // This computes the mapping
         }
-        
+
         auto it = std::find(canonical_to_global_mapping_->begin(),
                            canonical_to_global_mapping_->end(), global_id);
         if (it != canonical_to_global_mapping_->end()) {
             return it - canonical_to_global_mapping_->begin();
         }
-        
+
         return std::nullopt;
     }
 
@@ -439,33 +440,35 @@ public:
             edges.push_back(global_edge.global_vertices);
         }
 
-#ifdef DEBUG
-        printf("[DEBUG] Original edges before canonicalization: ");
-        for (const auto& edge : edges) {
-            printf("{");
-            for (std::size_t i = 0; i < edge.size(); ++i) {
-                printf("%zu", edge[i]);
-                if (i < edge.size() - 1) printf(",");
+        {
+            std::ostringstream debug_stream;
+            debug_stream << "[DEBUG] Original edges before canonicalization: ";
+            for (const auto& edge : edges) {
+                debug_stream << "{";
+                for (std::size_t i = 0; i < edge.size(); ++i) {
+                    debug_stream << edge[i];
+                    if (i < edge.size() - 1) debug_stream << ",";
+                }
+                debug_stream << "} ";
             }
-            printf("} ");
+            DEBUG_LOG("%s\n", debug_stream.str().c_str());
         }
-        printf("\n");
-#endif
 
         auto canonical_edges = wolfram_canonical_hypergraph(edges);
 
-#ifdef DEBUG
-        printf("[DEBUG] Canonical edges after canonicalization: ");
-        for (const auto& edge : canonical_edges) {
-            printf("{");
-            for (std::size_t i = 0; i < edge.size(); ++i) {
-                printf("%zu", edge[i]);
-                if (i < edge.size() - 1) printf(",");
+        {
+            std::ostringstream debug_stream;
+            debug_stream << "[DEBUG] Canonical edges after canonicalization: ";
+            for (const auto& edge : canonical_edges) {
+                debug_stream << "{";
+                for (std::size_t i = 0; i < edge.size(); ++i) {
+                    debug_stream << edge[i];
+                    if (i < edge.size() - 1) debug_stream << ",";
+                }
+                debug_stream << "} ";
             }
-            printf("} ");
+            DEBUG_LOG("%s\n", debug_stream.str().c_str());
         }
-        printf("\n");
-#endif
 
         // Compute hash directly on canonical edge structure
         std::size_t hash_value = 0;
@@ -800,9 +803,29 @@ public:
         StateId state_id = next_state_id_.fetch_add(1);
         WolframState state(state_id);
 
+        // Track the maximum vertex ID seen in the initial state
+        GlobalVertexId max_vertex_id = 0;
+
         for (const auto& vertices : edge_structures) {
             GlobalEdgeId edge_id = next_global_edge_id_.fetch_add(1);
             state.add_global_edge(edge_id, vertices);
+
+            // Find the maximum vertex ID in this edge
+            for (GlobalVertexId vertex_id : vertices) {
+                if (vertex_id > max_vertex_id) {
+                    max_vertex_id = vertex_id;
+                }
+            }
+        }
+
+        // Update next_global_vertex_id_ to ensure fresh vertices don't overlap
+        if (!edge_structures.empty() && max_vertex_id > 0) {
+            GlobalVertexId min_required = max_vertex_id + 1;
+            GlobalVertexId current = next_global_vertex_id_.load();
+            if (current < min_required) {
+                // Atomically add the difference to bring it up to the required minimum
+                next_global_vertex_id_.fetch_add(min_required - current);
+            }
         }
 
         // Register canonical hash for initial state
@@ -874,49 +897,46 @@ private:
             std::size_t canonical_hash = output_state.compute_canonical_hash();
             auto existing_opt = canonical_hash_to_state_->find(canonical_hash);
 
-#ifdef DEBUG
-            printf("[DEBUG] Canonical hash: %zu\n", canonical_hash);
-#endif
+            DEBUG_LOG("[DEBUG] Canonical hash: %zu", canonical_hash);
 
             if (existing_opt.has_value()) {
                 // State already exists - reuse existing StateId
-#ifdef DEBUG
-                printf("DUPLICATE: reusing state %zu (canonical hash %zu)\n",
-                       *existing_opt, canonical_hash);
-#endif
+                DEBUG_LOG("DUPLICATE: reusing state %zu (canonical hash %zu)", *existing_opt, canonical_hash);
                 output_state_id = *existing_opt;
             } else {
                 // New unique state - store it
-#ifdef DEBUG
-                printf("NEW UNIQUE STATE %zu (canonical hash %zu): ", output_state_id, canonical_hash);
+{
+                std::ostringstream debug_stream;
+                debug_stream << "NEW UNIQUE STATE " << output_state_id << " (canonical hash " << canonical_hash << "): ";
                 for (const auto& edge : output_state.edges()) {
-                    printf("{");
+                    debug_stream << "{";
                     for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
-                        printf("%zu", edge.global_vertices[i]);
-                        if (i < edge.global_vertices.size() - 1) printf(",");
+                        debug_stream << edge.global_vertices[i];
+                        if (i < edge.global_vertices.size() - 1) debug_stream << ",";
                     }
-                    printf("} ");
+                    debug_stream << "} ";
                 }
-                printf("\n");
-#endif
+                DEBUG_LOG("%s", debug_stream.str().c_str());
+            }
                 canonical_hash_to_state_->insert(canonical_hash, output_state_id);
                 states_->insert(output_state_id, std::move(output_state));
                 states_count_.fetch_add(1);
             }
         } else {
             // Canonicalization disabled - just create new state
-#ifdef DEBUG
-            printf("NEW STATE %zu (canonicalization disabled): ", output_state_id);
-            for (const auto& edge : output_state.edges()) {
-                printf("{");
-                for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
-                    printf("%zu", edge.global_vertices[i]);
-                    if (i < edge.global_vertices.size() - 1) printf(",");
+            {
+                std::ostringstream debug_stream;
+                debug_stream << "NEW STATE " << output_state_id << " (canonicalization disabled): ";
+                for (const auto& edge : output_state.edges()) {
+                    debug_stream << "{";
+                    for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
+                        debug_stream << edge.global_vertices[i];
+                        if (i < edge.global_vertices.size() - 1) debug_stream << ",";
+                    }
+                    debug_stream << "} ";
                 }
-                printf("} ");
+                DEBUG_LOG("%s", debug_stream.str().c_str());
             }
-            printf("\n");
-#endif
             states_->insert(output_state_id, std::move(output_state));
             states_count_.fetch_add(1);
         }
@@ -946,13 +966,18 @@ private:
     void update_edge_mappings(EventId event_id,
                              const std::vector<GlobalEdgeId>& input_edges,
                              const std::vector<GlobalEdgeId>& output_edges) {
+        // Intentionally unused - method is a no-op placeholder
+        (void)event_id;
+        
         // Add input edge mappings
         for (GlobalEdgeId edge_id : input_edges) {
+            (void)edge_id; // Intentionally unused
             // Note: This should be removed since we build mappings on-demand\n            // input_edge_to_events_[edge_id].push_back(event_id);
         }
 
         // Add output edge mappings
         for (GlobalEdgeId edge_id : output_edges) {
+            (void)edge_id; // Intentionally unused
             // Note: This should be removed since we build mappings on-demand\n            // output_edge_to_events_[edge_id].push_back(event_id);
         }
     }
@@ -1059,11 +1084,12 @@ public:
     std::vector<WolframState> get_all_states() const {
         std::vector<WolframState> result;
         result.reserve(states_->size());
-        
+
         states_->for_each([&result](const StateId& id, const WolframState& state) {
+            (void)id; // Unused - only need the state
             result.push_back(state);
         });
-        
+
         return result;
     }
 
@@ -1073,11 +1099,12 @@ public:
     std::vector<WolframEvent> get_all_events() const {
         std::vector<WolframEvent> result;
         result.reserve(events_->size());
-        
+
         events_->for_each([&result](const EventId& id, const WolframEvent& event) {
+            (void)id; // Unused - only need the event
             result.push_back(event);
         });
-        
+
         return result;
     }
 
@@ -1103,9 +1130,7 @@ public:
 
         // Free the state from memory to reduce memory usage
         if (states_->contains(state_id)) {
-#ifdef DEBUG
-            printf("  Freeing exhausted state %zu from memory\n", state_id);
-#endif
+            DEBUG_LOG("  Freeing exhausted state %zu from memory", state_id);
             states_->erase(state_id);
             states_count_.fetch_sub(1);
         }
@@ -1434,13 +1459,14 @@ public:
     /**
      * Print concise summary of multiway graph state.
      */
-    void print_summary() const {
-
+    std::string get_summary() const {
+        std::ostringstream ss;
+        
         auto states = get_all_states();
         auto events = get_all_events();
 
-        std::cout << "=== MULTIWAY GRAPH SUMMARY ===\n";
-        std::cout << "States: " << states.size() << ", Events: " << events.size() << "\n\n";
+        ss << "=== MULTIWAY GRAPH SUMMARY ===\n";
+        ss << "States: " << states.size() << ", Events: " << events.size() << "\n\n";
 
         // Count causal vs branchial edges
         std::size_t causal_count = 0, branchial_count = 0;
@@ -1451,53 +1477,58 @@ public:
             current = current->next.load();
         }
 
-        std::cout << "States:\n";
+        ss << "States:\n";
         for (const auto& state : states) {
-            std::cout << "  State " << state.id() << ": " << state.num_edges() << " edges\n";
+            ss << "  State " << state.id() << ": " << state.num_edges() << " edges\n";
             for (const auto& edge : state.edges()) {
-                std::cout << "    Edge " << edge.global_id << ": {";
+                ss << "    Edge " << edge.global_id << ": {";
                 for (size_t i = 0; i < edge.global_vertices.size(); ++i) {
-                    if (i > 0) std::cout << ", ";
-                    std::cout << edge.global_vertices[i];
+                    if (i > 0) ss << ", ";
+                    ss << edge.global_vertices[i];
                 }
-                std::cout << "}\n";
+                ss << "}\n";
             }
         }
 
-        std::cout << "\nEvents:\n";
+        ss << "\nEvents:\n";
         for (const auto& event : events) {
-            std::cout << "  Event " << event.event_id << ": State " << event.input_state_id
-                      << " → State " << event.output_state_id << " (rule " << event.rule_index << ")\n";
-            
+            ss << "  Event " << event.event_id << ": State " << event.input_state_id
+               << " → State " << event.output_state_id << " (rule " << event.rule_index << ")\n";
+
             // Show consumed edges
-            std::cout << "    Consumed edges: ";
+            ss << "    Consumed edges: ";
             if (event.consumed_edges.empty()) {
-                std::cout << "(none)";
+                ss << "(none)";
             } else {
                 for (size_t i = 0; i < event.consumed_edges.size(); ++i) {
-                    if (i > 0) std::cout << ", ";
-                    std::cout << event.consumed_edges[i];
+                    if (i > 0) ss << ", ";
+                    ss << event.consumed_edges[i];
                 }
             }
-            std::cout << "\n";
-            
-            // Show produced edges  
-            std::cout << "    Produced edges: ";
+            ss << "\n";
+
+            // Show produced edges
+            ss << "    Produced edges: ";
             if (event.produced_edges.empty()) {
-                std::cout << "(none)";
+                ss << "(none)";
             } else {
                 for (size_t i = 0; i < event.produced_edges.size(); ++i) {
-                    if (i > 0) std::cout << ", ";
-                    std::cout << event.produced_edges[i];
+                    if (i > 0) ss << ", ";
+                    ss << event.produced_edges[i];
                 }
             }
-            std::cout << "\n";
-            
+            ss << "\n";
+
             // Show anchor vertex
-            std::cout << "    Anchor vertex: " << event.anchor_vertex << "\n";
+            ss << "    Anchor vertex: " << event.anchor_vertex << "\n";
         }
 
-        std::cout << "\nRelationships: " << causal_count << " causal, " << branchial_count << " branchial\n";
+        ss << "\nRelationships: " << causal_count << " causal, " << branchial_count << " branchial\n";
+        return ss.str();
+    }
+    
+    void print_summary() const {
+        std::cout << get_summary();
     }
 };
 

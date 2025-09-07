@@ -33,12 +33,12 @@ void ScanTask::execute() {
 
     // Use signature index if available, otherwise iterate through all edges
     std::vector<EdgeId> compatible_edges;
-    
+
     if (context_->signature_index) {
         // Get edges with compatible signatures from the index
         auto edges_with_sig = context_->signature_index->get_edges_with_signature(pattern_sig);
         compatible_edges.insert(compatible_edges.end(), edges_with_sig.begin(), edges_with_sig.end());
-        
+
         // Find additional compatible edges by checking all signatures in the index
         compatible_edges = context_->signature_index->find_compatible_edges(pattern_sig);
     } else {
@@ -46,20 +46,25 @@ void ScanTask::execute() {
         for (EdgeId edge_id = 0; edge_id < target_hg.num_edges(); ++edge_id) {
             const auto& concrete_edge = target_hg.edges()[edge_id];
             EdgeSignature concrete_sig = EdgeSignature::from_concrete_edge(concrete_edge, context_->label_function);
-            
+
             if (concrete_sig.is_compatible_with_pattern(pattern_sig)) {
                 compatible_edges.push_back(edge_id);
             }
         }
     }
 
-    DEBUG_LOG("[SCAN] Pattern edge arity=%zu, target has %zu edges",
-              pattern_edge.arity(), target_hg.num_edges());
-    DEBUG_LOG("[SCAN] Found %zu compatible edges (arity match)", compatible_edges.size());
+    {
+        std::ostringstream debug_stream;
+        debug_stream << "[SCAN] Pattern edge arity=" << pattern_edge.arity()
+                     << ", target has " << target_hg.num_edges() << " edges. "
+                     << "Found " << compatible_edges.size() << " compatible edges (arity match).";
 
-    if (compatible_edges.empty()) {
-        DEBUG_LOG("[SCAN] No compatible edges found, returning");
-        return;
+        if (compatible_edges.empty()) {
+            debug_stream << " No compatible edges found, returning.";
+            DEBUG_LOG("%s", debug_stream.str().c_str());
+            return;
+        }
+        DEBUG_LOG("%s", debug_stream.str().c_str());
     }
 
     // Process the assigned partition
@@ -76,12 +81,15 @@ void ScanTask::execute() {
         EdgeId candidate_edge = compatible_edges[i];
         const auto& concrete_edge = target_hg.get_edge(candidate_edge);
 
-        DEBUG_LOG("[SCAN] Processing candidate edge %zu (index %zu)", candidate_edge, i);
-
         // Generate all possible variable assignments for this edge match
         auto assignments = generate_edge_assignments(pattern_edge, *concrete_edge);
 
-        DEBUG_LOG("[SCAN] Generated %zu assignments for edge %zu", assignments.size(), candidate_edge);
+        {
+            std::ostringstream debug_stream;
+            debug_stream << "[SCAN] Processing candidate edge " << candidate_edge << " (index " << i << "). "
+                         << "Generated " << assignments.size() << " assignments for edge " << candidate_edge << ".";
+            DEBUG_LOG("%s", debug_stream.str().c_str());
+        }
 
         for (const auto& assignment : assignments) {
             if (context_->should_terminate.load()) break;
@@ -126,9 +134,9 @@ void ScanTask::execute() {
             }
         }
     }
-    
+
     context_->scan_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[SCAN] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[SCAN] Task completed. Spawned: %zu, Completed: %zu",
               context_->scan_tasks_spawned.load(), context_->scan_tasks_completed.load());
 }
 
@@ -240,6 +248,18 @@ void ExpandTask::execute() {
             for (const auto& [var, val] : merged_assignment.variable_to_concrete) {
                 extended_str += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
             }
+            extended_str += "(edges: ";
+            for (const auto& [pattern_idx, data_edge] : extended_match.edge_map) {
+                const auto& concrete_edge = target_hg.get_edge(data_edge);
+                extended_str += "{";
+                const auto& vertices = concrete_edge->vertices();
+                for (std::size_t i = 0; i < vertices.size(); ++i) {
+                    extended_str += std::to_string(vertices[i]);
+                    if (i < vertices.size() - 1) extended_str += ",";
+                }
+                extended_str += "} ";
+            }
+            extended_str += ")";
             DEBUG_LOG("%s", extended_str.c_str());
 
             extended_match.add_edge_match(next_edge_idx, candidate, merged_assignment);
@@ -251,7 +271,7 @@ void ExpandTask::execute() {
     }
 
     context_->expand_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[EXPAND] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[EXPAND] Task completed. Spawned: %zu, Completed: %zu",
               context_->expand_tasks_spawned.load(), context_->expand_tasks_completed.load());
 }
 
@@ -286,9 +306,9 @@ void SinkTask::execute() {
     context_->rewrite_tasks_spawned.fetch_add(1);
 
     DEBUG_LOG("[SINK] REWRITE task submitted successfully");
-    
+
     context_->sink_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[SINK] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[SINK] Task completed. Spawned: %zu, Completed: %zu",
               context_->sink_tasks_spawned.load(), context_->sink_tasks_completed.load());
 }
 
@@ -299,19 +319,13 @@ void RewriteTask::execute() {
     }
     DEBUG_LOG("%s", assignment_info.c_str());
 
-    // Apply the first rewriting rule from context
-    if (context_->rewrite_rules.empty()) {
-        DEBUG_LOG("[REWRITE] No rewriting rules available");
-        return;
-    }
-
     std::string consumed_edges = "[REWRITE] Starting rewrite for state " + std::to_string(context_->current_state_id) + ", consumed edges: ";
     for (GlobalEdgeId eid : complete_match_.matched_edges) {
         consumed_edges += std::to_string(eid) + " ";
     }
     DEBUG_LOG("%s", consumed_edges.c_str());
 
-    const auto& rule = context_->rewrite_rules[0];
+    const auto& rule = context_->rewrite_rule;
 
     // Create new edges by applying rule RHS
     std::vector<std::vector<GlobalVertexId>> new_edges;
@@ -338,7 +352,7 @@ void RewriteTask::execute() {
                         DEBUG_LOG("[REWRITE] Resolved LHS variable %zu → canonical %zu → global %zu",
                                   pattern_vertex.id, *resolved, global_vertex);
                     } else {
-                        printf("[REWRITE] ERROR: Could not get source state %zu\n", context_->current_state_id);
+                        DEBUG_LOG("[REWRITE] ERROR: Could not get source state %zu\n", context_->current_state_id);
                         all_vertices_resolved = false;
                         break;
                     }
@@ -369,7 +383,7 @@ void RewriteTask::execute() {
     std::vector<GlobalEdgeId> edges_to_remove;
     auto source_state = context_->multiway_graph->get_state(context_->current_state_id);
     if (!source_state) {
-        printf("[REWRITE] ERROR: Could not get source state %zu\n", context_->current_state_id);
+        DEBUG_LOG("[REWRITE] ERROR: Could not get source state %zu\n", context_->current_state_id);
         return;
     }
 
@@ -409,7 +423,7 @@ void RewriteTask::execute() {
 
     // Apply rewriting through private method
     EventId event_id = context_->multiway_graph->apply_rewriting(
-        context_->current_state_id, edges_to_remove, new_edges, 0, 0);
+        context_->current_state_id, edges_to_remove, new_edges, context_->rule_index, 0);
 
     if (event_id != INVALID_EVENT) {
         DEBUG_LOG("[REWRITE] Created new event %zu", event_id);
@@ -418,28 +432,27 @@ void RewriteTask::execute() {
         auto event_opt = context_->multiway_graph->get_event(event_id);
         if (event_opt) {
             StateId new_state_id = event_opt->output_state_id;
-            
-            // Increment step and check limit atomically to prevent race conditions
-            std::size_t new_step = 0;
-            if (context_->wolfram_evolution) {
-                new_step = context_->wolfram_evolution->increment_step();  // Returns new value after increment
-            } else {
-                new_step = context_->current_step.fetch_add(1) + 1;  // fetch_add returns old value, add 1 for new
-            }
+
+            // Calculate step for newly created state (parent step + 1)
+            std::size_t new_step = context_->current_step + 1;
 
             DEBUG_LOG("[REWRITE] Step check: new_step=%zu, max_steps=%zu, state=%zu→%zu",
                       new_step, context_->max_steps, context_->current_state_id, new_state_id);
 
-            // PATCH-BASED MATCHING: Search for new matches around newly added edges
+            // MULTI-RULE APPLICATION: Apply all rules to the newly created state
             // Only spawn if we haven't exceeded step limit
             if (new_step < context_->max_steps) {
-                try {
-                    spawn_patch_based_matching_around_new_edges(new_state_id, new_edges, new_step);
-                } catch (const std::exception& e) {
-                    DEBUG_LOG("[REWRITE] Exception in patch-based matching: %s", e.what());
+                if (context_->wolfram_evolution) {
+                    try {
+                        context_->wolfram_evolution->apply_all_rules_to_state(new_state_id, new_step);
+                    } catch (const std::exception& e) {
+                        DEBUG_LOG("[REWRITE] Exception in multi-rule application: %s", e.what());
+                    }
+                } else {
+                    DEBUG_LOG("[REWRITE] No WolframEvolution context for multi-rule application");
                 }
             } else {
-                DEBUG_LOG("[REWRITE] NOT SPAWNING patch-based matching: step %zu >= max_steps %zu", new_step, context_->max_steps);
+                DEBUG_LOG("[REWRITE] NOT SPAWNING multi-rule application: step %zu >= max_steps %zu", new_step, context_->max_steps);
             }
 
             DEBUG_LOG("[REWRITE] Event %zu completed, state %zu created", event_id, new_state_id);
@@ -447,11 +460,12 @@ void RewriteTask::execute() {
     }
 
     DEBUG_LOG("[REWRITE] REWRITE task completed");
-    
+
     context_->rewrite_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[REWRITE] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[REWRITE] Task completed. Spawned: %zu, Completed: %zu",
               context_->rewrite_tasks_spawned.load(), context_->rewrite_tasks_completed.load());
 }
+
 
 void RewriteTask::spawn_patch_based_matching_around_new_edges(
     StateId new_state_id,
@@ -459,7 +473,7 @@ void RewriteTask::spawn_patch_based_matching_around_new_edges(
     std::size_t current_step) {
 
     DEBUG_LOG("[REWRITE] Starting patch-based matching for state %zu, current_step=%zu", new_state_id, current_step);
-    
+
     // Check current global step at spawn time to prevent concurrent tasks from all spawning
     std::size_t global_step_now = 0;
     if (context_->wolfram_evolution) {
@@ -467,11 +481,11 @@ void RewriteTask::spawn_patch_based_matching_around_new_edges(
     } else {
         global_step_now = context_->current_step.load();
     }
-    
-    if (global_step_now >= context_->max_steps) {  
+
+    if (global_step_now >= context_->max_steps) {
         return;
     }
-    
+
 
     // Get the new state
     auto new_state_opt = context_->multiway_graph->get_state(new_state_id);
@@ -606,46 +620,31 @@ void RewriteTask::spawn_patch_based_matching_around_new_edges(
         return;
     }
 
-    // Apply each rule to this patch
-    for (std::size_t rule_idx = 0; rule_idx < context_->rewrite_rules.size(); ++rule_idx) {
-        const auto& rule = context_->rewrite_rules[rule_idx];
+    // Apply the single rule to this patch
+    const auto& rule = context_->rewrite_rule;
+    std::size_t rule_idx = context_->rule_index;
 
-        try {
-            // Create edge signature index for patch-based matching
-            EdgeSignatureIndex signature_index;
-            auto label_func = [](VertexId v) -> VertexLabel { return static_cast<VertexLabel>(v); };
+    // Create edge signature index for patch-based matching
+    EdgeSignatureIndex signature_index;
+    auto label_func = [](VertexId v) -> VertexLabel { return static_cast<VertexLabel>(v); };
 
-            for (EdgeId edge_id : patch_edges) {
-                try {
-                    const auto& edge = target_hg.edges()[edge_id];
-                    EdgeSignature sig = EdgeSignature::from_concrete_edge(edge, label_func);
-                    signature_index.add_edge(edge_id, sig);
-                } catch (const std::exception& e) {
-                    DEBUG_LOG("[REWRITE] Error creating signature for edge %zu: %s", edge_id, e.what());
-                    continue;
-                }
-            }
-
-            // Create new pattern matching context for this patch
-            // The original rules remain in scope for the entire evolution, so we can reference them directly
-            auto patch_context = std::make_shared<PatternMatchingContext>(
-                target_hg_ptr.get(), std::make_shared<const PatternHypergraph>(rule.lhs), std::make_shared<EdgeSignatureIndex>(std::move(signature_index)), label_func,
-                context_->multiway_graph, context_->job_system);
-            patch_context->current_state_id = new_state_id;
-            // Reference the original rules directly - they remain in scope
-            patch_context->rewrite_rules = context_->rewrite_rules;
-            patch_context->max_steps = context_->max_steps;
-            patch_context->current_step = current_step;
-
-            // Submit SCAN tasks for this patch (limited to patch edges)
-            // Pass the hypergraph pointer to keep it alive during job execution
-            spawn_patch_scan_tasks(patch_context, patch_edges, rule_idx, target_hg_ptr);
-
-        } catch (const std::exception& e) {
-            DEBUG_LOG("[REWRITE] Exception during patch matching setup for rule %zu: %s", rule_idx, e.what());
-            continue;
-        }
+    for (EdgeId edge_id : patch_edges) {
+        const auto& edge = target_hg.edges()[edge_id];
+        EdgeSignature sig = EdgeSignature::from_concrete_edge(edge, label_func);
+        signature_index.add_edge(edge_id, sig);
     }
+
+    // Create new pattern matching context for this patch
+    auto patch_context = std::make_shared<PatternMatchingContext>(
+        target_hg_ptr, std::make_shared<const PatternHypergraph>(rule.lhs), std::make_shared<EdgeSignatureIndex>(std::move(signature_index)), label_func,
+        context_->multiway_graph, context_->job_system, rule);
+    patch_context->current_state_id = new_state_id;
+    patch_context->rule_index = rule_idx;
+    patch_context->max_steps = context_->max_steps;
+    patch_context->current_step = current_step;
+
+    // Submit SCAN tasks for this patch (limited to patch edges)
+    spawn_patch_scan_tasks(patch_context, patch_edges, rule_idx, target_hg_ptr);
 }
 
 void RewriteTask::spawn_patch_scan_tasks(
@@ -732,9 +731,9 @@ void CausalTask::execute() {
     // For demonstration, we just count causal computations
     static std::atomic<std::size_t> causal_count{0};
     causal_count.fetch_add(1);
-    
+
     context_->causal_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[CAUSAL] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[CAUSAL] Task completed. Spawned: %zu, Completed: %zu",
               context_->causal_tasks_spawned.load(), context_->causal_tasks_completed.load());
 }
 
@@ -753,9 +752,9 @@ void BranchialTask::execute() {
     // For demonstration, we just count branchial computations
     static std::atomic<std::size_t> branchial_count{0};
     branchial_count.fetch_add(1);
-    
+
     context_->branchial_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[BRANCHIAL] Task completed. Spawned: %zu, Completed: %zu", 
+    DEBUG_LOG("[BRANCHIAL] Task completed. Spawned: %zu, Completed: %zu",
               context_->branchial_tasks_spawned.load(), context_->branchial_tasks_completed.load());
 }
 
@@ -825,5 +824,6 @@ bool is_assignment_consistent(const VariableAssignment& a1, const VariableAssign
 
     return true;
 }
+
 
 } // namespace hypergraph

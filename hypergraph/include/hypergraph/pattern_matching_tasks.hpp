@@ -30,6 +30,32 @@ enum class PatternMatchingTaskType {
 };
 
 /**
+ * Lightweight copyable data for rule application tasks.
+ * Contains only essential data that can be safely copied by value.
+ */
+struct RuleApplicationData {
+    RewritingRule rule;
+    StateId target_state_id;
+    std::size_t current_step;
+    std::size_t max_steps;
+    std::size_t max_matches;
+    
+    // Stable pointers that persist for the duration of evolution
+    std::shared_ptr<MultiwayGraph> multiway_graph;
+    job_system::JobSystem<PatternMatchingTaskType>* job_system;
+    WolframEvolution* wolfram_evolution;
+    
+    RuleApplicationData(const RewritingRule& r, StateId state_id, std::size_t step, 
+                       std::size_t max_s, std::size_t max_m,
+                       std::shared_ptr<MultiwayGraph> mg,
+                       job_system::JobSystem<PatternMatchingTaskType>* js,
+                       WolframEvolution* we)
+        : rule(r), target_state_id(state_id), current_step(step), 
+          max_steps(max_s), max_matches(max_m),
+          multiway_graph(mg), job_system(js), wolfram_evolution(we) {}
+};
+
+/**
  * Partial pattern match containing incomplete binding information.
  * Used to track progress through the SCAN → EXPAND → SINK pipeline.
  */
@@ -75,7 +101,7 @@ struct PartialMatch {
  * Provides access to target hypergraph, pattern, and coordination data.
  */
 struct PatternMatchingContext {
-    const Hypergraph* target_hypergraph;
+    std::shared_ptr<const Hypergraph> target_hypergraph;
     std::shared_ptr<const PatternHypergraph> pattern;
     std::shared_ptr<const EdgeSignatureIndex> signature_index;
     std::function<VertexLabel(VertexId)> label_function;
@@ -83,7 +109,8 @@ struct PatternMatchingContext {
     // Multiway graph for state and event tracking
     std::shared_ptr<MultiwayGraph> multiway_graph;
     StateId current_state_id{INVALID_STATE};  // Current state being processed
-    std::vector<RewritingRule> rewrite_rules;  // Rules for REWRITE tasks
+    RewritingRule rewrite_rule;  // Single rule for REWRITE tasks
+    std::size_t rule_index{0};  // Index of the rule being processed
 
     // Job system for spawning tasks
     job_system::JobSystem<PatternMatchingTaskType>* job_system{nullptr};
@@ -120,14 +147,16 @@ struct PatternMatchingContext {
     std::atomic<std::size_t> causal_tasks_completed{0};
     std::atomic<std::size_t> branchial_tasks_completed{0};
 
-    PatternMatchingContext(const Hypergraph* hg, std::shared_ptr<const PatternHypergraph> pat,
+    PatternMatchingContext(std::shared_ptr<const Hypergraph> hg, std::shared_ptr<const PatternHypergraph> pat,
                           std::shared_ptr<const EdgeSignatureIndex> idx,
                           std::function<VertexLabel(VertexId)> label_func,
                           std::shared_ptr<MultiwayGraph> mg,
                           job_system::JobSystem<PatternMatchingTaskType>* js,
+                          const RewritingRule& rule,
                           WolframEvolution* we = nullptr)
         : target_hypergraph(hg), pattern(pat), signature_index(idx),
-          label_function(std::move(label_func)), multiway_graph(mg), job_system(js), wolfram_evolution(we) {}
+          label_function(std::move(label_func)), multiway_graph(mg), rewrite_rule(rule),
+          job_system(js), wolfram_evolution(we) {}
 };
 
 /**
@@ -226,6 +255,7 @@ private:
         StateId new_state_id,
         const std::vector<std::vector<GlobalVertexId>>& new_edges,
         std::size_t current_step);
+
 
     /**
      * Spawn SCAN tasks limited to a patch of edges.
@@ -368,6 +398,7 @@ std::vector<VariableAssignment> generate_edge_assignments(
  * Check if two variable assignments are consistent (no conflicting variable bindings).
  */
 bool is_assignment_consistent(const VariableAssignment& a1, const VariableAssignment& a2);
+
 
 } // namespace hypergraph
 
