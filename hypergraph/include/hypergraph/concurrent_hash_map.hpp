@@ -86,6 +86,42 @@ public:
     }
     
     /**
+     * Insert if not exists, or get existing value
+     * Returns pair of (value, was_inserted)
+     */
+    std::pair<Value, bool> insert_or_get(const Key& key, const Value& value) {
+        size_t bucket_idx = get_bucket_index(key);
+        Node* new_node = new Node(key, value);
+        
+        while (true) {
+            Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
+            
+            // Check if key already exists
+            Node* current = head;
+            while (current != nullptr) {
+                if (!current->marked.load(std::memory_order_acquire) && current->key == key) {
+                    // Key exists, return existing value
+                    Value existing_value = current->value;
+                    delete new_node;
+                    return {existing_value, false};
+                }
+                current = current->next.load(std::memory_order_acquire);
+            }
+            
+            // Insert at head of bucket
+            new_node->next.store(head, std::memory_order_release);
+            if (buckets_[bucket_idx].head.compare_exchange_weak(
+                    head, new_node, 
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {
+                size_.fetch_add(1, std::memory_order_relaxed);
+                return {value, true};
+            }
+            // CAS failed, retry
+        }
+    }
+    
+    /**
      * Find a value by key
      * Returns optional containing value if found
      */

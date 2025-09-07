@@ -9,7 +9,7 @@ int main() {
     std::cout << "================================\n\n";
 
     try {
-        const auto nSteps = 2;
+        const auto nSteps = 4;
         const auto nThreads = std::thread::hardware_concurrency();
 
         std::cout << "Creating WolframEvolution (" << nSteps << " steps, " << nThreads << " threads)...\n";

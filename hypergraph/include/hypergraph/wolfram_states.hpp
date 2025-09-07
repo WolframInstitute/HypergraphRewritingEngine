@@ -887,7 +887,7 @@ private:
         // Add produced edges
         std::vector<GlobalEdgeId> produced_edge_ids;
         for (const auto& vertices : edges_to_add) {
-            GlobalEdgeId edge_id = next_global_edge_id_++;
+            GlobalEdgeId edge_id = next_global_edge_id_.fetch_add(1);
             output_state.add_global_edge(edge_id, vertices);
             produced_edge_ids.push_back(edge_id);
         }
@@ -895,32 +895,33 @@ private:
         if (canonicalization_enabled_) {
             // Check for canonical deduplication
             std::size_t canonical_hash = output_state.compute_canonical_hash();
-            auto existing_opt = canonical_hash_to_state_->find(canonical_hash);
-
+            
+            // Atomically insert or get existing state ID
+            auto [existing_state_id, was_inserted] = canonical_hash_to_state_->insert_or_get(canonical_hash, output_state_id);
+            
             DEBUG_LOG("[DEBUG] Canonical hash: %zu", canonical_hash);
-
-            if (existing_opt.has_value()) {
-                // State already exists - reuse existing StateId
-                DEBUG_LOG("DUPLICATE: reusing state %zu (canonical hash %zu)", *existing_opt, canonical_hash);
-                output_state_id = *existing_opt;
-            } else {
-                // New unique state - store it
-{
-                std::ostringstream debug_stream;
-                debug_stream << "NEW UNIQUE STATE " << output_state_id << " (canonical hash " << canonical_hash << "): ";
-                for (const auto& edge : output_state.edges()) {
-                    debug_stream << "{";
-                    for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
-                        debug_stream << edge.global_vertices[i];
-                        if (i < edge.global_vertices.size() - 1) debug_stream << ",";
+            
+            if (was_inserted) {
+                // New unique state - we successfully inserted it
+                {
+                    std::ostringstream debug_stream;
+                    debug_stream << "NEW UNIQUE STATE " << output_state_id << " (canonical hash " << canonical_hash << "): ";
+                    for (const auto& edge : output_state.edges()) {
+                        debug_stream << "{";
+                        for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
+                            debug_stream << edge.global_vertices[i];
+                            if (i < edge.global_vertices.size() - 1) debug_stream << ",";
+                        }
+                        debug_stream << "} ";
                     }
-                    debug_stream << "} ";
+                    DEBUG_LOG("%s", debug_stream.str().c_str());
                 }
-                DEBUG_LOG("%s", debug_stream.str().c_str());
-            }
-                canonical_hash_to_state_->insert(canonical_hash, output_state_id);
                 states_->insert(output_state_id, std::move(output_state));
                 states_count_.fetch_add(1);
+            } else {
+                // State already existed - use the existing state ID
+                DEBUG_LOG("DUPLICATE: reusing state %zu (canonical hash %zu)", existing_state_id, canonical_hash);
+                output_state_id = existing_state_id;
             }
         } else {
             // Canonicalization disabled - just create new state
