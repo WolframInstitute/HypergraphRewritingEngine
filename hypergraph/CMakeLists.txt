@@ -12,6 +12,7 @@ add_library(hypergraph
     src/pattern_matching_tasks.cpp
     src/rewriting.cpp
     src/wolfram_evolution.cpp
+    src/wolfram_states.cpp
     src/thread_local_pool.cpp
 )
 
