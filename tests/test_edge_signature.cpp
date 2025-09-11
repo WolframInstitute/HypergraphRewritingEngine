@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <hypergraph/edge_signature.hpp>
+#include <hypergraph/pattern_matching.hpp>
 #include <hypergraph/hypergraph.hpp>
 #include "test_helpers.hpp"
 

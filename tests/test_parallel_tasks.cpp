@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include <hypergraph/pattern_matching_tasks.hpp>
 #include <hypergraph/wolfram_evolution.hpp>
-#include <hypergraph/edge_signature.hpp>
 #include <job_system/job_system.hpp>
 #include <thread>
 #include <atomic>

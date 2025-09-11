@@ -6,7 +6,6 @@
 #include <hypergraph/types.hpp>
 #include <hypergraph/canonicalization.hpp>
 #include <hypergraph/pattern_matching.hpp>
-#include <hypergraph/edge_signature.hpp>
 #include <hypergraph/concurrent_hash_map.hpp>
 #include <map>
 #include <set>

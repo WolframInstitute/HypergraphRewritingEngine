@@ -2,7 +2,6 @@
 #define HYPERGRAPH_PATTERN_MATCHING_TASKS_HPP
 
 #include <hypergraph/pattern_matching.hpp>
-#include <hypergraph/edge_signature.hpp>
 #include <hypergraph/wolfram_states.hpp>
 #include <hypergraph/rewriting.hpp>
 #include <hypergraph/thread_local_pool.hpp>
