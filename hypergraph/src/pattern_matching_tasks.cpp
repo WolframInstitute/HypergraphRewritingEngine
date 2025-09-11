@@ -329,6 +329,10 @@ void RewriteTask::execute() {
 
     // Create new edges by applying rule RHS
     std::vector<std::vector<GlobalVertexId>> new_edges;
+
+    // Maintain consistent mapping from RHS variables to fresh vertices within this rewrite
+    std::unordered_map<VertexId, GlobalVertexId> rhs_fresh_vertex_map;
+
     for (const auto& rhs_edge : rule.rhs.edges()) {
         std::vector<GlobalVertexId> edge_vertices;
         bool all_vertices_resolved = true;
@@ -357,11 +361,23 @@ void RewriteTask::execute() {
                         break;
                     }
                 } else {
-                    // Variable not in LHS assignment - create fresh vertex
-                    GlobalVertexId fresh_vertex = context_->multiway_graph->get_fresh_vertex_id();
+                    // Variable not in LHS assignment - use consistent fresh vertex for this rewrite
+                    auto it = rhs_fresh_vertex_map.find(pattern_vertex.id);
+                    GlobalVertexId fresh_vertex;
+                    if (it != rhs_fresh_vertex_map.end()) {
+                        // Reuse existing fresh vertex for this variable
+                        fresh_vertex = it->second;
+                        DEBUG_LOG("[REWRITE] Variable %zu NOT in LHS, reusing fresh vertex %zu",
+                                  pattern_vertex.id, fresh_vertex);
+                    } else {
+                        // Create fresh vertex using atomic counter
+                        fresh_vertex = context_->multiway_graph->get_fresh_vertex_id();
+
+                        rhs_fresh_vertex_map[pattern_vertex.id] = fresh_vertex;
+                        DEBUG_LOG("[REWRITE] Variable %zu NOT in LHS, creating fresh vertex %zu",
+                                  pattern_vertex.id, fresh_vertex);
+                    }
                     edge_vertices.push_back(fresh_vertex);
-                    DEBUG_LOG("[REWRITE] Variable %zu NOT in LHS, creating fresh vertex %zu",
-                              pattern_vertex.id, fresh_vertex);
                 }
             } else {
                 // Concrete vertex - use as is
@@ -372,8 +388,14 @@ void RewriteTask::execute() {
 
         // Only add edge if ALL vertices were resolved
         if (all_vertices_resolved && !edge_vertices.empty()) {
+            std::string edge_str = "[REWRITE] Adding edge: {";
+            for (std::size_t i = 0; i < edge_vertices.size(); ++i) {
+                edge_str += std::to_string(edge_vertices[i]);
+                if (i < edge_vertices.size() - 1) edge_str += ",";
+            }
+            edge_str += "}";
+            DEBUG_LOG("%s", edge_str.c_str());
             new_edges.push_back(edge_vertices);
-            DEBUG_LOG("[REWRITE] Adding edge with %zu vertices", edge_vertices.size());
         } else if (!all_vertices_resolved) {
             DEBUG_LOG("[REWRITE] SKIPPING edge due to unresolved vertices");
         }
@@ -393,8 +415,9 @@ void RewriteTask::execute() {
     }
     DEBUG_LOG("%s", source_info.c_str());
 
+    // Convert canonical edge indices to global edge IDs
+    // Note: We must do this conversion before any edge removal to avoid index shifting
     for (EdgeId canonical_edge_id : complete_match_.matched_edges) {
-        // Convert canonical edge index to actual global edge ID in the source state
         const auto& source_edges = source_state->edges();
         if (canonical_edge_id < source_edges.size()) {
             GlobalEdgeId global_edge_id = source_edges[canonical_edge_id].global_id;
@@ -421,7 +444,7 @@ void RewriteTask::execute() {
     }
     DEBUG_LOG("%s", rewrite_info.c_str());
 
-    // Apply rewriting through private method
+    // Apply rewriting through private method (still under critical section)
     EventId event_id = context_->multiway_graph->apply_rewriting(
         context_->current_state_id, edges_to_remove, new_edges, context_->rule_index, 0);
 
@@ -442,9 +465,15 @@ void RewriteTask::execute() {
             // MULTI-RULE APPLICATION: Apply all rules to the newly created state
             // Only spawn if we haven't exceeded step limit
             if (new_step < context_->max_steps) {
+                DEBUG_LOG("[REWRITE] Thread %zu: About to spawn rules for NEW state %zu at step %zu",
+                         std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000,
+                         new_state_id, new_step);
                 if (context_->wolfram_evolution) {
                     try {
                         context_->wolfram_evolution->apply_all_rules_to_state(new_state_id, new_step);
+                        DEBUG_LOG("[REWRITE] Thread %zu: Successfully spawned rules for state %zu",
+                                 std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000,
+                                 new_state_id);
                     } catch (const std::exception& e) {
                         DEBUG_LOG("[REWRITE] Exception in multi-rule application: %s", e.what());
                     }
@@ -553,12 +582,6 @@ void RewriteTask::spawn_patch_based_matching_around_new_edges(
     std::unordered_set<VertexId> expanded_patch = patch_vertices;
     for (std::size_t radius = 0; radius < search_radius; ++radius) {
         std::unordered_set<VertexId> new_vertices;
-
-        // Safety check: limit expansion size to prevent memory issues
-        if (expanded_patch.size() > 1000) {
-            DEBUG_LOG("[REWRITE] Patch too large (%zu vertices), limiting expansion", expanded_patch.size());
-            break;
-        }
 
         for (VertexId v : expanded_patch) {
             if (v >= target_hg.num_vertices()) continue; // Safety check

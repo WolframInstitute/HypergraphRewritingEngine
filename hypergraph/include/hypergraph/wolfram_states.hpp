@@ -3,6 +3,7 @@
 
 #include "hypergraph/debug_log.hpp"
 #include <hypergraph/hypergraph.hpp>
+#include <hypergraph/types.hpp>
 #include <hypergraph/canonicalization.hpp>
 #include <hypergraph/pattern_matching.hpp>
 #include <hypergraph/edge_signature.hpp>
@@ -14,6 +15,7 @@
 #include <sstream>
 #include <optional>
 #include <iostream>
+#include <numeric>
 
 namespace hypergraph {
 
@@ -21,18 +23,6 @@ namespace hypergraph {
 class WolframState;
 class WolframEvent;
 
-/**
- * Global IDs for tracking vertices and edges across canonicalization.
- */
-using GlobalVertexId = std::size_t;
-using GlobalEdgeId = std::size_t;
-using StateId = std::size_t;
-using EventId = std::size_t;
-
-constexpr GlobalVertexId INVALID_GLOBAL_VERTEX = std::numeric_limits<GlobalVertexId>::max();
-constexpr GlobalEdgeId INVALID_GLOBAL_EDGE = std::numeric_limits<GlobalEdgeId>::max();
-constexpr StateId INVALID_STATE = std::numeric_limits<StateId>::max();
-constexpr EventId INVALID_EVENT = std::numeric_limits<EventId>::max();
 
 /**
  * Hyperedge with global ID that persists across canonicalization.
@@ -61,12 +51,11 @@ struct GlobalHyperedge {
  */
 class WolframState {
 private:
-    StateId state_id_;
     std::vector<GlobalHyperedge> global_edges_;
     std::unordered_set<GlobalVertexId> global_vertices_;
     mutable std::optional<CanonicalForm> cached_canonical_form_;
     EdgeSignatureIndex edge_signature_index_;  // Fast edge lookup by signature
-    mutable std::optional<std::vector<GlobalVertexId>> canonical_to_global_mapping_;
+    mutable std::optional<VertexMapping> cached_vertex_mapping_;
     mutable std::optional<std::vector<GlobalEdgeId>> canonical_edge_to_global_mapping_;
 
     /**
@@ -96,10 +85,11 @@ private:
     }
 
 public:
-    explicit WolframState(StateId id = INVALID_STATE) : state_id_(id) {}
+    explicit WolframState() {}
 
-    StateId id() const { return state_id_; }
-    void set_id(StateId id) { state_id_ = id; }
+    StateId id(bool canonicalization_enabled = true) const { 
+        return compute_hash(canonicalization_enabled);
+    }
 
     /**
      * Add edge with global IDs.
@@ -161,12 +151,11 @@ public:
      * This is needed during rewrite operations to map back from canonical space.
      */
     GlobalVertexId canonical_to_global_vertex(std::size_t canonical_id) const {
-        if (!canonical_to_global_mapping_.has_value()) {
-            // Force computation of canonical form to populate mapping
+        if (!cached_vertex_mapping_.has_value()) {
             to_canonical_hypergraph(); // This computes the mapping
         }
-        if (canonical_id < canonical_to_global_mapping_->size()) {
-            return (*canonical_to_global_mapping_)[canonical_id];
+        if (canonical_id < cached_vertex_mapping_->canonical_to_original.size()) {
+            return cached_vertex_mapping_->canonical_to_original[canonical_id];
         }
         return canonical_id; // Fallback - shouldn't happen
     }
@@ -175,15 +164,13 @@ public:
      * Get mapping from global vertex ID to canonical vertex ID.
      */
     std::optional<std::size_t> global_to_canonical_vertex(GlobalVertexId global_id) const {
-        if (!canonical_to_global_mapping_.has_value()) {
-            // Force computation of canonical form to populate mapping
+        if (!cached_vertex_mapping_.has_value()) {
             to_canonical_hypergraph(); // This computes the mapping
         }
 
-        auto it = std::find(canonical_to_global_mapping_->begin(),
-                           canonical_to_global_mapping_->end(), global_id);
-        if (it != canonical_to_global_mapping_->end()) {
-            return it - canonical_to_global_mapping_->begin();
+        auto it = cached_vertex_mapping_->original_to_canonical.find(global_id);
+        if (it != cached_vertex_mapping_->original_to_canonical.end()) {
+            return it->second;
         }
 
         return std::nullopt;
@@ -203,178 +190,6 @@ public:
     }
 
 private:
-    /**
-     * DelDup equivalent - remap to consecutive integers starting from 0
-     * IMPORTANT: Preserve edge ordering and multiplicity for Wolfram Physics
-     */
-    std::vector<std::vector<std::size_t>> del_dup(const std::vector<std::vector<GlobalVertexId>>& edges) const {
-        // DO NOT sort vertices within edges - ordering matters!
-        // DO NOT remove duplicate edges - multiplicity matters!
-        auto working_edges = edges;
-
-        // Get all unique vertices
-        std::set<GlobalVertexId> unique_vertices;
-        for (const auto& edge : working_edges) {
-            for (GlobalVertexId vertex : edge) {
-                unique_vertices.insert(vertex);
-            }
-        }
-
-        // Sort edges lexicographically to establish deterministic order for canonicalization
-        std::sort(working_edges.begin(), working_edges.end());
-
-        // Create vertex ordering based on first appearance in sorted edge list
-        std::vector<GlobalVertexId> vertex_order;
-        std::set<GlobalVertexId> seen_vertices;
-
-        for (const auto& edge : working_edges) {
-            for (GlobalVertexId vertex : edge) {
-                if (seen_vertices.find(vertex) == seen_vertices.end()) {
-                    vertex_order.push_back(vertex);
-                    seen_vertices.insert(vertex);
-                }
-            }
-        }
-
-        // Create mapping to consecutive integers starting from 0
-        std::map<GlobalVertexId, std::size_t> vertex_map;
-        for (std::size_t i = 0; i < vertex_order.size(); ++i) {
-            vertex_map[vertex_order[i]] = i;
-        }
-
-        // Store reverse mapping (canonical → global) for rewrite operations
-        std::vector<GlobalVertexId> reverse_mapping(vertex_order.size());
-        for (std::size_t i = 0; i < vertex_order.size(); ++i) {
-            reverse_mapping[i] = vertex_order[i];
-        }
-        canonical_to_global_mapping_ = reverse_mapping;
-
-        // Apply mapping - preserve ALL edges including duplicates
-        std::vector<std::vector<std::size_t>> result;
-        for (const auto& edge : working_edges) {
-            std::vector<std::size_t> mapped_edge;
-            for (GlobalVertexId vertex : edge) {
-                mapped_edge.push_back(vertex_map[vertex]);
-            }
-            result.push_back(mapped_edge);
-        }
-
-        return result;
-    }
-
-    /**
-     * CanonicalizeParts equivalent - main canonicalization algorithm
-     */
-    std::vector<std::vector<std::size_t>> canonicalize_parts(std::vector<std::vector<std::size_t>> edges) const {
-        // Step 1: DO NOT sort vertices within edges - preserve order!
-        // The examples show {30, 20} -> {2, 1}, not {1, 2}
-
-        // Step 2: Group by length (arity) - GatherBy[ReverseSort[list], Length]
-        std::map<std::size_t, std::vector<std::vector<std::size_t>>> parts;
-        for (const auto& edge : edges) {
-            parts[edge.size()].push_back(edge);
-        }
-
-        // Step 3: Apply canonicalization to each part and collect results
-        std::vector<std::vector<std::size_t>> canonical_parts;
-        for (auto& [arity, edges_of_arity] : parts) {
-            // Sort edges within each arity group using insertion sort
-            for (std::size_t i = 1; i < edges_of_arity.size(); ++i) {
-                auto key = edges_of_arity[i];
-                std::size_t j = i;
-
-                while (j > 0 && key < edges_of_arity[j - 1]) {
-                    edges_of_arity[j] = edges_of_arity[j - 1];
-                    --j;
-                }
-                edges_of_arity[j] = key;
-            }
-
-            // Add canonicalized edges to result
-            for (const auto& edge : edges_of_arity) {
-                canonical_parts.push_back(edge);
-            }
-        }
-
-        // Step 4: Final sort using insertion sort
-        for (std::size_t i = 1; i < canonical_parts.size(); ++i) {
-            auto key = canonical_parts[i];
-            std::size_t j = i;
-
-            while (j > 0 && key < canonical_parts[j - 1]) {
-                canonical_parts[j] = canonical_parts[j - 1];
-                --j;
-            }
-            canonical_parts[j] = key;
-        }
-
-        return canonical_parts;
-    }
-
-    /**
-     * Implement Wolfram Language FindCanonicalHypergraph.wl algorithm
-     * The key is to try different vertex permutations and pick the lexicographically smallest result
-     */
-    std::vector<std::vector<std::size_t>> wolfram_canonical_hypergraph(
-        const std::vector<std::vector<GlobalVertexId>>& edges) const {
-
-        // Get all unique vertices
-        std::set<GlobalVertexId> vertex_set;
-        for (const auto& edge : edges) {
-            for (auto v : edge) {
-                vertex_set.insert(v);
-            }
-        }
-        std::vector<GlobalVertexId> vertices(vertex_set.begin(), vertex_set.end());
-
-        // Try all permutations of vertices and find the lexicographically smallest result
-        std::vector<std::vector<std::size_t>> best_result;
-        bool first = true;
-
-        // For small graphs, try all permutations
-        if (vertices.size() <= 8) {  // Factorial grows fast, limit to small graphs
-            std::sort(vertices.begin(), vertices.end());
-            do {
-                // Create mapping for this permutation
-                std::map<GlobalVertexId, std::size_t> vertex_map;
-                for (std::size_t i = 0; i < vertices.size(); ++i) {
-                    vertex_map[vertices[i]] = i;
-                }
-
-                // Apply mapping to edges
-                std::vector<std::vector<std::size_t>> permuted_edges;
-                for (const auto& edge : edges) {
-                    std::vector<std::size_t> new_edge;
-                    for (auto v : edge) {
-                        new_edge.push_back(vertex_map[v]);
-                    }
-                    permuted_edges.push_back(new_edge);
-                }
-
-                // Sort the edges for this permutation
-                std::sort(permuted_edges.begin(), permuted_edges.end());
-
-                // Keep the lexicographically smallest result
-                if (first || permuted_edges < best_result) {
-                    best_result = permuted_edges;
-
-                    // Store the mapping that produces this canonical form
-                    std::vector<GlobalVertexId> new_mapping(vertices.size());
-                    for (const auto& [orig_v, canon_v] : vertex_map) {
-                        new_mapping[canon_v] = orig_v;
-                    }
-                    canonical_to_global_mapping_ = new_mapping;
-                    first = false;
-                }
-            } while (std::next_permutation(vertices.begin(), vertices.end()));
-        } else {
-            // For larger graphs, use the simple sorting approach as fallback
-            auto deduped_edges = del_dup(edges);
-            best_result = canonicalize_parts(deduped_edges);
-        }
-
-        return best_result;
-    }
 
 public:
     /**
@@ -389,8 +204,11 @@ public:
             original_edge_ids.push_back(global_edge.global_id);
         }
 
-        // Apply FindCanonicalHypergraph.wl algorithm
-        auto canonical_edges = wolfram_canonical_hypergraph(edges);
+        // Apply FindCanonicalHypergraph.wl algorithm via Canonicalizer
+        Canonicalizer canonicalizer;
+        auto canonical_result = canonicalizer.canonicalize_edges(edges);
+        auto canonical_edges = canonical_result.canonical_form.edges;
+        cached_vertex_mapping_ = canonical_result.vertex_mapping;
 
         // Build mapping from canonical edge index to original global edge ID
         // The canonicalization sorts the edges, so we need to track the mapping
@@ -402,10 +220,9 @@ public:
                 std::vector<std::size_t> mapped_orig_edge;
                 for (auto v : edges[orig_idx]) {
                     // Find vertex in canonical mapping
-                    auto it = std::find(canonical_to_global_mapping_->begin(),
-                                      canonical_to_global_mapping_->end(), v);
-                    if (it != canonical_to_global_mapping_->end()) {
-                        mapped_orig_edge.push_back(it - canonical_to_global_mapping_->begin());
+                    auto it = cached_vertex_mapping_->original_to_canonical.find(v);
+                    if (it != cached_vertex_mapping_->original_to_canonical.end()) {
+                        mapped_orig_edge.push_back(it->second);
                     }
                 }
 
@@ -431,10 +248,11 @@ public:
     }
 
     /**
-     * Compute canonical hash for state deduplication
+     * Compute hash for state identification
+     * Uses canonical form if canonicalization_enabled, otherwise raw hypergraph
      */
-    std::size_t compute_canonical_hash() const {
-        // Convert global edges to vector format for canonicalization
+    std::size_t compute_hash(bool canonicalization_enabled = true) const {
+        // Convert global edges to vector format
         std::vector<std::vector<GlobalVertexId>> edges;
         for (const auto& global_edge : global_edges_) {
             edges.push_back(global_edge.global_vertices);
@@ -442,7 +260,7 @@ public:
 
         {
             std::ostringstream debug_stream;
-            debug_stream << "[DEBUG] Original edges before canonicalization: ";
+            debug_stream << "[DEBUG] Original edges before hashing: ";
             for (const auto& edge : edges) {
                 debug_stream << "{";
                 for (std::size_t i = 0; i < edge.size(); ++i) {
@@ -454,27 +272,45 @@ public:
             DEBUG_LOG("%s\n", debug_stream.str().c_str());
         }
 
-        auto canonical_edges = wolfram_canonical_hypergraph(edges);
-
-        {
-            std::ostringstream debug_stream;
-            debug_stream << "[DEBUG] Canonical edges after canonicalization: ";
-            for (const auto& edge : canonical_edges) {
-                debug_stream << "{";
-                for (std::size_t i = 0; i < edge.size(); ++i) {
-                    debug_stream << edge[i];
-                    if (i < edge.size() - 1) debug_stream << ",";
+        std::vector<std::vector<std::size_t>> edges_to_hash;
+        if (canonicalization_enabled) {
+            // Use Canonicalizer to get canonical form
+            Canonicalizer canonicalizer;
+            auto result = canonicalizer.canonicalize_edges(edges);
+            edges_to_hash = result.canonical_form.edges;
+            // Cache the result for later use
+            cached_canonical_form_ = result.canonical_form;
+            cached_vertex_mapping_ = result.vertex_mapping;
+            {
+                std::ostringstream debug_stream;
+                debug_stream << "[DEBUG] Canonical edges for hashing: ";
+                for (const auto& edge : edges_to_hash) {
+                    debug_stream << "{";
+                    for (std::size_t i = 0; i < edge.size(); ++i) {
+                        debug_stream << edge[i];
+                        if (i < edge.size() - 1) debug_stream << ",";
+                    }
+                    debug_stream << "} ";
                 }
-                debug_stream << "} ";
+                DEBUG_LOG("%s\n", debug_stream.str().c_str());
             }
-            DEBUG_LOG("%s\n", debug_stream.str().c_str());
+        } else {
+            // Sort edges for consistent hashing without canonicalization
+            for (const auto& edge : edges) {
+                std::vector<std::size_t> converted_edge;
+                for (auto v : edge) {
+                    converted_edge.push_back(static_cast<std::size_t>(v));
+                }
+                edges_to_hash.push_back(converted_edge);
+            }
+            std::sort(edges_to_hash.begin(), edges_to_hash.end());
         }
 
-        // Compute hash directly on canonical edge structure
+        // Compute hash on the edge structure
         std::size_t hash_value = 0;
         std::hash<std::size_t> hasher;
 
-        for (const auto& edge : canonical_edges) {
+        for (const auto& edge : edges_to_hash) {
             std::size_t edge_hash = edge.size(); // Start with arity
             for (std::size_t vertex : edge) {
                 edge_hash ^= hasher(vertex) + 0x9e3779b9 + (edge_hash << 6) + (edge_hash >> 2);
@@ -486,13 +322,27 @@ public:
     }
 
     /**
+     * Legacy method for compatibility - uses canonical hash
+     */
+    std::size_t compute_canonical_hash() const {
+        return compute_hash(true);
+    }
+
+    /**
      * Get canonical form (cached for performance).
      */
     const CanonicalForm& get_canonical_form() const {
         if (!cached_canonical_form_) {
+            // Use Canonicalizer to get canonical form
+            std::vector<std::vector<GlobalVertexId>> edges;
+            for (const auto& global_edge : global_edges_) {
+                edges.push_back(global_edge.global_vertices);
+            }
+            
             Canonicalizer canonicalizer;
-            Hypergraph canonical = to_canonical_hypergraph();
-            cached_canonical_form_ = canonicalizer.canonicalize(canonical).canonical_form;
+            auto result = canonicalizer.canonicalize_edges(edges);
+            cached_canonical_form_ = result.canonical_form;
+            cached_vertex_mapping_ = result.vertex_mapping;
         }
         return *cached_canonical_form_;
     }
@@ -547,7 +397,7 @@ public:
     }
 
     WolframState clone() const {
-        WolframState copy(INVALID_STATE); // New state gets new ID
+        WolframState copy; // New state will compute hash when needed
         copy.global_edges_ = global_edges_;
         copy.global_vertices_ = global_vertices_;
         copy.edge_signature_index_ = edge_signature_index_;
@@ -712,8 +562,7 @@ private:
     std::unique_ptr<ConcurrentHashMap<StateId, WolframState>> states_;
     std::unique_ptr<ConcurrentHashMap<EventId, WolframEvent>> events_;
 
-    // Canonical state deduplication
-    std::unique_ptr<ConcurrentHashMap<std::size_t, StateId>> canonical_hash_to_state_;
+    // No longer needed - states are identified by their hash directly
     std::atomic<EventEdgeNode*> event_edges_head_{nullptr};  // Lock-free linked list for event edges
     std::atomic<size_t> event_edges_count_{0};
     std::atomic<size_t> states_count_{0};
@@ -729,8 +578,7 @@ private:
     // Match forwarding and invalidation tracking
     std::unique_ptr<ConcurrentHashMap<StateId, StateMatchCache>> match_caches_;
 
-    // Global ID generators
-    std::atomic<StateId> next_state_id_{1};
+    // Global ID generators  
     std::atomic<EventId> next_event_id_{1};
     std::atomic<GlobalVertexId> next_global_vertex_id_{0};
     std::atomic<GlobalEdgeId> next_global_edge_id_{0};
@@ -752,7 +600,6 @@ public:
         , output_edge_to_events_(std::move(other.output_edge_to_events_))
         , exhausted_states_(std::move(other.exhausted_states_))
         , match_caches_(std::move(other.match_caches_))
-        , next_state_id_(other.next_state_id_.load())
         , next_event_id_(other.next_event_id_.load())
         , next_global_vertex_id_(other.next_global_vertex_id_.load())
         , next_global_edge_id_(other.next_global_edge_id_.load()) {}
@@ -762,7 +609,6 @@ public:
             // Move unique_ptrs directly - no locking needed
             states_ = std::move(other.states_);
             events_ = std::move(other.events_);
-            canonical_hash_to_state_ = std::move(other.canonical_hash_to_state_);
 
             // Clean up old event edges list and take ownership of new one
             EventEdgeNode* old_head = event_edges_head_.exchange(other.event_edges_head_.exchange(nullptr));
@@ -777,7 +623,6 @@ public:
             output_edge_to_events_ = std::move(other.output_edge_to_events_);
             exhausted_states_ = std::move(other.exhausted_states_);
             match_caches_ = std::move(other.match_caches_);
-            next_state_id_ = other.next_state_id_.load();
             next_event_id_ = other.next_event_id_.load();
             next_global_vertex_id_ = other.next_global_vertex_id_.load();
             next_global_edge_id_ = other.next_global_edge_id_.load();
@@ -788,7 +633,6 @@ public:
     MultiwayGraph()
         : states_(std::make_unique<ConcurrentHashMap<StateId, WolframState>>())
         , events_(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
-        , canonical_hash_to_state_(std::make_unique<ConcurrentHashMap<std::size_t, StateId>>())
         , input_edge_to_events_(std::make_unique<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>>())
         , output_edge_to_events_(std::make_unique<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>>())
         , exhausted_states_(std::make_unique<ConcurrentHashSet<StateId>>())
@@ -799,9 +643,7 @@ public:
      * Create initial state with given hypergraph structure.
      */
     StateId create_initial_state(const std::vector<std::vector<GlobalVertexId>>& edge_structures) {
-        // Atomically get next state ID
-        StateId state_id = next_state_id_.fetch_add(1);
-        WolframState state(state_id);
+        WolframState state;
 
         // Track the maximum vertex ID seen in the initial state
         GlobalVertexId max_vertex_id = 0;
@@ -828,13 +670,15 @@ public:
             }
         }
 
-        // Register canonical hash for initial state
-        std::size_t canonical_hash = state.compute_canonical_hash();
-        canonical_hash_to_state_->insert(canonical_hash, state_id);
-
-        states_->insert(state_id, std::move(state));
-        states_count_.fetch_add(1);
-        return state_id;
+        // Get state hash (this will use canonicalization if enabled)
+        StateId state_hash = state.id(canonicalization_enabled_);
+        
+        // Store state using its hash as the key
+        bool was_inserted = states_->insert(state_hash, std::move(state));
+        if (was_inserted) {
+            states_count_.fetch_add(1);
+        }
+        return state_hash;
     }
 
     /**
@@ -875,10 +719,8 @@ private:
         }
 
         // Create new state by cloning input state
-        StateId output_state_id = next_state_id_.fetch_add(1);
         WolframState output_state = input_state_opt->clone();
-        output_state.set_id(output_state_id);
-
+        
         // Remove consumed edges
         for (GlobalEdgeId edge_id : edges_to_remove) {
             output_state.remove_global_edge(edge_id);
@@ -892,42 +734,21 @@ private:
             produced_edge_ids.push_back(edge_id);
         }
 
-        if (canonicalization_enabled_) {
-            // Check for canonical deduplication
-            std::size_t canonical_hash = output_state.compute_canonical_hash();
-            
-            // Atomically insert or get existing state ID
-            auto [existing_state_id, was_inserted] = canonical_hash_to_state_->insert_or_get(canonical_hash, output_state_id);
-            
-            DEBUG_LOG("[DEBUG] Canonical hash: %zu", canonical_hash);
-            
-            if (was_inserted) {
-                // New unique state - we successfully inserted it
-                {
-                    std::ostringstream debug_stream;
-                    debug_stream << "NEW UNIQUE STATE " << output_state_id << " (canonical hash " << canonical_hash << "): ";
-                    for (const auto& edge : output_state.edges()) {
-                        debug_stream << "{";
-                        for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
-                            debug_stream << edge.global_vertices[i];
-                            if (i < edge.global_vertices.size() - 1) debug_stream << ",";
-                        }
-                        debug_stream << "} ";
-                    }
-                    DEBUG_LOG("%s", debug_stream.str().c_str());
-                }
-                states_->insert(output_state_id, std::move(output_state));
-                states_count_.fetch_add(1);
-            } else {
-                // State already existed - use the existing state ID
-                DEBUG_LOG("DUPLICATE: reusing state %zu (canonical hash %zu)", existing_state_id, canonical_hash);
-                output_state_id = existing_state_id;
-            }
-        } else {
-            // Canonicalization disabled - just create new state
+        // Get state hash (this will use canonicalization if enabled)
+        StateId output_state_id = output_state.id(canonicalization_enabled_);
+        
+        DEBUG_LOG("[DEBUG] Computing state hash for edges count=%zu", 
+                 edges_to_add.size());
+        DEBUG_LOG("[DEBUG] Output state hash: %zu", 
+                 output_state_id);
+        
+        // Use insert_or_get to atomically handle deduplication
+        auto [existing_state, was_inserted] = states_->insert_or_get(output_state_id, output_state);
+        if (was_inserted) {
+            // New unique state - we successfully inserted it
             {
                 std::ostringstream debug_stream;
-                debug_stream << "NEW STATE " << output_state_id << " (canonicalization disabled): ";
+                debug_stream << "NEW UNIQUE STATE " << output_state_id << "\nRAW: ";
                 for (const auto& edge : output_state.edges()) {
                     debug_stream << "{";
                     for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
@@ -936,10 +757,35 @@ private:
                     }
                     debug_stream << "} ";
                 }
+                
+                // Show canonicalized form too
+                debug_stream << "\nCANON: ";
+                if (canonicalization_enabled_) {
+                    try {
+                        auto canonical_hg = output_state.to_canonical_hypergraph();
+                        for (const auto& edge : canonical_hg.edges()) {
+                            debug_stream << "{";
+                            const auto& vertices = edge.vertices();
+                            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                                debug_stream << vertices[i];
+                                if (i < vertices.size() - 1) debug_stream << ",";
+                            }
+                            debug_stream << "} ";
+                        }
+                    } catch (...) {
+                        debug_stream << "CANONICALIZATION_ERROR";
+                    }
+                } else {
+                    debug_stream << "DISABLED";
+                }
+                
                 DEBUG_LOG("%s", debug_stream.str().c_str());
             }
-            states_->insert(output_state_id, std::move(output_state));
             states_count_.fetch_add(1);
+        } else {
+            // State already exists - deduplicated
+            DEBUG_LOG("DUPLICATE: reusing state %zu", 
+                     output_state_id);
         }
 
         // Create event
@@ -1042,7 +888,8 @@ private:
 
 public:
     std::size_t num_states() const {
-        return states_count_.load();
+        // Use hash map's internal atomic size to avoid race condition
+        return states_->size();
     }
 
     std::size_t num_events() const {
@@ -1326,7 +1173,7 @@ public:
 
         // Clone initial state and replay events
         WolframState reconstructed = initial_state_opt.value().clone();
-        reconstructed.set_id(target_state_id);
+        // Hash will be computed automatically when needed
 
         for (EventId event_id : event_path) {
             auto event_opt = events_->find(event_id);
@@ -1422,7 +1269,7 @@ public:
         output_edge_to_events_->clear();
         exhausted_states_->clear();
         match_caches_->clear();
-        next_state_id_.store(1);
+        // No need to reset state counter - states are identified by hash
         next_event_id_.store(1);
         next_global_vertex_id_ = 0;
         next_global_edge_id_ = 0;

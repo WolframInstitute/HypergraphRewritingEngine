@@ -1,7 +1,6 @@
-/.cache
-/build/
-/build_linux/
-/build_windows/
+/.cache/
+/.vscode/
+/build*/
 /research/
 /tmp/
 /tools/

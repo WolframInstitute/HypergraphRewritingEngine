@@ -55,7 +55,7 @@ public:
      */
     bool insert(const Key& key, const Value& value) {
         size_t bucket_idx = get_bucket_index(key);
-        Node* new_node = new Node(key, value);
+        Node* new_node = nullptr;
         
         while (true) {
             Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
@@ -64,15 +64,19 @@ public:
             Node* current = head;
             while (current != nullptr) {
                 if (!current->marked.load(std::memory_order_acquire) && current->key == key) {
-                    // Key exists, update value atomically
-                    current->value = value;
-                    delete new_node;
+                    // Key exists, don't update - return false to indicate no insertion
+                    if (new_node) delete new_node;
                     return false;
                 }
                 current = current->next.load(std::memory_order_acquire);
             }
             
-            // Insert at head of bucket
+            // Only allocate if we haven't already
+            if (!new_node) {
+                new_node = new Node(key, value);
+            }
+            
+            // Try to insert at head of bucket
             new_node->next.store(head, std::memory_order_release);
             if (buckets_[bucket_idx].head.compare_exchange_weak(
                     head, new_node, 
@@ -81,43 +85,55 @@ public:
                 size_.fetch_add(1, std::memory_order_relaxed);
                 return true;
             }
-            // CAS failed, retry
+            // CAS failed, retry with the same node
+            // The key might have been inserted by another thread
         }
     }
     
     /**
      * Insert if not exists, or get existing value
      * Returns pair of (value, was_inserted)
+     * This is now linearizable - exactly one thread will return true for any given key
      */
     std::pair<Value, bool> insert_or_get(const Key& key, const Value& value) {
         size_t bucket_idx = get_bucket_index(key);
-        Node* new_node = new Node(key, value);
+        Node* new_node = nullptr;
         
         while (true) {
             Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
             
-            // Check if key already exists
+            // Check if key already exists in current list state
             Node* current = head;
             while (current != nullptr) {
-                if (!current->marked.load(std::memory_order_acquire) && current->key == key) {
-                    // Key exists, return existing value
+                if (!current->marked.load(std::memory_order_acquire) && 
+                    current->key == key) {
+                    // Key exists - clean up and return existing value
+                    if (new_node) delete new_node;
                     Value existing_value = current->value;
-                    delete new_node;
                     return {existing_value, false};
                 }
                 current = current->next.load(std::memory_order_acquire);
             }
             
-            // Insert at head of bucket
+            // Only allocate if we haven't already
+            if (!new_node) {
+                new_node = new Node(key, value);
+            }
+            
+            // Key doesn't exist in current state - try to insert
             new_node->next.store(head, std::memory_order_release);
             if (buckets_[bucket_idx].head.compare_exchange_weak(
                     head, new_node, 
                     std::memory_order_release,
                     std::memory_order_acquire)) {
+                
+                // Successfully inserted - we're the winner
                 size_.fetch_add(1, std::memory_order_relaxed);
                 return {value, true};
             }
-            // CAS failed, retry
+            
+            // CAS failed because head changed - retry with the same node
+            // The new head might contain our key now
         }
     }
     

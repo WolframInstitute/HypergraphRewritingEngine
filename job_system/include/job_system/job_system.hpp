@@ -142,6 +142,9 @@ public:
             worker->queue.push(std::move(job));
         }
         worker->cv.notify_one();
+        
+        // Ensure the job is visible to other threads
+        std::atomic_thread_fence(std::memory_order_release);
     }
     
     void submit_to_worker(size_t worker_id, JobPtr<JobType> job, ScheduleMode mode = ScheduleMode::LIFO) {
@@ -219,7 +222,28 @@ public:
                 }
                 
                 if (truly_done) {
-                    break;
+                    // Use memory fence to ensure we see all pending submissions
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                    
+                    // Re-check with proper memory ordering
+                    submitted = total_submitted_.load();
+                    completed = total_completed_.load();
+                    
+                    if (submitted == completed) {
+                        // One final check - any executing jobs might be about to submit
+                        bool any_executing = false;
+                        for (const auto& worker : workers_) {
+                            if (worker->jobs_executing.load() > 0) {
+                                any_executing = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!any_executing) {
+                            // Really done - no jobs executing, all submitted == completed
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -238,6 +262,7 @@ public:
     bool is_running() const {
         return is_running_.load();
     }
+    
     
     struct SystemStatistics {
         size_t total_jobs_executed;

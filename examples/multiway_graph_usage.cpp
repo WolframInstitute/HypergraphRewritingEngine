@@ -9,11 +9,11 @@ int main() {
     std::cout << "================================\n\n";
 
     try {
-        const auto nSteps = 4;
+        const auto nSteps = 3;
         const auto nThreads = std::thread::hardware_concurrency();
 
         std::cout << "Creating WolframEvolution (" << nSteps << " steps, " << nThreads << " threads)...\n";
-        WolframEvolution evolution(nSteps, std::thread::hardware_concurrency(), true, false);
+        WolframEvolution evolution(nSteps, nThreads, true, false);
 
         {
             // Create rule: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
