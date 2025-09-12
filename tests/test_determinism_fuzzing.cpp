@@ -7,7 +7,7 @@
 
 using namespace hypergraph;
 
-class LockfreeIntegrationTest : public ::testing::Test {
+class DeterminismFuzzingTest : public ::testing::Test {
 protected:
     struct TestResult {
         std::size_t num_states;
@@ -139,7 +139,7 @@ protected:
     }
 };
 
-TEST_F(LockfreeIntegrationTest, TestCase1_SimpleRule) {
+TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule) {
     // Create rule: {{1,2}} -> {{1,2}, {2,3}}
     PatternHypergraph lhs, rhs;
     lhs.add_edge(PatternEdge{
@@ -168,7 +168,7 @@ TEST_F(LockfreeIntegrationTest, TestCase1_SimpleRule) {
     fuzz_test_rule("SimpleRule", rule, initial, 4);
 }
 
-TEST_F(LockfreeIntegrationTest, TestCase2_TwoEdgeRule) {
+TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
     // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
     PatternHypergraph lhs, rhs;
 
@@ -207,7 +207,7 @@ TEST_F(LockfreeIntegrationTest, TestCase2_TwoEdgeRule) {
     fuzz_test_rule("TwoEdgeRule", rule, initial, 4);
 }
 
-TEST_F(LockfreeIntegrationTest, TestCase3_ThreeVertexRule) {
+TEST_F(DeterminismFuzzingTest, TestCase3_ThreeVertexRule) {
     // Create rule: {{1,2,3}} -> {{1,2},{2,3},{3,1}}
     PatternHypergraph lhs, rhs;
 
@@ -243,7 +243,7 @@ TEST_F(LockfreeIntegrationTest, TestCase3_ThreeVertexRule) {
     fuzz_test_rule("ThreeVertexRule", rule, initial, 4);
 }
 
-TEST_F(LockfreeIntegrationTest, TestCase4_MultiRule) {
+TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
     // Create Rule 1: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
     PatternHypergraph lhs1, rhs1;
     lhs1.add_edge(PatternEdge{

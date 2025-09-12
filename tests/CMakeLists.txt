@@ -29,7 +29,7 @@ add_executable(unified_tests
     test_wolfram_states.cpp  
     test_parallel_tasks.cpp
     test_wolfram_evolution.cpp
-    test_lockfree_integration.cpp
+    test_determinism_fuzzing.cpp
 )
 
 # Link against all required libraries
@@ -72,6 +72,14 @@ add_custom_target(run_perf_tests
     DEPENDS unified_tests  
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running performance tests..."
+)
+
+# Determinism fuzzing test target (runs determinism tests)
+add_custom_target(run_determinism_tests
+    COMMAND unified_tests --gtest_filter="*DeterminismFuzzing*" --gtest_color=yes
+    DEPENDS unified_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running determinism fuzzing tests..."
 )
 
 # Integration test target (runs only integration tests)
