@@ -6,7 +6,7 @@
 class WolframStatesTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        graph = std::make_unique<hypergraph::MultiwayGraph>();
+        graph = std::make_unique<hypergraph::MultiwayGraph>(true); // Enable full_capture for tests
     }
     
     std::unique_ptr<hypergraph::MultiwayGraph> graph;
@@ -15,25 +15,16 @@ protected:
 // === WOLFRAM STATE CREATION AND MANAGEMENT ===
 
 TEST_F(WolframStatesTest, StateCreation) {
-    // Test creating initial state
-    auto state_id = graph->create_initial_state({{1, 2}, {2, 3}});
-    EXPECT_NE(state_id, hypergraph::INVALID_STATE);
-    
-    // Verify state exists and can be retrieved
-    auto state_opt = graph->get_state_efficient(state_id);
-    ASSERT_TRUE(state_opt.has_value());
-    
-    auto& state = *state_opt;
-    EXPECT_EQ(state.id(), state_id);
+    // Test creating initial state - now returns state directly
+    auto state = graph->create_initial_state({{1, 2}, {2, 3}});
+
+    // Verify state properties
     EXPECT_EQ(state.num_edges(), 2);
+    EXPECT_GT(state.raw_id().value, 0);
 }
 
 TEST_F(WolframStatesTest, StateGlobalEdgeManagement) {
-    auto state_id = graph->create_initial_state({{1, 2}, {2, 3}});
-    auto state_opt = graph->get_state_efficient(state_id);
-    ASSERT_TRUE(state_opt.has_value());
-    
-    auto& state = *state_opt;
+    auto state = graph->create_initial_state({{1, 2}, {2, 3}});
     
     // Check global edges
     EXPECT_EQ(state.num_edges(), 2);
@@ -50,22 +41,17 @@ TEST_F(WolframStatesTest, StateSignatureIndexing) {
     auto state2 = graph->create_initial_state({{4, 5}, {5, 6}});
     
     // Different states should have different signatures initially
-    auto sig1 = graph->get_state_hash(state1);
-    auto sig2 = graph->get_state_hash(state2);
-    
-    ASSERT_TRUE(sig1.has_value());
-    ASSERT_TRUE(sig2.has_value());
+    auto sig1 = state1.raw_id().value;
+    auto sig2 = state2.raw_id().value;
+
     // Note: signatures might be same due to canonical equivalence, that's OK
+    EXPECT_NE(sig1, sig2);
 }
 
 // === CANONICAL FORM CACHING ===
 
 TEST_F(WolframStatesTest, CanonicalFormCaching) {
-    auto state_id = graph->create_initial_state({{1, 2}});
-    auto state_opt = graph->get_state_efficient(state_id);
-    ASSERT_TRUE(state_opt.has_value());
-    
-    auto& state = *state_opt;
+    auto state = graph->create_initial_state({{1, 2}});
     
     // First access should compute canonical form
     const auto& canonical1 = state.get_canonical_form();
@@ -79,20 +65,21 @@ TEST_F(WolframStatesTest, CanonicalFormCaching) {
 }
 
 TEST_F(WolframStatesTest, CanonicalFormInvalidation) {
-    auto state_id = graph->create_initial_state({{1, 2}});
+    auto state = graph->create_initial_state({{1, 2}});
+    auto state_id = state.raw_id();
     auto state_opt = graph->get_state_efficient(state_id);
     ASSERT_TRUE(state_opt.has_value());
-    
-    auto& state = *state_opt;
+
+    auto& retrieved_state = *state_opt;
     
     // Get initial canonical form (make a copy)
     auto canonical1 = state.get_canonical_form();
     
     // Modify state - should invalidate cache
-    state.add_global_edge(100, {3, 4});
-    
+    retrieved_state.add_global_edge(100, {3, 4});
+
     // Should recompute canonical form (make a copy)
-    auto canonical2 = state.get_canonical_form();
+    auto canonical2 = retrieved_state.get_canonical_form();
     EXPECT_NE(canonical1, canonical2);
     EXPECT_EQ(canonical2.vertex_count, 4);
     EXPECT_EQ(canonical2.edges.size(), 2);
@@ -103,16 +90,17 @@ TEST_F(WolframStatesTest, CanonicalFormInvalidation) {
 TEST_F(WolframStatesTest, StateReconstruction) {
     // Create initial state
     auto initial_state = graph->create_initial_state({{1, 2}});
-    
+    auto initial_state_id = initial_state.raw_id();
+
     // Create some events (mock - would normally come from rule application)
     // For this test, we'll test the path finding mechanism
-    
-    auto path = graph->find_event_path_to_state(initial_state);
+
+    auto path = graph->find_event_path_to_state(initial_state_id);
     EXPECT_TRUE(path.empty());  // Initial state should have no path
-    
-    auto reconstructed = graph->reconstruct_state(initial_state);
+
+    auto reconstructed = graph->reconstruct_state(initial_state_id);
     EXPECT_TRUE(reconstructed.has_value());
-    EXPECT_EQ(reconstructed->id(), initial_state);
+    EXPECT_EQ(reconstructed->raw_id(), initial_state_id);
 }
 
 // === MULTIWAY GRAPH OPERATIONS ===
@@ -136,10 +124,11 @@ TEST_F(WolframStatesTest, StateAndEventCounting) {
 
 TEST_F(WolframStatesTest, EdgeMappingUpdates) {
     auto state = graph->create_initial_state({{1, 2}, {2, 3}});
-    
+    auto state_id = state.raw_id();
+
     // Note: update_edge_mappings is private, so we can't test it directly
     // This test just verifies we can create and access states
-    auto state_opt = graph->get_state_efficient(state);
+    auto state_opt = graph->get_state_efficient(state_id);
     EXPECT_TRUE(state_opt.has_value());
 }
 
@@ -186,23 +175,26 @@ TEST_F(WolframStatesTest, StateDuplicationDetection) {
     // Create two states with identical structure but different global IDs
     auto state1 = graph->create_initial_state({{1, 2}});
     auto state2 = graph->create_initial_state({{10, 20}});  // Same structure, different IDs
-    
-    auto canonical1_opt = graph->get_state_efficient(state1);
-    auto canonical2_opt = graph->get_state_efficient(state2);
-    
+
+    auto state1_id = state1.raw_id();
+    auto state2_id = state2.raw_id();
+
+    auto canonical1_opt = graph->get_state_efficient(state1_id);
+    auto canonical2_opt = graph->get_state_efficient(state2_id);
+
     ASSERT_TRUE(canonical1_opt.has_value());
     ASSERT_TRUE(canonical2_opt.has_value());
-    
+
     // Get canonical forms
     const auto& canon1 = canonical1_opt->get_canonical_form();
     const auto& canon2 = canonical2_opt->get_canonical_form();
-    
+
     // Should have same canonical form
     EXPECT_EQ(canon1, canon2);
-    
+
     // Should have same hash
-    auto hash1 = graph->get_state_hash(state1);
-    auto hash2 = graph->get_state_hash(state2);
+    auto hash1 = graph->get_state_hash(state1_id);
+    auto hash2 = graph->get_state_hash(state2_id);
     ASSERT_TRUE(hash1.has_value());
     ASSERT_TRUE(hash2.has_value());
     EXPECT_EQ(*hash1, *hash2);
@@ -211,27 +203,28 @@ TEST_F(WolframStatesTest, StateDuplicationDetection) {
 // === ERROR CONDITIONS ===
 
 TEST_F(WolframStatesTest, InvalidStateHandling) {
-    auto invalid_state = graph->get_state_efficient(hypergraph::INVALID_STATE);
+    auto invalid_state = graph->get_state_efficient(hypergraph::RawStateId(hypergraph::INVALID_STATE));
     EXPECT_FALSE(invalid_state.has_value());
     
-    auto invalid_hash = graph->get_state_hash(hypergraph::INVALID_STATE);
+    auto invalid_hash = graph->get_state_hash(hypergraph::RawStateId(hypergraph::INVALID_STATE));
     EXPECT_FALSE(invalid_hash.has_value());
     
-    auto invalid_reconstruction = graph->reconstruct_state(hypergraph::INVALID_STATE);
+    auto invalid_reconstruction = graph->reconstruct_state(hypergraph::RawStateId(hypergraph::INVALID_STATE));
     EXPECT_FALSE(invalid_reconstruction.has_value());
 }
 
 TEST_F(WolframStatesTest, EmptyStateHandling) {
     // Test empty initial state
     auto empty_state = graph->create_initial_state({});
-    EXPECT_NE(empty_state, hypergraph::INVALID_STATE);
-    
-    auto state_opt = graph->get_state_efficient(empty_state);
+    auto empty_state_id = empty_state.raw_id();
+    EXPECT_NE(empty_state_id, hypergraph::RawStateId(hypergraph::INVALID_STATE));
+
+    auto state_opt = graph->get_state_efficient(empty_state_id);
     ASSERT_TRUE(state_opt.has_value());
-    
+
     EXPECT_TRUE(state_opt->num_edges() == 0);
     EXPECT_TRUE(state_opt->num_vertices() == 0);
-    
+
     const auto& canonical = state_opt->get_canonical_form();
     EXPECT_EQ(canonical.vertex_count, 0);
     EXPECT_TRUE(canonical.edges.empty());
@@ -241,8 +234,8 @@ TEST_F(WolframStatesTest, EmptyStateHandling) {
 
 TEST_F(WolframStatesTest, ManyStatesCreation) {
     const int num_unique_structures = 5;  // Reduced from 10 to avoid performance issues
-    std::vector<hypergraph::StateId> state_ids;
-    
+    std::vector<hypergraph::RawStateId> state_ids;
+
     // Create states with actually different canonical structures
     // Each state will have a different number of edges to ensure uniqueness
     for (int i = 0; i < num_unique_structures; ++i) {
@@ -251,17 +244,18 @@ TEST_F(WolframStatesTest, ManyStatesCreation) {
         for (int j = 0; j <= i; ++j) {
             edges.push_back({static_cast<std::size_t>(j), static_cast<std::size_t>(j+1)});
         }
-        auto state_id = graph->create_initial_state(edges);
+        auto state = graph->create_initial_state(edges);
+        auto state_id = state.raw_id();
         state_ids.push_back(state_id);
-        EXPECT_NE(state_id, hypergraph::INVALID_STATE);
+        EXPECT_NE(state_id, hypergraph::RawStateId(hypergraph::INVALID_STATE));
     }
-    
+
     // Verify all can be retrieved
     for (auto state_id : state_ids) {
         auto state_opt = graph->get_state_efficient(state_id);
         EXPECT_TRUE(state_opt.has_value());
     }
-    
+
     // Check state count - with canonicalization, we should have num_unique_structures unique states
     size_t reported_count = graph->num_states();
     EXPECT_EQ(reported_count, num_unique_structures);

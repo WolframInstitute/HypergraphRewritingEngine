@@ -25,11 +25,16 @@ add_executable(unified_tests
     test_unified_simple.cpp
     test_core_hypergraph.cpp
     test_edge_signature.cpp
-    test_pattern_matching_comprehensive.cpp  
-    test_wolfram_states.cpp  
+    test_pattern_matching_comprehensive.cpp
+    test_wolfram_states.cpp
     test_parallel_tasks.cpp
     test_wolfram_evolution.cpp
     test_determinism_fuzzing.cpp
+    test_debug_relationships.cpp
+    test_canonicalization.cpp
+    test_pattern_matching_isolation.cpp
+    test_isolated_duplicate_bug.cpp
+    test_debug_edge_selection.cpp
 )
 
 # Link against all required libraries

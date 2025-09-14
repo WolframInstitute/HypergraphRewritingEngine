@@ -34,22 +34,27 @@ enum class PatternMatchingTaskType {
  */
 struct RuleApplicationData {
     RewritingRule rule;
-    StateId target_state_id;
+    WolframState input_state;                         // State flows through tasks
+    std::shared_ptr<const Hypergraph> target_hypergraph; // Hypergraph data for pattern matching
+    std::vector<GlobalEdgeId> edge_id_mapping;        // Maps local EdgeId to GlobalEdgeId
     std::size_t current_step;
     std::size_t max_steps;
     std::size_t max_matches;
-    
+
     // Stable pointers that persist for the duration of evolution
     std::shared_ptr<MultiwayGraph> multiway_graph;
     job_system::JobSystem<PatternMatchingTaskType>* job_system;
     WolframEvolution* wolfram_evolution;
-    
-    RuleApplicationData(const RewritingRule& r, StateId state_id, std::size_t step, 
+
+    RuleApplicationData(const RewritingRule& r, const WolframState& input_state,
+                       std::shared_ptr<const Hypergraph> target_hg,
+                       const std::vector<GlobalEdgeId>& edge_mapping, std::size_t step,
                        std::size_t max_s, std::size_t max_m,
                        std::shared_ptr<MultiwayGraph> mg,
                        job_system::JobSystem<PatternMatchingTaskType>* js,
                        WolframEvolution* we)
-        : rule(r), target_state_id(state_id), current_step(step), 
+        : rule(r), input_state(input_state),
+          target_hypergraph(target_hg), edge_id_mapping(edge_mapping), current_step(step),
           max_steps(max_s), max_matches(max_m),
           multiway_graph(mg), job_system(js), wolfram_evolution(we) {}
 };
@@ -107,7 +112,8 @@ struct PatternMatchingContext {
 
     // Multiway graph for state and event tracking
     std::shared_ptr<MultiwayGraph> multiway_graph;
-    StateId current_state_id{INVALID_STATE};  // Current state being processed
+    WolframState current_state;                        // State flows through tasks
+    std::vector<GlobalEdgeId> edge_id_mapping;         // Maps local EdgeId to GlobalEdgeId
     RewritingRule rewrite_rule;  // Single rule for REWRITE tasks
     std::size_t rule_index{0};  // Index of the rule being processed
 
@@ -251,7 +257,7 @@ private:
      * Implements efficient search within a radius around new edges.
      */
     void spawn_patch_based_matching_around_new_edges(
-        StateId new_state_id,
+        RawStateId new_state_id,
         const std::vector<std::vector<GlobalVertexId>>& new_edges,
         std::size_t current_step);
 
@@ -326,7 +332,7 @@ void spawn_scan_tasks(JobSystem& job_system,
 
     // For each pattern edge, create SCAN tasks across partitions
     for (std::size_t pattern_idx = 0; pattern_idx < context->pattern->num_edges(); ++pattern_idx) {
-        std::size_t edges_per_partition = context->target_hypergraph->num_edges() / num_partitions;
+        std::size_t edges_per_partition = std::max(std::size_t(1), context->target_hypergraph->num_edges() / num_partitions);
 
         for (std::size_t partition = 0; partition < num_partitions; ++partition) {
             std::size_t start = partition * edges_per_partition;

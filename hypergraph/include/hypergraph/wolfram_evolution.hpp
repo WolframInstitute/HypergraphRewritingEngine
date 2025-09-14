@@ -93,8 +93,9 @@ public:
     
     /**
      * Apply all rules to a target state (unified method for initial and produced states).
+     * State flows through tasks rather than being stored.
      */
-    void apply_all_rules_to_state(StateId target_state_id, std::size_t current_step);
+    void apply_all_rules_to_state(const WolframState& input_state, std::size_t current_step);
     
     
 private:

@@ -16,34 +16,36 @@ using namespace hypergraph;
 int main() {
     std::cout << "=== Basic Wolfram Evolution Example ===\n\n";
 
-    // Create simple single-threaded evolution (1 step, 1 thread)
+    // Create multi-threaded evolution (4 steps, 4 threads)
     std::cout << "Creating Wolfram evolution system:\n";
-    std::cout << "  Max steps: 1\n";
-    std::cout << "  Threads: 1\n";
+    std::cout << "  Max steps: 4\n";
+    std::cout << "  Threads: 4\n";
     std::cout << "  Canonicalization: enabled\n\n";
-    WolframEvolution evolution(1, 1, true, false);
+    WolframEvolution evolution(4, 4, true, false);
 
-    // Create rule: {X, Y} -> {{X, Y}, {Y, Z}} (edge growth)
-    std::cout << "Creating rewriting rule:\n";
-    std::cout << "  LHS: {X, Y}\n";
-    std::cout << "  RHS: {{X, Y}, {Y, Z}}\n";
-    std::cout << "  Effect: Adds a new edge extending from the matched edge\n\n";
+    // Create rule: {{X,Y},{Y,Z}} -> {{X,Y},{Y,Z},{Y,W}} (TestCase2 rule)
+    std::cout << "Creating rewriting rule (TestCase2):\n";
+    std::cout << "  LHS: {{X,Y},{Y,Z}}\n";
+    std::cout << "  RHS: {{X,Y},{Y,Z},{Y,W}}\n";
+    std::cout << "  Effect: Adds a new edge from shared vertex\n\n";
 
     PatternHypergraph lhs, rhs;
 
-    // LHS: single edge with two variables
+    // LHS: two edges sharing a vertex
     lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
 
-    // RHS: original edge plus new edge (Z is fresh variable)
+    // RHS: original edges plus new edge from shared vertex
     rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
     rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
 
     RewritingRule rule(lhs, rhs);
     evolution.add_rule(rule);
 
-    // Initial state: single edge {{1, 2}}
-    std::cout << "Initial hypergraph state: {{1, 2}}\n\n";
-    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}};
+    // Initial state: two edges {{1, 2}, {2, 3}}
+    std::cout << "Initial hypergraph state: {{1, 2}, {2, 3}}\n\n";
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
 
     std::cout << "Running evolution...\n";
 

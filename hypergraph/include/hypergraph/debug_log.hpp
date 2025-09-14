@@ -6,7 +6,7 @@
 #include <sstream>
 
 // Debug logging macro - thread-safe printf-based logging with thread ID
-#ifdef DEBUG
+#ifdef ENABLE_DEBUG_OUTPUT
     #define DEBUG_LOG(fmt, ...) do { \
         std::ostringstream oss; \
         oss << std::this_thread::get_id(); \

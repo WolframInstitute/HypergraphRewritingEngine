@@ -258,10 +258,10 @@ using VertexLabel = std::size_t;
  */
 struct PatternSignature {
     std::vector<std::size_t> variable_pattern;  // e.g., {0,0} for self-loop, {0,1} for distinct
-    
+
     PatternSignature() = default;
     PatternSignature(const std::vector<std::size_t>& pattern);
-    
+
     bool operator==(const PatternSignature& other) const;
     bool operator<(const PatternSignature& other) const;
     std::size_t hash() const;
@@ -277,36 +277,36 @@ private:
     std::multiset<VertexLabel> concrete_labels_;  // Concrete vertex labels
     std::size_t num_variables_;                   // Number of variable vertices
     std::size_t arity_;                           // Total number of vertices
-    
+
     // HGMatch-style vertex incidence information
     std::unordered_map<VertexId, std::vector<EdgeId>> vertex_incidence_;  // vertex -> incident edges
     std::unordered_map<VertexId, std::size_t> vertex_degrees_;             // vertex -> degree
     std::vector<std::size_t> variable_positions_;                          // Which positions are variables
-    
+
 public:
     EdgeSignature();
-    
+
     /**
      * Create signature from a concrete hyperedge with incidence information.
      */
-    static EdgeSignature from_concrete_edge(const Hyperedge& edge, 
+    static EdgeSignature from_concrete_edge(const Hyperedge& edge,
                                            const std::function<VertexLabel(VertexId)>& label_func,
                                            const Hypergraph* hypergraph = nullptr);
-    
+
     /**
      * Create signature from a pattern edge (may contain variables).
      */
     static EdgeSignature from_pattern_edge(const PatternEdge& edge,
                                           const std::function<VertexLabel(VertexId)>& label_func);
-    
+
     /**
      * Check if this signature is compatible with a pattern signature.
      */
     bool is_compatible_with_pattern(const EdgeSignature& pattern) const;
-    
+
     bool operator==(const EdgeSignature& other) const;
     bool operator!=(const EdgeSignature& other) const;
-    
+
     // Getters
     std::size_t arity() const;
     std::size_t num_variables() const;
@@ -314,12 +314,12 @@ public:
     const std::unordered_map<VertexId, std::vector<EdgeId>>& vertex_incidence() const;
     const std::unordered_map<VertexId, std::size_t>& vertex_degrees() const;
     const std::vector<std::size_t>& variable_positions() const;
-    
+
     /**
      * Generate all applicable pattern signatures for this concrete edge.
      */
     std::vector<PatternSignature> generate_pattern_signatures() const;
-    
+
     /**
      * Get a hash value for use in unordered containers.
      */
@@ -329,7 +329,7 @@ private:
     /**
      * Check if a variable pattern is compatible with concrete labels.
      */
-    bool is_pattern_compatible(const std::vector<std::size_t>& pattern, 
+    bool is_pattern_compatible(const std::vector<std::size_t>& pattern,
                               const std::vector<VertexLabel>& sorted_labels) const;
 };
 
@@ -345,37 +345,37 @@ private:
         struct PatternPartition {
             // Level 3: Map from concrete signature to edge IDs
             std::unordered_map<std::size_t, std::vector<EdgeId>> signature_to_edges;
-            
+
             // Store actual signatures for compatibility checking
             std::unordered_map<std::size_t, EdgeSignature> hash_to_signature;
         };
-        
+
         std::unordered_map<std::size_t, PatternPartition> by_pattern_signature;
     };
-    
+
     std::unordered_map<std::size_t, ArityPartition> by_arity_;
-    
+
 public:
     /**
      * Add an edge with its signature to the index.
      */
     void add_edge(EdgeId edge_id, const EdgeSignature& signature);
-    
+
     /**
      * Find all edges compatible with a pattern signature.
      */
     std::vector<EdgeId> find_compatible_edges(const EdgeSignature& pattern) const;
-    
+
     /**
      * Get edges with exact signature match (for concrete edges).
      */
     std::vector<EdgeId> get_edges_with_signature(const EdgeSignature& signature) const;
-    
+
     /**
      * Clear the index.
      */
     void clear();
-    
+
     /**
      * Get total number of indexed edges.
      */
@@ -386,7 +386,7 @@ public:
 
 // Hash specializations
 namespace std {
-template<>
+/* template<>
 struct hash<hypergraph::EdgeSignature> {
     std::size_t operator()(const hypergraph::EdgeSignature& sig) const;
 };
@@ -394,7 +394,7 @@ struct hash<hypergraph::EdgeSignature> {
 template<>
 struct hash<hypergraph::PatternSignature> {
     std::size_t operator()(const hypergraph::PatternSignature& sig) const;
-};
+}; */
 }
 
 #endif // HYPERGRAPH_PATTERN_MATCHING_HPP

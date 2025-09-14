@@ -18,15 +18,15 @@ namespace hypergraph {
 struct CanonicalForm {
     std::vector<std::vector<VertexId>> edges;  // Edges with canonical vertex indices
     VertexId vertex_count;
-    
+
     bool operator==(const CanonicalForm& other) const {
         return vertex_count == other.vertex_count && edges == other.edges;
     }
-    
+
     bool operator!=(const CanonicalForm& other) const {
         return !(*this == other);
     }
-    
+
     // String representation for debugging
     std::string to_string() const;
 };
@@ -37,16 +37,16 @@ struct CanonicalForm {
 struct VertexMapping {
     std::unordered_map<VertexId, VertexId> original_to_canonical;
     std::vector<VertexId> canonical_to_original;
-    
+
     // Apply the mapping to a vertex ID
     VertexId map_vertex(VertexId original) const {
         auto it = original_to_canonical.find(original);
         return (it != original_to_canonical.end()) ? it->second : INVALID_VERTEX;
     }
-    
+
     // Get original vertex from canonical index
     VertexId get_original(VertexId canonical) const {
-        return (canonical < canonical_to_original.size()) ? 
+        return (canonical < canonical_to_original.size()) ?
                canonical_to_original[canonical] : INVALID_VERTEX;
     }
 };
@@ -57,7 +57,7 @@ struct VertexMapping {
 struct CanonicalizationResult {
     CanonicalForm canonical_form;
     VertexMapping vertex_mapping;
-    
+
     // Check if two hypergraphs are isomorphic via their canonical forms
     static bool are_isomorphic(const CanonicalizationResult& a, const CanonicalizationResult& b) {
         return a.canonical_form == b.canonical_form;
@@ -66,13 +66,13 @@ struct CanonicalizationResult {
 
 /**
  * Canonicalization algorithm using Wolfram's approach.
- * 
+ *
  * The algorithm works as follows:
  * 1. Try all permutations of vertices
  * 2. For each permutation, map vertices to 0, 1, 2, ...
  * 3. Sort the resulting edges
  * 4. Keep the lexicographically smallest result
- * 
+ *
  * This finds the true canonical form but has factorial complexity.
  */
 class Canonicalizer {
@@ -85,25 +85,25 @@ private:
     std::vector<std::vector<VertexType>> wolfram_canonical_hypergraph(
         const std::vector<std::vector<VertexType>>& edges,
         VertexMapping& mapping) const;
-    
+
     /**
      * Helper to convert edge list with vertex IDs to size_t.
      */
     std::vector<std::vector<std::size_t>> edges_to_size_t(
         const std::vector<std::vector<VertexId>>& edges) const;
-    
+
 public:
     /**
      * Canonicalize a hypergraph, returning both canonical form and vertex mapping.
      */
     CanonicalizationResult canonicalize(const Hypergraph& hg) const;
-    
+
     /**
      * Canonicalize using raw edge vectors.
      */
     template<typename VertexType>
     CanonicalizationResult canonicalize_edges(const std::vector<std::vector<VertexType>>& edges) const;
-    
+
     /**
      * Quick check if two hypergraphs are isomorphic (same canonical form).
      */
@@ -116,11 +116,11 @@ public:
 
 // Hash function for CanonicalForm
 namespace std {
-template<>
+/* template<>
 struct hash<hypergraph::CanonicalForm> {
     std::size_t operator()(const hypergraph::CanonicalForm& canonical) const {
         std::size_t hash_value = std::hash<hypergraph::VertexId>{}(canonical.vertex_count);
-        
+
         // Hash the edges
         std::hash<hypergraph::VertexId> vertex_hasher;
         for (const auto& edge : canonical.edges) {
@@ -130,10 +130,10 @@ struct hash<hypergraph::CanonicalForm> {
             }
             hash_value ^= edge_hash + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
         }
-        
+
         return hash_value;
     }
-};
+}; */
 }
 
 #endif // HYPERGRAPH_CANONICALIZATION_HPP

@@ -38,7 +38,13 @@ target_link_libraries(hypergraph PUBLIC
 # Optional debug definitions (can be enabled via cmake -DDEBUG_OUTPUT=ON)
 option(DEBUG_OUTPUT "Enable debug output" OFF)
 if(DEBUG_OUTPUT)
-    target_compile_definitions(hypergraph PRIVATE DEBUG)
+    target_compile_definitions(hypergraph PRIVATE ENABLE_DEBUG_OUTPUT)
+endif()
+
+# Optional brute force isomorphism check (can be enabled via cmake -DENABLE_BRUTE_FORCE_ISOMORPHISM_CHECK=ON)
+option(ENABLE_BRUTE_FORCE_ISOMORPHISM_CHECK "Enable brute force isomorphism verification" OFF)
+if(ENABLE_BRUTE_FORCE_ISOMORPHISM_CHECK)
+    target_compile_definitions(hypergraph PRIVATE ENABLE_BRUTE_FORCE_ISOMORPHISM_CHECK)
 endif()
 
 # Note: Examples, benchmarks, and tests are now built separately in their own directories:

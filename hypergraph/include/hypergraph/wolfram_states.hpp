@@ -7,6 +7,7 @@
 #include <hypergraph/canonicalization.hpp>
 #include <hypergraph/pattern_matching.hpp>
 #include <hypergraph/concurrent_hash_map.hpp>
+#include <hypergraph/lockfree_list.hpp>
 #include <map>
 #include <set>
 #include <atomic>
@@ -21,6 +22,15 @@ namespace hypergraph {
 // Forward declarations
 class WolframState;
 class WolframEvent;
+enum class PatternMatchingTaskType;
+
+} // namespace hypergraph
+
+namespace job_system {
+    template<typename TaskType> class JobSystem;
+}
+
+namespace hypergraph {
 
 
 /**
@@ -46,16 +56,19 @@ struct GlobalHyperedge {
 };
 
 /**
+ * Canonical edge signature - represents the structural identity of an edge
+ * in its canonical form, independent of global IDs.
+ */
+using CanonicalEdgeSignature = std::vector<std::size_t>;  // Sorted canonical vertex IDs
+
+/**
  * Wolfram Physics state containing a hypergraph with global IDs.
  */
 class WolframState {
 private:
     std::vector<GlobalHyperedge> global_edges_;
     std::unordered_set<GlobalVertexId> global_vertices_;
-    mutable std::optional<CanonicalForm> cached_canonical_form_;
     EdgeSignatureIndex edge_signature_index_;  // Fast edge lookup by signature
-    mutable std::optional<VertexMapping> cached_vertex_mapping_;
-    mutable std::optional<std::vector<GlobalEdgeId>> canonical_edge_to_global_mapping_;
 
     /**
      * Rebuild the edge signature index.
@@ -65,7 +78,16 @@ private:
 public:
     explicit WolframState() {}
 
-    StateId id(bool canonicalization_enabled = true) const { 
+    CanonicalStateId canonical_id() const {
+        return CanonicalStateId(compute_hash(true));
+    }
+
+    RawStateId raw_id() const {
+        return RawStateId(compute_hash(false));
+    }
+
+    // Legacy method for backward compatibility - will be removed gradually
+    std::size_t id(bool canonicalization_enabled = true) const {
         return compute_hash(canonicalization_enabled);
     }
 
@@ -85,25 +107,18 @@ public:
     std::size_t num_edges() const { return global_edges_.size(); }
     std::size_t num_vertices() const { return global_vertices_.size(); }
 
-    /**
-     * Get mapping from canonical vertex IDs to original global vertex IDs.
-     * This is needed during rewrite operations to map back from canonical space.
-     */
-    GlobalVertexId canonical_to_global_vertex(std::size_t canonical_id) const;
+    // Canonical vertex mapping functions removed for thread safety
 
-    /**
-     * Get mapping from global vertex ID to canonical vertex ID.
-     */
-    std::optional<std::size_t> global_to_canonical_vertex(GlobalVertexId global_id) const;
-
-    /**
-     * Get mapping from canonical edge IDs to original global edge IDs.
-     */
-    GlobalEdgeId canonical_to_global_edge(std::size_t canonical_edge_id) const;
 
 private:
 
 public:
+    /**
+     * Convert to hypergraph for pattern matching (non-canonical, preserves edge order).
+     * Edge indices directly correspond to positions in global_edges_.
+     */
+    Hypergraph to_hypergraph() const;
+
     /**
      * Convert to canonical hypergraph and build edge mapping.
      */
@@ -125,7 +140,7 @@ public:
     /**
      * Get canonical form (cached for performance).
      */
-    const CanonicalForm& get_canonical_form() const;
+    CanonicalForm get_canonical_form() const;
 
     /**
      * Check structural equality (same canonical form).
@@ -150,6 +165,8 @@ public:
      */
     std::vector<GlobalEdgeId> find_edges_by_pattern_signature(const EdgeSignature& pattern_sig) const;
 
+    // Canonical edge signature functions removed for thread safety
+
     WolframState clone() const;
 };
 
@@ -158,26 +175,46 @@ public:
  */
 struct WolframEvent {
     EventId event_id;
-    StateId input_state_id;   // State before rewriting
-    StateId output_state_id;  // State after rewriting
+    RawStateId input_state_id;            // Raw/non-canonical state before rewriting (for pattern matching)
+    RawStateId output_state_id;           // Raw/non-canonical state after rewriting (for pattern matching)
+
+    CanonicalStateId canonical_input_state_id;   // Canonical state before rewriting (for equivalencing)
+    CanonicalStateId canonical_output_state_id;  // Canonical state after rewriting (for equivalencing)
 
     std::vector<GlobalEdgeId> consumed_edges;  // Global edges removed
     std::vector<GlobalEdgeId> produced_edges;  // Global edges added
 
+    // Canonical signatures for structural equivalence comparison
+    std::vector<CanonicalEdgeSignature> consumed_edge_signatures;
+    std::vector<CanonicalEdgeSignature> produced_edge_signatures;
+
     std::size_t rule_index;   // Index into rule set that was applied
     GlobalVertexId anchor_vertex; // Vertex around which rewriting occurred
+    std::size_t step;         // Evolution step when this event occurred
 
     std::chrono::steady_clock::time_point timestamp;
 
     WolframEvent() = default;
 
-    WolframEvent(EventId id, StateId input_state, StateId output_state,
+    WolframEvent(EventId id, RawStateId input_state, RawStateId output_state,
                 const std::vector<GlobalEdgeId>& consumed,
                 const std::vector<GlobalEdgeId>& produced,
-                std::size_t rule_idx, GlobalVertexId anchor)
+                std::size_t rule_idx, GlobalVertexId anchor, std::size_t evolution_step)
         : event_id(id), input_state_id(input_state), output_state_id(output_state)
         , consumed_edges(consumed), produced_edges(produced)
-        , rule_index(rule_idx), anchor_vertex(anchor)
+        , rule_index(rule_idx), anchor_vertex(anchor), step(evolution_step)
+        , timestamp(std::chrono::steady_clock::now()) {}
+
+    WolframEvent(EventId id, RawStateId input_state, RawStateId output_state,
+                const std::vector<GlobalEdgeId>& consumed,
+                const std::vector<GlobalEdgeId>& produced,
+                const std::vector<CanonicalEdgeSignature>& consumed_sigs,
+                const std::vector<CanonicalEdgeSignature>& produced_sigs,
+                std::size_t rule_idx, GlobalVertexId anchor, std::size_t evolution_step)
+        : event_id(id), input_state_id(input_state), output_state_id(output_state)
+        , consumed_edges(consumed), produced_edges(produced)
+        , consumed_edge_signatures(consumed_sigs), produced_edge_signatures(produced_sigs)
+        , rule_index(rule_idx), anchor_vertex(anchor), step(evolution_step)
         , timestamp(std::chrono::steady_clock::now()) {}
 };
 
@@ -225,10 +262,10 @@ using SharedCachedMatch = std::shared_ptr<const CachedMatch>;
  * Uses shared_ptr to avoid copying matches when forwarding between states.
  */
 struct StateMatchCache {
-    StateId state_id;
+    RawStateId state_id;  // Cache is indexed by raw StateId (for pattern matching)
     std::vector<SharedCachedMatch> cached_matches;   // All valid matches for this state
 
-    explicit StateMatchCache(StateId id) : state_id(id) {}
+    explicit StateMatchCache(RawStateId id) : state_id(id) {}
 
     /**
      * Add a new match to the cache (creates shared_ptr).
@@ -285,33 +322,36 @@ class MultiwayGraph {
     };
 
 private:
-    // State and event storage - using lock-free concurrent maps
-    std::unique_ptr<ConcurrentHashMap<StateId, WolframState>> states_;
-    std::unique_ptr<ConcurrentHashMap<EventId, WolframEvent>> events_;
+    // Event storage - using lock-free concurrent map
+    std::unique_ptr<ConcurrentHashMap<EventId, WolframEvent>> events;
 
-    // No longer needed - states are identified by their hash directly
-    std::atomic<EventEdgeNode*> event_edges_head_{nullptr};  // Lock-free linked list for event edges
-    std::atomic<size_t> event_edges_count_{0};
-    std::atomic<size_t> states_count_{0};
-    std::atomic<size_t> events_count_{0};
+    // Optional state storage - only used when full_capture is enabled
+    std::unique_ptr<ConcurrentHashMap<RawStateId, WolframState>> states;  // Raw states for pattern matching
+    std::unique_ptr<ConcurrentHashMap<CanonicalStateId, RawStateId>> canonical_to_raw_mapping;  // For deduplication
+    std::unique_ptr<ConcurrentHashMap<RawStateId, StateMatchCache>> match_caches;  // Pattern match caches
+    std::unordered_set<RawStateId> exhausted_states;  // States with no more applicable rules
+
+    // Event edge tracking
+    std::atomic<EventEdgeNode*> event_edges_head{nullptr};  // Lock-free linked list for event edges
+    std::atomic<size_t> event_edges_count{0};
+    std::atomic<size_t> events_count{0};
+    std::atomic<size_t> states_count{0};
 
     // Edge-to-event mapping indices for efficient overlap detection
-    std::unique_ptr<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>> input_edge_to_events_;
-    std::unique_ptr<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>> output_edge_to_events_;
+    std::unique_ptr<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>> input_edge_to_events;
+    std::unique_ptr<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>> output_edge_to_events;
 
-    // State lifecycle management for memory optimization
-    std::unique_ptr<ConcurrentHashSet<StateId>> exhausted_states_;
-
-    // Match forwarding and invalidation tracking
-    std::unique_ptr<ConcurrentHashMap<StateId, StateMatchCache>> match_caches_;
-
-    // Global ID generators  
-    std::atomic<EventId> next_event_id_{1};
-    std::atomic<GlobalVertexId> next_global_vertex_id_{0};
-    std::atomic<GlobalEdgeId> next_global_edge_id_{0};
+    // Global ID generators
+    std::atomic<EventId> next_event_id{0};
+    std::atomic<GlobalVertexId> next_global_vertex_id{0};
+    std::atomic<GlobalEdgeId> next_global_edge_id{0};
 
     // Configuration flags
-    bool canonicalization_enabled_ = true;
+    bool canonicalization_enabled = true;
+    bool full_capture = false;  // Controls optional state storage
+
+    // Track initial state for causal computation
+    std::optional<RawStateId> initial_state_id;
 
 
 public:
@@ -321,51 +361,72 @@ public:
 
     // Enable move operations (no mutex locking needed during construction)
     MultiwayGraph(MultiwayGraph&& other) noexcept
-        : states_(std::move(other.states_))
-        , events_(std::move(other.events_))
-        , input_edge_to_events_(std::move(other.input_edge_to_events_))
-        , output_edge_to_events_(std::move(other.output_edge_to_events_))
-        , exhausted_states_(std::move(other.exhausted_states_))
-        , match_caches_(std::move(other.match_caches_))
-        , next_event_id_(other.next_event_id_.load())
-        , next_global_vertex_id_(other.next_global_vertex_id_.load())
-        , next_global_edge_id_(other.next_global_edge_id_.load()) {}
+        : events(std::move(other.events))
+        , input_edge_to_events(std::move(other.input_edge_to_events))
+        , output_edge_to_events(std::move(other.output_edge_to_events))
+        , next_event_id(other.next_event_id.load())
+        , next_global_vertex_id(other.next_global_vertex_id.load())
+        , next_global_edge_id(other.next_global_edge_id.load()) {}
 
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
-    MultiwayGraph()
-        : states_(std::make_unique<ConcurrentHashMap<StateId, WolframState>>())
-        , events_(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
-        , input_edge_to_events_(std::make_unique<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>>())
-        , output_edge_to_events_(std::make_unique<ConcurrentHashMap<GlobalEdgeId, std::vector<EventId>>>())
-        , exhausted_states_(std::make_unique<ConcurrentHashSet<StateId>>())
-        , match_caches_(std::make_unique<ConcurrentHashMap<StateId, StateMatchCache>>())
-    {}
+    explicit MultiwayGraph(bool enable_full_capture = false)
+        : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
+        , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
+        , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
+        , full_capture(enable_full_capture)
+    {
+        if (full_capture) {
+            states = std::make_unique<ConcurrentHashMap<RawStateId, WolframState>>();
+            canonical_to_raw_mapping = std::make_unique<ConcurrentHashMap<CanonicalStateId, RawStateId>>();
+            match_caches = std::make_unique<ConcurrentHashMap<RawStateId, StateMatchCache>>();
+        }
+    }
 
     /**
      * Create initial state with given hypergraph structure.
+     * Returns the state directly - no storage, states flow through tasks.
      */
-    StateId create_initial_state(const std::vector<std::vector<GlobalVertexId>>& edge_structures);
+    WolframState create_initial_state(const std::vector<std::vector<GlobalVertexId>>& edge_structures);
 
     /**
      * Get fresh global vertex ID.
      */
     GlobalVertexId get_fresh_vertex_id() {
-        return next_global_vertex_id_.fetch_add(1);
+        return next_global_vertex_id.fetch_add(1);
     }
 
     /**
      * Get fresh global edge ID.
      */
     GlobalEdgeId get_fresh_edge_id() {
-        return next_global_edge_id_.fetch_add(1);
+        return next_global_edge_id.fetch_add(1);
     }
 
     /**
      * Enable or disable canonicalization-based state deduplication.
      */
     void set_canonicalization_enabled(bool enabled) {
-        canonicalization_enabled_ = enabled;
+        canonicalization_enabled = enabled;
+    }
+
+    bool is_canonicalization_enabled() const {
+        return canonicalization_enabled;
+    }
+
+    /**
+     * Get final atomic counter values for determinism testing.
+     */
+    GlobalVertexId get_final_vertex_id() const {
+        return next_global_vertex_id.load();
+    }
+
+    GlobalEdgeId get_final_edge_id() const {
+        return next_global_edge_id.load();
+    }
+
+    EventId get_final_event_id() const {
+        return next_event_id.load();
     }
 
 private:
@@ -373,11 +434,13 @@ private:
      * Apply rewriting rule and create new state and event.
      * ONLY called from job system tasks - not public API!
      */
-    EventId apply_rewriting(StateId input_state_id,
+    EventId apply_rewriting(const WolframState& input_state,
+                           const WolframState& output_state,
                            const std::vector<GlobalEdgeId>& edges_to_remove,
-                           const std::vector<std::vector<GlobalVertexId>>& edges_to_add,
+                           const std::vector<GlobalEdgeId>& produced_edge_ids,
                            std::size_t rule_index,
-                           GlobalVertexId anchor_vertex);
+                           GlobalVertexId anchor_vertex,
+                           std::size_t evolution_step);
 
     /**
      * Update edge-to-event mappings for a new event.
@@ -393,17 +456,19 @@ private:
     void update_event_relationships(EventId new_event_id);
 
     /**
-     * Get state by ID.
+     * Compute all event relationships (causal and branchial edges) in parallel post-processing phase.
+     * Creates one task per event to check relationships against all other events.
+     * This avoids race conditions by running after evolution completes.
      */
-    std::optional<WolframState> get_state(StateId state_id) const {
-        return states_->find(state_id);
-    }
+    void compute_all_event_relationships(job_system::JobSystem<PatternMatchingTaskType>* job_system);
+
+    // Removed: get_state - states are not stored, they flow through tasks
 
     /**
      * Get event by ID.
      */
     std::optional<WolframEvent> get_event(EventId event_id) const {
-        return events_->find(event_id);
+        return events->find(event_id);
     }
 
 
@@ -414,12 +479,40 @@ private:
 
 public:
     std::size_t num_states() const {
-        // Use hash map's internal atomic size to avoid race condition
-        return states_->size();
+        if (full_capture && states) {
+            // When full_capture is enabled, use the size of stored states hash map
+            if (canonicalization_enabled && canonical_to_raw_mapping) {
+                // If canonicalization is enabled, count unique canonical states
+                return canonical_to_raw_mapping->size();
+            } else {
+                // If canonicalization is disabled, count raw states
+                return states->size();
+            }
+        } else {
+            // When full_capture is disabled, count unique states from events based on canonicalization setting
+            auto all_events = get_all_events();
+            if (canonicalization_enabled) {
+                // Count unique canonical states from events
+                std::unordered_set<CanonicalStateId> unique_canonical_states;
+                for (const auto& event : all_events) {
+                    unique_canonical_states.insert(event.canonical_input_state_id);
+                    unique_canonical_states.insert(event.canonical_output_state_id);
+                }
+                return unique_canonical_states.size();
+            } else {
+                // Count unique raw states from events
+                std::unordered_set<RawStateId> unique_raw_states;
+                for (const auto& event : all_events) {
+                    unique_raw_states.insert(event.input_state_id);
+                    unique_raw_states.insert(event.output_state_id);
+                }
+                return unique_raw_states.size();
+            }
+        }
     }
 
     std::size_t num_events() const {
-        return events_count_.load();
+        return events_count.load();
     }
 
     /**
@@ -434,6 +527,7 @@ public:
 
     /**
      * Get all states for external access.
+     * Only works when full_capture is enabled.
      */
     std::vector<WolframState> get_all_states() const;
 
@@ -449,23 +543,21 @@ public:
 
     /**
      * Mark a state as exhausted (no more applicable rules) and clean up memory.
-     * Simple and effective - let shared_ptr handle the rest.
+     * Only works when full_capture is enabled.
      */
-    void mark_state_exhausted(StateId state_id);
+    void mark_state_exhausted(RawStateId state_id);
 
     /**
      * Check if a state is exhausted.
+     * Only works when full_capture is enabled.
      */
-    bool is_state_exhausted(StateId state_id) const {
-        return exhausted_states_->contains(state_id);
-    }
+    bool is_state_exhausted(RawStateId state_id) const;
 
     /**
      * Get count of live (non-exhausted) states.
+     * Only works when full_capture is enabled.
      */
-    std::size_t num_live_states() const {
-        return states_count_.load(); // Only live states remain in states_ map
-    }
+    std::size_t num_live_states() const;
 
     /**
      * Get edges within radius of specified center edges (for patch-based matching).
@@ -477,61 +569,60 @@ public:
 
     /**
      * Add pattern match to state cache.
+     * Only works when full_capture is enabled.
      */
-    void cache_pattern_match(StateId state_id, std::size_t rule_index,
+    void cache_pattern_match(RawStateId state_id, std::size_t rule_index,
                            const std::vector<GlobalEdgeId>& matched_edges,
                            const VariableAssignment& assignment,
                            GlobalVertexId anchor_vertex);
 
     /**
      * Get cached matches for a state and rule.
+     * Only works when full_capture is enabled.
      */
-    std::vector<CachedMatch> get_cached_matches(StateId state_id, std::size_t rule_index) const;
+    std::vector<CachedMatch> get_cached_matches(RawStateId state_id, std::size_t rule_index) const;
 
     /**
      * Forward valid matches from input state to output state, invalidating those using deleted edges.
      * Uses shared_ptr to avoid copying match data - much more memory efficient.
+     * Only works when full_capture is enabled.
      */
-    void forward_matches(StateId input_state_id, StateId output_state_id,
+    void forward_matches(RawStateId input_state_id, RawStateId output_state_id,
                         const std::vector<GlobalEdgeId>& deleted_edges);
 
     /**
      * Check if a state has any cached matches.
+     * Only works when full_capture is enabled.
      */
-    bool has_cached_matches(StateId state_id) const {
-
-        auto cache_opt = match_caches_->find(state_id);
-        return cache_opt && cache_opt.value().has_matches();
-    }
+    bool has_cached_matches(RawStateId state_id) const;
 
     /**
      * Clear match cache for a state (when state is exhausted).
+     * Only works when full_capture is enabled.
      */
-    void clear_match_cache(StateId state_id) {
-        match_caches_->erase(state_id);
-    }
+    void clear_match_cache(RawStateId state_id);
 
     /**
      * Reconstruct a state by replaying events from the initial state.
      * This is memory-efficient as we don't store full state copies.
      */
-    std::optional<WolframState> reconstruct_state(StateId target_state_id) const;
+    std::optional<WolframState> reconstruct_state(RawStateId target_state_id) const;
 
     /**
      * Find the sequence of events needed to reach a target state from the initial state.
      */
-    std::vector<EventId> find_event_path_to_state(StateId target_state_id) const;
+    std::vector<EventId> find_event_path_to_state(RawStateId target_state_id) const;
 
     /**
      * Get state by ID, reconstructing it if necessary.
      * This replaces direct state storage with on-demand reconstruction.
      */
-    std::optional<WolframState> get_state_efficient(StateId state_id) const;
+    std::optional<WolframState> get_state_efficient(RawStateId state_id) const;
 
     /**
      * Get canonical hash for a state without storing the full state.
      */
-    std::optional<std::size_t> get_state_hash(StateId state_id) const;
+    std::optional<std::size_t> get_state_hash(RawStateId state_id) const;
 
     void clear();
 
@@ -544,7 +635,7 @@ public:
      * Print concise summary of multiway graph state.
      */
     std::string get_summary() const;
-    
+
     void print_summary() const {
         std::cout << get_summary();
     }
@@ -554,7 +645,7 @@ public:
 
 // Hash functions for Wolfram Physics types
 namespace std {
-template<>
+/* template<>
 struct hash<hypergraph::WolframEvent> {
     std::size_t operator()(const hypergraph::WolframEvent& event) const {
         std::size_t hash_value = 0;
@@ -562,8 +653,8 @@ struct hash<hypergraph::WolframEvent> {
 
         // Hash basic event properties
         hash_value ^= size_hasher(event.event_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.input_state_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.output_state_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
+        hash_value ^= size_hasher(event.input_state_id.value) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
+        hash_value ^= size_hasher(event.output_state_id.value) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
         hash_value ^= size_hasher(event.rule_index) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
         hash_value ^= size_hasher(event.anchor_vertex) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
 
@@ -579,15 +670,15 @@ struct hash<hypergraph::WolframEvent> {
 
         return hash_value;
     }
-};
+}; */
 
-template<>
+/* template<>
 struct hash<hypergraph::WolframState> {
     std::size_t operator()(const hypergraph::WolframState& state) const {
         // Hash the canonical form of the state
         return std::hash<hypergraph::CanonicalForm>{}(state.get_canonical_form());
     }
-};
+}; */
 }
 
 #endif // HYPERGRAPH_WOLFRAM_STATES_HPP
