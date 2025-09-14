@@ -873,7 +873,7 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
         return intersection;
     };
 
-    DEBUG_LOG("[RELATIONSHIPS] Total events: %zu, Processing %zu event pairs single-threaded for determinism", all_event_ids.size(), event_pair_indices.size());
+    DEBUG_LOG("[RELATIONSHIPS] Total events: %zu, Processing %zu event pairs in parallel using job system", all_event_ids.size(), event_pair_indices.size());
 
     // Count events by step for debugging
     std::map<std::size_t, int> events_per_step;
@@ -905,12 +905,12 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
                   event_id, event.input_state_id.value, event.output_state_id.value);
     }
 
+    // Process all pairs in parallel using job system - TREE-BASED CAUSALITY
+    std::atomic<int> causal_created{0};
+    std::atomic<int> causal_skipped_no_overlap{0};
 
-    // Process all pairs single-threaded for determinism debugging - TREE-BASED CAUSALITY
-    int causal_created = 0;
-    int causal_skipped_no_overlap = 0;
-
-    for (size_t pair_idx = 0; pair_idx < event_pair_indices.size(); ++pair_idx) {
+    // Lambda function for processing each event pair
+    auto process_event_pair = [&](size_t pair_idx) {
         size_t i = event_pair_indices[pair_idx].first;
         size_t j = event_pair_indices[pair_idx].second;
 
@@ -940,9 +940,9 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
             } while (!event_edges_head.compare_exchange_weak(current_head, new_node));
 
             event_edges_count.fetch_add(1);
-            causal_created++;
+            causal_created.fetch_add(1);
         } else {
-            causal_skipped_no_overlap++;
+            causal_skipped_no_overlap.fetch_add(1);
         }
 
         // Check for reverse causal relationship: event_j outputs ∩ event_i inputs + TREE ANCESTRY
@@ -968,7 +968,7 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
             } while (!event_edges_head.compare_exchange_weak(current_head, new_node));
 
             event_edges_count.fetch_add(1);
-            causal_created++;
+            causal_created.fetch_add(1);
         }
         // Check for branchial relationship: shared input edges
         std::vector<GlobalEdgeId> branchial_overlap = fast_intersect(input_edge_sets[i], input_edge_sets[j]);
@@ -994,10 +994,22 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
             event_edges_count.fetch_add(1);
             branchial_edges_created++;
         }
+    };
+
+    // Spawn jobs for each event pair
+    for (size_t pair_idx = 0; pair_idx < event_pair_indices.size(); ++pair_idx) {
+        auto job = job_system::make_job([process_event_pair, pair_idx]() {
+            process_event_pair(pair_idx);
+        }, PatternMatchingTaskType::CAUSAL);
+        job_system->submit(std::move(job));
     }
 
+    // Wait for all relationship computation jobs to complete
+    DEBUG_LOG("[RELATIONSHIPS] Waiting for %zu relationship computation jobs to complete...", event_pair_indices.size());
+    job_system->wait_for_completion();
+
     // Apply transitive reduction to causal graph
-    DEBUG_LOG("[RELATIONSHIPS] Applying transitive reduction to %d causal edges...", causal_created);
+    DEBUG_LOG("[RELATIONSHIPS] Applying transitive reduction to %d causal edges...", causal_created.load());
 
     // Separate causal and branchial edges for proper handling
     std::vector<std::pair<EventId, EventId>> all_causal_edges;

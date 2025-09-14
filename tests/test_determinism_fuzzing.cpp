@@ -197,7 +197,7 @@ TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule) {
 
     validate_expected_results("SimpleRule", {rule}, initial, expected);
 
-    //fuzz_test_rules("SimpleRule", {rule}, initial, 4);
+    fuzz_test_rules("SimpleRule", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
@@ -242,7 +242,7 @@ TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
 
     validate_expected_results("TwoEdgeRule", {rule}, initial, expected);
 
-    //fuzz_test_rules("TwoEdgeRule", {rule}, initial, 4);
+    fuzz_test_rules("TwoEdgeRule", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
@@ -283,7 +283,7 @@ TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
 
     validate_expected_results("HyperedgeRule", {rule}, initial, expected);
 
-    //fuzz_test_rules("HyperedgeRule", {rule}, initial, 4);
+    fuzz_test_rules("HyperedgeRule", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
@@ -352,7 +352,7 @@ TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
 
     validate_expected_results("MultiRule", rules, initial, expected);
 
-    //fuzz_test_rules("MultiRule", rules, initial, 4);
+    fuzz_test_rules("MultiRule", rules, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
@@ -422,7 +422,7 @@ TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
 
     validate_expected_results("ComplexTwoRuleSystem", rules, initial, expected);
 
-    //fuzz_test_rules("ComplexTwoRuleSystem", rules, initial, 4);
+    fuzz_test_rules("ComplexTwoRuleSystem", rules, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
@@ -467,7 +467,7 @@ TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
 
     validate_expected_results("TwoEdgeRuleVariant", {rule}, initial, expected);
 
-    // fuzz_test_rules("TwoEdgeRuleVariant", {rule}, initial, 4);
+    fuzz_test_rules("TwoEdgeRuleVariant", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
@@ -513,7 +513,7 @@ TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
 
     validate_expected_results("TwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
-    // fuzz_test_rules("TwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
+    fuzz_test_rules("TwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
@@ -562,7 +562,7 @@ TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
 
     validate_expected_results("ComplexTwoEdgeRule", {rule}, initial, expected);
 
-    // fuzz_test_rules("ComplexTwoEdgeRule", {rule}, initial, 4);
+    fuzz_test_rules("ComplexTwoEdgeRule", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
@@ -611,7 +611,7 @@ TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
 
     validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
-    // fuzz_test_rules("ComplexTwoEdgeRuleWithSelfLoops", {rule}, initial, 3);
+    fuzz_test_rules("ComplexTwoEdgeRuleWithSelfLoops", {rule}, initial, 3);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
@@ -657,7 +657,7 @@ TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
 
     validate_expected_results("AnotherTwoEdgeRule", {rule}, initial, expected);
 
-    //fuzz_test_rules("AnotherTwoEdgeRule", {rule}, initial, 4);
+    fuzz_test_rules("AnotherTwoEdgeRule", {rule}, initial, 4);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
@@ -703,5 +703,5 @@ TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
 
     validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
-    // fuzz_test_rules("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
+    fuzz_test_rules("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
 }
