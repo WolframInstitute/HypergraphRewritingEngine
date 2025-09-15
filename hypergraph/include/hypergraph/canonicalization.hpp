@@ -114,26 +114,4 @@ public:
 
 } // namespace hypergraph
 
-// Hash function for CanonicalForm
-namespace std {
-/* template<>
-struct hash<hypergraph::CanonicalForm> {
-    std::size_t operator()(const hypergraph::CanonicalForm& canonical) const {
-        std::size_t hash_value = std::hash<hypergraph::VertexId>{}(canonical.vertex_count);
-
-        // Hash the edges
-        std::hash<hypergraph::VertexId> vertex_hasher;
-        for (const auto& edge : canonical.edges) {
-            std::size_t edge_hash = std::hash<std::size_t>{}(edge.size());
-            for (hypergraph::VertexId vertex : edge) {
-                edge_hash ^= vertex_hasher(vertex) + 0x9e3779b9 + (edge_hash << 6) + (edge_hash >> 2);
-            }
-            hash_value ^= edge_hash + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        }
-
-        return hash_value;
-    }
-}; */
-}
-
 #endif // HYPERGRAPH_CANONICALIZATION_HPP

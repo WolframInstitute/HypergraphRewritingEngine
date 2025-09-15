@@ -312,6 +312,14 @@ void SinkTask::execute() {
 }
 
 void RewriteTask::execute() {
+    // Check if we should even process this match - avoid wasteful work
+    if (context_->current_step >= context_->max_steps) {
+        DEBUG_LOG("[REWRITE] Skipping rewrite - current_step %zu >= max_steps %zu",
+                  context_->current_step, context_->max_steps);
+        context_->rewrite_tasks_completed.fetch_add(1);
+        return;
+    }
+
     std::string assignment_info = "[REWRITE] Executing REWRITE task. Variable assignments: ";
     for (const auto& [var, val] : complete_match_.assignment.variable_to_concrete) {
         assignment_info += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
@@ -541,47 +549,6 @@ void RewriteTask::spawn_patch_scan_tasks(
     return;
 }
 
-void CausalTask::execute() {
-    // Implementation for computing causal edges between events
-    // Causal edges exist when one event's output edges overlap with another's input edges
-
-    // Steps would include:
-    // 1. For each pair of events in event_ids_
-    // 2. Check if event A's output edges intersect with event B's input edges
-    // 3. If so, create a causal edge A → B
-    // 4. Store in the multiway graph's causal edge list
-
-    // This uses FIFO scheduling to ensure timely processing of relationships
-
-    // For demonstration, we just count causal computations
-    static std::atomic<std::size_t> causal_count{0};
-    causal_count.fetch_add(1);
-
-    context_->causal_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[CAUSAL] Task completed. Spawned: %zu, Completed: %zu",
-              context_->causal_tasks_spawned.load(), context_->causal_tasks_completed.load());
-}
-
-void BranchialTask::execute() {
-    // Implementation for computing branchial edges between events
-    // Branchial edges exist when events share input edges (alternative evolutions)
-
-    // Steps would include:
-    // 1. For each pair of events in event_ids_
-    // 2. Check if events share any input edges
-    // 3. If so, create a branchial edge A ↔ B
-    // 4. Store in the multiway graph's branchial edge list
-
-    // This uses FIFO scheduling to ensure timely processing of relationships
-
-    // For demonstration, we just count branchial computations
-    static std::atomic<std::size_t> branchial_count{0};
-    branchial_count.fetch_add(1);
-
-    context_->branchial_tasks_completed.fetch_add(1);
-    DEBUG_LOG("[BRANCHIAL] Task completed. Spawned: %zu, Completed: %zu",
-              context_->branchial_tasks_spawned.load(), context_->branchial_tasks_completed.load());
-}
 
 // Helper functions for task execution
 

@@ -384,17 +384,4 @@ public:
 
 } // namespace hypergraph
 
-// Hash specializations
-namespace std {
-/* template<>
-struct hash<hypergraph::EdgeSignature> {
-    std::size_t operator()(const hypergraph::EdgeSignature& sig) const;
-};
-
-template<>
-struct hash<hypergraph::PatternSignature> {
-    std::size_t operator()(const hypergraph::PatternSignature& sig) const;
-}; */
-}
-
 #endif // HYPERGRAPH_PATTERN_MATCHING_HPP

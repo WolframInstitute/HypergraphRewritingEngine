@@ -919,7 +919,7 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
 
         // Check for causal relationship: event_i outputs ∩ event_j inputs + TREE ANCESTRY
         std::vector<GlobalEdgeId> causal_forward = fast_intersect(output_edge_sets[i], input_edge_sets[j]);
-        if (!causal_forward.empty() /* && is_ancestor(event_i, event_j) */) {
+        if (!causal_forward.empty()) {
             {
                 std::ostringstream ss;
                 ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_i << " -> Event " << event_j;
@@ -947,7 +947,7 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
 
         // Check for reverse causal relationship: event_j outputs ∩ event_i inputs + TREE ANCESTRY
         std::vector<GlobalEdgeId> causal_reverse = fast_intersect(output_edge_sets[j], input_edge_sets[i]);
-        if (!causal_reverse.empty()/*  && is_ancestor(event_j, event_i) */) {
+        if (!causal_reverse.empty()) {
             {
                 std::ostringstream ss;
                 ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_j << " -> Event " << event_i;
@@ -996,113 +996,138 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
         }
     };
 
-    // Spawn jobs for each event pair
-    for (size_t pair_idx = 0; pair_idx < event_pair_indices.size(); ++pair_idx) {
-        auto job = job_system::make_job([process_event_pair, pair_idx]() {
-            process_event_pair(pair_idx);
-        }, PatternMatchingTaskType::CAUSAL);
+#if !defined(SINGLE_THREADED_EVENT_RELATION_PROCESSING)
+    // Process event pairs in batches for better parallelization efficiency
+    const size_t num_threads = std::thread::hardware_concurrency();
+    const size_t batch_size = std::max(size_t(1), event_pair_indices.size() / (num_threads * 4)); // 4 batches per thread
+    const size_t num_batches = (event_pair_indices.size() + batch_size - 1) / batch_size;
+
+    DEBUG_LOG("[RELATIONSHIPS] Processing %zu event pairs in %zu batches of size ~%zu using %zu threads",
+              event_pair_indices.size(), num_batches, batch_size, num_threads);
+
+    // Spawn jobs for batches of event pairs
+    for (size_t batch_idx = 0; batch_idx < num_batches; ++batch_idx) {
+        size_t start_idx = batch_idx * batch_size;
+        size_t end_idx = std::min(start_idx + batch_size, event_pair_indices.size());
+
+        auto job = job_system::make_job([process_event_pair, start_idx, end_idx]() {
+            for (size_t pair_idx = start_idx; pair_idx < end_idx; ++pair_idx) {
+                process_event_pair(pair_idx);
+            }
+        }, PatternMatchingTaskType::RELATE);
         job_system->submit(std::move(job));
     }
 
     // Wait for all relationship computation jobs to complete
-    DEBUG_LOG("[RELATIONSHIPS] Waiting for %zu relationship computation jobs to complete...", event_pair_indices.size());
+    DEBUG_LOG("[RELATIONSHIPS] Waiting for %zu batch processing jobs to complete...", num_batches);
     job_system->wait_for_completion();
+#else
+    // Single-threaded fallback for benchmarking
+    DEBUG_LOG("[RELATIONSHIPS] Processing %zu event pairs single-threaded...", event_pair_indices.size());
+    for (size_t pair_idx = 0; pair_idx < event_pair_indices.size(); ++pair_idx) {
+        process_event_pair(pair_idx);
+    }
+#endif
 
-    // Apply transitive reduction to causal graph
-    DEBUG_LOG("[RELATIONSHIPS] Applying transitive reduction to %d causal edges...", causal_created.load());
+    if (transitive_reduction_enabled) {
+        // Apply transitive reduction to causal graph
+        DEBUG_LOG("[RELATIONSHIPS] Applying transitive reduction to %d causal edges...", causal_created.load());
 
-    // Separate causal and branchial edges for proper handling
-    std::vector<std::pair<EventId, EventId>> all_causal_edges;
-    std::vector<EventEdge> all_branchial_edges;
+        // Separate causal and branchial edges for proper handling
+        std::vector<std::pair<EventId, EventId>> all_causal_edges;
+        std::vector<EventEdge> all_branchial_edges;
 
-    // Collect edges from the linked list, separating by type
-    EventEdgeNode* current = event_edges_head.load();
-    while (current != nullptr) {
-        if (current->edge.type == EventRelationType::CAUSAL) {
-            all_causal_edges.push_back({current->edge.from_event, current->edge.to_event});
-        } else if (current->edge.type == EventRelationType::BRANCHIAL) {
-            all_branchial_edges.push_back(current->edge);
+        // Collect edges from the linked list, separating by type
+        EventEdgeNode* current = event_edges_head.load();
+        while (current != nullptr) {
+            if (current->edge.type == EventRelationType::CAUSAL) {
+                all_causal_edges.push_back({current->edge.from_event, current->edge.to_event});
+            } else if (current->edge.type == EventRelationType::BRANCHIAL) {
+                all_branchial_edges.push_back(current->edge);
+            }
+            current = current->next.load();
         }
-        current = current->next.load();
-    }
 
-    // Build adjacency list for transitive reduction (causal only)
-    std::map<EventId, std::set<EventId>> causal_graph;
-    for (const auto& [from_event, to_event] : all_causal_edges) {
-        causal_graph[from_event].insert(to_event);
-    }
+        // Build adjacency list for transitive reduction (causal only)
+        std::map<EventId, std::set<EventId>> causal_graph;
+        for (const auto& [from_event, to_event] : all_causal_edges) {
+            causal_graph[from_event].insert(to_event);
+        }
 
-    // Apply proper transitive reduction: remove edge (A,C) if ANY path A->...->C exists with length >= 2
-    std::set<std::pair<EventId, EventId>> edges_to_remove;
+        // Apply proper transitive reduction: remove edge (A,C) if ANY path A->...->C exists with length >= 2
+        std::set<std::pair<EventId, EventId>> edges_to_remove;
 
-    // Build reachability matrix using DFS to find all paths of length >= 2
-    auto has_path_excluding_direct = [&](EventId start, EventId end) -> bool {
-        if (start == end) return false;
+        // Build reachability matrix using DFS to find all paths of length >= 2
+        auto has_path_excluding_direct = [&](EventId start, EventId end) -> bool {
+            if (start == end) return false;
 
-        // DFS to find if there's a path from start to end that doesn't use the direct edge
-        std::set<EventId> visited;
-        std::function<bool(EventId, int)> dfs = [&](EventId current, int depth) -> bool {
-            if (depth > 0 && current == end) return true;  // Found path with length >= 2
-            if (visited.count(current)) return false;      // Avoid cycles
+            // DFS to find if there's a path from start to end that doesn't use the direct edge
+            std::set<EventId> visited;
+            std::function<bool(EventId, int)> dfs = [&](EventId current, int depth) -> bool {
+                if (depth > 0 && current == end) return true;  // Found path with length >= 2
+                if (visited.count(current)) return false;      // Avoid cycles
 
-            visited.insert(current);
-            if (causal_graph.count(current)) {
-                for (EventId next : causal_graph[current]) {
-                    // Skip direct edge on first hop to ensure path length >= 2
-                    if (depth == 0 && current == start && next == end) continue;
-                    if (dfs(next, depth + 1)) {
-                        visited.erase(current);  // Backtrack
-                        return true;
+                visited.insert(current);
+                if (causal_graph.count(current)) {
+                    for (EventId next : causal_graph[current]) {
+                        // Skip direct edge on first hop to ensure path length >= 2
+                        if (depth == 0 && current == start && next == end) continue;
+                        if (dfs(next, depth + 1)) {
+                            visited.erase(current);  // Backtrack
+                            return true;
+                        }
                     }
                 }
-            }
-            visited.erase(current);  // Backtrack
-            return false;
+                visited.erase(current);  // Backtrack
+                return false;
+            };
+
+            return dfs(start, 0);
         };
 
-        return dfs(start, 0);
-    };
-
-    // Check each direct edge to see if it can be removed
-    for (const auto& [from_event, to_event] : all_causal_edges) {
-        if (has_path_excluding_direct(from_event, to_event)) {
-            edges_to_remove.insert({from_event, to_event});
-            DEBUG_LOG("[RELATIONSHIPS] Transitive reduction: removing edge %zu -> %zu (alternate path exists)",
-                     from_event, to_event);
+        // Check each direct edge to see if it can be removed
+        for (const auto& [from_event, to_event] : all_causal_edges) {
+            if (has_path_excluding_direct(from_event, to_event)) {
+                edges_to_remove.insert({from_event, to_event});
+                DEBUG_LOG("[RELATIONSHIPS] Transitive reduction: removing edge %zu -> %zu (alternate path exists)",
+                         from_event, to_event);
+            }
         }
-    }
 
-    // Rebuild the linked list with reduced causal edges + all branchial edges
-    int edges_removed = edges_to_remove.size();
-    event_edges_head.store(nullptr);
-    event_edges_count.store(0);
+        // Rebuild the linked list with reduced causal edges + all branchial edges
+        int edges_removed = edges_to_remove.size();
+        event_edges_head.store(nullptr);
+        event_edges_count.store(0);
 
-    // Add reduced causal edges
-    for (const auto& [event1, event2] : all_causal_edges) {
-        if (edges_to_remove.count({event1, event2}) == 0) {
-            EventEdge causal_edge(event1, event2, EventRelationType::CAUSAL, {});
-            EventEdgeNode* new_node = new EventEdgeNode(causal_edge);
+        // Add reduced causal edges
+        for (const auto& [event1, event2] : all_causal_edges) {
+            if (edges_to_remove.count({event1, event2}) == 0) {
+                EventEdge causal_edge(event1, event2, EventRelationType::CAUSAL, {});
+                EventEdgeNode* new_node = new EventEdgeNode(causal_edge);
+                EventEdgeNode* current_head = event_edges_head.load();
+                do {
+                    new_node->next.store(current_head);
+                } while (!event_edges_head.compare_exchange_weak(current_head, new_node));
+                event_edges_count.fetch_add(1);
+            }
+        }
+
+        // Add all branchial edges back
+        for (const auto& branchial_edge : all_branchial_edges) {
+            EventEdgeNode* new_node = new EventEdgeNode(branchial_edge);
             EventEdgeNode* current_head = event_edges_head.load();
             do {
                 new_node->next.store(current_head);
             } while (!event_edges_head.compare_exchange_weak(current_head, new_node));
             event_edges_count.fetch_add(1);
         }
-    }
 
-    // Add all branchial edges back
-    for (const auto& branchial_edge : all_branchial_edges) {
-        EventEdgeNode* new_node = new EventEdgeNode(branchial_edge);
-        EventEdgeNode* current_head = event_edges_head.load();
-        do {
-            new_node->next.store(current_head);
-        } while (!event_edges_head.compare_exchange_weak(current_head, new_node));
-        event_edges_count.fetch_add(1);
+        DEBUG_LOG("[RELATIONSHIPS] Transitive reduction removed %d causal edges (%d -> %d), kept %zu branchial edges",
+                  edges_removed, causal_created, causal_created - edges_removed, all_branchial_edges.size());
+        causal_created -= edges_removed;
+    } else {
+        DEBUG_LOG("[RELATIONSHIPS] Transitive reduction disabled, keeping all %d causal edges", causal_created.load());
     }
-
-    DEBUG_LOG("[RELATIONSHIPS] Transitive reduction removed %d causal edges (%d -> %d), kept %zu branchial edges",
-              edges_removed, causal_created, causal_created - edges_removed, all_branchial_edges.size());
-    causal_created -= edges_removed;
 
     DEBUG_LOG("[RELATIONSHIPS] SUMMARY: Created %d causal edges, skipped %d (no overlap)",
               causal_created, causal_skipped_no_overlap);

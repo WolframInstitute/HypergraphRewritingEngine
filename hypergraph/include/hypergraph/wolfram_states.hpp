@@ -349,6 +349,7 @@ private:
     // Configuration flags
     bool canonicalization_enabled = true;
     bool full_capture = false;  // Controls optional state storage
+    bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
 
     // Track initial state for causal computation
     std::optional<RawStateId> initial_state_id;
@@ -370,11 +371,12 @@ public:
 
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
-    explicit MultiwayGraph(bool enable_full_capture = false)
+    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true)
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , full_capture(enable_full_capture)
+        , transitive_reduction_enabled(enable_transitive_reduction)
     {
         if (full_capture) {
             states = std::make_unique<ConcurrentHashMap<RawStateId, WolframState>>();
@@ -642,43 +644,5 @@ public:
 };
 
 } // namespace hypergraph
-
-// Hash functions for Wolfram Physics types
-namespace std {
-/* template<>
-struct hash<hypergraph::WolframEvent> {
-    std::size_t operator()(const hypergraph::WolframEvent& event) const {
-        std::size_t hash_value = 0;
-        std::hash<std::size_t> size_hasher;
-
-        // Hash basic event properties
-        hash_value ^= size_hasher(event.event_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.input_state_id.value) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.output_state_id.value) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.rule_index) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        hash_value ^= size_hasher(event.anchor_vertex) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-
-        // Hash consumed edges
-        for (hypergraph::GlobalEdgeId edge_id : event.consumed_edges) {
-            hash_value ^= size_hasher(edge_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        }
-
-        // Hash produced edges
-        for (hypergraph::GlobalEdgeId edge_id : event.produced_edges) {
-            hash_value ^= size_hasher(edge_id) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        }
-
-        return hash_value;
-    }
-}; */
-
-/* template<>
-struct hash<hypergraph::WolframState> {
-    std::size_t operator()(const hypergraph::WolframState& state) const {
-        // Hash the canonical form of the state
-        return std::hash<hypergraph::CanonicalForm>{}(state.get_canonical_form());
-    }
-}; */
-}
 
 #endif // HYPERGRAPH_WOLFRAM_STATES_HPP

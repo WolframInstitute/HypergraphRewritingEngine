@@ -8,8 +8,8 @@ namespace hypergraph {
 
 WolframEvolution::WolframEvolution(std::size_t max_steps, std::size_t num_threads,
                  bool canonicalization_enabled, bool full_capture,
-                 bool event_deduplication)
-    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture))
+                 bool event_deduplication, bool transitive_reduction_enabled)
+    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled))
     , job_system_(std::make_unique<job_system::JobSystem<PatternMatchingTaskType>>(num_threads))
     , max_steps_(max_steps)
     , num_threads_(num_threads) {
@@ -54,6 +54,12 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     target_graphs_.clear();
     signature_indices_.clear();
     contexts_.clear();
+
+    // Skip evolution if max_steps is 0 - no work to be done
+    if (max_steps_ == 0) {
+        DEBUG_LOG("max_steps=0, skipping evolution - no processing needed");
+        return;
+    }
 
     // Apply all rules to the initial state (state flows through tasks)
     apply_all_rules_to_state(initial_state, 0);

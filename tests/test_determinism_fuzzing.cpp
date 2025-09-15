@@ -189,15 +189,17 @@ TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {4, 3, 0, 2}},
-        //{3, {8, 9, 0, 8}},
+        {1, {2, 1, 0, 0}},
+        {2, {4, 3, 0, 2}},
+        {3, {8, 9, 0, 8}},
         {4, {17, 33, 0, 32}}
     };
 
     validate_expected_results("SimpleRule", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("SimpleRule", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
@@ -234,15 +236,17 @@ TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 3, 3, 0}},
-        //{2, {4, 15, 18, 12}},
-        //{3, {8, 75, 108, 72}},
+        {1, {2, 3, 3, 0}},
+        {2, {4, 15, 18, 12}},
+        {3, {8, 75, 108, 72}},
         {4, {13, 435, 738, 444}}
     };
 
     validate_expected_results("TwoEdgeRule", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("TwoEdgeRule", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
@@ -275,15 +279,17 @@ TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        // {1, {2, 1, 0, 0}},
-        // {2, {2, 1, 0, 0}},
-        // {3, {2, 1, 0, 0}},
+        {1, {2, 1, 0, 0}},
+        {2, {2, 1, 0, 0}},
+        {3, {2, 1, 0, 0}},
         {4, {2, 1, 0, 0}}
     };
 
     validate_expected_results("HyperedgeRule", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("HyperedgeRule", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
@@ -344,15 +350,17 @@ TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {3, 4, 0, 3}},
-        //{3, {4, 16, 0, 15}},
+        {1, {2, 1, 0, 0}},
+        {2, {3, 4, 0, 3}},
+        {3, {4, 16, 0, 15}},
         {4, {5, 76, 0, 75}}
     };
 
     validate_expected_results("MultiRule", rules, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("MultiRule", rules, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
@@ -414,15 +422,17 @@ TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {3, 7, 15, 6}},
-        //{3, {5, 43, 105, 42}},
+        {1, {2, 1, 0, 0}},
+        {2, {3, 7, 15, 6}},
+        {3, {5, 43, 105, 42}},
         {4, {9, 283, 657, 282}}
     };
 
     validate_expected_results("ComplexTwoRuleSystem", rules, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("ComplexTwoRuleSystem", rules, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
@@ -459,15 +469,17 @@ TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {3, 3, 1, 2}},
-        //{3, {4, 9, 7, 8}},
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {4, 9, 7, 8}},
         {4, {5, 33, 43, 32}}
     };
 
     validate_expected_results("TwoEdgeRuleVariant", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("TwoEdgeRuleVariant", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
@@ -505,15 +517,17 @@ TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        // {1, {2, 2, 1, 0}},
-        // {2, {3, 10, 13, 8}},
-        // {3, {4, 58, 117, 56}},
+        {1, {2, 2, 1, 0}},
+        {2, {3, 10, 13, 8}},
+        {3, {4, 58, 117, 56}},
         {4, {5, 442, 1173, 440}}
     };
 
     validate_expected_results("TwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("TwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
@@ -554,15 +568,17 @@ TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {5, 4, 3, 3}},
-        //{3, {17, 21, 37, 20}},
+        {1, {2, 1, 0, 0}},
+        {2, {5, 4, 3, 3}},
+        {3, {17, 21, 37, 20}},
         {4, {83, 182, 423, 181}}
     };
 
     validate_expected_results("ComplexTwoEdgeRule", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("ComplexTwoEdgeRule", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
@@ -604,14 +620,16 @@ TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 2, 1, 0}},
-        //{2, {6, 16, 35, 14}},
+        {1, {2, 2, 1, 0}},
+        {2, {6, 16, 35, 14}},
         {3, {33, 172, 489, 170}}
     };
 
     validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("ComplexTwoEdgeRuleWithSelfLoops", {rule}, initial, 3);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
@@ -648,16 +666,18 @@ TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 1, 0, 0}},
-        //{2, {3, 3, 1, 2}},
-        //{3, {6, 9, 5, 8}},
-        //{4, {10, 37, 35, 36}},
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {6, 9, 5, 8}},
+        {4, {10, 37, 35, 36}},
         {5, {21, 203, 231, 210}}
     };
 
     validate_expected_results("AnotherTwoEdgeRule", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("AnotherTwoEdgeRule", {rule}, initial, 4);
+#endif
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
@@ -695,13 +715,15 @@ TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
     // Expected results for different step counts
     // Format: {steps, {states, events, branchial_edges, causal_edges}}
     std::vector<std::pair<int, TestResult>> expected = {
-        //{1, {2, 2, 1, 0}},
-        //{2, {4, 10, 13, 8}},
-        //{3, {8, 50, 81, 48}},
+        {1, {2, 2, 1, 0}},
+        {2, {4, 10, 13, 8}},
+        {3, {8, 50, 81, 48}},
         {4, {18, 282, 465, 280}}
     };
 
     validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, expected);
 
+#ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
+#endif
 }

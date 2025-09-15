@@ -24,8 +24,7 @@ enum class PatternMatchingTaskType {
     EXPAND,      // Expand partial matches with constraints (LIFO - memory efficient)
     SINK,        // Process complete matches (Round-robin - load balancing)
     REWRITE,     // Apply rewriting rules (Round-robin - load balancing)
-    CAUSAL,      // Compute causal edges between events (FIFO - timely processing)
-    BRANCHIAL    // Compute branchial edges between events (FIFO - timely processing)
+    RELATE       // Compute event relationships (causal and branchial edges)
 };
 
 /**
@@ -272,47 +271,6 @@ private:
         std::shared_ptr<Hypergraph> hypergraph_keeper = nullptr);
 };
 
-/**
- * CAUSAL task: Compute causal edges between events.
- * Looks for output→input edge overlaps.
- */
-class CausalTask : public job_system::Job<PatternMatchingTaskType> {
-private:
-    std::shared_ptr<PatternMatchingContext> context_;
-    // Event IDs to check for causal relationships
-    std::vector<std::size_t> event_ids_;
-
-public:
-    CausalTask(std::shared_ptr<PatternMatchingContext> ctx, std::vector<std::size_t> events)
-        : context_(std::move(ctx)), event_ids_(std::move(events)) {}
-
-    void execute() override;
-
-    PatternMatchingTaskType get_type() const override {
-        return PatternMatchingTaskType::CAUSAL;
-    }
-};
-
-/**
- * BRANCHIAL task: Compute branchial edges between events.
- * Looks for input→input edge overlaps.
- */
-class BranchialTask : public job_system::Job<PatternMatchingTaskType> {
-private:
-    std::shared_ptr<PatternMatchingContext> context_;
-    std::vector<std::size_t> event_ids_;
-
-public:
-    BranchialTask(std::shared_ptr<PatternMatchingContext> ctx, std::vector<std::size_t> events)
-        : context_(std::move(ctx)), event_ids_(std::move(events)) {}
-
-    void execute() override;
-
-    PatternMatchingTaskType get_type() const override {
-        return PatternMatchingTaskType::BRANCHIAL;
-    }
-
-};
 
 // PartialMatchPool now uses thread-local storage - defined in thread_local_pool.hpp
 // This eliminates the mutex bottleneck from the original implementation

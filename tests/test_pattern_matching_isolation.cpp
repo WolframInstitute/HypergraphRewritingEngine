@@ -84,9 +84,10 @@ protected:
         evolution.evolve(initial_edges);
 
         const auto& graph = evolution.get_multiway_graph();
-        tracker.total_matches = static_cast<int>(graph.num_states());
+        tracker.total_matches = static_cast<int>(graph.num_events());
 
         std::cout << "Evolution completed. Total states: " << graph.num_states() << std::endl;
+        std::cout << "Total events (rewrites): " << graph.num_events() << std::endl;
 
         return tracker;
     }
@@ -104,10 +105,9 @@ TEST_F(PatternMatchingTaskIsolationTest, SingleEdgePatternSingleEdgeHypergraph) 
     auto result = test_pattern_matching_tasks(initial_state, rule_lhs, 4);
     result.print_summary();
 
-    // With 0 steps, should find matches but create no events (no rewriting)
-    // This tests that pattern matching tasks run correctly
-    std::cout << "Expected: 0 events (no rewriting), pattern matching tasks should have run" << std::endl;
-    EXPECT_EQ(result.total_matches, 0) << "Should have 0 events with 0 evolution steps";
+    // With max_steps=0, no evolution happens at all - just the initial state
+    std::cout << "Expected: 0 events (no evolution with max_steps=0)" << std::endl;
+    EXPECT_EQ(result.total_matches, 0) << "Should have 0 events with max_steps=0 (no processing)";
 }
 
 // Test 2: Single edge pattern on multi-edge hypergraph - verify task spawning
@@ -122,8 +122,8 @@ TEST_F(PatternMatchingTaskIsolationTest, SingleEdgePatternMultiEdgeHypergraph) {
     auto result = test_pattern_matching_tasks(initial_state, rule_lhs, 4);
     result.print_summary();
 
-    std::cout << "Expected: 0 events (no rewriting), but pattern matching should process 4 edges" << std::endl;
-    EXPECT_EQ(result.total_matches, 0) << "Should have 0 events with 0 evolution steps";
+    std::cout << "Expected: 0 events (no evolution with max_steps=0)" << std::endl;
+    EXPECT_EQ(result.total_matches, 0) << "Should have 0 events with max_steps=0 (no processing)";
 }
 
 // Test 3: Check actual evolution for 1 step to see duplicate issue

@@ -94,21 +94,4 @@ public:
 
 } // namespace hypergraph
 
-namespace std {
-/* template<>
-struct hash<hypergraph::Hyperedge> {
-    std::size_t operator()(const hypergraph::Hyperedge& edge) const {
-        std::size_t hash_value = 0;
-        std::hash<hypergraph::VertexId> vertex_hasher;
-
-        // Combine hashes of all vertices in order
-        for (const auto& vertex : edge.vertices()) {
-            hash_value ^= vertex_hasher(vertex) + 0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-        }
-
-        return hash_value;
-    }
-}; */
-}
-
 #endif // HYPERGRAPH_HYPEREDGE_HPP

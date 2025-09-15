@@ -35,13 +35,4 @@ struct Vertex {
 
 } // namespace hypergraph
 
-namespace std {
-/* template<>
-struct hash<hypergraph::Vertex> {
-    std::size_t operator()(const hypergraph::Vertex& v) const {
-        return std::hash<hypergraph::VertexId>{}(v.id);
-    }
-}; */
-}
-
 #endif // HYPERGRAPH_VERTEX_HPP

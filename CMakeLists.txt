@@ -16,6 +16,18 @@ foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR})
 endforeach()
 
+# Benchmarking option for event relationship processing
+option(SINGLE_THREADED_EVENT_RELATION_PROCESSING "Use single-threaded event relation processing for benchmarking" OFF)
+if(SINGLE_THREADED_EVENT_RELATION_PROCESSING)
+    add_compile_definitions(SINGLE_THREADED_EVENT_RELATION_PROCESSING)
+endif()
+
+# Fuzzing tests option (disabled by default for faster builds)
+option(ENABLE_FUZZING_TESTS "Enable determinism fuzzing tests (slow but comprehensive)" OFF)
+if(ENABLE_FUZZING_TESTS)
+    add_compile_definitions(ENABLE_FUZZING_TESTS)
+endif()
+
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
 add_subdirectory(hypergraph)
@@ -40,7 +52,6 @@ endif()
 
 # Optional: Build Mathematica paclet if Mathematica is found
 option(BUILD_MATHEMATICA_PACLET "Build Mathematica paclet library" ON)
-
 if(BUILD_MATHEMATICA_PACLET)
     add_subdirectory(paclet)
 endif()
