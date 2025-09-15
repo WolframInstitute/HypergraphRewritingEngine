@@ -272,8 +272,7 @@ private:
 };
 
 
-// PartialMatchPool now uses thread-local storage - defined in thread_local_pool.hpp
-// This eliminates the mutex bottleneck from the original implementation
+// PartialMatchPool uses thread-local storage - defined in thread_local_pool.hpp
 
 /**
  * Factory functions for creating pattern matching tasks.

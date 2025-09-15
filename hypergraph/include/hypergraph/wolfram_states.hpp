@@ -86,10 +86,6 @@ public:
         return RawStateId(compute_hash(false));
     }
 
-    // Legacy method for backward compatibility - will be removed gradually
-    std::size_t id(bool canonicalization_enabled = true) const {
-        return compute_hash(canonicalization_enabled);
-    }
 
     /**
      * Add edge with global IDs.
@@ -130,9 +126,6 @@ public:
      */
     std::size_t compute_hash(bool canonicalization_enabled = true) const;
 
-    /**
-     * Legacy method for compatibility - uses canonical hash
-     */
     std::size_t compute_canonical_hash() const {
         return compute_hash(true);
     }
@@ -184,12 +177,7 @@ struct WolframEvent {
     std::vector<GlobalEdgeId> consumed_edges;  // Global edges removed
     std::vector<GlobalEdgeId> produced_edges;  // Global edges added
 
-    // Canonical signatures for structural equivalence comparison
-    std::vector<CanonicalEdgeSignature> consumed_edge_signatures;
-    std::vector<CanonicalEdgeSignature> produced_edge_signatures;
-
     std::size_t rule_index;   // Index into rule set that was applied
-    GlobalVertexId anchor_vertex; // Vertex around which rewriting occurred
     std::size_t step;         // Evolution step when this event occurred
 
     std::chrono::steady_clock::time_point timestamp;
@@ -199,23 +187,12 @@ struct WolframEvent {
     WolframEvent(EventId id, RawStateId input_state, RawStateId output_state,
                 const std::vector<GlobalEdgeId>& consumed,
                 const std::vector<GlobalEdgeId>& produced,
-                std::size_t rule_idx, GlobalVertexId anchor, std::size_t evolution_step)
+                std::size_t rule_idx, std::size_t evolution_step)
         : event_id(id), input_state_id(input_state), output_state_id(output_state)
         , consumed_edges(consumed), produced_edges(produced)
-        , rule_index(rule_idx), anchor_vertex(anchor), step(evolution_step)
+        , rule_index(rule_idx), step(evolution_step)
         , timestamp(std::chrono::steady_clock::now()) {}
 
-    WolframEvent(EventId id, RawStateId input_state, RawStateId output_state,
-                const std::vector<GlobalEdgeId>& consumed,
-                const std::vector<GlobalEdgeId>& produced,
-                const std::vector<CanonicalEdgeSignature>& consumed_sigs,
-                const std::vector<CanonicalEdgeSignature>& produced_sigs,
-                std::size_t rule_idx, GlobalVertexId anchor, std::size_t evolution_step)
-        : event_id(id), input_state_id(input_state), output_state_id(output_state)
-        , consumed_edges(consumed), produced_edges(produced)
-        , consumed_edge_signatures(consumed_sigs), produced_edge_signatures(produced_sigs)
-        , rule_index(rule_idx), anchor_vertex(anchor), step(evolution_step)
-        , timestamp(std::chrono::steady_clock::now()) {}
 };
 
 /**
@@ -248,11 +225,10 @@ struct CachedMatch {
     std::size_t rule_index;                    // Which rule this match is for
     std::vector<GlobalEdgeId> matched_edges;   // Global edges involved in the match
     VariableAssignment assignment;             // Variable assignments for the match
-    GlobalVertexId anchor_vertex;              // Anchor vertex for the match
 
     CachedMatch(std::size_t rule_idx, const std::vector<GlobalEdgeId>& edges,
-                const VariableAssignment& var_assignment, GlobalVertexId anchor)
-        : rule_index(rule_idx), matched_edges(edges), assignment(var_assignment), anchor_vertex(anchor) {}
+                const VariableAssignment& var_assignment)
+        : rule_index(rule_idx), matched_edges(edges), assignment(var_assignment) {}
 };
 
 using SharedCachedMatch = std::shared_ptr<const CachedMatch>;
@@ -327,7 +303,6 @@ private:
 
     // Optional state storage - only used when full_capture is enabled
     std::unique_ptr<ConcurrentHashMap<RawStateId, WolframState>> states;  // Raw states for pattern matching
-    std::unique_ptr<ConcurrentHashMap<CanonicalStateId, RawStateId>> canonical_to_raw_mapping;  // For deduplication
     std::unique_ptr<ConcurrentHashMap<RawStateId, StateMatchCache>> match_caches;  // Pattern match caches
     std::unordered_set<RawStateId> exhausted_states;  // States with no more applicable rules
 
@@ -351,8 +326,9 @@ private:
     bool full_capture = false;  // Controls optional state storage
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
 
-    // Track initial state for causal computation
+    // Track initial state for causal computation and state reconstruction
     std::optional<RawStateId> initial_state_id;
+    std::optional<WolframState> initial_state;
 
 
 public:
@@ -380,7 +356,6 @@ public:
     {
         if (full_capture) {
             states = std::make_unique<ConcurrentHashMap<RawStateId, WolframState>>();
-            canonical_to_raw_mapping = std::make_unique<ConcurrentHashMap<CanonicalStateId, RawStateId>>();
             match_caches = std::make_unique<ConcurrentHashMap<RawStateId, StateMatchCache>>();
         }
     }
@@ -441,7 +416,6 @@ private:
                            const std::vector<GlobalEdgeId>& edges_to_remove,
                            const std::vector<GlobalEdgeId>& produced_edge_ids,
                            std::size_t rule_index,
-                           GlobalVertexId anchor_vertex,
                            std::size_t evolution_step);
 
     /**
@@ -464,7 +438,6 @@ private:
      */
     void compute_all_event_relationships(job_system::JobSystem<PatternMatchingTaskType>* job_system);
 
-    // Removed: get_state - states are not stored, they flow through tasks
 
     /**
      * Get event by ID.
@@ -483,13 +456,7 @@ public:
     std::size_t num_states() const {
         if (full_capture && states) {
             // When full_capture is enabled, use the size of stored states hash map
-            if (canonicalization_enabled && canonical_to_raw_mapping) {
-                // If canonicalization is enabled, count unique canonical states
-                return canonical_to_raw_mapping->size();
-            } else {
-                // If canonicalization is disabled, count raw states
-                return states->size();
-            }
+            return states->size();
         } else {
             // When full_capture is disabled, count unique states from events based on canonicalization setting
             auto all_events = get_all_events();
@@ -575,8 +542,7 @@ public:
      */
     void cache_pattern_match(RawStateId state_id, std::size_t rule_index,
                            const std::vector<GlobalEdgeId>& matched_edges,
-                           const VariableAssignment& assignment,
-                           GlobalVertexId anchor_vertex);
+                           const VariableAssignment& assignment);
 
     /**
      * Get cached matches for a state and rule.

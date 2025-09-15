@@ -464,7 +464,6 @@ void RewriteTask::execute() {
         edges_to_remove,                   // edges to remove
         produced_edge_ids,                // use the already-created edge IDs
         context_->rule_index,             // rule index
-        complete_match_.anchor_vertex,    // anchor vertex
         context_->current_step            // evolution step
     );
 

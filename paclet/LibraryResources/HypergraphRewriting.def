@@ -1,7 +1,4 @@
 EXPORTS
-testHypergraphCanonical
-getVersion
 performRewriting
-performRewritingWXF
 WolframLibrary_initialize
 WolframLibrary_uninitialize

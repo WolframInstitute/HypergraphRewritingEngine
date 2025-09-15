@@ -1,469 +1,596 @@
 #include "WolframLibrary.h"
-#include "WolframSparseLibrary.h"
 #include <iostream>
 #include <vector>
 #include <memory>
+#include <cstring>
 #include <unordered_map>
 
-// Include our hypergraph headers
+// Include basic hypergraph headers
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/canonicalization.hpp"
-#include "hypergraph/pattern_matching.hpp"
+#include "hypergraph/wolfram_evolution.hpp"
 #include "hypergraph/rewriting.hpp"
 #include "hypergraph/wolfram_states.hpp"
-#include "hypergraph/wolfram_evolution.hpp"
 
 using namespace hypergraph;
 
-// Global state management
-static std::unordered_map<mint, std::shared_ptr<Hypergraph>> hypergraph_store;
-static std::unordered_map<mint, std::shared_ptr<WolframEvolution>> engine_store;
-static mint next_id = 1;
-static bool parallel_enabled = false;
+// WXF Parser class
+class WXFParser {
+private:
+    const uint8_t* data;
+    size_t size;
+    size_t pos;
+
+public:
+    WXFParser(const uint8_t* d, size_t s) : data(d), size(s), pos(0) {}
+
+    uint8_t read_byte() {
+        if (pos >= size) throw std::runtime_error("WXF data underflow");
+        return data[pos++];
+    }
+
+    size_t read_varint() {
+        size_t value = 0;
+        size_t shift = 0;
+        uint8_t byte;
+        do {
+            byte = read_byte();
+            value |= (size_t(byte & 0x7F) << shift);
+            shift += 7;
+        } while (byte & 0x80);
+        return value;
+    }
+
+    int64_t read_integer() {
+        uint8_t type = read_byte();
+        switch(type) {
+            case 'C': { // 8-bit
+                int8_t val = read_byte();
+                return val;
+            }
+            case 'j': { // 16-bit
+                int16_t val = 0;
+                for(int i = 0; i < 2; i++) {
+                    val |= (read_byte() << (i * 8));
+                }
+                return val;
+            }
+            case 'i': { // 32-bit
+                int32_t val = 0;
+                for(int i = 0; i < 4; i++) {
+                    val |= (read_byte() << (i * 8));
+                }
+                return val;
+            }
+            case 'L': { // 64-bit
+                int64_t val = 0;
+                for(int i = 0; i < 8; i++) {
+                    val |= (static_cast<int64_t>(read_byte()) << (i * 8));
+                }
+                return val;
+            }
+            default:
+                throw std::runtime_error("Unknown integer type in WXF");
+        }
+    }
+
+    std::string read_string() {
+        uint8_t type = read_byte();
+        if (type != 'S') throw std::runtime_error("Expected string in WXF");
+        size_t len = read_varint();
+        std::string str(len, '\0');
+        for(size_t i = 0; i < len; i++) {
+            str[i] = read_byte();
+        }
+        return str;
+    }
+
+    std::vector<std::vector<int64_t>> read_list_of_lists() {
+        uint8_t type = read_byte();
+        if (type != 'f') throw std::runtime_error("Expected function (List) in WXF");
+
+        size_t outer_len = read_varint();
+
+        // Skip List symbol
+        type = read_byte();
+        if (type != 's') throw std::runtime_error("Expected symbol in WXF");
+        size_t sym_len = read_varint();
+        for(size_t i = 0; i < sym_len; i++) read_byte(); // Skip "List"
+
+        std::vector<std::vector<int64_t>> result;
+        result.reserve(outer_len);
+
+        for(size_t i = 0; i < outer_len; i++) {
+            type = read_byte();
+            if (type != 'f') throw std::runtime_error("Expected inner function (List) in WXF");
+
+            size_t inner_len = read_varint();
+
+            // Skip List symbol
+            type = read_byte();
+            if (type != 's') throw std::runtime_error("Expected symbol in WXF");
+            sym_len = read_varint();
+            for(size_t j = 0; j < sym_len; j++) read_byte(); // Skip "List"
+
+            std::vector<int64_t> inner;
+            inner.reserve(inner_len);
+            for(size_t j = 0; j < inner_len; j++) {
+                inner.push_back(read_integer());
+            }
+            result.push_back(std::move(inner));
+        }
+
+        return result;
+    }
+
+    std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>> read_rules_association() {
+        uint8_t type = read_byte();
+        if (type != 'A') throw std::runtime_error("Expected association in WXF");
+
+        size_t num_rules = read_varint();
+        std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>> rules;
+
+        for(size_t r = 0; r < num_rules; r++) {
+            type = read_byte();
+            if (type != '-') throw std::runtime_error("Expected rule marker in WXF");
+
+            // Read rule name (e.g., "Rule1")
+            std::string rule_name = read_string();
+
+            // Read rule data (LHS -> RHS)
+            type = read_byte();
+            if (type != 'f') throw std::runtime_error("Expected Rule function in WXF");
+            size_t rule_parts = read_varint();
+            if (rule_parts != 2) throw std::runtime_error("Rule must have 2 parts (LHS and RHS)");
+
+            // Skip Rule symbol
+            type = read_byte();
+            if (type != 's') throw std::runtime_error("Expected symbol in WXF");
+            size_t sym_len = read_varint();
+            for(size_t i = 0; i < sym_len; i++) read_byte(); // Skip "Rule"
+
+            // Read LHS
+            auto lhs = read_list_of_lists();
+            // Read RHS
+            auto rhs = read_list_of_lists();
+
+            rules[rule_name] = {lhs, rhs};
+        }
+
+        return rules;
+    }
+
+    void skip_header() {
+        // Skip WXF header "8:"
+        if (read_byte() != '8' || read_byte() != ':') {
+            throw std::runtime_error("Invalid WXF header");
+        }
+    }
+};
+
+// WXF Serialization helpers
+void add_varint(std::vector<uint8_t>& data, std::size_t value) {
+    while (value >= 0x80) {
+        data.push_back(0x80 | (value & 0x7F));
+        value >>= 7;
+    }
+    data.push_back(value & 0x7F);
+}
+
+void add_string_to_wxf(std::vector<uint8_t>& wxf_data, const std::string& str) {
+    wxf_data.push_back('S');
+    add_varint(wxf_data, str.size());
+    wxf_data.insert(wxf_data.end(), str.begin(), str.end());
+}
+
+void add_integer_to_wxf(std::vector<uint8_t>& wxf_data, int64_t value) {
+    if (value >= -128 && value <= 127) {
+        wxf_data.push_back('C');
+        wxf_data.push_back(static_cast<uint8_t>(value & 0xFF));
+    } else if (value >= INT16_MIN && value <= INT16_MAX) {
+        wxf_data.push_back('j');
+        int16_t val16 = static_cast<int16_t>(value);
+        wxf_data.push_back(val16 & 0xFF);
+        wxf_data.push_back((val16 >> 8) & 0xFF);
+    } else if (value >= INT32_MIN && value <= INT32_MAX) {
+        wxf_data.push_back('i');
+        int32_t val32 = static_cast<int32_t>(value);
+        for (int i = 0; i < 4; ++i) {
+            wxf_data.push_back(val32 & 0xFF);
+            val32 >>= 8;
+        }
+    } else {
+        wxf_data.push_back('L');
+        for (int i = 0; i < 8; ++i) {
+            wxf_data.push_back(value & 0xFF);
+            value >>= 8;
+        }
+    }
+}
+
+void add_numeric_array(std::vector<uint8_t>& wxf_data, uint8_t type_token, size_t rank,
+                       const std::vector<size_t>& dimensions, const void* data, size_t element_size) {
+    wxf_data.push_back(0xC2);  // NumericArray token
+    wxf_data.push_back(type_token);
+    add_varint(wxf_data, rank);
+    for (size_t dim : dimensions) {
+        add_varint(wxf_data, dim);
+    }
+
+    size_t total_bytes = element_size;
+    for (size_t dim : dimensions) {
+        total_bytes *= dim;
+    }
+
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    wxf_data.insert(wxf_data.end(), bytes, bytes + total_bytes);
+}
+
+template<typename Func>
+void add_rule_to_wxf(std::vector<uint8_t>& wxf_data, const std::string& key, Func value_func) {
+    wxf_data.push_back('-');
+    add_string_to_wxf(wxf_data, key);
+    value_func(wxf_data);
+}
 
 // Error handling
 static void handle_error(WolframLibraryData libData, const char* message) {
-    libData->Message(message);
+    if (libData && libData->Message) {
+        libData->Message(message);
+    }
 }
 
 /**
- * Create a new hypergraph from an edge list
- * Input: MTensor of edges (2D integer array)
- * Output: DataStore ID
+ * Perform multiway rewriting evolution using WXF input/output
+ * Input: WXF binary data as 1D byte tensor containing:
+ *   Association[
+ *     "InitialEdges" -> {{vertices...}, ...},
+ *     "Rules" -> <"Rule1" -> {{lhs edges}, {rhs edges}}, ...>,
+ *     "Steps" -> integer
+ *   ]
+ *
+ * Output: WXF Association with States, Events, CausalEdges, BranchialEdges
  */
-EXTERN_C DLLEXPORT int createHypergraph(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
     try {
         if (argc != 1) {
-            handle_error(libData, "createHypergraph expects 1 argument");
+            handle_error(libData, "performRewriting expects 1 argument: WXF data");
             return LIBRARY_FUNCTION_ERROR;
         }
-        
-        MTensor edges_tensor = MArgument_getMTensor(argv[0]);
-        mint* dimensions = libData->MTensor_getDimensions(edges_tensor);
-        mint rank = libData->MTensor_getRank(edges_tensor);
-        
-        if (rank != 2) {
-            handle_error(libData, "Edge tensor must be 2D");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        mint num_edges = dimensions[0];
-        mint max_arity = dimensions[1];
-        mint* data = libData->MTensor_getIntegerData(edges_tensor);
-        
-        // Create hypergraph
-        auto hg = std::make_shared<Hypergraph>();
-        
-        for (mint i = 0; i < num_edges; i++) {
-            std::vector<VertexId> vertices;
-            for (mint j = 0; j < max_arity; j++) {
-                mint vertex = data[i * max_arity + j];
-                if (vertex >= 0) { // -1 indicates unused slot
-                    vertices.push_back(static_cast<VertexId>(vertex));
-                }
-            }
-            if (!vertices.empty()) {
-                hg->add_edge(vertices);
-            }
-        }
-        
-        // Store hypergraph and return ID
-        mint id = next_id++;
-        hypergraph_store[id] = hg;
-        
-        DataStore ds = libData->createDataStore();
-        libData->DataStore_addInteger(ds, id);
-        MArgument_setDataStore(res, ds);
-        
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
 
-/**
- * Add an edge to an existing hypergraph
- * Input: DataStore ID, edge vertices
- * Output: Updated DataStore ID
- */
-EXTERN_C DLLEXPORT int addEdgeToHypergraph(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 2) {
-            handle_error(libData, "addEdgeToHypergraph expects 2 arguments");
+        // Get WXF data tensor
+        MTensor wxf_tensor = MArgument_getMTensor(argv[0]);
+        if (libData->MTensor_getRank(wxf_tensor) != 1) {
+            handle_error(libData, "WXF data must be a 1D byte tensor");
             return LIBRARY_FUNCTION_ERROR;
         }
-        
-        DataStore ds = MArgument_getDataStore(argv[0]);
-        mint hg_id = libData->DataStore_getInteger(ds, 1);
-        
-        auto it = hypergraph_store.find(hg_id);
-        if (it == hypergraph_store.end()) {
-            handle_error(libData, "Invalid hypergraph ID");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        MTensor vertices_tensor = MArgument_getMTensor(argv[1]);
-        mint length = libData->MTensor_getFlattenedLength(vertices_tensor);
-        mint* vertices_data = libData->MTensor_getIntegerData(vertices_tensor);
-        
-        std::vector<VertexId> vertices;
-        for (mint i = 0; i < length; i++) {
-            vertices.push_back(static_cast<VertexId>(vertices_data[i]));
-        }
-        
-        // Add edge to hypergraph
-        it->second->add_edge(vertices);
-        
-        // Return the same DataStore
-        MArgument_setDataStore(res, ds);
-        
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
 
-/**
- * Canonicalize a hypergraph
- * Input: DataStore ID
- * Output: 2D integer tensor representing canonical edges
- */
-EXTERN_C DLLEXPORT int canonicalizeHypergraph(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 1) {
-            handle_error(libData, "canonicalizeHypergraph expects 1 argument");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        DataStore ds = MArgument_getDataStore(argv[0]);
-        mint hg_id = libData->DataStore_getInteger(ds, 1);
-        
-        auto it = hypergraph_store.find(hg_id);
-        if (it == hypergraph_store.end()) {
-            handle_error(libData, "Invalid hypergraph ID");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        // Canonicalize hypergraph
-        Canonicalizer canonicalizer;
-        auto result = canonicalizer.canonicalize(*it->second);
-        
-        const auto& edges = result.canonicalized_hypergraph.edges();
-        if (edges.empty()) {
-            // Return empty tensor
-            mint dims[2] = {0, 0};
-            MTensor output;
-            libData->MTensor_new(MType_Integer, 2, dims, &output);
-            MArgument_setMTensor(res, output);
-            return LIBRARY_NO_ERROR;
-        }
-        
-        // Find maximum arity
-        std::size_t max_arity = 0;
-        for (const auto& edge : edges) {
-            max_arity = std::max(max_arity, edge.vertices().size());
-        }
-        
-        // Create output tensor
-        mint dims[2] = {static_cast<mint>(edges.size()), static_cast<mint>(max_arity)};
-        MTensor output;
-        int err = libData->MTensor_new(MType_Integer, 2, dims, &output);
-        if (err != LIBRARY_NO_ERROR) {
-            return err;
-        }
-        
-        mint* output_data = libData->MTensor_getIntegerData(output);
-        
-        // Fill output tensor
-        for (std::size_t i = 0; i < edges.size(); i++) {
-            const auto& vertices = edges[i].vertices();
-            for (std::size_t j = 0; j < max_arity; j++) {
-                if (j < vertices.size()) {
-                    output_data[i * max_arity + j] = static_cast<mint>(vertices[j]);
-                } else {
-                    output_data[i * max_arity + j] = -1; // Pad with -1
-                }
-            }
-        }
-        
-        MArgument_setMTensor(res, output);
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
+        const mint* dims = libData->MTensor_getDimensions(wxf_tensor);
+        mint wxf_size = dims[0];
+        const mint* wxf_mint_data = libData->MTensor_getIntegerData(wxf_tensor);
 
-/**
- * Pattern matching in hypergraph
- * Input: DataStore ID (hypergraph), DataStore ID (pattern)
- * Output: 2D integer tensor representing matches
- */
-EXTERN_C DLLEXPORT int patternMatchHypergraph(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 2) {
-            handle_error(libData, "patternMatchHypergraph expects 2 arguments");
-            return LIBRARY_FUNCTION_ERROR;
+        // Convert mint array to byte array
+        std::vector<uint8_t> wxf_bytes(wxf_size);
+        for (mint i = 0; i < wxf_size; i++) {
+            wxf_bytes[i] = static_cast<uint8_t>(wxf_mint_data[i]);
         }
-        
-        DataStore hg_ds = MArgument_getDataStore(argv[0]);
-        DataStore pattern_ds = MArgument_getDataStore(argv[1]);
-        
-        mint hg_id = libData->DataStore_getInteger(hg_ds, 1);
-        mint pattern_id = libData->DataStore_getInteger(pattern_ds, 1);
-        
-        auto hg_it = hypergraph_store.find(hg_id);
-        auto pattern_it = hypergraph_store.find(pattern_id);
-        
-        if (hg_it == hypergraph_store.end() || pattern_it == hypergraph_store.end()) {
-            handle_error(libData, "Invalid hypergraph ID");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        // Perform pattern matching
-        PatternMatcher matcher;
-        auto matches = matcher.find_all_matches(*pattern_it->second, *hg_it->second);
-        
-        if (matches.empty()) {
-            // Return empty tensor
-            mint dims[2] = {0, 0};
-            MTensor output;
-            libData->MTensor_new(MType_Integer, 2, dims, &output);
-            MArgument_setMTensor(res, output);
-            return LIBRARY_NO_ERROR;
-        }
-        
-        // Convert matches to tensor format
-        mint dims[2] = {static_cast<mint>(matches.size()), static_cast<mint>(matches[0].assignment.size())};
-        MTensor output;
-        int err = libData->MTensor_new(MType_Integer, 2, dims, &output);
-        if (err != LIBRARY_NO_ERROR) {
-            return err;
-        }
-        
-        mint* output_data = libData->MTensor_getIntegerData(output);
-        
-        for (std::size_t i = 0; i < matches.size(); i++) {
-            std::size_t j = 0;
-            for (const auto& [pattern_vertex, target_vertex] : matches[i].assignment) {
-                output_data[i * matches[0].assignment.size() + j] = static_cast<mint>(target_vertex);
-                j++;
-            }
-        }
-        
-        MArgument_setMTensor(res, output);
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
 
-/**
- * Apply rewriting rule to hypergraph
- * Input: DataStore ID (hypergraph), DataStore ID (LHS pattern), DataStore ID (RHS replacement)
- * Output: DataStore ID (new hypergraph)
- */
-EXTERN_C DLLEXPORT int applyRewritingRule(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 3) {
-            handle_error(libData, "applyRewritingRule expects 3 arguments");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        DataStore hg_ds = MArgument_getDataStore(argv[0]);
-        DataStore lhs_ds = MArgument_getDataStore(argv[1]);
-        DataStore rhs_ds = MArgument_getDataStore(argv[2]);
-        
-        mint hg_id = libData->DataStore_getInteger(hg_ds, 1);
-        mint lhs_id = libData->DataStore_getInteger(lhs_ds, 1);
-        mint rhs_id = libData->DataStore_getInteger(rhs_ds, 1);
-        
-        auto hg_it = hypergraph_store.find(hg_id);
-        auto lhs_it = hypergraph_store.find(lhs_id);
-        auto rhs_it = hypergraph_store.find(rhs_id);
-        
-        if (hg_it == hypergraph_store.end() || lhs_it == hypergraph_store.end() || rhs_it == hypergraph_store.end()) {
-            handle_error(libData, "Invalid hypergraph ID");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        // Create rewriting rule
-        RewritingRule rule(*lhs_it->second, *rhs_it->second);
-        
-        // Apply rule
-        RewritingEngine engine;
-        auto result_hg = engine.apply_rule(*hg_it->second, rule);
-        
-        if (!result_hg) {
-            handle_error(libData, "Rule application failed");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        // Store result and return ID
-        mint new_id = next_id++;
-        hypergraph_store[new_id] = std::make_shared<Hypergraph>(*result_hg);
-        
-        DataStore new_ds = libData->createDataStore();
-        libData->DataStore_addInteger(new_ds, new_id);
-        MArgument_setDataStore(res, new_ds);
-        
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
+        // Parse WXF input
+        WXFParser parser(wxf_bytes.data(), wxf_bytes.size());
+        parser.skip_header();
 
-/**
- * Evolve hypergraph using multiway evolution
- * Input: DataStore ID (initial hypergraph), rule indices, number of steps
- * Output: 3D integer tensor representing evolution states
- */
-EXTERN_C DLLEXPORT int evolveMultiway(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 3) {
-            handle_error(libData, "evolveMultiway expects 3 arguments");
+        // Read main association
+        uint8_t type = parser.read_byte();
+        if (type != 'A') {
+            handle_error(libData, "Expected Association at top level");
             return LIBRARY_FUNCTION_ERROR;
         }
-        
-        DataStore hg_ds = MArgument_getDataStore(argv[0]);
-        MTensor rules_tensor = MArgument_getMTensor(argv[1]);
-        mint steps = MArgument_getInteger(argv[2]);
-        
-        mint hg_id = libData->DataStore_getInteger(hg_ds, 1);
-        auto hg_it = hypergraph_store.find(hg_id);
-        
-        if (hg_it == hypergraph_store.end()) {
-            handle_error(libData, "Invalid hypergraph ID");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-        
-        // Create Wolfram evolution engine
-        WolframEvolution engine(steps, parallel_enabled ? 4 : 1);
-        
-        // Add dummy rules (this would need to be populated with actual rules from the rules tensor)
-        // For now, create a simple rule as an example
-        Hypergraph lhs, rhs;
-        lhs.add_edge({0, 1, 2});
-        rhs.add_edge({0, 1});
-        rhs.add_edge({1, 2});
-        rhs.add_edge({2, 0});
-        RewritingRule dummy_rule(lhs, rhs);
-        engine.add_rule(dummy_rule);
-        
-        // Convert initial hypergraph to initial edges
+
+        size_t num_entries = parser.read_varint();
+
         std::vector<std::vector<GlobalVertexId>> initial_edges;
-        for (const auto& edge : hg_it->second->edges()) {
-            std::vector<GlobalVertexId> vertices;
-            for (VertexId v : edge.vertices()) {
-                vertices.push_back(static_cast<GlobalVertexId>(v));
+        std::vector<RewritingRule> parsed_rules;
+        mint steps = 1;
+
+        // Parse association entries
+        for (size_t e = 0; e < num_entries; e++) {
+            type = parser.read_byte();
+            if (type != '-') {
+                handle_error(libData, "Expected rule marker in Association");
+                return LIBRARY_FUNCTION_ERROR;
             }
-            initial_edges.push_back(vertices);
-        }
-        
-        // Evolve with initial edges
-        engine.evolve(initial_edges);
-        
-        // Get basic statistics (since full state access is private)
-        std::size_t num_states = engine.get_multiway_graph().num_states();
-        std::size_t num_events = engine.get_multiway_graph().num_events();
-        
-        // Return tensor format with evolution statistics
-        mint dims[3] = {2, 1, 1}; // Just return number of states and events
-        MTensor output;
-        int err = libData->MTensor_new(MType_Integer, 3, dims, &output);
-        if (err != LIBRARY_NO_ERROR) {
-            return err;
-        }
-        
-        mint* output_data = libData->MTensor_getIntegerData(output);
-        output_data[0] = static_cast<mint>(num_states);
-        output_data[1] = static_cast<mint>(num_events);
-        
-        MArgument_setMTensor(res, output);
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
 
-/**
- * Get engine performance statistics
- */
-EXTERN_C DLLEXPORT int getEngineStats(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        mint dims[1] = {4};
-        MTensor output;
-        int err = libData->MTensor_new(MType_Real, 1, dims, &output);
-        if (err != LIBRARY_NO_ERROR) {
-            return err;
+            std::string key = parser.read_string();
+
+            if (key == "InitialEdges") {
+                auto edges_data = parser.read_list_of_lists();
+                for (const auto& edge : edges_data) {
+                    std::vector<GlobalVertexId> edge_vertices;
+                    for (int64_t v : edge) {
+                        if (v >= 0) {
+                            edge_vertices.push_back(static_cast<GlobalVertexId>(v));
+                        }
+                    }
+                    if (!edge_vertices.empty()) {
+                        initial_edges.push_back(edge_vertices);
+                    }
+                }
+            }
+            else if (key == "Rules") {
+                auto rules = parser.read_rules_association();
+                for (const auto& [rule_name, rule_data] : rules) {
+                    if (rule_data.size() != 2) continue; // Should be {lhs, rhs}
+
+                    PatternHypergraph lhs, rhs;
+
+                    // Parse LHS
+                    for (const auto& edge : rule_data[0]) {
+                        std::vector<PatternVertex> edge_vertices;
+                        for (int64_t v : edge) {
+                            if (v >= 0) {
+                                edge_vertices.push_back(PatternVertex::variable(static_cast<VertexId>(v)));
+                            }
+                        }
+                        if (!edge_vertices.empty()) {
+                            lhs.add_edge(edge_vertices);
+                        }
+                    }
+
+                    // Parse RHS
+                    for (const auto& edge : rule_data[1]) {
+                        std::vector<PatternVertex> edge_vertices;
+                        for (int64_t v : edge) {
+                            if (v >= 0) {
+                                edge_vertices.push_back(PatternVertex::variable(static_cast<VertexId>(v)));
+                            }
+                        }
+                        if (!edge_vertices.empty()) {
+                            rhs.add_edge(edge_vertices);
+                        }
+                    }
+
+                    if (lhs.num_edges() > 0 && rhs.num_edges() > 0) {
+                        parsed_rules.emplace_back(lhs, rhs);
+                    }
+                }
+            }
+            else if (key == "Steps") {
+                steps = static_cast<mint>(parser.read_integer());
+            }
         }
-        
-        double* data = libData->MTensor_getRealData(output);
-        data[0] = static_cast<double>(hypergraph_store.size());
-        data[1] = static_cast<double>(engine_store.size());
-        data[2] = 0.0; // Cache hits - would need actual implementation
-        data[3] = 0.0; // Cache misses - would need actual implementation
-        
-        MArgument_setMTensor(res, output);
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
 
-/**
- * Clear internal caches
- */
-EXTERN_C DLLEXPORT int clearEngineCache(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        hypergraph_store.clear();
-        engine_store.clear();
-        next_id = 1;
-        return LIBRARY_NO_ERROR;
-    } catch (const std::exception& e) {
-        handle_error(libData, e.what());
-        return LIBRARY_FUNCTION_ERROR;
-    }
-}
-
-/**
- * Enable/disable parallel mode
- */
-EXTERN_C DLLEXPORT int setParallelMode(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
-    try {
-        if (argc != 1) {
-            handle_error(libData, "setParallelMode expects 1 argument");
+        if (initial_edges.empty()) {
+            handle_error(libData, "No initial edges provided");
             return LIBRARY_FUNCTION_ERROR;
         }
-        
-        mbool enabled = MArgument_getBoolean(argv[0]);
-        parallel_enabled = (enabled == True);
-        
+
+        if (parsed_rules.empty()) {
+            handle_error(libData, "No valid rules found");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        // Run evolution
+        WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(), true, true, true, true);
+
+        for (const auto& rule : parsed_rules) {
+            evolution.add_rule(rule);
+        }
+
+        evolution.evolve(initial_edges);
+
+        // Get results
+        const auto& multiway_graph = evolution.get_multiway_graph();
+        auto all_states = multiway_graph.get_all_states();
+        auto all_events = multiway_graph.get_all_events();
+        auto event_edges = multiway_graph.get_event_edges();
+
+        // Prepare edge vectors
+        std::vector<std::pair<std::size_t, std::size_t>> causal_edges;
+        std::vector<std::pair<std::size_t, std::size_t>> branchial_edges;
+
+        if (event_edges.empty() && all_events.size() > 1) {
+            for (const auto& event_a : all_events) {
+                for (const auto& event_b : all_events) {
+                    if (event_a.event_id != event_b.event_id) {
+                        if (event_a.output_state_id == event_b.input_state_id) {
+                            causal_edges.push_back(std::make_pair(event_a.event_id, event_b.event_id));
+                        }
+                        else if (event_a.input_state_id == event_b.input_state_id && event_a.event_id < event_b.event_id) {
+                            branchial_edges.push_back(std::make_pair(event_a.event_id, event_b.event_id));
+                        }
+                    }
+                }
+            }
+        } else {
+            for (const auto& edge : event_edges) {
+                if (edge.type == EventRelationType::CAUSAL) {
+                    causal_edges.push_back(std::make_pair(edge.from_event, edge.to_event));
+                } else {
+                    branchial_edges.push_back(std::make_pair(edge.from_event, edge.to_event));
+                }
+            }
+        }
+
+        // Create ID mappings
+        std::map<uint64_t, int> state_id_map;
+        std::map<uint64_t, int> edge_id_map;
+
+        // Map state IDs to sequential integers
+        int state_counter = 0;
+        for (const auto& state : all_states) {
+            state_id_map[state.raw_id().value] = state_counter++;
+        }
+
+        // Map edge IDs to sequential integers
+        int edge_counter = 0;
+        for (const auto& state : all_states) {
+            for (const auto& edge : state.edges()) {
+                if (edge_id_map.find(edge.global_id) == edge_id_map.end()) {
+                    edge_id_map[edge.global_id] = edge_counter++;
+                }
+            }
+        }
+
+        // Create WXF output
+        std::vector<uint8_t> wxf_data;
+
+        // WXF Header
+        wxf_data.push_back('8');
+        wxf_data.push_back(':');
+
+        // Main association
+        wxf_data.push_back('A');
+        add_varint(wxf_data, 4); // 4 key-value pairs
+
+        // "States" -> Association[state_id -> state_edges]
+        add_rule_to_wxf(wxf_data, "States", [&](std::vector<uint8_t>& d) {
+            d.push_back('A');
+            add_varint(d, all_states.size());
+
+            for (const auto& state : all_states) {
+                // Add Rule: state_id -> edges
+                d.push_back('-');
+
+                // Key: mapped state ID
+                add_integer_to_wxf(d, state_id_map[state.raw_id().value]);
+
+                // Value: List of edges
+                const auto& edges = state.edges();
+                d.push_back('f');
+                add_varint(d, edges.size());
+                d.push_back('s');
+                add_varint(d, 4);
+                d.insert(d.end(), {'L', 'i', 's', 't'});
+
+                for (const auto& edge : edges) {
+                    d.push_back('f');
+                    add_varint(d, edge.global_vertices.size() + 1); // +1 for edge ID
+                    d.push_back('s');
+                    add_varint(d, 4);
+                    d.insert(d.end(), {'L', 'i', 's', 't'});
+
+                    // First element is the mapped edge ID
+                    add_integer_to_wxf(d, edge_id_map[edge.global_id]);
+                    // Then the vertices
+                    for (const auto& vertex : edge.global_vertices) {
+                        add_integer_to_wxf(d, static_cast<int64_t>(vertex));
+                    }
+                }
+            }
+        });
+
+        // "Events" -> List of events
+        add_rule_to_wxf(wxf_data, "Events", [&](std::vector<uint8_t>& d) {
+            d.push_back('f');
+            add_varint(d, all_events.size());
+            d.push_back('s');
+            add_varint(d, 4);
+            d.insert(d.end(), {'L', 'i', 's', 't'});
+
+            for (const auto& event : all_events) {
+                d.push_back('A');
+                add_varint(d, 6);
+
+                add_rule_to_wxf(d, "EventId", [&](std::vector<uint8_t>& dd) {
+                    add_integer_to_wxf(dd, static_cast<int64_t>(event.event_id));
+                });
+                add_rule_to_wxf(d, "RuleIndex", [&](std::vector<uint8_t>& dd) {
+                    add_integer_to_wxf(dd, static_cast<int64_t>(event.rule_index));
+                });
+                add_rule_to_wxf(d, "InputStateId", [&](std::vector<uint8_t>& dd) {
+                    add_integer_to_wxf(dd, state_id_map[event.input_state_id.value]);
+                });
+                add_rule_to_wxf(d, "OutputStateId", [&](std::vector<uint8_t>& dd) {
+                    add_integer_to_wxf(dd, state_id_map[event.output_state_id.value]);
+                });
+
+                add_rule_to_wxf(d, "ConsumedEdges", [&](std::vector<uint8_t>& dd) {
+                    dd.push_back('f');
+                    add_varint(dd, event.consumed_edges.size());
+                    dd.push_back('s');
+                    add_varint(dd, 4);
+                    dd.insert(dd.end(), {'L', 'i', 's', 't'});
+                    for (const auto& edge_id : event.consumed_edges) {
+                        add_integer_to_wxf(dd, edge_id_map[edge_id]);
+                    }
+                });
+
+                add_rule_to_wxf(d, "ProducedEdges", [&](std::vector<uint8_t>& dd) {
+                    dd.push_back('f');
+                    add_varint(dd, event.produced_edges.size());
+                    dd.push_back('s');
+                    add_varint(dd, 4);
+                    dd.insert(dd.end(), {'L', 'i', 's', 't'});
+                    for (const auto& edge_id : event.produced_edges) {
+                        add_integer_to_wxf(dd, edge_id_map[edge_id]);
+                    }
+                });
+            }
+        });
+
+        // "CausalEdges" -> List of causal edges
+        add_rule_to_wxf(wxf_data, "CausalEdges", [&](std::vector<uint8_t>& d) {
+            d.push_back('f');
+            add_varint(d, causal_edges.size());
+            d.push_back('s');
+            add_varint(d, 4);
+            d.insert(d.end(), {'L', 'i', 's', 't'});
+
+            for (const auto& edge : causal_edges) {
+                d.push_back('f');
+                add_varint(d, 2);
+                d.push_back('s');
+                add_varint(d, 4);
+                d.insert(d.end(), {'L', 'i', 's', 't'});
+                add_integer_to_wxf(d, static_cast<int64_t>(edge.first));
+                add_integer_to_wxf(d, static_cast<int64_t>(edge.second));
+            }
+        });
+
+        // "BranchialEdges" -> List of branchial edges
+        add_rule_to_wxf(wxf_data, "BranchialEdges", [&](std::vector<uint8_t>& d) {
+            d.push_back('f');
+            add_varint(d, branchial_edges.size());
+            d.push_back('s');
+            add_varint(d, 4);
+            d.insert(d.end(), {'L', 'i', 's', 't'});
+
+            for (const auto& edge : branchial_edges) {
+                d.push_back('f');
+                add_varint(d, 2);
+                d.push_back('s');
+                add_varint(d, 4);
+                d.insert(d.end(), {'L', 'i', 's', 't'});
+                add_integer_to_wxf(d, static_cast<int64_t>(edge.first));
+                add_integer_to_wxf(d, static_cast<int64_t>(edge.second));
+            }
+        });
+
+        // Create output tensor
+        mint wxf_dims[1] = {static_cast<mint>(wxf_data.size())};
+        MTensor result_tensor;
+        int err = libData->MTensor_new(MType_Integer, 1, wxf_dims, &result_tensor);
+        if (err != LIBRARY_NO_ERROR) {
+            return err;
+        }
+
+        mint* result_data = libData->MTensor_getIntegerData(result_tensor);
+        for (std::size_t i = 0; i < wxf_data.size(); ++i) {
+            result_data[i] = static_cast<mint>(wxf_data[i]);
+        }
+
+        MArgument_setMTensor(res, result_tensor);
         return LIBRARY_NO_ERROR;
+
     } catch (const std::exception& e) {
         handle_error(libData, e.what());
         return LIBRARY_FUNCTION_ERROR;
     }
 }
 
-/**
- * Initialize and cleanup functions
- */
-EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData libData) {
-    hypergraph_store.clear();
-    engine_store.clear();
-    next_id = 1;
-    parallel_enabled = false;
+EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData /* libData */) {
     return LIBRARY_NO_ERROR;
 }
 
-EXTERN_C DLLEXPORT void WolframLibrary_uninitialize(WolframLibraryData libData) {
-    hypergraph_store.clear();
-    engine_store.clear();
+EXTERN_C DLLEXPORT void WolframLibrary_uninitialize(WolframLibraryData /* libData */) {
 }

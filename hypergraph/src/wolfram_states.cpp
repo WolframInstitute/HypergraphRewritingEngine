@@ -137,7 +137,6 @@ bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
     return false;
 }
 
-// These functions were removed as they were only used for unused canonical edge signature computation
 
 Hypergraph WolframState::to_hypergraph() const {
     // Build non-canonical hypergraph for pattern matching
@@ -325,7 +324,6 @@ const GlobalHyperedge* WolframState::get_edge(GlobalEdgeId edge_id) const {
     return (it != global_edges_.end()) ? &(*it) : nullptr;
 }
 
-// Canonical edge signature functions removed - they were unused and caused thread safety issues
 
 /*
  * MultiwayGraph
@@ -359,8 +357,9 @@ WolframState MultiwayGraph::create_initial_state(const std::vector<std::vector<G
         }
     }
 
-    // Store the initial state ID for causal computation
+    // Store the initial state ID and state for causal computation and reconstruction
     initial_state_id = state.raw_id();
+    initial_state = state;
 
     // Store state if full_capture is enabled
     if (full_capture && states) {
@@ -370,10 +369,6 @@ WolframState MultiwayGraph::create_initial_state(const std::vector<std::vector<G
         // Store raw state
         states->insert_or_get(raw_state_id, state);
 
-        // Store canonical mapping if canonicalization is enabled
-        if (canonicalization_enabled && canonical_to_raw_mapping) {
-            canonical_to_raw_mapping->insert_or_get(canonical_state_id, raw_state_id);
-        }
     }
 
     return state;
@@ -425,7 +420,6 @@ std::unordered_set<GlobalEdgeId> MultiwayGraph::get_edges_within_radius(
     return result;
 }
 
-// Removed: get_all_states - states are not stored
 
 std::vector<WolframEvent> MultiwayGraph::get_all_events() const {
     std::vector<WolframEvent> result;
@@ -569,8 +563,6 @@ std::string MultiwayGraph::get_summary() const {
         }
         ss << "\n";
 
-        // Show anchor vertex
-        ss << "    Anchor vertex: " << event.anchor_vertex << "\n";
     }
 
     ss << "\nRelationships: " << causal_count << " causal, " << branchial_count << " branchial\n";
@@ -607,7 +599,6 @@ EventId MultiwayGraph::apply_rewriting(const WolframState& input_state,
                        const std::vector<GlobalEdgeId>& edges_to_remove,
                        const std::vector<GlobalEdgeId>& produced_edge_ids,
                        std::size_t rule_index,
-                       GlobalVertexId anchor_vertex,
                        std::size_t evolution_step) {
     // State has already been built by RewriteTask - no need to rebuild
     // Generate state IDs based on canonicalization setting
@@ -622,56 +613,7 @@ EventId MultiwayGraph::apply_rewriting(const WolframState& input_state,
     DEBUG_LOG("[DEBUG] Canonical output state hash: %zu, Raw output state hash: %zu",
              canonical_output_state_id.value, raw_output_state_id.value);
 
-    // States flow through tasks - always treat as new
-    bool was_inserted = true;
-
-#ifdef ENABLE_BRUTE_FORCE_ISOMORPHISM_CHECK
-    const WolframState& existing_state = output_state;
-    if (!was_inserted) {
-        // Check if the existing state is truly isomorphic to the new state
-        std::vector<std::vector<hypergraph::GlobalVertexId>> existing_edges;
-        for (const auto& edge : existing_state.edges()) {
-            existing_edges.push_back(edge.global_vertices);
-        }
-
-        std::vector<std::vector<hypergraph::GlobalVertexId>> new_edges;
-        for (const auto& edge : output_state.edges()) {
-            new_edges.push_back(edge.global_vertices);
-        }
-
-        if (!are_truly_isomorphic(existing_edges, new_edges)) {
-            std::ostringstream error_msg;
-            error_msg << "CANONICALIZATION BUG in apply_rewriting: States with same hash are NOT isomorphic!\n";
-            error_msg << "Hash: " << canonical_output_state_id.value << "\n";
-            error_msg << "Existing state edges: ";
-            for (const auto& edge : existing_edges) {
-                error_msg << "{";
-                for (size_t i = 0; i < edge.size(); ++i) {
-                    error_msg << edge[i];
-                    if (i < edge.size() - 1) error_msg << ",";
-                }
-                error_msg << "} ";
-            }
-            error_msg << "\nNew state edges: ";
-            for (const auto& edge : new_edges) {
-                error_msg << "{";
-                for (size_t i = 0; i < edge.size(); ++i) {
-                    error_msg << edge[i];
-                    if (i < edge.size() - 1) error_msg << ",";
-                }
-                error_msg << "} ";
-            }
-            error_msg << "\n";
-
-            // This is a critical error - canonicalization is broken
-            throw std::runtime_error(error_msg.str());
-        }
-    }
-#endif
-
-    if (was_inserted) {
-        // New unique state - we successfully inserted it
-        {
+    {
             std::ostringstream debug_stream;
             debug_stream << "NEW UNIQUE STATE " << canonical_output_state_id.value << " (raw: " << raw_output_state_id.value << ")\nRAW: ";
             for (const auto& edge : output_state.edges()) {
@@ -706,11 +648,10 @@ EventId MultiwayGraph::apply_rewriting(const WolframState& input_state,
 
             DEBUG_LOG("%s", debug_stream.str().c_str());
         }
-        // No state counting - states aren't stored
-    } else {
-        // State already exists - deduplicated
-        DEBUG_LOG("DUPLICATE: reusing canonical state %zu (raw would have been %zu)",
-                 canonical_output_state_id.value, raw_output_state_id.value);
+
+    // Store output state if full_capture is enabled
+    if (full_capture && states) {
+        states->insert_or_get(raw_output_state_id, output_state);
     }
 
     // Create event with both canonical and raw StateIds
@@ -726,7 +667,7 @@ EventId MultiwayGraph::apply_rewriting(const WolframState& input_state,
     // Create event using existing constructor, then set canonical StateIds
     WolframEvent event(event_id, raw_input_state_id, raw_output_state_id,
                       edges_to_remove, produced_edge_ids,
-                      rule_index, anchor_vertex, evolution_step);
+                      rule_index, evolution_step);
 
     // Set canonical StateIds manually
     event.canonical_input_state_id = canonical_input_state_id;
@@ -739,7 +680,6 @@ EventId MultiwayGraph::apply_rewriting(const WolframState& input_state,
     // update_edge_mappings(event_id, edges_to_remove, produced_edge_ids);
     // update_event_relationships(event_id);
 
-    // No match forwarding - states flow through tasks
 
     return event_id;
 }
@@ -1172,7 +1112,6 @@ void MultiwayGraph::clear() {
     // Clear optional state storage if full_capture is enabled
     if (full_capture) {
         states.reset(new ConcurrentHashMap<RawStateId, WolframState>());
-        canonical_to_raw_mapping.reset(new ConcurrentHashMap<CanonicalStateId, RawStateId>());
         match_caches.reset(new ConcurrentHashMap<RawStateId, StateMatchCache>());
         exhausted_states.clear();
     }
@@ -1235,14 +1174,13 @@ std::size_t MultiwayGraph::num_live_states() const {
 
 void MultiwayGraph::cache_pattern_match(RawStateId state_id, std::size_t rule_index,
                        const std::vector<GlobalEdgeId>& matched_edges,
-                       const VariableAssignment& assignment,
-                       GlobalVertexId anchor_vertex) {
+                       const VariableAssignment& assignment) {
     if (!full_capture || !match_caches) {
         return; // No-op if full_capture is disabled
     }
 
     auto cache_result = match_caches->insert_or_get(state_id, StateMatchCache(state_id));
-    CachedMatch match(rule_index, matched_edges, assignment, anchor_vertex);
+    CachedMatch match(rule_index, matched_edges, assignment);
     cache_result.first.add_match(match);
 }
 
@@ -1336,10 +1274,79 @@ std::optional<WolframState> MultiwayGraph::reconstruct_state(RawStateId target_s
 }
 
 std::vector<EventId> MultiwayGraph::find_event_path_to_state(RawStateId target_state_id) const {
-    // For now, just return empty vector since we don't have path finding implemented yet
-    // This would need to traverse the event graph to find a path
-    (void)target_state_id; // Suppress unused parameter warning
-    return {};
+    if (!initial_state_id.has_value()) {
+        return {};  // No initial state
+    }
+    
+    // If target is initial state, no path needed
+    if (target_state_id == *initial_state_id) {
+        return {};
+    }
+    
+    // Build adjacency map: state -> list of (event_id, output_state)
+    std::unordered_map<RawStateId, std::vector<std::pair<EventId, RawStateId>>> state_to_events;
+    
+    events->for_each([&state_to_events](const EventId& id, const WolframEvent& event) {
+        state_to_events[event.input_state_id].emplace_back(id, event.output_state_id);
+    });
+    
+    // BFS to find shortest path
+    std::unordered_map<RawStateId, EventId> parent_event;
+    std::queue<RawStateId> to_visit;
+    
+    to_visit.push(*initial_state_id);
+    
+    while (!to_visit.empty()) {
+        RawStateId current_state = to_visit.front();
+        to_visit.pop();
+        
+        if (current_state == target_state_id) {
+            break;  // Found target
+        }
+        
+        // Check all events from current state
+        auto it = state_to_events.find(current_state);
+        if (it != state_to_events.end()) {
+            for (const auto& [event_id, output_state] : it->second) {
+                if (parent_event.find(output_state) == parent_event.end()) {
+                    parent_event[output_state] = event_id;
+                    to_visit.push(output_state);
+                }
+            }
+        }
+    }
+    
+    // Reconstruct path
+    if (parent_event.find(target_state_id) == parent_event.end()) {
+        return {};  // Target not reachable
+    }
+    
+    std::vector<EventId> path;
+    RawStateId current = target_state_id;
+    
+    while (parent_event.find(current) != parent_event.end()) {
+        EventId event_id = parent_event[current];
+        path.push_back(event_id);
+        
+        // Find input state efficiently from our adjacency map
+        bool found = false;
+        for (const auto& [state, event_list] : state_to_events) {
+            for (const auto& [eid, output] : event_list) {
+                if (eid == event_id) {
+                    current = state;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        
+        if (!found) break;
+    }
+    
+    // Reverse path (we built it backwards)
+    std::reverse(path.begin(), path.end());
+    return path;
 }
 
 } // namespace hypergraph

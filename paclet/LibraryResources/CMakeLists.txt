@@ -100,7 +100,7 @@ endif()
 
 # Source files - relative to LibraryResources directory
 set(SOURCES
-    hypergraph_ffi_simple.cpp
+    hypergraph_ffi.cpp
 )
 
 # Create the library

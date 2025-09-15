@@ -87,22 +87,26 @@ TEST_F(WolframStatesTest, CanonicalFormInvalidation) {
 
 // === STATE RECONSTRUCTION ===
 
-// TODO: Enable this test when reconstruct_state is implemented
-// TEST_F(WolframStatesTest, StateReconstruction) {
-//     // Create initial state
-//     auto initial_state = graph->create_initial_state({{1, 2}});
-//     auto initial_state_id = initial_state.raw_id();
-//
-//     // Create some events (mock - would normally come from rule application)
-//     // For this test, we'll test the path finding mechanism
-//
-//     auto path = graph->find_event_path_to_state(initial_state_id);
-//     EXPECT_TRUE(path.empty());  // Initial state should have no path
-//
-//     auto reconstructed = graph->reconstruct_state(initial_state_id);
-//     EXPECT_TRUE(reconstructed.has_value());
-//     EXPECT_EQ(reconstructed->raw_id(), initial_state_id);
-// }
+// NOTE: This test requires implementing reconstruct_state and find_event_path_to_state methods
+// These methods need to traverse the event graph to reconstruct states from the initial state
+// TODO: Implement these methods for when full_capture is false
+/*
+TEST_F(WolframStatesTest, StateReconstruction) {
+    // Create initial state
+    auto initial_state = graph->create_initial_state({{1, 2}});
+    auto initial_state_id = initial_state.raw_id();
+
+    // Create some events (mock - would normally come from rule application)
+    // For this test, we'll test the path finding mechanism
+
+    auto path = graph->find_event_path_to_state(initial_state_id);
+    EXPECT_TRUE(path.empty());  // Initial state should have no path
+
+    auto reconstructed = graph->reconstruct_state(initial_state_id);
+    EXPECT_TRUE(reconstructed.has_value());
+    EXPECT_EQ(reconstructed->raw_id(), initial_state_id);
+}
+*/
 
 // === MULTIWAY GRAPH OPERATIONS ===
 
@@ -204,13 +208,13 @@ TEST_F(WolframStatesTest, StateDuplicationDetection) {
 // === ERROR CONDITIONS ===
 
 TEST_F(WolframStatesTest, InvalidStateHandling) {
-    auto invalid_state = graph->get_state_efficient(hypergraph::RawStateId(hypergraph::INVALID_STATE));
+    auto invalid_state = graph->get_state_efficient(hypergraph::INVALID_RAW_STATE);
     EXPECT_FALSE(invalid_state.has_value());
     
-    auto invalid_hash = graph->get_state_hash(hypergraph::RawStateId(hypergraph::INVALID_STATE));
+    auto invalid_hash = graph->get_state_hash(hypergraph::INVALID_RAW_STATE);
     EXPECT_FALSE(invalid_hash.has_value());
     
-    auto invalid_reconstruction = graph->reconstruct_state(hypergraph::RawStateId(hypergraph::INVALID_STATE));
+    auto invalid_reconstruction = graph->reconstruct_state(hypergraph::INVALID_RAW_STATE);
     EXPECT_FALSE(invalid_reconstruction.has_value());
 }
 
@@ -218,7 +222,7 @@ TEST_F(WolframStatesTest, EmptyStateHandling) {
     // Test empty initial state
     auto empty_state = graph->create_initial_state({});
     auto empty_state_id = empty_state.raw_id();
-    EXPECT_NE(empty_state_id, hypergraph::RawStateId(hypergraph::INVALID_STATE));
+    EXPECT_NE(empty_state_id, hypergraph::INVALID_RAW_STATE);
 
     auto state_opt = graph->get_state_efficient(empty_state_id);
     ASSERT_TRUE(state_opt.has_value());
@@ -248,7 +252,7 @@ TEST_F(WolframStatesTest, ManyStatesCreation) {
         auto state = graph->create_initial_state(edges);
         auto state_id = state.raw_id();
         state_ids.push_back(state_id);
-        EXPECT_NE(state_id, hypergraph::RawStateId(hypergraph::INVALID_STATE));
+        EXPECT_NE(state_id, hypergraph::INVALID_RAW_STATE);
     }
 
     // Verify all can be retrieved

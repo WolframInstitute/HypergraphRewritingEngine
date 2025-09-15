@@ -19,31 +19,9 @@ protected:
         }
         std::cout << "\n";
         
-        std::cout << "    Consumed signatures: ";
-        for (const auto& sig : event.consumed_edge_signatures) {
-            std::cout << "{";
-            for (size_t i = 0; i < sig.size(); ++i) {
-                if (i > 0) std::cout << ",";
-                std::cout << sig[i];
-            }
-            std::cout << "} ";
-        }
-        std::cout << "\n";
-        
         std::cout << "    Produced edges (global IDs): ";
         for (auto id : event.produced_edges) {
             std::cout << id << " ";
-        }
-        std::cout << "\n";
-        
-        std::cout << "    Produced signatures: ";
-        for (const auto& sig : event.produced_edge_signatures) {
-            std::cout << "{";
-            for (size_t i = 0; i < sig.size(); ++i) {
-                if (i > 0) std::cout << ",";
-                std::cout << sig[i];
-            }
-            std::cout << "} ";
         }
         std::cout << "\n";
     }

@@ -38,8 +38,6 @@ constexpr CanonicalStateId INVALID_CANONICAL_STATE{std::numeric_limits<std::size
 constexpr RawStateId INVALID_RAW_STATE{std::numeric_limits<std::size_t>::max()};
 constexpr EventId INVALID_EVENT = std::numeric_limits<EventId>::max();
 
-// Legacy constant for backward compatibility during transition
-constexpr std::size_t INVALID_STATE = std::numeric_limits<std::size_t>::max();
 
 } // namespace hypergraph
 
