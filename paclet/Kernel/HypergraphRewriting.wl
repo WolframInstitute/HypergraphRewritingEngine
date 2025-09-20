@@ -153,8 +153,11 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
             "BranchialEdgesLength" -> Length[branchialEdges]
           ],
           "StatesGraph", HGCreateStatesGraph[states, events],
+          "StatesGraphStructure", HGCreateStatesGraph[states, events, False],
           "CausalGraph", HGCreateCausalGraph[states, events, causalEdges],
+          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False],
           "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges],
+          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False],
           "EvolutionGraph", HGCreateEvolutionGraph[states, events],
           "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
           "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
@@ -245,26 +248,33 @@ HGCreateMultiwayGraphDebug[result_, requestedSteps_] := Module[{},
   ]
 ]
 
-HGCreateStatesGraph[states_, events_] := Module[{stateVertices, stateEdges},
+HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True] := Module[{stateVertices, stateEdges},
   stateVertices = Values[states];
   stateEdges = Map[DirectedEdge[states[#["InputStateId"]], states[#["OutputStateId"]]] &, events];
   Graph[
     stateVertices,
     stateEdges,
-    VertexShapeFunction -> Function[
-      Inset[
-        Framed[
-          ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
-          Background -> LightBlue, RoundingRadius -> 3
-        ], #1
-      ]
+    VertexShapeFunction -> If[enableVertexStyles,
+      Function[
+        Inset[
+          Framed[
+            ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
+            Background -> LightBlue, RoundingRadius -> 3
+          ], #1
+        ]
+      ],
+      Automatic
+    ],
+    VertexStyle -> If[enableVertexStyles,
+      Automatic,
+      Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
     ],
     EdgeStyle -> Hue[0.75, 0, 0.35],
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
   ]
 ]
 
-HGCreateCausalGraph[states_, events_, causalEdges_] := Module[{eventVertices, causalEventEdges, connectedEvents},
+HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True] := Module[{eventVertices, causalEventEdges, connectedEvents},
   eventVertices = Map[
     DirectedEdge[
       states[#["InputStateId"]],
@@ -285,41 +295,48 @@ HGCreateCausalGraph[states_, events_, causalEdges_] := Module[{eventVertices, ca
   Graph[
     connectedEvents,
     causalEventEdges,
-    VertexShapeFunction -> {
-      _DirectedEdge -> Function[
-        With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
-          Inset[
-            Framed[
-              Row[{
-                ResourceFunction["WolframModelPlot"][
-                  Rest /@ from,
-                  GraphHighlight -> Rest /@ Extract[from, Position[from, {Alternatives @@ tag["ConsumedEdges"], ___}]],
-                  GraphHighlightStyle -> Dashed,
-                  ImageSize -> 64
-                ],
-                Graphics[{LightGray, FilledCurve[
-                  {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
-                  {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
-                  {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
-                ]}, ImageSize -> 12],
-                ResourceFunction["WolframModelPlot"][
-                  Rest /@ to,
-                  GraphHighlight -> Rest /@ Extract[to, Position[to, {Alternatives @@ tag["ProducedEdges"], ___}]],
-                  ImageSize -> 64
-                ]
-              }],
-              Background -> LightYellow, RoundingRadius -> 3
-            ], #1
+    VertexShapeFunction -> If[enableVertexStyles,
+      {
+        _DirectedEdge -> Function[
+          With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
+            Inset[
+              Framed[
+                Row[{
+                  ResourceFunction["WolframModelPlot"][
+                    Rest /@ from,
+                    GraphHighlight -> Rest /@ Extract[from, Position[from, {Alternatives @@ tag["ConsumedEdges"], ___}]],
+                    GraphHighlightStyle -> Dashed,
+                    ImageSize -> 64
+                  ],
+                  Graphics[{LightGray, FilledCurve[
+                    {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
+                    {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
+                    {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
+                  ]}, ImageSize -> 12],
+                  ResourceFunction["WolframModelPlot"][
+                    Rest /@ to,
+                    GraphHighlight -> Rest /@ Extract[to, Position[to, {Alternatives @@ tag["ProducedEdges"], ___}]],
+                    ImageSize -> 64
+                  ]
+                }],
+                Background -> LightYellow, RoundingRadius -> 3
+              ], #1
+            ]
           ]
         ]
-      ]
-    },
+      },
+      Automatic
+    ],
+    VertexStyle -> If[enableVertexStyles,
+      Automatic,
+      {_DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]]}
+    ],
     EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["CausalGraph"]["EdgeStyle"],
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
   ]
 ]
 
-HGCreateBranchialGraph[states_, events_, branchialEdges_] := Module[{branchialStateEdges},
+HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True] := Module[{branchialStateEdges},
   branchialStateEdges = If[Length[branchialEdges] > 0 && Length[events] > 0,
     Map[UndirectedEdge[states[events[[#[[1]] + 1]]["OutputStateId"]], states[events[[#[[2]] + 1]]["OutputStateId"]]] &, branchialEdges],
     {}
@@ -327,13 +344,20 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_] := Module[{branchialSt
 
   Graph[
     branchialStateEdges,
-    VertexShapeFunction -> Function[
-      Inset[
-        Framed[
-          ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
-          Background -> LightBlue, RoundingRadius -> 3
-        ], #1
-      ]
+    VertexShapeFunction -> If[enableVertexStyles,
+      Function[
+        Inset[
+          Framed[
+            ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
+            Background -> LightBlue, RoundingRadius -> 3
+          ], #1
+        ]
+      ],
+      Automatic
+    ],
+    VertexStyle -> If[enableVertexStyles,
+      Automatic,
+      Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
     ],
     EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"],
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
