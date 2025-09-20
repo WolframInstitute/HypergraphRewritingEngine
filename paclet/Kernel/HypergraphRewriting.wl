@@ -129,11 +129,29 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
         events = Lookup[wxfData, "Events", {}];
         causalEdges = Lookup[wxfData, "CausalEdges", {}];
         branchialEdges = Lookup[wxfData, "BranchialEdges", {}];
+        numStates = Lookup[wxfData, "NumStates", Length[states]];
+        numEvents = Lookup[wxfData, "NumEvents", Length[events]];
+        numCausalEdges = Lookup[wxfData, "NumCausalEdges", Length[causalEdges]];
+        numBranchialEdges = Lookup[wxfData, "NumBranchialEdges", Length[branchialEdges]];
 
         (* Return requested property *)
         Switch[property,
           "States", states,
           "Events", events,
+          "NumStates", numStates,
+          "NumEvents", numEvents,
+          "NumCausalEdges", numCausalEdges,
+          "NumBranchialEdges", numBranchialEdges,
+          "Debug", Association[
+            "NumStates" -> numStates,
+            "NumEvents" -> numEvents,
+            "NumCausalEdges" -> numCausalEdges,
+            "NumBranchialEdges" -> numBranchialEdges,
+            "StatesLength" -> Length[states],
+            "EventsLength" -> Length[events],
+            "CausalEdgesLength" -> Length[causalEdges],
+            "BranchialEdgesLength" -> Length[branchialEdges]
+          ],
           "StatesGraph", HGCreateStatesGraph[states, events],
           "CausalGraph", HGCreateCausalGraph[states, events, causalEdges],
           "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges],
@@ -141,6 +159,10 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
           "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
           "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
           "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges],
+          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False],
+          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False],
+          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False],
+          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False],
           _, $Failed
         ],
         (* WXF parsing failed *)
@@ -318,7 +340,7 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_] := Module[{branchialSt
   ]
 ]
 
-HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}] := Module[{
+HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True] := Module[{
   stateVertices, eventVertices, allVertices, stateToEventEdges,
   eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges
 },
@@ -364,43 +386,53 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
       v_ :> Placed[HoldForm[v], Tooltip],
       DirectedEdge[_, _, tag_] :> Placed[tag, Tooltip]
     },
-    VertexShapeFunction -> {
-      _DirectedEdge -> Function[
-        With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
+    VertexShapeFunction -> If[enableVertexStyles,
+      {
+        _DirectedEdge -> Function[
+          With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
+            Inset[
+              Framed[
+                Row[{
+                  ResourceFunction["WolframModelPlot"][
+                    Rest /@ from, (* Remove edge IDs for plotting *)
+                    GraphHighlight -> Rest /@ Select[from, MemberQ[tag["ConsumedEdges"], First[#]] &],
+                    GraphHighlightStyle -> Dashed,
+                    ImageSize -> 64
+                  ],
+                  Graphics[{LightGray, FilledCurve[
+                    {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
+                    {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
+                    {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
+                  ]}, ImageSize -> 12],
+                  ResourceFunction["WolframModelPlot"][
+                    Rest /@ to, (* Remove edge IDs for plotting *)
+                    GraphHighlight -> Rest /@ Select[to, MemberQ[tag["ProducedEdges"], First[#]] &],
+                    ImageSize -> 64
+                  ]
+                }],
+                Background -> LightYellow, RoundingRadius -> 3
+              ], #1
+            ]
+          ]
+        ],
+        Except[_DirectedEdge] -> Function[
           Inset[
             Framed[
-              Row[{
-                ResourceFunction["WolframModelPlot"][
-                  Rest /@ from, (* Remove edge IDs for plotting *)
-                  GraphHighlight -> Rest /@ Extract[from, Position[from, {Alternatives @@ tag["ConsumedEdges"], ___}]],
-                  GraphHighlightStyle -> Dashed,
-                  ImageSize -> 64
-                ],
-                Graphics[{LightGray, FilledCurve[
-                  {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
-                  {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
-                  {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
-                ]}, ImageSize -> 12],
-                ResourceFunction["WolframModelPlot"][
-                  Rest /@ to, (* Remove edge IDs for plotting *)
-                  GraphHighlight -> Rest /@ Extract[to, Position[to, {Alternatives @@ tag["ProducedEdges"], ___}]],
-                  ImageSize -> 64
-                ]
-              }],
-              Background -> LightYellow, RoundingRadius -> 3
+              ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64], (* Remove edge IDs *)
+              Background -> LightBlue, RoundingRadius -> 3
             ], #1
           ]
         ]
-      ],
-      Except[_DirectedEdge] -> Function[
-        Inset[
-          Framed[
-            ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64], (* Remove edge IDs *)
-            Background -> LightBlue, RoundingRadius -> 3
-          ], #1
-        ]
-      ]
-    },
+      },
+      Automatic
+    ],
+    VertexStyle -> If[enableVertexStyles,
+      Automatic,
+      {
+        _DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]],
+        Except[_DirectedEdge] -> Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
+      }
+    ],
     EdgeStyle -> {
       UndirectedEdge[Except[_DirectedEdge], _DirectedEdge] -> Hue[0.75, 0, 0.35],
       DirectedEdge[_DirectedEdge, Except[_DirectedEdge]] -> Hue[0.75, 0, 0.35],
@@ -408,6 +440,7 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
       UndirectedEdge[_DirectedEdge, _DirectedEdge] -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"]
     },
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
+    AspectRatio -> 1/2,
     PlotLabel -> None
   ]
 ]

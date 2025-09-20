@@ -1,13 +1,9 @@
 #include "WolframLibrary.h"
-#include <iostream>
 #include <vector>
-#include <memory>
 #include <cstring>
 #include <unordered_map>
 
 // Include basic hypergraph headers
-#include "hypergraph/hypergraph.hpp"
-#include "hypergraph/canonicalization.hpp"
 #include "hypergraph/wolfram_evolution.hpp"
 #include "hypergraph/rewriting.hpp"
 #include "hypergraph/wolfram_states.hpp"
@@ -208,22 +204,18 @@ void add_integer_to_wxf(std::vector<uint8_t>& wxf_data, int64_t value) {
     }
 }
 
-void add_numeric_array(std::vector<uint8_t>& wxf_data, uint8_t type_token, size_t rank,
-                       const std::vector<size_t>& dimensions, const void* data, size_t element_size) {
-    wxf_data.push_back(0xC2);  // NumericArray token
-    wxf_data.push_back(type_token);
-    add_varint(wxf_data, rank);
-    for (size_t dim : dimensions) {
-        add_varint(wxf_data, dim);
-    }
 
-    size_t total_bytes = element_size;
-    for (size_t dim : dimensions) {
-        total_bytes *= dim;
-    }
+void add_list_header(std::vector<uint8_t>& wxf_data, size_t size) {
+    wxf_data.push_back('f');
+    add_varint(wxf_data, size);
+    wxf_data.push_back('s');
+    add_varint(wxf_data, 4);
+    wxf_data.insert(wxf_data.end(), {'L', 'i', 's', 't'});
+}
 
-    const uint8_t* bytes = static_cast<const uint8_t*>(data);
-    wxf_data.insert(wxf_data.end(), bytes, bytes + total_bytes);
+void add_association_header(std::vector<uint8_t>& wxf_data, size_t size) {
+    wxf_data.push_back('A');
+    add_varint(wxf_data, size);
 }
 
 template<typename Func>
@@ -378,58 +370,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         evolution.evolve(initial_edges);
 
-        // Get results
+        // Get results from multiway graph
         const auto& multiway_graph = evolution.get_multiway_graph();
         auto all_states = multiway_graph.get_all_states();
         auto all_events = multiway_graph.get_all_events();
         auto event_edges = multiway_graph.get_event_edges();
 
-        // Prepare edge vectors
-        std::vector<std::pair<std::size_t, std::size_t>> causal_edges;
-        std::vector<std::pair<std::size_t, std::size_t>> branchial_edges;
-
-        if (event_edges.empty() && all_events.size() > 1) {
-            for (const auto& event_a : all_events) {
-                for (const auto& event_b : all_events) {
-                    if (event_a.event_id != event_b.event_id) {
-                        if (event_a.output_state_id == event_b.input_state_id) {
-                            causal_edges.push_back(std::make_pair(event_a.event_id, event_b.event_id));
-                        }
-                        else if (event_a.input_state_id == event_b.input_state_id && event_a.event_id < event_b.event_id) {
-                            branchial_edges.push_back(std::make_pair(event_a.event_id, event_b.event_id));
-                        }
-                    }
-                }
-            }
-        } else {
-            for (const auto& edge : event_edges) {
-                if (edge.type == EventRelationType::CAUSAL) {
-                    causal_edges.push_back(std::make_pair(edge.from_event, edge.to_event));
-                } else {
-                    branchial_edges.push_back(std::make_pair(edge.from_event, edge.to_event));
-                }
-            }
-        }
-
-        // Create ID mappings
-        std::map<uint64_t, int> state_id_map;
-        std::map<uint64_t, int> edge_id_map;
-
-        // Map state IDs to sequential integers
-        int state_counter = 0;
-        for (const auto& state : all_states) {
-            state_id_map[state.raw_id().value] = state_counter++;
-        }
-
-        // Map edge IDs to sequential integers
-        int edge_counter = 0;
-        for (const auto& state : all_states) {
-            for (const auto& edge : state.edges()) {
-                if (edge_id_map.find(edge.global_id) == edge_id_map.end()) {
-                    edge_id_map[edge.global_id] = edge_counter++;
-                }
-            }
-        }
 
         // Create WXF output
         std::vector<uint8_t> wxf_data;
@@ -440,38 +386,26 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // Main association
         wxf_data.push_back('A');
-        add_varint(wxf_data, 4); // 4 key-value pairs
+        add_varint(wxf_data, 8); // 8 key-value pairs
 
         // "States" -> Association[state_id -> state_edges]
         add_rule_to_wxf(wxf_data, "States", [&](std::vector<uint8_t>& d) {
-            d.push_back('A');
-            add_varint(d, all_states.size());
+            add_association_header(d, all_states.size());
 
             for (const auto& state : all_states) {
                 // Add Rule: state_id -> edges
                 d.push_back('-');
 
-                // Key: mapped state ID
-                add_integer_to_wxf(d, state_id_map[state.raw_id().value]);
+                // Key: state ID
+                add_integer_to_wxf(d, static_cast<int64_t>(state->id().value));
 
                 // Value: List of edges
-                const auto& edges = state.edges();
-                d.push_back('f');
-                add_varint(d, edges.size());
-                d.push_back('s');
-                add_varint(d, 4);
-                d.insert(d.end(), {'L', 'i', 's', 't'});
+                const auto& edges = state->edges();
+                add_list_header(d, edges.size());
 
                 for (const auto& edge : edges) {
-                    d.push_back('f');
-                    add_varint(d, edge.global_vertices.size() + 1); // +1 for edge ID
-                    d.push_back('s');
-                    add_varint(d, 4);
-                    d.insert(d.end(), {'L', 'i', 's', 't'});
-
-                    // First element is the mapped edge ID
-                    add_integer_to_wxf(d, edge_id_map[edge.global_id]);
-                    // Then the vertices
+                    add_list_header(d, edge.global_vertices.size() + 1);
+                    add_integer_to_wxf(d, static_cast<int64_t>(edge.global_id));
                     for (const auto& vertex : edge.global_vertices) {
                         add_integer_to_wxf(d, static_cast<int64_t>(vertex));
                     }
@@ -481,15 +415,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // "Events" -> List of events
         add_rule_to_wxf(wxf_data, "Events", [&](std::vector<uint8_t>& d) {
-            d.push_back('f');
-            add_varint(d, all_events.size());
-            d.push_back('s');
-            add_varint(d, 4);
-            d.insert(d.end(), {'L', 'i', 's', 't'});
+            add_list_header(d, all_events.size());
 
             for (const auto& event : all_events) {
-                d.push_back('A');
-                add_varint(d, 6);
+                add_association_header(d, 6);
 
                 add_rule_to_wxf(d, "EventId", [&](std::vector<uint8_t>& dd) {
                     add_integer_to_wxf(dd, static_cast<int64_t>(event.event_id));
@@ -498,31 +427,31 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     add_integer_to_wxf(dd, static_cast<int64_t>(event.rule_index));
                 });
                 add_rule_to_wxf(d, "InputStateId", [&](std::vector<uint8_t>& dd) {
-                    add_integer_to_wxf(dd, state_id_map[event.input_state_id.value]);
+                    // Use canonical state ID if available, otherwise raw state ID
+                    StateID state_id_to_use = event.has_canonical_input_state_id()
+                                              ? event.canonical_input_state_id
+                                              : event.input_state_id;
+                    add_integer_to_wxf(dd, static_cast<int64_t>(state_id_to_use.value));
                 });
                 add_rule_to_wxf(d, "OutputStateId", [&](std::vector<uint8_t>& dd) {
-                    add_integer_to_wxf(dd, state_id_map[event.output_state_id.value]);
+                    // Use canonical state ID if available, otherwise raw state ID
+                    StateID state_id_to_use = event.has_canonical_output_state_id()
+                                              ? event.canonical_output_state_id
+                                              : event.output_state_id;
+                    add_integer_to_wxf(dd, static_cast<int64_t>(state_id_to_use.value));
                 });
 
                 add_rule_to_wxf(d, "ConsumedEdges", [&](std::vector<uint8_t>& dd) {
-                    dd.push_back('f');
-                    add_varint(dd, event.consumed_edges.size());
-                    dd.push_back('s');
-                    add_varint(dd, 4);
-                    dd.insert(dd.end(), {'L', 'i', 's', 't'});
+                    add_list_header(dd, event.consumed_edges.size());
                     for (const auto& edge_id : event.consumed_edges) {
-                        add_integer_to_wxf(dd, edge_id_map[edge_id]);
+                        add_integer_to_wxf(dd, static_cast<int64_t>(edge_id));
                     }
                 });
 
                 add_rule_to_wxf(d, "ProducedEdges", [&](std::vector<uint8_t>& dd) {
-                    dd.push_back('f');
-                    add_varint(dd, event.produced_edges.size());
-                    dd.push_back('s');
-                    add_varint(dd, 4);
-                    dd.insert(dd.end(), {'L', 'i', 's', 't'});
+                    add_list_header(dd, event.produced_edges.size());
                     for (const auto& edge_id : event.produced_edges) {
-                        add_integer_to_wxf(dd, edge_id_map[edge_id]);
+                        add_integer_to_wxf(dd, static_cast<int64_t>(edge_id));
                     }
                 });
             }
@@ -530,40 +459,46 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // "CausalEdges" -> List of causal edges
         add_rule_to_wxf(wxf_data, "CausalEdges", [&](std::vector<uint8_t>& d) {
-            d.push_back('f');
-            add_varint(d, causal_edges.size());
-            d.push_back('s');
-            add_varint(d, 4);
-            d.insert(d.end(), {'L', 'i', 's', 't'});
-
-            for (const auto& edge : causal_edges) {
-                d.push_back('f');
-                add_varint(d, 2);
-                d.push_back('s');
-                add_varint(d, 4);
-                d.insert(d.end(), {'L', 'i', 's', 't'});
-                add_integer_to_wxf(d, static_cast<int64_t>(edge.first));
-                add_integer_to_wxf(d, static_cast<int64_t>(edge.second));
+            add_list_header(d, multiway_graph.get_causal_edge_count());
+            for (const auto& edge : event_edges) {
+                if (edge.type == EventRelationType::CAUSAL) {
+                    add_list_header(d, 2);
+                    add_integer_to_wxf(d, static_cast<int64_t>(edge.from_event));
+                    add_integer_to_wxf(d, static_cast<int64_t>(edge.to_event));
+                }
             }
         });
 
         // "BranchialEdges" -> List of branchial edges
         add_rule_to_wxf(wxf_data, "BranchialEdges", [&](std::vector<uint8_t>& d) {
-            d.push_back('f');
-            add_varint(d, branchial_edges.size());
-            d.push_back('s');
-            add_varint(d, 4);
-            d.insert(d.end(), {'L', 'i', 's', 't'});
-
-            for (const auto& edge : branchial_edges) {
-                d.push_back('f');
-                add_varint(d, 2);
-                d.push_back('s');
-                add_varint(d, 4);
-                d.insert(d.end(), {'L', 'i', 's', 't'});
-                add_integer_to_wxf(d, static_cast<int64_t>(edge.first));
-                add_integer_to_wxf(d, static_cast<int64_t>(edge.second));
+            add_list_header(d, multiway_graph.get_branchial_edge_count());
+            for (const auto& edge : event_edges) {
+                if (edge.type == EventRelationType::BRANCHIAL) {
+                    add_list_header(d, 2);
+                    add_integer_to_wxf(d, static_cast<int64_t>(edge.from_event));
+                    add_integer_to_wxf(d, static_cast<int64_t>(edge.to_event));
+                }
             }
+        });
+
+        // "NumStates" -> Count from multiway graph
+        add_rule_to_wxf(wxf_data, "NumStates", [&](std::vector<uint8_t>& d) {
+            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.num_states()));
+        });
+
+        // "NumEvents" -> Count from multiway graph
+        add_rule_to_wxf(wxf_data, "NumEvents", [&](std::vector<uint8_t>& d) {
+            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.num_events()));
+        });
+
+        // "NumCausalEdges" -> Count from multiway graph
+        add_rule_to_wxf(wxf_data, "NumCausalEdges", [&](std::vector<uint8_t>& d) {
+            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.get_causal_edge_count()));
+        });
+
+        // "NumBranchialEdges" -> Count from multiway graph
+        add_rule_to_wxf(wxf_data, "NumBranchialEdges", [&](std::vector<uint8_t>& d) {
+            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.get_branchial_edge_count()));
         });
 
         // Create output tensor

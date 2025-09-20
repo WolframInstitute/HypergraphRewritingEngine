@@ -26,7 +26,7 @@ protected:
         std::cout << "\n";
     }
     
-    void print_state_details(const WolframState& state, RawStateId id) {
+    void print_state_details(const WolframState& state, StateID id) {
         std::cout << "  State " << id.value << ":\n";
         std::cout << "    Raw edges: ";
         for (const auto& edge : state.edges()) {
@@ -85,7 +85,7 @@ TEST_F(DebugRelationshipsTest, SimpleRuleDebug) {
     std::cout << "\n--- States ---\n";
     auto states = graph.get_all_states();
     for (const auto& state : states) {
-        print_state_details(state, state.raw_id());
+        print_state_details(*state, state->id());
     }
     
     // Print all events with their edge signatures

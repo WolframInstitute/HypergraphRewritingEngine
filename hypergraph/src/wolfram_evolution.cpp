@@ -47,8 +47,8 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     DEBUG_LOG("Evolution has %zu rules, max steps: %zu", rules_.size(), max_steps_);
 
     // Create initial state (flows through tasks, not stored)
-    WolframState initial_state = multiway_graph_->create_initial_state(initial_edges);
-    DEBUG_LOG("Created initial state with %zu edges", initial_state.edges().size());
+    auto initial_state = multiway_graph_->create_initial_state(initial_edges);
+    DEBUG_LOG("Created initial state with %zu edges", initial_state->edges().size());
 
     // Clear any previous evolution context objects (no longer needed with new approach)
     target_graphs_.clear();
@@ -62,7 +62,7 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     }
 
     // Apply all rules to the initial state (state flows through tasks)
-    apply_all_rules_to_state(initial_state, 0);
+    apply_all_rules_to_state(*initial_state, 0);
 
     // Wait for all tasks to complete
     job_system_->wait_for_completion();
@@ -94,8 +94,9 @@ void WolframEvolution::apply_all_rules_to_state(const WolframState& input_state,
             edge_mapping.push_back(global_edge.global_id);
         }
 
-        // Create copyable rule application data with state copy, hypergraph, and mapping
-        RuleApplicationData rule_data(rule, input_state, target_hg, edge_mapping,
+        // Create copyable rule application data with shared state, hypergraph, and mapping
+        auto shared_input_state = std::make_shared<WolframState>(input_state.clone(*multiway_graph_));
+        RuleApplicationData rule_data(rule, shared_input_state, target_hg, edge_mapping,
                                      current_step, max_steps_, 1000, multiway_graph_, job_system_.get(), this);
         
         // Create task that captures rule_data by value (includes shared_ptr to hypergraph)

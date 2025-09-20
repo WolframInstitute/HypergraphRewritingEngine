@@ -326,7 +326,7 @@ void RewriteTask::execute() {
     }
     DEBUG_LOG("%s", assignment_info.c_str());
 
-    std::string consumed_edges = "[REWRITE] Starting rewrite for state with " + std::to_string(context_->current_state.edges().size()) + " edges, consumed edges: ";
+    std::string consumed_edges = "[REWRITE] Starting rewrite for state with " + std::to_string(context_->current_state->edges().size()) + " edges, consumed edges: ";
     for (GlobalEdgeId eid : complete_match_.matched_edges) {
         consumed_edges += std::to_string(eid) + " ";
     }
@@ -440,27 +440,33 @@ void RewriteTask::execute() {
     }
     DEBUG_LOG("%s", rewrite_info.c_str());
 
-    // Apply rewrite directly to create new state (states flow through tasks, no storage)
-    // Copy current state before modification to avoid affecting other tasks
-    WolframState new_state = context_->current_state;
-
-    // Remove consumed edges from the new state
-    for (GlobalEdgeId edge_id : edges_to_remove) {
-        new_state.remove_global_edge(edge_id);
-    }
-
-    // Add produced edges to the new state
+    // Pre-allocate edge IDs for new edges
     std::vector<GlobalEdgeId> produced_edge_ids;
     for (const auto& edge_vertices : new_edges) {
         GlobalEdgeId new_edge_id = context_->multiway_graph->get_fresh_edge_id();
-        new_state.add_global_edge(new_edge_id, edge_vertices);
         produced_edge_ids.push_back(new_edge_id);
     }
+    
+    // Create new state by building it with correct edge IDs
+    auto new_state_ptr = std::make_shared<WolframState>(*context_->multiway_graph);
+    
+    // Add existing edges (excluding those to be removed)
+    std::unordered_set<GlobalEdgeId> edges_to_remove_set(edges_to_remove.begin(), edges_to_remove.end());
+    for (const auto& edge : context_->current_state->edges()) {
+        if (edges_to_remove_set.find(edge.global_id) == edges_to_remove_set.end()) {
+            new_state_ptr->add_global_edge(edge.global_id, edge.global_vertices);
+        }
+    }
+    
+    // Add new edges with pre-allocated global IDs
+    for (size_t i = 0; i < new_edges.size(); i++) {
+        new_state_ptr->add_global_edge(produced_edge_ids[i], new_edges[i]);
+    }
 
-    // Create event by calling apply_rewriting with input and output states
-    EventId event_id = context_->multiway_graph->apply_rewriting(
+    // Create event by calling record_state_transition
+    EventId event_id = context_->multiway_graph->record_state_transition(
         context_->current_state,          // input state (before rewrite)
-        new_state,                        // output state (after rewrite)
+        new_state_ptr,                    // output state (after rewrite)
         edges_to_remove,                   // edges to remove
         produced_edge_ids,                // use the already-created edge IDs
         context_->rule_index,             // rule index
@@ -473,8 +479,8 @@ void RewriteTask::execute() {
         // Get the new state created by this rewrite
         auto event_opt = context_->multiway_graph->get_event(event_id);
         if (event_opt) {
-            RawStateId raw_new_state_id = event_opt->output_state_id;
-            CanonicalStateId canonical_new_state_id = event_opt->canonical_output_state_id;
+            StateID raw_new_state_id = event_opt->output_state_id;
+            StateID canonical_new_state_id = event_opt->output_state_id;
 
             // Calculate step for newly created state (parent step + 1)
             std::size_t new_step = context_->current_step + 1;
@@ -487,13 +493,13 @@ void RewriteTask::execute() {
             if (new_step < context_->max_steps) {
                 DEBUG_LOG("[REWRITE] Thread %zu: About to spawn rules for NEW state with %zu edges at step %zu",
                          std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000,
-                         new_state.edges().size(), new_step);
+                         new_state_ptr->edges().size(), new_step);
                 if (context_->wolfram_evolution) {
                     try {
-                        context_->wolfram_evolution->apply_all_rules_to_state(new_state, new_step);
+                        context_->wolfram_evolution->apply_all_rules_to_state(*new_state_ptr, new_step);
                         DEBUG_LOG("[REWRITE] Thread %zu: Successfully spawned rules for new state with %zu edges",
                                  std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000,
-                                 new_state.edges().size());
+                                 new_state_ptr->edges().size());
                     } catch (const std::exception& e) {
                         DEBUG_LOG("[REWRITE] Exception in multi-rule application: %s", e.what());
                     }
@@ -516,7 +522,7 @@ void RewriteTask::execute() {
 }
 
 
-void RewriteTask::spawn_patch_based_matching_around_new_edges(RawStateId new_state_id, const std::vector<std::vector<GlobalVertexId>>& new_edges, std::size_t current_step) {
+void RewriteTask::spawn_patch_based_matching_around_new_edges(StateID new_state_id, const std::vector<std::vector<GlobalVertexId>>& new_edges, std::size_t current_step) {
     DEBUG_LOG("[REWRITE] Starting patch-based matching for state %zu, current_step=%zu", new_state_id.value, current_step);
 
     // Check current global step at spawn time to prevent concurrent tasks from all spawning

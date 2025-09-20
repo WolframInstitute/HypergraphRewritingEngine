@@ -33,7 +33,7 @@ enum class PatternMatchingTaskType {
  */
 struct RuleApplicationData {
     RewritingRule rule;
-    WolframState input_state;                         // State flows through tasks
+    std::shared_ptr<WolframState> input_state;        // State flows through tasks
     std::shared_ptr<const Hypergraph> target_hypergraph; // Hypergraph data for pattern matching
     std::vector<GlobalEdgeId> edge_id_mapping;        // Maps local EdgeId to GlobalEdgeId
     std::size_t current_step;
@@ -45,7 +45,7 @@ struct RuleApplicationData {
     job_system::JobSystem<PatternMatchingTaskType>* job_system;
     WolframEvolution* wolfram_evolution;
 
-    RuleApplicationData(const RewritingRule& r, const WolframState& input_state,
+    RuleApplicationData(const RewritingRule& r, std::shared_ptr<WolframState> input_state,
                        std::shared_ptr<const Hypergraph> target_hg,
                        const std::vector<GlobalEdgeId>& edge_mapping, std::size_t step,
                        std::size_t max_s, std::size_t max_m,
@@ -111,7 +111,7 @@ struct PatternMatchingContext {
 
     // Multiway graph for state and event tracking
     std::shared_ptr<MultiwayGraph> multiway_graph;
-    WolframState current_state;                        // State flows through tasks
+    std::shared_ptr<WolframState> current_state;       // State flows through tasks
     std::vector<GlobalEdgeId> edge_id_mapping;         // Maps local EdgeId to GlobalEdgeId
     RewritingRule rewrite_rule;  // Single rule for REWRITE tasks
     std::size_t rule_index{0};  // Index of the rule being processed
@@ -256,7 +256,7 @@ private:
      * Implements efficient search within a radius around new edges.
      */
     void spawn_patch_based_matching_around_new_edges(
-        RawStateId new_state_id,
+        StateID new_state_id,
         const std::vector<std::vector<GlobalVertexId>>& new_edges,
         std::size_t current_step);
 

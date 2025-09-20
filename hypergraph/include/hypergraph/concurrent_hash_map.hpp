@@ -7,6 +7,7 @@
 #include <functional>
 #include <optional>
 #include <cstddef>
+#include <type_traits>
 
 namespace hypergraph {
 
@@ -24,6 +25,12 @@ private:
         std::atomic<bool> marked{false};  // For logical deletion
 
         Node(const Key& k, const Value& v) : key(k), value(v) {}
+        Node(const Key& k, Value&& v) : key(k), value(std::move(v)) {}
+        Node(Key&& k, const Value& v) : key(std::move(k)), value(v) {}
+        Node(Key&& k, Value&& v) : key(std::move(k)), value(std::move(v)) {}
+
+        template<typename K, typename V>
+        Node(K&& k, V&& v) : key(std::forward<K>(k)), value(std::forward<V>(v)) {}
     };
 
     struct Bucket {
@@ -91,6 +98,48 @@ public:
     }
 
     /**
+     * Insert or update a key-value pair (universal reference version)
+     * Returns true if inserted, false if updated
+     */
+    template<typename K, typename V>
+    bool insert(K&& key, V&& value) {
+        size_t bucket_idx = get_bucket_index(key);
+        Node* new_node = nullptr;
+
+        while (true) {
+            Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
+
+            // Check if key already exists
+            Node* current = head;
+            while (current != nullptr) {
+                if (!current->marked.load(std::memory_order_acquire) && current->key == key) {
+                    // Key exists, don't update - return false to indicate no insertion
+                    if (new_node) delete new_node;
+                    return false;
+                }
+                current = current->next.load(std::memory_order_acquire);
+            }
+
+            // Only allocate if we haven't already
+            if (!new_node) {
+                new_node = new Node(std::forward<K>(key), std::forward<V>(value));
+            }
+
+            // Try to insert at head of bucket
+            new_node->next.store(head, std::memory_order_release);
+            if (buckets_[bucket_idx].head.compare_exchange_weak(
+                    head, new_node,
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {
+                size_.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            }
+            // CAS failed, retry with the same node
+            // The key might have been inserted by another thread
+        }
+    }
+
+    /**
      * Insert if not exists, or get existing value
      * Returns pair of (value, was_inserted)
      * This is linearizable - exactly one thread will return true for any given key
@@ -136,6 +185,60 @@ public:
             // The new head might contain our key now
         }
     }
+
+    /**
+     * Insert if not exists using factory function, or get existing value
+     * The factory is only called if the key doesn't exist, avoiding unnecessary object construction
+     * Returns pair of (value, was_inserted)
+     * This is linearizable - exactly one thread will return true for any given key
+     */
+    template<typename Factory>
+    std::enable_if_t<std::is_invocable_r_v<Value, Factory>, std::pair<Value, bool>>
+    insert_or_get(const Key& key, Factory&& factory) {
+        size_t bucket_idx = get_bucket_index(key);
+        Node* new_node = nullptr;
+
+        while (true) {
+            Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
+
+            // Check if key already exists in current list state
+            Node* current = head;
+            while (current != nullptr) {
+                if (!current->marked.load(std::memory_order_acquire) &&
+                    current->key == key) {
+                    // Key exists - clean up and return existing value
+                    if (new_node) delete new_node;
+                    Value existing_value = current->value;
+                    return {existing_value, false};
+                }
+                current = current->next.load(std::memory_order_acquire);
+            }
+
+            // Only allocate if we haven't already
+            if (!new_node) {
+                // Call factory function to create value only when needed
+                Value new_value = factory();
+                new_node = new Node(key, std::move(new_value));
+            }
+
+            // Key doesn't exist in current state - try to insert
+            new_node->next.store(head, std::memory_order_release);
+            if (buckets_[bucket_idx].head.compare_exchange_weak(
+                    head, new_node,
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {
+
+                // Successfully inserted - we're the winner
+                size_.fetch_add(1, std::memory_order_relaxed);
+                Value inserted_value = new_node->value;
+                return {inserted_value, true};
+            }
+
+            // CAS failed because head changed - retry with the same node
+            // The new head might contain our key now
+        }
+    }
+
 
     /**
      * Find a value by key

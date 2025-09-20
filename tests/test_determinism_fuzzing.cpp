@@ -130,10 +130,12 @@ protected:
     void validate_expected_results(const std::string& test_name,
                                   const std::vector<RewritingRule>& rules,
                                   const std::vector<std::vector<GlobalVertexId>>& initial,
-                                  const std::vector<std::pair<int, TestResult>>& expected) {
-        std::cout << "\n=== Validating Expected Results for " << test_name << " ===" << std::endl;
+                                  const std::vector<std::pair<int, TestResult>>& expected,
+                                  bool full_capture = false) {
+        std::cout << "\n=== Validating Expected Results for " << test_name
+                  << " (full_capture=" << (full_capture ? "true" : "false") << ") ===" << std::endl;
         for (const auto& [steps, expected_result] : expected) {
-            WolframEvolution evolution(steps, std::thread::hardware_concurrency(), true, false);
+            WolframEvolution evolution(steps, std::thread::hardware_concurrency(), true, full_capture);
             for (const auto& rule : rules) {
                 evolution.add_rule(rule);
             }
@@ -195,7 +197,8 @@ TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule) {
         {4, {17, 33, 0, 32}}
     };
 
-    validate_expected_results("SimpleRule", {rule}, initial, expected);
+    validate_expected_results("SimpleRule", {rule}, initial, expected, false);
+    validate_expected_results("SimpleRule", {rule}, initial, expected, true);
 
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("SimpleRule", {rule}, initial, 4);
@@ -725,5 +728,54 @@ TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
 
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("AnotherTwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
+#endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule) {
+    // Create rule: {{1,2,3},{5,1}} -> {{1,5,6},{3,2},{3,5}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(5), PatternVertex::variable(1)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(5), PatternVertex::variable(6)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(5)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{0, 0, 0}, {0, 0}};
+
+    // Expected results for different step counts from Mathematica getMWGStats
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {5, 9, 7, 8}},
+        {4, {9, 29, 31, 28}},
+        {5, {18, 89, 99, 88}}
+    };
+
+    validate_expected_results("ComplexThreeEdgeRule", {rule}, initial, expected);
+    validate_expected_results("ComplexThreeEdgeRule", {rule}, initial, expected, true);
+
+#ifdef ENABLE_FUZZING_TESTS
+    fuzz_test_rules("ComplexThreeEdgeRule", {rule}, initial, 5);
 #endif
 }

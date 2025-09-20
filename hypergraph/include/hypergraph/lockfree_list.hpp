@@ -16,9 +16,12 @@ private:
     struct Node {
         T data;
         std::atomic<Node*> next{nullptr};
-        
+
         explicit Node(const T& value) : data(value) {}
         explicit Node(T&& value) : data(std::move(value)) {}
+
+        template<typename... Args>
+        explicit Node(Args&&... args) : data(std::forward<Args>(args)...) {}
     };
     
     std::atomic<Node*> head_{nullptr};
@@ -69,7 +72,43 @@ public:
             std::memory_order_acquire
         ));
     }
-    
+
+    /**
+     * Append an element to the front of the list (universal reference version)
+     */
+    template<typename U>
+    void push_front(U&& value) {
+        Node* new_node = new Node(std::forward<U>(value));
+        Node* current_head = head_.load(std::memory_order_acquire);
+
+        do {
+            new_node->next.store(current_head, std::memory_order_relaxed);
+        } while (!head_.compare_exchange_weak(
+            current_head,
+            new_node,
+            std::memory_order_release,
+            std::memory_order_acquire
+        ));
+    }
+
+    /**
+     * Construct an element in-place at the front of the list (lock-free)
+     */
+    template<typename... Args>
+    void emplace_front(Args&&... args) {
+        Node* new_node = new Node(std::forward<Args>(args)...);
+        Node* current_head = head_.load(std::memory_order_acquire);
+
+        do {
+            new_node->next.store(current_head, std::memory_order_relaxed);
+        } while (!head_.compare_exchange_weak(
+            current_head,
+            new_node,
+            std::memory_order_release,
+            std::memory_order_acquire
+        ));
+    }
+
     /**
      * Check if the list is empty
      */
