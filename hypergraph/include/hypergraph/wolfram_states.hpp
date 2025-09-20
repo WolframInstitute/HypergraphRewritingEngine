@@ -360,9 +360,10 @@ private:
     std::unique_ptr<ConcurrentHashMap<EventId, WolframEvent>> events;
 
     // Optional state storage - only used when full_capture is enabled
-    std::unique_ptr<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>> states;  // States by ID
+    std::unique_ptr<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>> states;  // States by raw ID for direct access
     std::unique_ptr<ConcurrentHashMap<StateID, StateMatchCache>> match_caches;  // Pattern match caches
-    std::unique_ptr<ConcurrentHashMap<std::size_t, StateID>> seen_hashes;  // Maps canonical hash to representative StateID
+    std::unique_ptr<ConcurrentHashMap<std::size_t, StateID>> seen_hashes;  // Maps canonical hash to canonical StateID
+    std::unique_ptr<ConcurrentHashMap<StateID, StateID>> canonical_to_raw_mapping;  // Maps canonical ID to raw ID
     std::unordered_set<StateID> exhausted_states;  // States with no more applicable rules
 
     // Event edge tracking
@@ -419,6 +420,7 @@ public:
         }
         if (canonicalization_enabled) {
             seen_hashes = std::make_unique<ConcurrentHashMap<std::size_t, StateID>>();
+            canonical_to_raw_mapping = std::make_unique<ConcurrentHashMap<StateID, StateID>>();
         }
     }
 
@@ -523,12 +525,12 @@ private:
 
 public:
     std::size_t num_states() const {
-        if (full_capture && states) {
-            return states->size();  // Most accurate when storing
-        } else if (canonicalization_enabled && seen_hashes) {
-            return seen_hashes->size();  // Unique canonical states
+        if (canonicalization_enabled && seen_hashes) {
+            return seen_hashes->size();  // Unique canonical states when canonicalization enabled
+        } else if (full_capture && states) {
+            return states->size();  // Raw state count when canonicalization disabled
         } else {
-            return next_state_id.load();  // All states unique when no canonicalization
+            return next_state_id.load();  // All states unique when no canonicalization and no storage
         }
     }
 
@@ -637,7 +639,7 @@ public:
      * Get state by ID, reconstructing it if necessary.
      * This replaces direct state storage with on-demand reconstruction.
      */
-    std::optional<WolframState> get_state_efficient(StateID state_id) const;
+    std::shared_ptr<WolframState> get_state_efficient(StateID state_id) const;
 
     /**
      * Get canonical hash for a state without storing the full state.
