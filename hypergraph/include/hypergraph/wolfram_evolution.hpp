@@ -37,7 +37,8 @@ private:
 public:
     WolframEvolution(std::size_t max_steps, std::size_t num_threads = std::thread::hardware_concurrency(),
                      bool canonicalization_enabled = true, bool full_capture = false,
-                     bool event_deduplication = true, bool transitive_reduction_enabled = true);
+                     bool event_deduplication = true, bool transitive_reduction_enabled = true,
+                     bool early_termination = false);
     
     ~WolframEvolution();
     

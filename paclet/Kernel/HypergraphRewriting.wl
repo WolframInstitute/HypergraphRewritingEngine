@@ -94,10 +94,22 @@ HGCreate[edges_List] := Module[{edgeArray},
 ]
 
 
-HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph"] := Module[{inputData, rulesAssoc, result},
+HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", opts___] := Module[{inputData, rulesAssoc, result, options},
 
   If[Head[performRewriting] =!= LibraryFunction,
     Return["Library function performRewriting not loaded"]
+  ];
+
+  (* Parse options with defaults *)
+  options = Association[
+    "CanonicalizeStates" -> True,
+    "CanonicalizeEvents" -> False,
+    "CausalTransitiveReduction" -> True,
+    "EarlyTermination" -> False,
+    "PatchBasedMatching" -> False,
+    "FullCapture" -> True,  (* Must be true for paclet interface to return states *)
+    "AspectRatio" -> 1/2,
+    opts
   ];
 
   (* Convert rules to Association format for WXF *)
@@ -108,11 +120,12 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
     ]
   ];
 
-  (* Create input association *)
+  (* Create input association with options *)
   inputData = Association[
     "InitialEdges" -> initialEdges,
     "Rules" -> rulesAssoc,
-    "Steps" -> steps
+    "Steps" -> steps,
+    "Options" -> options
   ];
 
   (* Serialize to WXF and call library function *)
@@ -152,12 +165,12 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
             "CausalEdgesLength" -> Length[causalEdges],
             "BranchialEdgesLength" -> Length[branchialEdges]
           ],
-          "StatesGraph", HGCreateStatesGraph[states, events],
-          "StatesGraphStructure", HGCreateStatesGraph[states, events, False],
-          "CausalGraph", HGCreateCausalGraph[states, events, causalEdges],
-          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False],
-          "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges],
-          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False],
+          "StatesGraph", HGCreateStatesGraph[states, events, True, options["AspectRatio"]],
+          "StatesGraphStructure", HGCreateStatesGraph[states, events, False, options["AspectRatio"]],
+          "CausalGraph", HGCreateCausalGraph[states, events, causalEdges, True, options["AspectRatio"]],
+          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False, options["AspectRatio"]],
+          "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
+          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
           "EvolutionGraph", HGCreateEvolutionGraph[states, events],
           "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
           "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
@@ -248,11 +261,9 @@ HGCreateMultiwayGraphDebug[result_, requestedSteps_] := Module[{},
   ]
 ]
 
-HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True] := Module[{stateVertices, stateEdges},
-  stateVertices = Values[states];
+HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{stateEdges},
   stateEdges = Map[DirectedEdge[states[#["InputStateId"]], states[#["OutputStateId"]]] &, events];
   Graph[
-    stateVertices,
     stateEdges,
     VertexShapeFunction -> If[enableVertexStyles,
       Function[
@@ -270,11 +281,12 @@ HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True] := Module[{sta
       Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
     ],
     EdgeStyle -> Hue[0.75, 0, 0.35],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
+    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
+    AspectRatio -> aspectRatio
   ]
 ]
 
-HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True] := Module[{eventVertices, causalEventEdges, connectedEvents},
+HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{eventVertices, causalEventEdges, connectedEvents},
   eventVertices = Map[
     DirectedEdge[
       states[#["InputStateId"]],
@@ -332,11 +344,12 @@ HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True] 
       {_DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]]}
     ],
     EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["CausalGraph"]["EdgeStyle"],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
+    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
+    AspectRatio -> aspectRatio
   ]
 ]
 
-HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True] := Module[{branchialStateEdges},
+HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{branchialStateEdges},
   branchialStateEdges = If[Length[branchialEdges] > 0 && Length[events] > 0,
     Map[UndirectedEdge[states[events[[#[[1]] + 1]]["OutputStateId"]], states[events[[#[[2]] + 1]]["OutputStateId"]]] &, branchialEdges],
     {}
@@ -360,7 +373,8 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : 
       Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
     ],
     EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top}
+    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
+    AspectRatio -> aspectRatio
   ]
 ]
 

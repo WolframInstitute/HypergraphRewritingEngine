@@ -386,6 +386,7 @@ private:
     bool canonicalization_enabled = true;
     bool full_capture = false;  // Controls optional state storage
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
+    bool early_termination_enabled = false;  // Stop processing seen states
 
     // Track initial state for causal computation and state reconstruction
     std::optional<StateID> initial_state_id;
@@ -407,12 +408,13 @@ public:
 
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
-    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true)
+    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false)
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , full_capture(enable_full_capture)
         , transitive_reduction_enabled(enable_transitive_reduction)
+        , early_termination_enabled(enable_early_termination)
     {
         if (full_capture) {
             states = std::make_unique<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>>();
@@ -460,6 +462,17 @@ public:
 
     bool is_canonicalization_enabled() const {
         return canonicalization_enabled;
+    }
+
+    /**
+     * Enable or disable early termination on duplicate states.
+     */
+    void set_early_termination_enabled(bool enabled) {
+        early_termination_enabled = enabled;
+    }
+
+    bool is_early_termination_enabled() const {
+        return early_termination_enabled;
     }
 
     /**

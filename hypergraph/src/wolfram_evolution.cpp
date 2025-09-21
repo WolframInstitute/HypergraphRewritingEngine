@@ -8,15 +8,18 @@ namespace hypergraph {
 
 WolframEvolution::WolframEvolution(std::size_t max_steps, std::size_t num_threads,
                  bool canonicalization_enabled, bool full_capture,
-                 bool event_deduplication, bool transitive_reduction_enabled)
-    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled))
+                 bool event_deduplication, bool transitive_reduction_enabled,
+                 bool early_termination)
+    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination))
     , job_system_(std::make_unique<job_system::JobSystem<PatternMatchingTaskType>>(num_threads))
     , max_steps_(max_steps)
     , num_threads_(num_threads) {
-    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, event_dedup %s", 
-              max_steps, num_threads, canonicalization_enabled ? "enabled" : "disabled", 
-              full_capture ? "enabled" : "disabled", event_deduplication ? "enabled" : "disabled");
+    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, event_dedup %s, early_termination %s",
+              max_steps, num_threads, canonicalization_enabled ? "enabled" : "disabled",
+              full_capture ? "enabled" : "disabled", event_deduplication ? "enabled" : "disabled",
+              early_termination ? "enabled" : "disabled");
     multiway_graph_->set_canonicalization_enabled(canonicalization_enabled);
+    multiway_graph_->set_early_termination_enabled(early_termination);
     job_system_->start();
     DEBUG_LOG("Job system started");
 }

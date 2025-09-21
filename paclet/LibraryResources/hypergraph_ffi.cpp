@@ -284,6 +284,14 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::vector<RewritingRule> parsed_rules;
         mint steps = 1;
 
+        // Options with defaults
+        bool canonicalize_states = true;
+        bool full_capture = true;  // Default true for paclet interface
+        bool canonicalize_events = false;
+        bool causal_transitive_reduction = true;
+        bool early_termination = false;
+        bool patch_based_matching = false;  // Not currently used
+
         // Parse association entries
         for (size_t e = 0; e < num_entries; e++) {
             type = parser.read_byte();
@@ -349,6 +357,62 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             else if (key == "Steps") {
                 steps = static_cast<mint>(parser.read_integer());
             }
+            else if (key == "Options") {
+                // Parse options association
+                type = parser.read_byte();
+                if (type == 'A') {  // Association
+                    size_t num_options = parser.read_varint();
+                    for (size_t o = 0; o < num_options; o++) {
+                        type = parser.read_byte();
+                        if (type == '-') {  // Rule marker
+                            std::string option_key = parser.read_string();
+
+                            // Read the value - could be a symbol (True/False) or other types
+                            type = parser.read_byte();
+                            if (type == 's') {  // Symbol
+                                size_t sym_len = parser.read_varint();
+                                std::string symbol_value;
+                                for (size_t i = 0; i < sym_len; i++) {
+                                    symbol_value += (char)parser.read_byte();
+                                }
+
+                                bool value = (symbol_value == "True");
+
+                                // Set the appropriate option
+                                if (option_key == "CanonicalizeStates") {
+                                    canonicalize_states = value;
+                                } else if (option_key == "CanonicalizeEvents") {
+                                    canonicalize_events = value;
+                                } else if (option_key == "CausalTransitiveReduction") {
+                                    causal_transitive_reduction = value;
+                                } else if (option_key == "EarlyTermination") {
+                                    early_termination = value;
+                                } else if (option_key == "PatchBasedMatching") {
+                                    patch_based_matching = value;
+                                } else if (option_key == "FullCapture") {
+                                    full_capture = value;
+                                }
+                            } else if (type == 'r') {
+                                // Real number - skip 8 bytes
+                                for (int i = 0; i < 8; i++) parser.read_byte();
+                            } else if (type == 'C') {
+                                // 8-bit integer - skip 1 byte
+                                parser.read_byte();
+                            } else if (type == 'j') {
+                                // 16-bit integer - skip 2 bytes
+                                parser.read_byte();
+                                parser.read_byte();
+                            } else if (type == 'i') {
+                                // 32-bit integer - skip 4 bytes
+                                for (int i = 0; i < 4; i++) parser.read_byte();
+                            } else if (type == 'L') {
+                                // 64-bit integer - skip 8 bytes
+                                for (int i = 0; i < 8; i++) parser.read_byte();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if (initial_edges.empty()) {
@@ -361,8 +425,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             return LIBRARY_FUNCTION_ERROR;
         }
 
-        // Run evolution
-        WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(), true, true, true, true);
+        // Run evolution with parsed options
+        WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(),
+                                   canonicalize_states, full_capture, canonicalize_events,
+                                   causal_transitive_reduction, early_termination);
 
         for (const auto& rule : parsed_rules) {
             evolution.add_rule(rule);

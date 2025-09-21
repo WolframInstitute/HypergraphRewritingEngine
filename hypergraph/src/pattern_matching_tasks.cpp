@@ -512,6 +512,8 @@ void RewriteTask::execute() {
 
             DEBUG_LOG("[REWRITE] Event %zu completed, new state with %zu edges created", event_id, new_state.edges().size());
         }
+    } else {
+        DEBUG_LOG("[REWRITE] No event created (INVALID_EVENT) - state may have been seen before (early termination)");
     }
 
     DEBUG_LOG("[REWRITE] REWRITE task completed");

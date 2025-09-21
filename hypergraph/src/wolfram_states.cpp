@@ -314,7 +314,8 @@ std::vector<GlobalEdgeId> WolframState::find_edges_by_pattern_signature(const Ed
 }
 
 WolframState WolframState::clone(MultiwayGraph& graph) const {
-    WolframState copy(graph); // Gets fresh ID
+    WolframState copy(graph); // Gets fresh ID initially
+    copy.state_id = this->state_id; // Preserve original state ID
     copy.global_edges_ = global_edges_;
     copy.global_vertices_ = global_vertices_;
     copy.edge_signature_index_ = edge_signature_index_;
@@ -661,7 +662,14 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
         std::size_t output_hash = output_state->get_hash(true);
         auto canonical_result = seen_hashes->insert_or_get(output_hash, output_state_id);
         canonical_output_state_id = canonical_result.first;
+        bool is_first_occurrence = canonical_result.second;
         output_state->set_canonical_id(canonical_output_state_id);
+
+        // Early termination: if state has been seen before and early termination is enabled, return invalid event
+        if (!is_first_occurrence && early_termination_enabled) {
+            DEBUG_LOG("[EARLY_TERMINATION] State with hash %zu already seen, skipping processing", output_hash);
+            return INVALID_EVENT;
+        }
 
         // Track canonical-to-raw mapping for efficient lookup
         if (canonical_to_raw_mapping) {
