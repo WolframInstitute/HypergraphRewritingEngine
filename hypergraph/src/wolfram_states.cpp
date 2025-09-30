@@ -389,9 +389,20 @@ std::shared_ptr<WolframState> MultiwayGraph::create_initial_state(const std::vec
         // Set canonical ID on the state object
         state->set_canonical_id(canonical_state_id);
 
-        // Track canonical-to-raw mapping for efficient lookup
-        if (canonical_to_raw_mapping) {
-            canonical_to_raw_mapping->insert_or_get(canonical_state_id, state->id());
+        // Store based on flags
+        if (states) {
+            if (full_capture_non_canonicalised) {
+                // Store all states by raw ID regardless of canonicalization
+                states->insert_or_get(state->id(), state);
+            } else if (full_capture && is_first_occurrence) {
+                // Store only canonical representatives
+                states->insert_or_get(canonical_state_id, state);
+            }
+        }
+    } else {
+        // No canonicalization - store all states if requested
+        if ((full_capture || full_capture_non_canonicalised) && states) {
+            states->insert_or_get(state->id(), state);
         }
     }
 
@@ -649,6 +660,12 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
             canonical_input_state_id = canonical_result.first;
             input_state->set_canonical_id(canonical_input_state_id);
         }
+    } else {
+        // No canonicalization - use raw state ID as canonical ID for event references
+        canonical_input_state_id = input_state_id;
+        if (!input_state->has_canonical_id()) {
+            input_state->set_canonical_id(canonical_input_state_id);
+        }
     }
 
     // Always store output state by its raw ID for direct access
@@ -671,9 +688,18 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
             return INVALID_EVENT;
         }
 
-        // Track canonical-to-raw mapping for efficient lookup
-        if (canonical_to_raw_mapping) {
-            canonical_to_raw_mapping->insert_or_get(canonical_output_state_id, output_state_id);
+        // Store state if first occurrence
+        if (full_capture && states && is_first_occurrence) {
+            states->insert_or_get(canonical_output_state_id, output_state);
+        }
+    } else {
+        // No canonicalization - use raw state IDs as canonical IDs for event references
+        canonical_output_state_id = output_state_id;
+        output_state->set_canonical_id(canonical_output_state_id);
+
+        // Store all states
+        if ((full_capture || full_capture_non_canonicalised) && states) {
+            states->insert_or_get(output_state_id, output_state);
         }
     }
 
@@ -1117,8 +1143,8 @@ void MultiwayGraph::clear() {
 // === OPTIONAL STATE STORAGE METHODS (only work when full_capture is enabled) ===
 
 std::vector<std::shared_ptr<WolframState>> MultiwayGraph::get_all_states() const {
-    if (!full_capture || !states) {
-        return {}; // Return empty vector if full_capture is disabled
+    if ((!full_capture && !full_capture_non_canonicalised) || !states) {
+        return {}; // Return empty vector if both full_capture and full_capture_non_canonicalised are disabled
     }
 
     // Return all stored states (canonical when canonicalization is enabled)
@@ -1238,25 +1264,30 @@ void MultiwayGraph::clear_match_cache(StateID state_id) {
 }
 
 std::shared_ptr<WolframState> MultiwayGraph::get_state_efficient(StateID state_id) const {
-    if (full_capture && states) {
-        // Direct lookup with the provided state_id (states are always stored by raw ID)
+    if ((full_capture || full_capture_non_canonicalised) && states) {
+        // Try to get from stored states first
         auto state_opt = states->find(state_id);
         if (state_opt) {
-            return *state_opt;
+            return state_opt.value();
         }
     }
 
-    // Fall back to reconstruction - for now return nullptr since reconstruction isn't implemented
+    // Fall back to reconstruction if needed
+    auto reconstructed = reconstruct_state(state_id);
+    if (reconstructed.has_value()) {
+        return std::make_shared<WolframState>(std::move(reconstructed.value()));
+    }
+
     return nullptr;
 }
 
 std::optional<std::size_t> MultiwayGraph::get_state_hash(StateID state_id) const {
-    auto state_opt = get_state_efficient(state_id);
-    if (!state_opt) {
+    auto state_ptr = get_state_efficient(state_id);
+    if (!state_ptr) {
         return std::nullopt;
     }
 
-    return state_opt->compute_hash(canonicalization_enabled);
+    return state_ptr->compute_hash(canonicalization_enabled);
 }
 
 std::optional<WolframState> MultiwayGraph::reconstruct_state(StateID target_state_id) const {

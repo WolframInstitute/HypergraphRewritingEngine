@@ -496,7 +496,7 @@ void RewriteTask::execute() {
                          new_state_ptr->edges().size(), new_step);
                 if (context_->wolfram_evolution) {
                     try {
-                        context_->wolfram_evolution->apply_all_rules_to_state(*new_state_ptr, new_step);
+                        context_->wolfram_evolution->apply_all_rules_to_state(new_state_ptr, new_step);
                         DEBUG_LOG("[REWRITE] Thread %zu: Successfully spawned rules for new state with %zu edges",
                                  std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000,
                                  new_state_ptr->edges().size());

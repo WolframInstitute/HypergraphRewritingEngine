@@ -24,6 +24,17 @@ HGDebugInfo::usage = "HGDebugInfo[] shows debug information about the library lo
 (* Rewriting functions *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution and returns the specified property."
 
+(* Options for HGEvolve *)
+Options[HGEvolve] = {
+  "CanonicalizeStates" -> True,
+  "CanonicalizeEvents" -> False,
+  "CausalTransitiveReduction" -> True,
+  "EarlyTermination" -> False,
+  "PatchBasedMatching" -> False,
+  "FullCapture" -> True,
+  "AspectRatio" -> 1/2
+};
+
 (* Data type symbols *)
 HypergraphObject::usage = "HypergraphObject[...] represents a hypergraph object."
 RewritingRule::usage = "RewritingRule[lhs, rhs] represents a hypergraph rewriting rule."
@@ -94,7 +105,7 @@ HGCreate[edges_List] := Module[{edgeArray},
 ]
 
 
-HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", opts___] := Module[{inputData, rulesAssoc, result, options},
+HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, rulesAssoc, result, options},
 
   If[Head[performRewriting] =!= LibraryFunction,
     Return["Library function performRewriting not loaded"]
@@ -102,14 +113,13 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
 
   (* Parse options with defaults *)
   options = Association[
-    "CanonicalizeStates" -> True,
-    "CanonicalizeEvents" -> False,
-    "CausalTransitiveReduction" -> True,
-    "EarlyTermination" -> False,
-    "PatchBasedMatching" -> False,
-    "FullCapture" -> True,  (* Must be true for paclet interface to return states *)
-    "AspectRatio" -> 1/2,
-    opts
+    "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
+    "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
+    "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
+    "EarlyTermination" -> OptionValue["EarlyTermination"],
+    "PatchBasedMatching" -> OptionValue["PatchBasedMatching"],
+    "FullCapture" -> OptionValue["FullCapture"],
+    "AspectRatio" -> OptionValue["AspectRatio"]
   ];
 
   (* Convert rules to Association format for WXF *)
@@ -151,6 +161,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
         Switch[property,
           "States", states,
           "Events", events,
+          "CausalEdges", causalEdges,
+          "BranchialEdges", branchialEdges,
           "NumStates", numStates,
           "NumEvents", numEvents,
           "NumCausalEdges", numCausalEdges,
@@ -172,12 +184,12 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
           "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
           "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
           "EvolutionGraph", HGCreateEvolutionGraph[states, events],
-          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
-          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
-          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges],
           "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False],
+          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
           "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False],
+          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
           "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False],
+          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges],
           "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False],
           _, $Failed
         ],

@@ -9,8 +9,8 @@ namespace hypergraph {
 WolframEvolution::WolframEvolution(std::size_t max_steps, std::size_t num_threads,
                  bool canonicalization_enabled, bool full_capture,
                  bool event_deduplication, bool transitive_reduction_enabled,
-                 bool early_termination)
-    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination))
+                 bool early_termination, bool full_capture_non_canonicalised)
+    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination, full_capture_non_canonicalised))
     , job_system_(std::make_unique<job_system::JobSystem<PatternMatchingTaskType>>(num_threads))
     , max_steps_(max_steps)
     , num_threads_(num_threads) {
@@ -65,7 +65,7 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     }
 
     // Apply all rules to the initial state (state flows through tasks)
-    apply_all_rules_to_state(*initial_state, 0);
+    apply_all_rules_to_state(initial_state, 0);
 
     // Wait for all tasks to complete
     job_system_->wait_for_completion();
@@ -77,29 +77,28 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     DEBUG_LOG("Evolution completed - task system handled all parallel processing");
 }
 
-void WolframEvolution::apply_all_rules_to_state(const WolframState& input_state, std::size_t current_step) {
+void WolframEvolution::apply_all_rules_to_state(std::shared_ptr<WolframState> input_state, std::size_t current_step) {
     DEBUG_LOG("Applying %zu rules to state with %zu edges at step %zu",
-             rules_.size(), input_state.edges().size(), current_step);
+             rules_.size(), input_state->edges().size(), current_step);
 
     // For each rule, create a task that copies all necessary data by value
     for (std::size_t rule_idx = 0; rule_idx < rules_.size(); ++rule_idx) {
         const auto& rule = rules_[rule_idx];
 
         // Create hypergraph from state for pattern matching
-        auto target_hg_data = input_state.to_hypergraph();
+        auto target_hg_data = input_state->to_hypergraph();
         auto target_hg = std::make_shared<const Hypergraph>(std::move(target_hg_data));
 
         // Create mapping from local EdgeIds to GlobalEdgeIds
         std::vector<GlobalEdgeId> edge_mapping;
-        const auto& state_edges = input_state.edges();
+        const auto& state_edges = input_state->edges();
         edge_mapping.reserve(state_edges.size());
         for (const auto& global_edge : state_edges) {
             edge_mapping.push_back(global_edge.global_id);
         }
 
-        // Create copyable rule application data with shared state, hypergraph, and mapping
-        auto shared_input_state = std::make_shared<WolframState>(input_state.clone(*multiway_graph_));
-        RuleApplicationData rule_data(rule, shared_input_state, target_hg, edge_mapping,
+        // Use the shared_ptr directly - state lifetime managed by caller and captured rule_data
+        RuleApplicationData rule_data(rule, input_state, target_hg, edge_mapping,
                                      current_step, max_steps_, 1000, multiway_graph_, job_system_.get(), this);
         
         // Create task that captures rule_data by value (includes shared_ptr to hypergraph)
@@ -140,7 +139,7 @@ void WolframEvolution::apply_all_rules_to_state(const WolframState& input_state,
                 std::size_t num_partitions = rule_data.job_system->get_num_workers();
                 pattern_matching_tasks::spawn_scan_tasks(*rule_data.job_system, context, num_partitions);
                 
-                DEBUG_LOG("Applied rule %zu to state with %zu edges", rule_idx, rule_data.input_state.edges().size());
+                DEBUG_LOG("Applied rule %zu to state with %zu edges", rule_idx, rule_data.input_state->edges().size());
             },
             PatternMatchingTaskType::REWRITE  // Use REWRITE type for rule application tasks
         );

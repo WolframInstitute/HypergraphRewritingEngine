@@ -284,13 +284,13 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::vector<RewritingRule> parsed_rules;
         mint steps = 1;
 
-        // Options with defaults
+        // Default option values
         bool canonicalize_states = true;
-        bool full_capture = true;  // Default true for paclet interface
-        bool canonicalize_events = false;
+        bool canonicalize_events = true;
         bool causal_transitive_reduction = true;
         bool early_termination = false;
-        bool patch_based_matching = false;  // Not currently used
+        bool full_capture = true;  // Enable to store states for visualization
+        bool full_capture_non_canonicalised = false;  // Store all states, not just canonical ones
 
         // Parse association entries
         for (size_t e = 0; e < num_entries; e++) {
@@ -359,56 +359,42 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
             else if (key == "Options") {
                 // Parse options association
-                type = parser.read_byte();
-                if (type == 'A') {  // Association
+                uint8_t type = parser.read_byte();
+                if (type == 'A') {
                     size_t num_options = parser.read_varint();
                     for (size_t o = 0; o < num_options; o++) {
                         type = parser.read_byte();
-                        if (type == '-') {  // Rule marker
-                            std::string option_key = parser.read_string();
+                        if (type != '-') continue;
 
-                            // Read the value - could be a symbol (True/False) or other types
-                            type = parser.read_byte();
-                            if (type == 's') {  // Symbol
-                                size_t sym_len = parser.read_varint();
-                                std::string symbol_value;
-                                for (size_t i = 0; i < sym_len; i++) {
-                                    symbol_value += (char)parser.read_byte();
-                                }
+                        std::string option_key = parser.read_string();
 
-                                bool value = (symbol_value == "True");
-
-                                // Set the appropriate option
-                                if (option_key == "CanonicalizeStates") {
-                                    canonicalize_states = value;
-                                } else if (option_key == "CanonicalizeEvents") {
-                                    canonicalize_events = value;
-                                } else if (option_key == "CausalTransitiveReduction") {
-                                    causal_transitive_reduction = value;
-                                } else if (option_key == "EarlyTermination") {
-                                    early_termination = value;
-                                } else if (option_key == "PatchBasedMatching") {
-                                    patch_based_matching = value;
-                                } else if (option_key == "FullCapture") {
-                                    full_capture = value;
-                                }
-                            } else if (type == 'r') {
-                                // Real number - skip 8 bytes
-                                for (int i = 0; i < 8; i++) parser.read_byte();
-                            } else if (type == 'C') {
-                                // 8-bit integer - skip 1 byte
-                                parser.read_byte();
-                            } else if (type == 'j') {
-                                // 16-bit integer - skip 2 bytes
-                                parser.read_byte();
-                                parser.read_byte();
-                            } else if (type == 'i') {
-                                // 32-bit integer - skip 4 bytes
-                                for (int i = 0; i < 4; i++) parser.read_byte();
-                            } else if (type == 'L') {
-                                // 64-bit integer - skip 8 bytes
-                                for (int i = 0; i < 8; i++) parser.read_byte();
+                        // Read option value (True/False symbol)
+                        type = parser.read_byte();
+                        if (type == 's') {
+                            size_t sym_len = parser.read_varint();
+                            std::string symbol;
+                            for (size_t i = 0; i < sym_len; i++) {
+                                symbol += static_cast<char>(parser.read_byte());
                             }
+                            bool value = (symbol == "True");
+
+                            if (option_key == "CanonicalizeStates") {
+                                canonicalize_states = value;
+                            } else if (option_key == "CanonicalizeEvents") {
+                                canonicalize_events = value;
+                            } else if (option_key == "CausalTransitiveReduction") {
+                                causal_transitive_reduction = value;
+                            } else if (option_key == "EarlyTermination") {
+                                early_termination = value;
+                            } else if (option_key == "FullCapture") {
+                                full_capture = value;
+                            }
+                        } else {
+                            // Skip non-symbol values for now
+                            if (type == 'C') parser.read_byte();
+                            else if (type == 'j') { parser.read_byte(); parser.read_byte(); }
+                            else if (type == 'i') { for(int i = 0; i < 4; i++) parser.read_byte(); }
+                            else if (type == 'L') { for(int i = 0; i < 8; i++) parser.read_byte(); }
                         }
                     }
                 }
@@ -425,10 +411,16 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             return LIBRARY_FUNCTION_ERROR;
         }
 
+        // When canonicalization is disabled, we need to store all states (not just canonical ones)
+        if (!canonicalize_states) {
+            full_capture_non_canonicalised = true;
+        }
+
+
         // Run evolution with parsed options
         WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(),
                                    canonicalize_states, full_capture, canonicalize_events,
-                                   causal_transitive_reduction, early_termination);
+                                   causal_transitive_reduction, early_termination, full_capture_non_canonicalised);
 
         for (const auto& rule : parsed_rules) {
             evolution.add_rule(rule);
@@ -462,8 +454,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 // Add Rule: state_id -> edges
                 d.push_back('-');
 
-                // Key: state ID
-                add_integer_to_wxf(d, static_cast<int64_t>(state->id().value));
+                // Key: Use canonical ID if available, otherwise raw ID (must match what events use)
+                StateID state_id_to_use = state->has_canonical_id()
+                                         ? state->get_canonical_id()
+                                         : state->id();
+                add_integer_to_wxf(d, static_cast<int64_t>(state_id_to_use.value));
 
                 // Value: List of edges
                 const auto& edges = state->edges();

@@ -6,7 +6,7 @@
 class WolframStatesTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        graph = std::make_unique<hypergraph::MultiwayGraph>(true); // Enable full_capture for tests
+        graph = std::make_unique<hypergraph::MultiwayGraph>(true, true, false, true); // Enable full_capture and full_capture_non_canonicalised for tests
     }
     
     std::unique_ptr<hypergraph::MultiwayGraph> graph;
@@ -68,11 +68,11 @@ TEST_F(WolframStatesTest, CanonicalFormCaching) {
 TEST_F(WolframStatesTest, CanonicalFormInvalidation) {
     auto state = graph->create_initial_state({{1, 2}});
     auto state_id = state->id();  // Get state ID
-    auto retrieved_state = graph->get_state_efficient(state_id);
-    ASSERT_TRUE(retrieved_state != nullptr);
+    auto state_ptr = graph->get_state_efficient(state_id);
+    ASSERT_TRUE(state_ptr != nullptr);
 
-    auto& state_ref = *retrieved_state;
-    
+    auto& retrieved_state = *state_ptr;
+
     // Get initial canonical form (make a copy)
     auto canonical1 = state->get_canonical_form();
     
@@ -134,8 +134,8 @@ TEST_F(WolframStatesTest, EdgeMappingUpdates) {
 
     // Note: update_edge_mappings is private, so we can't test it directly
     // This test just verifies we can create and access states
-    auto retrieved_state = graph->get_state_efficient(state_id);
-    EXPECT_TRUE(retrieved_state != nullptr);
+    auto state_ptr = graph->get_state_efficient(state_id);
+    EXPECT_TRUE(state_ptr != nullptr);
 }
 
 // === CAUSAL AND BRANCHIAL EDGE COMPUTATION ===

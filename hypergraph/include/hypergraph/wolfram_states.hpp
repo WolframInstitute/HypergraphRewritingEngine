@@ -385,6 +385,7 @@ private:
     // Configuration flags
     bool canonicalization_enabled = true;
     bool full_capture = false;  // Controls optional state storage
+    bool full_capture_non_canonicalised = false;  // Store all states including duplicates
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
     bool early_termination_enabled = false;  // Stop processing seen states
 
@@ -408,15 +409,16 @@ public:
 
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
-    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false)
+    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false, bool enable_full_capture_non_canonicalised = false)
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , full_capture(enable_full_capture)
+        , full_capture_non_canonicalised(enable_full_capture_non_canonicalised)
         , transitive_reduction_enabled(enable_transitive_reduction)
         , early_termination_enabled(enable_early_termination)
     {
-        if (full_capture) {
+        if (full_capture || full_capture_non_canonicalised) {
             states = std::make_unique<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>>();
             match_caches = std::make_unique<ConcurrentHashMap<StateID, StateMatchCache>>();
         }

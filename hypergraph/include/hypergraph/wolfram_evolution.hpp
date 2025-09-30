@@ -38,8 +38,8 @@ public:
     WolframEvolution(std::size_t max_steps, std::size_t num_threads = std::thread::hardware_concurrency(),
                      bool canonicalization_enabled = true, bool full_capture = false,
                      bool event_deduplication = true, bool transitive_reduction_enabled = true,
-                     bool early_termination = false);
-    
+                     bool early_termination = false, bool full_capture_non_canonicalised = false);
+
     ~WolframEvolution();
     
     /**
@@ -96,7 +96,7 @@ public:
      * Apply all rules to a target state (unified method for initial and produced states).
      * State flows through tasks rather than being stored.
      */
-    void apply_all_rules_to_state(const WolframState& input_state, std::size_t current_step);
+    void apply_all_rules_to_state(std::shared_ptr<WolframState> input_state, std::size_t current_step);
     
     
 private:
