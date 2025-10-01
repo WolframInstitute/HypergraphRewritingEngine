@@ -84,6 +84,21 @@ else()
     add_compile_definitions(WOLFRAMSCRIPT_AVAILABLE=0)
 endif()
 
+# Make paclet build flag available to tests
+if(BUILD_MATHEMATICA_PACLET)
+    add_compile_definitions(BUILD_MATHEMATICA_PACLET=1)
+else()
+    add_compile_definitions(BUILD_MATHEMATICA_PACLET=0)
+endif()
+
+# Detect WSL environment for paclet path handling
+if(DEFINED ENV{WSL_DISTRO_NAME})
+    add_compile_definitions(WSL_ENVIRONMENT=1)
+    message(STATUS "WSL environment detected for paclet tests")
+else()
+    add_compile_definitions(WSL_ENVIRONMENT=0)
+endif()
+
 # Find and configure GoogleTest
 include(FetchContent)
 FetchContent_Declare(
@@ -110,8 +125,8 @@ add_executable(unified_tests
     test_pattern_matching_isolation.cpp
     test_isolated_duplicate_bug.cpp
     test_debug_edge_selection.cpp
-    test_wxf_comprehensive.cpp
-    test_wxf_complete.cpp
+    test_wxf.cpp
+    test_paclet.cpp
 )
 
 # Link against all required libraries
@@ -130,6 +145,16 @@ target_link_libraries(unified_tests
     # System libraries
     Threads::Threads
 )
+
+# Add paclet dependency when paclet building is enabled
+if(BUILD_MATHEMATICA_PACLET)
+    add_dependencies(unified_tests paclet)
+endif()
+
+# Static linking for MinGW to avoid DLL dependencies during test discovery
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+    target_link_options(unified_tests PRIVATE -static-libgcc -static-libstdc++)
+endif()
 
 # Include directories
 target_include_directories(unified_tests PRIVATE

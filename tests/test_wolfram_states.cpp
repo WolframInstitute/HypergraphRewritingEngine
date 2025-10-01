@@ -75,12 +75,12 @@ TEST_F(WolframStatesTest, CanonicalFormInvalidation) {
 
     // Get initial canonical form (make a copy)
     auto canonical1 = state->get_canonical_form();
-    
+
     // Modify state - should invalidate cache
-    state_ref.add_global_edge(100, {3, 4});
+    retrieved_state.add_global_edge(100, {3, 4});
 
     // Should recompute canonical form (make a copy)
-    auto canonical2 = state_ref.get_canonical_form();
+    auto canonical2 = retrieved_state.get_canonical_form();
     EXPECT_NE(canonical1, canonical2);
     EXPECT_EQ(canonical2.vertex_count, 4);
     EXPECT_EQ(canonical2.edges.size(), 2);

@@ -185,7 +185,129 @@ std::vector<uint8_t> Parser::read_binary_string() {
     return result;
 }
 
+std::string Parser::read_big_integer() {
+    Token token = peek_token();
+    if (token != Token::BigInteger) {
+        throw TypeError("Expected big integer", pos_);
+    }
+    throw ParseError("BigInteger not implemented - requires arbitrary precision library", pos_);
+}
+
+std::string Parser::read_big_real() {
+    Token token = peek_token();
+    if (token != Token::BigReal) {
+        throw TypeError("Expected big real", pos_);
+    }
+    throw ParseError("BigReal not implemented - requires arbitrary precision library", pos_);
+}
+
 void Parser::read_association(const AssociationCallback& callback) {
+    Token token = peek_token();
+    if (token != Token::Association) {
+        char err[256];
+        snprintf(err, sizeof(err), "Expected association at pos %zu, got token 0x%02X", pos_, static_cast<uint8_t>(token));
+        throw TypeError(err, pos_);
+    }
+    read_byte(); // consume 'A'
+
+    size_t num_entries = read_varint();
+
+    for (size_t i = 0; i < num_entries; i++) {
+        Token rule_token = peek_token();
+        if (rule_token != Token::Rule) {
+            char err[256];
+            snprintf(err, sizeof(err), "Expected rule marker in association at pos %zu (entry %zu/%zu), got 0x%02X",
+                     pos_, i+1, num_entries, static_cast<uint8_t>(rule_token));
+            throw TypeError(err, pos_);
+        }
+        read_byte(); // consume '-'
+
+        // Read key - can be String, Symbol, or any other type (including integers)
+        std::string key;
+        Token key_token = peek_token();
+        if (key_token == Token::String) {
+            key = read_string();
+        } else if (key_token == Token::Symbol) {
+            key = read_symbol();
+        } else if (key_token == Token::Integer8 || key_token == Token::Integer16 ||
+                   key_token == Token::Integer32 || key_token == Token::Integer64) {
+            // Convert integer keys to strings for uniform interface
+            if (key_token == Token::Integer8) {
+                key = std::to_string(read_int8());
+            } else if (key_token == Token::Integer16) {
+                key = std::to_string(read_int16());
+            } else if (key_token == Token::Integer32) {
+                key = std::to_string(read_int32());
+            } else {
+                key = std::to_string(read_int64());
+            }
+        } else {
+            throw TypeError("Association key must be String, Symbol, or Integer", pos_);
+        }
+
+        // Create a sub-parser for the value
+        Parser value_parser(data_ + pos_, size_ - pos_);
+        callback(key, value_parser);
+
+        // Advance our position by how much the callback consumed
+        pos_ += value_parser.position();
+    }
+}
+
+void Parser::skip_value() {
+    Token token = peek_token();
+
+    switch (token) {
+        case Token::Integer8:
+            read_int8();
+            break;
+        case Token::Integer16:
+            read_int16();
+            break;
+        case Token::Integer32:
+            read_int32();
+            break;
+        case Token::Integer64:
+            read_int64();
+            break;
+        case Token::Real64:
+            read_real64();
+            break;
+        case Token::String:
+            read_string();
+            break;
+        case Token::Symbol:
+            read_symbol();
+            break;
+        case Token::BinaryString:
+            read_binary_string();
+            break;
+        case Token::Function:
+            read_function([](const std::string&, size_t arg_count, Parser& p) {
+                // Skip all arguments recursively
+                for (size_t i = 0; i < arg_count; i++) {
+                    p.skip_value();
+                }
+            });
+            break;
+        case Token::Association:
+            read_association_generic([](Parser& k, Parser& v) {
+                // Skip both key and value recursively
+                k.skip_value();
+                v.skip_value();
+            });
+            break;
+        case Token::Rule:
+            read_byte(); // consume '-'
+            skip_value(); // skip key
+            skip_value(); // skip value
+            break;
+        default:
+            throw TypeError("Cannot skip unsupported or invalid token", pos_);
+    }
+}
+
+void Parser::read_association_generic(const GenericAssociationCallback& callback) {
     Token token = peek_token();
     if (token != Token::Association) {
         throw TypeError("Expected association", pos_);
@@ -197,17 +319,26 @@ void Parser::read_association(const AssociationCallback& callback) {
     for (size_t i = 0; i < num_entries; i++) {
         Token rule_token = peek_token();
         if (rule_token != Token::Rule) {
-            throw TypeError("Expected rule marker in association", pos_);
+            char err[256];
+            snprintf(err, sizeof(err), "Expected rule marker in association (generic) at pos %zu (entry %zu/%zu), got 0x%02X",
+                     pos_, i+1, num_entries, static_cast<uint8_t>(rule_token));
+            throw TypeError(err, pos_);
         }
         read_byte(); // consume '-'
 
-        std::string key = read_string();
+        // Measure the key length by skipping it in a temporary parser
+        Parser key_measurer(data_ + pos_, size_ - pos_);
+        key_measurer.skip_value();
+        size_t key_length = key_measurer.position();
 
-        // Create a sub-parser for the value
+        // Create properly positioned parsers
+        Parser key_parser(data_ + pos_, key_length);
+        pos_ += key_length;
+
         Parser value_parser(data_ + pos_, size_ - pos_);
-        callback(key, value_parser);
+        callback(key_parser, value_parser);
 
-        // Advance our position by how much the callback consumed
+        // Advance our position by how much the value callback consumed
         pos_ += value_parser.position();
     }
 }

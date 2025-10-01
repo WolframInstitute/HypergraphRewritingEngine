@@ -11,6 +11,7 @@
 #include <complex>
 #include <cstdint>
 #include <limits>
+#include <variant>
 
 /**
  * Wolfram Exchange Format (WXF) Implementation
@@ -73,6 +74,46 @@ public:
 // Forward declarations
 class Parser;
 class Writer;
+
+// Heterogeneous value type for arbitrary WXF data structures
+// Supports recursive nesting via std::variant
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+struct Value;
+
+using ValueList = std::vector<Value>;
+using ValueAssociation = std::vector<std::pair<Value, Value>>;  // Key-value pairs, keys can be any expression
+
+struct Value {
+    std::variant<
+        std::monostate,           // Null/empty
+        int64_t,                  // Integer
+        double,                   // Real
+        std::string,              // String or Symbol
+        std::vector<uint8_t>,     // BinaryString
+        ValueList,                // List of values
+        ValueAssociation          // Association (arbitrary keys and values)
+    > data;
+
+    Value() : data(std::monostate{}) {}
+
+    template<typename T>
+    Value(T&& value) : data(std::forward<T>(value)) {}
+
+    template<typename T>
+    T& get() { return std::get<T>(data); }
+
+    template<typename T>
+    const T& get() const { return std::get<T>(data); }
+
+    template<typename T>
+    bool holds() const { return std::holds_alternative<T>(data); }
+};
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /**
  * Type traits for WXF serialization support
@@ -157,15 +198,18 @@ public:
 
     // Callback-driven structured readers
     using AssociationCallback = std::function<void(const std::string&, Parser&)>;
+    using GenericAssociationCallback = std::function<void(Parser&, Parser&)>;
     using FunctionCallback = std::function<void(const std::string&, size_t, Parser&)>;
 
     void read_association(const AssociationCallback& callback);
+    void read_association_generic(const GenericAssociationCallback& callback);
     void read_function(const FunctionCallback& callback);
 
     // Utility methods
     size_t position() const noexcept { return pos_; }
     size_t remaining() const noexcept { return size_ - pos_; }
     bool at_end() const noexcept { return pos_ >= size_; }
+    void skip_value();  // Skip over any WXF value (atomic or structured)
 
 private:
     void ensure_bytes(size_t count);
@@ -218,24 +262,62 @@ public:
 
 template<typename T>
 T Parser::read() {
+    // Check for unimplemented WXF types first and provide helpful error messages
+    Token token = peek_token();
+    if (token == Token::BigInteger) {
+        throw ParseError("BigInteger not implemented - requires arbitrary precision library", pos_);
+    } else if (token == Token::BigReal) {
+        throw ParseError("BigReal not implemented - requires arbitrary precision library", pos_);
+    } else if (token == Token::DelayedRule) {
+        throw ParseError("DelayedRule not implemented", pos_);
+    } else if (token == Token::PackedArray) {
+        throw ParseError("PackedArray not implemented", pos_);
+    } else if (token == Token::NumericArray) {
+        throw ParseError("NumericArray not implemented", pos_);
+    }
+
     if constexpr (std::is_integral_v<T>) {
-        // Read any integer type and convert to requested type
-        Token token = peek_token();
+        // Read any integer type and convert to requested type with safe upcasting
         if (token == Token::Integer8) {
-            return static_cast<T>(read_int8());
+            int8_t value = read_int8();
+            if constexpr (sizeof(T) < sizeof(int8_t)) {
+                throw TypeError("Cannot narrow int8 to smaller type", pos_);
+            }
+            return static_cast<T>(value);
         } else if (token == Token::Integer16) {
-            return static_cast<T>(read_int16());
+            int16_t value = read_int16();
+            if constexpr (sizeof(T) < sizeof(int16_t)) {
+                throw TypeError("Cannot narrow int16 to smaller type", pos_);
+            }
+            return static_cast<T>(value);
         } else if (token == Token::Integer32) {
-            return static_cast<T>(read_int32());
+            int32_t value = read_int32();
+            if constexpr (sizeof(T) < sizeof(int32_t)) {
+                throw TypeError("Cannot narrow int32 to smaller type", pos_);
+            }
+            return static_cast<T>(value);
         } else if (token == Token::Integer64) {
-            return static_cast<T>(read_int64());
+            int64_t value = read_int64();
+            if constexpr (sizeof(T) < sizeof(int64_t)) {
+                throw TypeError("Cannot narrow int64 to smaller type", pos_);
+            }
+            return static_cast<T>(value);
         } else {
             throw TypeError("Expected integer type", pos_);
         }
     } else if constexpr (std::is_same_v<T, double>) {
         return read_real64();
     } else if constexpr (std::is_same_v<T, std::string>) {
-        return read_string();
+        // Handle both String and Symbol tokens for std::string type
+        // This allows reading Wolfram Symbols (True, False, etc.) as strings
+        Token token = peek_token();
+        if (token == Token::String) {
+            return read_string();
+        } else if (token == Token::Symbol) {
+            return read_symbol();
+        } else {
+            throw TypeError("Expected String or Symbol token for std::string", pos_);
+        }
     } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
         return read_binary_string();
     } else if constexpr (is_vector_v<T>) {
@@ -270,7 +352,13 @@ T Parser::read() {
 
 template<typename T>
 void Writer::write(const T& value) {
-    if constexpr (std::is_integral_v<T>) {
+    if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>) {
+        // Handle C-style string literals
+        write_string(std::string(value));
+    } else if constexpr (std::is_array_v<T> && std::is_same_v<std::remove_extent_t<T>, char>) {
+        // Handle char array literals like "string"
+        write_string(std::string(value));
+    } else if constexpr (std::is_integral_v<T>) {
         // Use smallest integer type that can hold the value (like Wolfram does)
         if (value >= std::numeric_limits<int8_t>::min() && value <= std::numeric_limits<int8_t>::max()) {
             write_int8(static_cast<int8_t>(value));
@@ -311,6 +399,33 @@ void Writer::write_association(const MapType& map) {
         write(key);
         write(value);
     }
+}
+
+// Specialization for Value type - supports heterogeneous nesting
+template<>
+inline void Writer::write<Value>(const Value& value) {
+    std::visit([this](const auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            // Write empty list for null/empty
+            write_function("List", 0);
+        } else if constexpr (std::is_same_v<T, ValueList>) {
+            write_function("List", v.size());
+            for (const auto& item : v) {
+                write(item);
+            }
+        } else if constexpr (std::is_same_v<T, ValueAssociation>) {
+            write_byte(static_cast<uint8_t>(Token::Association));
+            write_varint(v.size());
+            for (const auto& [k, val] : v) {
+                write_byte(static_cast<uint8_t>(Token::Rule));
+                write(k);
+                write(val);
+            }
+        } else {
+            write(v);  // Use generic write for primitives
+        }
+    }, value.data);
 }
 
 // Convenience functions for common operations

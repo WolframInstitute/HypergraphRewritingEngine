@@ -1,4 +1,5 @@
 #include "WolframLibrary.h"
+#include "WolframNumericArrayLibrary.h"
 #include <vector>
 #include <cstring>
 #include <unordered_map>
@@ -8,221 +9,39 @@
 #include "hypergraph/rewriting.hpp"
 #include "hypergraph/wolfram_states.hpp"
 
+// Include comprehensive WXF library
+#include "wxf.hpp"
+
 using namespace hypergraph;
 
-// WXF Parser class
-class WXFParser {
-private:
-    const uint8_t* data;
-    size_t size;
-    size_t pos;
-
-public:
-    WXFParser(const uint8_t* d, size_t s) : data(d), size(s), pos(0) {}
-
-    uint8_t read_byte() {
-        if (pos >= size) throw std::runtime_error("WXF data underflow");
-        return data[pos++];
-    }
-
-    size_t read_varint() {
-        size_t value = 0;
-        size_t shift = 0;
-        uint8_t byte;
-        do {
-            byte = read_byte();
-            value |= (size_t(byte & 0x7F) << shift);
-            shift += 7;
-        } while (byte & 0x80);
-        return value;
-    }
-
-    int64_t read_integer() {
-        uint8_t type = read_byte();
-        switch(type) {
-            case 'C': { // 8-bit
-                int8_t val = read_byte();
-                return val;
-            }
-            case 'j': { // 16-bit
-                int16_t val = 0;
-                for(int i = 0; i < 2; i++) {
-                    val |= (read_byte() << (i * 8));
-                }
-                return val;
-            }
-            case 'i': { // 32-bit
-                int32_t val = 0;
-                for(int i = 0; i < 4; i++) {
-                    val |= (read_byte() << (i * 8));
-                }
-                return val;
-            }
-            case 'L': { // 64-bit
-                int64_t val = 0;
-                for(int i = 0; i < 8; i++) {
-                    val |= (static_cast<int64_t>(read_byte()) << (i * 8));
-                }
-                return val;
-            }
-            default:
-                throw std::runtime_error("Unknown integer type in WXF");
-        }
-    }
-
-    std::string read_string() {
-        uint8_t type = read_byte();
-        if (type != 'S') throw std::runtime_error("Expected string in WXF");
-        size_t len = read_varint();
-        std::string str(len, '\0');
-        for(size_t i = 0; i < len; i++) {
-            str[i] = read_byte();
-        }
-        return str;
-    }
-
-    std::vector<std::vector<int64_t>> read_list_of_lists() {
-        uint8_t type = read_byte();
-        if (type != 'f') throw std::runtime_error("Expected function (List) in WXF");
-
-        size_t outer_len = read_varint();
-
-        // Skip List symbol
-        type = read_byte();
-        if (type != 's') throw std::runtime_error("Expected symbol in WXF");
-        size_t sym_len = read_varint();
-        for(size_t i = 0; i < sym_len; i++) read_byte(); // Skip "List"
-
-        std::vector<std::vector<int64_t>> result;
-        result.reserve(outer_len);
-
-        for(size_t i = 0; i < outer_len; i++) {
-            type = read_byte();
-            if (type != 'f') throw std::runtime_error("Expected inner function (List) in WXF");
-
-            size_t inner_len = read_varint();
-
-            // Skip List symbol
-            type = read_byte();
-            if (type != 's') throw std::runtime_error("Expected symbol in WXF");
-            sym_len = read_varint();
-            for(size_t j = 0; j < sym_len; j++) read_byte(); // Skip "List"
-
-            std::vector<int64_t> inner;
-            inner.reserve(inner_len);
-            for(size_t j = 0; j < inner_len; j++) {
-                inner.push_back(read_integer());
-            }
-            result.push_back(std::move(inner));
-        }
-
-        return result;
-    }
-
-    std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>> read_rules_association() {
-        uint8_t type = read_byte();
-        if (type != 'A') throw std::runtime_error("Expected association in WXF");
-
-        size_t num_rules = read_varint();
+// WXF Helper Functions using comprehensive wxf library
+namespace ffi_helpers {
+    // Parse rules association using wxf library
+    std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>>
+    read_rules_association(wxf::Parser& parser) {
         std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>> rules;
 
-        for(size_t r = 0; r < num_rules; r++) {
-            type = read_byte();
-            if (type != '-') throw std::runtime_error("Expected rule marker in WXF");
+        parser.read_association([&](const std::string& rule_name, wxf::Parser& rule_parser) {
+            // Each rule value should be a function Rule[lhs, rhs]
+            std::vector<std::vector<std::vector<int64_t>>> rule_parts;
 
-            // Read rule name (e.g., "Rule1")
-            std::string rule_name = read_string();
+            rule_parser.read_function([&](const std::string& head, size_t count, wxf::Parser& args_parser) {
+                if (head != "Rule" || count != 2) {
+                    throw std::runtime_error("Expected Rule[lhs, rhs]");
+                }
 
-            // Read rule data (LHS -> RHS)
-            type = read_byte();
-            if (type != 'f') throw std::runtime_error("Expected Rule function in WXF");
-            size_t rule_parts = read_varint();
-            if (rule_parts != 2) throw std::runtime_error("Rule must have 2 parts (LHS and RHS)");
+                // Read LHS and RHS using recursive templates
+                auto lhs = args_parser.read<std::vector<std::vector<int64_t>>>();
+                auto rhs = args_parser.read<std::vector<std::vector<int64_t>>>();
 
-            // Skip Rule symbol
-            type = read_byte();
-            if (type != 's') throw std::runtime_error("Expected symbol in WXF");
-            size_t sym_len = read_varint();
-            for(size_t i = 0; i < sym_len; i++) read_byte(); // Skip "Rule"
+                rule_parts = {lhs, rhs};
+            });
 
-            // Read LHS
-            auto lhs = read_list_of_lists();
-            // Read RHS
-            auto rhs = read_list_of_lists();
-
-            rules[rule_name] = {lhs, rhs};
-        }
+            rules[rule_name] = rule_parts;
+        });
 
         return rules;
     }
-
-    void skip_header() {
-        // Skip WXF header "8:"
-        if (read_byte() != '8' || read_byte() != ':') {
-            throw std::runtime_error("Invalid WXF header");
-        }
-    }
-};
-
-// WXF Serialization helpers
-void add_varint(std::vector<uint8_t>& data, std::size_t value) {
-    while (value >= 0x80) {
-        data.push_back(0x80 | (value & 0x7F));
-        value >>= 7;
-    }
-    data.push_back(value & 0x7F);
-}
-
-void add_string_to_wxf(std::vector<uint8_t>& wxf_data, const std::string& str) {
-    wxf_data.push_back('S');
-    add_varint(wxf_data, str.size());
-    wxf_data.insert(wxf_data.end(), str.begin(), str.end());
-}
-
-void add_integer_to_wxf(std::vector<uint8_t>& wxf_data, int64_t value) {
-    if (value >= -128 && value <= 127) {
-        wxf_data.push_back('C');
-        wxf_data.push_back(static_cast<uint8_t>(value & 0xFF));
-    } else if (value >= INT16_MIN && value <= INT16_MAX) {
-        wxf_data.push_back('j');
-        int16_t val16 = static_cast<int16_t>(value);
-        wxf_data.push_back(val16 & 0xFF);
-        wxf_data.push_back((val16 >> 8) & 0xFF);
-    } else if (value >= INT32_MIN && value <= INT32_MAX) {
-        wxf_data.push_back('i');
-        int32_t val32 = static_cast<int32_t>(value);
-        for (int i = 0; i < 4; ++i) {
-            wxf_data.push_back(val32 & 0xFF);
-            val32 >>= 8;
-        }
-    } else {
-        wxf_data.push_back('L');
-        for (int i = 0; i < 8; ++i) {
-            wxf_data.push_back(value & 0xFF);
-            value >>= 8;
-        }
-    }
-}
-
-
-void add_list_header(std::vector<uint8_t>& wxf_data, size_t size) {
-    wxf_data.push_back('f');
-    add_varint(wxf_data, size);
-    wxf_data.push_back('s');
-    add_varint(wxf_data, 4);
-    wxf_data.insert(wxf_data.end(), {'L', 'i', 's', 't'});
-}
-
-void add_association_header(std::vector<uint8_t>& wxf_data, size_t size) {
-    wxf_data.push_back('A');
-    add_varint(wxf_data, size);
-}
-
-template<typename Func>
-void add_rule_to_wxf(std::vector<uint8_t>& wxf_data, const std::string& key, Func value_func) {
-    wxf_data.push_back('-');
-    add_string_to_wxf(wxf_data, key);
-    value_func(wxf_data);
 }
 
 // Error handling
@@ -246,43 +65,37 @@ static void handle_error(WolframLibraryData libData, const char* message) {
 EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
     try {
         if (argc != 1) {
-            handle_error(libData, "performRewriting expects 1 argument: WXF data");
+            handle_error(libData, "performRewriting expects 1 argument: WXF ByteArray data");
             return LIBRARY_FUNCTION_ERROR;
         }
 
-        // Get WXF data tensor
-        MTensor wxf_tensor = MArgument_getMTensor(argv[0]);
-        if (libData->MTensor_getRank(wxf_tensor) != 1) {
-            handle_error(libData, "WXF data must be a 1D byte tensor");
+        // Get WXF data as ByteArray (MNumericArray)
+        MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
+
+        // Get array properties
+        mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
+        if (rank != 1) {
+            handle_error(libData, "WXF ByteArray must be 1-dimensional");
             return LIBRARY_FUNCTION_ERROR;
         }
 
-        const mint* dims = libData->MTensor_getDimensions(wxf_tensor);
+        const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
         mint wxf_size = dims[0];
-        const mint* wxf_mint_data = libData->MTensor_getIntegerData(wxf_tensor);
 
-        // Convert mint array to byte array
-        std::vector<uint8_t> wxf_bytes(wxf_size);
-        for (mint i = 0; i < wxf_size; i++) {
-            wxf_bytes[i] = static_cast<uint8_t>(wxf_mint_data[i]);
-        }
+        // Get raw byte data
+        void* raw_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(wxf_array);
+        const uint8_t* wxf_byte_data = static_cast<const uint8_t*>(raw_data);
 
-        // Parse WXF input
-        WXFParser parser(wxf_bytes.data(), wxf_bytes.size());
+        // Convert to vector
+        std::vector<uint8_t> wxf_bytes(wxf_byte_data, wxf_byte_data + wxf_size);
+
+        // Parse WXF input using comprehensive wxf library
+        wxf::Parser parser(wxf_bytes);
         parser.skip_header();
-
-        // Read main association
-        uint8_t type = parser.read_byte();
-        if (type != 'A') {
-            handle_error(libData, "Expected Association at top level");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-
-        size_t num_entries = parser.read_varint();
 
         std::vector<std::vector<GlobalVertexId>> initial_edges;
         std::vector<RewritingRule> parsed_rules;
-        mint steps = 1;
+        int steps = 1;
 
         // Default option values
         bool canonicalize_states = true;
@@ -292,18 +105,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool full_capture = true;  // Enable to store states for visualization
         bool full_capture_non_canonicalised = false;  // Store all states, not just canonical ones
 
-        // Parse association entries
-        for (size_t e = 0; e < num_entries; e++) {
-            type = parser.read_byte();
-            if (type != '-') {
-                handle_error(libData, "Expected rule marker in Association");
-                return LIBRARY_FUNCTION_ERROR;
-            }
-
-            std::string key = parser.read_string();
-
+        // Parse main association using comprehensive wxf library
+        parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
             if (key == "InitialEdges") {
-                auto edges_data = parser.read_list_of_lists();
+                auto edges_data = value_parser.read<std::vector<std::vector<int64_t>>>();
                 for (const auto& edge : edges_data) {
                     std::vector<GlobalVertexId> edge_vertices;
                     for (int64_t v : edge) {
@@ -317,7 +122,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
             }
             else if (key == "Rules") {
-                auto rules = parser.read_rules_association();
+                auto rules = ffi_helpers::read_rules_association(value_parser);
                 for (const auto& [rule_name, rule_data] : rules) {
                     if (rule_data.size() != 2) continue; // Should be {lhs, rhs}
 
@@ -355,51 +160,43 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
             }
             else if (key == "Steps") {
-                steps = static_cast<mint>(parser.read_integer());
+                steps = value_parser.read<int>();
             }
             else if (key == "Options") {
-                // Parse options association
-                uint8_t type = parser.read_byte();
-                if (type == 'A') {
-                    size_t num_options = parser.read_varint();
-                    for (size_t o = 0; o < num_options; o++) {
-                        type = parser.read_byte();
-                        if (type != '-') continue;
+                // Parse options association using wxf library
+                value_parser.read_association([&](const std::string& option_key, wxf::Parser& option_parser) {
+                    // CRITICAL: Must ALWAYS consume the value, even if we don't recognize the option
+                    // Otherwise parser position gets misaligned!
+                    try {
+                        // Try to read as string (symbol) - this handles both String and Symbol tokens now
+                        std::string symbol = option_parser.read<std::string>();
+                        bool value = (symbol == "True");
 
-                        std::string option_key = parser.read_string();
-
-                        // Read option value (True/False symbol)
-                        type = parser.read_byte();
-                        if (type == 's') {
-                            size_t sym_len = parser.read_varint();
-                            std::string symbol;
-                            for (size_t i = 0; i < sym_len; i++) {
-                                symbol += static_cast<char>(parser.read_byte());
-                            }
-                            bool value = (symbol == "True");
-
-                            if (option_key == "CanonicalizeStates") {
-                                canonicalize_states = value;
-                            } else if (option_key == "CanonicalizeEvents") {
-                                canonicalize_events = value;
-                            } else if (option_key == "CausalTransitiveReduction") {
-                                causal_transitive_reduction = value;
-                            } else if (option_key == "EarlyTermination") {
-                                early_termination = value;
-                            } else if (option_key == "FullCapture") {
-                                full_capture = value;
-                            }
-                        } else {
-                            // Skip non-symbol values for now
-                            if (type == 'C') parser.read_byte();
-                            else if (type == 'j') { parser.read_byte(); parser.read_byte(); }
-                            else if (type == 'i') { for(int i = 0; i < 4; i++) parser.read_byte(); }
-                            else if (type == 'L') { for(int i = 0; i < 8; i++) parser.read_byte(); }
+                        if (option_key == "CanonicalizeStates") {
+                            canonicalize_states = value;
+                        } else if (option_key == "CanonicalizeEvents") {
+                            canonicalize_events = value;
+                        } else if (option_key == "CausalTransitiveReduction") {
+                            causal_transitive_reduction = value;
+                        } else if (option_key == "EarlyTermination") {
+                            early_termination = value;
+                        } else if (option_key == "FullCapture") {
+                            full_capture = value;
                         }
+                        // If we successfully read but don't recognize the option, that's fine
+                        // The value was consumed
+                    } catch (...) {
+                        // If reading as string failed, skip whatever the value is
+                        // This handles options like "AspectRatio" -> Automatic (not a string/symbol we can read)
+                        option_parser.skip_value();
                     }
-                }
+                });
             }
-        }
+            else {
+                // Unknown key - must skip its value to maintain parser position
+                value_parser.skip_value();
+            }
+        });
 
         if (initial_edges.empty()) {
             handle_error(libData, "No initial edges provided");
@@ -435,149 +232,121 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         auto event_edges = multiway_graph.get_event_edges();
 
 
-        // Create WXF output
-        std::vector<uint8_t> wxf_data;
+        // Create WXF output using comprehensive wxf library
+        wxf::Writer wxf_writer;
+        wxf_writer.write_header();
 
-        // WXF Header
-        wxf_data.push_back('8');
-        wxf_data.push_back(':');
+        // Build main association
 
-        // Main association
-        wxf_data.push_back('A');
-        add_varint(wxf_data, 8); // 8 key-value pairs
+        // States -> Association[state_id -> state_edges]
+        std::unordered_map<int64_t, std::vector<std::vector<int64_t>>> states_map;
+        for (const auto& state : all_states) {
+            StateID state_id_to_use = state->has_canonical_id()
+                                     ? state->get_canonical_id()
+                                     : state->id();
 
-        // "States" -> Association[state_id -> state_edges]
-        add_rule_to_wxf(wxf_data, "States", [&](std::vector<uint8_t>& d) {
-            add_association_header(d, all_states.size());
-
-            for (const auto& state : all_states) {
-                // Add Rule: state_id -> edges
-                d.push_back('-');
-
-                // Key: Use canonical ID if available, otherwise raw ID (must match what events use)
-                StateID state_id_to_use = state->has_canonical_id()
-                                         ? state->get_canonical_id()
-                                         : state->id();
-                add_integer_to_wxf(d, static_cast<int64_t>(state_id_to_use.value));
-
-                // Value: List of edges
-                const auto& edges = state->edges();
-                add_list_header(d, edges.size());
-
-                for (const auto& edge : edges) {
-                    add_list_header(d, edge.global_vertices.size() + 1);
-                    add_integer_to_wxf(d, static_cast<int64_t>(edge.global_id));
-                    for (const auto& vertex : edge.global_vertices) {
-                        add_integer_to_wxf(d, static_cast<int64_t>(vertex));
-                    }
+            std::vector<std::vector<int64_t>> state_edges;
+            for (const auto& edge : state->edges()) {
+                std::vector<int64_t> edge_data = {static_cast<int64_t>(edge.global_id)};
+                for (const auto& vertex : edge.global_vertices) {
+                    edge_data.push_back(static_cast<int64_t>(vertex));
                 }
+                state_edges.push_back(edge_data);
             }
-        });
+            states_map[static_cast<int64_t>(state_id_to_use.value)] = state_edges;
+        }
 
-        // "Events" -> List of events
-        add_rule_to_wxf(wxf_data, "Events", [&](std::vector<uint8_t>& d) {
-            add_list_header(d, all_events.size());
+        // Build full result using Value type for heterogeneous association
+        wxf::ValueAssociation full_result;
 
-            for (const auto& event : all_events) {
-                add_association_header(d, 6);
-
-                add_rule_to_wxf(d, "EventId", [&](std::vector<uint8_t>& dd) {
-                    add_integer_to_wxf(dd, static_cast<int64_t>(event.event_id));
-                });
-                add_rule_to_wxf(d, "RuleIndex", [&](std::vector<uint8_t>& dd) {
-                    add_integer_to_wxf(dd, static_cast<int64_t>(event.rule_index));
-                });
-                add_rule_to_wxf(d, "InputStateId", [&](std::vector<uint8_t>& dd) {
-                    // Use canonical state ID if available, otherwise raw state ID
-                    StateID state_id_to_use = event.has_canonical_input_state_id()
-                                              ? event.canonical_input_state_id
-                                              : event.input_state_id;
-                    add_integer_to_wxf(dd, static_cast<int64_t>(state_id_to_use.value));
-                });
-                add_rule_to_wxf(d, "OutputStateId", [&](std::vector<uint8_t>& dd) {
-                    // Use canonical state ID if available, otherwise raw state ID
-                    StateID state_id_to_use = event.has_canonical_output_state_id()
-                                              ? event.canonical_output_state_id
-                                              : event.output_state_id;
-                    add_integer_to_wxf(dd, static_cast<int64_t>(state_id_to_use.value));
-                });
-
-                add_rule_to_wxf(d, "ConsumedEdges", [&](std::vector<uint8_t>& dd) {
-                    add_list_header(dd, event.consumed_edges.size());
-                    for (const auto& edge_id : event.consumed_edges) {
-                        add_integer_to_wxf(dd, static_cast<int64_t>(edge_id));
-                    }
-                });
-
-                add_rule_to_wxf(d, "ProducedEdges", [&](std::vector<uint8_t>& dd) {
-                    add_list_header(dd, event.produced_edges.size());
-                    for (const auto& edge_id : event.produced_edges) {
-                        add_integer_to_wxf(dd, static_cast<int64_t>(edge_id));
-                    }
-                });
-            }
-        });
-
-        // "CausalEdges" -> List of causal edges
-        add_rule_to_wxf(wxf_data, "CausalEdges", [&](std::vector<uint8_t>& d) {
-            add_list_header(d, multiway_graph.get_causal_edge_count());
-            for (const auto& edge : event_edges) {
-                if (edge.type == EventRelationType::CAUSAL) {
-                    add_list_header(d, 2);
-                    add_integer_to_wxf(d, static_cast<int64_t>(edge.from_event));
-                    add_integer_to_wxf(d, static_cast<int64_t>(edge.to_event));
+        // States -> Association[state_id -> state_edges]
+        wxf::ValueAssociation states_assoc;
+        for (const auto& [state_id, edges] : states_map) {
+            wxf::ValueList edge_list;
+            for (const auto& edge : edges) {
+                wxf::ValueList edge_data;
+                for (int64_t v : edge) {
+                    edge_data.push_back(wxf::Value(v));
                 }
+                edge_list.push_back(wxf::Value(edge_data));
             }
-        });
+            states_assoc.push_back({wxf::Value(state_id), wxf::Value(edge_list)});
+        }
+        full_result.push_back({wxf::Value("States"), wxf::Value(states_assoc)});
 
-        // "BranchialEdges" -> List of branchial edges
-        add_rule_to_wxf(wxf_data, "BranchialEdges", [&](std::vector<uint8_t>& d) {
-            add_list_header(d, multiway_graph.get_branchial_edge_count());
-            for (const auto& edge : event_edges) {
-                if (edge.type == EventRelationType::BRANCHIAL) {
-                    add_list_header(d, 2);
-                    add_integer_to_wxf(d, static_cast<int64_t>(edge.from_event));
-                    add_integer_to_wxf(d, static_cast<int64_t>(edge.to_event));
-                }
+        // Events -> List of event associations
+        wxf::ValueList events_list;
+        for (const auto& event : all_events) {
+            wxf::ValueAssociation event_data;
+            event_data.push_back({wxf::Value("EventId"), wxf::Value(static_cast<int64_t>(event.event_id))});
+            event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
+
+            StateID input_state_id = event.has_canonical_input_state_id()
+                                    ? event.canonical_input_state_id
+                                    : event.input_state_id;
+            event_data.push_back({wxf::Value("InputStateId"), wxf::Value(static_cast<int64_t>(input_state_id.value))});
+
+            StateID output_state_id = event.has_canonical_output_state_id()
+                                     ? event.canonical_output_state_id
+                                     : event.output_state_id;
+            event_data.push_back({wxf::Value("OutputStateId"), wxf::Value(static_cast<int64_t>(output_state_id.value))});
+
+            events_list.push_back(wxf::Value(event_data));
+        }
+        full_result.push_back({wxf::Value("Events"), wxf::Value(events_list)});
+
+        // CausalEdges and BranchialEdges
+        wxf::ValueList causal_edges, branchial_edges;
+        for (const auto& edge : event_edges) {
+            wxf::ValueList edge_pair;
+            edge_pair.push_back(wxf::Value(static_cast<int64_t>(edge.from_event)));
+            edge_pair.push_back(wxf::Value(static_cast<int64_t>(edge.to_event)));
+
+            if (edge.type == EventRelationType::CAUSAL) {
+                causal_edges.push_back(wxf::Value(edge_pair));
+            } else if (edge.type == EventRelationType::BRANCHIAL) {
+                branchial_edges.push_back(wxf::Value(edge_pair));
             }
-        });
+        }
+        full_result.push_back({wxf::Value("CausalEdges"), wxf::Value(causal_edges)});
+        full_result.push_back({wxf::Value("BranchialEdges"), wxf::Value(branchial_edges)});
 
-        // "NumStates" -> Count from multiway graph
-        add_rule_to_wxf(wxf_data, "NumStates", [&](std::vector<uint8_t>& d) {
-            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.num_states()));
-        });
+        // Counts
+        full_result.push_back({wxf::Value("NumStates"), wxf::Value(static_cast<int64_t>(multiway_graph.num_states()))});
+        full_result.push_back({wxf::Value("NumEvents"), wxf::Value(static_cast<int64_t>(multiway_graph.num_events()))});
+        full_result.push_back({wxf::Value("NumCausalEdges"), wxf::Value(static_cast<int64_t>(multiway_graph.get_causal_edge_count()))});
+        full_result.push_back({wxf::Value("NumBranchialEdges"), wxf::Value(static_cast<int64_t>(multiway_graph.get_branchial_edge_count()))});
 
-        // "NumEvents" -> Count from multiway graph
-        add_rule_to_wxf(wxf_data, "NumEvents", [&](std::vector<uint8_t>& d) {
-            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.num_events()));
-        });
+        // Write final association using Value
+        wxf_writer.write(wxf::Value(full_result));
+        const auto& wxf_data = wxf_writer.data();
 
-        // "NumCausalEdges" -> Count from multiway graph
-        add_rule_to_wxf(wxf_data, "NumCausalEdges", [&](std::vector<uint8_t>& d) {
-            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.get_causal_edge_count()));
-        });
-
-        // "NumBranchialEdges" -> Count from multiway graph
-        add_rule_to_wxf(wxf_data, "NumBranchialEdges", [&](std::vector<uint8_t>& d) {
-            add_integer_to_wxf(d, static_cast<int64_t>(multiway_graph.get_branchial_edge_count()));
-        });
-
-        // Create output tensor
+        // Create output ByteArray
         mint wxf_dims[1] = {static_cast<mint>(wxf_data.size())};
-        MTensor result_tensor;
-        int err = libData->MTensor_new(MType_Integer, 1, wxf_dims, &result_tensor);
+        MNumericArray result_array;
+        int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, wxf_dims, &result_array);
         if (err != LIBRARY_NO_ERROR) {
             return err;
         }
 
-        mint* result_data = libData->MTensor_getIntegerData(result_tensor);
-        for (std::size_t i = 0; i < wxf_data.size(); ++i) {
-            result_data[i] = static_cast<mint>(wxf_data[i]);
-        }
+        // Copy byte data directly
+        void* result_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array);
+        uint8_t* byte_result_data = static_cast<uint8_t*>(result_data);
+        std::memcpy(byte_result_data, wxf_data.data(), wxf_data.size());
 
-        MArgument_setMTensor(res, result_tensor);
+        MArgument_setMNumericArray(res, result_array);
         return LIBRARY_NO_ERROR;
 
+    } catch (const wxf::TypeError& e) {
+        char err1[200], err2[200];
+        std::string msg = e.what();
+        snprintf(err1, sizeof(err1), "WXF TypeError (1/2): %s", msg.substr(0, 150).c_str());
+        snprintf(err2, sizeof(err2), "WXF TypeError (2/2): %s", msg.length() > 150 ? msg.substr(150).c_str() : "");
+        handle_error(libData, err1);
+        if (msg.length() > 150) {
+            handle_error(libData, err2);
+        }
+        return LIBRARY_FUNCTION_ERROR;
     } catch (const std::exception& e) {
         handle_error(libData, e.what());
         return LIBRARY_FUNCTION_ERROR;

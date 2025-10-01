@@ -19,6 +19,10 @@ target_link_libraries(test_lockfree_deque
     atomic
 )
 
+# Static linking for MinGW to avoid DLL dependencies during test discovery
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+    target_link_options(test_lockfree_deque PRIVATE -static-libgcc -static-libstdc++)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(test_lockfree_deque)

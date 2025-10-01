@@ -363,7 +363,6 @@ private:
     std::unique_ptr<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>> states;  // States by raw ID for direct access
     std::unique_ptr<ConcurrentHashMap<StateID, StateMatchCache>> match_caches;  // Pattern match caches
     std::unique_ptr<ConcurrentHashMap<std::size_t, StateID>> seen_hashes;  // Maps canonical hash to canonical StateID
-    std::unique_ptr<ConcurrentHashMap<StateID, StateID>> canonical_to_raw_mapping;  // Maps canonical ID to raw ID
     std::unordered_set<StateID> exhausted_states;  // States with no more applicable rules
 
     // Event edge tracking
@@ -424,7 +423,6 @@ public:
         }
         if (canonicalization_enabled) {
             seen_hashes = std::make_unique<ConcurrentHashMap<std::size_t, StateID>>();
-            canonical_to_raw_mapping = std::make_unique<ConcurrentHashMap<StateID, StateID>>();
         }
     }
 
