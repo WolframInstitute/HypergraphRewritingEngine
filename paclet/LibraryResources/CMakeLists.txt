@@ -107,8 +107,9 @@ set(SOURCES
 add_library(HypergraphRewriting SHARED ${SOURCES})
 
 # Link against our existing targets and Mathematica libraries
-target_link_libraries(HypergraphRewriting 
+target_link_libraries(HypergraphRewriting
     hypergraph
+    wxf
     ${Mathematica_LIBRARIES}
 )
 

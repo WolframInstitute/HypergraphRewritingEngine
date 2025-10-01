@@ -31,6 +31,7 @@ endif()
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
 add_subdirectory(hypergraph)
+add_subdirectory(wxf)
 
 # Unified test suite
 option(BUILD_TESTS "Build unified test suite" ON)
