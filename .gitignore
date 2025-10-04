@@ -5,3 +5,14 @@
 /tmp/
 /tools/
 /utils/
+/venv/
+
+# Benchmark results - exclude intermediate files ...
+/benchmark_results/*/*.csv
+/benchmark_results/*/per_benchmark/
+/benchmark_results/*/benchmark_config.txt
+
+# But keep the markdown and plots
+!/benchmark_results/*/BENCHMARKS.md
+!/benchmark_results/*/plots/
+!/benchmark_results/*/plots/*.png

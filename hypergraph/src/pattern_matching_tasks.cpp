@@ -277,8 +277,11 @@ void ExpandTask::execute() {
 void SinkTask::execute() {
     DEBUG_LOG("[SINK] Executing SINK task for complete match");
 
-    // Increment match count atomically
+    // Increment match count atomically (both in context and global WolframEvolution counter)
     std::size_t current_count = context_->total_matches_found.fetch_add(1);
+    if (context_->wolfram_evolution) {
+        context_->wolfram_evolution->increment_total_matches();
+    }
 
     DEBUG_LOG("[SINK] Match count increased to %zu", current_count + 1);
 

@@ -67,6 +67,7 @@ inline void expect_canonical_different(const hypergraph::Hypergraph& hg1, const 
  * This ensures Windows executables can find the correct paths
  */
 inline std::string getWolframScriptPath() {
+#if WOLFRAMSCRIPT_AVAILABLE
     std::string wolfram_exe = WOLFRAMSCRIPT_EXECUTABLE;
 #if defined(WSL_ENVIRONMENT) && defined(_WIN32)
     // Convert /mnt/c/... to C:/... for Windows executable
@@ -77,6 +78,9 @@ inline std::string getWolframScriptPath() {
     }
 #endif
     return wolfram_exe;
+#else
+    throw std::runtime_error("WolframScript not available - cannot get WolframScript path");
+#endif
 }
 
 /**

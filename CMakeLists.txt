@@ -48,6 +48,7 @@ endif()
 # Benchmarks - Performance measurement tools
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 if(BUILD_BENCHMARKS)
+    add_subdirectory(benchmarking)
     add_subdirectory(benchmarks)
 endif()
 

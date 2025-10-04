@@ -26,9 +26,10 @@ private:
     std::vector<RewritingRule> rules_;
     std::size_t computed_radius_{0};  // Computed from rule set
     std::atomic<std::size_t> current_step_{0};
+    mutable std::atomic<std::size_t> total_matches_found_{0};  // Global counter for all pattern matches across all rules
     std::size_t max_steps_;
     std::size_t num_threads_;
-    
+
     // Store evolution context objects to keep them alive
     std::vector<std::shared_ptr<Hypergraph>> target_graphs_;
     std::vector<std::shared_ptr<EdgeSignatureIndex>> signature_indices_;
@@ -63,8 +64,11 @@ public:
     /**
      * Submit initial state and start evolution.
      * Blocks until completion or step limit reached.
+     *
+     * @param pattern_matching_only If true, only perform pattern matching without rewriting or event relationships.
+     *                               Useful for benchmarking pattern matching performance in isolation.
      */
-    void evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges);
+    void evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges, bool pattern_matching_only = false);
     
     /**
      * Get results.
@@ -80,9 +84,17 @@ public:
     std::size_t get_current_step() const {
         return current_step_.load();
     }
-    
+
     std::size_t increment_step() {
         return current_step_.fetch_add(1);
+    }
+
+    std::size_t get_total_matches_found() const {
+        return total_matches_found_.load();
+    }
+
+    std::size_t increment_total_matches() const {
+        return total_matches_found_.fetch_add(1);
     }
     
     /**

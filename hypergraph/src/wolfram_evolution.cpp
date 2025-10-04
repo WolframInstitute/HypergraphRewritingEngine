@@ -45,9 +45,13 @@ void WolframEvolution::initialize_radius_config() {
     }
 }
 
-void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges) {
-    DEBUG_LOG("Starting evolution with %zu initial edges", initial_edges.size());
+void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges, bool pattern_matching_only) {
+    DEBUG_LOG("Starting evolution with %zu initial edges (pattern_matching_only=%s)",
+              initial_edges.size(), pattern_matching_only ? "true" : "false");
     DEBUG_LOG("Evolution has %zu rules, max steps: %zu", rules_.size(), max_steps_);
+
+    // Reset match counter for new evolution run
+    total_matches_found_.store(0);
 
     // Create initial state (flows through tasks, not stored)
     auto initial_state = multiway_graph_->create_initial_state(initial_edges);
@@ -58,8 +62,8 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
     signature_indices_.clear();
     contexts_.clear();
 
-    // Skip evolution if max_steps is 0 - no work to be done
-    if (max_steps_ == 0) {
+    // Skip if max_steps is 0, unless benchmarking pattern matching only
+    if (max_steps_ == 0 && !pattern_matching_only) {
         DEBUG_LOG("max_steps=0, skipping evolution - no processing needed");
         return;
     }
@@ -69,6 +73,12 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
 
     // Wait for all tasks to complete
     job_system_->wait_for_completion();
+
+    // Skip event relationship computation if only benchmarking pattern matching
+    if (pattern_matching_only) {
+        DEBUG_LOG("pattern_matching_only=true, skipping event relationship computation");
+        return;
+    }
 
     // Compute causal and branchial relationships in post-processing phase
     DEBUG_LOG("Computing event relationships in post-processing phase");
