@@ -1,10 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
 
-project(HypergraphBenchmarks CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 find_package(Threads REQUIRED)
 
 # Try to find WolframScript for Wolfram integration benchmarks

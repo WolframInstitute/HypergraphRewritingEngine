@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
 # WXF (Wolfram Exchange Format) Library
-project(WXF VERSION 1.0.0 LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Create WXF static library
 add_library(wxf STATIC wxf.cpp)

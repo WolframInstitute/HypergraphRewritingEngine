@@ -1,6 +1,6 @@
 PacletObject[<|
     "Name" -> "HypergraphRewriting",
-    "Version" -> "1.0.0",
+    "Version" -> "0.0.1",
     "Description" -> "A high-performance hypergraph rewriting engine with parallel processing capabilities",
     "Creator" -> "Hypergraph Rewriting Project",
     "WolframVersion" -> "13.0+",

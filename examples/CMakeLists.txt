@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
 # Examples
-project(HypergraphExamples CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find required packages
 find_package(Threads REQUIRED)
