@@ -391,6 +391,14 @@ private:
     // Track initial state for causal computation and state reconstruction
     std::optional<StateID> initial_state_id;
 
+    // Pruning control parameters (0 = unlimited)
+    std::size_t max_successor_states_per_parent_{0};
+    std::size_t max_states_per_step_{0};
+    double exploration_probability_{1.0};  // 1.0 = always explore
+
+    // Tracking structures for hard limits (thread-safe concurrent maps with shared_ptr to atomics)
+    std::unique_ptr<ConcurrentHashMap<StateID, std::shared_ptr<std::atomic<std::size_t>>>> successor_counts_;
+    std::unique_ptr<ConcurrentHashMap<std::size_t, std::shared_ptr<std::atomic<std::size_t>>>> states_per_step_;
 
 public:
     // Disable copy operations (due to atomic members)
@@ -408,7 +416,8 @@ public:
 
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
-    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false, bool enable_full_capture_non_canonicalised = false)
+    explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false, bool enable_full_capture_non_canonicalised = false,
+                          std::size_t max_successor_states_per_parent = 0, std::size_t max_states_per_step = 0, double exploration_probability = 1.0)
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
@@ -416,6 +425,9 @@ public:
         , full_capture_non_canonicalised(enable_full_capture_non_canonicalised)
         , transitive_reduction_enabled(enable_transitive_reduction)
         , early_termination_enabled(enable_early_termination)
+        , max_successor_states_per_parent_(max_successor_states_per_parent)
+        , max_states_per_step_(max_states_per_step)
+        , exploration_probability_(exploration_probability)
     {
         if (full_capture || full_capture_non_canonicalised) {
             states = std::make_unique<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>>();
@@ -423,6 +435,13 @@ public:
         }
         if (canonicalization_enabled) {
             seen_hashes = std::make_unique<ConcurrentHashMap<std::size_t, StateID>>();
+        }
+        // Initialize pruning tracking structures if limits are enabled
+        if (max_successor_states_per_parent_ > 0) {
+            successor_counts_ = std::make_unique<ConcurrentHashMap<StateID, std::shared_ptr<std::atomic<std::size_t>>>>();
+        }
+        if (max_states_per_step_ > 0) {
+            states_per_step_ = std::make_unique<ConcurrentHashMap<std::size_t, std::shared_ptr<std::atomic<std::size_t>>>>();
         }
     }
 
@@ -474,6 +493,43 @@ public:
     bool is_early_termination_enabled() const {
         return early_termination_enabled;
     }
+
+    /**
+     * Pruning control accessors.
+     */
+    std::size_t get_max_successor_states_per_parent() const {
+        return max_successor_states_per_parent_;
+    }
+
+    std::size_t get_max_states_per_step() const {
+        return max_states_per_step_;
+    }
+
+    double get_exploration_probability() const {
+        return exploration_probability_;
+    }
+
+    /**
+     * Try to reserve a successor slot for a parent state (hard limit enforcement).
+     * Returns true if successfully reserved, false if limit reached.
+     */
+    bool try_reserve_successor_slot(StateID parent_state_id);
+
+    /**
+     * Release a reserved successor slot (for rollback in multi-limit scenarios).
+     */
+    void release_successor_slot(StateID parent_state_id);
+
+    /**
+     * Try to reserve a state slot for a given step (hard limit enforcement).
+     * Returns true if successfully reserved, false if limit reached.
+     */
+    bool try_reserve_step_slot(std::size_t step);
+
+    /**
+     * Release a reserved step slot (for rollback in multi-limit scenarios).
+     */
+    void release_step_slot(std::size_t step);
 
     /**
      * Get final atomic counter values for determinism testing.

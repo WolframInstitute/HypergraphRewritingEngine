@@ -104,6 +104,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool early_termination = false;
         bool full_capture = true;  // Enable to store states for visualization
         bool full_capture_non_canonicalised = false;  // Store all states, not just canonical ones
+        size_t max_successor_states_per_parent = 0;  // 0 = unlimited
+        size_t max_states_per_step = 0;  // 0 = unlimited
+        double exploration_probability = 1.0;  // 1.0 = always explore
 
         // Parse main association using comprehensive wxf library
         parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
@@ -168,25 +171,34 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // CRITICAL: Must ALWAYS consume the value, even if we don't recognize the option
                     // Otherwise parser position gets misaligned!
                     try {
-                        // Try to read as string (symbol) - this handles both String and Symbol tokens now
-                        std::string symbol = option_parser.read<std::string>();
-                        bool value = (symbol == "True");
+                        // Check if this is a numeric option first
+                        if (option_key == "MaxSuccessorStatesPerParent") {
+                            max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "MaxStatesPerStep") {
+                            max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "ExplorationProbability") {
+                            exploration_probability = option_parser.read<double>();
+                        } else {
+                            // Try to read as string (symbol) - this handles both String and Symbol tokens now
+                            std::string symbol = option_parser.read<std::string>();
+                            bool value = (symbol == "True");
 
-                        if (option_key == "CanonicalizeStates") {
-                            canonicalize_states = value;
-                        } else if (option_key == "CanonicalizeEvents") {
-                            canonicalize_events = value;
-                        } else if (option_key == "CausalTransitiveReduction") {
-                            causal_transitive_reduction = value;
-                        } else if (option_key == "EarlyTermination") {
-                            early_termination = value;
-                        } else if (option_key == "FullCapture") {
-                            full_capture = value;
+                            if (option_key == "CanonicalizeStates") {
+                                canonicalize_states = value;
+                            } else if (option_key == "CanonicalizeEvents") {
+                                canonicalize_events = value;
+                            } else if (option_key == "CausalTransitiveReduction") {
+                                causal_transitive_reduction = value;
+                            } else if (option_key == "EarlyTermination") {
+                                early_termination = value;
+                            } else if (option_key == "FullCapture") {
+                                full_capture = value;
+                            }
+                            // If we successfully read but don't recognize the option, that's fine
+                            // The value was consumed
                         }
-                        // If we successfully read but don't recognize the option, that's fine
-                        // The value was consumed
                     } catch (...) {
-                        // If reading as string failed, skip whatever the value is
+                        // If reading as string/number failed, skip whatever the value is
                         // This handles options like "AspectRatio" -> Automatic (not a string/symbol we can read)
                         option_parser.skip_value();
                     }
@@ -217,7 +229,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Run evolution with parsed options
         WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(),
                                    canonicalize_states, full_capture, canonicalize_events,
-                                   causal_transitive_reduction, early_termination, full_capture_non_canonicalised);
+                                   causal_transitive_reduction, early_termination, full_capture_non_canonicalised,
+                                   max_successor_states_per_parent, max_states_per_step, exploration_probability);
 
         for (const auto& rule : parsed_rules) {
             evolution.add_rule(rule);

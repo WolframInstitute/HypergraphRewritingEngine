@@ -127,6 +127,7 @@ add_executable(unified_tests
     test_debug_edge_selection.cpp
     test_wxf.cpp
     test_paclet.cpp
+    test_evolution_limits.cpp
 )
 
 # Link against all required libraries

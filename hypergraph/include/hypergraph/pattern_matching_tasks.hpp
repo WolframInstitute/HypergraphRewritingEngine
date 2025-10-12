@@ -142,7 +142,7 @@ struct PatternMatchingContext {
     std::atomic<std::size_t> rewrite_tasks_spawned{0};
     std::atomic<std::size_t> causal_tasks_spawned{0};
     std::atomic<std::size_t> branchial_tasks_spawned{0};
-    
+
     // Completion counters for debugging
     std::atomic<std::size_t> scan_tasks_completed{0};
     std::atomic<std::size_t> expand_tasks_completed{0};
@@ -150,6 +150,16 @@ struct PatternMatchingContext {
     std::atomic<std::size_t> rewrite_tasks_completed{0};
     std::atomic<std::size_t> causal_tasks_completed{0};
     std::atomic<std::size_t> branchial_tasks_completed{0};
+
+    // Pruning control parameters (passed from MultiwayGraph)
+    std::size_t max_successor_states_per_parent{0};
+    std::size_t max_states_per_step{0};
+    double exploration_probability{1.0};
+
+    // Pruning rejection statistics
+    std::atomic<std::size_t> rewrites_rejected_random{0};
+    std::atomic<std::size_t> rewrites_rejected_successor{0};
+    std::atomic<std::size_t> rewrites_rejected_step{0};
 
     PatternMatchingContext(std::shared_ptr<const Hypergraph> hg, std::shared_ptr<const PatternHypergraph> pat,
                           std::shared_ptr<const EdgeSignatureIndex> idx,

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <numeric>
 #include <string>
+#include <random>
 
 namespace hypergraph {
 
@@ -322,6 +323,56 @@ void RewriteTask::execute() {
         context_->rewrite_tasks_completed.fetch_add(1);
         return;
     }
+
+    // ===== PRUNING ENFORCEMENT PHASE =====
+    // Three-phase check with rollback protocol
+
+    // PHASE 1: Random exploration check (stateless, no rollback needed)
+    if (context_->exploration_probability < 1.0) {
+        thread_local std::mt19937 rng(
+            std::random_device{}() +
+            std::hash<std::thread::id>{}(std::this_thread::get_id())
+        );
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        if (dist(rng) > context_->exploration_probability) {
+            DEBUG_LOG("[REWRITE] Randomly rejected (p=%.3f)",
+                     context_->exploration_probability);
+            context_->rewrites_rejected_random.fetch_add(1);
+            context_->rewrite_tasks_completed.fetch_add(1);
+            return;
+        }
+    }
+
+    // PHASE 2: Reserve successor slot
+    StateID parent_state_id = context_->current_state->id();
+    bool successor_reserved = context_->multiway_graph->try_reserve_successor_slot(
+        parent_state_id
+    );
+
+    if (!successor_reserved) {
+        DEBUG_LOG("[REWRITE] Parent state %zu reached max successors (%zu)",
+                 parent_state_id.value, context_->max_successor_states_per_parent);
+        context_->rewrites_rejected_successor.fetch_add(1);
+        context_->rewrite_tasks_completed.fetch_add(1);
+        return;
+    }
+
+    // PHASE 3: Reserve step slot (with rollback if fails)
+    std::size_t next_step = context_->current_step + 1;
+    bool step_reserved = context_->multiway_graph->try_reserve_step_slot(next_step);
+
+    if (!step_reserved) {
+        // ROLLBACK: Release successor slot
+        context_->multiway_graph->release_successor_slot(parent_state_id);
+        DEBUG_LOG("[REWRITE] Step %zu reached max states (%zu)",
+                 next_step, context_->max_states_per_step);
+        context_->rewrites_rejected_step.fetch_add(1);
+        context_->rewrite_tasks_completed.fetch_add(1);
+        return;
+    }
+
+    // ALL CHECKS PASSED - proceed with rewrite
+    // ===== END PRUNING ENFORCEMENT =====
 
     std::string assignment_info = "[REWRITE] Executing REWRITE task. Variable assignments: ";
     for (const auto& [var, val] : complete_match_.assignment.variable_to_concrete) {

@@ -15,7 +15,10 @@ Options[HGEvolve] = {
   "EarlyTermination" -> False,
   "PatchBasedMatching" -> False,
   "FullCapture" -> True,
-  "AspectRatio" -> 1/2
+  "AspectRatio" -> 1/2,
+  "MaxSuccessorStatesPerParent" -> 0,  (* 0 = unlimited *)
+  "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
+  "ExplorationProbability" -> 1.0       (* 1.0 = always explore *)
 };
 
 
@@ -64,7 +67,10 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
     "EarlyTermination" -> OptionValue["EarlyTermination"],
     "PatchBasedMatching" -> OptionValue["PatchBasedMatching"],
     "FullCapture" -> OptionValue["FullCapture"],
-    "AspectRatio" -> OptionValue["AspectRatio"]
+    "AspectRatio" -> OptionValue["AspectRatio"],
+    "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
+    "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
+    "ExplorationProbability" -> OptionValue["ExplorationProbability"]
   ];
 
   (* Convert rules to Association format for WXF *)

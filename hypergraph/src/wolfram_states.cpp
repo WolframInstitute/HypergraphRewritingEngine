@@ -1373,4 +1373,64 @@ std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_stat
     return path;
 }
 
+bool MultiwayGraph::try_reserve_successor_slot(StateID parent_state_id) {
+    if (max_successor_states_per_parent_ == 0) return true;  // Unlimited
+
+    if (!successor_counts_) return true;  // Safety check
+
+    // Insert or get atomic counter for this state
+    auto result = successor_counts_->insert_or_get(
+        parent_state_id,
+        []() { return std::make_shared<std::atomic<std::size_t>>(0); }
+    );
+
+    std::shared_ptr<std::atomic<std::size_t>> counter = result.first;
+    std::size_t old_val = counter->fetch_add(1);
+
+    if (old_val >= max_successor_states_per_parent_) {
+        counter->fetch_sub(1);  // Rollback
+        return false;
+    }
+    return true;
+}
+
+void MultiwayGraph::release_successor_slot(StateID parent_state_id) {
+    if (!successor_counts_) return;
+
+    auto count_opt = successor_counts_->find(parent_state_id);
+    if (count_opt) {
+        count_opt.value()->fetch_sub(1);
+    }
+}
+
+bool MultiwayGraph::try_reserve_step_slot(std::size_t step) {
+    if (max_states_per_step_ == 0) return true;  // Unlimited
+
+    if (!states_per_step_) return true;  // Safety check
+
+    // Insert or get atomic counter for this step
+    auto result = states_per_step_->insert_or_get(
+        step,
+        []() { return std::make_shared<std::atomic<std::size_t>>(0); }
+    );
+
+    std::shared_ptr<std::atomic<std::size_t>> counter = result.first;
+    std::size_t old_val = counter->fetch_add(1);
+
+    if (old_val >= max_states_per_step_) {
+        counter->fetch_sub(1);  // Rollback
+        return false;
+    }
+    return true;
+}
+
+void MultiwayGraph::release_step_slot(std::size_t step) {
+    if (!states_per_step_) return;
+
+    auto count_opt = states_per_step_->find(step);
+    if (count_opt) {
+        count_opt.value()->fetch_sub(1);
+    }
+}
+
 } // namespace hypergraph

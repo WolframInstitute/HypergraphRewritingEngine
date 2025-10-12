@@ -9,15 +9,18 @@ namespace hypergraph {
 WolframEvolution::WolframEvolution(std::size_t max_steps, std::size_t num_threads,
                  bool canonicalization_enabled, bool full_capture,
                  bool event_deduplication, bool transitive_reduction_enabled,
-                 bool early_termination, bool full_capture_non_canonicalised)
-    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination, full_capture_non_canonicalised))
+                 bool early_termination, bool full_capture_non_canonicalised,
+                 std::size_t max_successor_states_per_parent, std::size_t max_states_per_step,
+                 double exploration_probability)
+    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination, full_capture_non_canonicalised,
+                                                       max_successor_states_per_parent, max_states_per_step, exploration_probability))
     , job_system_(std::make_unique<job_system::JobSystem<PatternMatchingTaskType>>(num_threads))
     , max_steps_(max_steps)
     , num_threads_(num_threads) {
-    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, event_dedup %s, early_termination %s",
+    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, event_dedup %s, early_termination %s, max_successor_per_parent %zu, max_states_per_step %zu, exploration_probability %.3f",
               max_steps, num_threads, canonicalization_enabled ? "enabled" : "disabled",
               full_capture ? "enabled" : "disabled", event_deduplication ? "enabled" : "disabled",
-              early_termination ? "enabled" : "disabled");
+              early_termination ? "enabled" : "disabled", max_successor_states_per_parent, max_states_per_step, exploration_probability);
     multiway_graph_->set_canonicalization_enabled(canonicalization_enabled);
     multiway_graph_->set_early_termination_enabled(early_termination);
     job_system_->start();
@@ -137,13 +140,18 @@ void WolframEvolution::apply_all_rules_to_state(std::shared_ptr<WolframState> in
                     rule_data.rule,
                     rule_data.wolfram_evolution
                 );
-                
+
                 context->current_state = rule_data.input_state;  // State flows through task
                 context->edge_id_mapping = rule_data.edge_id_mapping;                       // EdgeId to GlobalEdgeId mapping
                 context->rule_index = rule_idx;
                 context->max_steps = rule_data.max_steps;
                 context->current_step = rule_data.current_step;
                 context->max_matches_to_find = rule_data.max_matches;
+
+                // Copy pruning parameters from MultiwayGraph
+                context->max_successor_states_per_parent = rule_data.multiway_graph->get_max_successor_states_per_parent();
+                context->max_states_per_step = rule_data.multiway_graph->get_max_states_per_step();
+                context->exploration_probability = rule_data.multiway_graph->get_exploration_probability();
                 
                 // Spawn SCAN tasks for this rule
                 std::size_t num_partitions = rule_data.job_system->get_num_workers();
