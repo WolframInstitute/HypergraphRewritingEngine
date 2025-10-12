@@ -6,11 +6,12 @@ A high-performance Mathematica paclet for hypergraph rewriting and Wolfram Physi
 
 This paclet provides efficient hypergraph rewriting capabilities with parallel processing support. It includes:
 
-- Fast hypergraph canonicalization 
+- Fast hypergraph canonicalization
 - Pattern matching algorithms
 - Multiway rewriting evolution
 - Wolfram Physics model simulation
-- Parallel processing support
+- Parallel processing with lock-free job system
+- Causal and branchial graph computation
 
 ## Installation
 
@@ -18,40 +19,83 @@ This paclet provides efficient hypergraph rewriting capabilities with parallel p
 
 - Mathematica 13.0 or later
 - C++ compiler with C++17 support
-- CMake 3.12 or later
+- CMake 3.14 or later
 
 ### Building the Library
 
-#### Option 1: Build from Project Root (Recommended)
+This project supports building for multiple platforms: Linux, Windows, and macOS.
 
-1. Build the entire project including the paclet:
+#### Multi-Platform Build (Recommended)
+
+Build for all platforms using the provided script:
+
 ```bash
-mkdir build && cd build
-cmake ..
-make -j4
+# From project root
+./build_all_platforms.sh
 ```
 
-2. Build just the paclet library:
+This automatically builds Linux, Windows (via MinGW), and macOS (via OSXCross if available) libraries.
+
+Build for specific platforms:
 ```bash
-make paclet
+./build_all_platforms.sh --linux-only
+./build_all_platforms.sh --windows-only
+./build_all_platforms.sh --macos-only
 ```
 
-#### Option 2: Build Paclet Separately
+#### Cross-Compilation
 
-1. Navigate to the paclet directory:
+The build system supports cross-compilation from any host OS to all target platforms.
+
+**Linux Native Build:**
 ```bash
-cd paclet/LibraryResources
+mkdir build_linux && cd build_linux
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+make -j$(nproc) paclet
 ```
 
-2. Create a build directory and compile:
+**Windows Cross-Compilation (from Linux/WSL):**
 ```bash
-mkdir build
-cd build
-cmake ..
-make -j4
+# Install MinGW
+sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+# Build
+mkdir build_windows && cd build_windows
+cmake .. \
+  -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_MATHEMATICA_PACLET=ON
+make -j$(nproc) paclet
 ```
 
-The paclet library will be automatically placed in the correct platform directory (`LibraryResources/Linux-x86-64/`, etc.).
+**macOS Cross-Compilation (from Linux via OSXCross):**
+```bash
+# Set up OSXCross (one-time setup)
+# See CROSS_COMPILATION.md for detailed instructions
+
+export OSXCROSS_ROOT="$HOME/osxcross"
+export PATH="$OSXCROSS_ROOT/target/bin:$PATH"
+
+# Build
+mkdir build_macos && cd build_macos
+cmake .. \
+  -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_MATHEMATICA_PACLET=ON
+make -j$(nproc) paclet
+```
+
+For comprehensive cross-compilation documentation, including OSXCross setup and toolchain options, see [CROSS_COMPILATION.md](../CROSS_COMPILATION.md).
+
+#### Platform Libraries
+
+Built libraries are placed in platform-specific directories:
+```
+paclet/LibraryResources/
+├── Linux-x86-64/libHypergraphRewriting.so
+├── Windows-x86-64/HypergraphRewriting.dll
+└── MacOSX-x86-64/libHypergraphRewriting.dylib
+```
 
 ### Installing the Paclet
 
@@ -59,10 +103,10 @@ In Mathematica, evaluate:
 
 ```mathematica
 (* Install from local directory *)
-PacletInstall["/path/to/your/paclet/directory"]
+PacletInstall["/path/to/paclet/directory"]
 
 (* Or create and install a .paclet file *)
-pacletFile = CreatePacletArchive["/path/to/your/paclet/directory"]
+pacletFile = CreatePacletArchive["/path/to/paclet/directory"]
 PacletInstall[pacletFile]
 ```
 
@@ -74,117 +118,174 @@ PacletInstall[pacletFile]
 << HypergraphRewriting`
 ```
 
-### Basic Operations
+### Basic Evolution
 
-#### Creating Hypergraphs
-
-```mathematica
-(* Create a simple hypergraph *)
-hg = HGCreate[{{1, 2, 3}, {2, 3, 4}, {3, 4, 5}}]
-```
-
-#### Canonicalization
+The core function is `HGEvolve`, which performs multiway rewriting evolution:
 
 ```mathematica
-(* Get canonical form *)
-canonical = HGCanonical[hg]
-```
-
-#### Pattern Matching
-
-```mathematica
-(* Find pattern matches *)
-pattern = {{1, 2}, {2, 3}}
-matches = HGPatternMatch[hg, pattern]
-```
-
-#### Rewriting Rules
-
-```mathematica
-(* Define and apply rewriting rules *)
-rule = RewritingRule[{{1, 2, 3}}, {{1, 2}, {2, 3}, {3, 1}}]
-newHG = HGApplyRule[hg, rule]
-```
-
-#### Multiway Evolution
-
-```mathematica
-(* Evolve using multiple rules *)
+(* Define rules and initial state *)
 rules = {
-    RewritingRule[{{1, 2, 3}}, {{1, 2}, {2, 3}, {3, 1}}],
-    RewritingRule[{{1, 2}}, {{1, 3, 2}}]
-}
-evolution = HGMultiwayEvolution[hg, rules, 3]
+  {{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}},
+  {{x_, y_}} :> {{x, z}, {z, y}}
+};
+
+initialEdges = {{1, 2, 3}, {3, 4, 5}};
+
+(* Run evolution for 3 steps *)
+result = HGEvolve[rules, initialEdges, 3]
 ```
 
-#### Wolfram Models
+### Extracting Properties
+
+`HGEvolve` returns different properties based on the `property` argument:
 
 ```mathematica
-(* Create a Wolfram Physics model *)
-initial = {{1, 2, 3}, {3, 4, 5}}
-rules = {
-    RewritingRule[{{x_, y_, z_}}, {{x, y}, {y, z}, {z, x}}]
-}
-model = HGWolframModel[initial, rules, 5]
+(* Get states *)
+states = HGEvolve[rules, initialEdges, 3, "States"]
+
+(* Get events *)
+events = HGEvolve[rules, initialEdges, 3, "Events"]
+
+(* Get causal edges *)
+causalEdges = HGEvolve[rules, initialEdges, 3, "CausalEdges"]
+
+(* Get branchial edges *)
+branchialEdges = HGEvolve[rules, initialEdges, 3, "BranchialEdges"]
+
+(* Get counts *)
+numStates = HGEvolve[rules, initialEdges, 3, "NumStates"]
+numEvents = HGEvolve[rules, initialEdges, 3, "NumEvents"]
 ```
 
-### Performance Options
+### Visualizing Evolution
 
-#### Parallel Processing
+The paclet provides various graph visualizations:
 
 ```mathematica
-(* Enable parallel processing *)
-HGSetParallel[True]
+(* States graph - multiway branching *)
+statesGraph = HGEvolve[rules, initialEdges, 3, "StatesGraph"]
 
-(* Disable parallel processing *)
-HGSetParallel[False]
+(* Causal graph - causal relationships between events *)
+causalGraph = HGEvolve[rules, initialEdges, 3, "CausalGraph"]
+
+(* Branchial graph - branchlike relationships between states *)
+branchialGraph = HGEvolve[rules, initialEdges, 3, "BranchialGraph"]
+
+(* Combined evolution graph *)
+evolutionGraph = HGEvolve[rules, initialEdges, 3, "EvolutionCausalBranchialGraph"]
 ```
 
-#### Statistics and Cache Management
+To get graph structure without rendering:
+```mathematica
+(* Structure variants return Graph objects without vertex styling *)
+statesStructure = HGEvolve[rules, initialEdges, 3, "StatesGraphStructure"]
+causalStructure = HGEvolve[rules, initialEdges, 3, "CausalGraphStructure"]
+```
+
+### Evolution Options
+
+`HGEvolve` supports various options:
 
 ```mathematica
-(* Get performance statistics *)
-stats = HGGetStats[]
-
-(* Clear internal caches *)
-HGClearCache[]
+HGEvolve[rules, initialEdges, steps, property,
+  "CanonicalizeStates" -> True,         (* Canonicalize states for isomorphism detection *)
+  "CanonicalizeEvents" -> False,        (* Canonicalize events *)
+  "CausalTransitiveReduction" -> True,  (* Remove transitive causal edges *)
+  "EarlyTermination" -> False,          (* Stop when a seen state is encountered *)
+  "PatchBasedMatching" -> False,        (* Use patch-based pattern matching *)
+  "FullCapture" -> True,                (* Capture all states including duplicates *)
+  "AspectRatio" -> 1/2                  (* Graph aspect ratio *)
+]
 ```
 
-## API Reference
+### Available Properties
 
-### Core Functions
+**Data Properties:**
+- `"States"` - Association of state IDs to state edges
+- `"Events"` - List of rewriting events
+- `"CausalEdges"` - Pairs of causally connected event IDs
+- `"BranchialEdges"` - Pairs of branchially connected event IDs
+- `"NumStates"` - Total number of states
+- `"NumEvents"` - Total number of events
+- `"NumCausalEdges"` - Number of causal edges
+- `"NumBranchialEdges"` - Number of branchial edges
+- `"Debug"` - Association with all counts
 
-- `HGCreate[edges]` - Create hypergraph from edge list
-- `HGCanonical[hg]` - Get canonical form
-- `HGPatternMatch[hg, pattern]` - Find pattern matches
-- `HGApplyRule[hg, rule]` - Apply single rewriting rule
-- `HGApplyRules[hg, rules, steps]` - Apply multiple rules for specified steps
-- `HGMultiwayEvolution[hg, rules, steps]` - Multiway evolution
-- `HGWolframModel[init, rules, steps]` - Create Wolfram model
+**Graph Properties (with rendering):**
+- `"StatesGraph"` - Multiway states graph
+- `"CausalGraph"` - Causal graph of events
+- `"BranchialGraph"` - Branchial graph of states
+- `"EvolutionGraph"` - Combined evolution visualization
+- `"EvolutionCausalGraph"` - Evolution with causal edges
+- `"EvolutionBranchialGraph"` - Evolution with branchial edges
+- `"EvolutionCausalBranchialGraph"` - Full evolution graph (default)
 
-### Utility Functions
-
-- `HGSetParallel[enabled]` - Enable/disable parallel processing
-- `HGGetStats[]` - Get performance statistics
-- `HGClearCache[]` - Clear internal caches
-
-### Data Types
-
-- `HypergraphObject[...]` - Represents a hypergraph
-- `RewritingRule[lhs, rhs]` - Represents a rewriting rule
-- `MultiwayState[...]` - Represents a multiway evolution state
-- `WolframModel[...]` - Represents a Wolfram physics model
+**Graph Structure Properties (without rendering):**
+- `"StatesGraphStructure"`
+- `"CausalGraphStructure"`
+- `"BranchialGraphStructure"`
+- `"EvolutionGraphStructure"`
+- `"EvolutionCausalGraphStructure"`
+- `"EvolutionBranchialGraphStructure"`
+- `"EvolutionCausalBranchialGraphStructure"`
 
 ## Examples
 
-See the included example notebook `HypergraphRewritingExamples.nb` for detailed usage examples and tutorials.
+### Simple Rewriting
+
+```mathematica
+(* Binary splitting rule *)
+rules = {{{x_, y_}} :> {{x, z}, {z, y}}};
+initialEdges = {{1, 2}};
+
+(* Evolve and visualize *)
+HGEvolve[rules, initialEdges, 3, "StatesGraph"]
+```
+
+### Wolfram Physics Models
+
+```mathematica
+(* Ternary to binary rule *)
+rules = {{{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}}};
+initialEdges = {{1, 2, 3}};
+
+(* Get causal graph *)
+HGEvolve[rules, initialEdges, 5, "CausalGraph"]
+```
+
+### Multiple Rules
+
+```mathematica
+rules = {
+  {{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}},
+  {{x_, y_}} :> {{x, z}, {z, y}}
+};
+initialEdges = {{1, 2, 3}, {2, 3, 4}};
+
+(* Evolution with both rules *)
+HGEvolve[rules, initialEdges, 4, "EvolutionCausalBranchialGraph"]
+```
 
 ## Performance Notes
 
-- The library uses efficient C++ implementations for core algorithms
-- Pattern matching utilizes edge signatures for fast lookups
-- Parallel processing can significantly speed up multiway evolution
-- Canonicalization results are cached for improved performance
+### Parallel Processing
+
+- The library uses a custom lock-free job system for parallel rewriting
+- Pattern matching is parallelized across multiple threads
+- Canonicalization is performed in parallel for state comparison
+
+### Optimization Tips
+
+- Enable `"EarlyTermination"` to stop evolution when cycles are detected
+- Disable `"CanonicalizeStates"` if isomorphism detection is not needed
+- Use structure properties (e.g., `"StatesGraphStructure"`) to avoid rendering overhead
+- For large evolutions, extract counts first (`"NumStates"`, `"NumEvents"`) before full data
+
+### Memory Considerations
+
+- States are stored with automatic memory management via smart pointers
+- Canonicalization caches are managed internally
+- For very large evolutions (>10,000 states), monitor memory usage
 
 ## Troubleshooting
 
@@ -192,25 +293,54 @@ See the included example notebook `HypergraphRewritingExamples.nb` for detailed 
 
 If you encounter library loading errors:
 
-1. Ensure the C++ library is compiled for your platform
-2. Check that all dependencies are installed
-3. Verify Mathematica can find the library in the correct platform directory
+1. **Check library exists**: Verify the library is compiled for your platform in `LibraryResources/$SystemID/`
+2. **Rebuild library**: Run `./build_all_platforms.sh` from project root
+3. **Manual override**: Set `MATHEMATICA_INSTALL_DIR` if CMake can't find Mathematica
 
-### Compilation Issues
+### Cross-Compilation Issues
 
-Common compilation problems:
+Common cross-compilation problems:
 
-1. **Mathematica headers not found**: Ensure Mathematica is properly installed and CMake can find it
-2. **C++17 support**: Use a modern compiler (GCC 7+, Clang 5+, MSVC 2017+)
-3. **Thread library**: On Linux, ensure pthread is available
+1. **MinGW not found**: Install with `sudo apt install gcc-mingw-w64-x86-64` (Linux)
+2. **OSXCross setup**: See [CROSS_COMPILATION.md](../CROSS_COMPILATION.md) for detailed setup
+3. **Wrong platform library**: Ensure you're building with the correct toolchain file
 
-### Memory Usage
+### Runtime Errors
 
-For large hypergraphs or long evolution runs:
+If `HGEvolve` returns `$Failed`:
 
-- Monitor memory usage with `HGGetStats[]`
-- Clear caches periodically with `HGClearCache[]`
-- Consider limiting the number of evolution steps
+1. **Check library loaded**: Look for "Library functions loaded successfully" message when loading paclet
+2. **Verify input format**: Rules must be in `lhs :> rhs` format, edges must be lists of integers
+3. **Check steps**: Steps must be a positive integer
+
+### Build Issues
+
+Common build problems:
+
+1. **C++17 support**: Use GCC 7+, Clang 5+, or MSVC 2017+
+2. **CMake version**: Requires CMake 3.14 or later
+3. **Mathematica headers**: CMake must find Mathematica installation (set `MATHEMATICA_INSTALL_DIR` if needed)
+4. **Thread library**: On Linux, pthread must be available
+
+## Architecture
+
+### Components
+
+- **C++ Core**: High-performance hypergraph rewriting engine
+  - Pattern matching with edge signatures
+  - Parallel job system with work-stealing deques
+  - Canonicalization via nauty-style algorithms
+  - Lock-free concurrent hash maps
+
+- **LibraryLink Interface**: Bidirectional WXF serialization
+  - Efficient binary protocol (no string parsing)
+  - Handles arbitrary nested data structures
+  - Zero-copy byte array transfer
+
+- **Wolfram Language Frontend**: Graph visualization and user API
+  - Multiple visualization modes
+  - Flexible property extraction
+  - Integration with WolframPhysics ecosystem
 
 ## Contributing
 
@@ -219,7 +349,7 @@ To contribute to this paclet:
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests and documentation
+4. Add tests and update documentation
 5. Submit a pull request
 
 ## License
