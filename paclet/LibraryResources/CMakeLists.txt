@@ -153,12 +153,26 @@ set_target_properties(HypergraphRewriting PROPERTIES
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${PLATFORM_DIR}")
 
 # Custom target to create paclet archive
-add_custom_target(paclet_archive
-    COMMAND ${CMAKE_COMMAND} -E echo "Creating paclet archive..."
-    DEPENDS HypergraphRewriting
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Creating Mathematica paclet archive"
-)
+# Requires wolframscript to be available (found by FindMathematica.cmake)
+if(Mathematica_WOLFRAMSCRIPT)
+    # Get the paclet directory (parent of LibraryResources)
+    get_filename_component(PACLET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+
+    # Create paclet_archive directory at project root
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet_archive")
+
+    add_custom_target(create_paclet_archive
+        COMMAND "${Mathematica_WOLFRAMSCRIPT}" -code "CreatePacletArchive[\"${PACLET_DIR}\", \"${CMAKE_SOURCE_DIR}/paclet_archive\"]"
+        DEPENDS HypergraphRewriting
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Creating Mathematica paclet archive in paclet_archive/"
+        VERBATIM
+    )
+
+    message(STATUS "Paclet archive target enabled (wolframscript available)")
+else()
+    message(STATUS "Paclet archive target disabled (wolframscript not found)")
+endif()
 
 # Print paclet-specific configuration
 message(STATUS "Paclet Configuration:")

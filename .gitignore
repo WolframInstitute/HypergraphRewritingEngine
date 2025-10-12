@@ -1,6 +1,7 @@
 /.cache/
 /.vscode/
 /build*/
+/paclet_archive/
 /research/
 /tmp/
 /tools/
