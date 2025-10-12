@@ -99,7 +99,8 @@ struct Value {
 
     Value() : data(std::monostate{}) {}
 
-    template<typename T>
+    template<typename T,
+             typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, Value>>>
     Value(T&& value) : data(std::forward<T>(value)) {}
 
     template<typename T>

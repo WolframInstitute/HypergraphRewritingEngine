@@ -18,6 +18,11 @@ target_include_directories(wxf PUBLIC
 # Require C++17 features
 target_compile_features(wxf PUBLIC cxx_std_17)
 
+# Enable position independent code for shared library linking
+set_target_properties(wxf PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # Optional: Install targets
 install(TARGETS wxf
     EXPORT WXFTargets
