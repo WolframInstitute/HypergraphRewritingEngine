@@ -145,24 +145,24 @@ endif()
 
 # Set output directory to paclet LibraryResources platform directory
 set_target_properties(HypergraphRewriting PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${PLATFORM_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${PLATFORM_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
 )
 
 # Create platform directory if it doesn't exist
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${PLATFORM_DIR}")
+file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
 
 # Custom target to create paclet archive
 # Requires wolframscript to be available (found by FindMathematica.cmake)
 if(Mathematica_WOLFRAMSCRIPT)
-    # Get the paclet directory (parent of LibraryResources)
-    get_filename_component(PACLET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    # Paclet distribution directory (contains only distribution files, no build sources)
+    set(PACLET_DIST_DIR "${CMAKE_SOURCE_DIR}/paclet")
 
     # Create paclet_archive directory at project root
     file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet_archive")
 
     add_custom_target(create_paclet_archive
-        COMMAND "${Mathematica_WOLFRAMSCRIPT}" -code "CreatePacletArchive[\"${PACLET_DIR}\", \"${CMAKE_SOURCE_DIR}/paclet_archive\"]"
+        COMMAND "${Mathematica_WOLFRAMSCRIPT}" -code "CreatePacletArchive[\"${PACLET_DIST_DIR}\", \"${CMAKE_SOURCE_DIR}/paclet_archive\"]"
         DEPENDS HypergraphRewriting
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Creating Mathematica paclet archive in paclet_archive/"
@@ -174,7 +174,17 @@ else()
     message(STATUS "Paclet archive target disabled (wolframscript not found)")
 endif()
 
+# Add convenience target to build just the paclet library
+add_custom_target(paclet
+    DEPENDS HypergraphRewriting
+    COMMENT "Building Mathematica paclet library"
+)
+
+message(STATUS "Paclet targets:")
+message(STATUS "  paclet - Build the Mathematica paclet library")
+message(STATUS "  create_paclet_archive - Create paclet archive (requires wolframscript)")
+
 # Print paclet-specific configuration
-message(STATUS "Paclet Configuration:")
+message(STATUS "Paclet Build Configuration:")
 message(STATUS "  Platform: ${PLATFORM_DIR}")
-message(STATUS "  Output: ${CMAKE_CURRENT_SOURCE_DIR}/${PLATFORM_DIR}")
+message(STATUS "  Output: ${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")

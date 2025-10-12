@@ -55,5 +55,5 @@ endif()
 # Optional: Build Mathematica paclet if Mathematica is found
 option(BUILD_MATHEMATICA_PACLET "Build Mathematica paclet library" ON)
 if(BUILD_MATHEMATICA_PACLET)
-    add_subdirectory(paclet)
+    add_subdirectory(paclet_source)
 endif()
