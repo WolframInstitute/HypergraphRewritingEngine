@@ -5,6 +5,19 @@
 
 using namespace hypergraph;
 
+// Helper to build adjacency index from edges
+static std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>
+build_adjacency_index(const std::vector<GlobalHyperedge>& edges) {
+    std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>> index;
+    for (const auto& edge : edges) {
+        for (std::size_t pos = 0; pos < edge.global_vertices.size(); ++pos) {
+            GlobalVertexId vertex = edge.global_vertices[pos];
+            index[vertex].emplace_back(edge.global_id, pos);
+        }
+    }
+    return index;
+}
+
 class UniquenessTreeTest : public ::testing::Test {
 protected:
     // Helper to create edges for testing
@@ -22,8 +35,9 @@ protected:
 // Test basic uniqueness tree construction
 TEST_F(UniquenessTreeTest, BasicConstruction) {
     auto edges = create_edges({{1, 2}, {2, 3}});
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTree tree1(1, edges);
+    UniquenessTree tree1(1, edges, adjacency_index);
     EXPECT_EQ(tree1.root_vertex(), 1);
     EXPECT_GT(tree1.hash(), 0);
 }
@@ -31,8 +45,9 @@ TEST_F(UniquenessTreeTest, BasicConstruction) {
 // Test uniqueness tree set
 TEST_F(UniquenessTreeTest, TreeSetConstruction) {
     auto edges = create_edges({{1, 2}, {2, 3}});
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTreeSet tree_set(edges);
+    UniquenessTreeSet tree_set(edges, adjacency_index);
     auto hash = tree_set.canonical_hash();
     EXPECT_GT(hash, 0);
 }
@@ -41,9 +56,11 @@ TEST_F(UniquenessTreeTest, TreeSetConstruction) {
 TEST_F(UniquenessTreeTest, EdgeMultiplicityNonIsomorphic) {
     auto edges1 = create_edges({{1, 2}});
     auto edges2 = create_edges({{1, 2}, {1, 2}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -55,9 +72,11 @@ TEST_F(UniquenessTreeTest, EdgeMultiplicityNonIsomorphic) {
 TEST_F(UniquenessTreeTest, EdgeMultiplicityIsomorphic) {
     auto edges1 = create_edges({{1, 2}, {1, 2}});
     auto edges2 = create_edges({{10, 20}, {10, 20}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -68,22 +87,24 @@ TEST_F(UniquenessTreeTest, EdgeMultiplicityIsomorphic) {
 // Test self-loops: {1,1}
 TEST_F(UniquenessTreeTest, SelfLoops) {
     auto edges = create_edges({{1, 1}});
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTree tree(1, edges);
+    UniquenessTree tree(1, edges, adjacency_index);
     EXPECT_GT(tree.hash(), 0);
 
-    UniquenessTreeSet tree_set(edges);
+    UniquenessTreeSet tree_set(edges, adjacency_index);
     EXPECT_GT(tree_set.canonical_hash(), 0);
 }
 
 // Test multiple self-loops: {1,1,1}
 TEST_F(UniquenessTreeTest, MultipleSelfLoops) {
     auto edges = create_edges({{1, 1, 1}});
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTree tree(1, edges);
+    UniquenessTree tree(1, edges, adjacency_index);
     EXPECT_GT(tree.hash(), 0);
 
-    UniquenessTreeSet tree_set(edges);
+    UniquenessTreeSet tree_set(edges, adjacency_index);
     EXPECT_GT(tree_set.canonical_hash(), 0);
 }
 
@@ -91,9 +112,11 @@ TEST_F(UniquenessTreeTest, MultipleSelfLoops) {
 TEST_F(UniquenessTreeTest, SelfLoopMultiplicity) {
     auto edges1 = create_edges({{1, 1}});
     auto edges2 = create_edges({{1, 1}, {1, 1}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -105,9 +128,11 @@ TEST_F(UniquenessTreeTest, SelfLoopMultiplicity) {
 TEST_F(UniquenessTreeTest, SelfLoopIsomorphism) {
     auto edges1 = create_edges({{1, 1}, {2, 2}});
     auto edges2 = create_edges({{10, 10}, {20, 20}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -120,10 +145,13 @@ TEST_F(UniquenessTreeTest, EdgePositionMatters) {
     auto edges1 = create_edges({{1, 1, 2}});
     auto edges2 = create_edges({{1, 2, 1}});
     auto edges3 = create_edges({{2, 1, 1}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
+    auto adjacency_index3 = build_adjacency_index(edges3);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
-    UniquenessTreeSet tree_set3(edges3);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
+    UniquenessTreeSet tree_set3(edges3, adjacency_index3);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -139,9 +167,11 @@ TEST_F(UniquenessTreeTest, EdgePositionMatters) {
 TEST_F(UniquenessTreeTest, MixedMultiplicity) {
     auto edges1 = create_edges({{1, 2}, {1, 2}, {2, 3}});
     auto edges2 = create_edges({{1, 2}, {2, 3}, {2, 3}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -154,10 +184,13 @@ TEST_F(UniquenessTreeTest, DifferentMultiplicityCounts) {
     auto edges1 = create_edges({{1, 2}});
     auto edges2 = create_edges({{1, 2}, {1, 2}});
     auto edges3 = create_edges({{1, 2}, {1, 2}, {1, 2}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
+    auto adjacency_index3 = build_adjacency_index(edges3);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
-    UniquenessTreeSet tree_set3(edges3);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
+    UniquenessTreeSet tree_set3(edges3, adjacency_index3);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -172,9 +205,11 @@ TEST_F(UniquenessTreeTest, DifferentMultiplicityCounts) {
 TEST_F(UniquenessTreeTest, IsomorphismInvariance) {
     auto edges1 = create_edges({{1, 2}, {2, 3}});
     auto edges2 = create_edges({{10, 20}, {20, 30}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -186,9 +221,11 @@ TEST_F(UniquenessTreeTest, IsomorphismInvariance) {
 TEST_F(UniquenessTreeTest, NonIsomorphicDifferentHashes) {
     auto edges1 = create_edges({{1, 2}, {3, 4}});  // Disconnected
     auto edges2 = create_edges({{1, 2}, {2, 3}});  // Connected
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -201,10 +238,13 @@ TEST_F(UniquenessTreeTest, EdgeOrderIndependence) {
     auto edges1 = create_edges({{1, 2}, {2, 3}, {3, 4}});
     auto edges2 = create_edges({{3, 4}, {1, 2}, {2, 3}});
     auto edges3 = create_edges({{2, 3}, {3, 4}, {1, 2}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
+    auto adjacency_index3 = build_adjacency_index(edges3);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
-    UniquenessTreeSet tree_set3(edges3);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
+    UniquenessTreeSet tree_set3(edges3, adjacency_index3);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -218,9 +258,11 @@ TEST_F(UniquenessTreeTest, EdgeOrderIndependence) {
 TEST_F(UniquenessTreeTest, DisconnectedComponentsWithMultiplicity) {
     auto edges1 = create_edges({{1, 2}, {1, 2}, {3, 4}, {3, 4}});
     auto edges2 = create_edges({{10, 20}, {10, 20}, {30, 40}, {30, 40}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -232,9 +274,11 @@ TEST_F(UniquenessTreeTest, DisconnectedComponentsWithMultiplicity) {
 TEST_F(UniquenessTreeTest, LargeArityWithRepeats) {
     auto edges1 = create_edges({{1, 1, 2, 2, 3, 3}});
     auto edges2 = create_edges({{10, 10, 20, 20, 30, 30}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -246,9 +290,11 @@ TEST_F(UniquenessTreeTest, LargeArityWithRepeats) {
 TEST_F(UniquenessTreeTest, ComplexMultiplicityPattern) {
     auto edges1 = create_edges({{1, 2}, {1, 2}, {2, 3}, {3, 4}});
     auto edges2 = create_edges({{10, 20}, {10, 20}, {20, 30}, {30, 40}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -263,8 +309,8 @@ TEST_F(UniquenessTreeTest, HashStrategyEdgeMultiplicity) {
 
     UniquenessTreeHashStrategy strategy;
 
-    auto hash1 = strategy.compute_hash(edges1);
-    auto hash2 = strategy.compute_hash(edges2);
+    auto hash1 = strategy.compute_hash(edges1, build_adjacency_index(edges1));
+    auto hash2 = strategy.compute_hash(edges2, build_adjacency_index(edges2));
 
     EXPECT_NE(hash1, hash2) << "Hash strategy should distinguish edge multiplicity";
 }
@@ -276,8 +322,8 @@ TEST_F(UniquenessTreeTest, HashStrategySelfLoops) {
 
     UniquenessTreeHashStrategy strategy;
 
-    auto hash1 = strategy.compute_hash(edges1);
-    auto hash2 = strategy.compute_hash(edges2);
+    auto hash1 = strategy.compute_hash(edges1, build_adjacency_index(edges1));
+    auto hash2 = strategy.compute_hash(edges2, build_adjacency_index(edges2));
 
     EXPECT_NE(hash1, hash2) << "Self-loops should produce different hash than regular edges";
 }
@@ -289,8 +335,8 @@ TEST_F(UniquenessTreeTest, HashStrategyIsomorphismInvariance) {
 
     UniquenessTreeHashStrategy strategy;
 
-    auto hash1 = strategy.compute_hash(edges1);
-    auto hash2 = strategy.compute_hash(edges2);
+    auto hash1 = strategy.compute_hash(edges1, build_adjacency_index(edges1));
+    auto hash2 = strategy.compute_hash(edges2, build_adjacency_index(edges2));
 
     EXPECT_EQ(hash1, hash2) << "Isomorphic triangles should have same hash";
 }
@@ -298,8 +344,9 @@ TEST_F(UniquenessTreeTest, HashStrategyIsomorphismInvariance) {
 // Test complex hypergraph with mixed arities
 TEST_F(UniquenessTreeTest, MixedArities) {
     auto edges = create_edges({{1, 2}, {2, 3, 4}, {4, 5, 6, 7}});
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTreeSet tree_set(edges);
+    UniquenessTreeSet tree_set(edges, adjacency_index);
     auto hash = tree_set.canonical_hash();
     EXPECT_GT(hash, 0);
 }
@@ -307,8 +354,9 @@ TEST_F(UniquenessTreeTest, MixedArities) {
 // Test empty hypergraph
 TEST_F(UniquenessTreeTest, EmptyHypergraph) {
     std::vector<GlobalHyperedge> edges;
+    auto adjacency_index = build_adjacency_index(edges);
 
-    UniquenessTreeSet tree_set(edges);
+    UniquenessTreeSet tree_set(edges, adjacency_index);
     auto hash = tree_set.canonical_hash();
     EXPECT_EQ(hash, 0) << "Empty hypergraph should have zero hash";
 }
@@ -317,9 +365,11 @@ TEST_F(UniquenessTreeTest, EmptyHypergraph) {
 TEST_F(UniquenessTreeTest, TriangleVsPath) {
     auto triangle = create_edges({{1, 2}, {2, 3}, {3, 1}});
     auto path = create_edges({{1, 2}, {2, 3}, {3, 4}});
+    auto adjacency_index1 = build_adjacency_index(triangle);
+    auto adjacency_index2 = build_adjacency_index(path);
 
-    UniquenessTreeSet tree_set1(triangle);
-    UniquenessTreeSet tree_set2(path);
+    UniquenessTreeSet tree_set1(triangle, adjacency_index1);
+    UniquenessTreeSet tree_set2(path, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -331,9 +381,11 @@ TEST_F(UniquenessTreeTest, TriangleVsPath) {
 TEST_F(UniquenessTreeTest, SymmetricVsAsymmetric) {
     auto symmetric = create_edges({{1, 2}, {1, 3}, {2, 3}});  // Complete triangle
     auto asymmetric = create_edges({{1, 2}, {1, 3}, {1, 4}});  // Star
+    auto adjacency_index1 = build_adjacency_index(symmetric);
+    auto adjacency_index2 = build_adjacency_index(asymmetric);
 
-    UniquenessTreeSet tree_set1(symmetric);
-    UniquenessTreeSet tree_set2(asymmetric);
+    UniquenessTreeSet tree_set1(symmetric, adjacency_index1);
+    UniquenessTreeSet tree_set2(asymmetric, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();
@@ -345,9 +397,11 @@ TEST_F(UniquenessTreeTest, SymmetricVsAsymmetric) {
 TEST_F(UniquenessTreeTest, AllVerticesSame) {
     auto edges1 = create_edges({{1, 1, 1, 1}});
     auto edges2 = create_edges({{10, 10, 10, 10}});
+    auto adjacency_index1 = build_adjacency_index(edges1);
+    auto adjacency_index2 = build_adjacency_index(edges2);
 
-    UniquenessTreeSet tree_set1(edges1);
-    UniquenessTreeSet tree_set2(edges2);
+    UniquenessTreeSet tree_set1(edges1, adjacency_index1);
+    UniquenessTreeSet tree_set2(edges2, adjacency_index2);
 
     auto hash1 = tree_set1.canonical_hash();
     auto hash2 = tree_set2.canonical_hash();

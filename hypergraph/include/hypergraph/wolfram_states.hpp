@@ -72,6 +72,10 @@ private:
     std::vector<GlobalHyperedge> global_edges_;
     std::unordered_set<GlobalVertexId> global_vertices_;
 
+    // Adjacency/incidence index: vertex -> list of (edge_id, position_in_edge) pairs
+    // Enables O(degree(v)) lookups instead of O(E) scans for finding edges containing a vertex
+    std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>> vertex_to_edge_positions_;
+
     mutable std::optional<std::size_t> cached_hash_;  // Lazy-computed hash
     mutable std::optional<StateID> canonical_state_id;  // Canonical ID when known
 
@@ -90,9 +94,11 @@ public:
      * Much more efficient than calling add_global_edge() N times.
      * @param graph MultiwayGraph to get fresh state ID from
      * @param edges List of (GlobalEdgeId, vertices) pairs
+     * @param parent_state Optional parent state to copy indices from (for incremental updates)
      */
     explicit WolframState(MultiwayGraph& graph,
-                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges);
+                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges,
+                         const WolframState* parent_state = nullptr);
     
     // Delete copy operations to prevent ID duplication
     WolframState(const WolframState&) = delete;
@@ -140,14 +146,24 @@ public:
     }
 
     /**
-     * Add edge with global IDs.
+     * Add edge with global IDs (incrementally updates adjacency index).
      */
     void add_global_edge(GlobalEdgeId edge_id, const std::vector<GlobalVertexId>& vertices);
 
     /**
-     * Remove edge by global ID.
+     * Batch add edges (incrementally updates adjacency index).
+     */
+    void add_global_edges(const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges);
+
+    /**
+     * Remove edge by global ID (incrementally updates adjacency index).
      */
     bool remove_global_edge(GlobalEdgeId edge_id);
+
+    /**
+     * Batch remove edges (incrementally updates adjacency index).
+     */
+    void remove_global_edges(const std::vector<GlobalEdgeId>& edge_ids);
 
     const std::vector<GlobalHyperedge>& edges() const { return global_edges_; }
     const std::unordered_set<GlobalVertexId>& vertices() const { return global_vertices_; }
@@ -194,6 +210,15 @@ public:
      * Get edges containing a specific global vertex.
      */
     std::vector<GlobalEdgeId> edges_containing(GlobalVertexId vertex_id) const;
+
+    /**
+     * Get adjacency index: vertex -> list of (edge_id, position) pairs.
+     * Enables O(1) lookup of all edges containing a vertex.
+     */
+    const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>&
+    get_vertex_to_edge_positions() const {
+        return vertex_to_edge_positions_;
+    }
 
     /**
      * Get edge by global ID.

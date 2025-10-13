@@ -21,18 +21,24 @@ public:
     /**
      * Compute isomorphism-invariant hash for a collection of edges.
      * @param edges The edges to hash
+     * @param adjacency_index Adjacency index mapping vertices to (edge_id, position) pairs
      * @return Hash value that is the same for isomorphic hypergraphs
      */
-    virtual std::size_t compute_hash(const std::vector<GlobalHyperedge>& edges) const = 0;
+    virtual std::size_t compute_hash(
+        const std::vector<GlobalHyperedge>& edges,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index) const = 0;
 
     /**
      * Check if two edge collections represent isomorphic hypergraphs.
      * Optional method - not all strategies need to implement this.
      */
-    virtual bool are_isomorphic(const std::vector<GlobalHyperedge>& edges1,
-                               const std::vector<GlobalHyperedge>& edges2) const {
+    virtual bool are_isomorphic(
+        const std::vector<GlobalHyperedge>& edges1,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index1,
+        const std::vector<GlobalHyperedge>& edges2,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index2) const {
         // Default implementation: compare hashes (may have false positives)
-        return compute_hash(edges1) == compute_hash(edges2);
+        return compute_hash(edges1, adjacency_index1) == compute_hash(edges2, adjacency_index2);
     }
 };
 
@@ -43,7 +49,11 @@ public:
  */
 class CanonicalizationHashStrategy : public HashStrategy {
 public:
-    std::size_t compute_hash(const std::vector<GlobalHyperedge>& edges) const override {
+    std::size_t compute_hash(
+        const std::vector<GlobalHyperedge>& edges,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index) const override {
+        (void)adjacency_index; // Unused by canonicalization
+
         if (edges.empty()) {
             return 0;
         }
@@ -76,8 +86,13 @@ public:
         return hash;
     }
 
-    bool are_isomorphic(const std::vector<GlobalHyperedge>& edges1,
-                       const std::vector<GlobalHyperedge>& edges2) const override {
+    bool are_isomorphic(
+        const std::vector<GlobalHyperedge>& edges1,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index1,
+        const std::vector<GlobalHyperedge>& edges2,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index2) const override {
+        (void)adjacency_index1; // Unused by canonicalization
+        (void)adjacency_index2; // Unused by canonicalization
         // Convert to vector format
         auto to_vectors = [](const std::vector<GlobalHyperedge>& edges) {
             std::vector<std::vector<GlobalVertexId>> result;
@@ -103,18 +118,23 @@ public:
  */
 class UniquenessTreeHashStrategy : public HashStrategy {
 public:
-    std::size_t compute_hash(const std::vector<GlobalHyperedge>& edges) const override {
+    std::size_t compute_hash(
+        const std::vector<GlobalHyperedge>& edges,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index) const override {
         if (edges.empty()) {
             return 0;
         }
 
         // Build uniqueness tree set and get canonical hash
-        UniquenessTreeSet tree_set(edges);
+        UniquenessTreeSet tree_set(edges, adjacency_index);
         return static_cast<std::size_t>(tree_set.canonical_hash());
     }
 
-    bool are_isomorphic(const std::vector<GlobalHyperedge>& edges1,
-                       const std::vector<GlobalHyperedge>& edges2) const override {
+    bool are_isomorphic(
+        const std::vector<GlobalHyperedge>& edges1,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index1,
+        const std::vector<GlobalHyperedge>& edges2,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index2) const override {
         // Basic checks first
         if (edges1.size() != edges2.size()) {
             return false;
@@ -122,7 +142,7 @@ public:
 
         // Compare uniqueness tree hashes
         // Note: This may have false positives (hash collisions) in rare cases
-        return compute_hash(edges1) == compute_hash(edges2);
+        return compute_hash(edges1, adjacency_index1) == compute_hash(edges2, adjacency_index2);
     }
 };
 
@@ -181,30 +201,35 @@ public:
         return strategy_type_;
     }
 
-    std::size_t compute_hash(const std::vector<GlobalHyperedge>& edges) const override {
+    std::size_t compute_hash(
+        const std::vector<GlobalHyperedge>& edges,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index) const override {
         switch (strategy_type_) {
             case HashStrategyType::CANONICALIZATION: {
                 CanonicalizationHashStrategy strategy;
-                return strategy.compute_hash(edges);
+                return strategy.compute_hash(edges, adjacency_index);
             }
             case HashStrategyType::UNIQUENESS_TREE: {
                 UniquenessTreeHashStrategy strategy;
-                return strategy.compute_hash(edges);
+                return strategy.compute_hash(edges, adjacency_index);
             }
         }
         return 0; // unreachable
     }
 
-    bool are_isomorphic(const std::vector<GlobalHyperedge>& edges1,
-                       const std::vector<GlobalHyperedge>& edges2) const override {
+    bool are_isomorphic(
+        const std::vector<GlobalHyperedge>& edges1,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index1,
+        const std::vector<GlobalHyperedge>& edges2,
+        const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index2) const override {
         switch (strategy_type_) {
             case HashStrategyType::CANONICALIZATION: {
                 CanonicalizationHashStrategy strategy;
-                return strategy.are_isomorphic(edges1, edges2);
+                return strategy.are_isomorphic(edges1, adjacency_index1, edges2, adjacency_index2);
             }
             case HashStrategyType::UNIQUENESS_TREE: {
                 UniquenessTreeHashStrategy strategy;
-                return strategy.are_isomorphic(edges1, edges2);
+                return strategy.are_isomorphic(edges1, adjacency_index1, edges2, adjacency_index2);
             }
         }
         return false; // unreachable

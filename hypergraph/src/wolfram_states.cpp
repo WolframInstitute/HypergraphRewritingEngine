@@ -86,28 +86,50 @@ WolframState::WolframState(MultiwayGraph& graph, const std::vector<std::vector<G
 }
 
 WolframState::WolframState(MultiwayGraph& graph,
-                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges)
+                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges,
+                         const WolframState* parent_state)
     : state_id(graph.get_fresh_state_id()) {
-    // Reserve space for edges and vertices
     global_edges_.reserve(edges.size());
 
-    // Batch add all edges - single pass
+    // Batch add all edges, building adjacency index in single pass O(E·a)
     for (const auto& [edge_id, vertices] : edges) {
         global_edges_.emplace_back(edge_id, vertices);
-        for (GlobalVertexId vertex : vertices) {
+
+        for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
+            GlobalVertexId vertex = vertices[pos];
             global_vertices_.insert(vertex);
+            vertex_to_edge_positions_[vertex].emplace_back(edge_id, pos);
         }
     }
-    // No incremental index updates - indices built on-demand by to_hypergraph()
 }
 
 void WolframState::add_global_edge(GlobalEdgeId edge_id, const std::vector<GlobalVertexId>& vertices) {
     global_edges_.emplace_back(edge_id, vertices);
-    for (GlobalVertexId vertex : vertices) {
+
+    // Incrementally update adjacency index O(arity)
+    for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
+        GlobalVertexId vertex = vertices[pos];
         global_vertices_.insert(vertex);
+        vertex_to_edge_positions_[vertex].emplace_back(edge_id, pos);
     }
 
-    // CRITICAL FIX (CODE_REVIEW §2.1): Invalidate hash cache after modification
+    cached_hash_.reset();
+}
+
+void WolframState::add_global_edges(const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges) {
+    global_edges_.reserve(global_edges_.size() + edges.size());
+
+    // Batch incremental update O(added_edges · arity)
+    for (const auto& [edge_id, vertices] : edges) {
+        global_edges_.emplace_back(edge_id, vertices);
+
+        for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
+            GlobalVertexId vertex = vertices[pos];
+            global_vertices_.insert(vertex);
+            vertex_to_edge_positions_[vertex].emplace_back(edge_id, pos);
+        }
+    }
+
     cached_hash_.reset();
 }
 
@@ -116,21 +138,73 @@ bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
         [edge_id](const GlobalHyperedge& edge) { return edge.global_id == edge_id; });
 
     if (it != global_edges_.end()) {
-        global_edges_.erase(it);
+        const auto& vertices_to_remove = it->global_vertices;
 
-        // Rebuild vertex set (some vertices might no longer be referenced)
-        global_vertices_.clear();
-        for (const auto& edge : global_edges_) {
-            for (GlobalVertexId vertex : edge.global_vertices) {
-                global_vertices_.insert(vertex);
+        // Incrementally update adjacency index O(arity) instead of O(E·a) rebuild
+        for (std::size_t pos = 0; pos < vertices_to_remove.size(); ++pos) {
+            GlobalVertexId vertex = vertices_to_remove[pos];
+            auto& positions = vertex_to_edge_positions_[vertex];
+
+            // Remove this (edge_id, pos) entry
+            positions.erase(
+                std::remove_if(positions.begin(), positions.end(),
+                    [edge_id](const auto& p) { return p.first == edge_id; }),
+                positions.end()
+            );
+
+            // If vertex no longer appears in any edge, remove it entirely
+            if (positions.empty()) {
+                vertex_to_edge_positions_.erase(vertex);
+                global_vertices_.erase(vertex);
             }
         }
 
-        // CRITICAL FIX (CODE_REVIEW §2.1): Invalidate hash cache after modification
+        global_edges_.erase(it);
         cached_hash_.reset();
         return true;
     }
     return false;
+}
+
+void WolframState::remove_global_edges(const std::vector<GlobalEdgeId>& edge_ids) {
+    std::unordered_set<GlobalEdgeId> ids_to_remove(edge_ids.begin(), edge_ids.end());
+
+    // Collect vertices from edges to be removed before erasing
+    std::unordered_map<GlobalVertexId, std::vector<GlobalEdgeId>> vertex_to_removed_edges;
+    for (const auto& edge : global_edges_) {
+        if (ids_to_remove.count(edge.global_id)) {
+            for (GlobalVertexId vertex : edge.global_vertices) {
+                vertex_to_removed_edges[vertex].push_back(edge.global_id);
+            }
+        }
+    }
+
+    // Remove edges from vector
+    global_edges_.erase(
+        std::remove_if(global_edges_.begin(), global_edges_.end(),
+            [&ids_to_remove](const GlobalHyperedge& e) { return ids_to_remove.count(e.global_id); }),
+        global_edges_.end()
+    );
+
+    // Incrementally update adjacency index O(removed_edges · arity)
+    for (const auto& [vertex, removed_edge_ids] : vertex_to_removed_edges) {
+        auto& positions = vertex_to_edge_positions_[vertex];
+
+        // Remove all entries for removed edges
+        positions.erase(
+            std::remove_if(positions.begin(), positions.end(),
+                [&ids_to_remove](const auto& p) { return ids_to_remove.count(p.first); }),
+            positions.end()
+        );
+
+        // If vertex no longer in any edge, remove entirely
+        if (positions.empty()) {
+            vertex_to_edge_positions_.erase(vertex);
+            global_vertices_.erase(vertex);
+        }
+    }
+
+    cached_hash_.reset();
 }
 
 
@@ -203,7 +277,7 @@ std::size_t WolframState::compute_hash(HashStrategyType strategy_type) const {
 
     // Use runtime-selectable isomorphism-invariant hash strategy
     RuntimeHashStrategy strategy(strategy_type);
-    std::size_t hash_value = strategy.compute_hash(global_edges_);
+    std::size_t hash_value = strategy.compute_hash(global_edges_, vertex_to_edge_positions_);
 
     DEBUG_LOG("[DEBUG] Computed hash value: %zu", hash_value);
 
@@ -227,16 +301,21 @@ WolframState WolframState::clone(MultiwayGraph& graph) const {
     copy.state_id = this->state_id; // Preserve original state ID
     copy.global_edges_ = global_edges_;
     copy.global_vertices_ = global_vertices_;
-    // Signature index built on-demand by Hypergraph when to_hypergraph() is called
+    copy.vertex_to_edge_positions_ = vertex_to_edge_positions_; // Copy adjacency index
     return copy;
 }
 
 std::vector<GlobalEdgeId> WolframState::edges_containing(GlobalVertexId vertex_id) const {
+    // Use adjacency index for O(degree(v)) lookup instead of O(E) scan
+    auto it = vertex_to_edge_positions_.find(vertex_id);
+    if (it == vertex_to_edge_positions_.end()) {
+        return {};
+    }
+
     std::vector<GlobalEdgeId> result;
-    for (const auto& edge : global_edges_) {
-        if (edge.contains(vertex_id)) {
-            result.push_back(edge.global_id);
-        }
+    result.reserve(it->second.size());
+    for (const auto& [edge_id, pos] : it->second) {
+        result.push_back(edge_id);
     }
     return result;
 }

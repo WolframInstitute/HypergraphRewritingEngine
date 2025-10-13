@@ -9,6 +9,19 @@ using namespace hypergraph;
 
 namespace {
 
+// Helper to build adjacency index from edges
+std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>
+build_adjacency_index(const std::vector<GlobalHyperedge>& edges) {
+    std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>> index;
+    for (const auto& edge : edges) {
+        for (std::size_t pos = 0; pos < edge.global_vertices.size(); ++pos) {
+            GlobalVertexId vertex = edge.global_vertices[pos];
+            index[vertex].emplace_back(edge.global_id, pos);
+        }
+    }
+    return index;
+}
+
 // Helper to convert edge vectors to GlobalHyperedge format
 std::vector<GlobalHyperedge> edges_to_global(const std::vector<std::vector<GlobalVertexId>>& edge_vecs) {
     std::vector<GlobalHyperedge> edges;
@@ -153,9 +166,14 @@ TEST(BruteForceIsomorphism, FailingCaseFromFuzzing) {
     CanonicalizationHashStrategy canon_strategy;
     UniquenessTreeHashStrategy tree_strategy;
 
-    bool canon_says_iso = canon_strategy.are_isomorphic(edges_to_global(edge_vecs), edges_to_global(relabeled_vecs));
-    bool tree_says_iso = tree_strategy.compute_hash(edges_to_global(edge_vecs)) ==
-                         tree_strategy.compute_hash(edges_to_global(relabeled_vecs));
+    auto edges1_global = edges_to_global(edge_vecs);
+    auto edges2_global = edges_to_global(relabeled_vecs);
+    auto adj_index1 = build_adjacency_index(edges1_global);
+    auto adj_index2 = build_adjacency_index(edges2_global);
+
+    bool canon_says_iso = canon_strategy.are_isomorphic(edges1_global, adj_index1, edges2_global, adj_index2);
+    bool tree_says_iso = tree_strategy.compute_hash(edges1_global, adj_index1) ==
+                         tree_strategy.compute_hash(edges2_global, adj_index2);
     bool brute_force_says_iso = brute_force_isomorphism_check(edge_vecs, relabeled_vecs);
 
     std::cout << "\nIsomorphism check results:" << std::endl;
@@ -182,13 +200,18 @@ TEST(BruteForceIsomorphism, SimpleCase) {
     bool brute_force = brute_force_isomorphism_check(edges1, edges2);
     std::cout << "Brute force says: " << (brute_force ? "ISOMORPHIC" : "NON-ISOMORPHIC") << std::endl;
 
+    auto edges1_global = edges_to_global(edges1);
+    auto edges2_global = edges_to_global(edges2);
+    auto adj_index1 = build_adjacency_index(edges1_global);
+    auto adj_index2 = build_adjacency_index(edges2_global);
+
     CanonicalizationHashStrategy canon_strategy;
-    bool canon = canon_strategy.are_isomorphic(edges_to_global(edges1), edges_to_global(edges2));
+    bool canon = canon_strategy.are_isomorphic(edges1_global, adj_index1, edges2_global, adj_index2);
     std::cout << "Canonicalization says: " << (canon ? "ISOMORPHIC" : "NON-ISOMORPHIC") << std::endl;
 
     UniquenessTreeHashStrategy tree_strategy;
-    bool tree = tree_strategy.compute_hash(edges_to_global(edges1)) ==
-                tree_strategy.compute_hash(edges_to_global(edges2));
+    bool tree = tree_strategy.compute_hash(edges1_global, adj_index1) ==
+                tree_strategy.compute_hash(edges2_global, adj_index2);
     std::cout << "Uniqueness trees say: " << (tree ? "ISOMORPHIC" : "NON-ISOMORPHIC") << std::endl;
 
     EXPECT_EQ(canon, brute_force);

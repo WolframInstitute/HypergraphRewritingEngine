@@ -13,14 +13,30 @@ using namespace benchmark;
 // =============================================================================
 // These benchmarks use controlled-symmetry graphs to get predictable results
 
-BENCHMARK(canonicalization_by_edge_count, "Measures canonicalization performance as graph size increases") {
+BENCHMARK(canonicalization_by_edge_count, "Measures canonicalization performance as graph size increases (arity=2)") {
+    for (int edges : {2, 4, 6}) {
+        BENCHMARK_PARAM("edges", edges);
+
+        // Fixed arity=2, symmetry_groups = edges/2 for moderate complexity
+        int symmetry_groups = std::max(1, edges / 2);
+        uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_edge_count", 0, edges, symmetry_groups, 3);
+        Hypergraph hg = RandomHypergraphGenerator::generate_symmetric(edges, symmetry_groups, 2, seed);
+        Canonicalizer canonicalizer;
+
+        BENCHMARK_CODE([&]() {
+            canonicalizer.canonicalize(hg);
+        }, 10);
+    }
+}
+
+BENCHMARK(canonicalization_by_edge_count_arity3, "Measures canonicalization performance as graph size increases (arity=3, higher complexity)") {
     for (int edges : {2, 4, 6}) {
         BENCHMARK_PARAM("edges", edges);
 
         // Fixed arity=3, symmetry_groups = edges/2 for moderate complexity
         int symmetry_groups = std::max(1, edges / 2);
-        uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_edge_count", 0, edges, symmetry_groups, 3);
-        Hypergraph hg = RandomHypergraphGenerator::generate_symmetric(edges, symmetry_groups, 2, seed);
+        uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_edge_count_arity3", 0, edges, symmetry_groups, 3);
+        Hypergraph hg = RandomHypergraphGenerator::generate_symmetric(edges, symmetry_groups, 3, seed);
         Canonicalizer canonicalizer;
 
         BENCHMARK_CODE([&]() {

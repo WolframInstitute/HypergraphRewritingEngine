@@ -9,6 +9,19 @@
 
 using namespace hypergraph;
 
+// Helper to build adjacency index from edges
+static std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>
+build_adjacency_index(const std::vector<GlobalHyperedge>& edges) {
+    std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>> index;
+    for (const auto& edge : edges) {
+        for (std::size_t pos = 0; pos < edge.global_vertices.size(); ++pos) {
+            GlobalVertexId vertex = edge.global_vertices[pos];
+            index[vertex].emplace_back(edge.global_id, pos);
+        }
+    }
+    return index;
+}
+
 // Helper to convert Hypergraph edges to GlobalHyperedge format
 std::vector<GlobalHyperedge> hypergraph_to_global_edges(const Hypergraph& hg) {
     std::vector<GlobalHyperedge> edges;
@@ -69,8 +82,8 @@ protected:
         const std::string& test_name) {
 
         UniquenessTreeHashStrategy tree_strategy;
-        auto hash1 = tree_strategy.compute_hash(edges1);
-        auto hash2 = tree_strategy.compute_hash(edges2);
+        auto hash1 = tree_strategy.compute_hash(edges1, build_adjacency_index(edges1));
+        auto hash2 = tree_strategy.compute_hash(edges2, build_adjacency_index(edges2));
 
         EXPECT_EQ(hash1, hash2)
             << test_name << ": expected isomorphic graphs to have same hash"
@@ -85,8 +98,8 @@ protected:
         const std::string& test_name) {
 
         UniquenessTreeHashStrategy tree_strategy;
-        auto hash1 = tree_strategy.compute_hash(edges1);
-        auto hash2 = tree_strategy.compute_hash(edges2);
+        auto hash1 = tree_strategy.compute_hash(edges1, build_adjacency_index(edges1));
+        auto hash2 = tree_strategy.compute_hash(edges2, build_adjacency_index(edges2));
 
         // Note: Hash collisions are possible but should be rare
         // We don't EXPECT_NE because rare collisions are acceptable
@@ -174,8 +187,11 @@ TEST_F(UniquenessTreeFuzzingTest, DifferentGraphsNonIsomorphic) {
         CanonicalizationHashStrategy canon_strategy;
         UniquenessTreeHashStrategy tree_strategy;
 
-        bool canon_says_iso = canon_strategy.are_isomorphic(edges1, edges2);
-        bool tree_says_same = tree_strategy.compute_hash(edges1) == tree_strategy.compute_hash(edges2);
+        auto adj_index1 = build_adjacency_index(edges1);
+        auto adj_index2 = build_adjacency_index(edges2);
+
+        bool canon_says_iso = canon_strategy.are_isomorphic(edges1, adj_index1, edges2, adj_index2);
+        bool tree_says_same = tree_strategy.compute_hash(edges1, adj_index1) == tree_strategy.compute_hash(edges2, adj_index2);
 
         if (canon_says_iso == tree_says_same) {
             agreements++;

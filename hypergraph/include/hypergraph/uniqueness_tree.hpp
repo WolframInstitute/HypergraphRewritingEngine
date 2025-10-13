@@ -75,9 +75,13 @@ public:
      * Construct uniqueness tree for a vertex in a hypergraph.
      * @param root_vertex The vertex to build tree around
      * @param edges All edges in the hypergraph
+     * @param adjacency_index Adjacency index for O(degree(v)) edge lookups
+     * @param edge_map Pre-built edge_id->edge map (nullptr to build locally, or shared from UniquenessTreeSet)
      */
     UniquenessTree(GlobalVertexId root_vertex,
-                  const std::vector<GlobalHyperedge>& edges);
+                  const std::vector<GlobalHyperedge>& edges,
+                  const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index,
+                  const std::unordered_map<GlobalEdgeId, const GlobalHyperedge*>* edge_map = nullptr);
 
     // Copy and move operations
     UniquenessTree(const UniquenessTree& other);
@@ -94,6 +98,12 @@ private:
     GlobalVertexId root_vertex_;
     std::unique_ptr<TreeNode> root_;
     const std::vector<GlobalHyperedge>* edges_;
+    const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>* adjacency_index_;
+
+    // Edge map for O(1) edge_id->edge lookup
+    // Either owned (if built locally) or borrowed (if passed from UniquenessTreeSet)
+    std::unordered_map<GlobalEdgeId, const GlobalHyperedge*> owned_edge_map_;
+    const std::unordered_map<GlobalEdgeId, const GlobalHyperedge*>* edge_map_; // Points to owned_edge_map_ or external
 
     void build_tree(TreeNode* node, std::unordered_set<GlobalVertexId>& visited,
                    std::size_t max_depth = 100);
@@ -112,9 +122,12 @@ class UniquenessTreeSet {
 public:
     /**
      * Construct trees for all vertices in the hypergraph.
-     * Handles edge multiplicity, self-loops, and multiple self-loops.
+     * @param edges All edges in the hypergraph
+     * @param adjacency_index Adjacency index from the graph (vertex -> (edge_id, position) pairs)
+     * @param edge_map Optional pre-built edge_id->edge map (built if nullptr, shared across trees)
      */
-    explicit UniquenessTreeSet(const std::vector<GlobalHyperedge>& edges);
+    UniquenessTreeSet(const std::vector<GlobalHyperedge>& edges,
+                     const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>& adjacency_index);
 
     // Copy and move operations
     UniquenessTreeSet(const UniquenessTreeSet& other);
@@ -134,6 +147,8 @@ private:
     std::vector<UniquenessTree> trees_;
     std::unordered_map<GlobalVertexId, std::size_t> vertex_to_tree_index_;
     const std::vector<GlobalHyperedge>* edges_;
+    const std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>>* adjacency_index_;
+    std::unordered_map<GlobalEdgeId, const GlobalHyperedge*> edge_map_; // Built once, shared by all trees
 
     mutable uint64_t canonical_hash_;
     mutable bool hash_valid_;
