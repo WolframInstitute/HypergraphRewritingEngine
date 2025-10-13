@@ -1,5 +1,6 @@
 #include <hypergraph/wolfram_states.hpp>
 #include <hypergraph/pattern_matching_tasks.hpp>
+#include <hypergraph/hash_strategy.hpp>
 #include <job_system/job_system.hpp>
 #include <sstream>
 #include <algorithm>
@@ -185,91 +186,24 @@ Hypergraph WolframState::to_canonical_hypergraph() const {
     return Hypergraph(edge_list);
 }
 
-std::size_t WolframState::compute_hash(bool canonicalization_enabled) const {
-    // Convert global edges to vector format
-    std::vector<std::vector<GlobalVertexId>> edges;
-    for (const auto& global_edge : global_edges_) {
-        edges.push_back(global_edge.global_vertices);
-    }
-
+std::size_t WolframState::compute_hash(HashStrategyType strategy_type) const {
     {
         std::ostringstream debug_stream;
         debug_stream << "[DEBUG] Original edges before hashing: ";
-        for (const auto& edge : edges) {
+        for (const auto& edge : global_edges_) {
             debug_stream << "{";
-            for (std::size_t i = 0; i < edge.size(); ++i) {
-                debug_stream << edge[i];
-                if (i < edge.size() - 1) debug_stream << ",";
+            for (std::size_t i = 0; i < edge.global_vertices.size(); ++i) {
+                debug_stream << edge.global_vertices[i];
+                if (i < edge.global_vertices.size() - 1) debug_stream << ",";
             }
             debug_stream << "} ";
         }
         DEBUG_LOG("%s", debug_stream.str().c_str());
     }
 
-    std::vector<std::vector<std::size_t>> edges_to_hash;
-    if (canonicalization_enabled) {
-        // Use Canonicalizer to get canonical form
-        Canonicalizer canonicalizer;
-        auto result = canonicalizer.canonicalize_edges(edges);
-        edges_to_hash = result.canonical_form.edges;
-        // No caching - compute locally for thread safety
-
-        {
-            std::ostringstream debug_stream;
-            debug_stream << "[DEBUG] Canonical edges for hashing: ";
-            for (const auto& edge : edges_to_hash) {
-                debug_stream << "{";
-                for (std::size_t i = 0; i < edge.size(); ++i) {
-                    debug_stream << edge[i];
-                    if (i < edge.size() - 1) debug_stream << ",";
-                }
-                debug_stream << "} ";
-            }
-            DEBUG_LOG("%s", debug_stream.str().c_str());
-        }
-    } else {
-        // Sort edges for consistent hashing without canonicalization
-        for (const auto& edge : edges) {
-            std::vector<std::size_t> converted_edge;
-            for (auto v : edge) {
-                converted_edge.push_back(static_cast<std::size_t>(v));
-            }
-            edges_to_hash.push_back(converted_edge);
-        }
-        std::sort(edges_to_hash.begin(), edges_to_hash.end());
-    }
-
-    // Compute hash on the edge structure
-    std::size_t hash_value = 0x9e3779b97f4a7c15ULL; // Start with non-zero seed
-    std::hash<std::size_t> hasher;
-
-    // Use FNV-like hash combining with better avalanche properties
-    for (std::size_t edge_idx = 0; edge_idx < edges_to_hash.size(); ++edge_idx) {
-        const auto& edge = edges_to_hash[edge_idx];
-
-        // Hash arity and edge position together with bit mixing
-        std::size_t edge_hash = edge.size();
-        edge_hash ^= edge_idx + 0x9e3779b9;
-        edge_hash ^= (edge_hash << 6) ^ (edge_hash >> 2);
-
-        for (std::size_t vertex_idx = 0; vertex_idx < edge.size(); ++vertex_idx) {
-            std::size_t vertex = edge[vertex_idx];
-            std::size_t vertex_hash = hasher(vertex);
-
-            // Mix vertex hash with position using bit operations for avalanche
-            vertex_hash ^= vertex_idx + 0x9e3779b9;
-            vertex_hash ^= (vertex_hash << 13) ^ (vertex_hash >> 19);
-            vertex_hash *= 0xc2b2ae35;
-            vertex_hash ^= vertex_hash >> 16;
-
-            // Combine with edge hash using FNV-like mixing
-            edge_hash = (edge_hash ^ vertex_hash) * 0x100000001b3ULL;
-        }
-
-        // Combine edge hash with running total using strong mixing
-        hash_value = (hash_value ^ edge_hash) * 0x100000001b3ULL;
-        hash_value ^= hash_value >> 32;
-    }
+    // Use runtime-selectable isomorphism-invariant hash strategy
+    RuntimeHashStrategy strategy(strategy_type);
+    std::size_t hash_value = strategy.compute_hash(global_edges_);
 
     DEBUG_LOG("[DEBUG] Computed hash value: %zu", hash_value);
 
@@ -356,7 +290,7 @@ std::shared_ptr<WolframState> MultiwayGraph::create_initial_state(const std::vec
 
     // Handle canonicalization mapping separately
     if (canonicalization_enabled && seen_hashes) {
-        std::size_t hash = state->get_hash(true);
+        std::size_t hash = state->get_hash(hash_strategy_type);
         auto canonical_result = seen_hashes->insert_or_get(hash, state->id());
         StateID canonical_state_id = canonical_result.first;
         bool is_first_occurrence = canonical_result.second;
@@ -630,7 +564,7 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
             canonical_input_state_id = input_state->get_canonical_id();
         } else {
             // Compute and cache canonical ID
-            std::size_t input_hash = input_state->get_hash(true);
+            std::size_t input_hash = input_state->get_hash(hash_strategy_type);
             auto canonical_result = seen_hashes->insert_or_get(input_hash, input_state_id);
             canonical_input_state_id = canonical_result.first;
             input_state->set_canonical_id(canonical_input_state_id);
@@ -651,7 +585,7 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
     // Handle output state canonicalization mapping separately
     StateID canonical_output_state_id = INVALID_STATE;
     if (canonicalization_enabled && seen_hashes) {
-        std::size_t output_hash = output_state->get_hash(true);
+        std::size_t output_hash = output_state->get_hash(hash_strategy_type);
         auto canonical_result = seen_hashes->insert_or_get(output_hash, output_state_id);
         canonical_output_state_id = canonical_result.first;
         bool is_first_occurrence = canonical_result.second;
@@ -1257,12 +1191,16 @@ std::shared_ptr<WolframState> MultiwayGraph::get_state_efficient(StateID state_i
 }
 
 std::optional<std::size_t> MultiwayGraph::get_state_hash(StateID state_id) const {
+    if (!canonicalization_enabled) {
+        return std::nullopt;
+    }
+
     auto state_ptr = get_state_efficient(state_id);
     if (!state_ptr) {
         return std::nullopt;
     }
 
-    return state_ptr->compute_hash(canonicalization_enabled);
+    return state_ptr->get_hash(hash_strategy_type);
 }
 
 std::optional<WolframState> MultiwayGraph::reconstruct_state(StateID target_state_id) const {

@@ -21,7 +21,7 @@ TEST_F(WolframStatesTest, StateCreation) {
     // Verify state properties
     EXPECT_EQ(state->num_edges(), 2);
     // State hash should be non-zero
-    EXPECT_GT(state->compute_hash(true), 0);
+    EXPECT_GT(state->compute_hash(hypergraph::HashStrategyType::UNIQUENESS_TREE), 0);
 }
 
 TEST_F(WolframStatesTest, StateGlobalEdgeManagement) {
@@ -235,12 +235,11 @@ TEST_F(WolframStatesTest, StateDuplicationDetectionNoCanonicalization) {
     // Should have same canonical form (structure is identical)
     EXPECT_EQ(canon1, canon2);
 
-    // Should have different raw hashes since canonicalization is disabled
+    // Hashes are not computed when canonicalization is disabled
     auto hash1 = no_canon_graph->get_state_hash(state1_id);
     auto hash2 = no_canon_graph->get_state_hash(state2_id);
-    ASSERT_TRUE(hash1.has_value());
-    ASSERT_TRUE(hash2.has_value());
-    EXPECT_NE(*hash1, *hash2);  // Different raw hashes when canonicalization disabled
+    EXPECT_FALSE(hash1.has_value());
+    EXPECT_FALSE(hash2.has_value());
 
     // Verify both states are counted separately when canonicalization is disabled
     EXPECT_EQ(no_canon_graph->num_states(), 2);

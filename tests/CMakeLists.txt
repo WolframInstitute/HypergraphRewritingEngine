@@ -116,14 +116,15 @@ add_executable(unified_tests
     test_parallel_tasks.cpp
     test_wolfram_evolution.cpp
     test_determinism_fuzzing.cpp
-    test_debug_relationships.cpp
     test_canonicalization.cpp
     test_pattern_matching_isolation.cpp
     test_isolated_duplicate_bug.cpp
-    test_debug_edge_selection.cpp
     test_wxf.cpp
     test_paclet.cpp
     test_evolution_limits.cpp
+    test_uniqueness_tree.cpp
+    test_uniqueness_tree_fuzzing.cpp
+    test_brute_force_isomorphism.cpp
 )
 
 # Link against all required libraries

@@ -360,3 +360,87 @@ TEST_F(CanonicalizationTest, TestCase1ProblematicStates) {
     EXPECT_TRUE(should_be_isomorphic(stateA, stateB));
 }
 
+TEST_F(CanonicalizationTest, SimpleVertexRelabeling) {
+    // {1,2} and {2,1} should be isomorphic via vertex relabeling
+    std::vector<std::vector<VertexId>> edges1 = {{1, 2}};
+    std::vector<std::vector<VertexId>> edges2 = {{2, 1}};
+
+    Canonicalizer canonicalizer;
+    auto result1 = canonicalizer.canonicalize_edges(edges1);
+    auto result2 = canonicalizer.canonicalize_edges(edges2);
+
+    std::cout << "Input 1: {" << edges1[0][0] << "," << edges1[0][1] << "}" << std::endl;
+    std::cout << "Input 2: {" << edges2[0][0] << "," << edges2[0][1] << "}" << std::endl;
+
+    std::cout << "Canonical 1: ";
+    for (const auto& edge : result1.canonical_form.edges) {
+        std::cout << "{";
+        for (size_t i = 0; i < edge.size(); ++i) {
+            std::cout << edge[i];
+            if (i + 1 < edge.size()) std::cout << ",";
+        }
+        std::cout << "} ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "Canonical 2: ";
+    for (const auto& edge : result2.canonical_form.edges) {
+        std::cout << "{";
+        for (size_t i = 0; i < edge.size(); ++i) {
+            std::cout << edge[i];
+            if (i + 1 < edge.size()) std::cout << ",";
+        }
+        std::cout << "} ";
+    }
+    std::cout << std::endl;
+
+    EXPECT_EQ(result1.canonical_form.edges, result2.canonical_form.edges);
+}
+
+TEST_F(CanonicalizationTest, RandomGraphFromFuzzing) {
+    // The failing case from our fuzzing test
+    std::vector<std::vector<VertexId>> edges1 = {
+        {8, 7, 6, 10},
+        {2, 9, 5, 10},
+        {5, 1},
+        {6, 9, 2},
+        {10, 8, 1},
+        {3, 6, 10, 6}
+    };
+
+    std::vector<std::vector<VertexId>> edges2 = {
+        {1, 10, 8, 5},
+        {2, 3, 9, 5},
+        {9, 6},
+        {8, 3, 2},
+        {5, 1, 6},
+        {7, 8, 5, 8}
+    };
+
+    Canonicalizer canonicalizer;
+    auto result1 = canonicalizer.canonicalize_edges(edges1);
+    auto result2 = canonicalizer.canonicalize_edges(edges2);
+
+    std::cout << "Canonical form 1:" << std::endl;
+    for (const auto& edge : result1.canonical_form.edges) {
+        std::cout << "  {";
+        for (size_t i = 0; i < edge.size(); ++i) {
+            std::cout << edge[i];
+            if (i + 1 < edge.size()) std::cout << ",";
+        }
+        std::cout << "}" << std::endl;
+    }
+
+    std::cout << "Canonical form 2:" << std::endl;
+    for (const auto& edge : result2.canonical_form.edges) {
+        std::cout << "  {";
+        for (size_t i = 0; i < edge.size(); ++i) {
+            std::cout << edge[i];
+            if (i + 1 < edge.size()) std::cout << ",";
+        }
+        std::cout << "}" << std::endl;
+    }
+
+    EXPECT_EQ(result1.canonical_form.edges, result2.canonical_form.edges);
+}
+

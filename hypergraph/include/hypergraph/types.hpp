@@ -29,6 +29,12 @@ constexpr GlobalEdgeId INVALID_GLOBAL_EDGE = std::numeric_limits<GlobalEdgeId>::
 constexpr StateID INVALID_STATE{std::numeric_limits<std::size_t>::max()};
 constexpr EventId INVALID_EVENT = std::numeric_limits<EventId>::max();
 
+// Hash strategy types for runtime selection
+enum class HashStrategyType {
+    CANONICALIZATION,  // O(n!) exact canonical form
+    UNIQUENESS_TREE    // O(n^7) polynomial-time hash
+};
+
 
 } // namespace hypergraph
 

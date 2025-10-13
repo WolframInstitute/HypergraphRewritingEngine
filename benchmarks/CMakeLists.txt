@@ -75,6 +75,7 @@ file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/benchmark_results)
 
 add_executable(benchmark_suite
     canonicalization_benchmarks.cpp
+    uniqueness_tree_benchmarks.cpp
     pattern_matching_benchmarks.cpp
     state_management_benchmarks.cpp
     event_relationship_benchmarks.cpp

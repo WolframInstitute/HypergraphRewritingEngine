@@ -109,11 +109,11 @@ public:
     
     /**
      * Get hash of the state structure with lazy computation and caching.
-     * @param canonical If true, compute canonical hash; otherwise raw hash.
+     * @param strategy_type Hash strategy to use (UNIQUENESS_TREE or CANONICALIZATION)
      */
-    std::size_t get_hash(bool canonical = true) const {
+    std::size_t get_hash(HashStrategyType strategy_type) const {
         if (!cached_hash_.has_value()) {
-            cached_hash_ = compute_hash(canonical);
+            cached_hash_ = compute_hash(strategy_type);
         }
         return cached_hash_.value();
     }
@@ -173,14 +173,10 @@ public:
     Hypergraph to_canonical_hypergraph() const;
 
     /**
-     * Compute hash for state identification
-     * Uses canonical form if canonicalization_enabled, otherwise raw hypergraph
+     * Compute isomorphism-invariant hash for state identification.
+     * Only called when canonicalization is enabled.
      */
-    std::size_t compute_hash(bool canonicalization_enabled = true) const;
-
-    std::size_t compute_canonical_hash() const {
-        return compute_hash(true);
-    }
+    std::size_t compute_hash(HashStrategyType strategy_type) const;
 
     /**
      * Get canonical form (cached for performance).
@@ -380,6 +376,7 @@ private:
 
     // Configuration flags
     bool canonicalization_enabled = true;
+    HashStrategyType hash_strategy_type;  // Runtime-selectable when canonicalization enabled (initialized in constructor)
     bool full_capture = false;  // Controls optional state storage
     bool full_capture_non_canonicalised = false;  // Store all states including duplicates
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
@@ -418,6 +415,7 @@ public:
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
+        , hash_strategy_type(HashStrategyType::UNIQUENESS_TREE)
         , full_capture(enable_full_capture)
         , full_capture_non_canonicalised(enable_full_capture_non_canonicalised)
         , transitive_reduction_enabled(enable_transitive_reduction)
@@ -478,6 +476,18 @@ public:
 
     bool is_canonicalization_enabled() const {
         return canonicalization_enabled;
+    }
+
+    /**
+     * Set hash strategy type (CANONICALIZATION or UNIQUENESS_TREE).
+     * Only used when canonicalization is enabled.
+     */
+    void set_hash_strategy_type(HashStrategyType type) {
+        hash_strategy_type = type;
+    }
+
+    HashStrategyType get_hash_strategy_type() const {
+        return hash_strategy_type;
     }
 
     /**

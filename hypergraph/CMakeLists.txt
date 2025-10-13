@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 
 # Create hypergraph library with canonicalization, pattern matching, rewriting, parallel rewriting and Wolfram Physics
-add_library(hypergraph 
+add_library(hypergraph
     src/canonicalization.cpp
     src/pattern_matching.cpp
     src/pattern_matching_tasks.cpp
@@ -9,6 +9,7 @@ add_library(hypergraph
     src/wolfram_evolution.cpp
     src/wolfram_states.cpp
     src/thread_local_pool.cpp
+    src/uniqueness_tree.cpp
 )
 
 # Include directories
