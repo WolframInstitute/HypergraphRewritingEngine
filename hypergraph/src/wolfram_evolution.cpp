@@ -120,21 +120,19 @@ void WolframEvolution::apply_all_rules_to_state(std::shared_ptr<WolframState> in
                 // Use the hypergraph from rule_data (already a shared_ptr)
                 auto target_hg = rule_data.target_hypergraph;
                 auto signature_index = std::make_shared<EdgeSignatureIndex>();
-                auto label_func = [](VertexId v) -> VertexLabel { return static_cast<VertexLabel>(v); };
-                
+
                 // Build signature index
                 for (EdgeId edge_id = 0; edge_id < target_hg->num_edges(); ++edge_id) {
                     const auto& edge = target_hg->edges()[edge_id];
-                    EdgeSignature sig = EdgeSignature::from_concrete_edge(edge, label_func);
+                    EdgeSignature sig = EdgeSignature::from_concrete_edge(edge);
                     signature_index->add_edge(edge_id, sig);
                 }
-                
+
                 // Create fresh context for this rule
                 auto context = std::make_shared<PatternMatchingContext>(
                     target_hg,  // Use the shared_ptr from rule_data
                     std::make_shared<const PatternHypergraph>(rule_data.rule.lhs),
                     signature_index,
-                    label_func,
                     rule_data.multiway_graph,
                     rule_data.job_system,
                     rule_data.rule,

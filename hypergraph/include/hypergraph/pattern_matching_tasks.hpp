@@ -107,7 +107,6 @@ struct PatternMatchingContext {
     std::shared_ptr<const Hypergraph> target_hypergraph;
     std::shared_ptr<const PatternHypergraph> pattern;
     std::shared_ptr<const EdgeSignatureIndex> signature_index;
-    std::function<VertexLabel(VertexId)> label_function;
 
     // Multiway graph for state and event tracking
     std::shared_ptr<MultiwayGraph> multiway_graph;
@@ -118,7 +117,7 @@ struct PatternMatchingContext {
 
     // Job system for spawning tasks
     job_system::JobSystem<PatternMatchingTaskType>* job_system{nullptr};
-    
+
     // Pointer to WolframEvolution for global step tracking
     WolframEvolution* wolfram_evolution{nullptr};
 
@@ -161,16 +160,24 @@ struct PatternMatchingContext {
     std::atomic<std::size_t> rewrites_rejected_successor{0};
     std::atomic<std::size_t> rewrites_rejected_step{0};
 
+    // Cached pattern edge signatures (optimization #2)
+    std::vector<EdgeSignature> cached_pattern_signatures;
+
     PatternMatchingContext(std::shared_ptr<const Hypergraph> hg, std::shared_ptr<const PatternHypergraph> pat,
                           std::shared_ptr<const EdgeSignatureIndex> idx,
-                          std::function<VertexLabel(VertexId)> label_func,
                           std::shared_ptr<MultiwayGraph> mg,
                           job_system::JobSystem<PatternMatchingTaskType>* js,
                           const RewritingRule& rule,
                           WolframEvolution* we = nullptr)
         : target_hypergraph(hg), pattern(pat), signature_index(idx),
-          label_function(std::move(label_func)), multiway_graph(mg), rewrite_rule(rule),
-          job_system(js), wolfram_evolution(we) {}
+          multiway_graph(mg), rewrite_rule(rule),
+          job_system(js), wolfram_evolution(we) {
+        // Pre-compute pattern edge signatures once (optimization #2)
+        cached_pattern_signatures.reserve(pattern->num_edges());
+        for (const auto& pattern_edge : pattern->edges()) {
+            cached_pattern_signatures.push_back(EdgeSignature::from_pattern_edge(pattern_edge));
+        }
+    }
 };
 
 /**
@@ -360,9 +367,11 @@ void spawn_sink_task(JobSystem& job_system,
  */
 
 /**
- * Generate all possible variable assignments for matching a pattern edge to a concrete edge.
+ * Generate variable assignment for matching a pattern edge to a concrete edge.
+ * Returns std::nullopt if the edges are incompatible.
+ * Optimization #5: Changed from vector to optional to avoid allocation.
  */
-std::vector<VariableAssignment> generate_edge_assignments(
+std::optional<VariableAssignment> generate_edge_assignment(
     const PatternEdge& pattern_edge,
     const Hyperedge& concrete_edge);
 

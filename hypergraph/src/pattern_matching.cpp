@@ -63,7 +63,8 @@ bool PatternMatcher::match_remaining_edges(
     const std::vector<PatternEdge>& remaining_pattern_edges,
     const std::unordered_set<EdgeId>& available_edges,
     std::vector<EdgeId>& matched_edges,
-    VariableAssignment& assignment) const {
+    VariableAssignment& assignment,
+    const EdgeSignatureIndex& edge_index) const {
 
     if (remaining_pattern_edges.empty()) {
         return true;  // All edges matched
@@ -73,8 +74,36 @@ bool PatternMatcher::match_remaining_edges(
     std::vector<PatternEdge> remaining(remaining_pattern_edges.begin() + 1,
                                       remaining_pattern_edges.end());
 
-    // Try to match current pattern edge with each available concrete edge
-    for (EdgeId edge_id : available_edges) {
+    // HGMatch optimization: Use inverted index to get candidate edges
+    // Collect concrete vertices from current assignment that appear in pattern
+    // Use unordered_set to automatically deduplicate (important for self-loops)
+    std::unordered_set<VertexId> incident_vertices_set;
+    for (const auto& pattern_vertex : current_pattern.vertices) {
+        if (pattern_vertex.is_variable()) {
+            auto resolved = assignment.resolve(pattern_vertex);
+            if (resolved.has_value()) {
+                incident_vertices_set.insert(resolved.value());
+            }
+        } else {
+            incident_vertices_set.insert(pattern_vertex.id);
+        }
+    }
+
+    std::vector<VertexId> incident_vertices(incident_vertices_set.begin(),
+                                            incident_vertices_set.end());
+
+    // Get candidates via inverted index intersection (HGMatch Algorithm 4)
+    std::vector<EdgeId> candidates;
+    if (!incident_vertices.empty()) {
+        candidates = edge_index.generate_candidates_by_intersection(
+            incident_vertices, available_edges);
+    } else {
+        // No vertices assigned yet - fall back to checking all available edges
+        candidates.assign(available_edges.begin(), available_edges.end());
+    }
+
+    // Try to match current pattern edge with each candidate
+    for (EdgeId edge_id : candidates) {
         const Hyperedge* concrete_edge = target.get_edge(edge_id);
         if (!concrete_edge) continue;
 
@@ -87,7 +116,7 @@ bool PatternMatcher::match_remaining_edges(
             remaining_available.erase(edge_id);
 
             if (match_remaining_edges(target, remaining, remaining_available,
-                                    matched_edges, temp_assignment)) {
+                                    matched_edges, temp_assignment, edge_index)) {
                 assignment = temp_assignment;
                 return true;  // Found complete match
             }
@@ -119,6 +148,16 @@ std::vector<PatternMatch> PatternMatcher::find_matches_from_anchor(
         return matches;  // Not enough edges to match pattern
     }
 
+    // Build EdgeSignatureIndex for fast candidate filtering (HGMatch optimization)
+    EdgeSignatureIndex edge_index;
+    for (EdgeId eid : nearby_edges) {
+        const Hyperedge* edge = target.get_edge(eid);
+        if (edge) {
+            EdgeSignature sig = EdgeSignature::from_concrete_edge(*edge, &target);
+            edge_index.add_edge(eid, sig);
+        }
+    }
+
     // Try to match pattern edges
     const auto& pattern_edges = pattern.edges();
     if (pattern_edges.empty()) {
@@ -145,7 +184,7 @@ std::vector<PatternMatch> PatternMatcher::find_matches_from_anchor(
             available_edges.erase(edge_id);
 
             if (match_remaining_edges(target, remaining_patterns, available_edges,
-                                    matched_edges, assignment)) {
+                                    matched_edges, assignment, edge_index)) {
                 // Found a complete match
                 PatternMatch match;
                 match.matched_edges = matched_edges;
@@ -275,15 +314,13 @@ std::size_t PatternSignature::hash() const {
 EdgeSignature::EdgeSignature() : num_variables_(0), arity_(0) {}
 
 EdgeSignature EdgeSignature::from_concrete_edge(const Hyperedge& edge,
-                                       const std::function<VertexLabel(VertexId)>& label_func,
                                        const Hypergraph* hypergraph) {
     EdgeSignature sig;
     sig.arity_ = edge.arity();
     sig.num_variables_ = 0;
 
     for (VertexId v : edge.vertices()) {
-        VertexLabel label = label_func(v);
-        sig.concrete_labels_.insert(label);
+        sig.concrete_labels_.insert(v);  // Use VertexId directly as label
 
         // Add vertex incidence information as per HGMatch paper
         if (hypergraph) {
@@ -296,8 +333,7 @@ EdgeSignature EdgeSignature::from_concrete_edge(const Hyperedge& edge,
     return sig;
 }
 
-EdgeSignature EdgeSignature::from_pattern_edge(const PatternEdge& edge,
-                                      const std::function<VertexLabel(VertexId)>& label_func) {
+EdgeSignature EdgeSignature::from_pattern_edge(const PatternEdge& edge) {
     EdgeSignature sig;
     sig.arity_ = edge.arity();
     sig.num_variables_ = 0;
@@ -308,7 +344,7 @@ EdgeSignature EdgeSignature::from_pattern_edge(const PatternEdge& edge,
             sig.num_variables_++;
             sig.variable_positions_.push_back(pos);
         } else {
-            sig.concrete_labels_.insert(label_func(pv.id));
+            sig.concrete_labels_.insert(pv.id);  // Use VertexId directly
         }
     }
 
@@ -323,9 +359,9 @@ bool EdgeSignature::is_compatible_with_pattern(const EdgeSignature& pattern) con
     }
 
     // Check if all pattern's concrete labels can be matched
-    std::multiset<VertexLabel> remaining_labels = concrete_labels_;
+    std::multiset<VertexId> remaining_labels = concrete_labels_;
 
-    for (VertexLabel label : pattern.concrete_labels_) {
+    for (VertexId label : pattern.concrete_labels_) {
         auto it = remaining_labels.find(label);
         if (it == remaining_labels.end()) {
             DEBUG_LOG("[SIGNATURE] Missing required label: %zu", label);
@@ -336,13 +372,42 @@ bool EdgeSignature::is_compatible_with_pattern(const EdgeSignature& pattern) con
 
     // Check if variables can cover remaining positions
     std::size_t unmatched_positions = remaining_labels.size();
-    bool compatible = unmatched_positions <= pattern.num_variables_;
+    if (unmatched_positions > pattern.num_variables_) {
+        DEBUG_LOG("[SIGNATURE] Too many unmatched positions: %zu > %zu variables",
+                 unmatched_positions, pattern.num_variables_);
+        return false;
+    }
 
-    DEBUG_LOG("[SIGNATURE] Compatibility check: concrete_labels=%zu, pattern_concrete=%zu, unmatched=%zu, pattern_vars=%zu -> %s",
+    // OPTIMIZATION: Use vertex degree information for fast filtering
+    // If both signatures have degree information, check degree compatibility
+    if (!vertex_degrees_.empty() && !pattern.vertex_degrees_.empty()) {
+        // For each vertex in the pattern with known degree requirements
+        for (const auto& [pattern_vertex, pattern_degree] : pattern.vertex_degrees_) {
+            // Check if any vertex in the concrete edge has a compatible degree
+            bool found_compatible_vertex = false;
+            for (const auto& [concrete_vertex, concrete_degree] : vertex_degrees_) {
+                // Concrete vertex must have at least as many connections as pattern requires
+                // This is a necessary (but not sufficient) condition for matching
+                if (concrete_degree >= pattern_degree) {
+                    found_compatible_vertex = true;
+                    break;
+                }
+            }
+
+            if (!found_compatible_vertex) {
+                DEBUG_LOG("[SIGNATURE] Degree incompatibility: pattern vertex %zu requires degree %zu, "
+                         "but no concrete vertex has sufficient degree",
+                         pattern_vertex, pattern_degree);
+                return false;
+            }
+        }
+    }
+
+    DEBUG_LOG("[SIGNATURE] Compatibility check: concrete_labels=%zu, pattern_concrete=%zu, unmatched=%zu, pattern_vars=%zu -> COMPATIBLE",
              concrete_labels_.size(), pattern.concrete_labels_.size(),
-             unmatched_positions, pattern.num_variables_, compatible ? "COMPATIBLE" : "INCOMPATIBLE");
+             unmatched_positions, pattern.num_variables_);
 
-    return compatible;
+    return true;
 }
 
 bool EdgeSignature::operator==(const EdgeSignature& other) const {
@@ -357,7 +422,7 @@ bool EdgeSignature::operator!=(const EdgeSignature& other) const {
 
 std::size_t EdgeSignature::arity() const { return arity_; }
 std::size_t EdgeSignature::num_variables() const { return num_variables_; }
-const std::multiset<VertexLabel>& EdgeSignature::concrete_labels() const { return concrete_labels_; }
+const std::multiset<VertexId>& EdgeSignature::concrete_labels() const { return concrete_labels_; }
 const std::unordered_map<VertexId, std::vector<EdgeId>>& EdgeSignature::vertex_incidence() const { return vertex_incidence_; }
 const std::unordered_map<VertexId, std::size_t>& EdgeSignature::vertex_degrees() const { return vertex_degrees_; }
 const std::vector<std::size_t>& EdgeSignature::variable_positions() const { return variable_positions_; }
@@ -367,8 +432,11 @@ std::vector<PatternSignature> EdgeSignature::generate_pattern_signatures() const
 
     if (arity_ == 0) return patterns;
 
+    // Optimization #6: Reserve based on Bell number estimate
+    patterns.reserve(std::min(std::size_t(64), std::size_t(1) << (arity_ - 1)));
+
     // Convert concrete labels to indices for pattern generation
-    std::vector<VertexLabel> sorted_labels(concrete_labels_.begin(), concrete_labels_.end());
+    std::vector<VertexId> sorted_labels(concrete_labels_.begin(), concrete_labels_.end());
 
     // Generate all possible variable patterns for this arity
     std::function<void(std::vector<std::size_t>&, std::size_t)> generate_patterns =
@@ -401,14 +469,14 @@ std::vector<PatternSignature> EdgeSignature::generate_pattern_signatures() const
 }
 
 bool EdgeSignature::is_pattern_compatible(const std::vector<std::size_t>& pattern,
-                          const std::vector<VertexLabel>& sorted_labels) const {
+                          const std::vector<VertexId>& sorted_labels) const {
     if (pattern.size() != sorted_labels.size()) return false;
 
-    std::unordered_map<std::size_t, VertexLabel> var_binding;
+    std::unordered_map<std::size_t, VertexId> var_binding;
 
     for (std::size_t i = 0; i < pattern.size(); ++i) {
         std::size_t var = pattern[i];
-        VertexLabel label = sorted_labels[i];
+        VertexId label = sorted_labels[i];
 
         auto it = var_binding.find(var);
         if (it != var_binding.end()) {
@@ -428,8 +496,8 @@ std::size_t EdgeSignature::hash() const {
     h ^= std::hash<std::size_t>{}(arity_) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<std::size_t>{}(num_variables_) + 0x9e3779b9 + (h << 6) + (h >> 2);
 
-    for (VertexLabel label : concrete_labels_) {
-        h ^= std::hash<VertexLabel>{}(label) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    for (VertexId label : concrete_labels_) {
+        h ^= std::hash<VertexId>{}(label) + 0x9e3779b9 + (h << 6) + (h >> 2);
     }
 
     return h;
@@ -443,13 +511,33 @@ void EdgeSignatureIndex::add_edge(EdgeId edge_id, const EdgeSignature& signature
     // Generate all pattern signatures for this concrete edge
     auto pattern_signatures = signature.generate_pattern_signatures();
 
+    std::size_t sig_hash = signature.hash();
+
     for (const auto& pattern_sig : pattern_signatures) {
         auto& pattern_partition = arity_partition.by_pattern_signature[pattern_sig.hash()];
 
-        std::size_t sig_hash = signature.hash();
         pattern_partition.signature_to_edges[sig_hash].push_back(edge_id);
         pattern_partition.hash_to_signature[sig_hash] = signature;
     }
+
+    // Build inverted index: for each UNIQUE vertex in this edge, add to he(v)
+    // Use a set to deduplicate vertices (important for self-loops)
+    std::unordered_set<VertexId> unique_vertices(
+        signature.concrete_labels().begin(),
+        signature.concrete_labels().end()
+    );
+    for (VertexId vertex : unique_vertices) {
+        auto& edge_list = inverted_index_[vertex];
+        edge_list.push_back(edge_id);
+        // Keep sorted for fast set intersection (optimization #1)
+        // Only sort if we have multiple elements (common case: append-only)
+        if (edge_list.size() > 1 && edge_list[edge_list.size() - 2] > edge_id) {
+            std::sort(edge_list.begin(), edge_list.end());
+        }
+    }
+
+    // Store edge -> signature_hash mapping for quick signature lookup
+    edge_to_signature_hash_[edge_id] = sig_hash;
 }
 
 std::vector<EdgeId> EdgeSignatureIndex::find_compatible_edges(const EdgeSignature& pattern) const {
@@ -475,6 +563,13 @@ std::vector<EdgeId> EdgeSignatureIndex::find_compatible_edges(const EdgeSignatur
 
     // Use a set to deduplicate edges that may appear in multiple compatible signatures
     std::unordered_set<EdgeId> unique_edges;
+
+    // Optimization #6: Reserve space to avoid rehashing
+    std::size_t total_estimate = 0;
+    for (const auto& [sig_hash, edges] : pattern_partition.signature_to_edges) {
+        total_estimate += edges.size();
+    }
+    unique_edges.reserve(total_estimate);
 
     // Check each signature in this pattern partition
     for (const auto& [sig_hash, edges] : pattern_partition.signature_to_edges) {
@@ -512,6 +607,8 @@ std::vector<EdgeId> EdgeSignatureIndex::get_edges_with_signature(const EdgeSigna
 
 void EdgeSignatureIndex::clear() {
     by_arity_.clear();
+    inverted_index_.clear();
+    edge_to_signature_hash_.clear();
 }
 
 std::size_t EdgeSignatureIndex::size() const {
@@ -528,6 +625,82 @@ std::size_t EdgeSignatureIndex::size() const {
     }
 
     return counted_edges.size();
+}
+
+const std::vector<EdgeId>& EdgeSignatureIndex::get_incident_edges(VertexId vertex) const {
+    static const std::vector<EdgeId> empty;
+    auto vertex_it = inverted_index_.find(vertex);
+    if (vertex_it == inverted_index_.end()) {
+        return empty;  // Return reference to static empty vector
+    }
+
+    return vertex_it->second;  // Return reference
+}
+
+std::vector<EdgeId> EdgeSignatureIndex::generate_candidates_by_intersection(
+    const std::vector<VertexId>& incident_vertices,
+    const std::unordered_set<EdgeId>& available_edges) const {
+
+    if (incident_vertices.empty()) {
+        return std::vector<EdgeId>(available_edges.begin(), available_edges.end());
+    }
+
+    // Optimization #4: Sort vertices by selectivity (fewest incident edges first)
+    // This dramatically reduces the working set size early in the intersection
+    std::vector<VertexId> sorted_vertices = incident_vertices;
+    std::sort(sorted_vertices.begin(), sorted_vertices.end(),
+        [this](VertexId a, VertexId b) {
+            return get_incident_edges(a).size() < get_incident_edges(b).size();
+        });
+
+    // Step 1: Get edges incident to first vertex as starting set (already sorted!)
+    auto first_incident = get_incident_edges(sorted_vertices[0]);
+
+    // Convert to sorted vector for std::set_intersection
+    // If available_edges is non-empty, filter first_incident by it
+    std::vector<EdgeId> candidates;
+    if (!available_edges.empty()) {
+        candidates.reserve(std::min(first_incident.size(), available_edges.size()));
+        for (EdgeId eid : first_incident) {
+            if (available_edges.find(eid) != available_edges.end()) {
+                candidates.push_back(eid);
+            }
+        }
+
+        if (candidates.empty()) {
+            return {};
+        }
+    } else {
+        candidates = first_incident;
+    }
+
+    // Step 2: Intersect with edges incident to each subsequent vertex
+    // Use std::set_intersection since all vectors are sorted
+    std::vector<EdgeId> temp_result;
+    for (std::size_t i = 1; i < sorted_vertices.size(); ++i) {
+        auto incident_edges = get_incident_edges(sorted_vertices[i]);
+
+        // std::set_intersection requires sorted ranges (which we maintain)
+        temp_result.clear();
+        temp_result.reserve(std::min(candidates.size(), incident_edges.size()));
+
+        std::set_intersection(
+            candidates.begin(), candidates.end(),
+            incident_edges.begin(), incident_edges.end(),
+            std::back_inserter(temp_result)
+        );
+
+        // Early exit if intersection is empty
+        if (temp_result.empty()) {
+            return {};
+        }
+
+        // Swap for next iteration (avoids copy)
+        std::swap(candidates, temp_result);
+    }
+
+    // Return candidates - edge_matches() will do the full structural verification
+    return candidates;
 }
 
 } // namespace hypergraph

@@ -60,17 +60,23 @@ def should_regenerate_plot(benchmark_name, results_dir, plots_dir):
 
     plot_mtime = os.path.getmtime(existing_plot)
 
-    # Check modification times of individual result files for this benchmark
-    per_benchmark_dir = os.path.join(results_dir, 'per_benchmark')
-    if not os.path.exists(per_benchmark_dir):
-        return True
-
-    # Check all CSV files that start with this benchmark name
-    for filename in os.listdir(per_benchmark_dir):
-        if filename.startswith(benchmark_name) and filename.endswith('.csv'):
-            result_file = os.path.join(per_benchmark_dir, filename)
-            if os.path.getmtime(result_file) > plot_mtime:
+    # Check main CSV files that contain all benchmark data
+    main_csv_files = ['detailed.csv', 'summary.csv', 'raw_timings.csv']
+    for csv_file in main_csv_files:
+        csv_path = os.path.join(results_dir, csv_file)
+        if os.path.exists(csv_path):
+            if os.path.getmtime(csv_path) > plot_mtime:
                 return True
+
+    # Also check per_benchmark subdirectory if it exists
+    per_benchmark_dir = os.path.join(results_dir, 'per_benchmark')
+    if os.path.exists(per_benchmark_dir):
+        # Check all CSV files that start with this benchmark name
+        for filename in os.listdir(per_benchmark_dir):
+            if filename.startswith(benchmark_name) and filename.endswith('.csv'):
+                result_file = os.path.join(per_benchmark_dir, filename)
+                if os.path.getmtime(result_file) > plot_mtime:
+                    return True
 
     return False
 
@@ -561,10 +567,11 @@ def main():
         else:
             print("\nAll plots are up-to-date!\n")
 
-    # Time-series requires parent directory with multiple commits
-    parent_dir = os.path.dirname(results_dir)
-    if os.path.basename(parent_dir) == 'benchmark_results':
-        plot_time_series(parent_dir, plots_dir)
+    # Time-series disabled - generates too many plots (one per parameter combination)
+    # TODO: Improve time-series to aggregate by benchmark, not by parameter combo
+    # parent_dir = os.path.dirname(results_dir)
+    # if os.path.basename(parent_dir) == 'benchmark_results':
+    #     plot_time_series(parent_dir, plots_dir)
 
     # Always generate BENCHMARKS.md (needs full results table)
     generate_benchmarks_md(results_dir, plots_dir, detailed_csv)

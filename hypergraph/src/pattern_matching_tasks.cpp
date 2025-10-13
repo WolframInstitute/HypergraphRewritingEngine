@@ -27,10 +27,8 @@ void ScanTask::execute() {
 
     const auto& pattern_edge = pattern.edges()[pattern_edge_idx_];
 
-    // Create signature for this pattern edge
-    EdgeSignature pattern_sig = EdgeSignature::from_pattern_edge(
-        pattern_edge, context_->label_function
-    );
+    // Use cached signature (optimization #2)
+    const EdgeSignature& pattern_sig = context_->cached_pattern_signatures[pattern_edge_idx_];
 
     // Use signature index if available, otherwise iterate through all edges
     std::vector<EdgeId> compatible_edges;
@@ -40,9 +38,10 @@ void ScanTask::execute() {
         compatible_edges = context_->signature_index->find_compatible_edges(pattern_sig);
     } else {
         // Fallback: iterate through all edges and check signatures
+        compatible_edges.reserve(target_hg.num_edges());  // Optimization #6
         for (EdgeId edge_id = 0; edge_id < target_hg.num_edges(); ++edge_id) {
             const auto& concrete_edge = target_hg.edges()[edge_id];
-            EdgeSignature concrete_sig = EdgeSignature::from_concrete_edge(concrete_edge, context_->label_function);
+            EdgeSignature concrete_sig = EdgeSignature::from_concrete_edge(concrete_edge);
 
             if (concrete_sig.is_compatible_with_pattern(pattern_sig)) {
                 compatible_edges.push_back(edge_id);
@@ -81,57 +80,59 @@ void ScanTask::execute() {
                   candidate_edge, partition_start_, actual_end, i);
         const auto& concrete_edge = target_hg.get_edge(candidate_edge);
 
-        // Generate all possible variable assignments for this edge match
-        auto assignments = generate_edge_assignments(pattern_edge, *concrete_edge);
+        // Generate variable assignment for this edge match (optimization #5)
+        auto assignment_opt = generate_edge_assignment(pattern_edge, *concrete_edge);
+
+        if (!assignment_opt) {
+            continue;  // Edges are incompatible
+        }
 
         {
             std::ostringstream debug_stream;
             debug_stream << "[SCAN] Processing candidate edge " << candidate_edge << " (index " << i << "). "
-                         << "Generated " << assignments.size() << " assignments for edge " << candidate_edge << ".";
+                         << "Generated assignment for edge " << candidate_edge << ".";
             DEBUG_LOG("%s", debug_stream.str().c_str());
         }
 
-        for (const auto& assignment : assignments) {
-            if (context_->should_terminate.load()) break;
+        if (context_->should_terminate.load()) continue;
 
-            // Create initial partial match
-            PartialMatch partial_match;
-            partial_match.add_edge_match(pattern_edge_idx_, candidate_edge, assignment);
+        // Create initial partial match
+        PartialMatch partial_match;
+        partial_match.add_edge_match(pattern_edge_idx_, candidate_edge, *assignment_opt);
 
-            // Set available edges (all edges except the one we just used)
-            partial_match.available_edges.clear();
-            for (EdgeId eid = 0; eid < target_hg.num_edges(); ++eid) {
-                if (eid != candidate_edge) {
-                    partial_match.available_edges.insert(eid);
-                }
+        // Set available edges (all edges except the one we just used)
+        partial_match.available_edges.clear();
+        for (EdgeId eid = 0; eid < target_hg.num_edges(); ++eid) {
+            if (eid != candidate_edge) {
+                partial_match.available_edges.insert(eid);
             }
+        }
 
-            // Determine anchor vertex for locality (pick first vertex of matched edge)
-            if (!concrete_edge->vertices().empty()) {
-                partial_match.anchor_vertex = concrete_edge->vertices()[0];
-            }
+        // Determine anchor vertex for locality (pick first vertex of matched edge)
+        if (!concrete_edge->vertices().empty()) {
+            partial_match.anchor_vertex = concrete_edge->vertices()[0];
+        }
 
-            // If pattern has only one edge, this is already a complete match
-            if (pattern.num_edges() == 1) {
-                DEBUG_LOG("[SCAN] Single-edge pattern: creating complete match");
-                PatternMatch complete_match;
-                complete_match.matched_edges = partial_match.matched_edges;
-                complete_match.edge_map = partial_match.edge_map;
-                complete_match.assignment = partial_match.assignment;
-                complete_match.anchor_vertex = partial_match.anchor_vertex;
+        // If pattern has only one edge, this is already a complete match
+        if (pattern.num_edges() == 1) {
+            DEBUG_LOG("[SCAN] Single-edge pattern: creating complete match");
+            PatternMatch complete_match;
+            complete_match.matched_edges = partial_match.matched_edges;
+            complete_match.edge_map = partial_match.edge_map;
+            complete_match.assignment = partial_match.assignment;
+            complete_match.anchor_vertex = partial_match.anchor_vertex;
 
-                DEBUG_LOG("[SCAN] Executing SINK task directly");
-                // Create and execute SINK task directly (avoid scheduler overhead)
-                SinkTask sink_task(context_, std::move(complete_match));
-                sink_task.execute();
-            } else {
-                DEBUG_LOG("[SCAN] Multi-edge pattern: creating partial match, about to create and execute EXPAND task");
-                // Create and execute EXPAND task directly
-                ExpandTask expand_task(context_, std::move(partial_match));
-                DEBUG_LOG("[SCAN] EXPAND task created, about to execute");
-                expand_task.execute();
-                DEBUG_LOG("[SCAN] EXPAND task execution completed");
-            }
+            DEBUG_LOG("[SCAN] Executing SINK task directly");
+            // Create and execute SINK task directly (avoid scheduler overhead)
+            SinkTask sink_task(context_, std::move(complete_match));
+            sink_task.execute();
+        } else {
+            DEBUG_LOG("[SCAN] Multi-edge pattern: creating partial match, about to create and execute EXPAND task");
+            // Create and execute EXPAND task directly
+            ExpandTask expand_task(context_, std::move(partial_match));
+            DEBUG_LOG("[SCAN] EXPAND task created, about to execute");
+            expand_task.execute();
+            DEBUG_LOG("[SCAN] EXPAND task execution completed");
         }
     }
 
@@ -184,23 +185,50 @@ void ExpandTask::execute() {
 
     const auto& next_pattern_edge = pattern.edges()[next_edge_idx];
 
-    // Create signature for next pattern edge
-    EdgeSignature pattern_sig = EdgeSignature::from_pattern_edge(
-        next_pattern_edge, context_->label_function
-    );
+    // Use cached signature (optimization #2)
+    const EdgeSignature& pattern_sig = context_->cached_pattern_signatures[next_edge_idx];
 
-    // Find compatible edges from remaining available edges
+    // HGMatch optimization: Use inverted index to generate candidates via set intersection
+    // Collect concrete vertices from current assignment that appear in next_pattern_edge
+    std::unordered_set<VertexId> incident_vertices_set;
+    for (const auto& pattern_vertex : next_pattern_edge.vertices) {
+        if (pattern_vertex.is_variable()) {
+            auto resolved = partial_match_.assignment.resolve(pattern_vertex);
+            if (resolved.has_value()) {
+                incident_vertices_set.insert(resolved.value());
+            }
+        } else {
+            incident_vertices_set.insert(pattern_vertex.id);
+        }
+    }
+
+    std::vector<VertexId> incident_vertices(incident_vertices_set.begin(),
+                                            incident_vertices_set.end());
+
+    // Get candidates via inverted index intersection (HGMatch Algorithm 4)
     std::vector<EdgeId> candidates;
-    candidates.reserve(partial_match_.available_edges.size());
-
-    for (EdgeId eid : partial_match_.available_edges) {
-        const auto& candidate_edge = target_hg.get_edge(eid);
-        EdgeSignature candidate_sig = EdgeSignature::from_concrete_edge(
-            *candidate_edge, context_->label_function
-        );
-
-        if (candidate_sig.is_compatible_with_pattern(pattern_sig)) {
-            candidates.push_back(eid);
+    if (context_->signature_index && !incident_vertices.empty()) {
+        candidates = context_->signature_index->generate_candidates_by_intersection(
+            incident_vertices, partial_match_.available_edges);
+    } else if (!incident_vertices.empty()) {
+        // Fallback without index: iterate available edges
+        candidates.reserve(partial_match_.available_edges.size());
+        for (EdgeId eid : partial_match_.available_edges) {
+            const auto& candidate_edge = target_hg.get_edge(eid);
+            EdgeSignature candidate_sig = EdgeSignature::from_concrete_edge(*candidate_edge);
+            if (candidate_sig.is_compatible_with_pattern(pattern_sig)) {
+                candidates.push_back(eid);
+            }
+        }
+    } else {
+        // No vertices assigned yet - check all available edges with signature filter
+        candidates.reserve(partial_match_.available_edges.size());
+        for (EdgeId eid : partial_match_.available_edges) {
+            const auto& candidate_edge = target_hg.get_edge(eid);
+            EdgeSignature candidate_sig = EdgeSignature::from_concrete_edge(*candidate_edge);
+            if (candidate_sig.is_compatible_with_pattern(pattern_sig)) {
+                candidates.push_back(eid);
+            }
         }
     }
 
@@ -209,65 +237,69 @@ void ExpandTask::execute() {
         if (context_->should_terminate.load()) break;
 
         const auto& concrete_edge = target_hg.get_edge(candidate);
-        auto assignments = generate_edge_assignments(next_pattern_edge, *concrete_edge);
+        auto assignment_opt = generate_edge_assignment(next_pattern_edge, *concrete_edge);
 
-        for (const auto& assignment : assignments) {
-            if (context_->should_terminate.load()) break;
-
-            std::string assignment_str = "[EXPAND] Testing assignment for edge " + std::to_string(candidate) + ": ";
-            for (const auto& [var, val] : assignment.variable_to_concrete) {
-                assignment_str += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
-            }
-            DEBUG_LOG("%s", assignment_str.c_str());
-
-            // Check assignment consistency with existing partial match
-            if (!is_assignment_consistent(partial_match_.assignment, assignment)) {
-                DEBUG_LOG("[EXPAND] Assignment inconsistent with existing partial match");
-                continue;
-            }
-
-            // Create extended partial match
-            PartialMatch extended_match = partial_match_.branch();
-
-            // Merge assignments
-            VariableAssignment merged_assignment = partial_match_.assignment;
-            bool assignment_valid = true;
-            for (const auto& [var, val] : assignment.variable_to_concrete) {
-                if (!merged_assignment.assign(var, val)) {
-                    assignment_valid = false;
-                    break;
-                }
-            }
-
-            if (!assignment_valid) {
-                DEBUG_LOG("[EXPAND] Merged assignment invalid");
-                continue;
-            }
-
-            std::string extended_str = "[EXPAND] Extended match successful: ";
-            for (const auto& [var, val] : merged_assignment.variable_to_concrete) {
-                extended_str += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
-            }
-            extended_str += "(edges: ";
-            for (const auto& [pattern_idx, data_edge] : extended_match.edge_map) {
-                const auto& concrete_edge = target_hg.get_edge(data_edge);
-                extended_str += "{";
-                const auto& vertices = concrete_edge->vertices();
-                for (std::size_t i = 0; i < vertices.size(); ++i) {
-                    extended_str += std::to_string(vertices[i]);
-                    if (i < vertices.size() - 1) extended_str += ",";
-                }
-                extended_str += "} ";
-            }
-            extended_str += ")";
-            DEBUG_LOG("%s", extended_str.c_str());
-
-            extended_match.add_edge_match(next_edge_idx, candidate, merged_assignment);
-
-            // Execute another EXPAND task for the extended match
-            ExpandTask expand_task(context_, std::move(extended_match));
-            expand_task.execute();
+        if (!assignment_opt) {
+            continue;  // Edges are incompatible
         }
+
+        const auto& assignment = *assignment_opt;
+
+        if (context_->should_terminate.load()) break;
+
+        std::string assignment_str = "[EXPAND] Testing assignment for edge " + std::to_string(candidate) + ": ";
+        for (const auto& [var, val] : assignment.variable_to_concrete) {
+            assignment_str += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
+        }
+        DEBUG_LOG("%s", assignment_str.c_str());
+
+        // Check assignment consistency with existing partial match
+        if (!is_assignment_consistent(partial_match_.assignment, assignment)) {
+            DEBUG_LOG("[EXPAND] Assignment inconsistent with existing partial match");
+            continue;
+        }
+
+        // Create extended partial match
+        PartialMatch extended_match = partial_match_.branch();
+
+        // Merge assignments
+        VariableAssignment merged_assignment = partial_match_.assignment;
+        bool assignment_valid = true;
+        for (const auto& [var, val] : assignment.variable_to_concrete) {
+            if (!merged_assignment.assign(var, val)) {
+                assignment_valid = false;
+                break;
+            }
+        }
+
+        if (!assignment_valid) {
+            DEBUG_LOG("[EXPAND] Merged assignment invalid");
+            continue;
+        }
+
+        std::string extended_str = "[EXPAND] Extended match successful: ";
+        for (const auto& [var, val] : merged_assignment.variable_to_concrete) {
+            extended_str += "var" + std::to_string(var) + "→" + std::to_string(val) + " ";
+        }
+        extended_str += "(edges: ";
+        for (const auto& [pattern_idx, data_edge] : extended_match.edge_map) {
+            const auto& concrete_edge = target_hg.get_edge(data_edge);
+            extended_str += "{";
+            const auto& vertices = concrete_edge->vertices();
+            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                extended_str += std::to_string(vertices[i]);
+                if (i < vertices.size() - 1) extended_str += ",";
+            }
+            extended_str += "} ";
+        }
+        extended_str += ")";
+        DEBUG_LOG("%s", extended_str.c_str());
+
+        extended_match.add_edge_match(next_edge_idx, candidate, merged_assignment);
+
+        // Execute another EXPAND task for the extended match
+        ExpandTask expand_task(context_, std::move(extended_match));
+        expand_task.execute();
     }
 
     context_->expand_tasks_completed.fetch_add(1);
@@ -500,22 +532,28 @@ void RewriteTask::execute() {
         GlobalEdgeId new_edge_id = context_->multiway_graph->get_fresh_edge_id();
         produced_edge_ids.push_back(new_edge_id);
     }
-    
-    // Create new state by building it with correct edge IDs
-    auto new_state_ptr = std::make_shared<WolframState>(*context_->multiway_graph);
-    
+
+    // BATCH CONSTRUCTION: Build edge list first, then construct state once
+    // This avoids N individual add_global_edge() calls and their incremental updates
+    std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>> all_edges;
+    std::size_t num_kept = context_->current_state->num_edges() - edges_to_remove.size();
+    all_edges.reserve(num_kept + new_edges.size());
+
     // Add existing edges (excluding those to be removed)
     std::unordered_set<GlobalEdgeId> edges_to_remove_set(edges_to_remove.begin(), edges_to_remove.end());
     for (const auto& edge : context_->current_state->edges()) {
         if (edges_to_remove_set.find(edge.global_id) == edges_to_remove_set.end()) {
-            new_state_ptr->add_global_edge(edge.global_id, edge.global_vertices);
+            all_edges.emplace_back(edge.global_id, edge.global_vertices);
         }
     }
-    
+
     // Add new edges with pre-allocated global IDs
     for (size_t i = 0; i < new_edges.size(); i++) {
-        new_state_ptr->add_global_edge(produced_edge_ids[i], new_edges[i]);
+        all_edges.emplace_back(produced_edge_ids[i], new_edges[i]);
     }
+
+    // Single state construction - builds all internal structures in one pass
+    auto new_state_ptr = std::make_shared<WolframState>(*context_->multiway_graph, all_edges);
 
     // Create event by calling record_state_transition
     EventId event_id = context_->multiway_graph->record_state_transition(
@@ -613,23 +651,19 @@ void RewriteTask::spawn_patch_scan_tasks(
 
 // Helper functions for task execution
 
-std::vector<VariableAssignment> generate_edge_assignments(
+std::optional<VariableAssignment> generate_edge_assignment(
     const PatternEdge& pattern_edge,
     const Hyperedge& concrete_edge) {
 
-    std::vector<VariableAssignment> assignments;
-
     if (pattern_edge.arity() != concrete_edge.arity()) {
-        return assignments;  // Incompatible arities
+        return std::nullopt;  // Incompatible arities
     }
+
     // Get concrete vertices
     auto concrete_vertices = concrete_edge.vertices();
-    std::vector<std::size_t> indices(concrete_vertices.size());
-    std::iota(indices.begin(), indices.end(), 0);
 
     // For directed hypergraphs, vertex order matters - no permutations!
     VariableAssignment assignment;
-    bool valid = true;
 
     for (std::size_t i = 0; i < pattern_edge.vertices.size(); ++i) {
         const auto& pattern_vertex = pattern_edge.vertices[i];
@@ -638,23 +672,17 @@ std::vector<VariableAssignment> generate_edge_assignments(
         if (pattern_vertex.is_concrete()) {
             // Concrete vertex must match exactly
             if (pattern_vertex.id != concrete_vertex) {
-                valid = false;
-                break;
+                return std::nullopt;
             }
         } else {
             // Variable vertex - try to assign
             if (!assignment.assign(pattern_vertex.id, concrete_vertex)) {
-                valid = false;
-                break;
+                return std::nullopt;
             }
         }
     }
 
-    if (valid) {
-        assignments.push_back(assignment);
-    }
-
-    return assignments;
+    return assignment;
 }
 
 bool is_assignment_consistent(const VariableAssignment& a1, const VariableAssignment& a2) {

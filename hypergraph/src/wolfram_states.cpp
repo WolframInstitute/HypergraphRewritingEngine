@@ -81,30 +81,23 @@ WolframState::WolframState(MultiwayGraph& graph, const std::vector<std::vector<G
     for (const auto& vertices : edge_structures) {
         add_global_edge(edge_counter++, vertices);
     }
-    rebuild_signature_index();
+    // Signature index now built by Hypergraph when to_hypergraph() is called
 }
 
-void WolframState::rebuild_signature_index() {
-    edge_signature_index_.clear();
+WolframState::WolframState(MultiwayGraph& graph,
+                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges)
+    : state_id(graph.get_fresh_state_id()) {
+    // Reserve space for edges and vertices
+    global_edges_.reserve(edges.size());
 
-    // Create a simple label function (using vertex ID as label for now)
-    auto label_func = [](GlobalVertexId v) -> VertexLabel {
-        return static_cast<VertexLabel>(v);
-    };
-
-    for (std::size_t i = 0; i < global_edges_.size(); ++i) {
-        const GlobalHyperedge& edge = global_edges_[i];
-
-        // Create a temporary Hyperedge for signature generation
-        std::vector<VertexId> local_vertices;
-        for (GlobalVertexId gv : edge.global_vertices) {
-            local_vertices.push_back(static_cast<VertexId>(gv));
+    // Batch add all edges - single pass
+    for (const auto& [edge_id, vertices] : edges) {
+        global_edges_.emplace_back(edge_id, vertices);
+        for (GlobalVertexId vertex : vertices) {
+            global_vertices_.insert(vertex);
         }
-        Hyperedge temp_edge(static_cast<EdgeId>(i), local_vertices);
-
-        EdgeSignature sig = EdgeSignature::from_concrete_edge(temp_edge, label_func);
-        edge_signature_index_.add_edge(static_cast<EdgeId>(i), sig);
     }
+    // No incremental index updates - indices built on-demand by to_hypergraph()
 }
 
 void WolframState::add_global_edge(GlobalEdgeId edge_id, const std::vector<GlobalVertexId>& vertices) {
@@ -112,20 +105,9 @@ void WolframState::add_global_edge(GlobalEdgeId edge_id, const std::vector<Globa
     for (GlobalVertexId vertex : vertices) {
         global_vertices_.insert(vertex);
     }
-    // No cache to invalidate - canonical forms computed locally
 
-    // Update signature index
-    std::vector<VertexId> local_vertices;
-    for (GlobalVertexId gv : vertices) {
-        local_vertices.push_back(static_cast<VertexId>(gv));
-    }
-    EdgeId edge_idx = static_cast<EdgeId>(global_edges_.size() - 1);
-    Hyperedge temp_edge(edge_idx, local_vertices);
-    auto label_func = [](GlobalVertexId v) -> VertexLabel {
-        return static_cast<VertexLabel>(v);
-    };
-    EdgeSignature sig = EdgeSignature::from_concrete_edge(temp_edge, label_func);
-    edge_signature_index_.add_edge(static_cast<EdgeId>(global_edges_.size() - 1), sig);
+    // CRITICAL FIX (CODE_REVIEW §2.1): Invalidate hash cache after modification
+    cached_hash_.reset();
 }
 
 bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
@@ -143,8 +125,8 @@ bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
             }
         }
 
-        // No cache to invalidate - canonical forms computed locally
-        rebuild_signature_index(); // Rebuild index after edge removal
+        // CRITICAL FIX (CODE_REVIEW §2.1): Invalidate hash cache after modification
+        cached_hash_.reset();
         return true;
     }
     return false;
@@ -152,17 +134,23 @@ bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
 
 
 Hypergraph WolframState::to_hypergraph() const {
-    // Build non-canonical hypergraph for pattern matching
+    // Build non-canonical hypergraph for pattern matching using batch constructor
     // Edge indices directly correspond to positions in global_edges_
-    Hypergraph hg;
+    std::vector<std::vector<VertexId>> edge_list;
+    edge_list.reserve(global_edges_.size());
+
     for (const auto& global_edge : global_edges_) {
         std::vector<VertexId> vertices;
+        vertices.reserve(global_edge.global_vertices.size());
         for (GlobalVertexId global_v : global_edge.global_vertices) {
             vertices.push_back(static_cast<VertexId>(global_v));
         }
-        hg.add_edge(vertices);
+        edge_list.push_back(std::move(vertices));
     }
-    return hg;
+
+    // Use batch constructor with default label function (vertex ID as label)
+    // Builds all indices (vertex_to_edges, signature index) in single pass
+    return Hypergraph(edge_list);
 }
 
 Hypergraph WolframState::to_canonical_hypergraph() const {
@@ -180,18 +168,21 @@ Hypergraph WolframState::to_canonical_hypergraph() const {
     auto canonical_edges = canonical_result.canonical_form.edges;
     // No caching of vertex mapping for thread safety
 
+    // Build canonical hypergraph using batch constructor
+    std::vector<std::vector<VertexId>> edge_list;
+    edge_list.reserve(canonical_edges.size());
 
-    // Build canonical hypergraph
-    Hypergraph canonical;
     for (const auto& canonical_edge : canonical_edges) {
         std::vector<VertexId> vertices;
+        vertices.reserve(canonical_edge.size());
         for (std::size_t vertex : canonical_edge) {
             vertices.push_back(static_cast<VertexId>(vertex));
         }
-        canonical.add_edge(vertices);
+        edge_list.push_back(std::move(vertices));
     }
 
-    return canonical;
+    // Use batch constructor - builds all indices in single pass
+    return Hypergraph(edge_list);
 }
 
 std::size_t WolframState::compute_hash(bool canonicalization_enabled) const {
@@ -297,28 +288,12 @@ CanonicalForm WolframState::get_canonical_form() const {
     return result.canonical_form;
 }
 
-std::vector<GlobalEdgeId> WolframState::find_edges_by_pattern_signature(const EdgeSignature& pattern_sig) const {
-    std::vector<GlobalEdgeId> result;
-
-    // Get edge indices from signature index
-    std::vector<EdgeId> edge_indices = edge_signature_index_.find_compatible_edges(pattern_sig);
-
-    // Convert indices to global edge IDs
-    for (EdgeId idx : edge_indices) {
-        if (idx < global_edges_.size()) {
-            result.push_back(global_edges_[idx].global_id);
-        }
-    }
-
-    return result;
-}
-
 WolframState WolframState::clone(MultiwayGraph& graph) const {
     WolframState copy(graph); // Gets fresh ID initially
     copy.state_id = this->state_id; // Preserve original state ID
     copy.global_edges_ = global_edges_;
     copy.global_vertices_ = global_vertices_;
-    copy.edge_signature_index_ = edge_signature_index_;
+    // Signature index built on-demand by Hypergraph when to_hypergraph() is called
     return copy;
 }
 

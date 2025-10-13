@@ -71,15 +71,9 @@ private:
     StateID state_id;  // Unique ID assigned on construction
     std::vector<GlobalHyperedge> global_edges_;
     std::unordered_set<GlobalVertexId> global_vertices_;
-    EdgeSignatureIndex edge_signature_index_;  // Fast edge lookup by signature
 
     mutable std::optional<std::size_t> cached_hash_;  // Lazy-computed hash
     mutable std::optional<StateID> canonical_state_id;  // Canonical ID when known
-
-    /**
-     * Rebuild the edge signature index.
-     */
-    void rebuild_signature_index();
 
 public:
     // Delete default constructor
@@ -90,6 +84,15 @@ public:
     
     // Constructor for creating state with specific edges - gets fresh ID
     explicit WolframState(MultiwayGraph& graph, const std::vector<std::vector<GlobalVertexId>>& edge_structures);
+
+    /**
+     * Batch constructor: Create state from edge list with pre-allocated edge IDs.
+     * Much more efficient than calling add_global_edge() N times.
+     * @param graph MultiwayGraph to get fresh state ID from
+     * @param edges List of (GlobalEdgeId, vertices) pairs
+     */
+    explicit WolframState(MultiwayGraph& graph,
+                         const std::vector<std::pair<GlobalEdgeId, std::vector<GlobalVertexId>>>& edges);
     
     // Delete copy operations to prevent ID duplication
     WolframState(const WolframState&) = delete;
@@ -200,12 +203,6 @@ public:
      * Get edge by global ID.
      */
     const GlobalHyperedge* get_edge(GlobalEdgeId edge_id) const;
-
-    /**
-     * Find edges compatible with a pattern signature.
-     * This is key for fast pattern matching using the signature index.
-     */
-    std::vector<GlobalEdgeId> find_edges_by_pattern_signature(const EdgeSignature& pattern_sig) const;
 
     // Canonical edge signature functions removed for thread safety
 

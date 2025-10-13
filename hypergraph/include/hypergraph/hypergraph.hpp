@@ -19,10 +19,10 @@ class Hypergraph {
 private:
     std::vector<Hyperedge> edges_;
     std::unordered_set<VertexId> vertices_;
-    
+
     // Index: vertex -> edges containing that vertex
     std::unordered_map<VertexId, std::vector<EdgeId>> vertex_to_edges_;
-    
+
     EdgeId next_edge_id_ = 0;
     VertexId next_vertex_id_ = 0;
     
@@ -49,15 +49,23 @@ private:
     
 public:
     Hypergraph() = default;
-    
+
+    /**
+     * Batch constructor: Build hypergraph from edge list with single index build.
+     * Much more efficient than calling add_edge() N times.
+     * Builds vertex_to_edges index in single pass.
+     * @param edge_list List of edges, each edge is a vector of vertex IDs
+     */
+    explicit Hypergraph(const std::vector<std::vector<VertexId>>& edge_list);
+
     // Copy constructor
-    Hypergraph(const Hypergraph& other) 
+    Hypergraph(const Hypergraph& other)
         : edges_(other.edges_)
         , vertices_(other.vertices_)
         , vertex_to_edges_(other.vertex_to_edges_)
         , next_edge_id_(other.next_edge_id_)
         , next_vertex_id_(other.next_vertex_id_) {}
-    
+
     // Assignment operator
     Hypergraph& operator=(const Hypergraph& other) {
         if (this != &other) {
@@ -257,6 +265,34 @@ public:
         next_vertex_id_ = 0;
     }
 };
+
+// Batch constructor implementation
+inline Hypergraph::Hypergraph(const std::vector<std::vector<VertexId>>& edge_list) {
+    // Reserve space
+    edges_.reserve(edge_list.size());
+
+    for (const auto& vertices : edge_list) {
+        if (vertices.empty()) {
+            continue;  // Skip empty edges
+        }
+
+        EdgeId edge_id = next_edge_id_++;
+        Hyperedge edge(edge_id, vertices);
+
+        // Update vertex set and next_vertex_id
+        for (VertexId v : vertices) {
+            vertices_.insert(v);
+            next_vertex_id_ = std::max(next_vertex_id_, v + 1);
+        }
+
+        // Build vertex_to_edges index
+        for (VertexId vertex_id : vertices) {
+            vertex_to_edges_[vertex_id].push_back(edge_id);
+        }
+
+        edges_.push_back(std::move(edge));
+    }
+}
 
 } // namespace hypergraph
 

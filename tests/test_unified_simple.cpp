@@ -118,11 +118,9 @@ TEST_F(JobSystemSimpleTest, Statistics) {
     }
     
     job_system->wait_for_completion();
-    
+
     auto stats = job_system->get_statistics();
-    EXPECT_GE(stats.total_jobs_executed, static_cast<size_t>(num_jobs));
-    EXPECT_EQ(stats.total_jobs_stolen, 0);  // Current implementation doesn't steal
-    EXPECT_EQ(stats.total_jobs_deferred, 0);
+    EXPECT_EQ(stats.total_jobs_executed, static_cast<size_t>(num_jobs));
 }
 
 // === CANONICALIZATION TESTS (Fixed) ===

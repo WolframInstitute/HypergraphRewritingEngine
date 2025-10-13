@@ -173,6 +173,9 @@ struct PatternMatch {
     }
 };
 
+// Forward declaration for EdgeSignatureIndex (defined later in this file)
+class EdgeSignatureIndex;
+
 /**
  * Pattern matching engine with radius-based search.
  */
@@ -196,13 +199,15 @@ private:
 
     /**
      * Recursively try to match remaining pattern edges.
+     * Uses EdgeSignatureIndex for fast candidate filtering via inverted index.
      */
     bool match_remaining_edges(
         const Hypergraph& target,
         const std::vector<PatternEdge>& remaining_pattern_edges,
         const std::unordered_set<EdgeId>& available_edges,
         std::vector<EdgeId>& matched_edges,
-        VariableAssignment& assignment) const;
+        VariableAssignment& assignment,
+        const EdgeSignatureIndex& edge_index) const;
 
     /**
      * Generate all possible variable assignments for an edge match.
@@ -249,9 +254,6 @@ public:
         std::size_t search_radius) const;
 };
 
-// Type for vertex labels (can be customized based on application needs)
-using VertexLabel = std::size_t;
-
 /**
  * Pattern signature representing variable arrangement (e.g., {0,0}, {0,1}, {0,1,2}).
  * This is used for partitioning edges by their variable patterns.
@@ -274,9 +276,9 @@ struct PatternSignature {
  */
 class EdgeSignature {
 private:
-    std::multiset<VertexLabel> concrete_labels_;  // Concrete vertex labels
-    std::size_t num_variables_;                   // Number of variable vertices
-    std::size_t arity_;                           // Total number of vertices
+    std::multiset<VertexId> concrete_labels_;  // Concrete vertex IDs (used as labels)
+    std::size_t num_variables_;                // Number of variable vertices
+    std::size_t arity_;                        // Total number of vertices
 
     // HGMatch-style vertex incidence information
     std::unordered_map<VertexId, std::vector<EdgeId>> vertex_incidence_;  // vertex -> incident edges
@@ -288,16 +290,16 @@ public:
 
     /**
      * Create signature from a concrete hyperedge with incidence information.
+     * Uses vertex IDs directly as labels.
      */
     static EdgeSignature from_concrete_edge(const Hyperedge& edge,
-                                           const std::function<VertexLabel(VertexId)>& label_func,
                                            const Hypergraph* hypergraph = nullptr);
 
     /**
      * Create signature from a pattern edge (may contain variables).
+     * Uses vertex IDs directly as labels.
      */
-    static EdgeSignature from_pattern_edge(const PatternEdge& edge,
-                                          const std::function<VertexLabel(VertexId)>& label_func);
+    static EdgeSignature from_pattern_edge(const PatternEdge& edge);
 
     /**
      * Check if this signature is compatible with a pattern signature.
@@ -310,7 +312,7 @@ public:
     // Getters
     std::size_t arity() const;
     std::size_t num_variables() const;
-    const std::multiset<VertexLabel>& concrete_labels() const;
+    const std::multiset<VertexId>& concrete_labels() const;
     const std::unordered_map<VertexId, std::vector<EdgeId>>& vertex_incidence() const;
     const std::unordered_map<VertexId, std::size_t>& vertex_degrees() const;
     const std::vector<std::size_t>& variable_positions() const;
@@ -330,7 +332,7 @@ private:
      * Check if a variable pattern is compatible with concrete labels.
      */
     bool is_pattern_compatible(const std::vector<std::size_t>& pattern,
-                              const std::vector<VertexLabel>& sorted_labels) const;
+                              const std::vector<VertexId>& sorted_labels) const;
 };
 
 /**
@@ -355,9 +357,19 @@ private:
 
     std::unordered_map<std::size_t, ArityPartition> by_arity_;
 
+    // HGMatch-style inverted hyperedge index: he(v)
+    // Maps: vertex_id -> [edge_ids]
+    // Enables fast lookup: "which edges contain vertex v?"
+    // Signature filtering happens after intersection
+    std::unordered_map<VertexId, std::vector<EdgeId>> inverted_index_;
+
+    // Quick lookup map: edge_id -> signature_hash for efficient signature retrieval
+    std::unordered_map<EdgeId, std::size_t> edge_to_signature_hash_;
+
 public:
     /**
      * Add an edge with its signature to the index.
+     * Also updates inverted index for HGMatch-style candidate generation.
      */
     void add_edge(EdgeId edge_id, const EdgeSignature& signature);
 
@@ -372,7 +384,27 @@ public:
     std::vector<EdgeId> get_edges_with_signature(const EdgeSignature& signature) const;
 
     /**
-     * Clear the index.
+     * HGMatch Algorithm 4: Get all edges incident to vertex v.
+     * Returns he(v) from inverted index.
+     * @param vertex Vertex ID to lookup
+     * @return Const reference to vector of edge IDs incident to vertex (optimization #3)
+     */
+    const std::vector<EdgeId>& get_incident_edges(VertexId vertex) const;
+
+    /**
+     * HGMatch Algorithm 4: Generate candidates by intersecting incident edge sets.
+     * For vertices in incident_vertices, compute ∩ he(vi).
+     * Then filters by available_edges constraint.
+     * @param incident_vertices Set of vertices to intersect over
+     * @param available_edges Only consider edges in this set (for partial matches)
+     * @return Edges incident to ALL vertices and in available_edges
+     */
+    std::vector<EdgeId> generate_candidates_by_intersection(
+        const std::vector<VertexId>& incident_vertices,
+        const std::unordered_set<EdgeId>& available_edges) const;
+
+    /**
+     * Clear the index (including inverted index).
      */
     void clear();
 
