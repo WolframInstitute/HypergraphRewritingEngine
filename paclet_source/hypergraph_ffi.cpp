@@ -252,11 +252,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Build main association
 
         // States -> Association[state_id -> state_edges]
+        // Send ALL states by their raw ID (not canonical) so events can reference them correctly
         std::unordered_map<int64_t, std::vector<std::vector<int64_t>>> states_map;
         for (const auto& state : all_states) {
-            StateID state_id_to_use = state->has_canonical_id()
-                                     ? state->get_canonical_id()
-                                     : state->id();
+            StateID state_id = state->id();  // Use raw ID, not canonical
 
             std::vector<std::vector<int64_t>> state_edges;
             for (const auto& edge : state->edges()) {
@@ -266,7 +265,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
                 state_edges.push_back(edge_data);
             }
-            states_map[static_cast<int64_t>(state_id_to_use.value)] = state_edges;
+            states_map[static_cast<int64_t>(state_id.value)] = state_edges;
         }
 
         // Build full result using Value type for heterogeneous association
@@ -294,15 +293,28 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             event_data.push_back({wxf::Value("EventId"), wxf::Value(static_cast<int64_t>(event.event_id))});
             event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
 
-            StateID input_state_id = event.has_canonical_input_state_id()
-                                    ? event.canonical_input_state_id
-                                    : event.input_state_id;
-            event_data.push_back({wxf::Value("InputStateId"), wxf::Value(static_cast<int64_t>(input_state_id.value))});
+            // Send RAW state IDs for consumed/produced edge matching
+            event_data.push_back({wxf::Value("InputStateId"), wxf::Value(static_cast<int64_t>(event.input_state_id.value))});
+            event_data.push_back({wxf::Value("OutputStateId"), wxf::Value(static_cast<int64_t>(event.output_state_id.value))});
 
-            StateID output_state_id = event.has_canonical_output_state_id()
-                                     ? event.canonical_output_state_id
-                                     : event.output_state_id;
-            event_data.push_back({wxf::Value("OutputStateId"), wxf::Value(static_cast<int64_t>(output_state_id.value))});
+            // Also send canonical IDs for graph structure (linking isomorphic states)
+            if (event.has_canonical_input_state_id()) {
+                event_data.push_back({wxf::Value("CanonicalInputStateId"), wxf::Value(static_cast<int64_t>(event.canonical_input_state_id.value))});
+            }
+            if (event.has_canonical_output_state_id()) {
+                event_data.push_back({wxf::Value("CanonicalOutputStateId"), wxf::Value(static_cast<int64_t>(event.canonical_output_state_id.value))});
+            }
+
+            // Add consumed/produced edges for graph highlighting
+            wxf::ValueList consumed_list, produced_list;
+            for (auto edge_id : event.consumed_edges) {
+                consumed_list.push_back(wxf::Value(static_cast<int64_t>(edge_id)));
+            }
+            for (auto edge_id : event.produced_edges) {
+                produced_list.push_back(wxf::Value(static_cast<int64_t>(edge_id)));
+            }
+            event_data.push_back({wxf::Value("ConsumedEdges"), wxf::Value(consumed_list)});
+            event_data.push_back({wxf::Value("ProducedEdges"), wxf::Value(produced_list)});
 
             events_list.push_back(wxf::Value(event_data));
         }

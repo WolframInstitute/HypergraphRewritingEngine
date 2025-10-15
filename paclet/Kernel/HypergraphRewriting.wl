@@ -2,7 +2,7 @@
 
 BeginPackage["HypergraphRewriting`"]
 
-PackageImport["WolframInstitute`Hypergraph`"]
+PackageExport["HGEvolve"]
 
 (* Public symbols - exposed API functions *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution and returns the specified property."
@@ -15,12 +15,11 @@ Options[HGEvolve] = {
   "EarlyTermination" -> False,
   "PatchBasedMatching" -> False,
   "FullCapture" -> True,
-  "AspectRatio" -> 1/2,
+  "AspectRatio" -> None,
   "MaxSuccessorStatesPerParent" -> 0,  (* 0 = unlimited *)
   "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
   "ExplorationProbability" -> 1.0       (* 1.0 = always explore *)
 };
-
 
 Begin["`Private`"]
 
@@ -53,8 +52,50 @@ HypergraphRewriting::invarg = "Invalid argument: `1`"
 HypergraphRewriting::libcall = "Library function call failed: `1`"
 HypergraphRewriting::notimpl = "`1`"
 
-HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, rulesAssoc, result, options},
+(* ============================================================================ *)
+(* Vertex Shape Functions - Factored out to avoid repetition *)
+(* ============================================================================ *)
 
+(* State vertex shape function - renders hypergraph states *)
+stateVertexShapeFunction := Function[
+  Inset[
+    Framed[
+      ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> {32, 32}],
+      Background -> LightBlue, RoundingRadius -> 3
+    ], #1, {0, 0}
+  ]
+]
+
+(* Event vertex shape function - renders from->to transitions *)
+eventVertexShapeFunction := Function[
+  With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
+    Inset[
+      Framed[
+        Row[{
+          ResourceFunction["WolframModelPlot"][
+            Rest /@ from,
+            GraphHighlight -> Rest /@ Select[from, MemberQ[tag["ConsumedEdges"], First[#]] &],
+            GraphHighlightStyle -> Dashed,
+            ImageSize -> 32
+          ],
+          Graphics[{LightGray, FilledCurve[
+            {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
+            {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
+            {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
+          ]}, ImageSize -> 8],
+          ResourceFunction["WolframModelPlot"][
+            Rest /@ to,
+            GraphHighlight -> Rest /@ Select[to, MemberQ[tag["ProducedEdges"], First[#]] &],
+            ImageSize -> 32
+          ]
+        }],
+        Background -> LightYellow, RoundingRadius -> 3
+      ], #1, {0, 0}
+    ]
+  ]
+]
+
+HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, wxfByteArray, resultByteArray, rulesAssoc, result, options},
   If[Head[performRewriting] =!= LibraryFunction,
     Return["Library function performRewriting not loaded"]
   ];
@@ -94,7 +135,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
   resultByteArray = performRewriting[wxfByteArray];
 
   If[ByteArrayQ[resultByteArray] && Length[resultByteArray] > 0,
-    Module[{wxfData, states, events, causalEdges, branchialEdges},
+    Module[{wxfData, states, events, causalEdges, branchialEdges, numStates, numEvents, numCausalEdges, numBranchialEdges},
       (* Deserialize WXF result *)
       wxfData = BinaryDeserialize[resultByteArray];
 
@@ -135,14 +176,14 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
           "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False, options["AspectRatio"]],
           "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
           "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
-          "EvolutionGraph", HGCreateEvolutionGraph[states, events],
-          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False],
-          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges],
-          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False],
-          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges],
-          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False],
-          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges],
-          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False],
+          "EvolutionGraph", HGCreateEvolutionGraph[states, events, {}, {}, True, options["AspectRatio"]],
+          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False, options["AspectRatio"]],
+          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges, {}, True, options["AspectRatio"]],
+          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False, options["AspectRatio"]],
+          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges, True, options["AspectRatio"]],
+          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False, options["AspectRatio"]],
+          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, True, options["AspectRatio"]],
+          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False, options["AspectRatio"]],
           _, $Failed
         ],
         (* WXF parsing failed *)
@@ -153,21 +194,19 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
   ]
 ]
 
-HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{stateEdges},
-  stateEdges = Map[DirectedEdge[states[#["InputStateId"]], states[#["OutputStateId"]]] &, events];
+HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{stateEdges},
+  (* Use canonical state IDs for graph edges to link isomorphic states *)
+  stateEdges = Map[
+    DirectedEdge[
+      states[Lookup[#, "CanonicalInputStateId", #["InputStateId"]]],
+      states[Lookup[#, "CanonicalOutputStateId", #["OutputStateId"]]]
+    ] &,
+    events
+  ];
   Graph[
     stateEdges,
-    VertexShapeFunction -> If[enableVertexStyles,
-      Function[
-        Inset[
-          Framed[
-            ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
-            Background -> LightBlue, RoundingRadius -> 3
-          ], #1
-        ]
-      ],
-      Automatic
-    ],
+    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
+    VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
     VertexStyle -> If[enableVertexStyles,
       Automatic,
       Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
@@ -178,7 +217,7 @@ HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ :
   ]
 ]
 
-HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{eventVertices, causalEventEdges, connectedEvents},
+HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{eventVertices, causalEventEdges, connectedEvents},
   eventVertices = Map[
     DirectedEdge[
       states[#["InputStateId"]],
@@ -199,38 +238,8 @@ HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, 
   Graph[
     connectedEvents,
     causalEventEdges,
-    VertexShapeFunction -> If[enableVertexStyles,
-      {
-        _DirectedEdge -> Function[
-          With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
-            Inset[
-              Framed[
-                Row[{
-                  ResourceFunction["WolframModelPlot"][
-                    Rest /@ from,
-                    GraphHighlight -> Rest /@ Extract[from, Position[from, {Alternatives @@ tag["ConsumedEdges"], ___}]],
-                    GraphHighlightStyle -> Dashed,
-                    ImageSize -> 64
-                  ],
-                  Graphics[{LightGray, FilledCurve[
-                    {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
-                    {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
-                    {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
-                  ]}, ImageSize -> 12],
-                  ResourceFunction["WolframModelPlot"][
-                    Rest /@ to,
-                    GraphHighlight -> Rest /@ Extract[to, Position[to, {Alternatives @@ tag["ProducedEdges"], ___}]],
-                    ImageSize -> 64
-                  ]
-                }],
-                Background -> LightYellow, RoundingRadius -> 3
-              ], #1
-            ]
-          ]
-        ]
-      },
-      Automatic
-    ],
+    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
+    VertexShapeFunction -> If[enableVertexStyles, {_DirectedEdge -> eventVertexShapeFunction}, Automatic],
     VertexStyle -> If[enableVertexStyles,
       Automatic,
       {_DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]]}
@@ -241,25 +250,23 @@ HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, 
   ]
 ]
 
-HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True, aspectRatio_ : 1/2] := Module[{branchialStateEdges},
+HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{branchialStateEdges},
+  (* Use canonical state IDs for graph edges to link isomorphic states *)
   branchialStateEdges = If[Length[branchialEdges] > 0 && Length[events] > 0,
-    Map[UndirectedEdge[states[events[[#[[1]] + 1]]["OutputStateId"]], states[events[[#[[2]] + 1]]["OutputStateId"]]] &, branchialEdges],
+    Map[
+      UndirectedEdge[
+        states[Lookup[events[[#[[1]] + 1]], "CanonicalOutputStateId", events[[#[[1]] + 1]]["OutputStateId"]]],
+        states[Lookup[events[[#[[2]] + 1]], "CanonicalOutputStateId", events[[#[[2]] + 1]]["OutputStateId"]]]
+      ] &,
+      branchialEdges
+    ],
     {}
   ];
 
   Graph[
     branchialStateEdges,
-    VertexShapeFunction -> If[enableVertexStyles,
-      Function[
-        Inset[
-          Framed[
-            ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64],
-            Background -> LightBlue, RoundingRadius -> 3
-          ], #1
-        ]
-      ],
-      Automatic
-    ],
+    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
+    VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
     VertexStyle -> If[enableVertexStyles,
       Automatic,
       Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
@@ -270,12 +277,13 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : 
   ]
 ]
 
-HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True] := Module[{
+HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{
   stateVertices, eventVertices, allVertices, stateToEventEdges,
-  eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges
+  eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges, baseGraph, baseEdges
 },
   stateVertices = Values[states];
 
+  (* Event vertices contain raw state data for visualization, but carry event metadata *)
   eventVertices = Map[
     DirectedEdge[
       states[#["InputStateId"]],
@@ -285,15 +293,16 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
     events
   ];
 
-  allVertices = Join[stateVertices, eventVertices];
+  (* allVertices = Join[stateVertices, eventVertices]; *)
 
+  (* Graph edges use canonical state IDs to link isomorphic states *)
   stateToEventEdges = MapThread[
-    UndirectedEdge[states[#1["InputStateId"]], #2] &,
+    UndirectedEdge[states[Lookup[#1, "CanonicalInputStateId", #1["InputStateId"]]], #2] &,
     {events, eventVertices}
   ];
 
   eventToStateEdges = MapThread[
-    DirectedEdge[#2, states[#1["OutputStateId"]]] &,
+    DirectedEdge[#2, states[Lookup[#1, "CanonicalOutputStateId", #1["OutputStateId"]]]] &,
     {events, eventVertices}
   ];
 
@@ -310,49 +319,18 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
   allEdges = Join[stateToEventEdges, eventToStateEdges, causalGraphEdges, branchialGraphEdges];
 
   Graph[
-    allVertices,
     allEdges,
+    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
+    PerformanceGoal -> "Quality",
     VertexLabels -> {
       v_ :> Placed[HoldForm[v], Tooltip],
       DirectedEdge[_, _, tag_] :> Placed[tag, Tooltip]
     },
+    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
     VertexShapeFunction -> If[enableVertexStyles,
       {
-        _DirectedEdge -> Function[
-          With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
-            Inset[
-              Framed[
-                Row[{
-                  ResourceFunction["WolframModelPlot"][
-                    Rest /@ from, (* Remove edge IDs for plotting *)
-                    GraphHighlight -> Rest /@ Select[from, MemberQ[tag["ConsumedEdges"], First[#]] &],
-                    GraphHighlightStyle -> Dashed,
-                    ImageSize -> 64
-                  ],
-                  Graphics[{LightGray, FilledCurve[
-                    {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
-                    {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
-                    {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
-                  ]}, ImageSize -> 12],
-                  ResourceFunction["WolframModelPlot"][
-                    Rest /@ to, (* Remove edge IDs for plotting *)
-                    GraphHighlight -> Rest /@ Select[to, MemberQ[tag["ProducedEdges"], First[#]] &],
-                    ImageSize -> 64
-                  ]
-                }],
-                Background -> LightYellow, RoundingRadius -> 3
-              ], #1
-            ]
-          ]
-        ],
-        Except[_DirectedEdge] -> Function[
-          Inset[
-            Framed[
-              ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> 64], (* Remove edge IDs *)
-              Background -> LightBlue, RoundingRadius -> 3
-            ], #1
-          ]
-        ]
+        _DirectedEdge -> eventVertexShapeFunction,
+        Except[_DirectedEdge] -> stateVertexShapeFunction
       },
       Automatic
     ],
@@ -369,12 +347,11 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
       DirectedEdge[_DirectedEdge, _DirectedEdge] -> ResourceFunction["WolframPhysicsProjectStyleData"]["CausalGraph"]["EdgeStyle"],
       UndirectedEdge[_DirectedEdge, _DirectedEdge] -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"]
     },
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
-    AspectRatio -> 1/2,
+    AspectRatio -> aspectRatio,
     PlotLabel -> None
   ]
 ]
 
-End[] (* `Private` *)
+End[]  (* `Private` *)
 
-EndPackage[]
+EndPackage[]  (* `HypergraphRewriting` *)

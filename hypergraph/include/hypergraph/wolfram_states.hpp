@@ -241,8 +241,8 @@ struct WolframEvent {
     StateID canonical_input_state_id;  // Canonical state before rewriting (for storage)
     StateID canonical_output_state_id; // Canonical state after rewriting (for storage)
 
-    std::vector<GlobalEdgeId> consumed_edges;  // Global edges removed
-    std::vector<GlobalEdgeId> produced_edges;  // Global edges added
+    std::vector<GlobalEdgeId> consumed_edges;  // Global edge IDs removed
+    std::vector<GlobalEdgeId> produced_edges;  // Global edge IDs added
 
     std::size_t rule_index;   // Index into rule set that was applied
     std::size_t step;         // Evolution step when this event occurred
