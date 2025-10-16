@@ -91,7 +91,7 @@ if(COMPILER_TYPE STREQUAL "notfound")
     message(FATAL_ERROR
         "No Windows cross-compiler found\n"
         "Install options:\n"
-        "  MinGW (Linux/WSL): sudo apt install gcc-mingw-w64-${CMAKE_SYSTEM_PROCESSOR}\n"
+        "  MinGW (Linux/WSL): sudo apt install gcc-mingw-w64-${CMAKE_SYSTEM_PROCESSOR} g++-mingw-w64-${CMAKE_SYSTEM_PROCESSOR}\n"
         "  MinGW (macOS): brew install mingw-w64\n"
         "  Clang: Use system clang with --target=${CMAKE_SYSTEM_PROCESSOR}-windows-gnu\n"
         "  MSVC: Install Visual Studio Build Tools or clang-cl\n"
