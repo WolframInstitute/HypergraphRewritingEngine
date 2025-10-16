@@ -351,7 +351,7 @@ void RewriteTask::execute() {
     // Check if we should even process this match - avoid wasteful work
     if (context_->current_step >= context_->max_steps) {
         DEBUG_LOG("[REWRITE] Skipping rewrite - current_step %zu >= max_steps %zu",
-                  context_->current_step, context_->max_steps);
+                  context_->current_step.load(), context_->max_steps);
         context_->rewrite_tasks_completed.fetch_add(1);
         return;
     }
@@ -602,7 +602,7 @@ void RewriteTask::execute() {
                 DEBUG_LOG("[REWRITE] NOT SPAWNING multi-rule application: step %zu >= max_steps %zu", new_step, context_->max_steps);
             }
 
-            DEBUG_LOG("[REWRITE] Event %zu completed, new state with %zu edges created", event_id, new_state.edges().size());
+            DEBUG_LOG("[REWRITE] Event %zu completed, new state with %zu edges created", event_id, new_state_ptr->edges().size());
         }
     } else {
         DEBUG_LOG("[REWRITE] No event created (INVALID_EVENT) - state may have been seen before (early termination)");

@@ -11,6 +11,7 @@ HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multi
 Options[HGEvolve] = {
   "CanonicalizeStates" -> True,
   "CanonicalizeEvents" -> False,
+  "DeduplicateEvents" -> False,
   "CausalTransitiveReduction" -> True,
   "EarlyTermination" -> False,
   "PatchBasedMatching" -> False,
@@ -104,6 +105,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
   options = Association[
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
+    "DeduplicateEvents" -> OptionValue["DeduplicateEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
     "EarlyTermination" -> OptionValue["EarlyTermination"],
     "PatchBasedMatching" -> OptionValue["PatchBasedMatching"],
@@ -194,14 +196,20 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
   ]
 ]
 
-HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{stateEdges},
+HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{stateEdges, eventList},
+  (* Events is now an Association, get values and expand by multiplicity *)
+  eventList = Flatten[Map[
+    ConstantArray[#, Lookup[#, "Multiplicity", 1]] &,
+    Values[events]
+  ], 1];
+
   (* Use canonical state IDs for graph edges to link isomorphic states *)
   stateEdges = Map[
     DirectedEdge[
       states[Lookup[#, "CanonicalInputStateId", #["InputStateId"]]],
       states[Lookup[#, "CanonicalOutputStateId", #["OutputStateId"]]]
     ] &,
-    events
+    eventList
   ];
   Graph[
     stateEdges,
@@ -218,17 +226,25 @@ HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ :
 ]
 
 HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{eventVertices, causalEventEdges, connectedEvents},
-  eventVertices = Map[
-    DirectedEdge[
+  (* Events is now an Association keyed by event ID *)
+  eventVertices = Association[Map[
+    #["EventId"] -> DirectedEdge[
       states[#["InputStateId"]],
       states[#["OutputStateId"]],
       #
     ] &,
-    events
-  ];
+    Values[events]
+  ]];
 
+  (* Causal edges now have From/To/Multiplicity structure *)
   causalEventEdges = If[Length[causalEdges] > 0 && Length[eventVertices] > 0,
-    Map[DirectedEdge[eventVertices[[#[[1]] + 1]], eventVertices[[#[[2]] + 1]]] &, causalEdges],
+    Flatten[Map[
+      ConstantArray[
+        DirectedEdge[eventVertices[#["From"]], eventVertices[#["To"]]],
+        #["Multiplicity"]
+      ] &,
+      causalEdges
+    ], 1],
     {}
   ];
 
@@ -252,14 +268,22 @@ HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, 
 
 HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{branchialStateEdges},
   (* Use canonical state IDs for graph edges to link isomorphic states *)
+  (* Branchial edges now have From/To/Multiplicity structure *)
   branchialStateEdges = If[Length[branchialEdges] > 0 && Length[events] > 0,
-    Map[
-      UndirectedEdge[
-        states[Lookup[events[[#[[1]] + 1]], "CanonicalOutputStateId", events[[#[[1]] + 1]]["OutputStateId"]]],
-        states[Lookup[events[[#[[2]] + 1]], "CanonicalOutputStateId", events[[#[[2]] + 1]]["OutputStateId"]]]
+    Flatten[Map[
+      Module[{fromEvent, toEvent},
+        fromEvent = events[#["From"]];
+        toEvent = events[#["To"]];
+        ConstantArray[
+          UndirectedEdge[
+            states[Lookup[fromEvent, "CanonicalOutputStateId", fromEvent["OutputStateId"]]],
+            states[Lookup[toEvent, "CanonicalOutputStateId", toEvent["OutputStateId"]]]
+          ],
+          #["Multiplicity"]
+        ]
       ] &,
       branchialEdges
-    ],
+    ], 1],
     {}
   ];
 
@@ -278,10 +302,16 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : 
 ]
 
 HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{
-  stateVertices, eventVertices, allVertices, stateToEventEdges,
+  stateVertices, eventVertices, eventList, allVertices, stateToEventEdges,
   eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges, baseGraph, baseEdges
 },
   stateVertices = Values[states];
+
+  (* Events is now an Association, expand by multiplicity for visualization *)
+  eventList = Flatten[Map[
+    ConstantArray[#, Lookup[#, "Multiplicity", 1]] &,
+    Values[events]
+  ], 1];
 
   (* Event vertices contain raw state data for visualization, but carry event metadata *)
   eventVertices = Map[
@@ -290,29 +320,49 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
       states[#["OutputStateId"]],
       #
     ] &,
-    events
+    eventList
   ];
 
-  (* allVertices = Join[stateVertices, eventVertices]; *)
+  (* Build association for edge lookup *)
+  eventVertexAssoc = Association[Map[
+    #["EventId"] -> DirectedEdge[
+      states[#["InputStateId"]],
+      states[#["OutputStateId"]],
+      #
+    ] &,
+    Values[events]
+  ]];
 
   (* Graph edges use canonical state IDs to link isomorphic states *)
   stateToEventEdges = MapThread[
     UndirectedEdge[states[Lookup[#1, "CanonicalInputStateId", #1["InputStateId"]]], #2] &,
-    {events, eventVertices}
+    {eventList, eventVertices}
   ];
 
   eventToStateEdges = MapThread[
     DirectedEdge[#2, states[Lookup[#1, "CanonicalOutputStateId", #1["OutputStateId"]]]] &,
-    {events, eventVertices}
+    {eventList, eventVertices}
   ];
 
-  causalGraphEdges = If[Length[causalEdges] > 0 && Length[eventVertices] > 0,
-    Map[DirectedEdge[eventVertices[[#[[1]] + 1]], eventVertices[[#[[2]] + 1]]] &, causalEdges],
+  causalGraphEdges = If[Length[causalEdges] > 0 && Length[eventVertexAssoc] > 0,
+    Flatten[Map[
+      ConstantArray[
+        DirectedEdge[eventVertexAssoc[#["From"]], eventVertexAssoc[#["To"]]],
+        #["Multiplicity"]
+      ] &,
+      causalEdges
+    ], 1],
     {}
   ];
 
-  branchialGraphEdges = If[Length[branchialEdges] > 0 && Length[eventVertices] > 0,
-    Map[UndirectedEdge[eventVertices[[#[[1]] + 1]], eventVertices[[#[[2]] + 1]]] &, branchialEdges],
+  branchialGraphEdges = If[Length[branchialEdges] > 0 && Length[eventVertexAssoc] > 0,
+    Flatten[Map[
+      ConstantArray[
+        UndirectedEdge[eventVertexAssoc[#["From"]], eventVertexAssoc[#["To"]]],
+        #["Multiplicity"]
+      ] &,
+      branchialEdges
+    ], 1],
     {}
   ];
 

@@ -42,13 +42,17 @@ TEST(EvolutionLimits, MaxSuccessorsPerParentHardLimit) {
     WolframEvolution evolution(
         /*max_steps=*/2,
         /*num_threads=*/4,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
         /*full_capture_non_canonicalised=*/false,
-        /*max_successor_states_per_parent=*/1  // HARD LIMIT
+        /*max_successor_states_per_parent=*/1,  // HARD LIMIT
+        /*max_states_per_step=*/0,
+        /*exploration_probability=*/1.0,
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -81,14 +85,17 @@ TEST(EvolutionLimits, MaxStatesPerStepHardLimit) {
     WolframEvolution evolution(
         /*max_steps=*/2,
         /*num_threads=*/8,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
         /*full_capture_non_canonicalised=*/false,
         /*max_successor_states_per_parent=*/0,  // Unlimited successors per parent
-        /*max_states_per_step=*/3  // HARD LIMIT: max 3 states at any step
+        /*max_states_per_step=*/3,  // HARD LIMIT: max 3 states at any step
+        /*exploration_probability=*/1.0,
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -117,15 +124,17 @@ TEST(EvolutionLimits, RandomExplorationProbability) {
         WolframEvolution evolution(
             /*max_steps=*/1,
             /*num_threads=*/1,
-            /*canonicalization=*/true,
+            /*canonicalize_states=*/true,
             /*full_capture=*/false,
-            /*event_dedup=*/true,
+            /*canonicalize_events=*/false,
+            /*deduplicate_events=*/true,
             /*transitive_reduction=*/true,
             /*early_termination=*/false,
             /*full_capture_non_canonicalised=*/false,
             /*max_successor_states_per_parent=*/0,
             /*max_states_per_step=*/0,
-            /*exploration_probability=*/0.5  // 50% chance
+            /*exploration_probability=*/0.5,  // 50% chance
+            /*full_event_canonicalization=*/true
         );
 
         evolution.add_rule(rule);
@@ -157,15 +166,17 @@ TEST(EvolutionLimits, CombinedLimitsInteraction) {
     WolframEvolution evolution(
         /*max_steps=*/3,
         /*num_threads=*/8,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
         /*full_capture_non_canonicalised=*/false,
         /*max_successor_states_per_parent=*/2,  // Max 2 successors per parent
         /*max_states_per_step=*/5,              // Max 5 states per step
-        /*exploration_probability=*/0.8         // 80% exploration
+        /*exploration_probability=*/0.8,        // 80% exploration
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -205,15 +216,17 @@ TEST(EvolutionLimits, UnlimitedDefaults) {
     WolframEvolution evolution(
         /*max_steps=*/2,
         /*num_threads=*/4,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
-        /*full_capture_non_canonicalised=*/false
-        // max_successor_states_per_parent defaults to 0 (unlimited)
-        // max_states_per_step defaults to 0 (unlimited)
-        // exploration_probability defaults to 1.0 (always explore)
+        /*full_capture_non_canonicalised=*/false,
+        /*max_successor_states_per_parent=*/0,  // unlimited
+        /*max_states_per_step=*/0,  // unlimited
+        /*exploration_probability=*/1.0,  // always explore
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -236,15 +249,17 @@ TEST(EvolutionLimits, ExplorationProbabilityZero) {
     WolframEvolution evolution(
         /*max_steps=*/1,
         /*num_threads=*/1,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
         /*full_capture_non_canonicalised=*/false,
         /*max_successor_states_per_parent=*/0,
         /*max_states_per_step=*/0,
-        /*exploration_probability=*/0.0  // Reject all
+        /*exploration_probability=*/0.0,  // Reject all
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -267,14 +282,17 @@ TEST(EvolutionLimits, LimitOfOne) {
     WolframEvolution evolution(
         /*max_steps=*/2,
         /*num_threads=*/4,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/false,
         /*full_capture_non_canonicalised=*/false,
         /*max_successor_states_per_parent=*/1,  // Only 1 successor allowed
-        /*max_states_per_step=*/1              // Only 1 state per step
+        /*max_states_per_step=*/1,              // Only 1 state per step
+        /*exploration_probability=*/1.0,
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);
@@ -308,15 +326,17 @@ TEST(EvolutionLimits, EarlyTerminationWithLimits) {
     WolframEvolution evolution(
         /*max_steps=*/5,
         /*num_threads=*/4,
-        /*canonicalization=*/true,
+        /*canonicalize_states=*/true,
         /*full_capture=*/false,
-        /*event_dedup=*/true,
+        /*canonicalize_events=*/false,
+        /*deduplicate_events=*/true,
         /*transitive_reduction=*/true,
         /*early_termination=*/true,  // Stop on duplicate states
         /*full_capture_non_canonicalised=*/false,
         /*max_successor_states_per_parent=*/2,
         /*max_states_per_step=*/3,
-        /*exploration_probability=*/1.0
+        /*exploration_probability=*/1.0,
+        /*full_event_canonicalization=*/true
     );
 
     evolution.add_rule(rule);

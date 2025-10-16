@@ -76,8 +76,12 @@ private:
     // Enables O(degree(v)) lookups instead of O(E) scans for finding edges containing a vertex
     std::unordered_map<GlobalVertexId, std::vector<std::pair<GlobalEdgeId, std::size_t>>> vertex_to_edge_positions_;
 
+    // Edge ID to index map: enables O(1) edge lookup by global ID (maintained alongside global_edges_)
+    std::unordered_map<GlobalEdgeId, std::size_t> edge_id_to_index_;
+
     mutable std::optional<std::size_t> cached_hash_;  // Lazy-computed hash
     mutable std::optional<StateID> canonical_state_id;  // Canonical ID when known
+    mutable VertexMapping vertex_mapping_;  // Isomorphism to canonical form (for event canonicalization)
 
 public:
     // Delete default constructor
@@ -103,7 +107,7 @@ public:
     // Delete copy operations to prevent ID duplication
     WolframState(const WolframState&) = delete;
     WolframState& operator=(const WolframState&) = delete;
-    
+
     // Allow move operations
     WolframState(WolframState&&) = default;
     WolframState& operator=(WolframState&&) = default;
@@ -146,6 +150,20 @@ public:
     }
 
     /**
+     * Set vertex mapping to canonical form (only when event canonicalization enabled).
+     */
+    void set_vertex_mapping(const VertexMapping& mapping) const {
+        vertex_mapping_ = mapping;
+    }
+
+    /**
+     * Get vertex mapping to canonical form.
+     */
+    const VertexMapping& get_vertex_mapping() const {
+        return vertex_mapping_;
+    }
+
+    /**
      * Add edge with global IDs (incrementally updates adjacency index).
      */
     void add_global_edge(GlobalEdgeId edge_id, const std::vector<GlobalVertexId>& vertices);
@@ -170,6 +188,13 @@ public:
 
     std::size_t num_edges() const { return global_edges_.size(); }
     std::size_t num_vertices() const { return global_vertices_.size(); }
+
+    /**
+     * Get edge by global ID using O(1) index lookup.
+     */
+    const GlobalHyperedge& get_edge_by_id(GlobalEdgeId edge_id) const {
+        return global_edges_[edge_id_to_index_.at(edge_id)];
+    }
 
     // Canonical vertex mapping functions removed for thread safety
 
@@ -241,6 +266,8 @@ struct WolframEvent {
     StateID canonical_input_state_id;  // Canonical state before rewriting (for storage)
     StateID canonical_output_state_id; // Canonical state after rewriting (for storage)
 
+    std::optional<EventId> canonical_event_id;  // Points to first event with same signature (when event canonicalization enabled)
+
     std::vector<GlobalEdgeId> consumed_edges;  // Global edge IDs removed
     std::vector<GlobalEdgeId> produced_edges;  // Global edge IDs added
 
@@ -276,6 +303,110 @@ struct WolframEvent {
         , timestamp(std::chrono::steady_clock::now()) {}
 
 };
+
+/**
+ * Event signature for canonicalization - tuple of (canonical_input_state, canonical_output_state, step)
+ */
+struct EventSignature {
+    // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+    // For Automatic mode: canonical edge positions (indices)
+    std::vector<std::size_t> canonical_consumed_edges;
+    std::vector<std::size_t> canonical_produced_edges;
+
+    // For Full mode: canonical state IDs only (edges empty)
+    StateID canonical_input_state_id{INVALID_STATE};
+    StateID canonical_output_state_id{INVALID_STATE};
+    std::size_t evolution_step{0};
+    bool include_state_ids{false};  // True for Full mode, False for Automatic mode (currently disabled)
+
+    bool operator==(const EventSignature& other) const {
+        if (include_state_ids != other.include_state_ids) {
+            DEBUG_LOG("[EventSig==] include_state_ids mismatch: this=%d other=%d", include_state_ids, other.include_state_ids);
+            return false;
+        }
+
+        if (include_state_ids) {
+            // Full mode: compare state IDs only (edges are empty)
+            return canonical_input_state_id == other.canonical_input_state_id &&
+                   canonical_output_state_id == other.canonical_output_state_id;
+        } else {
+#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+            // Automatic mode: compare edge positions, canonical state IDs, and step
+            // Events are identified by which canonical edges they transform in which canonical states
+            bool consumed_match = canonical_consumed_edges == other.canonical_consumed_edges;
+            bool produced_match = canonical_produced_edges == other.canonical_produced_edges;
+            bool input_state_match = canonical_input_state_id == other.canonical_input_state_id;
+            bool output_state_match = canonical_output_state_id == other.canonical_output_state_id;
+            bool step_match = evolution_step == other.evolution_step;
+
+            bool result = consumed_match && produced_match && input_state_match && output_state_match && step_match;
+
+            DEBUG_LOG("[EventSig==] this(in=%zu,out=%zu,step=%zu,c=%zu,p=%zu) vs other(in=%zu,out=%zu,step=%zu,c=%zu,p=%zu) => consumed=%d produced=%d in_state=%d out_state=%d step=%d RESULT=%d",
+                     canonical_input_state_id.value, canonical_output_state_id.value, evolution_step, canonical_consumed_edges.size(), canonical_produced_edges.size(),
+                     other.canonical_input_state_id.value, other.canonical_output_state_id.value, other.evolution_step, other.canonical_consumed_edges.size(), other.canonical_produced_edges.size(),
+                     consumed_match, produced_match, input_state_match, output_state_match, step_match, result);
+
+            return result;
+#else
+            throw std::runtime_error("Automatic mode event canonicalization comparison is disabled");
+#endif
+        }
+    }
+};
+
+} // namespace hypergraph
+
+// Hash specialization for EventSignature
+namespace std {
+    template <>
+    struct hash<hypergraph::EventSignature> {
+        std::size_t operator()(const hypergraph::EventSignature& sig) const {
+            std::size_t h = 0;
+
+            if (sig.include_state_ids) {
+                // Full mode: hash state IDs only
+                h ^= std::hash<std::size_t>{}(sig.canonical_input_state_id.value) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                h ^= std::hash<std::size_t>{}(sig.canonical_output_state_id.value) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                DEBUG_LOG("[std::hash<EventSig>] FULL mode (in=%zu,out=%zu) => hash=%zu",
+                         sig.canonical_input_state_id.value, sig.canonical_output_state_id.value, h);
+            } else {
+#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+                // Automatic mode: hash edge positions, canonical state IDs, and step
+                // Events are identified by which canonical edges they transform in which canonical states
+
+                // Hash canonical input state ID
+                h ^= std::hash<std::size_t>{}(sig.canonical_input_state_id.value) + 0x9e3779b9 + (h << 6) + (h >> 2);
+
+                // Hash canonical output state ID
+                h ^= std::hash<std::size_t>{}(sig.canonical_output_state_id.value) + 0x9e3779b9 + (h << 6) + (h >> 2);
+
+                // Hash consumed edge positions
+                for (const auto& edge_idx : sig.canonical_consumed_edges) {
+                    h ^= std::hash<std::size_t>{}(edge_idx) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                }
+
+                // Hash produced edge positions
+                for (const auto& edge_idx : sig.canonical_produced_edges) {
+                    h ^= std::hash<std::size_t>{}(edge_idx) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                }
+
+                // Hash step
+                h ^= std::hash<std::size_t>{}(sig.evolution_step) + 0x9e3779b9 + (h << 6) + (h >> 2);
+
+                DEBUG_LOG("[std::hash<EventSig>] AUTO mode (in=%zu,out=%zu,step=%zu,consumed=%zu,produced=%zu) => hash=%zu",
+                         sig.canonical_input_state_id.value, sig.canonical_output_state_id.value, sig.evolution_step,
+                         sig.canonical_consumed_edges.size(), sig.canonical_produced_edges.size(), h);
+#else
+                throw std::runtime_error("Automatic mode event canonicalization hashing is disabled");
+#endif
+            }
+
+            return h;
+        }
+    };
+}
+
+namespace hypergraph {
 
 /**
  * Causal and branchial edge types between events in the multiway graph.
@@ -381,6 +512,10 @@ private:
     std::unique_ptr<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>> states;  // States by raw ID for direct access
     std::unique_ptr<ConcurrentHashMap<StateID, StateMatchCache>> match_caches;  // Pattern match caches
     std::unique_ptr<ConcurrentHashMap<std::size_t, StateID>> seen_hashes;  // Maps canonical hash to canonical StateID
+
+    // Event canonicalization - maps (input_state, output_state, step) hash to first event ID
+    std::unique_ptr<ConcurrentHashMap<EventSignature, EventId>> seen_event_signatures;
+
     std::unordered_set<StateID> exhausted_states;  // States with no more applicable rules
 
     // Event edge tracking
@@ -400,8 +535,11 @@ private:
     std::atomic<std::size_t> next_state_id{0};
 
     // Configuration flags
-    bool canonicalization_enabled = true;
+    bool canonicalize_states = true;
     HashStrategyType hash_strategy_type;  // Runtime-selectable when canonicalization enabled (initialized in constructor)
+    bool canonicalize_events = false;  // Track canonical event IDs for events with same (input, output, step)
+    bool deduplicate_events = false;  // When true, return existing event ID for duplicates (simple graph mode)
+    bool full_event_canonicalization = true;  // Full mode (true) uses state IDs only; Automatic mode (false) includes edges & step
     bool full_capture = false;  // Controls optional state storage
     bool full_capture_non_canonicalised = false;  // Store all states including duplicates
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
@@ -436,11 +574,14 @@ public:
     MultiwayGraph& operator=(MultiwayGraph&& other) noexcept;
 
     explicit MultiwayGraph(bool enable_full_capture = false, bool enable_transitive_reduction = true, bool enable_early_termination = false, bool enable_full_capture_non_canonicalised = false,
-                          std::size_t max_successor_states_per_parent = 0, std::size_t max_states_per_step = 0, double exploration_probability = 1.0)
+                          std::size_t max_successor_states_per_parent = 0, std::size_t max_states_per_step = 0, double exploration_probability = 1.0, bool enable_canonicalize_events = false, bool enable_deduplicate_events = false, bool enable_full_event_canonicalization = true)
         : events(std::make_unique<ConcurrentHashMap<EventId, WolframEvent>>())
         , input_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , output_edge_to_events(std::make_unique<ConcurrentHashMap<GlobalEdgeId, LockfreeList<EventId>*>>())
         , hash_strategy_type(HashStrategyType::UNIQUENESS_TREE)
+        , canonicalize_events(enable_canonicalize_events)
+        , deduplicate_events(enable_deduplicate_events)
+        , full_event_canonicalization(enable_full_event_canonicalization)
         , full_capture(enable_full_capture)
         , full_capture_non_canonicalised(enable_full_capture_non_canonicalised)
         , transitive_reduction_enabled(enable_transitive_reduction)
@@ -453,8 +594,12 @@ public:
             states = std::make_unique<ConcurrentHashMap<StateID, std::shared_ptr<WolframState>>>();
             match_caches = std::make_unique<ConcurrentHashMap<StateID, StateMatchCache>>();
         }
-        if (canonicalization_enabled) {
+        if (canonicalize_states) {
             seen_hashes = std::make_unique<ConcurrentHashMap<std::size_t, StateID>>();
+        }
+        // Event canonicalization only makes sense when state canonicalization is enabled
+        if (canonicalize_states && canonicalize_events) {
+            seen_event_signatures = std::make_unique<ConcurrentHashMap<EventSignature, EventId>>();
         }
         // Initialize pruning tracking structures if limits are enabled
         if (max_successor_states_per_parent_ > 0) {
@@ -495,12 +640,12 @@ public:
     /**
      * Enable or disable canonicalization-based state deduplication.
      */
-    void set_canonicalization_enabled(bool enabled) {
-        canonicalization_enabled = enabled;
+    void set_canonicalize_states(bool enabled) {
+        canonicalize_states = enabled;
     }
 
-    bool is_canonicalization_enabled() const {
-        return canonicalization_enabled;
+    bool is_canonicalize_states() const {
+        return canonicalize_states;
     }
 
     /**
@@ -626,7 +771,7 @@ private:
 
 public:
     std::size_t num_states() const {
-        if (canonicalization_enabled && seen_hashes) {
+        if (canonicalize_states && seen_hashes) {
             return seen_hashes->size();  // Unique canonical states when canonicalization enabled
         } else if (full_capture && states) {
             return states->size();  // Raw state count when canonicalization disabled

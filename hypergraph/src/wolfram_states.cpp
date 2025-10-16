@@ -72,7 +72,7 @@ namespace hypergraph {
  * WolframState
  */
 
-WolframState::WolframState(MultiwayGraph& graph) 
+WolframState::WolframState(MultiwayGraph& graph)
     : state_id(graph.get_fresh_state_id()) {
 }
 
@@ -90,10 +90,12 @@ WolframState::WolframState(MultiwayGraph& graph,
                          const WolframState* parent_state)
     : state_id(graph.get_fresh_state_id()) {
     global_edges_.reserve(edges.size());
+    edge_id_to_index_.reserve(edges.size());
 
-    // Batch add all edges, building adjacency index in single pass O(E·a)
+    // Batch add all edges, building adjacency index and edge map in single pass O(E·a)
     for (const auto& [edge_id, vertices] : edges) {
         global_edges_.emplace_back(edge_id, vertices);
+        edge_id_to_index_[edge_id] = global_edges_.size() - 1;
 
         for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
             GlobalVertexId vertex = vertices[pos];
@@ -105,6 +107,7 @@ WolframState::WolframState(MultiwayGraph& graph,
 
 void WolframState::add_global_edge(GlobalEdgeId edge_id, const std::vector<GlobalVertexId>& vertices) {
     global_edges_.emplace_back(edge_id, vertices);
+    edge_id_to_index_[edge_id] = global_edges_.size() - 1;
 
     // Incrementally update adjacency index O(arity)
     for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
@@ -122,6 +125,7 @@ void WolframState::add_global_edges(const std::vector<std::pair<GlobalEdgeId, st
     // Batch incremental update O(added_edges · arity)
     for (const auto& [edge_id, vertices] : edges) {
         global_edges_.emplace_back(edge_id, vertices);
+        edge_id_to_index_[edge_id] = global_edges_.size() - 1;
 
         for (std::size_t pos = 0; pos < vertices.size(); ++pos) {
             GlobalVertexId vertex = vertices[pos];
@@ -134,36 +138,48 @@ void WolframState::add_global_edges(const std::vector<std::pair<GlobalEdgeId, st
 }
 
 bool WolframState::remove_global_edge(GlobalEdgeId edge_id) {
-    auto it = std::find_if(global_edges_.begin(), global_edges_.end(),
-        [edge_id](const GlobalHyperedge& edge) { return edge.global_id == edge_id; });
-
-    if (it != global_edges_.end()) {
-        const auto& vertices_to_remove = it->global_vertices;
-
-        // Incrementally update adjacency index O(arity) instead of O(E·a) rebuild
-        for (std::size_t pos = 0; pos < vertices_to_remove.size(); ++pos) {
-            GlobalVertexId vertex = vertices_to_remove[pos];
-            auto& positions = vertex_to_edge_positions_[vertex];
-
-            // Remove this (edge_id, pos) entry
-            positions.erase(
-                std::remove_if(positions.begin(), positions.end(),
-                    [edge_id](const auto& p) { return p.first == edge_id; }),
-                positions.end()
-            );
-
-            // If vertex no longer appears in any edge, remove it entirely
-            if (positions.empty()) {
-                vertex_to_edge_positions_.erase(vertex);
-                global_vertices_.erase(vertex);
-            }
-        }
-
-        global_edges_.erase(it);
-        cached_hash_.reset();
-        return true;
+    auto map_it = edge_id_to_index_.find(edge_id);
+    if (map_it == edge_id_to_index_.end()) {
+        return false;
     }
-    return false;
+
+    std::size_t index_to_remove = map_it->second;
+    const auto& vertices_to_remove = global_edges_[index_to_remove].global_vertices;
+
+    // Incrementally update adjacency index O(arity) instead of O(E·a) rebuild
+    for (std::size_t pos = 0; pos < vertices_to_remove.size(); ++pos) {
+        GlobalVertexId vertex = vertices_to_remove[pos];
+        auto& positions = vertex_to_edge_positions_[vertex];
+
+        // Remove this (edge_id, pos) entry
+        positions.erase(
+            std::remove_if(positions.begin(), positions.end(),
+                [edge_id](const auto& p) { return p.first == edge_id; }),
+            positions.end()
+        );
+
+        // If vertex no longer appears in any edge, remove it entirely
+        if (positions.empty()) {
+            vertex_to_edge_positions_.erase(vertex);
+            global_vertices_.erase(vertex);
+        }
+    }
+
+    // Erase from map first
+    edge_id_to_index_.erase(map_it);
+
+    // Erase from vector
+    global_edges_.erase(global_edges_.begin() + index_to_remove);
+
+    // Update all indices >= index_to_remove in the map (they all shifted down by 1)
+    for (auto& [eid, idx] : edge_id_to_index_) {
+        if (idx > index_to_remove) {
+            idx--;
+        }
+    }
+
+    cached_hash_.reset();
+    return true;
 }
 
 void WolframState::remove_global_edges(const std::vector<GlobalEdgeId>& edge_ids) {
@@ -185,6 +201,13 @@ void WolframState::remove_global_edges(const std::vector<GlobalEdgeId>& edge_ids
             [&ids_to_remove](const GlobalHyperedge& e) { return ids_to_remove.count(e.global_id); }),
         global_edges_.end()
     );
+
+    // Rebuild edge index map since multiple indices shifted
+    edge_id_to_index_.clear();
+    edge_id_to_index_.reserve(global_edges_.size());
+    for (std::size_t i = 0; i < global_edges_.size(); ++i) {
+        edge_id_to_index_[global_edges_[i].global_id] = i;
+    }
 
     // Incrementally update adjacency index O(removed_edges · arity)
     for (const auto& [vertex, removed_edge_ids] : vertex_to_removed_edges) {
@@ -241,7 +264,9 @@ Hypergraph WolframState::to_canonical_hypergraph() const {
     Canonicalizer canonicalizer;
     auto canonical_result = canonicalizer.canonicalize_edges(edges);
     auto canonical_edges = canonical_result.canonical_form.edges;
-    // No caching of vertex mapping for thread safety
+
+    // Store vertex mapping for event canonicalization
+    vertex_mapping_ = canonical_result.vertex_mapping;
 
     // Build canonical hypergraph using batch constructor
     std::vector<std::vector<VertexId>> edge_list;
@@ -275,6 +300,18 @@ std::size_t WolframState::compute_hash(HashStrategyType strategy_type) const {
         DEBUG_LOG("%s", debug_stream.str().c_str());
     }
 
+    // Populate vertex mapping for event canonicalization by computing canonical form
+    // This creates the mapping from original GlobalVertexIds to canonical positions
+    std::vector<std::vector<GlobalVertexId>> edges;
+    for (const auto& global_edge : global_edges_) {
+        edges.push_back(global_edge.global_vertices);
+    }
+
+    Canonicalizer canonicalizer;
+    auto canonical_result = canonicalizer.canonicalize_edges(edges);
+    vertex_mapping_ = canonical_result.vertex_mapping;
+    DEBUG_LOG("[DEBUG] Populated vertex mapping with %zu entries", vertex_mapping_.original_to_canonical.size());
+
     // Use runtime-selectable isomorphism-invariant hash strategy
     RuntimeHashStrategy strategy(strategy_type);
     std::size_t hash_value = strategy.compute_hash(global_edges_, vertex_to_edge_positions_);
@@ -302,6 +339,14 @@ WolframState WolframState::clone(MultiwayGraph& graph) const {
     copy.global_edges_ = global_edges_;
     copy.global_vertices_ = global_vertices_;
     copy.vertex_to_edge_positions_ = vertex_to_edge_positions_; // Copy adjacency index
+
+    // Rebuild edge index map
+    copy.edge_id_to_index_.clear();
+    copy.edge_id_to_index_.reserve(copy.global_edges_.size());
+    for (std::size_t i = 0; i < copy.global_edges_.size(); ++i) {
+        copy.edge_id_to_index_[copy.global_edges_[i].global_id] = i;
+    }
+
     return copy;
 }
 
@@ -321,9 +366,8 @@ std::vector<GlobalEdgeId> WolframState::edges_containing(GlobalVertexId vertex_i
 }
 
 const GlobalHyperedge* WolframState::get_edge(GlobalEdgeId edge_id) const {
-    auto it = std::find_if(global_edges_.begin(), global_edges_.end(),
-        [edge_id](const GlobalHyperedge& edge) { return edge.global_id == edge_id; });
-    return (it != global_edges_.end()) ? &(*it) : nullptr;
+    auto it = edge_id_to_index_.find(edge_id);
+    return (it != edge_id_to_index_.end()) ? &global_edges_[it->second] : nullptr;
 }
 
 
@@ -359,7 +403,7 @@ std::shared_ptr<WolframState> MultiwayGraph::create_initial_state(const std::vec
         }
     }
 
-    // Store the initial state ID for causal computation  
+    // Store the initial state ID for causal computation
     initial_state_id = state->id();
 
     // Always store state by its raw ID for direct access
@@ -368,7 +412,7 @@ std::shared_ptr<WolframState> MultiwayGraph::create_initial_state(const std::vec
     }
 
     // Handle canonicalization mapping separately
-    if (canonicalization_enabled && seen_hashes) {
+    if (canonicalize_states && seen_hashes) {
         std::size_t hash = state->get_hash(hash_strategy_type);
         auto canonical_result = seen_hashes->insert_or_get(hash, state->id());
         StateID canonical_state_id = canonical_result.first;
@@ -449,7 +493,6 @@ std::vector<WolframEvent> MultiwayGraph::get_all_events() const {
     result.reserve(events->size());
 
     events->for_each([&result](const EventId& id, const WolframEvent& event) {
-        (void)id; // Unused - only need the event
         result.push_back(event);
     });
 
@@ -637,9 +680,9 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
 
     // Handle input state canonicalization
     StateID canonical_input_state_id = INVALID_STATE;
-    if (canonicalization_enabled && seen_hashes) {
+    if (canonicalize_states && seen_hashes) {
         if (input_state->has_canonical_id()) {
-            // Use already-known canonical ID
+            // Use already-known canonical ID (vertex mapping was set when first computed)
             canonical_input_state_id = input_state->get_canonical_id();
         } else {
             // Compute and cache canonical ID
@@ -663,7 +706,7 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
 
     // Handle output state canonicalization mapping separately
     StateID canonical_output_state_id = INVALID_STATE;
-    if (canonicalization_enabled && seen_hashes) {
+    if (canonicalize_states && seen_hashes) {
         std::size_t output_hash = output_state->get_hash(hash_strategy_type);
         auto canonical_result = seen_hashes->insert_or_get(output_hash, output_state_id);
         canonical_output_state_id = canonical_result.first;
@@ -691,9 +734,165 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
         }
     }
 
-    // Create event with raw state IDs (for relationships)
-    EventId event_id = next_event_id.fetch_add(1);
+    // Event canonicalization: check if we've seen this (canonical_input, canonical_output, step) tuple before
+    // Only applies when both state and event canonicalization are enabled
+    EventId event_id;
+    std::optional<EventId> canonical_event_id_opt;  // Will be set if this is a duplicate event
 
+    if (canonicalize_states && canonicalize_events && seen_event_signatures) {
+        EventSignature event_sig;
+
+        if (full_event_canonicalization) {
+            // Full mode (keys={}) - events identified ONLY by canonical state pair
+            event_sig = EventSignature{
+                {},  // canonical_consumed_edges - empty for Full mode
+                {},  // canonical_produced_edges - empty for Full mode
+                canonical_input_state_id,
+                canonical_output_state_id,
+                0,   // evolution_step - not used in Full mode
+                true // include_state_ids=true means compare state IDs
+            };
+        } else {
+#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+            // Automatic mode (keys={"Input", "Output", "Step"})
+            // We MUST use the canonical representative state's edge mapping, not each instance's mapping,
+            // because isomorphic states with different edge orderings get different permutations.
+
+            // Automatic mode REQUIRES canonical representative states for consistent edge mapping
+            if (!states) {
+                throw std::runtime_error("Automatic mode event canonicalization requires state storage (states map must exist)");
+            }
+
+            // Look up canonical representative states - this MUST succeed
+            auto input_opt = states->find(canonical_input_state_id);
+            if (!input_opt.has_value()) {
+                throw std::runtime_error(
+                    "Automatic mode event canonicalization failed: could not find canonical input state " +
+                    std::to_string(canonical_input_state_id.value) +
+                    ". This indicates full_capture=false, but Automatic mode requires full_capture=true " +
+                    "to ensure canonical state representatives are stored and available for consistent edge mapping.");
+            }
+
+            auto output_opt = states->find(canonical_output_state_id);
+            if (!output_opt.has_value()) {
+                throw std::runtime_error(
+                    "Automatic mode event canonicalization failed: could not find canonical output state " +
+                    std::to_string(canonical_output_state_id.value) +
+                    ". This indicates full_capture=false, but Automatic mode requires full_capture=true " +
+                    "to ensure canonical state representatives are stored and available for consistent edge mapping.");
+            }
+
+            std::shared_ptr<WolframState> canonical_input_state = input_opt.value();
+            std::shared_ptr<WolframState> canonical_output_state = output_opt.value();
+
+            const VertexMapping& input_mapping = canonical_input_state->get_vertex_mapping();
+            const VertexMapping& output_mapping = canonical_output_state->get_vertex_mapping();
+
+            // Convert consumed GlobalEdgeIds to canonical edge indices
+            std::vector<std::size_t> canonical_consumed_indices;
+            for (GlobalEdgeId edge_id : consumed_edges) {
+                std::size_t orig_idx = input_state->edge_id_to_index_.at(edge_id);
+                std::size_t canon_idx = input_mapping.map_edge(orig_idx);
+                canonical_consumed_indices.push_back(canon_idx);
+            }
+            // Sort to ensure order-independent comparison
+            std::sort(canonical_consumed_indices.begin(), canonical_consumed_indices.end());
+
+            // Convert produced GlobalEdgeIds to canonical edge indices
+            std::vector<std::size_t> canonical_produced_indices;
+            for (GlobalEdgeId edge_id : produced_edges) {
+                std::size_t orig_idx = output_state->edge_id_to_index_.at(edge_id);
+                std::size_t canon_idx = output_mapping.map_edge(orig_idx);
+                DEBUG_LOG("[EDGE_MAPPING] Produced edge_id=%zu orig_idx=%zu canon_idx=%zu", edge_id, orig_idx, canon_idx);
+                canonical_produced_indices.push_back(canon_idx);
+            }
+            // Sort to ensure order-independent comparison
+            std::sort(canonical_produced_indices.begin(), canonical_produced_indices.end());
+
+            event_sig = EventSignature{
+                canonical_consumed_indices,
+                canonical_produced_indices,
+                canonical_input_state_id,
+                canonical_output_state_id,
+                evolution_step,
+                false // include_state_ids=false for Automatic mode
+            };
+
+            DEBUG_LOG("[EVENT_CANON_AUTO] Automatic mode: canonical_in=%zu, canonical_out=%zu, consumed_indices=%zu, produced_indices=%zu, step=%zu",
+                     canonical_input_state_id.value, canonical_output_state_id.value,
+                     canonical_consumed_indices.size(), canonical_produced_indices.size(), evolution_step);
+
+            // Debug: Print canonical consumed edge indices
+            {
+                std::ostringstream ss;
+                ss << "[EVENT_CANON_AUTO] Canonical consumed indices: [";
+                for (size_t i = 0; i < canonical_consumed_indices.size(); ++i) {
+                    ss << canonical_consumed_indices[i];
+                    if (i < canonical_consumed_indices.size()-1) ss << ", ";
+                }
+                ss << "]";
+                DEBUG_LOG("%s", ss.str().c_str());
+            }
+
+            // Debug: Print canonical produced edge indices
+            {
+                std::ostringstream ss;
+                ss << "[EVENT_CANON_AUTO] Canonical produced indices: [";
+                for (size_t i = 0; i < canonical_produced_indices.size(); ++i) {
+                    ss << canonical_produced_indices[i];
+                    if (i < canonical_produced_indices.size()-1) ss << ", ";
+                }
+                ss << "]";
+                DEBUG_LOG("%s", ss.str().c_str());
+            }
+
+            // Debug: Compute and print signature hash
+            std::size_t sig_hash = std::hash<EventSignature>{}(event_sig);
+            DEBUG_LOG("[EVENT_SIG_HASH] Hash=%zu, include_state_ids=%s, consumed_size=%zu, produced_size=%zu",
+                     sig_hash, event_sig.include_state_ids ? "true" : "false",
+                     event_sig.canonical_consumed_edges.size(), event_sig.canonical_produced_edges.size());
+#else
+            throw std::runtime_error("Automatic mode event canonicalization (full_event_canonicalization=false) is currently disabled");
+#endif
+        }
+
+        // Try to insert signature, allocating new event ID if first occurrence
+        auto result = seen_event_signatures->insert_or_get(event_sig,
+            [this]() { return next_event_id.fetch_add(1); });
+
+        EventId first_event_with_signature = result.first;
+        bool is_new_signature = result.second;
+
+        DEBUG_LOG("[EVENT_SIG_CHECK] is_new_signature=%s, first_event_id=%zu, canonical_in=%zu, canonical_out=%zu, step=%zu",
+                 is_new_signature ? "TRUE" : "FALSE", first_event_with_signature,
+                 canonical_input_state_id.value, canonical_output_state_id.value, evolution_step);
+
+        if (!is_new_signature) {
+            // Event signature already seen
+            if (deduplicate_events) {
+                // Simple graph mode: return existing event ID without creating duplicate
+                DEBUG_LOG("[EVENT_DEDUPLICATION] Duplicate event signature (in=%zu, out=%zu, step=%zu), returning existing event_id=%zu",
+                         canonical_input_state_id.value, canonical_output_state_id.value, evolution_step, first_event_with_signature);
+                return first_event_with_signature;
+            } else {
+                // Multigraph mode: create new event but record canonical ID
+                event_id = next_event_id.fetch_add(1);
+                canonical_event_id_opt = first_event_with_signature;
+                DEBUG_LOG("[EVENT_CANONICALIZATION] Duplicate event signature (in=%zu, out=%zu, step=%zu), creating new event_id=%zu with canonical_id=%zu",
+                         canonical_input_state_id.value, canonical_output_state_id.value, evolution_step, event_id, first_event_with_signature);
+            }
+        } else {
+            // New signature - this event is its own canonical
+            event_id = first_event_with_signature;
+            DEBUG_LOG("[EVENT_CANONICALIZATION] New event signature (in=%zu, out=%zu, step=%zu), creating event_id=%zu",
+                     canonical_input_state_id.value, canonical_output_state_id.value, evolution_step, event_id);
+        }
+    } else {
+        // No event canonicalization - always create new event
+        event_id = next_event_id.fetch_add(1);
+    }
+
+    // Create event with raw state IDs (for relationships)
     WolframEvent event(event_id, input_state_id, output_state_id,
                       consumed_edges, produced_edges,
                       rule_index, evolution_step);
@@ -702,8 +901,18 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
     event.canonical_input_state_id = canonical_input_state_id;
     event.canonical_output_state_id = canonical_output_state_id;
 
+    // Set canonical event ID if this is a duplicate
+    event.canonical_event_id = canonical_event_id_opt;
+
     events->insert(event_id, std::move(event));
-    events_count.fetch_add(1);
+
+    // Only count canonical events when event canonicalization is enabled
+    if (canonicalize_events && canonical_event_id_opt.has_value()) {
+        // This is a duplicate event, don't count it
+    } else {
+        // This is a canonical event (or canonicalization is disabled), count it
+        events_count.fetch_add(1);
+    }
 
     // Update edge-to-event mappings and event relationships
     // update_edge_mappings(event_id, edges_to_remove, produced_edge_ids);
@@ -886,12 +1095,21 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
         EventId event_i = all_event_ids[i];
         EventId event_j = all_event_ids[j];
 
+        // Get canonical event IDs if event canonicalization is enabled
+        const WolframEvent& event_i_data = all_events[i].second;
+        const WolframEvent& event_j_data = all_events[j].second;
+
+        EventId canonical_event_i = event_i_data.canonical_event_id.value_or(event_i);
+        EventId canonical_event_j = event_j_data.canonical_event_id.value_or(event_j);
+
         // Check for causal relationship: event_i outputs ∩ event_j inputs + TREE ANCESTRY
+        DEBUG_LOG("[RELATIONSHIPS] Checking causal i=%zu (event %zu, canonical %zu) -> j=%zu (event %zu, canonical %zu): output_set_size=%zu, input_set_size=%zu",
+                 i, event_i, canonical_event_i, j, event_j, canonical_event_j, output_edge_sets[i].size(), input_edge_sets[j].size());
         std::vector<GlobalEdgeId> causal_forward = fast_intersect(output_edge_sets[i], input_edge_sets[j]);
         if (!causal_forward.empty()) {
             {
                 std::ostringstream ss;
-                ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_i << " -> Event " << event_j;
+                ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_i << " (canonical: " << canonical_event_i << ") -> Event " << event_j << " (canonical: " << canonical_event_j << ")";
                 ss << " (overlap edges: ";
                 for (const auto& edge : causal_forward) {
                     ss << edge << " ";
@@ -899,13 +1117,17 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
                 ss << ") (ancestor->descendant)";
                 DEBUG_LOG("%s", ss.str().c_str());
             }
+
+            // Create single edge (boolean topology) using ACTUAL event IDs
+            // We use actual event IDs so that duplicate canonical events create multiple edges
+            // Multiplicity will be added after transitive reduction if !deduplicate_events
+            DEBUG_LOG("[RELATIONSHIPS] Creating EventEdge %zu -> %zu with %zu overlap edges",
+                     event_i, event_j, causal_forward.size());
             EventEdge causal_edge(event_i, event_j, EventRelationType::CAUSAL, causal_forward);
-
-            // Add to event edges list atomically
             event_edges.push_front(causal_edge);
-
             event_edges_count.fetch_add(1);
             causal_created.fetch_add(1);
+
         } else {
             causal_skipped_no_overlap.fetch_add(1);
         }
@@ -915,7 +1137,7 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
         if (!causal_reverse.empty()) {
             {
                 std::ostringstream ss;
-                ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_j << " -> Event " << event_i;
+                ss << "[RELATIONSHIPS] CAUSAL TREE: Event " << event_j << " (canonical: " << canonical_event_j << ") -> Event " << event_i << " (canonical: " << canonical_event_i << ")";
                 ss << " (overlap edges: ";
                 for (const auto& edge : causal_reverse) {
                     ss << edge << " ";
@@ -923,26 +1145,31 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
                 ss << ") (reverse ancestor->descendant)";
                 DEBUG_LOG("%s", ss.str().c_str());
             }
+
+            // Create single edge (boolean topology) using ACTUAL event IDs
+            // We use actual event IDs so that duplicate canonical events create multiple edges
+            // Multiplicity will be added after transitive reduction if !deduplicate_events
+            DEBUG_LOG("[RELATIONSHIPS] Creating reverse EventEdge %zu -> %zu with %zu overlap edges",
+                     event_j, event_i, causal_reverse.size());
             EventEdge causal_edge(event_j, event_i, EventRelationType::CAUSAL, causal_reverse);
-
-            // Add to event edges list atomically
             event_edges.push_front(causal_edge);
-
             event_edges_count.fetch_add(1);
             causal_created.fetch_add(1);
+
         }
         // Check for branchial relationship: shared input edges
         std::vector<GlobalEdgeId> branchial_overlap = fast_intersect(input_edge_sets[i], input_edge_sets[j]);
 
-        // Get input states for analysis
+        // Get input and output states for analysis
         StateID input_state_i = all_events[i].second.input_state_id;
         StateID input_state_j = all_events[j].second.input_state_id;
         bool same_input_state = (input_state_i == input_state_j);
 
         if (!branchial_overlap.empty() && same_input_state) {
-            DEBUG_LOG("[RELATIONSHIPS] Event %zu (input_state: %zu) <-> Event %zu (input_state: %zu): intersection size = %zu, same_input_state = %s",
-                    event_i, input_state_i.value, event_j, input_state_j.value, branchial_overlap.size(), same_input_state ? "true" : "false");
+            DEBUG_LOG("[RELATIONSHIPS] Event %zu (canonical: %zu, input_state: %zu) <-> Event %zu (canonical: %zu, input_state: %zu): intersection size = %zu, same_input_state = %s",
+                    event_i, canonical_event_i, input_state_i.value, event_j, canonical_event_j, input_state_j.value, branchial_overlap.size(), same_input_state ? "true" : "false");
 
+            // Use actual event IDs (will be mapped to canonical during transitive reduction if enabled)
             EventEdge branchial_edge(event_i, event_j, EventRelationType::BRANCHIAL, branchial_overlap);
 
             // Add to event edges list atomically
@@ -991,25 +1218,26 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
         DEBUG_LOG("[RELATIONSHIPS] Applying transitive reduction to %d causal edges...", causal_created.load());
 
         // Separate causal and branchial edges for proper handling
-        std::vector<std::pair<EventId, EventId>> all_causal_edges;
+        std::vector<EventEdge> all_causal_edges;
         std::vector<EventEdge> all_branchial_edges;
 
         // Collect edges from the linked list, separating by type
         event_edges.for_each([&all_causal_edges, &all_branchial_edges](const EventEdge& edge) {
             if (edge.type == EventRelationType::CAUSAL) {
-                all_causal_edges.push_back({edge.from_event, edge.to_event});
+                all_causal_edges.push_back(edge);
             } else if (edge.type == EventRelationType::BRANCHIAL) {
                 all_branchial_edges.push_back(edge);
             }
         });
 
-        // Build adjacency list for transitive reduction (causal only)
+        // Build adjacency list from ACTUAL event IDs (not canonical)
+        // This preserves the full event topology for correct transitive reduction
         std::map<EventId, std::set<EventId>> causal_graph;
-        for (const auto& [from_event, to_event] : all_causal_edges) {
-            causal_graph[from_event].insert(to_event);
+        for (const auto& edge : all_causal_edges) {
+            causal_graph[edge.from_event].insert(edge.to_event);
         }
 
-        // Apply proper transitive reduction: remove edge (A,C) if ANY path A->...->C exists with length >= 2
+        // Apply proper transitive reduction on ACTUAL event topology
         std::set<std::pair<EventId, EventId>> edges_to_remove;
 
         // Build reachability matrix using DFS to find all paths of length >= 2
@@ -1040,26 +1268,51 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
             return dfs(start, 0);
         };
 
-        // Check each direct edge to see if it can be removed
-        for (const auto& [from_event, to_event] : all_causal_edges) {
-            if (has_path_excluding_direct(from_event, to_event)) {
-                edges_to_remove.insert({from_event, to_event});
-                DEBUG_LOG("[RELATIONSHIPS] Transitive reduction: removing edge %zu -> %zu (alternate path exists)",
-                         from_event, to_event);
+        // Check each actual edge to see if it should be removed
+        for (const auto& edge : all_causal_edges) {
+            if (has_path_excluding_direct(edge.from_event, edge.to_event)) {
+                edges_to_remove.insert({edge.from_event, edge.to_event});
+                DEBUG_LOG("[RELATIONSHIPS] Transitive reduction: removing actual edge %zu -> %zu (alternate path exists)",
+                         edge.from_event, edge.to_event);
             }
         }
 
+        // Map actual event IDs to canonical event IDs for output
+        std::map<EventId, EventId> actual_to_canonical;
+        for (const auto& [event_id, event] : all_events) {
+            actual_to_canonical[event_id] = event.canonical_event_id.value_or(event_id);
+        }
+
         // Rebuild the linked list with reduced causal edges + all branchial edges
-        int edges_removed = edges_to_remove.size();
+        int edges_removed = 0;
+        int edges_before = causal_created.load();
         event_edges.clear();
         event_edges_count.store(0);
+        causal_created.store(0);
 
-        // Add reduced causal edges
-        for (const auto& [event1, event2] : all_causal_edges) {
-            if (edges_to_remove.count({event1, event2}) == 0) {
-                EventEdge causal_edge(event1, event2, EventRelationType::CAUSAL, {});
-                event_edges.push_front(causal_edge);
-                event_edges_count.fetch_add(1);
+        // Add surviving edges using canonical event IDs
+        for (const auto& edge : all_causal_edges) {
+            if (edges_to_remove.count({edge.from_event, edge.to_event}) == 0) {
+                // Edge survives transitive reduction
+                EventId canonical_from = actual_to_canonical[edge.from_event];
+                EventId canonical_to = actual_to_canonical[edge.to_event];
+
+                // Always use multiplicity=1 with transitive reduction enabled
+                // This matches Mathematica's default behavior: TransitiveReduction implies EdgeDeduplication
+                std::size_t multiplicity = 1;
+                DEBUG_LOG("[RELATIONSHIPS] Preserving edge %zu -> %zu (canonical %zu -> %zu): overlap_size=%zu, multiplicity=%zu",
+                         edge.from_event, edge.to_event, canonical_from, canonical_to,
+                         edge.overlapping_edges.size(), multiplicity);
+
+                for (std::size_t i = 0; i < multiplicity; ++i) {
+                    // Use canonical event IDs for the edge endpoints
+                    EventEdge causal_edge(canonical_from, canonical_to, EventRelationType::CAUSAL, edge.overlapping_edges);
+                    event_edges.push_front(causal_edge);
+                    event_edges_count.fetch_add(1);
+                    causal_created.fetch_add(1);
+                }
+            } else {
+                edges_removed += 1;
             }
         }
 
@@ -1069,15 +1322,14 @@ void MultiwayGraph::compute_all_event_relationships(job_system::JobSystem<Patter
             event_edges_count.fetch_add(1);
         }
 
-        DEBUG_LOG("[RELATIONSHIPS] Transitive reduction removed %d causal edges (%d -> %d), kept %zu branchial edges",
-                  edges_removed, causal_created, causal_created - edges_removed, all_branchial_edges.size());
-        causal_created -= edges_removed;
+        DEBUG_LOG("[RELATIONSHIPS] Transitive reduction removed %d edges (%d -> %d total edges), kept %zu branchial edges",
+                  edges_removed, edges_before, causal_created.load(), all_branchial_edges.size());
     } else {
         DEBUG_LOG("[RELATIONSHIPS] Transitive reduction disabled, keeping all %d causal edges", causal_created.load());
     }
 
     DEBUG_LOG("[RELATIONSHIPS] SUMMARY: Created %d causal edges, skipped %d (no overlap)",
-              causal_created, causal_skipped_no_overlap);
+              causal_created.load(), causal_skipped_no_overlap.load());
 
     DEBUG_LOG("[RELATIONSHIPS] Completed: created %zu branchial edges, count function reports %zu branchial edges, %zu causal edges",
         branchial_edges_created, get_branchial_edge_count(), get_causal_edge_count());
@@ -1270,7 +1522,7 @@ std::shared_ptr<WolframState> MultiwayGraph::get_state_efficient(StateID state_i
 }
 
 std::optional<std::size_t> MultiwayGraph::get_state_hash(StateID state_id) const {
-    if (!canonicalization_enabled) {
+    if (!canonicalize_states) {
         return std::nullopt;
     }
 
@@ -1293,33 +1545,33 @@ std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_stat
     if (!initial_state_id.has_value()) {
         return {};  // No initial state
     }
-    
+
     // If target is initial state, no path needed
     if (target_state_id == *initial_state_id) {
         return {};
     }
-    
+
     // Build adjacency map: state -> list of (event_id, output_state)
     std::unordered_map<StateID, std::vector<std::pair<EventId, StateID>>> state_to_events;
-    
+
     events->for_each([&state_to_events](const EventId& id, const WolframEvent& event) {
         state_to_events[event.input_state_id].emplace_back(id, event.output_state_id);
     });
-    
+
     // BFS to find shortest path
     std::unordered_map<StateID, EventId> parent_event;
     std::queue<StateID> to_visit;
-    
+
     to_visit.push(*initial_state_id);
-    
+
     while (!to_visit.empty()) {
         StateID current_state = to_visit.front();
         to_visit.pop();
-        
+
         if (current_state == target_state_id) {
             break;  // Found target
         }
-        
+
         // Check all events from current state
         auto it = state_to_events.find(current_state);
         if (it != state_to_events.end()) {
@@ -1331,19 +1583,19 @@ std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_stat
             }
         }
     }
-    
+
     // Reconstruct path
     if (parent_event.find(target_state_id) == parent_event.end()) {
         return {};  // Target not reachable
     }
-    
+
     std::vector<EventId> path;
     StateID current = target_state_id;
-    
+
     while (parent_event.find(current) != parent_event.end()) {
         EventId event_id = parent_event[current];
         path.push_back(event_id);
-        
+
         // Find input state efficiently from our adjacency map
         bool found = false;
         for (const auto& [state, event_list] : state_to_events) {
@@ -1356,10 +1608,10 @@ std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_stat
             }
             if (found) break;
         }
-        
+
         if (!found) break;
     }
-    
+
     // Reverse path (we built it backwards)
     std::reverse(path.begin(), path.end());
     return path;

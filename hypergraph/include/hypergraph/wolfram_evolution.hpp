@@ -37,11 +37,13 @@ private:
     
 public:
     WolframEvolution(std::size_t max_steps, std::size_t num_threads = std::thread::hardware_concurrency(),
-                     bool canonicalization_enabled = true, bool full_capture = false,
-                     bool event_deduplication = true, bool transitive_reduction_enabled = true,
+                     bool canonicalize_states = true, bool full_capture = false,
+                     bool canonicalize_events = false, bool deduplicate_events = false,
+                     bool transitive_reduction_enabled = true,
                      bool early_termination = false, bool full_capture_non_canonicalised = false,
                      std::size_t max_successor_states_per_parent = 0, std::size_t max_states_per_step = 0,
-                     double exploration_probability = 1.0);
+                     double exploration_probability = 1.0,
+                     bool full_event_canonicalization = true);
 
     ~WolframEvolution();
     
@@ -78,7 +80,14 @@ public:
     const MultiwayGraph& get_multiway_graph() const {
         return *multiway_graph_;
     }
-    
+
+    /**
+     * Get mutable multiway graph for configuration.
+     */
+    MultiwayGraph& get_multiway_graph() {
+        return *multiway_graph_;
+    }
+
     void print_summary() const {
         multiway_graph_->print_summary();
     }

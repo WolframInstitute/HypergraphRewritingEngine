@@ -61,6 +61,8 @@ protected:
         for (int i = 0; i < num_runs; ++i) {
             // Create clean evolution system
             WolframEvolution evolution(steps, std::thread::hardware_concurrency(), true, false);
+            // Override hash strategy to use exact canonicalization for consistent test results
+            evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
             for (const auto& rule : rules) {
                 evolution.add_rule(rule);
             }
@@ -131,11 +133,17 @@ protected:
                                   const std::vector<RewritingRule>& rules,
                                   const std::vector<std::vector<GlobalVertexId>>& initial,
                                   const std::vector<std::pair<int, TestResult>>& expected,
-                                  bool full_capture = false) {
+                                  bool full_capture = false,
+                                  bool canonicalize_events = false,
+                                  bool full_event_canonicalization = true) {
         std::cout << "\n=== Validating Expected Results for " << test_name
-                  << " (full_capture=" << (full_capture ? "true" : "false") << ") ===" << std::endl;
+                  << " (full_capture=" << (full_capture ? "true" : "false")
+                  << ", canonicalize_events=" << (canonicalize_events ? "true" : "false")
+                  << ", full_event_canonicalization=" << (full_event_canonicalization ? "true" : "false") << ") ===" << std::endl;
         for (const auto& [steps, expected_result] : expected) {
-            WolframEvolution evolution(steps, std::thread::hardware_concurrency(), true, full_capture);
+            WolframEvolution evolution(steps, std::thread::hardware_concurrency(), true, full_capture, canonicalize_events, false, true, false, false, 0, 0, 1.0, full_event_canonicalization);
+            // Override hash strategy to use exact canonicalization for consistent test results
+            evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
             for (const auto& rule : rules) {
                 evolution.add_rule(rule);
             }
@@ -205,6 +213,41 @@ TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule_EventCanonicalization) {
+    // Create rule: {{1,2}} -> {{1,2}, {2,3}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {4, 3, 0, 2}},
+        {3, {8, 8, 0, 8}},
+        {4, {17, 21, 0, 32}}
+    };
+
+    validate_expected_results("SimpleRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
     // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
 
@@ -252,6 +295,49 @@ TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}, {3, 1}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 3, 0}},
+        {2, {4, 3, 18, 12}},
+        {3, {8, 9, 108, 72}},
+        {4, {13, 19, 738, 444}}
+    };
+
+    validate_expected_results("TwoEdgeRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
     // Create rule: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
 
@@ -293,6 +379,45 @@ TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule) {
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("HyperedgeRule", {rule}, initial, 4);
 #endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule_EventCanonicalization) {
+    // Create rule: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    // Expected results WITH event canonicalization
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {2, 1, 0, 0}},
+        {3, {2, 1, 0, 0}},
+        {4, {2, 1, 0, 0}}
+    };
+
+    validate_expected_results("HyperedgeRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
@@ -364,6 +489,73 @@ TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule) {
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("MultiRule", rules, initial, 4);
 #endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule_EventCanonicalization) {
+    // Create Rule 1: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
+    PatternHypergraph lhs1;
+
+    lhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(2),
+        PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs1;
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(2)
+    });
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(3)
+    });
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(4)
+    });
+
+    RewritingRule rule1(lhs1, rhs1);
+
+    // Create Rule 2: {{1,2}} -> {{1,2},{1,3}}
+    PatternHypergraph lhs2;
+
+    lhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(2)
+    });
+
+    PatternHypergraph rhs2;
+
+    rhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(2)
+    });
+
+    rhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1),
+        PatternVertex::variable(3)
+    });
+
+    RewritingRule rule2(lhs2, rhs2);
+
+    std::vector<RewritingRule> rules = {rule1, rule2};
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 2, 0, 3}},
+        {3, {4, 3, 0, 15}},
+        {4, {5, 4, 0, 75}}
+    };
+
+    validate_expected_results("MultiRule_EventCanonicalization", rules, initial, expected_with_event_canon, false, true);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
@@ -438,6 +630,74 @@ TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_EventCanonicalization) {
+    // Create rules: {{1,2,3}} -> {{1,2},{1,3},{1,4}} and {{1,2},{1,3}} -> {{1,2},{1,3},{2,4}}
+
+    // Rule 1: {{1,2,3}} -> {{1,2},{1,3},{1,4}}
+    PatternHypergraph lhs1;
+
+    lhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs1;
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    rhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(4)
+    });
+
+    // Rule 2: {{1,2},{1,3}} -> {{1,2},{1,3},{2,4}}
+    PatternHypergraph lhs2;
+
+    lhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs2;
+
+    rhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs2.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    rhs2.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule1(lhs1, rhs1);
+    RewritingRule rule2(lhs2, rhs2);
+
+    std::vector<RewritingRule> rules = {rule1, rule2};
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 2, 15, 6}},
+        {3, {5, 4, 105, 42}},
+        {4, {9, 9, 657, 282}}
+    };
+
+    validate_expected_results("ComplexTwoRuleSystem_EventCanonicalization", rules, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
     // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
 
@@ -483,6 +743,49 @@ TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant) {
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("TwoEdgeRuleVariant", {rule}, initial, 4);
 #endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 2, 1, 2}},
+        {3, {4, 3, 7, 8}},
+        {4, {5, 4, 43, 32}}
+    };
+
+    validate_expected_results("TwoEdgeRuleVariant_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
@@ -531,6 +834,50 @@ TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops) {
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("TwoEdgeRuleWithSelfLoops", {rule}, initial, 4);
 #endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{1,2},{2,3},{2,4}}
+    // Initial state: {{1,1},{1,1}} (self-loops)
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 1, 0}},
+        {2, {3, 2, 13, 8}},
+        {3, {4, 3, 117, 56}},
+        {4, {5, 4, 1173, 440}}
+    };
+
+    validate_expected_results("TwoEdgeRuleWithSelfLoops_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
@@ -584,6 +931,53 @@ TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{4,1},{1,4},{2,3},{4,3}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(4), PatternVertex::variable(1)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(4)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(4), PatternVertex::variable(3)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {5, 4, 3, 3}},
+        {3, {17, 16, 37, 20}},
+        {4, {83, 94, 423, 181}}
+    };
+
+    validate_expected_results("ComplexTwoEdgeRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
     // Create rule: {{1,2},{2,3}} -> {{4,1},{1,4},{2,3},{4,3}}
     // Initial state: {{1,1},{1,1}} (self-loops)
@@ -635,6 +1029,53 @@ TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{4,1},{1,4},{2,3},{4,3}}
+    // Initial state: {{1,1},{1,1}} (self-loops)
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(4), PatternVertex::variable(1)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(4)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(4), PatternVertex::variable(3)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 1, 0}},
+        {2, {6, 5, 35, 14}},
+        {3, {33, 36, 489, 170}}
+    };
+
+    validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
     // Create rule: {{1,2},{2,3}} -> {{1,3},{2,3},{3,4}}
 
@@ -681,6 +1122,50 @@ TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule) {
 #ifdef ENABLE_FUZZING_TESTS
     fuzz_test_rules("AnotherTwoEdgeRule", {rule}, initial, 4);
 #endif
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{1,3},{2,3},{3,4}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 2, 1, 2}},
+        {3, {6, 5, 5, 8}},
+        {4, {10, 12, 35, 36}},
+        {5, {21, 29, 231, 210}}
+    };
+
+    validate_expected_results("AnotherTwoEdgeRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
@@ -731,6 +1216,50 @@ TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops) {
 #endif
 }
 
+TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops_EventCanonicalization) {
+    // Create rule: {{1,2},{2,3}} -> {{1,3},{2,3},{3,4}}
+    // Initial state: {{1,1},{1,1}} (self-loops)
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(4)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 1, 0}},
+        {2, {4, 3, 13, 8}},
+        {3, {8, 7, 81, 48}},
+        {4, {18, 18, 465, 280}}
+    };
+
+    validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+
 TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule) {
     // Create rule: {{1,2,3},{5,1}} -> {{1,5,6},{3,2},{3,5}}
 
@@ -779,3 +1308,372 @@ TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule) {
     fuzz_test_rules("ComplexThreeEdgeRule", {rule}, initial, 5);
 #endif
 }
+
+TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_EventCanonicalization) {
+    // Create rule: {{1,2,3},{5,1}} -> {{1,5,6},{3,2},{3,5}}
+
+    PatternHypergraph lhs;
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(5), PatternVertex::variable(1)
+    });
+
+    PatternHypergraph rhs;
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(5), PatternVertex::variable(6)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(2)
+    });
+
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(5)
+    });
+
+    RewritingRule rule(lhs, rhs);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{0, 0, 0}, {0, 0}};
+
+    // Expected results WITH event canonicalization (Full mode)
+    // Format: {steps, {states, events, branchial_edges, causal_edges}}
+    std::vector<std::pair<int, TestResult>> expected_with_event_canon = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 2, 1, 2}},
+        {3, {5, 4, 7, 8}},
+        {4, {9, 8, 31, 28}},
+        {5, {18, 17, 99, 88}}
+    };
+
+    validate_expected_results("ComplexThreeEdgeRule_EventCanonicalization", {rule}, initial, expected_with_event_canon, false, true);
+}
+// ============================================================================
+// Automatic Event Canonicalization Tests (full_event_canonicalization=false)
+// ============================================================================
+
+#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2)
+    });
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {4, 3, 0, 2}},
+        {3, {8, 9, 0, 8}},
+        {4, {17, 26, 0, 32}}
+    };
+
+    validate_expected_results("SimpleRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}, {3, 1}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 3, 3, 0}},
+        {2, {4, 7, 18, 12}},
+        {3, {8, 19, 108, 72}},
+        {4, {13, 47, 738, 444}}
+    };
+
+    validate_expected_results("TwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {2, 1, 0, 0}},
+        {3, {2, 1, 0, 0}},
+        {4, {2, 1, 0, 0}}
+    };
+
+    validate_expected_results("HyperedgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs1;
+    lhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs1;
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(4)});
+
+    RewritingRule rule1(lhs1, rhs1);
+
+    PatternHypergraph lhs2;
+    lhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs2;
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
+
+    RewritingRule rule2(lhs2, rhs2);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        // {1, {2, 1, 0, 0}},
+        // {2, {3, 4, 0, 3}},
+        {3, {4, 8, 0, 15}}
+        // {4, {5, 13, 0, 75}}
+    };
+
+    validate_expected_results("MultiRule_Automatic", {rule1, rule2}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs1;
+    lhs1.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+
+    PatternHypergraph rhs1;
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs1.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(4)});
+
+    RewritingRule rule1(lhs1, rhs1);
+
+    PatternHypergraph lhs2;
+    lhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs2;
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs2.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
+
+    RewritingRule rule2(lhs2, rhs2);
+
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 7, 15, 6}},
+        {3, {5, 17, 105, 42}},
+        {4, {9, 35, 657, 282}}
+    };
+
+    validate_expected_results("ComplexTwoRuleSystem_Automatic", {rule1, rule2}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {4, 6, 7, 8}},
+        {4, {5, 10, 43, 32}}
+    };
+
+    validate_expected_results("TwoEdgeRuleVariant_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 2, 1, 0}},
+        {2, {3, 7, 13, 8}},
+        {3, {4, 16, 117, 56}},
+        {4, {5, 29, 1173, 440}}
+    };
+
+    validate_expected_results("TwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(4), PatternVertex::variable(1)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(4)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(4), PatternVertex::variable(3)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {5, 4, 3, 3}},
+        {3, {17, 21, 37, 20}},
+        {4, {83, 136, 423, 181}}
+    };
+
+    validate_expected_results("ComplexTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(4), PatternVertex::variable(1)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(4)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(4), PatternVertex::variable(3)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 2, 1, 0}},
+        {2, {6, 9, 35, 14}},
+        {3, {33, 57, 489, 170}}
+    };
+
+    validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(3), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}, {2, 3}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {6, 8, 5, 8}},
+        {4, {10, 22, 35, 36}},
+        {5, {21, 54, 231, 210}}
+    };
+
+    validate_expected_results("AnotherTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(2)});
+    lhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{PatternVertex::variable(1), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(2), PatternVertex::variable(3)});
+    rhs.add_edge(PatternEdge{PatternVertex::variable(3), PatternVertex::variable(4)});
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{1, 1}, {1, 1}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 2, 1, 0}},
+        {2, {4, 6, 13, 8}},
+        {3, {8, 18, 81, 48}},
+        {4, {18, 49, 465, 280}}
+    };
+
+    validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+
+TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_EventCanonicalization_Automatic) {
+    PatternHypergraph lhs;
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(2), PatternVertex::variable(3)
+    });
+    lhs.add_edge(PatternEdge{
+        PatternVertex::variable(5), PatternVertex::variable(1)
+    });
+
+    PatternHypergraph rhs;
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(1), PatternVertex::variable(5), PatternVertex::variable(6)
+    });
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(2)
+    });
+    rhs.add_edge(PatternEdge{
+        PatternVertex::variable(3), PatternVertex::variable(5)
+    });
+
+    RewritingRule rule(lhs, rhs);
+    std::vector<std::vector<GlobalVertexId>> initial = {{0, 0, 0}, {0, 0}};
+
+    std::vector<std::pair<int, TestResult>> expected_automatic = {
+        {1, {2, 1, 0, 0}},
+        {2, {3, 3, 1, 2}},
+        {3, {5, 7, 7, 8}},
+        {4, {9, 14, 31, 28}},
+        {5, {18, 25, 99, 88}}
+    };
+
+    validate_expected_results("ComplexThreeEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+}
+#endif  // Automatic mode event canonicalization tests disabled

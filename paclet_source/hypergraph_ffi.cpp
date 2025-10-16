@@ -100,6 +100,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Default option values
         bool canonicalize_states = true;
         bool canonicalize_events = true;
+        bool deduplicate_events = false;  // Simple graph mode - return existing event for duplicates
         bool causal_transitive_reduction = true;
         bool early_termination = false;
         bool full_capture = true;  // Enable to store states for visualization
@@ -187,6 +188,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                                 canonicalize_states = value;
                             } else if (option_key == "CanonicalizeEvents") {
                                 canonicalize_events = value;
+                            } else if (option_key == "DeduplicateEvents") {
+                                deduplicate_events = value;
                             } else if (option_key == "CausalTransitiveReduction") {
                                 causal_transitive_reduction = value;
                             } else if (option_key == "EarlyTermination") {
@@ -227,10 +230,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
 
         // Run evolution with parsed options
+        // TODO: Automatic mode event canonicalization (full_event_canonicalization=false) is temporarily disabled
         WolframEvolution evolution(static_cast<std::size_t>(steps), std::thread::hardware_concurrency(),
-                                   canonicalize_states, full_capture, canonicalize_events,
+                                   canonicalize_states, full_capture, canonicalize_events, deduplicate_events,
                                    causal_transitive_reduction, early_termination, full_capture_non_canonicalised,
-                                   max_successor_states_per_parent, max_states_per_step, exploration_probability);
+                                   max_successor_states_per_parent, max_states_per_step, exploration_probability,
+                                   /*full_event_canonicalization=*/true);
 
         for (const auto& rule : parsed_rules) {
             evolution.add_rule(rule);
@@ -286,12 +291,36 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         }
         full_result.push_back({wxf::Value("States"), wxf::Value(states_assoc)});
 
-        // Events -> List of event associations
-        wxf::ValueList events_list;
+        // Events -> Association of canonical events with multiplicity
+        // Build event lookup and count multiplicity in one pass
+        std::unordered_map<std::size_t, int> event_multiplicity;
+        std::unordered_map<std::size_t, const WolframEvent*> event_lookup;
+
         for (const auto& event : all_events) {
+            event_lookup[event.event_id] = &event;
+
+            if (event.canonical_event_id.has_value()) {
+                // This is a duplicate - increment canonical event's multiplicity
+                event_multiplicity[event.canonical_event_id.value()]++;
+            } else {
+                // This is a canonical event - initialize to 1 if not seen
+                if (event_multiplicity.find(event.event_id) == event_multiplicity.end()) {
+                    event_multiplicity[event.event_id] = 1;
+                }
+            }
+        }
+
+        wxf::ValueAssociation events_assoc;
+        for (const auto& event : all_events) {
+            // Skip duplicate events - only send canonical representatives
+            if (event.canonical_event_id.has_value()) {
+                continue;
+            }
+
             wxf::ValueAssociation event_data;
             event_data.push_back({wxf::Value("EventId"), wxf::Value(static_cast<int64_t>(event.event_id))});
             event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
+            event_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(event_multiplicity[event.event_id]))});
 
             // Send RAW state IDs for consumed/produced edge matching
             event_data.push_back({wxf::Value("InputStateId"), wxf::Value(static_cast<int64_t>(event.input_state_id.value))});
@@ -316,23 +345,57 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             event_data.push_back({wxf::Value("ConsumedEdges"), wxf::Value(consumed_list)});
             event_data.push_back({wxf::Value("ProducedEdges"), wxf::Value(produced_list)});
 
-            events_list.push_back(wxf::Value(event_data));
+            events_assoc.push_back({wxf::Value(static_cast<int64_t>(event.event_id)), wxf::Value(event_data)});
         }
-        full_result.push_back({wxf::Value("Events"), wxf::Value(events_list)});
+        full_result.push_back({wxf::Value("Events"), wxf::Value(events_assoc)});
 
-        // CausalEdges and BranchialEdges
-        wxf::ValueList causal_edges, branchial_edges;
+        // CausalEdges and BranchialEdges with multiplicity
+        // Remap to canonical IDs and count multiplicity
+        std::map<std::pair<std::size_t, std::size_t>, int> causal_multiplicity;
+        std::map<std::pair<std::size_t, std::size_t>, int> branchial_multiplicity;
+
         for (const auto& edge : event_edges) {
-            wxf::ValueList edge_pair;
-            edge_pair.push_back(wxf::Value(static_cast<int64_t>(edge.from_event)));
-            edge_pair.push_back(wxf::Value(static_cast<int64_t>(edge.to_event)));
+            // Remap from_event to canonical
+            std::size_t from_canonical = edge.from_event;
+            auto from_it = event_lookup.find(edge.from_event);
+            if (from_it != event_lookup.end() && from_it->second->canonical_event_id.has_value()) {
+                from_canonical = from_it->second->canonical_event_id.value();
+            }
+
+            // Remap to_event to canonical
+            std::size_t to_canonical = edge.to_event;
+            auto to_it = event_lookup.find(edge.to_event);
+            if (to_it != event_lookup.end() && to_it->second->canonical_event_id.has_value()) {
+                to_canonical = to_it->second->canonical_event_id.value();
+            }
 
             if (edge.type == EventRelationType::CAUSAL) {
-                causal_edges.push_back(wxf::Value(edge_pair));
+                causal_multiplicity[{from_canonical, to_canonical}]++;
             } else if (edge.type == EventRelationType::BRANCHIAL) {
-                branchial_edges.push_back(wxf::Value(edge_pair));
+                branchial_multiplicity[{from_canonical, to_canonical}]++;
             }
         }
+
+        // Serialize causal edges with multiplicity
+        wxf::ValueList causal_edges;
+        for (const auto& [edge_pair, mult] : causal_multiplicity) {
+            wxf::ValueAssociation edge_data;
+            edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(edge_pair.first))});
+            edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(edge_pair.second))});
+            edge_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(mult))});
+            causal_edges.push_back(wxf::Value(edge_data));
+        }
+
+        // Serialize branchial edges with multiplicity
+        wxf::ValueList branchial_edges;
+        for (const auto& [edge_pair, mult] : branchial_multiplicity) {
+            wxf::ValueAssociation edge_data;
+            edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(edge_pair.first))});
+            edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(edge_pair.second))});
+            edge_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(mult))});
+            branchial_edges.push_back(wxf::Value(edge_data));
+        }
+
         full_result.push_back({wxf::Value("CausalEdges"), wxf::Value(causal_edges)});
         full_result.push_back({wxf::Value("BranchialEdges"), wxf::Value(branchial_edges)});
 

@@ -209,7 +209,7 @@ TEST_F(WolframStatesTest, StateDuplicationDetection) {
 TEST_F(WolframStatesTest, StateDuplicationDetectionNoCanonicalization) {
     // Create a graph with canonicalization disabled
     auto no_canon_graph = std::make_unique<hypergraph::MultiwayGraph>(true); // full_capture=true
-    no_canon_graph->set_canonicalization_enabled(false);
+    no_canon_graph->set_canonicalize_states(false);
 
     // Create two states with identical structure but different global IDs
     auto state1 = no_canon_graph->create_initial_state({{1, 2}});

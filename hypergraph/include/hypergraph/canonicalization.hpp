@@ -38,6 +38,10 @@ struct VertexMapping {
     std::unordered_map<VertexId, VertexId> original_to_canonical;
     std::vector<VertexId> canonical_to_original;
 
+    // Edge permutation: original_edge_index -> canonical_edge_index
+    std::unordered_map<std::size_t, std::size_t> original_edge_to_canonical;
+    std::vector<std::size_t> canonical_edge_to_original;
+
     // Apply the mapping to a vertex ID
     VertexId map_vertex(VertexId original) const {
         auto it = original_to_canonical.find(original);
@@ -48,6 +52,12 @@ struct VertexMapping {
     VertexId get_original(VertexId canonical) const {
         return (canonical < canonical_to_original.size()) ?
                canonical_to_original[canonical] : INVALID_VERTEX;
+    }
+
+    // Apply edge permutation: original edge index -> canonical edge index
+    std::size_t map_edge(std::size_t original_idx) const {
+        auto it = original_edge_to_canonical.find(original_idx);
+        return (it != original_edge_to_canonical.end()) ? it->second : static_cast<std::size_t>(-1);
     }
 };
 

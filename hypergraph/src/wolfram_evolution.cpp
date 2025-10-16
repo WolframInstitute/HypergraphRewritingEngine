@@ -7,21 +7,35 @@
 namespace hypergraph {
 
 WolframEvolution::WolframEvolution(std::size_t max_steps, std::size_t num_threads,
-                 bool canonicalization_enabled, bool full_capture,
-                 bool event_deduplication, bool transitive_reduction_enabled,
+                 bool canonicalize_states, bool full_capture,
+                 bool canonicalize_events, bool deduplicate_events,
+                 bool transitive_reduction_enabled,
                  bool early_termination, bool full_capture_non_canonicalised,
                  std::size_t max_successor_states_per_parent, std::size_t max_states_per_step,
-                 double exploration_probability)
-    : multiway_graph_(std::make_shared<MultiwayGraph>(full_capture, transitive_reduction_enabled, early_termination, full_capture_non_canonicalised,
-                                                       max_successor_states_per_parent, max_states_per_step, exploration_probability))
+                 double exploration_probability,
+                 bool full_event_canonicalization)
+    : multiway_graph_(std::make_shared<MultiwayGraph>(
+        // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+        // Automatic mode event canonicalization REQUIRES full_capture=true for consistent edge mapping
+        // (canonicalize_events && !full_event_canonicalization) ? true : full_capture,
+        full_capture,
+        transitive_reduction_enabled, early_termination, full_capture_non_canonicalised,
+        max_successor_states_per_parent, max_states_per_step, exploration_probability,
+        canonicalize_events, deduplicate_events, full_event_canonicalization))
     , job_system_(std::make_unique<job_system::JobSystem<PatternMatchingTaskType>>(num_threads))
     , max_steps_(max_steps)
     , num_threads_(num_threads) {
-    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, event_dedup %s, early_termination %s, max_successor_per_parent %zu, max_states_per_step %zu, exploration_probability %.3f",
-              max_steps, num_threads, canonicalization_enabled ? "enabled" : "disabled",
-              full_capture ? "enabled" : "disabled", event_deduplication ? "enabled" : "disabled",
+
+    // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+    // Automatically enable full_capture for Automatic mode
+    // bool effective_full_capture = (canonicalize_events && !full_event_canonicalization) ? true : full_capture;
+
+    DEBUG_LOG("WolframEvolution created: %zu steps, %zu threads, canonicalization %s, full_capture %s, canonicalize_events %s (full=%s), deduplicate_events %s, early_termination %s, max_successor_per_parent %zu, max_states_per_step %zu, exploration_probability %.3f",
+              max_steps, num_threads, canonicalize_states ? "enabled" : "disabled",
+              full_capture ? "enabled" : "disabled",
+              canonicalize_events ? "enabled" : "disabled", full_event_canonicalization ? "true" : "false", deduplicate_events ? "enabled" : "disabled",
               early_termination ? "enabled" : "disabled", max_successor_states_per_parent, max_states_per_step, exploration_probability);
-    multiway_graph_->set_canonicalization_enabled(canonicalization_enabled);
+    multiway_graph_->set_canonicalize_states(canonicalize_states);
     multiway_graph_->set_early_termination_enabled(early_termination);
     job_system_->start();
     DEBUG_LOG("Job system started");

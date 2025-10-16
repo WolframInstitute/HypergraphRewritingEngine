@@ -386,45 +386,87 @@ std::vector<std::vector<VertexType>> canonicalize_parts(const std::vector<std::v
     
     // First[...] - take lexicographically smallest
     auto best_tuple = all_tuples[0];
-    
-    // DelDup[...]
-    auto result = del_dup(best_tuple);
-    
+
+    // Return best_tuple WITHOUT del_dup so caller can extract vertex mapping
     // Flatten[..., 1] - already flat since we're working with edges
-    return result;
+    return best_tuple;
 }
 
 template<typename VertexType>
 std::vector<std::vector<VertexType>> Canonicalizer::wolfram_canonical_hypergraph(
     const std::vector<std::vector<VertexType>>& edges,
     VertexMapping& mapping) const {
-    
+
     if (edges.empty()) {
         return {};
     }
-    
+
     // CanonicalHypergraph[list_] := CanonicalizeParts[list]
-    auto result = canonicalize_parts(edges);
-    
-    // Build vertex mapping
+    // canonicalize_parts now returns best_tuple BEFORE del_dup is applied
+    auto best_tuple = canonicalize_parts(edges);
+
+    // Build vertex mapping by extracting the "alphabet" that del_dup will use
+    // alphabet = DeleteDuplicates[Flatten[best_tuple]] - preserves first-appearance order
     mapping.canonical_to_original.clear();
     mapping.original_to_canonical.clear();
-    
-    std::set<VertexType> vertex_set;
-    for (const auto& edge : edges) {
+
+    std::vector<VertexType> alphabet;
+    std::set<VertexType> seen;
+    for (const auto& edge : best_tuple) {
         for (auto v : edge) {
-            vertex_set.insert(v);
+            if (seen.insert(v).second) {
+                alphabet.push_back(v);
+            }
         }
     }
-    std::vector<VertexType> orig_vertices(vertex_set.begin(), vertex_set.end());
-    std::sort(orig_vertices.begin(), orig_vertices.end());
-    
-    mapping.canonical_to_original.resize(orig_vertices.size());
-    for (std::size_t i = 0; i < orig_vertices.size(); ++i) {
-        mapping.canonical_to_original[i] = orig_vertices[i];
-        mapping.original_to_canonical[orig_vertices[i]] = static_cast<VertexType>(i);
+
+    // Build vertex mapping: alphabet[i] is the original vertex for canonical vertex i
+    mapping.canonical_to_original.resize(alphabet.size());
+    for (std::size_t i = 0; i < alphabet.size(); ++i) {
+        mapping.canonical_to_original[i] = alphabet[i];
+        mapping.original_to_canonical[alphabet[i]] = static_cast<VertexType>(i);
     }
-    
+
+    // Now apply del_dup to get the canonical result
+    auto result = del_dup(best_tuple);
+
+    // Build edge permutation by matching original edges to best_tuple positions
+    // best_tuple has original vertex IDs, just reordered
+    mapping.original_edge_to_canonical.clear();
+    mapping.canonical_edge_to_original.clear();
+    mapping.canonical_edge_to_original.resize(edges.size());
+
+    // Create sorted versions of original edges with their indices
+    std::vector<std::pair<std::vector<VertexType>, std::size_t>> sorted_original_with_idx;
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        std::vector<VertexType> sorted_edge = edges[i];
+        std::sort(sorted_edge.begin(), sorted_edge.end());
+        sorted_original_with_idx.push_back({sorted_edge, i});
+    }
+
+    // Use stable_sort to ensure deterministic ordering when edges are equal
+    std::stable_sort(sorted_original_with_idx.begin(), sorted_original_with_idx.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // Match each edge in best_tuple to an original edge
+    std::set<std::size_t> used_original_indices;
+    for (std::size_t canon_idx = 0; canon_idx < best_tuple.size(); ++canon_idx) {
+        // Sort the best_tuple edge for comparison
+        std::vector<VertexType> sorted_best_tuple_edge = best_tuple[canon_idx];
+        std::sort(sorted_best_tuple_edge.begin(), sorted_best_tuple_edge.end());
+
+        // Find first unused original edge that matches
+        for (const auto& [sorted_orig, orig_idx] : sorted_original_with_idx) {
+            if (sorted_orig == sorted_best_tuple_edge &&
+                used_original_indices.find(orig_idx) == used_original_indices.end()) {
+                mapping.original_edge_to_canonical[orig_idx] = canon_idx;
+                mapping.canonical_edge_to_original[canon_idx] = orig_idx;
+                used_original_indices.insert(orig_idx);
+                break;
+            }
+        }
+    }
+
     return result;
 }
 

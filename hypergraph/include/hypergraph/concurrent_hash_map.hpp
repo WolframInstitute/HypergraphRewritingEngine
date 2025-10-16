@@ -8,6 +8,7 @@
 #include <optional>
 #include <cstddef>
 #include <type_traits>
+#include <hypergraph/debug_log.hpp>
 
 namespace hypergraph {
 
@@ -197,32 +198,61 @@ public:
     insert_or_get(const Key& key, Factory&& factory) {
         size_t bucket_idx = get_bucket_index(key);
         Node* new_node = nullptr;
+        size_t iteration = 0;
+        std::size_t key_hash = hasher_(key);
 
         while (true) {
+            iteration++;
             Node* head = buckets_[bucket_idx].head.load(std::memory_order_acquire);
+
+            DEBUG_LOG("[ConcurrentHashMap] iter=%zu, bucket=%zu, hash=%zu, new_node=%s, scanning...",
+                     iteration, bucket_idx, key_hash, new_node ? "allocated" : "null");
 
             // Check if key already exists in current list state
             Node* current = head;
+            size_t scan_count = 0;
             while (current != nullptr) {
+                scan_count++;
                 if (!current->marked.load(std::memory_order_acquire) &&
                     current->key == key) {
                     // Key exists - clean up and return existing value
-                    if (new_node) delete new_node;
+                    if constexpr (std::is_convertible_v<Value, size_t>) {
+                        DEBUG_LOG("[ConcurrentHashMap] FOUND existing key at scan_count=%zu, value=%zu, returning (value, false)",
+                                 scan_count, static_cast<size_t>(current->value));
+                    } else {
+                        DEBUG_LOG("[ConcurrentHashMap] FOUND existing key at scan_count=%zu, returning (value, false)", scan_count);
+                    }
+                    if (new_node) {
+                        DEBUG_LOG("[ConcurrentHashMap] Deleting unused node");
+                        delete new_node;
+                    }
                     Value existing_value = current->value;
                     return {existing_value, false};
                 }
                 current = current->next.load(std::memory_order_acquire);
             }
 
+            DEBUG_LOG("[ConcurrentHashMap] Key NOT found after scanning %zu nodes", scan_count);
+
             // Only allocate if we haven't already
             if (!new_node) {
                 // Call factory function to create value only when needed
                 Value new_value = factory();
+                if constexpr (std::is_convertible_v<Value, size_t>) {
+                    DEBUG_LOG("[ConcurrentHashMap] Factory called, returned value=%zu", static_cast<size_t>(new_value));
+                } else {
+                    DEBUG_LOG("[ConcurrentHashMap] Factory called");
+                }
                 new_node = new Node(key, std::move(new_value));
             }
 
             // Key doesn't exist in current state - try to insert
             new_node->next.store(head, std::memory_order_release);
+            if constexpr (std::is_convertible_v<Value, size_t>) {
+                DEBUG_LOG("[ConcurrentHashMap] Attempting CAS with value=%zu...", static_cast<size_t>(new_node->value));
+            } else {
+                DEBUG_LOG("[ConcurrentHashMap] Attempting CAS...");
+            }
             if (buckets_[bucket_idx].head.compare_exchange_weak(
                     head, new_node,
                     std::memory_order_release,
@@ -231,9 +261,15 @@ public:
                 // Successfully inserted - we're the winner
                 size_.fetch_add(1, std::memory_order_relaxed);
                 Value inserted_value = new_node->value;
+                if constexpr (std::is_convertible_v<Value, size_t>) {
+                    DEBUG_LOG("[ConcurrentHashMap] CAS SUCCESS! Inserted value=%zu, returning (value, true)", static_cast<size_t>(inserted_value));
+                } else {
+                    DEBUG_LOG("[ConcurrentHashMap] CAS SUCCESS! Returning (value, true)");
+                }
                 return {inserted_value, true};
             }
 
+            DEBUG_LOG("[ConcurrentHashMap] CAS FAILED! Head changed, retrying loop...");
             // CAS failed because head changed - retry with the same node
             // The new head might contain our key now
         }
