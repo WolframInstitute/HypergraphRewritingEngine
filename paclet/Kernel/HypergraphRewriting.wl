@@ -28,7 +28,45 @@ Begin["`Private`"]
 $HypergraphLibrary = Quiet[FindLibrary["HypergraphRewriting"]]
 
 If[$HypergraphLibrary === $Failed,
-  $HypergraphLibrary = Quiet[FindFile[FileNameJoin[{DirectoryName[$InputFileName, 2], "LibraryResources", $SystemID, "libHypergraphRewriting" <> Internal`DynamicLibraryExtension[]}]]]
+  (* Manual library path construction with platform-specific naming *)
+  Module[{libraryName, libraryPath, pacletRoot, attemptedPath},
+    (* Windows uses no prefix, Unix-like systems use "lib" prefix *)
+    libraryName = If[StringMatchQ[$SystemID, "Windows*"],
+      "HypergraphRewriting",
+      "libHypergraphRewriting"
+    ];
+
+    (* Get paclet root directory *)
+    pacletRoot = DirectoryName[$InputFileName, 2];
+
+    (* Construct full library path *)
+    libraryPath = FileNameJoin[{
+      pacletRoot,
+      "LibraryResources",
+      $SystemID,
+      libraryName <> "." <> Internal`DynamicLibraryExtension[]
+    }];
+
+    (* Try to find the library *)
+    $HypergraphLibrary = Quiet[FindFile[libraryPath]];
+
+    (* Debug output if still failed *)
+    If[$HypergraphLibrary === $Failed,
+      Print["HypergraphRewriting: Failed to find library"];
+      Print["  SystemID: ", $SystemID];
+      Print["  Paclet root: ", pacletRoot];
+      Print["  Attempted path: ", libraryPath];
+      Print["  File exists: ", FileExistsQ[libraryPath]];
+
+      (* List what's actually in the LibraryResources directory *)
+      If[DirectoryQ[FileNameJoin[{pacletRoot, "LibraryResources"}]],
+        Print["  Available platforms: ", FileNames[All, FileNameJoin[{pacletRoot, "LibraryResources"}]]];
+        If[DirectoryQ[FileNameJoin[{pacletRoot, "LibraryResources", $SystemID}]],
+          Print["  Files in ", $SystemID, ": ", FileNames[All, FileNameJoin[{pacletRoot, "LibraryResources", $SystemID}]]];
+        ];
+      ];
+    ];
+  ]
 ]
 
 If[$HypergraphLibrary === $Failed,
