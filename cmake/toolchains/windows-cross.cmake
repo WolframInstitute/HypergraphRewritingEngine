@@ -107,7 +107,89 @@ set(CMAKE_CXX_COMPILER ${FOUND_CXX})
 # Compiler-specific setup
 if(COMPILER_TYPE STREQUAL "clang")
     # Clang needs explicit target
-    set(CLANG_TARGET "${CMAKE_SYSTEM_PROCESSOR}-windows-gnu")
+    # For ARM64, use MSVC ABI for better compatibility
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        set(CLANG_TARGET "${CMAKE_SYSTEM_PROCESSOR}-pc-windows-msvc")
+
+        # Detect Windows SDK in WSL environment for ARM64 cross-compilation
+        if(EXISTS "/mnt/c/Program Files (x86)/Windows Kits")
+            # Find the latest Windows SDK version
+            file(GLOB SDK_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Lib/*")
+            list(SORT SDK_VERSIONS)
+            list(REVERSE SDK_VERSIONS)
+            list(GET SDK_VERSIONS 0 SDK_PATH)
+
+            if(EXISTS "${SDK_PATH}/um/arm64" AND EXISTS "${SDK_PATH}/ucrt/arm64")
+                set(WINSDK_LIB_PATH "${SDK_PATH}")
+                message(STATUS "Found Windows SDK for ARM64: ${SDK_PATH}")
+
+                # Find MSVC libraries for ARM64 (search all editions and years)
+                if(EXISTS "/mnt/c/Program Files/Microsoft Visual Studio")
+                    file(GLOB VS_YEARS LIST_DIRECTORIES true "/mnt/c/Program Files/Microsoft Visual Studio/*")
+                    foreach(VS_YEAR ${VS_YEARS})
+                        if(IS_DIRECTORY "${VS_YEAR}")
+                            # Check all editions: Community, Professional, Enterprise, BuildTools
+                            foreach(EDITION Community Professional Enterprise BuildTools)
+                                set(MSVC_BASE "${VS_YEAR}/${EDITION}/VC/Tools/MSVC")
+                                if(EXISTS "${MSVC_BASE}")
+                                    file(GLOB MSVC_VERSIONS LIST_DIRECTORIES true "${MSVC_BASE}/*")
+                                    list(SORT MSVC_VERSIONS)
+                                    list(REVERSE MSVC_VERSIONS)
+                                    list(GET MSVC_VERSIONS 0 MSVC_PATH)
+
+                                    if(EXISTS "${MSVC_PATH}/lib/arm64")
+                                        set(MSVC_LIB_PATH "${MSVC_PATH}/lib/arm64")
+                                        set(MSVC_INCLUDE_PATH "${MSVC_PATH}/include")
+                                        message(STATUS "Found MSVC ARM64 libraries: ${MSVC_LIB_PATH}")
+                                        message(STATUS "Found MSVC C++ headers: ${MSVC_INCLUDE_PATH}")
+                                        break()
+                                    endif()
+                                endif()
+                            endforeach()
+                            if(DEFINED MSVC_LIB_PATH)
+                                break()
+                            endif()
+                        endif()
+                    endforeach()
+                endif()
+
+                # Add Windows SDK and MSVC library paths for ARM64 via linker flags
+                # lld-link needs /LIBPATH: flags to find libraries
+                set(CMAKE_EXE_LINKER_FLAGS_INIT "${CMAKE_EXE_LINKER_FLAGS_INIT} -Xlinker /LIBPATH:\"${WINSDK_LIB_PATH}/um/arm64\" -Xlinker /LIBPATH:\"${WINSDK_LIB_PATH}/ucrt/arm64\"")
+                set(CMAKE_SHARED_LINKER_FLAGS_INIT "${CMAKE_SHARED_LINKER_FLAGS_INIT} -Xlinker /LIBPATH:\"${WINSDK_LIB_PATH}/um/arm64\" -Xlinker /LIBPATH:\"${WINSDK_LIB_PATH}/ucrt/arm64\"")
+
+                if(DEFINED MSVC_LIB_PATH)
+                    set(CMAKE_EXE_LINKER_FLAGS_INIT "${CMAKE_EXE_LINKER_FLAGS_INIT} -Xlinker /LIBPATH:\"${MSVC_LIB_PATH}\"")
+                    set(CMAKE_SHARED_LINKER_FLAGS_INIT "${CMAKE_SHARED_LINKER_FLAGS_INIT} -Xlinker /LIBPATH:\"${MSVC_LIB_PATH}\"")
+                else()
+                    message(WARNING "MSVC ARM64 libraries not found - linking may fail")
+                endif()
+
+                # Add SDK and MSVC include paths
+                if(DEFINED MSVC_INCLUDE_PATH)
+                    include_directories(SYSTEM "${MSVC_INCLUDE_PATH}")
+                endif()
+
+                if(EXISTS "/mnt/c/Program Files (x86)/Windows Kits/10/Include")
+                    file(GLOB SDK_INCLUDE_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Include/*")
+                    list(SORT SDK_INCLUDE_VERSIONS)
+                    list(REVERSE SDK_INCLUDE_VERSIONS)
+                    list(GET SDK_INCLUDE_VERSIONS 0 SDK_INCLUDE_PATH)
+
+                    include_directories(SYSTEM
+                        "${SDK_INCLUDE_PATH}/ucrt"
+                        "${SDK_INCLUDE_PATH}/um"
+                        "${SDK_INCLUDE_PATH}/shared"
+                    )
+                    message(STATUS "Added Windows SDK include paths from: ${SDK_INCLUDE_PATH}")
+                endif()
+            else()
+                message(WARNING "Windows SDK ARM64 libraries not found - build may fail")
+            endif()
+        endif()
+    else()
+        set(CLANG_TARGET "${CMAKE_SYSTEM_PROCESSOR}-windows-gnu")
+    endif()
     set(CMAKE_C_COMPILER_TARGET ${CLANG_TARGET})
     set(CMAKE_CXX_COMPILER_TARGET ${CLANG_TARGET})
     set(CMAKE_C_FLAGS_INIT "--target=${CLANG_TARGET}")
@@ -140,10 +222,23 @@ set(CMAKE_SHARED_LIBRARY_SUFFIX ".dll")
 set(CMAKE_STATIC_LIBRARY_PREFIX "lib")
 set(CMAKE_STATIC_LIBRARY_SUFFIX ".a")
 
+# Windows doesn't use -fPIC (position independent code)
+set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
+
 # Link statically for MinGW/GCC to avoid runtime dependencies
-if(COMPILER_TYPE STREQUAL "mingw" OR COMPILER_TYPE STREQUAL "clang")
+if(COMPILER_TYPE STREQUAL "mingw")
     set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
     set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+elseif(COMPILER_TYPE STREQUAL "clang")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        # For ARM64 with MSVC target, use dynamic MSVC runtime (standard for DLLs)
+        # No special flags needed - dynamic CRT is the default
+        message(STATUS "Using dynamic MSVC runtime (standard for DLLs)")
+    else()
+        # For x86/x64 with GNU target, use GCC static linking
+        set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+        set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+    endif()
 endif()
 
 message(STATUS "Windows Cross-Compilation Toolchain")

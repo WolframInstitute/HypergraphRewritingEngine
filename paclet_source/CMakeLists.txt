@@ -37,9 +37,12 @@ target_include_directories(HypergraphRewriting PRIVATE
 )
 
 # Set target properties based on target platform
-set_target_properties(HypergraphRewriting PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-)
+# Windows doesn't use -fPIC; only set for Unix-like systems
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_target_properties(HypergraphRewriting PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+    )
+endif()
 
 # Set library naming based on target system
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -61,9 +64,19 @@ endif()
 
 # For Windows, use the .def file to ensure proper exports
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set_target_properties(HypergraphRewriting PROPERTIES
-        LINK_FLAGS "-Wl,--out-implib,HypergraphRewriting.lib -Wl,--export-all-symbols -Wl,${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def"
-    )
+    # Check if using MinGW (GNU toolchain) or Clang/MSVC
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"))
+        # MinGW uses GNU-style linker flags
+        set_target_properties(HypergraphRewriting PROPERTIES
+            LINK_FLAGS "-Wl,--out-implib,HypergraphRewriting.lib -Wl,--export-all-symbols -Wl,${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def"
+        )
+    else()
+        # Clang with MSVC target (e.g., ARM64) uses lld-link with MSVC-style flags
+        # Use /WHOLEARCHIVE to force inclusion of all symbols from static libraries
+        set_target_properties(HypergraphRewriting PROPERTIES
+            LINK_FLAGS "-Xlinker /DEF:${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib"
+        )
+    endif()
 endif()
 
 # Platform-specific linker settings
@@ -93,8 +106,13 @@ endif()
 # Compiler-specific options
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(HypergraphRewriting PRIVATE
-        -Wall -Wextra -O3 -fPIC
+        -Wall -Wextra -O3
     )
+
+    # Add -fPIC for non-Windows platforms (Windows doesn't use it)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        target_compile_options(HypergraphRewriting PRIVATE -fPIC)
+    endif()
 
     # Enable pthread for non-Windows platforms
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")

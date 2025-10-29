@@ -23,7 +23,28 @@ This paclet provides efficient hypergraph rewriting capabilities with parallel p
 
 ### Building the Library
 
-This project supports building for multiple platforms: Linux, Windows, and macOS.
+This project supports building for multiple platforms: Linux (x86-64, ARM64), Windows (x86-64, ARM64), and macOS (x86-64, ARM64).
+
+#### Build Dependencies
+
+**Required for all builds:**
+- CMake 3.14+
+- C++17 compatible compiler
+
+**Platform-specific cross-compilation toolchains (for multi-platform builds):**
+
+| Platform | Required Toolchain | Installation |
+|----------|-------------------|--------------|
+| Linux x86-64 | Native GCC/Clang | `sudo apt install build-essential` |
+| Linux ARM64 | GCC ARM64 cross-compiler | `sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu` |
+| Windows x86-64 | MinGW-w64 | `sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64` |
+| Windows ARM64 | Clang + Windows SDK* | `sudo apt install clang` |
+| macOS x86-64 | OSXCross | See [OSXCross setup](https://github.com/tpoechtrager/osxcross) |
+| macOS ARM64 | OSXCross | See [OSXCross setup](https://github.com/tpoechtrager/osxcross) |
+
+**\*Windows ARM64 notes:** When building from WSL2, the build script automatically detects Windows SDK and MSVC libraries from `/mnt/c`. Requires Visual Studio with ARM64 components installed on the Windows host. Outside of WSL2, requires Windows SDK headers and libraries for ARM64.
+
+**The build script gracefully skips platforms** where toolchains are unavailable and provides installation instructions.
 
 #### Multi-Platform Build (Recommended)
 
@@ -85,6 +106,37 @@ cmake .. \
 make -j$(nproc) paclet
 ```
 
+**Linux ARM64 Cross-Compilation (from Linux):**
+```bash
+# Install ARM64 cross-compiler
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+# Build
+mkdir build_linux_arm64 && cd build_linux_arm64
+cmake .. \
+  -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/linux-cross.cmake \
+  -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_MATHEMATICA_PACLET=ON
+make -j$(nproc) paclet
+```
+
+**Windows ARM64 Cross-Compilation (from Linux):**
+```bash
+# Install Clang (if not already installed)
+sudo apt install clang
+
+# Build
+mkdir build_windows_arm64 && cd build_windows_arm64
+cmake .. \
+  -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
+  -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DWINDOWS_COMPILER=clang \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_MATHEMATICA_PACLET=ON
+make -j$(nproc) paclet
+```
+
 For comprehensive cross-compilation documentation, including OSXCross setup and toolchain options, see [CROSS_COMPILATION.md](../CROSS_COMPILATION.md).
 
 #### Platform Libraries
@@ -93,8 +145,11 @@ Built libraries are placed in platform-specific directories:
 ```
 paclet/LibraryResources/
 ├── Linux-x86-64/libHypergraphRewriting.so
+├── Linux-ARM64/libHypergraphRewriting.so
 ├── Windows-x86-64/HypergraphRewriting.dll
-└── MacOSX-x86-64/libHypergraphRewriting.dylib
+├── Windows-ARM64/HypergraphRewriting.dll
+├── MacOSX-x86-64/libHypergraphRewriting.dylib
+└── MacOSX-ARM64/libHypergraphRewriting.dylib
 ```
 
 ### Installing the Paclet
@@ -303,7 +358,9 @@ Common cross-compilation problems:
 
 1. **MinGW not found**: Install with `sudo apt install gcc-mingw-w64-x86-64` (Linux)
 2. **OSXCross setup**: See [CROSS_COMPILATION.md](../CROSS_COMPILATION.md) for detailed setup
-3. **Wrong platform library**: Ensure you're building with the correct toolchain file
+3. **ARM64 Linux cross-compiler**: Install with `sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu`
+4. **ARM64 Windows (Clang)**: Install Clang with `sudo apt install clang`; requires Clang with Windows SDK headers
+5. **Wrong platform library**: Ensure you're building with the correct toolchain file and `CMAKE_SYSTEM_PROCESSOR`
 
 ### Runtime Errors
 

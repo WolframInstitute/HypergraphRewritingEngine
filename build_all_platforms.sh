@@ -15,6 +15,11 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}=== Building Hypergraph Rewriting Library for All Platforms ===${NC}\n"
 
+# Clean existing library files to ensure fresh builds
+echo -e "${GREEN}Cleaning existing library files...${NC}"
+rm -f paclet/LibraryResources/*/*.so paclet/LibraryResources/*/*.dll paclet/LibraryResources/*/*.dylib
+echo -e "${GREEN}✓ Cleaned${NC}\n"
+
 # Configuration
 BUILD_LINUX=true
 BUILD_WINDOWS=true
@@ -90,18 +95,43 @@ if $BUILD_LINUX; then
     mkdir -p build_linux
     cd build_linux
 
-    if [ ! -f CMakeCache.txt ]; then
-        cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
-            || { echo -e "${RED}Linux CMake configuration failed${NC}"; exit 1; }
-    fi
+    # Always configure to ensure correct build settings
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_MATHEMATICA_PACLET=ON \
+        || { echo -e "${RED}Linux CMake configuration failed${NC}"; exit 1; }
 
     make -j"$BUILD_JOBS" paclet \
         || { echo -e "${RED}Linux build failed${NC}"; exit 1; }
 
     echo -e "${GREEN}✓ Linux build complete${NC}"
     cd "$PROJECT_ROOT"
+fi
+
+# Linux ARM64 build
+if $BUILD_LINUX; then
+    echo -e "\n${GREEN}=== Building for Linux (ARM64) ===${NC}"
+
+    if ! check_prerequisite "GCC-ARM64" "aarch64-linux-gnu-gcc" "sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu (Linux)"; then
+        echo -e "${YELLOW}Skipping Linux ARM64 build - ARM64 cross-compiler not available${NC}"
+    else
+        mkdir -p build_linux_arm64
+        cd build_linux_arm64
+
+        # Always configure to ensure correct build settings
+        cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/linux-cross.cmake \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MATHEMATICA_PACLET=ON \
+            || { echo -e "${RED}Linux ARM64 CMake configuration failed${NC}"; exit 1; }
+
+        make -j"$BUILD_JOBS" paclet \
+            || { echo -e "${RED}Linux ARM64 build failed${NC}"; exit 1; }
+
+        echo -e "${GREEN}✓ Linux ARM64 build complete${NC}"
+        cd "$PROJECT_ROOT"
+    fi
 fi
 
 # Windows build
@@ -115,18 +145,44 @@ if $BUILD_WINDOWS; then
         mkdir -p build_windows
         cd build_windows
 
-        if [ ! -f CMakeCache.txt ]; then
-            cmake .. \
-                -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_MATHEMATICA_PACLET=ON \
-                || { echo -e "${RED}Windows CMake configuration failed${NC}"; exit 1; }
-        fi
+        # Always configure to ensure correct build settings
+        cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MATHEMATICA_PACLET=ON \
+            || { echo -e "${RED}Windows CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
             || { echo -e "${RED}Windows build failed${NC}"; exit 1; }
 
         echo -e "${GREEN}✓ Windows build complete${NC}"
+        cd "$PROJECT_ROOT"
+    fi
+fi
+
+# Windows ARM64 build
+if $BUILD_WINDOWS; then
+    echo -e "\n${GREEN}=== Building for Windows (ARM64) ===${NC}"
+
+    if ! check_prerequisite "Clang" "clang" "sudo apt install clang (Linux) or brew install llvm (macOS)"; then
+        echo -e "${YELLOW}Skipping Windows ARM64 build - Clang not available${NC}"
+    else
+        mkdir -p build_windows_arm64
+        cd build_windows_arm64
+
+        # Always configure to ensure correct build settings
+        cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DWINDOWS_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MATHEMATICA_PACLET=ON \
+            || { echo -e "${RED}Windows ARM64 CMake configuration failed${NC}"; exit 1; }
+
+        make -j"$BUILD_JOBS" paclet \
+            || { echo -e "${RED}Windows ARM64 build failed${NC}"; exit 1; }
+
+        echo -e "${GREEN}✓ Windows ARM64 build complete${NC}"
         cd "$PROJECT_ROOT"
     fi
 fi
@@ -149,14 +205,13 @@ if $BUILD_MACOS; then
         mkdir -p build_macos
         cd build_macos
 
-        if [ ! -f CMakeCache.txt ]; then
-            cmake .. \
-                -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
-                -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_MATHEMATICA_PACLET=ON \
-                || { echo -e "${RED}macOS x86_64 CMake configuration failed${NC}"; exit 1; }
-        fi
+        # Always configure to ensure correct build settings
+        cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
+            -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MATHEMATICA_PACLET=ON \
+            || { echo -e "${RED}macOS x86_64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
             || { echo -e "${RED}macOS x86_64 build failed${NC}"; exit 1; }
@@ -177,14 +232,13 @@ if $BUILD_MACOS; then
         mkdir -p build_macos_arm64
         cd build_macos_arm64
 
-        if [ ! -f CMakeCache.txt ]; then
-            cmake .. \
-                -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
-                -DCMAKE_SYSTEM_PROCESSOR=arm64 \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_MATHEMATICA_PACLET=ON \
-                || { echo -e "${RED}macOS ARM64 CMake configuration failed${NC}"; exit 1; }
-        fi
+        # Always configure to ensure correct build settings
+        cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MATHEMATICA_PACLET=ON \
+            || { echo -e "${RED}macOS ARM64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
             || { echo -e "${RED}macOS ARM64 build failed${NC}"; exit 1; }
@@ -196,10 +250,65 @@ fi
 
 # Summary
 echo -e "\n${GREEN}=== Build Summary ===${NC}"
-[ -f paclet/LibraryResources/Linux-x86-64/libHypergraphRewriting.so ] && echo -e "${GREEN}✓ Linux-x86-64${NC}"
-[ -f paclet/LibraryResources/Windows-x86-64/HypergraphRewriting.dll ] && echo -e "${GREEN}✓ Windows-x86-64${NC}"
-[ -f paclet/LibraryResources/MacOSX-x86-64/libHypergraphRewriting.dylib ] && echo -e "${GREEN}✓ MacOSX-x86-64${NC}"
-[ -f paclet/LibraryResources/MacOSX-ARM64/libHypergraphRewriting.dylib ] && echo -e "${GREEN}✓ MacOSX-ARM64${NC}"
+
+# Track build status
+BUILD_FAILED=false
+
+# Check Linux x86-64
+if [ -f paclet/LibraryResources/Linux-x86-64/libHypergraphRewriting.so ]; then
+    echo -e "${GREEN}✓ Linux-x86-64${NC}"
+else
+    echo -e "${RED}✗ Linux-x86-64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
+
+# Check Linux ARM64
+if [ -f paclet/LibraryResources/Linux-ARM64/libHypergraphRewriting.so ]; then
+    echo -e "${GREEN}✓ Linux-ARM64${NC}"
+else
+    echo -e "${RED}✗ Linux-ARM64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
+
+# Check Windows x86-64
+if [ -f paclet/LibraryResources/Windows-x86-64/HypergraphRewriting.dll ]; then
+    echo -e "${GREEN}✓ Windows-x86-64${NC}"
+else
+    echo -e "${RED}✗ Windows-x86-64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
+
+# Check Windows ARM64
+if [ -f paclet/LibraryResources/Windows-ARM64/HypergraphRewriting.dll ]; then
+    echo -e "${GREEN}✓ Windows-ARM64${NC}"
+else
+    echo -e "${RED}✗ Windows-ARM64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
+
+# Check macOS x86-64
+if [ -f paclet/LibraryResources/MacOSX-x86-64/libHypergraphRewriting.dylib ]; then
+    echo -e "${GREEN}✓ MacOSX-x86-64${NC}"
+else
+    echo -e "${RED}✗ MacOSX-x86-64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
+
+# Check macOS ARM64
+if [ -f paclet/LibraryResources/MacOSX-ARM64/libHypergraphRewriting.dylib ]; then
+    echo -e "${GREEN}✓ MacOSX-ARM64${NC}"
+else
+    echo -e "${RED}✗ MacOSX-ARM64 - MISSING${NC}"
+    BUILD_FAILED=true
+fi
 
 echo -e "\n${GREEN}Paclet libraries located in: paclet/LibraryResources/${NC}"
-echo -e "\nTo create paclet archive: cd build_<platform> && make paclet_archive"
+
+if $BUILD_FAILED; then
+    echo -e "\n${RED}ERROR: Some platform libraries are missing!${NC}"
+    echo -e "${RED}Build incomplete - do not create paclet archive${NC}"
+    exit 1
+else
+    echo -e "\n${GREEN}✓ All platform libraries built successfully${NC}"
+    echo -e "\nTo create paclet archive: cd build_<platform> && make create_paclet_archive"
+fi

@@ -4,7 +4,7 @@ PacletObject[<|
     "Description" -> "A high-performance hypergraph rewriting engine with parallel processing capabilities",
     "Creator" -> "Hypergraph Rewriting Project",
     "WolframVersion" -> "13.0+",
-    "SystemID" -> {"Linux-x86-64", "MacOSX-x86-64", "MacOSX-ARM64", "Windows-x86-64"},
+    "SystemID" -> {"Linux-x86-64", "Linux-ARM64", "MacOSX-x86-64", "MacOSX-ARM64", "Windows-x86-64", "Windows-ARM64"},
     "Extensions" -> {
         {
             "Kernel",

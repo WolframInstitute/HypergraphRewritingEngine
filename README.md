@@ -70,3 +70,21 @@ std::cout << "Events: " << graph.num_events() << std::endl;
 - CMake 3.15+
 - Google Test (automatically downloaded)
 - Mathematica 12+ (for paclet build dependencies)
+
+## Supported Platforms
+
+The paclet supports 6 platforms:
+- **Linux**: x86-64, ARM64
+- **Windows**: x86-64, ARM64
+- **macOS**: x86-64 (Intel), ARM64 (Apple Silicon)
+
+### Cross-Compilation
+
+Cross-compilation from Linux is supported for all 6 platforms. The build script automatically detects available toolchains and builds for all platforms where dependencies are met:
+
+- **Linux ARM64**: Requires `gcc-aarch64-linux-gnu`
+- **Windows x86-64**: Requires MinGW-w64 (`gcc-mingw-w64-x86-64`)
+- **Windows ARM64**: Requires Clang + Windows SDK (auto-detected in WSL2)
+- **macOS**: Requires OSXCross
+
+The build script gracefully skips platforms where toolchains are unavailable. See `paclet_source/README.md` for detailed build instructions and dependencies.
