@@ -56,12 +56,10 @@ BENCHMARK(uniqueness_tree_by_edge_count, "Measures uniqueness tree performance a
 
         auto adjacency_index = build_adjacency_index(global_edges);
 
-        // Use fewer samples for larger graphs
-        int samples = edges <= 20 ? 50 : (edges <= 50 ? 20 : 10);
         BENCHMARK_CODE([&]() {
             UniquenessTreeSet tree_set(global_edges, adjacency_index);
             tree_set.canonical_hash();
-        }, samples);
+        });
     }
 }
 
@@ -77,12 +75,10 @@ BENCHMARK(uniqueness_tree_by_edge_count_arity3, "Measures uniqueness tree perfor
 
         auto adjacency_index = build_adjacency_index(global_edges);
 
-        // Use fewer samples for larger graphs
-        int samples = edges <= 20 ? 50 : (edges <= 50 ? 20 : 10);
         BENCHMARK_CODE([&]() {
             UniquenessTreeSet tree_set(global_edges, adjacency_index);
             tree_set.canonical_hash();
-        }, samples);
+        });
     }
 }
 
@@ -99,7 +95,7 @@ BENCHMARK(uniqueness_tree_by_symmetry, "Shows how graph symmetry affects uniquen
         BENCHMARK_CODE([&]() {
             UniquenessTreeSet tree_set(global_edges, adjacency_index);
             tree_set.canonical_hash();
-        }, 50);
+        });
     }
 }
 
@@ -121,7 +117,7 @@ BENCHMARK(uniqueness_tree_2d_sweep, "2D parameter sweep: edges vs symmetry_group
             BENCHMARK_CODE([&]() {
                 UniquenessTreeSet tree_set(global_edges, adjacency_index);
                 tree_set.canonical_hash();
-            }, 50);
+            });
         }
     }
 }
@@ -141,7 +137,7 @@ BENCHMARK(uniqueness_tree_by_vertex_count, "Measures performance as vertex count
         BENCHMARK_CODE([&]() {
             UniquenessTreeSet tree_set(global_edges, adjacency_index);
             tree_set.canonical_hash();
-        }, 50);
+        });
     }
 }
 
@@ -158,6 +154,6 @@ BENCHMARK(uniqueness_tree_by_arity, "Tests impact of hyperedge arity on performa
         BENCHMARK_CODE([&]() {
             UniquenessTreeSet tree_set(global_edges, adjacency_index);
             tree_set.canonical_hash();
-        }, 50);
+        });
     }
 }

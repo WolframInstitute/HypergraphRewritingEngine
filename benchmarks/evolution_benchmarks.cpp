@@ -54,8 +54,10 @@ BENCHMARK(evolution_multi_rule_by_rule_count, "Tests evolution performance with 
             for (const auto& rule : rules) {
                 evolution.add_rule(rule);
             }
+            BENCHMARK_BEGIN();
             evolution.evolve(initial);
-        }, 3);
+            BENCHMARK_END();
+        });
     }
 }
 
@@ -80,8 +82,10 @@ BENCHMARK(evolution_thread_scaling, "Evaluates parallel speedup from 1 thread up
         BENCHMARK_CODE([&]() {
             WolframEvolution evolution(3, num_threads, true, true);
             evolution.add_rule(rule);
+            BENCHMARK_BEGIN();
             evolution.evolve(initial);
-        }, 3);
+            BENCHMARK_END();
+        });
     }
 }
 
@@ -111,8 +115,10 @@ BENCHMARK(evolution_2d_sweep_threads_steps, "2D sweep: evolution with rule {{1,2
             BENCHMARK_CODE([&]() {
                 WolframEvolution evolution(steps, num_threads, true, true);
                 evolution.add_rule(rule);
+                BENCHMARK_BEGIN();
                 evolution.evolve(initial);
-            }, 3);
+                BENCHMARK_END();
+            });
         }
     }
 }
@@ -135,7 +141,9 @@ BENCHMARK(evolution_with_self_loops, "Tests evolution performance on hypergraphs
         BENCHMARK_CODE([&]() {
             WolframEvolution evolution(steps, num_threads, true, true);
             evolution.add_rule(rule);
+            BENCHMARK_BEGIN();
             evolution.evolve(initial);
-        }, 3);
+            BENCHMARK_END();
+        });
     }
 }

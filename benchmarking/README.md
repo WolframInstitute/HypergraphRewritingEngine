@@ -18,20 +18,27 @@ make benchmark_suite
 # Run all benchmarks (outputs to benchmark_results/)
 cmake .. -DCMAKE_BUILD_TYPE=Release && make run_benchmarks
 
-# Run filtered benchmarks (regex with implicit ^ anchor)
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBENCHMARK_FILTER="pattern_matching.*" && make run_benchmarks
+# Run filtered benchmarks (gtest-style patterns with wildcards)
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBENCHMARK_FILTER="pattern_matching*" && make run_benchmarks
 cmake .. -DCMAKE_BUILD_TYPE=Release -DBENCHMARK_FILTER="canonicalization_2d_sweep" && make run_benchmarks
 
 # Clear filter
 cmake .. -UBENCHMARK_FILTER && make run_benchmarks
 
-# Run benchmark suite directly with regex filter
-./benchmark_suite <output_dir> [filter]
+# Run benchmark suite directly with gtest-style filter
+./benchmark_suite --filter='pattern'
 
-# Filter examples:
-# - "pattern_matching.*" - all pattern matching benchmarks
-# - ".*_2d_sweep" - all 2D parameter sweeps
-# - "canonicalization_by_edge_count" - exact match
+# Filter syntax (gtest-style):
+# - Wildcards: '*' (any string), '?' (any char)
+# - Multiple patterns: separated by ':' (OR)
+# - Negative patterns: after '-' (exclude)
+# - Examples:
+#   "pattern_matching*" - all pattern matching benchmarks
+#   "*_2d_sweep" - all 2D parameter sweeps
+#   "canonicalization_by_edge_count" - exact match
+#   "causal*:transitive*" - multiple patterns (OR)
+#   "*overhead*" - substring match
+#   "*-*reference*" - all except reference benchmarks
 ```
 
 ### Visualize Results

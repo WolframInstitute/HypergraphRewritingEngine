@@ -25,7 +25,7 @@ BENCHMARK(canonicalization_by_edge_count, "Measures canonicalization performance
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize(hg);
-        }, 10);
+        });
     }
 }
 
@@ -41,7 +41,7 @@ BENCHMARK(canonicalization_by_edge_count_arity3, "Measures canonicalization perf
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize(hg);
-        }, 10);
+        });
     }
 }
 
@@ -56,7 +56,7 @@ BENCHMARK(canonicalization_by_symmetry, "Shows how graph symmetry affects canoni
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize(hg);
-        }, 10);
+        });
     }
 }
 
@@ -76,7 +76,7 @@ BENCHMARK(canonicalization_2d_sweep, "2D parameter sweep: edges vs symmetry_grou
             BENCHMARK_CODE([&]() {
                 Canonicalizer canonicalizer;
                 canonicalizer.canonicalize(hg);
-            }, 10);
+            });
         }
     }
 }

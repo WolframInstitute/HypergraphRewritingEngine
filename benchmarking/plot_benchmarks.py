@@ -80,6 +80,20 @@ def should_regenerate_plot(benchmark_name, results_dir, plots_dir):
 
     return False
 
+def extract_metadata(metadata_str):
+    """Extract metadata from the metadata column (CSV field)"""
+    metadata = {}
+    if not metadata_str or metadata_str == '' or pd.isna(metadata_str):
+        return metadata
+
+    for item in metadata_str.split(','):
+        item = item.strip()
+        if '=' in item:
+            key, value = item.split('=', 1)
+            metadata[key.strip()] = value.strip()
+
+    return metadata
+
 def plot_1d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
     """Plot 1D parameter sweeps"""
     df = pd.read_csv(detailed_csv)
@@ -111,12 +125,19 @@ def plot_1d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
 
         bench_data = df[df['benchmark_name'] == benchmark]
 
-        # Extract parameter name and values
+        # Extract parameter name first (for default labels)
         param_str = bench_data['params'].values[0]
         parts = param_str.split('=')
         if len(parts) < 2:
             continue  # Skip malformed params
         param_name = parts[0].strip()
+
+        # Extract metadata from metadata column
+        metadata = extract_metadata(bench_data['metadata'].values[0])
+        x_label = metadata.get('x_label', param_name)
+        y_label = metadata.get('y_label', 'Time (μs)')
+        x_scale = metadata.get('x_scale', 'linear')
+        y_scale = metadata.get('y_scale', 'linear')
 
         param_values = []
         avg_times = []
@@ -188,7 +209,10 @@ def plot_1d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
                 valid_avgs = [data['avg'][i] for i in valid_indices]
                 valid_stds = [data['stddev'][i] for i in valid_indices]
 
-                ax.errorbar(valid_params, valid_avgs, yerr=valid_stds,
+                # Only show error bars if there's actual variance
+                sub_yerr = None if all(s == 0 or s < 1e-6 for s in valid_stds) else valid_stds
+
+                ax.errorbar(valid_params, valid_avgs, yerr=sub_yerr,
                            fmt='s-', linewidth=2.5, markersize=7, capsize=4, capthick=2,
                            label=name.capitalize(), color=colors[idx % len(colors)], alpha=0.9, zorder=5)
 
@@ -198,26 +222,71 @@ def plot_1d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
             for name in sub_timing_names
         )
 
+        # Check if there's a reference benchmark for comparison
+        reference_name = benchmark + '_reference'
+        reference_csv_path = os.path.join(os.path.dirname(detailed_csv), '..', 'reference', f'{reference_name}.csv')
+        has_reference = os.path.exists(reference_csv_path)
+
+        # Get legend labels from metadata or use defaults
+        main_legend_label = metadata.get('legend_label', 'Main' if has_reference else None)
+        reference_legend_label = metadata.get('reference_legend_label', 'Reference')
+
+        # Only show error bars if there's actual variance
+        main_yerr = None if all(s == 0 or s < 1e-6 for s in stddev_times) else stddev_times
+
         # Plot overall timing (only show if there are sub-timings, otherwise it's the only line)
         if has_sub_timings:
             # With sub-timings: show overall as dashed line with label
-            ax.errorbar(param_values, avg_times, yerr=stddev_times,
+            ax.errorbar(param_values, avg_times, yerr=main_yerr,
                        fmt='o--', linewidth=2, markersize=7, capsize=5, capthick=2,
                        label='Overall', color='#34495e', alpha=0.6, zorder=3)
         else:
-            # Without sub-timings: just show the main data without label
-            ax.errorbar(param_values, avg_times, yerr=stddev_times,
+            # Without sub-timings: show main data (with label if there's reference data)
+            ax.errorbar(param_values, avg_times, yerr=main_yerr,
                        fmt='o-', linewidth=2, markersize=7, capsize=5, capthick=2,
-                       color='#2c3e50', alpha=1.0, zorder=3)
+                       label=main_legend_label, color='#2c3e50', alpha=1.0, zorder=3)
 
-        ax.set_xlabel(param_name, fontsize=14)
-        ax.set_ylabel('Time (μs)', fontsize=14)
+        # Plot reference data if available
+        if has_reference:
+            ref_df = pd.read_csv(reference_csv_path)
+            ref_points = []
+            for _, row in ref_df.iterrows():
+                # Reference CSV has parameter columns directly
+                if param_name in ref_df.columns:
+                    param_val = row[param_name]
+                    ref_points.append({
+                        'param': param_val,
+                        'avg': row['median_us'],
+                        'stddev': row['mad_us']
+                    })
+
+            if ref_points:
+                ref_points.sort(key=lambda p: p['param'] if isinstance(p['param'], (int, float)) else str(p['param']))
+                ref_params = [p['param'] for p in ref_points]
+                ref_avgs = [p['avg'] for p in ref_points]
+                ref_stds = [p['stddev'] for p in ref_points]
+
+                # Only show error bars if there's actual variance (CI width > 0)
+                ref_yerr = None if all(s == 0 or s < 1e-6 for s in ref_stds) else ref_stds
+
+                ax.errorbar(ref_params, ref_avgs, yerr=ref_yerr,
+                           fmt='s--', linewidth=2, markersize=7, capsize=5, capthick=2,
+                           label=reference_legend_label, color='#e74c3c', alpha=0.8, zorder=2)
+
+        ax.set_xlabel(x_label, fontsize=14)
+        ax.set_ylabel(y_label, fontsize=14)
         ax.set_title(f'{benchmark} - Performance vs {param_name}', fontsize=16, fontweight='bold')
         ax.grid(True, alpha=0.3)
 
-        # Only show legend if there are multiple lines (sub-timings exist)
-        if has_sub_timings:
-            ax.legend(fontsize=11)
+        # Apply axis scales
+        if x_scale == 'log':
+            ax.set_xscale('log')
+        if y_scale == 'log':
+            ax.set_yscale('log')
+
+        # Show legend if there are multiple lines (sub-timings or reference data)
+        if has_sub_timings or has_reference:
+            ax.legend(fontsize=11, loc='best')
 
         # Set x-axis limits and ticks to start from actual minimum (avoid misleading 0)
         if all(isinstance(v, (int, float)) for v in param_values):
@@ -258,8 +327,17 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
     two_param_benchmarks = []
     for benchmark in df['benchmark_name'].unique():
         bench_data = df[df['benchmark_name'] == benchmark]
-        params_list = bench_data['params'].values[0].split(',')
-        if len(params_list) == 2:
+
+        # Check parameter consistency across all rows
+        param_counts = [len(row.split(',')) for row in bench_data['params'].values]
+        unique_counts = set(param_counts)
+
+        if len(unique_counts) > 1:
+            raise ValueError(f"ERROR: Benchmark '{benchmark}' has inconsistent parameter counts: {unique_counts}. "
+                           f"All rows must have the same number of parameters. "
+                           f"This indicates a bug in the benchmark code where BENCHMARK_PARAM calls are not consistent.")
+
+        if list(unique_counts)[0] == 2:
             two_param_benchmarks.append(benchmark)
 
     if not two_param_benchmarks:
@@ -273,10 +351,19 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
 
         bench_data = df[df['benchmark_name'] == benchmark]
 
-        # Extract parameter names
+        # Extract parameter names first (for default labels)
         param_str = bench_data['params'].values[0]
         param1_name = param_str.split(',')[0].split('=')[0].strip()
         param2_name = param_str.split(',')[1].split('=')[0].strip()
+
+        # Extract metadata from metadata column
+        metadata = extract_metadata(bench_data['metadata'].values[0])
+        x_label = metadata.get('x_label', param1_name)
+        y_label = metadata.get('y_label', param2_name)
+        z_label = metadata.get('z_label', 'Time (μs)')
+        x_scale = metadata.get('x_scale', 'linear')
+        y_scale = metadata.get('y_scale', 'linear')
+        z_scale = metadata.get('z_scale', 'linear')
 
         param1_vals = []
         param2_vals = []
@@ -285,6 +372,10 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
 
         for _, row in bench_data.iterrows():
             parts = row['params'].split(',')
+            if len(parts) != 2:
+                # Should never happen due to early validation, but defensive check
+                raise ValueError(f"INTERNAL ERROR: Benchmark '{benchmark}' was classified as 2D but has "
+                               f"{len(parts)} parameter(s) in row: '{row['params']}'")
             p1_val = parts[0].split('=')[1].strip()
             p2_val = parts[1].split('=')[1].strip()
 
@@ -337,9 +428,9 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
 
                 X, Y = np.meshgrid(unique_p1, unique_p2)
                 surf = ax.plot_surface(X, Y, Z, cmap='cividis', alpha=0.8)
-                ax.set_xlabel(param1_name, fontsize=10)
-                ax.set_ylabel(param2_name, fontsize=10)
-                ax.set_zlabel('Time (μs)', fontsize=10)
+                ax.set_xlabel(x_label, fontsize=10)
+                ax.set_ylabel(y_label, fontsize=10)
+                ax.set_zlabel(z_label, fontsize=10)
                 ax.set_title('Overall', fontsize=12, fontweight='bold')
                 # Set axis limits to actual data range
                 ax.set_xlim(min(unique_p1), max(unique_p1))
@@ -359,9 +450,9 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
                                 Z_sub[i, j] = time
 
                         surf = ax.plot_surface(X, Y, Z_sub, cmap='plasma', alpha=0.8)
-                        ax.set_xlabel(param1_name, fontsize=10)
-                        ax.set_ylabel(param2_name, fontsize=10)
-                        ax.set_zlabel('Time (μs)', fontsize=10)
+                        ax.set_xlabel(x_label, fontsize=10)
+                        ax.set_ylabel(y_label, fontsize=10)
+                        ax.set_zlabel(z_label, fontsize=10)
                         ax.set_title(name.capitalize(), fontsize=12, fontweight='bold')
                         # Set axis limits to actual data range
                         ax.set_xlim(min(unique_p1), max(unique_p1))
@@ -383,9 +474,9 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
                 X, Y = np.meshgrid(unique_p1, unique_p2)
                 surf = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8)
 
-                ax.set_xlabel(param1_name, fontsize=12)
-                ax.set_ylabel(param2_name, fontsize=12)
-                ax.set_zlabel('Time (μs)', fontsize=12)
+                ax.set_xlabel(x_label, fontsize=12)
+                ax.set_ylabel(y_label, fontsize=12)
+                ax.set_zlabel(z_label, fontsize=12)
                 ax.set_title(f'{benchmark} - 2D Parameter Sweep', fontsize=14, fontweight='bold')
                 # Set axis limits to actual data range
                 ax.set_xlim(min(unique_p1), max(unique_p1))
@@ -433,8 +524,8 @@ def plot_2d_sweep(detailed_csv, output_dir, filter_benchmarks=None):
 
                 ax.bar(x + i * width, times, width, label=f'{param2_name}={p2}')
 
-            ax.set_xlabel(param1_name, fontsize=14)
-            ax.set_ylabel('Time (μs)', fontsize=14)
+            ax.set_xlabel(x_label, fontsize=14)
+            ax.set_ylabel(z_label, fontsize=14)
             ax.set_title(f'{benchmark} - Parameter Comparison', fontsize=16, fontweight='bold')
             ax.set_xticks(x + width * (len(unique_p2) - 1) / 2)
             ax.set_xticklabels([f'{p}' for p in unique_p1])
@@ -504,11 +595,13 @@ def plot_time_series(benchmark_results_dir, output_dir):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python plot_benchmarks.py <benchmark_results_dir>")
+        print("Usage: python plot_benchmarks.py <benchmark_results_dir> [--force]")
         print("Example: python plot_benchmarks.py benchmark_results/a05e49a1...")
+        print("  --force: Force regeneration of all plots")
         sys.exit(1)
 
     results_dir = sys.argv[1]
+    force_regenerate = '--force' in sys.argv
 
     if not os.path.exists(results_dir):
         print(f"Error: Directory {results_dir} does not exist")
@@ -542,7 +635,7 @@ def main():
             plot_2d = os.path.join(plots_dir, f'{benchmark}_2d.png')
             plot_exists = os.path.exists(plot_1d) or os.path.exists(plot_2d)
 
-            if should_regenerate_plot(benchmark, results_dir, plots_dir):
+            if force_regenerate or should_regenerate_plot(benchmark, results_dir, plots_dir):
                 benchmarks_to_plot.append(benchmark)
                 if plot_exists:
                     updated_plots.append(benchmark)
@@ -705,102 +798,159 @@ def generate_benchmarks_md(results_dir, plots_dir, detailed_csv):
     if uncategorized:
         categories['Other'] = uncategorized
 
-    # Generate markdown
-    md = []
-    md.append("# Hypergraph Engine Benchmarks\n")
+    def generate_markdown(title, include_tables=True, include_toc=True):
+        """Generate markdown with optional tables and TOC"""
+        md = []
+        md.append(f"# {title}\n")
 
-    # Table of Contents
-    md.append("## Contents\n")
-    for category, benchmarks in categories.items():
-        if not benchmarks:
-            continue
-        category_anchor = category.lower().replace(' ', '-') + '-benchmarks'
-        md.append(f"- **[{category} Benchmarks](#{category_anchor})**")
-        for benchmark in sorted(benchmarks):
-            md.append(f"  - [{benchmark}](#{benchmark})")
-    md.append("")
+        # Table of Contents
+        if include_toc:
+            md.append("## Contents\n")
+            for category, benchmarks in categories.items():
+                if not benchmarks:
+                    continue
+                category_anchor = category.lower().replace(' ', '-') + '-benchmarks'
+                md.append(f"- **[{category} Benchmarks](#{category_anchor})**")
+                for benchmark in sorted(benchmarks):
+                    md.append(f"  - [{benchmark}](#{benchmark})")
+            md.append("")
 
-    # System information
-    md.append("## System Information\n")
-    md.append(f"- **CPU**: {hw['cpu']}")
-    md.append(f"- **Cores**: {hw['cores']}")
-    md.append(f"- **Architecture**: {hw['arch']}")
-    md.append(f"- **OS**: {hw['os']}")
-    md.append(f"- **Memory**: {hw['memory']}")
-    md.append(f"- **Compiler**: {hw['compiler']}")
-    md.append(f"- **Hash Type**: {config.get('HASH_TYPE', 'unknown')}")
-    md.append(f"- **Hash**: {config.get('HASH', 'unknown')}")
-    md.append(f"- **Date**: {config.get('COMMIT_DATE', 'unknown')}")
-    md.append(f"- **Timestamp**: {config.get('TIMESTAMP', 'unknown')}\n")
+        # System information
+        md.append("## System Information\n")
+        md.append(f"- **CPU**: {hw['cpu']}")
+        md.append(f"- **Cores**: {hw['cores']}")
+        md.append(f"- **Architecture**: {hw['arch']}")
+        md.append(f"- **OS**: {hw['os']}")
+        md.append(f"- **Memory**: {hw['memory']}")
+        md.append(f"- **Compiler**: {hw['compiler']}")
+        md.append(f"- **Hash Type**: {config.get('HASH_TYPE', 'unknown')}")
+        md.append(f"- **Hash**: {config.get('HASH', 'unknown')}")
+        md.append(f"- **Date**: {config.get('COMMIT_DATE', 'unknown')}")
+        md.append(f"- **Timestamp**: {config.get('TIMESTAMP', 'unknown')}\n")
 
-    # Benchmarks by category
-    for category, benchmarks in categories.items():
-        if not benchmarks:
-            continue
+        # Benchmarks by category
+        for category, benchmarks in categories.items():
+            if not benchmarks:
+                continue
 
-        md.append(f"## {category} Benchmarks\n")
+            md.append(f"## {category} Benchmarks\n")
 
-        for benchmark in sorted(benchmarks):
-            md.append(f"### {benchmark}\n")
+            for benchmark in sorted(benchmarks):
+                md.append(f"### {benchmark}\n")
 
-            # Add description if available
-            if benchmark in metadata and metadata[benchmark]['description']:
-                md.append(f"{metadata[benchmark]['description']}\n")
+                # Add description if available
+                if benchmark in metadata and metadata[benchmark]['description']:
+                    md.append(f"{metadata[benchmark]['description']}\n")
 
-            # Check for plot files
-            plot_1d = os.path.join('plots', f'{benchmark}_1d.png')
-            plot_2d = os.path.join('plots', f'{benchmark}_2d.png')
+                # Check for plot files (prefer 2D over 1D for multi-parameter benchmarks)
+                plot_1d = os.path.join('plots', f'{benchmark}_1d.png')
+                plot_2d = os.path.join('plots', f'{benchmark}_2d.png')
 
-            if os.path.exists(os.path.join(results_dir, plot_1d)):
-                md.append(f"![{benchmark}]({plot_1d})\n")
-            elif os.path.exists(os.path.join(results_dir, plot_2d)):
-                md.append(f"![{benchmark}]({plot_2d})\n")
+                if os.path.exists(os.path.join(results_dir, plot_2d)):
+                    md.append(f"![{benchmark}]({plot_2d})\n")
+                elif os.path.exists(os.path.join(results_dir, plot_1d)):
+                    md.append(f"![{benchmark}]({plot_1d})\n")
 
-            # Add metrics table
-            bench_data = df[df['benchmark_name'] == benchmark]
-            if len(bench_data) > 0:
-                # Detect sub-timings for this benchmark
-                sub_timing_cols = []
-                for col in bench_data.columns:
-                    if col.endswith('_avg_us') and col != 'avg_us':
-                        # Check if this benchmark actually has data for this sub-timing
-                        if bench_data[col].notna().any():
-                            timing_name = col.replace('_avg_us', '')
-                            sub_timing_cols.append(timing_name)
+                # Add metrics table if requested
+                if not include_tables:
+                    continue
 
-                # Build table header
-                if sub_timing_cols:
-                    # Has sub-timings: show Overall + sub-timings
-                    header = "| Parameters | Overall (μs) | Stddev (μs) | CV% | Samples |"
-                    separator = "|------------|--------------|-------------|-----|---------|"
-                    for name in sub_timing_cols:
-                        header += f" {name.capitalize()} (μs) |"
-                        separator += "-----------------|"
-                else:
-                    # No sub-timings: show Avg instead of Overall
-                    header = "| Parameters | Avg (μs) | Stddev (μs) | CV% | Samples |"
-                    separator = "|------------|----------|-------------|-----|---------|"
+                bench_data = df[df['benchmark_name'] == benchmark]
+                if len(bench_data) > 0:
+                    # Detect result type and get y_label from metadata
+                    result_type = bench_data.iloc[0]['result_type'] if 'result_type' in bench_data.columns else 'TIME'
+                    bench_metadata = extract_metadata(bench_data.iloc[0]['metadata']) if 'metadata' in bench_data.columns else {}
+                    y_label = bench_metadata.get('y_label', None)
 
-                md.append(header)
-                md.append(separator)
+                    # Determine units for table header
+                    if result_type == 'RATIO' or y_label == 'Speedup (x)':
+                        median_unit = "(x)"
+                        mad_unit = "(x)"
+                    else:
+                        median_unit = "(μs)"
+                        mad_unit = "(μs)"
 
-                # Build table rows
-                for _, row in bench_data.iterrows():
-                    params = row['params']
-                    row_str = f"| {params} | {row['avg_us']:.2f} | {row['stddev_us']:.2f} | {row['cv_percent']:.2f} | {row['samples']} |"
-                    for name in sub_timing_cols:
-                        avg_col = f'{name}_avg_us'
-                        if pd.notna(row[avg_col]):
-                            row_str += f" {row[avg_col]:.2f} |"
+                    # Detect sub-timings for this benchmark
+                    sub_timing_cols = []
+                    for col in bench_data.columns:
+                        if col.endswith('_avg_us') and col != 'avg_us':
+                            # Check if this benchmark actually has data for this sub-timing
+                            if bench_data[col].notna().any():
+                                timing_name = col.replace('_avg_us', '')
+                                sub_timing_cols.append(timing_name)
+
+                    # Check if this is a single-sample benchmark (all samples=1, all MAD=0, all CI=0)
+                    is_single_sample = (
+                        (bench_data['samples'] == 1).all() and
+                        (bench_data['mad_us'] == 0).all() and
+                        (bench_data['ci_width_percent'] == 0).all()
+                    )
+
+                    # Build table header
+                    if is_single_sample:
+                        # Single-sample: just show Parameters and Median
+                        header = f"| Parameters | Median {median_unit} |"
+                        separator = "|------------|-------------|"
+                        if sub_timing_cols:
+                            for name in sub_timing_cols:
+                                header += f" {name.capitalize()} (μs) |"
+                                separator += "-----------------|"
+                    elif sub_timing_cols:
+                        # Has sub-timings: show Overall + sub-timings
+                        header = f"| Parameters | Median {median_unit} | MAD {mad_unit} | CI Width% | Samples |"
+                        separator = "|------------|-------------|----------|-----------|---------|"
+                        for name in sub_timing_cols:
+                            header += f" {name.capitalize()} (μs) |"
+                            separator += "-----------------|"
+                    else:
+                        # No sub-timings: show Median instead of Overall
+                        header = f"| Parameters | Median {median_unit} | MAD {mad_unit} | CI Width% | Samples |"
+                        separator = "|------------|-------------|----------|-----------|---------|"
+
+                    md.append(header)
+                    md.append(separator)
+
+                    # Sort rows by parameter values (natural sort for numeric parameters)
+                    def sort_key(row):
+                        params = row['params']
+                        # Try to extract numeric values from params for sorting
+                        import re
+                        numbers = re.findall(r'\d+', params)
+                        if numbers:
+                            return [int(n) for n in numbers]
+                        return [params]
+
+                    sorted_rows = bench_data.sort_values(by='params', key=lambda x: x.map(lambda p: sort_key({'params': p})))
+
+                    # Build table rows
+                    for _, row in sorted_rows.iterrows():
+                        params = row['params']
+                        if is_single_sample:
+                            row_str = f"| {params} | {row['median_us']:.2f} |"
                         else:
-                            row_str += " - |"
-                    md.append(row_str)
-                md.append("")
+                            row_str = f"| {params} | {row['median_us']:.2f} | {row['mad_us']:.2f} | {row['ci_width_percent']:.2f} | {row['samples']} |"
+                        for name in sub_timing_cols:
+                            avg_col = f'{name}_avg_us'
+                            if pd.notna(row[avg_col]):
+                                row_str += f" {row[avg_col]:.2f} |"
+                            else:
+                                row_str += " - |"
+                        md.append(row_str)
+                    md.append("")
 
-    # Write file
+        return '\n'.join(md)
+
+    # Generate and write full file with tables
+    markdown_content = generate_markdown("Hypergraph Engine Benchmarks", include_tables=True, include_toc=True)
     output_file = os.path.join(results_dir, 'BENCHMARKS.md')
     with open(output_file, 'w') as f:
-        f.write('\n'.join(md))
+        f.write(markdown_content)
+
+    # Generate and write plots-only file
+    markdown_plots_only = generate_markdown("Hypergraph Engine Benchmarks - Plots Only", include_tables=False, include_toc=False)
+    output_file_plots = os.path.join(results_dir, 'BENCHMARKS_PLOTS_ONLY.md')
+    with open(output_file_plots, 'w') as f:
+        f.write(markdown_plots_only)
 
 
 if __name__ == '__main__':

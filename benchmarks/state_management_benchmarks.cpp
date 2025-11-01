@@ -26,8 +26,10 @@ BENCHMARK(state_storage_by_steps, "Measures state storage and retrieval overhead
         BENCHMARK_CODE([&]() {
             WolframEvolution evolution(steps, 1, true, true);
             evolution.add_rule(rule);
+            BENCHMARK_BEGIN();
             evolution.evolve(initial);
-        }, 3);
+            BENCHMARK_END();
+        });
     }
 }
 
@@ -40,17 +42,15 @@ BENCHMARK(full_capture_overhead, "Compares evolution performance with and withou
 
     std::vector<std::vector<GlobalVertexId>> initial = {{1, 2}};
 
-    BENCHMARK_PARAM("full_capture", "true");
-    BENCHMARK_CODE([&]() {
-        WolframEvolution evolution(2, 1, true, true);
-        evolution.add_rule(rule);
-        evolution.evolve(initial);
-    }, 3);
+    for (bool full_capture : {false, true}) {
+        BENCHMARK_PARAM("full_capture", full_capture ? "true" : "false");
 
-    BENCHMARK_PARAM("full_capture", "false");
-    BENCHMARK_CODE([&]() {
-        WolframEvolution evolution(2, 1, true, false);
-        evolution.add_rule(rule);
-        evolution.evolve(initial);
-    }, 3);
+        BENCHMARK_CODE([&]() {
+            WolframEvolution evolution(2, 1, true, full_capture);
+            evolution.add_rule(rule);
+            BENCHMARK_BEGIN();
+            evolution.evolve(initial);
+            BENCHMARK_END();
+        });
+    }
 }

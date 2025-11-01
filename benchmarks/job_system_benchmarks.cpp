@@ -49,7 +49,7 @@ BENCHMARK(job_system_2d_sweep, "2D parameter sweep of job system across thread c
                 // Wait for all jobs to complete
                 js.wait_for_completion();
                 BENCHMARK_TIMING_STOP("execution");
-            }, 3);
+            });
 
             js.shutdown();
         }
@@ -61,6 +61,7 @@ BENCHMARK(job_system_overhead, "Measures job system overhead with minimal worklo
 
     for (int batch_size : {10, 100, 1000, 10000}) {
         BENCHMARK_PARAM("batch_size", batch_size);
+        BENCHMARK_META("x_scale", "log");
 
         JobSystem<std::function<void()>> js(num_threads);
         js.start();
@@ -80,7 +81,7 @@ BENCHMARK(job_system_overhead, "Measures job system overhead with minimal worklo
             BENCHMARK_TIMING_START("execution");
             js.wait_for_completion();
             BENCHMARK_TIMING_STOP("execution");
-        }, 5);
+        });
 
         js.shutdown();
     }
@@ -122,7 +123,7 @@ BENCHMARK(job_system_scaling_efficiency, "Evaluates parallel efficiency with fix
             BENCHMARK_TIMING_START("execution");
             js.wait_for_completion();
             BENCHMARK_TIMING_STOP("execution");
-        }, 3);
+        });
 
         js.shutdown();
     }

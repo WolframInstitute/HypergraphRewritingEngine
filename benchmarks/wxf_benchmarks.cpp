@@ -34,7 +34,7 @@ BENCHMARK(wxf_serialize_flat_list, "Measures WXF serialization time for flat int
 
         BENCHMARK_CODE([&]() {
             auto serialized = wxf::serialize(data);
-        }, 10);
+        });
     }
 }
 
@@ -47,7 +47,7 @@ BENCHMARK(wxf_deserialize_flat_list, "Measures WXF deserialization time for flat
 
         BENCHMARK_CODE([&]() {
             auto deserialized = wxf::deserialize<std::vector<int>>(serialized);
-        }, 10);
+        });
     }
 }
 
@@ -61,7 +61,7 @@ BENCHMARK(wxf_serialize_nested_list, "Measures WXF serialization time for nested
 
             BENCHMARK_CODE([&]() {
                 auto serialized = wxf::serialize(data);
-            }, 10);
+            });
         }
     }
 }
@@ -77,7 +77,7 @@ BENCHMARK(wxf_deserialize_nested_list, "Measures WXF deserialization time for ne
 
             BENCHMARK_CODE([&]() {
                 auto deserialized = wxf::deserialize<std::vector<std::vector<int>>>(serialized);
-            }, 10);
+            });
         }
     }
 }
@@ -91,6 +91,6 @@ BENCHMARK(wxf_roundtrip, "Measures WXF round-trip (serialize + deserialize) time
         BENCHMARK_CODE([&]() {
             auto serialized = wxf::serialize(data);
             auto deserialized = wxf::deserialize<std::vector<int>>(serialized);
-        }, 10);
+        });
     }
 }

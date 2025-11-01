@@ -1,6 +1,5 @@
 #include "benchmark_framework.hpp"
 #include <cstdio>
-#include <map>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -19,12 +18,18 @@ int main(int argc, char** argv) {
     std::string filter = "";
     bool list_only = false;
     bool output_dir_set = false;
+    bool include_reference = false;
+    bool only_reference = false;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--list") {
             list_only = true;
+        } else if (arg == "--reference") {
+            only_reference = true;
+        } else if (arg == "--include-reference") {
+            include_reference = true;
         } else if (arg.find("--filter=") == 0) {
             filter = arg.substr(9);
         } else if (arg.find("--output=") == 0) {
@@ -46,14 +51,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Load calibration data if available
-    std::map<std::string, size_t> calibration = benchmark::CalibrationLoader::load("benchmark_calibration.txt");
-
-    if (!calibration.empty()) {
-        printf("Loaded %zu calibrated sample counts\n\n", calibration.size());
-    }
-
-    benchmark::BenchmarkRegistry::instance().run_all(output_dir, calibration, filter);
+    benchmark::BenchmarkRegistry::instance().run_all(output_dir, filter, include_reference, only_reference);
 
     return 0;
 }

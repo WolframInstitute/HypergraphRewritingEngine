@@ -20,30 +20,16 @@ BENCHMARK(pattern_matching_by_pattern_size, "2D parameter sweep: pattern matchin
             BENCHMARK_PARAM("pattern_edges", pattern_edges);
             BENCHMARK_PARAM("graph_edges", graph_edges);
 
-            // Pre-generate all samples
-            constexpr int num_samples = 50;
-            std::vector<Hypergraph> graphs;
-            std::vector<PatternHypergraph> patterns;
-            graphs.reserve(num_samples);
-            patterns.reserve(num_samples);
-
             int num_vertices = 10 + graph_edges;
-            for (int i = 0; i < num_samples; ++i) {
-                uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_pattern_size", num_vertices, graph_edges, i, 3);
-                uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_pattern_size_pattern", 0, pattern_edges, i, 2);
-
-                Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
-                PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, pattern_edges, pattern_seed);
-
-                graphs.push_back(std::move(hg));
-                patterns.push_back(std::move(pattern));
-            }
-
             int sample_index = 0;
 
             BENCHMARK_CODE([&]() {
-                const auto& hg = graphs[sample_index];
-                const auto& pattern = patterns[sample_index];
+                // Generate random graph/pattern (not timed)
+                uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_pattern_size", num_vertices, graph_edges, sample_index, 3);
+                uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_pattern_size_pattern", 0, pattern_edges, sample_index, 2);
+
+                Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
+                PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, pattern_edges, pattern_seed);
 
                 WolframEvolution evolution(0, std::thread::hardware_concurrency(), false, false);
                 RewritingRule dummy_rule(pattern, pattern);
@@ -53,7 +39,11 @@ BENCHMARK(pattern_matching_by_pattern_size, "2D parameter sweep: pattern matchin
                 for (const auto& edge : hg.edges()) {
                     initial.push_back(edge.vertices());
                 }
+
+                // Actual pattern matching (timed)
+                BENCHMARK_BEGIN();
                 evolution.evolve(initial, true);  // pattern_matching_only=true
+                BENCHMARK_END();
 
                 // Verify pattern matching found at least one match
                 if (evolution.get_total_matches_found() == 0) {
@@ -61,7 +51,7 @@ BENCHMARK(pattern_matching_by_pattern_size, "2D parameter sweep: pattern matchin
                 }
 
                 sample_index++;
-            }, num_samples);
+            });
         }
     }
 }
@@ -70,30 +60,16 @@ BENCHMARK(pattern_matching_by_graph_size, "Evaluates pattern matching scalabilit
     for (int graph_edges : {10, 20, 30, 40, 50, 60, 70, 80, 90, 100}) {
         BENCHMARK_PARAM("graph_edges", graph_edges);
 
-        // Pre-generate all samples
-        constexpr int num_samples = 50;
-        std::vector<Hypergraph> graphs;
-        std::vector<PatternHypergraph> patterns;
-        graphs.reserve(num_samples);
-        patterns.reserve(num_samples);
-
         int num_vertices = 10 + graph_edges;
-        for (int i = 0; i < num_samples; ++i) {
-            uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_graph_size", num_vertices, graph_edges, i, 3);
-            uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_graph_size_pattern", 0, 2, i, 2);
-
-            Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
-            PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, 2, pattern_seed);
-
-            graphs.push_back(std::move(hg));
-            patterns.push_back(std::move(pattern));
-        }
-
         int sample_index = 0;
 
         BENCHMARK_CODE([&]() {
-            const auto& hg = graphs[sample_index];
-            const auto& pattern = patterns[sample_index];
+            // Generate random graph/pattern (not timed)
+            uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_graph_size", num_vertices, graph_edges, sample_index, 3);
+            uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_by_graph_size_pattern", 0, 2, sample_index, 2);
+
+            Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
+            PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, 2, pattern_seed);
 
             WolframEvolution evolution(0, std::thread::hardware_concurrency(), false, false);
             RewritingRule dummy_rule(pattern, pattern);
@@ -103,7 +79,11 @@ BENCHMARK(pattern_matching_by_graph_size, "Evaluates pattern matching scalabilit
             for (const auto& edge : hg.edges()) {
                 initial.push_back(edge.vertices());
             }
+
+            // Actual pattern matching (timed)
+            BENCHMARK_BEGIN();
             evolution.evolve(initial, true);  // pattern_matching_only=true
+            BENCHMARK_END();
 
             // Verify pattern matching found at least one match
             if (evolution.get_total_matches_found() == 0) {
@@ -111,7 +91,7 @@ BENCHMARK(pattern_matching_by_graph_size, "Evaluates pattern matching scalabilit
             }
 
             sample_index++;
-        }, num_samples);
+        });
     }
 }
 
@@ -127,30 +107,16 @@ BENCHMARK(pattern_matching_2d_sweep_threads_size, "2D parameter sweep of pattern
             BENCHMARK_PARAM("num_threads", num_threads);
             BENCHMARK_PARAM("graph_edges", graph_edges);
 
-            // Pre-generate all samples
-            constexpr int num_samples = 50;
-            std::vector<Hypergraph> graphs;
-            std::vector<PatternHypergraph> patterns;
-            graphs.reserve(num_samples);
-            patterns.reserve(num_samples);
-
             int num_vertices = 10 + graph_edges;
-            for (int i = 0; i < num_samples; ++i) {
-                uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_2d_sweep", num_vertices, graph_edges, i, 3);
-                uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_2d_sweep_pattern", 0, 2, i, 2);
-
-                Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
-                PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, 2, pattern_seed);
-
-                graphs.push_back(std::move(hg));
-                patterns.push_back(std::move(pattern));
-            }
-
             int sample_index = 0;
 
             BENCHMARK_CODE([&]() {
-                const auto& hg = graphs[sample_index];
-                const auto& pattern = patterns[sample_index];
+                // Generate random graph/pattern (not timed)
+                uint32_t graph_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_2d_sweep", num_vertices, graph_edges, sample_index, 3);
+                uint32_t pattern_seed = RandomHypergraphGenerator::compute_seed("pattern_matching_2d_sweep_pattern", 0, 2, sample_index, 2);
+
+                Hypergraph hg = RandomHypergraphGenerator::generate(num_vertices, graph_edges, 3, graph_seed);
+                PatternHypergraph pattern = RandomHypergraphGenerator::extract_pattern(hg, 2, pattern_seed);
 
                 // 0 steps evolution to isolate pattern matching
                 WolframEvolution evolution(0, num_threads, false, false);
@@ -161,7 +127,11 @@ BENCHMARK(pattern_matching_2d_sweep_threads_size, "2D parameter sweep of pattern
                 for (const auto& edge : hg.edges()) {
                     initial.push_back(edge.vertices());
                 }
+
+                // Actual pattern matching (timed)
+                BENCHMARK_BEGIN();
                 evolution.evolve(initial, true);  // pattern_matching_only=true
+                BENCHMARK_END();
 
                 // Verify pattern matching found at least one match
                 if (evolution.get_total_matches_found() == 0) {
@@ -169,7 +139,7 @@ BENCHMARK(pattern_matching_2d_sweep_threads_size, "2D parameter sweep of pattern
                 }
 
                 sample_index++;
-            }, num_samples);
+            });
         }
     }
 }
