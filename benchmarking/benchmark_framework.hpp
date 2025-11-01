@@ -611,21 +611,40 @@ public:
  * Used by both BenchmarkRegistry and ReferenceDataLoader
  */
 struct CSVSchema {
-    // Column names in exact order (after benchmark_name, params, metadata, result_type)
-    static std::vector<std::string> get_column_names() {
+    enum class ColumnType {
+        INTEGER,
+        FLOATING_POINT
+    };
+
+    struct ColumnMetadata {
+        std::string name;
+        ColumnType type;
+    };
+
+    // Column metadata in exact order (after benchmark_name, params, metadata, result_type)
+    static std::vector<ColumnMetadata> get_column_metadata() {
         return {
-            "samples",
-            "outliers_removed",
-            "median_us",
-            "mad_us",
-            "min_us",
-            "max_us",
-            "avg_us",
-            "stddev_us",
-            "ci_lower_us",
-            "ci_upper_us",
-            "ci_width_percent"
+            {"samples", ColumnType::INTEGER},
+            {"outliers_removed", ColumnType::INTEGER},
+            {"median_us", ColumnType::FLOATING_POINT},
+            {"mad_us", ColumnType::FLOATING_POINT},
+            {"min_us", ColumnType::FLOATING_POINT},
+            {"max_us", ColumnType::FLOATING_POINT},
+            {"avg_us", ColumnType::FLOATING_POINT},
+            {"stddev_us", ColumnType::FLOATING_POINT},
+            {"ci_lower_us", ColumnType::FLOATING_POINT},
+            {"ci_upper_us", ColumnType::FLOATING_POINT},
+            {"ci_width_percent", ColumnType::FLOATING_POINT}
         };
+    }
+
+    // Column names in exact order (backward compatibility)
+    static std::vector<std::string> get_column_names() {
+        std::vector<std::string> names;
+        for (const auto& meta : get_column_metadata()) {
+            names.push_back(meta.name);
+        }
+        return names;
     }
 
     // Extract column values from result in same order
@@ -643,6 +662,26 @@ struct CSVSchema {
             result.ci_upper_us,
             result.ci_width_percent
         };
+    }
+
+    // Format a column value based on its type
+    static std::string format_column_value(double value, ColumnType type) {
+        std::ostringstream oss;
+        if (type == ColumnType::INTEGER) {
+            oss << static_cast<size_t>(value);
+        } else {
+            oss << std::fixed << std::setprecision(6) << value;
+        }
+        return oss.str();
+    }
+
+    // Write column values with proper formatting
+    static void write_column_values(std::ostream& os, const BenchmarkResult& result) {
+        auto metadata = get_column_metadata();
+        auto values = get_column_values(result);
+        for (size_t i = 0; i < values.size(); ++i) {
+            os << "," << format_column_value(values[i], metadata[i].type);
+        }
     }
 
     // Parse column values into result in same order
@@ -1420,9 +1459,7 @@ private:
             << params_to_string(result.params) << "\",\""
             << params_to_string(result.metadata) << "\","
             << result_type_str;
-        for (double value : CSVSchema::get_column_values(result)) {
-            oss << "," << value;
-        }
+        CSVSchema::write_column_values(oss, result);
 
         for (const auto& [sub_name, stats] : result.sub_timing_stats) {
             oss << "," << stats.avg_us
@@ -1499,9 +1536,7 @@ private:
                 << params_to_string(result.params) << "\",\""
                 << params_to_string(result.metadata) << "\","
                 << result_type_str;
-            for (double value : CSVSchema::get_column_values(result)) {
-                oss << "," << value;
-            }
+            CSVSchema::write_column_values(oss, result);
 
             // Add sub-timing data
             for (const auto& name : all_sub_timing_names) {
