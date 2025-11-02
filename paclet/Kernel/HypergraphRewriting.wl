@@ -3,9 +3,11 @@
 BeginPackage["HypergraphRewriting`"]
 
 PackageExport["HGEvolve"]
+PackageExport["EdgeId"]
 
 (* Public symbols - exposed API functions *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution and returns the specified property."
+EdgeId::usage = "EdgeId[id] wraps an edge identifier in state visualizations."
 
 (* Options for HGEvolve *)
 Options[HGEvolve] = {
@@ -341,8 +343,15 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : 
 
 HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{
   stateVertices, eventVertices, eventList, allVertices, stateToEventEdges,
-  eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges, baseGraph, baseEdges
+  eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges, baseGraph, baseEdges,
+  formatStateForTooltip
 },
+  (* Helper function to format state for tooltip: wrap EdgeID with EdgeId[...] *)
+  formatStateForTooltip[stateEdges_List] := Map[
+    Prepend[Rest[#], EdgeId[First[#]]] &,
+    stateEdges
+  ];
+
   stateVertices = Values[states];
 
   (* Events is now an Association, expand by multiplicity for visualization *)
@@ -411,7 +420,7 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
     PerformanceGoal -> "Quality",
     VertexLabels -> {
-      v_ :> Placed[HoldForm[v], Tooltip],
+      v_List :> With[{formatted = formatStateForTooltip[v]}, Placed[HoldForm[formatted], Tooltip]],
       DirectedEdge[_, _, tag_] :> Placed[tag, Tooltip]
     },
     VertexSize -> If[enableVertexStyles, 1/2, Automatic],
