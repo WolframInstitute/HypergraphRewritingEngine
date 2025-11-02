@@ -74,9 +74,23 @@ struct PartialMatch {
 
     /**
      * Check if this is a complete match (all pattern edges matched).
+     * CRITICAL: Must verify that ALL pattern edge indices from 0 to N-1 are present,
+     * because SCAN tasks process pattern edges independently and may only match a subset.
      */
     bool is_complete(std::size_t total_pattern_edges) const {
-        return next_pattern_edge_idx >= total_pattern_edges;
+        // Check that we have the right number of edges
+        if (edge_map.size() != total_pattern_edges) {
+            return false;
+        }
+
+        // Verify that all pattern indices from 0 to total_pattern_edges-1 are present
+        for (std::size_t i = 0; i < total_pattern_edges; ++i) {
+            if (edge_map.find(i) == edge_map.end()) {
+                return false;  // Missing pattern edge i
+            }
+        }
+
+        return true;
     }
 
     /**

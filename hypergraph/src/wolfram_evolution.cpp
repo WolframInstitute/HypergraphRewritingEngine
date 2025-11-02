@@ -142,6 +142,14 @@ void WolframEvolution::apply_all_rules_to_state(std::shared_ptr<WolframState> in
                     signature_index->add_edge(edge_id, sig);
                 }
 
+                // CRITICAL CHECK: Don't spawn tasks if target doesn't have enough edges
+                // A pattern with N edges can never match a hypergraph with < N edges
+                if (target_hg->num_edges() < rule_data.rule.lhs.num_edges()) {
+                    DEBUG_LOG("Skipping rule %zu: target has %zu edges but pattern requires %zu edges",
+                             rule_idx, target_hg->num_edges(), rule_data.rule.lhs.num_edges());
+                    return;  // Early return - no matches possible
+                }
+
                 // Create fresh context for this rule
                 auto context = std::make_shared<PatternMatchingContext>(
                     target_hg,  // Use the shared_ptr from rule_data
@@ -164,7 +172,7 @@ void WolframEvolution::apply_all_rules_to_state(std::shared_ptr<WolframState> in
                 context->max_successor_states_per_parent = rule_data.multiway_graph->get_max_successor_states_per_parent();
                 context->max_states_per_step = rule_data.multiway_graph->get_max_states_per_step();
                 context->exploration_probability = rule_data.multiway_graph->get_exploration_probability();
-                
+
                 // Spawn SCAN tasks for this rule
                 std::size_t num_partitions = rule_data.job_system->get_num_workers();
                 pattern_matching_tasks::spawn_scan_tasks(*rule_data.job_system, context, num_partitions);

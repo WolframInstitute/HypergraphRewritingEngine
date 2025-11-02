@@ -70,25 +70,92 @@ TEST_F(WolframEvolutionTest, MultiStepEvolution) {
     // Test with 3 steps - should now work with step checking fix
     hypergraph::WolframEvolution evolution(3, 1, true, false);
     evolution.add_rule(create_test_rule());
-    
+
     // Initial state: two edges {{1, 2}, {2, 3}}
     std::vector<std::vector<hypergraph::GlobalVertexId>> initial = {{1, 2}, {2, 3}};
-    
+
     try {
         evolution.evolve(initial);
-        
+
         const auto& graph = evolution.get_multiway_graph();
-        
+
         // After 3 steps we should have multiple states and events
         EXPECT_GT(graph.num_states(), 1) << "Should have more than 1 state after 3 steps";
         EXPECT_GT(graph.num_events(), 1) << "Should have more than 1 event after 3 steps";
-        
+
         // Print debug info
-        std::cout << "After 3 steps: " << graph.num_states() << " states, " 
+        std::cout << "After 3 steps: " << graph.num_states() << " states, "
                   << graph.num_events() << " events\n";
-        
+
     } catch (const std::exception& e) {
         FAIL() << "Multi-step evolution threw exception: " << e.what();
+    }
+}
+
+TEST_F(WolframEvolutionTest, BugTwoEdgeRuleShouldNotMatchOneEdgeState) {
+    // BUG REPORT: Rule {{1,2,3},{2,3,4}} -> {{1,3,4},{2,3,5},{1,5,6}}
+    // incorrectly matches initial state {{1,1,1}}
+    // User reports: HGEvolve[..., {{1,1,1}}, 2, "NumStates"] returns 4 but should return 1
+
+    // TEST WITH 2 STEPS to match user's example
+    hypergraph::WolframEvolution evolution(2, 1, true, false);
+
+    // Create rule with 2-edge LHS (matching user's example)
+    hypergraph::PatternHypergraph lhs, rhs;
+    lhs.add_edge(hypergraph::PatternEdge{
+        hypergraph::PatternVertex::variable(1),
+        hypergraph::PatternVertex::variable(2),
+        hypergraph::PatternVertex::variable(3)
+    });
+    lhs.add_edge(hypergraph::PatternEdge{
+        hypergraph::PatternVertex::variable(2),
+        hypergraph::PatternVertex::variable(3),
+        hypergraph::PatternVertex::variable(4)
+    });
+
+    // RHS with 3 edges (matching user's example)
+    rhs.add_edge(hypergraph::PatternEdge{
+        hypergraph::PatternVertex::variable(1),
+        hypergraph::PatternVertex::variable(3),
+        hypergraph::PatternVertex::variable(4)
+    });
+    rhs.add_edge(hypergraph::PatternEdge{
+        hypergraph::PatternVertex::variable(2),
+        hypergraph::PatternVertex::variable(3),
+        hypergraph::PatternVertex::variable(5)
+    });
+    rhs.add_edge(hypergraph::PatternEdge{
+        hypergraph::PatternVertex::variable(1),
+        hypergraph::PatternVertex::variable(5),
+        hypergraph::PatternVertex::variable(6)
+    });
+
+    evolution.add_rule(hypergraph::RewritingRule(lhs, rhs));
+
+    // Initial state: ONLY ONE EDGE
+    std::vector<std::vector<hypergraph::GlobalVertexId>> initial = {{1, 1, 1}};
+
+    try {
+        evolution.evolve(initial);
+
+        const auto& graph = evolution.get_multiway_graph();
+
+        // We should have EXACTLY 1 state (the initial state) and 0 events
+        // because the 2-edge rule LHS cannot match a 1-edge state
+        std::cout << "\nBug test (2 steps): " << graph.num_states() << " states, "
+                  << graph.num_events() << " events\n";
+
+        EXPECT_EQ(graph.num_events(), 0)
+            << "CRITICAL BUG: 2-edge rule LHS should NOT match 1-edge state! "
+            << "Found " << graph.num_events() << " event(s) when there should be 0. "
+            << "User reports 4 states in Wolfram Language when there should be 1.";
+
+        EXPECT_EQ(graph.num_states(), 1)
+            << "Should have exactly 1 state (the initial state) since no rules can apply. "
+            << "User sees 4 states which indicates bug still exists!";
+
+    } catch (const std::exception& e) {
+        FAIL() << "Evolution threw exception: " << e.what();
     }
 }
 

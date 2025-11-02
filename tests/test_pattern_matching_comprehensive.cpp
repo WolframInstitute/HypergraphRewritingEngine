@@ -199,9 +199,56 @@ TEST_F(PatternMatchingComprehensiveTest, SelfLoopMatching) {
 TEST_F(PatternMatchingComprehensiveTest, NoMatchDifferentArity) {
     auto target = test_utils::create_test_hypergraph({{1, 2}});
     auto pattern = create_pattern({{100, 101, 102}});  // 3-ary pattern vs 2-ary edge
-    
+
     auto matches = matcher.find_matches_around(target, pattern, 1, 2);
     EXPECT_TRUE(matches.empty());
+}
+
+TEST_F(PatternMatchingComprehensiveTest, BugMultiEdgePatternMatchesSingleEdge) {
+    // BUG REPORT: Pattern {{1,2,3},{2,3,4}} incorrectly matches single edge {{1,1,1}}
+    // A pattern with 2 edges should NEVER match a graph with only 1 edge
+    auto target = test_utils::create_test_hypergraph({{1, 1, 1}});
+    auto pattern = create_pattern({{1, 2, 3}, {2, 3, 4}});  // 2-edge concrete pattern
+
+    auto matches = matcher.find_matches_around(target, pattern, 1, 10);
+
+    EXPECT_TRUE(matches.empty())
+        << "BUG: Pattern with 2 edges {{1,2,3},{2,3,4}} should NOT match single edge {{1,1,1}}, "
+        << "but found " << matches.size() << " match(es)";
+
+    EXPECT_EQ(pattern.num_edges(), 2) << "Pattern should have 2 edges";
+    EXPECT_EQ(target.num_edges(), 1) << "Target should have only 1 edge";
+}
+
+TEST_F(PatternMatchingComprehensiveTest, BugAllVariablePatternTreatedAsVariables) {
+    // BUG: FFI code treats ALL vertices as variables, not concrete
+    // This test simulates what happens when FFI parses {{1,2,3},{2,3,4}}
+    // and incorrectly treats all numbers as variable IDs
+    auto target = test_utils::create_test_hypergraph({{5, 5, 5}});
+
+    // Create a pattern where 1,2,3,4 are all VARIABLES (simulating the FFI bug)
+    hypergraph::PatternHypergraph buggy_pattern;
+    buggy_pattern.add_edge({
+        hypergraph::PatternVertex::variable(1),
+        hypergraph::PatternVertex::variable(2),
+        hypergraph::PatternVertex::variable(3)
+    });
+    buggy_pattern.add_edge({
+        hypergraph::PatternVertex::variable(2),
+        hypergraph::PatternVertex::variable(3),
+        hypergraph::PatternVertex::variable(4)
+    });
+
+    auto matches = matcher.find_matches_around(target, buggy_pattern, 5, 10);
+
+    // With the bug, this MIGHT incorrectly match because all are variables
+    // The correct behavior is: 2-edge pattern should NEVER match 1-edge graph
+    EXPECT_TRUE(matches.empty())
+        << "CRITICAL BUG: 2-edge pattern (even with all variables) should NOT match 1-edge graph! "
+        << "Found " << matches.size() << " match(es)";
+
+    EXPECT_EQ(buggy_pattern.num_edges(), 2);
+    EXPECT_EQ(target.num_edges(), 1);
 }
 
 // === RADIUS CONSTRAINT TESTS ===
