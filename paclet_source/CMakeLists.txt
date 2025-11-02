@@ -179,15 +179,38 @@ if(Mathematica_WOLFRAMSCRIPT)
     # Create paclet_archive directory at project root
     file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet_archive")
 
-    add_custom_target(create_paclet_archive
-        COMMAND "${Mathematica_WOLFRAMSCRIPT}" -code "CreatePacletArchive[\"${PACLET_DIST_DIR}\", \"${CMAKE_SOURCE_DIR}/paclet_archive\"]"
-        DEPENDS HypergraphRewriting
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Creating Mathematica paclet archive in paclet_archive/"
-        VERBATIM
-    )
-
-    message(STATUS "Paclet archive target enabled (wolframscript available)")
+    # PacletBuild performs both documentation building and paclet archive creation
+    # WSL requires special handling due to Java file locking issues with Lucene indices
+    if(IS_WSL)
+        # WSL workaround: Copy to Windows filesystem to avoid Java file locking errors
+        # PacletBuild uses Java/Lucene for documentation indices which can't lock files on WSL filesystem
+        add_custom_target(create_paclet_archive
+            # Clean up temp directories
+            COMMAND ${CMAKE_COMMAND} -E rm -rf /mnt/c/Temp/paclet_build
+            COMMAND ${CMAKE_COMMAND} -E rm -rf /mnt/c/Temp/paclet_output
+            # Copy paclet source to Windows temp directory
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${PACLET_DIST_DIR}" /mnt/c/Temp/paclet_build
+            # Run PacletBuild on Windows filesystem (builds documentation + creates archive)
+            COMMAND "${Mathematica_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "C:\\Temp\\paclet_build" "C:\\Temp\\paclet_output"
+            # Copy resulting .paclet file to paclet_archive (only .paclet files)
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different /mnt/c/Temp/paclet_output/HypergraphRewriting-${PROJECT_VERSION}.paclet "${CMAKE_SOURCE_DIR}/paclet_archive/"
+            DEPENDS HypergraphRewriting
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Building paclet archive with documentation (WSL mode)"
+            VERBATIM
+        )
+        message(STATUS "Paclet archive target enabled (WSL mode - will use Windows temp directory)")
+    else()
+        # Native Windows/Linux/macOS: Run PacletBuild directly
+        add_custom_target(create_paclet_archive
+            COMMAND "${Mathematica_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "${PACLET_DIST_DIR}" "${CMAKE_SOURCE_DIR}/paclet_archive"
+            DEPENDS HypergraphRewriting
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Building paclet archive with documentation"
+            VERBATIM
+        )
+        message(STATUS "Paclet archive target enabled (native mode)")
+    endif()
 else()
     message(STATUS "Paclet archive target disabled (wolframscript not found)")
 endif()
@@ -200,7 +223,7 @@ add_custom_target(paclet
 
 message(STATUS "Paclet targets:")
 message(STATUS "  paclet - Build the Mathematica paclet library")
-message(STATUS "  create_paclet_archive - Create paclet archive (requires wolframscript)")
+message(STATUS "  create_paclet_archive - Build documentation and create paclet archive (requires wolframscript)")
 
 # Print paclet-specific configuration
 message(STATUS "Paclet Build Configuration:")

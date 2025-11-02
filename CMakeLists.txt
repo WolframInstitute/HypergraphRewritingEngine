@@ -5,6 +5,19 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Detect WSL environment
+# WSL (Windows Subsystem for Linux) requires special handling for:
+# - File locking (Java/Lucene operations fail on WSL filesystem)
+# - Path conversions between Linux and Windows
+# Note: Use CMAKE_HOST_SYSTEM_NAME to detect the build host, not the target
+set(IS_WSL FALSE)
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    if(EXISTS "/proc/sys/fs/binfmt_misc/WSLInterop" OR DEFINED ENV{WSL_DISTRO_NAME})
+        set(IS_WSL TRUE)
+        message(STATUS "WSL environment detected")
+    endif()
+endif()
+
 # Export compile commands for clangd and other tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
