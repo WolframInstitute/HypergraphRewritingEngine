@@ -73,7 +73,19 @@ public:
      *                               Useful for benchmarking pattern matching performance in isolation.
      */
     void evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges, bool pattern_matching_only = false);
-    
+
+    /**
+     * Submit multiple initial states and start evolution.
+     * Each state in the vector represents a different starting configuration.
+     * All initial states will be processed at step 0.
+     *
+     * Blocks until completion or step limit reached.
+     *
+     * @param initial_states Vector of initial states, each state is a vector of edges
+     * @param pattern_matching_only If true, only perform pattern matching without rewriting or event relationships.
+     */
+    void evolve(const std::vector<std::vector<std::vector<GlobalVertexId>>>& initial_states, bool pattern_matching_only = false);
+
     /**
      * Get results.
      */

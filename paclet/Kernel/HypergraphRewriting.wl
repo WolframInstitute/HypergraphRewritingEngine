@@ -164,9 +164,19 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "Evolut
     ]
   ];
 
+  (* Detect if we have single state or multiple states using Depth *)
+  (* Depth 3: {{1,2},{2,3}} = single state (list of edges) *)
+  (* Depth 4: {{{1,2}},{{3,4}}} = multiple states (list of states) *)
+  initialStatesData = If[Depth[initialEdges] == 3,
+    (* Single state: wrap in outer list to make uniform *)
+    {initialEdges},
+    (* Multiple states: already in correct format *)
+    initialEdges
+  ];
+
   (* Create input association with options *)
   inputData = Association[
-    "InitialEdges" -> initialEdges,
+    "InitialStates" -> initialStatesData,
     "Rules" -> rulesAssoc,
     "Steps" -> steps,
     "Options" -> options
@@ -244,15 +254,28 @@ HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ :
   ], 1];
 
   (* Use canonical state IDs for graph edges to link isomorphic states *)
+  (* Extract state edges (now states are Associations with "Edges" and "IsInitialState") *)
   stateEdges = Map[
     DirectedEdge[
-      states[Lookup[#, "CanonicalInputStateId", #["InputStateId"]]],
-      states[Lookup[#, "CanonicalOutputStateId", #["OutputStateId"]]]
+      Lookup[states[Lookup[#, "CanonicalInputStateId", #["InputStateId"]]], "Edges"],
+      Lookup[states[Lookup[#, "CanonicalOutputStateId", #["OutputStateId"]]], "Edges"]
     ] &,
     eventList
   ];
+
+  (* Include states that are either connected by events OR are initial states *)
+  connectedOrInitialStates = If[Length[stateEdges] == 0,
+    (* No events: include all state edges *)
+    Map[Lookup[#, "Edges"] &, Values[states]],
+    (* Has events: include connected states plus any initial states *)
+    DeleteDuplicates[Join[
+      Flatten[List @@@ stateEdges, 1],
+      Map[Lookup[#, "Edges"] &, Select[Values[states], Lookup[#, "IsInitialState", False] == "True" &]]
+    ]]
+  ];
+
   Graph[
-    Values[states],  (* Include all states as vertices, even isolated ones *)
+    connectedOrInitialStates,
     stateEdges,
     VertexSize -> If[enableVertexStyles, 1/2, Automatic],
     VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
@@ -270,8 +293,8 @@ HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, 
   (* Events is now an Association keyed by event ID *)
   eventVertices = Association[Map[
     #["EventId"] -> DirectedEdge[
-      states[#["InputStateId"]],
-      states[#["OutputStateId"]],
+      Lookup[states[#["InputStateId"]], "Edges"],
+      Lookup[states[#["OutputStateId"]], "Edges"],
       #
     ] &,
     Values[events]
@@ -317,8 +340,8 @@ HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : 
         toEvent = events[#["To"]];
         ConstantArray[
           UndirectedEdge[
-            states[Lookup[fromEvent, "CanonicalOutputStateId", fromEvent["OutputStateId"]]],
-            states[Lookup[toEvent, "CanonicalOutputStateId", toEvent["OutputStateId"]]]
+            Lookup[states[Lookup[fromEvent, "CanonicalOutputStateId", fromEvent["OutputStateId"]]], "Edges"],
+            Lookup[states[Lookup[toEvent, "CanonicalOutputStateId", toEvent["OutputStateId"]]], "Edges"]
           ],
           #["Multiplicity"]
         ]
@@ -353,7 +376,8 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
     stateEdges
   ];
 
-  stateVertices = Values[states];
+  (* Extract just the edges from state data *)
+  stateVertices = Map[Lookup[#, "Edges"] &, Values[states]];
 
   (* Events is now an Association, expand by multiplicity for visualization *)
   eventList = Flatten[Map[
@@ -364,8 +388,8 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
   (* Event vertices contain raw state data for visualization, but carry event metadata *)
   eventVertices = Map[
     DirectedEdge[
-      states[#["InputStateId"]],
-      states[#["OutputStateId"]],
+      Lookup[states[#["InputStateId"]], "Edges"],
+      Lookup[states[#["OutputStateId"]], "Edges"],
       #
     ] &,
     eventList
@@ -374,8 +398,8 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
   (* Build association for edge lookup *)
   eventVertexAssoc = Association[Map[
     #["EventId"] -> DirectedEdge[
-      states[#["InputStateId"]],
-      states[#["OutputStateId"]],
+      Lookup[states[#["InputStateId"]], "Edges"],
+      Lookup[states[#["OutputStateId"]], "Edges"],
       #
     ] &,
     Values[events]
@@ -383,12 +407,12 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
 
   (* Graph edges use canonical state IDs to link isomorphic states *)
   stateToEventEdges = MapThread[
-    UndirectedEdge[states[Lookup[#1, "CanonicalInputStateId", #1["InputStateId"]]], #2] &,
+    UndirectedEdge[Lookup[states[Lookup[#1, "CanonicalInputStateId", #1["InputStateId"]]], "Edges"], #2] &,
     {eventList, eventVertices}
   ];
 
   eventToStateEdges = MapThread[
-    DirectedEdge[#2, states[Lookup[#1, "CanonicalOutputStateId", #1["OutputStateId"]]]] &,
+    DirectedEdge[#2, Lookup[states[Lookup[#1, "CanonicalOutputStateId", #1["OutputStateId"]]], "Edges"]] &,
     {eventList, eventVertices}
   ];
 
@@ -415,7 +439,23 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
   ];
 
   allEdges = Join[stateToEventEdges, eventToStateEdges, causalGraphEdges, branchialGraphEdges];
-  allVertices = Join[stateVertices, eventVertices];
+
+  (* Include states that are either connected by events OR are initial states *)
+  connectedOrInitialStateVertices = If[Length[stateToEventEdges] == 0 && Length[eventToStateEdges] == 0,
+    (* No state-event edges: include all states *)
+    stateVertices,
+    (* Has edges: include connected states plus any initial states *)
+    DeleteDuplicates[Join[
+      Cases[
+        Join[stateToEventEdges, eventToStateEdges],
+        (UndirectedEdge | DirectedEdge)[s_List, _] | (UndirectedEdge | DirectedEdge)[_, s_List] :> s,
+        {1}
+      ],
+      Map[Lookup[#, "Edges"] &, Select[Values[states], Lookup[#, "IsInitialState", False] == "True" &]]
+    ]]
+  ];
+
+  allVertices = Join[connectedOrInitialStateVertices, eventVertices];
 
   Graph[
     allVertices,

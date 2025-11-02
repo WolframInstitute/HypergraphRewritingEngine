@@ -17,9 +17,10 @@ using namespace hypergraph;
 // WXF Helper Functions using comprehensive wxf library
 namespace ffi_helpers {
     // Parse rules association using wxf library
-    std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>>
+    // Returns vector of pairs to preserve rule order (unordered_map doesn't preserve order!)
+    std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>>
     read_rules_association(wxf::Parser& parser) {
-        std::unordered_map<std::string, std::vector<std::vector<std::vector<int64_t>>>> rules;
+        std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> rules;
 
         parser.read_association([&](const std::string& rule_name, wxf::Parser& rule_parser) {
             // Each rule value should be a function Rule[lhs, rhs]
@@ -37,7 +38,7 @@ namespace ffi_helpers {
                 rule_parts = {lhs, rhs};
             });
 
-            rules[rule_name] = rule_parts;
+            rules.push_back({rule_name, rule_parts});
         });
 
         return rules;
@@ -93,7 +94,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         wxf::Parser parser(wxf_bytes);
         parser.skip_header();
 
-        std::vector<std::vector<GlobalVertexId>> initial_edges;
+        std::vector<std::vector<std::vector<GlobalVertexId>>> initial_states;
         std::vector<RewritingRule> parsed_rules;
         int steps = 1;
 
@@ -111,8 +112,31 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // Parse main association using comprehensive wxf library
         parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
-            if (key == "InitialEdges") {
+            if (key == "InitialStates") {
+                // New format: list of states (3D array)
+                auto states_data = value_parser.read<std::vector<std::vector<std::vector<int64_t>>>>();
+                for (const auto& state_edges : states_data) {
+                    std::vector<std::vector<GlobalVertexId>> state;
+                    for (const auto& edge : state_edges) {
+                        std::vector<GlobalVertexId> edge_vertices;
+                        for (int64_t v : edge) {
+                            if (v >= 0) {
+                                edge_vertices.push_back(static_cast<GlobalVertexId>(v));
+                            }
+                        }
+                        if (!edge_vertices.empty()) {
+                            state.push_back(edge_vertices);
+                        }
+                    }
+                    if (!state.empty()) {
+                        initial_states.push_back(state);
+                    }
+                }
+            }
+            else if (key == "InitialEdges") {
+                // Legacy format: single state (2D array) - wrap as single state in states list
                 auto edges_data = value_parser.read<std::vector<std::vector<int64_t>>>();
+                std::vector<std::vector<GlobalVertexId>> single_state;
                 for (const auto& edge : edges_data) {
                     std::vector<GlobalVertexId> edge_vertices;
                     for (int64_t v : edge) {
@@ -121,8 +145,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         }
                     }
                     if (!edge_vertices.empty()) {
-                        initial_edges.push_back(edge_vertices);
+                        single_state.push_back(edge_vertices);
                     }
+                }
+                if (!single_state.empty()) {
+                    initial_states.push_back(single_state);
                 }
             }
             else if (key == "Rules") {
@@ -213,8 +240,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
         });
 
-        if (initial_edges.empty()) {
-            handle_error(libData, "No initial edges provided");
+        if (initial_states.empty()) {
+            handle_error(libData, "No initial states provided");
             return LIBRARY_FUNCTION_ERROR;
         }
 
@@ -241,7 +268,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             evolution.add_rule(rule);
         }
 
-        evolution.evolve(initial_edges);
+        evolution.evolve(initial_states);
 
         // Get results from multiway graph
         const auto& multiway_graph = evolution.get_multiway_graph();
@@ -256,9 +283,16 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // Build main association
 
-        // States -> Association[state_id -> state_edges]
+        // Get initial state IDs to mark them in the output
+        const auto& initial_state_ids = multiway_graph.get_initial_state_ids();
+        std::unordered_set<std::size_t> initial_ids_set;
+        for (const auto& id : initial_state_ids) {
+            initial_ids_set.insert(id.value);
+        }
+
+        // States -> Association[state_id -> state_data]
         // Send ALL states by their raw ID (not canonical) so events can reference them correctly
-        std::unordered_map<int64_t, std::vector<std::vector<int64_t>>> states_map;
+        std::unordered_map<int64_t, std::pair<std::vector<std::vector<int64_t>>, bool>> states_map;
         for (const auto& state : all_states) {
             StateID state_id = state->id();  // Use raw ID, not canonical
 
@@ -270,15 +304,19 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
                 state_edges.push_back(edge_data);
             }
-            states_map[static_cast<int64_t>(state_id.value)] = state_edges;
+
+            bool is_initial = initial_ids_set.find(state_id.value) != initial_ids_set.end();
+            states_map[static_cast<int64_t>(state_id.value)] = {state_edges, is_initial};
         }
 
         // Build full result using Value type for heterogeneous association
         wxf::ValueAssociation full_result;
 
-        // States -> Association[state_id -> state_edges]
+        // States -> Association[state_id -> Association["Edges" -> edges, "IsInitialState" -> bool]]
         wxf::ValueAssociation states_assoc;
-        for (const auto& [state_id, edges] : states_map) {
+        for (const auto& [state_id, state_data] : states_map) {
+            const auto& [edges, is_initial] = state_data;
+
             wxf::ValueList edge_list;
             for (const auto& edge : edges) {
                 wxf::ValueList edge_data;
@@ -287,7 +325,13 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
                 edge_list.push_back(wxf::Value(edge_data));
             }
-            states_assoc.push_back({wxf::Value(state_id), wxf::Value(edge_list)});
+
+            // Create state association with edges and IsInitialState flag
+            wxf::ValueAssociation state_assoc;
+            state_assoc.push_back({wxf::Value("Edges"), wxf::Value(edge_list)});
+            state_assoc.push_back({wxf::Value("IsInitialState"), wxf::Value(is_initial ? "True" : "False")});
+
+            states_assoc.push_back({wxf::Value(state_id), wxf::Value(state_assoc)});
         }
         full_result.push_back({wxf::Value("States"), wxf::Value(states_assoc)});
 

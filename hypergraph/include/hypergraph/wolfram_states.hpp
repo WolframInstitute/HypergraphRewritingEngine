@@ -545,8 +545,8 @@ private:
     bool transitive_reduction_enabled = true;  // Controls transitive reduction of causal graph
     bool early_termination_enabled = false;  // Stop processing seen states
 
-    // Track initial state for causal computation and state reconstruction
-    std::optional<StateID> initial_state_id;
+    // Track initial states for causal computation and state reconstruction
+    std::vector<StateID> initial_state_ids;
 
     // Pruning control parameters (0 = unlimited)
     std::size_t max_successor_states_per_parent_{0};
@@ -635,6 +635,14 @@ public:
      */
     StateID get_fresh_state_id() {
         return StateID{next_state_id.fetch_add(1)};
+    }
+
+    /**
+     * Get all initial state IDs.
+     * Returns a vector of state IDs for all states created as initial states.
+     */
+    const std::vector<StateID>& get_initial_state_ids() const {
+        return initial_state_ids;
     }
 
     /**

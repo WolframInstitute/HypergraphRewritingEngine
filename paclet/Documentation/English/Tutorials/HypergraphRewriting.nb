@@ -10,10 +10,10 @@
 NotebookFileLineBreakTest
 NotebookFileLineBreakTest
 NotebookDataPosition[       154,          7]
-NotebookDataLength[     10273,        263]
-NotebookOptionsPosition[      7166,        190]
-NotebookOutlinePosition[      7699,        208]
-CellTagsIndexPosition[      7656,        205]
+NotebookDataLength[     10500,        266]
+NotebookOptionsPosition[      7392,        193]
+NotebookOutlinePosition[      7926,        211]
+CellTagsIndexPosition[      7883,        208]
 WindowFrame->Normal*)
 
 (* Beginning of Notebook Content *)
@@ -43,8 +43,8 @@ Cell[BoxData[GridBox[{
      ButtonBox["HGEvolve",
       BaseStyle->"Link",
       ButtonData->"paclet:HypergraphRewriting/ref/HGEvolve"], "[", 
-     RowBox[{"rules", ",", "initialEdges", ",", "steps", ",", "property"}], 
-     "]"}], Cell[TextData[{
+     RowBox[{"rules", ",", "initial", ",", "steps", ",", "property"}], "]"}], 
+    Cell[TextData[{
      "Performs multiway rewriting evolution and returns the specified ",
      Cell[BoxData[
       StyleBox["property", "TI"]], "InlineFormula",ExpressionUUID->
@@ -53,7 +53,8 @@ Cell[BoxData[GridBox[{
     }], "TableText",ExpressionUUID->"3f281cc1-6ac5-754f-9aa9-882b434b6b79"]}
   }]], "DefinitionBox",
  CellChangeTimes->{{3.9710456056456776`*^9, 3.9710456365969334`*^9}, {
-   3.971045766038666*^9, 3.971045766038666*^9}, 3.9710490180537224`*^9},
+   3.971045766038666*^9, 3.971045766038666*^9}, 3.9710490180537224`*^9, {
+   3.9710879113173943`*^9, 3.971087918877157*^9}},
  CellID->107468298,ExpressionUUID->"3aa857f4-8cab-fe4b-9f76-c551af39131c"],
 
 Cell["Computing multiway evolution of hypergraph rewrite systems.", "Caption",
@@ -75,13 +76,14 @@ Cell[TextData[{
    ButtonData->"paclet:HypergraphRewriting/ref/HGEvolve"]], "InlineFormula",
   ExpressionUUID->"f319b87f-e583-bb45-b4fd-084ba9a93cd4"],
  " performs multiway evolution by exploring all possible rewriting paths from \
-an initial hypergraph state. Unlike traditional single-history evolution, \
+an initial hypergraph state or states under the application of one or more \
+hypergraph rewriting rules. Unlike traditional single-history evolution, \
 multiway systems track multiple simultaneous branches of computation, \
 revealing the complete state space and causal structure of the rewriting \
 process."
 }], "Text",
  CellChangeTimes->{{3.9710456682226257`*^9, 3.971045672237009*^9}, 
-   3.9710490437088776`*^9},
+   3.9710490437088776`*^9, {3.9710879295090084`*^9, 3.9710879735088177`*^9}},
  CellID->1357275,ExpressionUUID->"610723e9-ba4e-fa44-a9cb-ac4e64b841ea"]
 }, Open  ]],
 
@@ -93,13 +95,14 @@ Cell["State and Event Canonicalization", "Section",
  CellID->32216837,ExpressionUUID->"336b43b2-0f5d-f54f-865f-cf6f666a19ad"],
 
 Cell["\<\
-The paclet implements graph isomorphism detection to identify equivalent \
+This paclet implements subgraph isomorphism detection to identify equivalent \
 states, significantly reducing the explored state space. Event \
 canonicalization identifies equivalent events and reduces them to their \
 canonical form.\
 \>", "Text",
  CellChangeTimes->{{3.9710456868288727`*^9, 3.97104568995722*^9}, {
-   3.971045813851921*^9, 3.9710458890126934`*^9}, 3.971050312153393*^9},
+   3.971045813851921*^9, 3.9710458890126934`*^9}, 3.971050312153393*^9, {
+   3.971087989980768*^9, 3.971088014988756*^9}},
  CellID->211360029,ExpressionUUID->"ead1cb58-2c73-784a-8601-e8f48a19a8a6"]
 }, Open  ]],
 
@@ -189,7 +192,7 @@ Cell["XXXX", "Keywords",
 }, Open  ]]
 },
 WindowSize->{700, 770},
-WindowMargins->{{Automatic, 500}, {79.5, Automatic}},
+WindowMargins->{{1393.5, Automatic}, {Automatic, 72}},
 TaggingRules-><|"Paclet" -> "HypergraphRewriting"|>,
 FrontEndVersion->"14.1 for Microsoft Windows (64-bit) (July 16, 2024)",
 StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "TechNotePageStylesExt.nb", 
@@ -212,56 +215,56 @@ Cell[576, 22, 262, 4, 112, "Title",ExpressionUUID->"fb90794c-15a9-b344-b65d-c28f
  CellID->808155],
 Cell[841, 28, 558, 9, 79, "Text",ExpressionUUID->"f8625b38-b0fb-fe46-b0d6-56938ec03d5e",
  CellID->147890514],
-Cell[1402, 39, 801, 17, 62, "DefinitionBox",ExpressionUUID->"3aa857f4-8cab-fe4b-9f76-c551af39131c",
+Cell[1402, 39, 847, 18, 62, "DefinitionBox",ExpressionUUID->"3aa857f4-8cab-fe4b-9f76-c551af39131c",
  CellID->107468298],
-Cell[2206, 58, 221, 2, 28, "Caption",ExpressionUUID->"e9fb7ef8-9ee9-4b4b-86e5-98057110f0c1",
+Cell[2252, 59, 221, 2, 28, "Caption",ExpressionUUID->"e9fb7ef8-9ee9-4b4b-86e5-98057110f0c1",
  CellID->139915063],
 Cell[CellGroupData[{
-Cell[2452, 64, 207, 3, 44, "Section",ExpressionUUID->"9fe320e2-c554-6d47-8369-36395a493b51",
+Cell[2498, 65, 207, 3, 44, "Section",ExpressionUUID->"9fe320e2-c554-6d47-8369-36395a493b51",
  CellID->80235475],
-Cell[2662, 69, 729, 15, 79, "Text",ExpressionUUID->"610723e9-ba4e-fa44-a9cb-ac4e64b841ea",
+Cell[2708, 70, 855, 16, 79, "Text",ExpressionUUID->"610723e9-ba4e-fa44-a9cb-ac4e64b841ea",
  CellID->1357275]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[3428, 89, 223, 3, 44, "Section",ExpressionUUID->"336b43b2-0f5d-f54f-865f-cf6f666a19ad",
+Cell[3600, 91, 223, 3, 44, "Section",ExpressionUUID->"336b43b2-0f5d-f54f-865f-cf6f666a19ad",
  CellID->32216837],
-Cell[3654, 94, 469, 8, 61, "Text",ExpressionUUID->"ead1cb58-2c73-784a-8601-e8f48a19a8a6",
+Cell[3826, 96, 523, 9, 61, "Text",ExpressionUUID->"ead1cb58-2c73-784a-8601-e8f48a19a8a6",
  CellID->211360029]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[4160, 107, 166, 2, 44, "Section",ExpressionUUID->"7fbc7e9e-70be-914f-853f-fa35be652e95",
+Cell[4386, 110, 166, 2, 44, "Section",ExpressionUUID->"7fbc7e9e-70be-914f-853f-fa35be652e95",
  CellID->636789906],
-Cell[4329, 111, 466, 8, 61, "Text",ExpressionUUID->"59fec2ac-7210-5f46-9a2c-f44bafb3cc36",
+Cell[4555, 114, 466, 8, 61, "Text",ExpressionUUID->"59fec2ac-7210-5f46-9a2c-f44bafb3cc36",
  CellID->525610090]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[4832, 124, 167, 2, 44, "Section",ExpressionUUID->"8d481242-55d4-ab40-adb2-0c3ca8762471",
+Cell[5058, 127, 167, 2, 44, "Section",ExpressionUUID->"8d481242-55d4-ab40-adb2-0c3ca8762471",
  CellID->752641132],
-Cell[5002, 128, 430, 7, 61, "Text",ExpressionUUID->"36fb3f9d-4530-e34f-8363-b07ac08a6d57",
+Cell[5228, 131, 430, 7, 61, "Text",ExpressionUUID->"36fb3f9d-4530-e34f-8363-b07ac08a6d57",
  CellID->83754855]
 }, Open  ]]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[5481, 141, 110, 1, 71, "MetadataSection",ExpressionUUID->"efe70da5-202e-7041-b441-cc0fa004e897",
+Cell[5707, 144, 110, 1, 71, "MetadataSection",ExpressionUUID->"efe70da5-202e-7041-b441-cc0fa004e897",
  CellID->533818500],
-Cell[5594, 144, 546, 12, 25, "History",ExpressionUUID->"e4f058bc-d5bd-0b45-92b6-40c8f8bbbad5",
+Cell[5820, 147, 546, 12, 25, "History",ExpressionUUID->"e4f058bc-d5bd-0b45-92b6-40c8f8bbbad5",
  CellID->291596547],
 Cell[CellGroupData[{
-Cell[6165, 160, 122, 1, 20, "CategorizationSection",ExpressionUUID->"51678add-5a53-7b47-b300-50a2dde64e9e",
+Cell[6391, 163, 122, 1, 20, "CategorizationSection",ExpressionUUID->"51678add-5a53-7b47-b300-50a2dde64e9e",
  CellID->561482223],
-Cell[6290, 163, 136, 2, 33, "Categorization",ExpressionUUID->"30f9dff8-4853-344c-810b-e53d0b14a41f",
+Cell[6516, 166, 136, 2, 33, "Categorization",ExpressionUUID->"30f9dff8-4853-344c-810b-e53d0b14a41f",
  CellID->23126595],
-Cell[6429, 167, 147, 2, 33, "Categorization",ExpressionUUID->"47d0b49c-8cdb-364e-abee-11b0a2512d71",
+Cell[6655, 170, 147, 2, 33, "Categorization",ExpressionUUID->"47d0b49c-8cdb-364e-abee-11b0a2512d71",
  CellID->108972849],
-Cell[6579, 171, 144, 2, 33, "Categorization",ExpressionUUID->"b8565162-a490-4747-b314-579e3f10e52b",
+Cell[6805, 174, 144, 2, 33, "Categorization",ExpressionUUID->"b8565162-a490-4747-b314-579e3f10e52b",
  CellID->262710245],
-Cell[6726, 175, 163, 2, 33, "Categorization",ExpressionUUID->"81ebe41c-80ee-bf48-8d48-030eb4270550",
+Cell[6952, 178, 163, 2, 33, "Categorization",ExpressionUUID->"81ebe41c-80ee-bf48-8d48-030eb4270550",
  CellID->442456058]
 }, Closed]],
 Cell[CellGroupData[{
-Cell[6926, 182, 110, 1, 20, "KeywordsSection",ExpressionUUID->"00f88192-333f-c249-a783-01bd729a3601",
+Cell[7152, 185, 110, 1, 20, "KeywordsSection",ExpressionUUID->"00f88192-333f-c249-a783-01bd729a3601",
  CellID->562425728],
-Cell[7039, 185, 99, 1, 19, "Keywords",ExpressionUUID->"c564c5bb-953f-3741-b241-e8727728acf2",
+Cell[7265, 188, 99, 1, 19, "Keywords",ExpressionUUID->"c564c5bb-953f-3741-b241-e8727728acf2",
  CellID->144123701]
 }, Closed]]
 }, Open  ]]

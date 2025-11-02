@@ -63,18 +63,20 @@ void WolframEvolution::initialize_radius_config() {
 }
 
 void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& initial_edges, bool pattern_matching_only) {
-    DEBUG_LOG("Starting evolution with %zu initial edges (pattern_matching_only=%s)",
-              initial_edges.size(), pattern_matching_only ? "true" : "false");
+    // Delegate to multi-state version by wrapping single state in vector
+    std::vector<std::vector<std::vector<GlobalVertexId>>> states = {initial_edges};
+    evolve(states, pattern_matching_only);
+}
+
+void WolframEvolution::evolve(const std::vector<std::vector<std::vector<GlobalVertexId>>>& initial_states, bool pattern_matching_only) {
+    DEBUG_LOG("Starting evolution with %zu initial states (pattern_matching_only=%s)",
+              initial_states.size(), pattern_matching_only ? "true" : "false");
     DEBUG_LOG("Evolution has %zu rules, max steps: %zu", rules_.size(), max_steps_);
 
     // Reset match counter for new evolution run
     total_matches_found_.store(0);
 
-    // Create initial state (flows through tasks, not stored)
-    auto initial_state = multiway_graph_->create_initial_state(initial_edges);
-    DEBUG_LOG("Created initial state with %zu edges", initial_state->edges().size());
-
-    // Clear any previous evolution context objects (no longer needed with new approach)
+    // Clear any previous evolution context objects
     target_graphs_.clear();
     signature_indices_.clear();
     contexts_.clear();
@@ -85,8 +87,16 @@ void WolframEvolution::evolve(const std::vector<std::vector<GlobalVertexId>>& in
         return;
     }
 
-    // Apply all rules to the initial state (state flows through tasks)
-    apply_all_rules_to_state(initial_state, 0);
+    // Create and process each initial state
+    for (size_t i = 0; i < initial_states.size(); ++i) {
+        const auto& initial_edges = initial_states[i];
+        auto initial_state = multiway_graph_->create_initial_state(initial_edges);
+        DEBUG_LOG("Created initial state %zu (ID: %zu) with %zu edges",
+                  i, initial_state->id().value, initial_state->edges().size());
+
+        // Apply all rules to this initial state (state flows through tasks)
+        apply_all_rules_to_state(initial_state, 0);
+    }
 
     // Wait for all tasks to complete
     job_system_->wait_for_completion();

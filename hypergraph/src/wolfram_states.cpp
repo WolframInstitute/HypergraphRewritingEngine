@@ -404,7 +404,7 @@ std::shared_ptr<WolframState> MultiwayGraph::create_initial_state(const std::vec
     }
 
     // Store the initial state ID for causal computation
-    initial_state_id = state->id();
+    initial_state_ids.push_back(state->id());
 
     // Always store state by its raw ID for direct access
     if (full_capture && states) {
@@ -1542,13 +1542,15 @@ std::optional<WolframState> MultiwayGraph::reconstruct_state(StateID target_stat
 }
 
 std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_state_id) const {
-    if (!initial_state_id.has_value()) {
-        return {};  // No initial state
+    if (initial_state_ids.empty()) {
+        return {};  // No initial states
     }
 
-    // If target is initial state, no path needed
-    if (target_state_id == *initial_state_id) {
-        return {};
+    // If target is one of the initial states, no path needed
+    for (const auto& initial_id : initial_state_ids) {
+        if (target_state_id == initial_id) {
+            return {};
+        }
     }
 
     // Build adjacency map: state -> list of (event_id, output_state)
@@ -1558,11 +1560,14 @@ std::vector<EventId> MultiwayGraph::find_event_path_to_state(StateID target_stat
         state_to_events[event.input_state_id].emplace_back(id, event.output_state_id);
     });
 
-    // BFS to find shortest path
+    // BFS to find shortest path from ANY initial state
     std::unordered_map<StateID, EventId> parent_event;
     std::queue<StateID> to_visit;
 
-    to_visit.push(*initial_state_id);
+    // Start BFS from all initial states
+    for (const auto& initial_id : initial_state_ids) {
+        to_visit.push(initial_id);
+    }
 
     while (!to_visit.empty()) {
         StateID current_state = to_visit.front();

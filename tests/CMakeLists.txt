@@ -115,6 +115,7 @@ add_executable(unified_tests
     test_wolfram_states.cpp
     test_parallel_tasks.cpp
     test_wolfram_evolution.cpp
+    test_multiple_initial_states.cpp
     test_determinism_fuzzing.cpp
     test_canonicalization.cpp
     test_pattern_matching_isolation.cpp
