@@ -252,6 +252,7 @@ HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ :
     eventList
   ];
   Graph[
+    Values[states],  (* Include all states as vertices, even isolated ones *)
     stateEdges,
     VertexSize -> If[enableVertexStyles, 1/2, Automatic],
     VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
@@ -414,8 +415,10 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
   ];
 
   allEdges = Join[stateToEventEdges, eventToStateEdges, causalGraphEdges, branchialGraphEdges];
+  allVertices = Join[stateVertices, eventVertices];
 
   Graph[
+    allVertices,
     allEdges,
     GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
     PerformanceGoal -> "Quality",
