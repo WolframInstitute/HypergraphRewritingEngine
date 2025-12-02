@@ -1,0 +1,533 @@
+#pragma once
+
+#include <cstdint>
+#include <atomic>
+#include <functional>
+#include <memory>
+
+#include "types.hpp"
+#include "pattern.hpp"
+#include "pattern_matcher.hpp"
+#include "index.hpp"
+#include "arena.hpp"
+#include "bitset.hpp"
+#include "segmented_array.hpp"
+#include "lock_free_list.hpp"
+#include "concurrent_map.hpp"
+
+// Include v1 job system
+#include <job_system/job_system.hpp>
+
+namespace hypergraph::v2_3 {
+
+// =============================================================================
+// Task Types
+// =============================================================================
+
+enum class TaskType {
+    MATCH,    // Find pattern matches in a state
+    REWRITE,  // Apply a match to create new state
+    RELATE    // Compute causal/branchial relationships
+};
+
+// =============================================================================
+// Evolution Context
+// =============================================================================
+// Shared context for the entire evolution run.
+
+class EvolutionContext {
+public:
+    // Rules
+    const RewriteRule* rules;
+    uint16_t num_rules;
+
+    // Global ID counters
+    GlobalCounters counters;
+
+    // Storage for edges, states, events, matches
+    SegmentedArray<Edge> edges;
+    SegmentedArray<State> states;
+    SegmentedArray<Event> events;
+    SegmentedArray<Match> matches;
+
+    // Indices
+    PatternMatchingIndex match_index;
+
+    // Canonical state deduplication (Level 1+)
+    ConcurrentMap<uint64_t, StateId> canonical_states;
+
+    // Match deduplication
+    ConcurrentMap<uint64_t, MatchId> match_dedup;
+
+    // Per-state match lists
+    ConcurrentMap<StateId, LockFreeList<MatchId>*> state_matches;
+
+    // Job system (reuse v1's implementation)
+    job_system::JobSystem<TaskType>* job_system;
+
+    // Arena for allocations (thread-safe for parallel)
+    ConcurrentHeterogeneousArena arena;
+
+    // Coordination
+    std::atomic<bool> should_terminate{false};
+    std::atomic<size_t> total_matches_found{0};
+    std::atomic<size_t> total_rewrites{0};
+    std::atomic<size_t> total_states_created{0};
+
+    // Configuration
+    size_t max_steps{SIZE_MAX};
+    size_t max_matches{SIZE_MAX};
+    size_t max_states{SIZE_MAX};
+    uint8_t canonicalization_level{0};  // 0, 1, or 2
+
+    // Statistics
+    std::atomic<size_t> match_tasks_spawned{0};
+    std::atomic<size_t> match_tasks_completed{0};
+    std::atomic<size_t> rewrite_tasks_spawned{0};
+    std::atomic<size_t> rewrite_tasks_completed{0};
+
+    EvolutionContext(
+        const RewriteRule* r,
+        uint16_t nr,
+        job_system::JobSystem<TaskType>* js
+    )
+        : rules(r)
+        , num_rules(nr)
+        , job_system(js)
+    {}
+
+    // Edge accessor for pattern matching
+    auto get_edge_accessor() {
+        return [this](EdgeId eid) -> const Edge& {
+            return edges[eid];
+        };
+    }
+
+    // Create a new edge
+    EdgeId create_edge(
+        const VertexId* vertices,
+        uint8_t arity,
+        EventId creator_event,
+        uint32_t step
+    ) {
+        EdgeId eid = counters.alloc_edge();
+
+        // Allocate vertex array
+        VertexId* verts = arena.alloc_array<VertexId>(arity);
+        std::memcpy(verts, vertices, arity * sizeof(VertexId));
+
+        // Create edge
+        edges.emplace(arena, eid, verts, arity, creator_event, step);
+
+        // Update indices
+        match_index.add_edge(eid, vertices, arity, arena);
+
+        return eid;
+    }
+
+    // Create a new state
+    StateId create_state(
+        SparseBitset&& edge_set,
+        uint32_t step,
+        uint64_t canonical_hash,
+        EventId parent_event
+    ) {
+        StateId sid = counters.alloc_state();
+
+        states.emplace(arena, sid, std::move(edge_set), step, canonical_hash, parent_event);
+
+        // Create match list for state
+        auto* match_list = arena.create<LockFreeList<MatchId>>();
+        state_matches.insert_if_absent(sid, match_list);
+
+        total_states_created.fetch_add(1);
+
+        return sid;
+    }
+
+    // Create a new event
+    EventId create_event(
+        StateId input_state,
+        StateId output_state,
+        RuleIndex rule_index,
+        const EdgeId* consumed,
+        uint8_t num_consumed,
+        const EdgeId* produced,
+        uint8_t num_produced,
+        const VariableBinding& binding
+    ) {
+        EventId eid = counters.alloc_event();
+
+        // Allocate edge arrays
+        EdgeId* cons = arena.alloc_array<EdgeId>(num_consumed);
+        std::memcpy(cons, consumed, num_consumed * sizeof(EdgeId));
+
+        EdgeId* prod = arena.alloc_array<EdgeId>(num_produced);
+        std::memcpy(prod, produced, num_produced * sizeof(EdgeId));
+
+        events.emplace(arena, eid, input_state, output_state, rule_index,
+                       cons, num_consumed, prod, num_produced, binding);
+
+        return eid;
+    }
+
+    // Register a match
+    MatchId register_match(
+        RuleIndex rule_index,
+        const EdgeId* matched_edges,
+        uint8_t num_edges,
+        const VariableBinding& binding,
+        StateId origin_state
+    ) {
+        MatchId mid = counters.alloc_match();
+
+        // Allocate edge array
+        EdgeId* medges = arena.alloc_array<EdgeId>(num_edges);
+        std::memcpy(medges, matched_edges, num_edges * sizeof(EdgeId));
+
+        matches.emplace(arena, mid, rule_index, medges, num_edges, binding, origin_state);
+
+        // Add to state's match list
+        auto result = state_matches.lookup(origin_state);
+        if (result.has_value()) {
+            result.value()->push(mid, arena);
+        }
+
+        total_matches_found.fetch_add(1);
+
+        return mid;
+    }
+};
+
+// =============================================================================
+// MATCH Task
+// =============================================================================
+// Finds all pattern matches in a state, spawns REWRITE tasks for each.
+
+class MatchTask : public job_system::Job<TaskType> {
+    EvolutionContext* ctx_;
+    StateId state_id_;
+    uint32_t step_;
+
+public:
+    MatchTask(EvolutionContext* ctx, StateId state_id, uint32_t step)
+        : ctx_(ctx), state_id_(state_id), step_(step) {}
+
+    void execute() override {
+        if (ctx_->should_terminate.load()) return;
+        if (step_ >= ctx_->max_steps) return;
+
+        const State& state = ctx_->states[state_id_];
+
+        // Find matches for all rules
+        for (uint16_t r = 0; r < ctx_->num_rules; ++r) {
+            if (ctx_->should_terminate.load()) break;
+
+            find_matches(
+                ctx_->rules[r],
+                r,
+                state_id_,
+                state.edges,
+                ctx_->match_index.signature_index(),
+                ctx_->match_index.inverted_index(),
+                ctx_->get_edge_accessor(),
+                [this, r](uint16_t rule_idx, const EdgeId* edges,
+                          uint8_t num_edges, const VariableBinding& binding,
+                          StateId sid) {
+                    on_match_found(rule_idx, edges, num_edges, binding, sid);
+                },
+                &ctx_->should_terminate,
+                &ctx_->total_matches_found,
+                ctx_->max_matches,
+                &ctx_->match_dedup
+            );
+        }
+
+        ctx_->match_tasks_completed.fetch_add(1);
+    }
+
+    TaskType get_type() const override {
+        return TaskType::MATCH;
+    }
+
+private:
+    void on_match_found(
+        uint16_t rule_idx,
+        const EdgeId* edges,
+        uint8_t num_edges,
+        const VariableBinding& binding,
+        StateId state_id
+    ) {
+        // Register match
+        MatchId mid = ctx_->register_match(rule_idx, edges, num_edges, binding, state_id);
+
+        // Spawn REWRITE task
+        auto rewrite_job = job_system::make_job(
+            [ctx = ctx_, sid = state_id_, mid, step = step_]() {
+                RewriteTask task(ctx, sid, mid, step);
+                task.execute();
+            },
+            TaskType::REWRITE
+        );
+
+        ctx_->job_system->submit(std::move(rewrite_job), job_system::ScheduleMode::FIFO);
+        ctx_->rewrite_tasks_spawned.fetch_add(1);
+    }
+};
+
+// =============================================================================
+// REWRITE Task
+// =============================================================================
+// Applies a match to create a new state.
+
+class RewriteTask : public job_system::Job<TaskType> {
+    EvolutionContext* ctx_;
+    StateId input_state_;
+    MatchId match_id_;
+    uint32_t step_;
+
+public:
+    RewriteTask(EvolutionContext* ctx, StateId input_state, MatchId match_id, uint32_t step)
+        : ctx_(ctx), input_state_(input_state), match_id_(match_id), step_(step) {}
+
+    void execute() override {
+        if (ctx_->should_terminate.load()) return;
+        if (step_ >= ctx_->max_steps) return;
+        if (ctx_->total_states_created.load() >= ctx_->max_states) {
+            ctx_->should_terminate.store(true);
+            return;
+        }
+
+        const Match& match = ctx_->matches[match_id_];
+        const RewriteRule& rule = ctx_->rules[match.rule_index];
+        const State& input_state = ctx_->states[input_state_];
+
+        // Build new edge set: copy parent, remove consumed, add produced
+        SparseBitset new_edges;
+
+        // Copy parent edges
+        input_state.edges.for_each([&](EdgeId eid) {
+            new_edges.set(eid, ctx_->arena);
+        });
+
+        // Remove consumed edges
+        for (uint8_t i = 0; i < match.num_edges; ++i) {
+            new_edges.clear(match.matched_edges[i]);
+        }
+
+        // Create new vertices for fresh RHS variables
+        VertexId fresh_vertex_map[MAX_VARS];
+        std::memset(fresh_vertex_map, 0xFF, sizeof(fresh_vertex_map));
+
+        uint32_t new_var_mask = rule.new_var_mask();
+        while (new_var_mask) {
+            uint8_t var = __builtin_ctz(new_var_mask);
+            fresh_vertex_map[var] = ctx_->counters.alloc_vertex();
+            new_var_mask &= new_var_mask - 1;
+        }
+
+        // Create new edges from RHS pattern
+        EdgeId produced_edges[MAX_PATTERN_EDGES];
+        uint8_t num_produced = 0;
+
+        for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
+            const PatternEdge& rhs_edge = rule.rhs[i];
+
+            // Resolve vertices
+            VertexId vertices[MAX_ARITY];
+            for (uint8_t j = 0; j < rhs_edge.arity; ++j) {
+                uint8_t var = rhs_edge.var_at(j);
+
+                if (match.binding.is_bound(var)) {
+                    // Variable from LHS
+                    vertices[j] = match.binding.get(var);
+                } else if (fresh_vertex_map[var] != INVALID_ID) {
+                    // Fresh variable
+                    vertices[j] = fresh_vertex_map[var];
+                } else {
+                    // Error: variable not bound
+                    return;
+                }
+            }
+
+            // Create edge
+            EdgeId eid = ctx_->create_edge(vertices, rhs_edge.arity, INVALID_ID, step_ + 1);
+            produced_edges[num_produced++] = eid;
+            new_edges.set(eid, ctx_->arena);
+        }
+
+        // Compute canonical hash (TODO: integrate uniqueness tree)
+        uint64_t canonical_hash = compute_simple_hash(new_edges);
+
+        // Check for equivalent state (Level 1+)
+        StateId new_state_id;
+        bool is_new_state = true;
+
+        if (ctx_->canonicalization_level >= 1) {
+            auto [existing, inserted] = ctx_->canonical_states.insert_if_absent(
+                canonical_hash, ctx_->counters.next_state.load());
+
+            if (!inserted) {
+                // Equivalent state exists
+                new_state_id = existing;
+                is_new_state = false;
+            }
+        }
+
+        if (is_new_state) {
+            // Create new state
+            new_state_id = ctx_->create_state(
+                std::move(new_edges),
+                step_ + 1,
+                canonical_hash,
+                INVALID_ID  // Will be set when event is created
+            );
+        }
+
+        // Create event
+        EventId event_id = ctx_->create_event(
+            input_state_,
+            new_state_id,
+            match.rule_index,
+            match.matched_edges,
+            match.num_edges,
+            produced_edges,
+            num_produced,
+            match.binding
+        );
+
+        // Update state's parent event
+        // (Note: State is immutable after creation, so this would need special handling)
+
+        ctx_->total_rewrites.fetch_add(1);
+        ctx_->rewrite_tasks_completed.fetch_add(1);
+
+        // Spawn MATCH tasks for new state (if we should continue evolution)
+        if (is_new_state && step_ + 1 < ctx_->max_steps) {
+            spawn_match_tasks(new_state_id, step_ + 1);
+        }
+    }
+
+    TaskType get_type() const override {
+        return TaskType::REWRITE;
+    }
+
+private:
+    void spawn_match_tasks(StateId state_id, uint32_t step) {
+        auto match_job = job_system::make_job(
+            [ctx = ctx_, sid = state_id, s = step]() {
+                MatchTask task(ctx, sid, s);
+                task.execute();
+            },
+            TaskType::MATCH
+        );
+
+        ctx_->job_system->submit(std::move(match_job), job_system::ScheduleMode::LIFO);
+        ctx_->match_tasks_spawned.fetch_add(1);
+    }
+
+    // Simple hash for state (placeholder - should use uniqueness tree)
+    static uint64_t compute_simple_hash(const SparseBitset& edges) {
+        uint64_t h = 14695981039346656037ULL;
+        edges.for_each([&](EdgeId eid) {
+            h ^= eid;
+            h *= 1099511628211ULL;
+        });
+        return h;
+    }
+};
+
+// =============================================================================
+// Evolution Engine
+// =============================================================================
+// Orchestrates the multiway evolution process.
+
+class EvolutionEngine {
+    std::unique_ptr<EvolutionContext> ctx_;
+    std::unique_ptr<job_system::JobSystem<TaskType>> job_system_;
+
+public:
+    EvolutionEngine(
+        const RewriteRule* rules,
+        uint16_t num_rules,
+        size_t num_threads = 0
+    ) {
+        // Create job system
+        job_system_ = std::make_unique<job_system::JobSystem<TaskType>>(
+            num_threads == 0 ? std::thread::hardware_concurrency() : num_threads
+        );
+
+        // Create context
+        ctx_ = std::make_unique<EvolutionContext>(rules, num_rules, job_system_.get());
+    }
+
+    // Configuration
+    void set_max_steps(size_t steps) { ctx_->max_steps = steps; }
+    void set_max_matches(size_t matches) { ctx_->max_matches = matches; }
+    void set_max_states(size_t states) { ctx_->max_states = states; }
+    void set_canonicalization_level(uint8_t level) { ctx_->canonicalization_level = level; }
+
+    // Add initial state
+    StateId add_initial_state(const std::vector<std::vector<VertexId>>& edges) {
+        SparseBitset edge_set;
+
+        for (const auto& edge_verts : edges) {
+            VertexId* verts = ctx_->arena.alloc_array<VertexId>(edge_verts.size());
+            std::memcpy(verts, edge_verts.data(), edge_verts.size() * sizeof(VertexId));
+
+            EdgeId eid = ctx_->create_edge(
+                verts, static_cast<uint8_t>(edge_verts.size()),
+                INVALID_ID, 0
+            );
+            edge_set.set(eid, ctx_->arena);
+
+            // Track max vertex ID
+            for (VertexId v : edge_verts) {
+                while (ctx_->counters.next_vertex.load() <= v) {
+                    ctx_->counters.alloc_vertex();
+                }
+            }
+        }
+
+        uint64_t hash = 0;  // Initial states get hash 0
+        return ctx_->create_state(std::move(edge_set), 0, hash, INVALID_ID);
+    }
+
+    // Run evolution
+    void evolve() {
+        job_system_->start();
+
+        // Spawn initial MATCH tasks for all initial states
+        for (StateId sid = 0; sid < ctx_->states.size(); ++sid) {
+            const State& state = ctx_->states[sid];
+            if (state.parent_event == INVALID_ID) {  // Initial state
+                auto match_job = job_system::make_job(
+                    [ctx = ctx_.get(), sid]() {
+                        MatchTask task(ctx, sid, 0);
+                        task.execute();
+                    },
+                    TaskType::MATCH
+                );
+
+                job_system_->submit(std::move(match_job), job_system::ScheduleMode::LIFO);
+                ctx_->match_tasks_spawned.fetch_add(1);
+            }
+        }
+
+        // Wait for completion
+        job_system_->wait_for_completion();
+        job_system_->shutdown();
+    }
+
+    // Access results
+    EvolutionContext& context() { return *ctx_; }
+    const EvolutionContext& context() const { return *ctx_; }
+
+    // Statistics
+    size_t num_states() const { return ctx_->states.size(); }
+    size_t num_events() const { return ctx_->events.size(); }
+    size_t num_edges() const { return ctx_->edges.size(); }
+    size_t num_matches() const { return ctx_->matches.size(); }
+};
+
+}  // namespace hypergraph::v2_3
