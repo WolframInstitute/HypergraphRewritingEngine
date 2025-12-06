@@ -201,6 +201,7 @@ struct ChildInfo {
     StateId child_state;
     EdgeId consumed_edges[MAX_PATTERN_EDGES];
     uint8_t num_consumed;
+    uint32_t creation_step{0};  // Step at which child was created
     uint64_t registration_epoch{0};  // Epoch when child was registered
 
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
@@ -317,8 +318,14 @@ class ParallelEvolutionEngine {
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
 
+    // Batched matching: collect all matches then spawn REWRITEs (vs eager spawning)
+    // Batching eliminates race conditions in match forwarding, but eager may have
+    // better cache locality for some workloads. When disabled with match forwarding,
+    // requires push-based forwarding to cover race windows.
+    bool batched_matching_{false};  // Disabled to test eager single-threaded
+
     // Validation mode: compare forwarded+delta vs full matching
-    bool validate_match_forwarding_{false};
+    bool validate_match_forwarding_{true};  // Enabled for debugging
     std::atomic<size_t> validation_mismatches_{0};
 
     // Track missing hashes to verify they arrive later via push
@@ -389,6 +396,7 @@ public:
     void set_max_states(size_t max) { max_states_ = max; }
     void set_max_events(size_t max) { max_events_ = max; }
     void set_match_forwarding(bool enable) { enable_match_forwarding_ = enable; }
+    void set_batched_matching(bool enable) { batched_matching_ = enable; }
     void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
@@ -513,7 +521,7 @@ private:
     // Helper: Store a match for a state (for later forwarding)
     // Sets the storage_epoch on the match and returns it.
     // =========================================================================
-    uint64_t store_match_for_state(StateId state, MatchRecord& match) {
+    uint64_t store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false) {
         // Get epoch BEFORE storing (for ordering)
         uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
         match.storage_epoch = epoch;
@@ -521,10 +529,12 @@ private:
         LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
         list->push(match, hg_->arena());
 
-        // Note: Per-store fence removed - the batch fence in execute_match_task
-        // (after ALL stores) provides sufficient visibility guarantee.
-        // Uncomment if non-batched paths are reintroduced:
-        // std::atomic_thread_fence(std::memory_order_seq_cst);
+        // In non-batched (eager) mode, we need a fence after each store to ensure
+        // visibility before push_match_to_children runs. In batched mode, we use
+        // a single fence after all stores.
+        if (with_fence) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+        }
 
         return epoch;
     }
@@ -570,13 +580,15 @@ private:
     // a match could be stored with epoch >= child.epoch (so push is responsible)
     // but the child isn't visible yet (so push misses it).
     uint64_t register_child_with_parent(StateId parent, StateId child,
-                                     const EdgeId* consumed_edges, uint8_t num_consumed) {
+                                     const EdgeId* consumed_edges, uint8_t num_consumed,
+                                     uint32_t child_step = 0) {
         if (parent == INVALID_ID) return 0;
 
         // Build ChildInfo (epoch will be set after push)
         ChildInfo info;
         info.child_state = child;
         info.num_consumed = num_consumed;
+        info.creation_step = child_step;  // Step at which child was created
         info.registration_epoch = 0;  // Temporary, will update after push
         for (uint8_t i = 0; i < num_consumed; ++i) {
             info.consumed_edges[i] = consumed_edges[i];
@@ -630,11 +642,30 @@ private:
     // Note: We also push to grandchildren recursively. Each store gets a new
     // epoch, so the epoch comparison is correct at each level.
     void push_match_to_children(StateId parent, const MatchRecord& match, uint32_t step) {
-        // With batched matching, no retry loop needed:
-        // - Parent's MATCH task stores ALL matches before spawning any REWRITEs
-        // - No children can be registered until REWRITEs run
-        // - So children list is stable during this call
-        push_match_to_children_impl(parent, match, step);
+        if (batched_matching_) {
+            // With batched matching, no retry loop needed:
+            // - Parent's MATCH task stores ALL matches before spawning any REWRITEs
+            // - No children can be registered until REWRITEs run
+            // - So children list is stable during this call
+            push_match_to_children_impl(parent, match, step);
+        } else {
+            // EAGER MODE: Retry loop to close race window.
+            // Race: child registers AFTER we read children list but BEFORE epoch increments.
+            // Solution: capture epoch before, push, check if epoch changed, retry if so.
+            //
+            // The retry ensures we see any children that registered during our push.
+            // At most a few retries since children only register once.
+            uint64_t epoch_before = global_epoch_.load(std::memory_order_acquire);
+            push_match_to_children_impl(parent, match, step);
+
+            // Retry if new children may have registered during push
+            uint64_t epoch_after = global_epoch_.load(std::memory_order_acquire);
+            while (epoch_after != epoch_before) {
+                epoch_before = epoch_after;
+                push_match_to_children_impl(parent, match, step);
+                epoch_after = global_epoch_.load(std::memory_order_acquire);
+            }
+        }
     }
 
     void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step) {
@@ -668,8 +699,6 @@ private:
             uint64_t h = forwarded.hash();
             auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
             if (!inserted) {
-                DEBUG_LOG("PUSH_DUP parent=%u -> child=%u rule=%u hash=%lu step=%u",
-                          parent, child_info.child_state, match.rule_index, h, step);
                 return;  // Already processed
             }
 
@@ -678,8 +707,6 @@ private:
                 auto missing = missing_match_hashes_.lookup(h);
                 if (missing.has_value()) {
                     late_arrivals_.fetch_add(1, std::memory_order_relaxed);
-                    fprintf(stderr, "LATE_ARRIVAL: PUSH hash=%lu arrived for child=%u\n",
-                            h, child_info.child_state);
                 }
             }
 
@@ -698,11 +725,18 @@ private:
             // Uncomment if non-batched paths are reintroduced:
             // std::atomic_thread_fence(std::memory_order_seq_cst);
 
+            // CRITICAL FIX: Use child's MATCH step, not parent's step!
+            // The child was created at child_info.creation_step, so its MATCH
+            // runs at creation_step + 1. Matches forwarded to child should spawn
+            // REWRITEs at the same step as the child's MATCH (creation_step + 1),
+            // which create grandchildren whose MATCH runs at creation_step + 2.
+            uint32_t child_step = child_info.creation_step + 1;
+
             // RECURSIVE: Push to child's existing children (grandchildren)
-            push_match_to_children(child_info.child_state, forwarded, step);
+            push_match_to_children(child_info.child_state, forwarded, child_step);
 
             // Spawn REWRITE task for this forwarded match
-            submit_rewrite_task(forwarded, step);
+            submit_rewrite_task(forwarded, child_step);
         });
     }
 
@@ -814,8 +848,6 @@ private:
                 auto missing = missing_match_hashes_.lookup(h);
                 if (missing.has_value()) {
                     late_arrivals_.fetch_add(1, std::memory_order_relaxed);
-                    fprintf(stderr, "LATE_ARRIVAL: FWD hash=%lu arrived for child=%u from ancestor=%u\n",
-                            h, child, ancestor);
                 }
             }
 
@@ -827,6 +859,145 @@ private:
 
             // Add to batch - will be stored and REWRITE spawned in Phase 2
             batch.push_back(forwarded);
+        });
+    }
+
+    // =========================================================================
+    // EAGER MODE: Forward existing parent matches with retry loop
+    // =========================================================================
+    // Called when a child is created in non-batched mode. Pulls from ancestors
+    // with retry to close the race window where a parent stores a match after
+    // we read the ancestor's match list.
+
+    void forward_existing_parent_matches_eager(
+        StateId parent, StateId child,
+        const EdgeId* consumed_edges, uint8_t num_consumed,
+        uint32_t step
+    ) {
+        // Accumulate all consumed edges along the path from child to ancestors
+        EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];
+        uint8_t total_consumed = 0;
+        for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+            accumulated_consumed[total_consumed++] = consumed_edges[i];
+        }
+
+        // RETRY LOOP: Pull with epoch tracking to close race window.
+        // We retry the entire ancestor chain walk if global_epoch changes,
+        // indicating new matches may have been stored.
+        uint64_t epoch_before = global_epoch_.load(std::memory_order_acquire);
+
+        // Walk up the ancestor chain, forwarding matches from each ancestor
+        StateId current_ancestor = parent;
+        while (current_ancestor != INVALID_ID) {
+            forward_matches_from_single_ancestor_eager(
+                current_ancestor, child,
+                accumulated_consumed, total_consumed, step);
+
+            // Move to next ancestor and accumulate consumed edges
+            auto parent_result = state_parent_.lookup_waiting(current_ancestor);
+            if (!parent_result.has_value()) break;
+
+            ParentInfo* pi = *parent_result;
+            if (!pi || !pi->has_parent()) break;
+
+            for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+                accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
+            }
+            current_ancestor = pi->parent_state;
+        }
+
+        // Check if epoch changed - if so, retry to catch any new matches
+        uint64_t epoch_after = global_epoch_.load(std::memory_order_acquire);
+        while (epoch_after != epoch_before) {
+            epoch_before = epoch_after;
+
+            // Reset consumed edges and re-walk
+            total_consumed = 0;
+            for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+                accumulated_consumed[total_consumed++] = consumed_edges[i];
+            }
+
+            current_ancestor = parent;
+            while (current_ancestor != INVALID_ID) {
+                forward_matches_from_single_ancestor_eager(
+                    current_ancestor, child,
+                    accumulated_consumed, total_consumed, step);
+
+                auto parent_result = state_parent_.lookup_waiting(current_ancestor);
+                if (!parent_result.has_value()) break;
+
+                ParentInfo* pi = *parent_result;
+                if (!pi || !pi->has_parent()) break;
+
+                for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+                    accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
+                }
+                current_ancestor = pi->parent_state;
+            }
+
+            epoch_after = global_epoch_.load(std::memory_order_acquire);
+        }
+    }
+
+    // EAGER VERSION: Forward matches from single ancestor, spawning immediately
+    void forward_matches_from_single_ancestor_eager(
+        StateId ancestor, StateId child,
+        const EdgeId* accumulated_consumed, uint8_t total_consumed,
+        uint32_t step
+    ) {
+        auto result = state_matches_.lookup_waiting(ancestor);
+        if (!result.has_value()) return;
+
+        LockFreeList<MatchRecord>* ancestor_matches = *result;
+        ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
+            // Skip if match overlaps with ANY consumed edge along the path
+            bool overlaps = false;
+            for (uint8_t i = 0; i < ancestor_match.num_edges && !overlaps; ++i) {
+                for (uint8_t j = 0; j < total_consumed; ++j) {
+                    if (ancestor_match.matched_edges[i] == accumulated_consumed[j]) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+            }
+
+            if (overlaps) {
+                stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            // Create forwarded match for child state
+            MatchRecord forwarded = ancestor_match;
+            forwarded.source_state = child;
+            forwarded.canonical_source = hg_->get_canonical_state(child);
+            forwarded.source_canonical_hash = hg_->get_state(child).canonical_hash;
+
+            // Deduplicate - seen_match_hashes_ protects against both push and pull duplicates
+            uint64_t h = forwarded.hash();
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
+            if (!inserted) {
+                DEBUG_LOG("FWD_EAGER_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
+                          ancestor, child, ancestor_match.rule_index, h);
+                return;  // Already seen (possibly via push)
+            }
+
+            // Check if this was a "missing" match that arrived late
+            if (validate_match_forwarding_) {
+                auto missing = missing_match_hashes_.lookup(h);
+                if (missing.has_value()) {
+                    late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+
+            total_matches_found_.fetch_add(1, std::memory_order_relaxed);
+            stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
+
+            DEBUG_LOG("FWD_EAGER ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
+                      ancestor, child, ancestor_match.rule_index, h, step);
+
+            // EAGER: Immediately spawn REWRITE task
+            // No need to store - match is already stored in ancestor, descendants can pull from there
+            submit_rewrite_task(forwarded, step);
         });
     }
 
@@ -910,7 +1081,8 @@ private:
         batch.reserve(32);  // Pre-allocate for typical cases
         size_t delta_start = 0;  // Index where delta (discovered) matches start
 
-        // Collector callback - just adds to batch, no immediate processing
+        // Collector callback - in batched mode, adds to batch for later processing.
+        // In eager mode, stores immediately and spawns REWRITE, with push to children.
         auto collect_match = [&, state, canonical_state](
             uint16_t rule_index,
             const EdgeId* edges,
@@ -943,7 +1115,17 @@ private:
 
             DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
 
-            batch.push_back(match);
+            if (batched_matching_) {
+                // BATCHED MODE: Collect for later processing
+                batch.push_back(match);
+            } else {
+                // EAGER MODE: Store immediately with fence, push to children, spawn REWRITE
+                if (enable_match_forwarding_) {
+                    store_match_for_state(state, match, true);  // with fence
+                    push_match_to_children(state, match, step);
+                }
+                submit_rewrite_task(match, step);
+            }
         };
 
         // Match callback for pattern matching
@@ -965,11 +1147,22 @@ private:
             // Invariant: Forwarded (pull) + Delta = Full matches
             stats_.delta_pattern_matches.fetch_add(1, std::memory_order_relaxed);
 
-            // Pull ALL ancestor matches into the batch - they're guaranteed to be stored because
-            // parent's MATCH task batched and stored all matches before spawning REWRITE
-            forward_existing_parent_matches(
-                ctx.parent_state, state,
-                ctx.consumed_edges, ctx.num_consumed, step, batch);
+            if (batched_matching_) {
+                // BATCHED MODE: Pull all ancestor matches into batch
+                // They're guaranteed visible because parent stored all before spawning REWRITE
+                forward_existing_parent_matches(
+                    ctx.parent_state, state,
+                    ctx.consumed_edges, ctx.num_consumed, step, batch);
+            } else {
+                // EAGER MODE: Pull from ancestors with retry loop.
+                // Race: parent may store a match AFTER we read ancestor's match list.
+                // Solution: capture epoch before pull, pull, check if epoch changed, retry if so.
+                //
+                // We directly spawn REWRITEs for each pulled match (no batching).
+                forward_existing_parent_matches_eager(
+                    ctx.parent_state, state,
+                    ctx.consumed_edges, ctx.num_consumed, step);
+            }
 
             // Track where forwarded matches end - we only need to STORE delta matches
             // (forwarded matches are already stored in ancestors and can be pulled by descendants)
@@ -1022,8 +1215,7 @@ private:
                                 }
                             }
                         }
-                        fprintf(stderr, "VALIDATION: MISSING match state=%u rule=%u hash=%lu produced=%u/%u\n",
-                                state, rule_index, h, produced_count, num_edges);
+                        (void)produced_count;  // Suppress unused variable warning
                     }
                 };
                 for (uint16_t r = 0; r < rules_.size(); ++r) {
@@ -1049,25 +1241,28 @@ private:
         }
 
         // =======================================================================
-        // PHASE 2: Store all matches, then spawn all REWRITEs
+        // PHASE 2: Store all matches, then spawn all REWRITEs (BATCHED MODE ONLY)
         // =======================================================================
-        // This ordering guarantees that when a child is created (by REWRITE),
-        // all parent matches are already stored and visible for pulling.
+        // In batched mode, this ordering guarantees that when a child is created
+        // (by REWRITE), all parent matches are already stored and visible for pulling.
+        // In eager mode, matches were already stored and REWRITEs spawned above.
 
-        if (enable_match_forwarding_) {
-            // Only store DELTA matches (discovered in this state).
-            // Forwarded matches are already stored in ancestors - descendants can pull from there.
-            // This dramatically reduces memory usage.
-            for (size_t i = delta_start; i < batch.size(); ++i) {
-                store_match_for_state(state, batch[i]);
+        if (batched_matching_) {
+            if (enable_match_forwarding_) {
+                // Only store DELTA matches (discovered in this state).
+                // Forwarded matches are already stored in ancestors - descendants can pull from there.
+                // This dramatically reduces memory usage.
+                for (size_t i = delta_start; i < batch.size(); ++i) {
+                    store_match_for_state(state, batch[i]);
+                }
+                // Memory fence ensures all stores are visible before REWRITEs run
+                std::atomic_thread_fence(std::memory_order_seq_cst);
             }
-            // Memory fence ensures all stores are visible before REWRITEs run
-            std::atomic_thread_fence(std::memory_order_seq_cst);
-        }
 
-        // Now spawn REWRITEs - children will see all stored matches
-        for (const auto& match : batch) {
-            submit_rewrite_task(match, step);
+            // Now spawn REWRITEs - children will see all stored matches
+            for (const auto& match : batch) {
+                submit_rewrite_task(match, step);
+            }
         }
     }
 
@@ -1143,9 +1338,11 @@ private:
                 // - Child's MATCH task pulls from ancestors (all matches visible)
                 // - No race condition!
                 if (enable_match_forwarding_) {
+                    // Child is created at current step, its MATCH runs at step+1
                     register_child_with_parent(
                         match.source_state, rr.raw_state,
-                        match.matched_edges, match.num_edges);
+                        match.matched_edges, match.num_edges,
+                        step);  // Pass step so pushed matches use correct child step
                     // Note: forward_existing is done in child's MATCH task, not here.
                     // This avoids redundant work and keeps the logic centralized.
                 }

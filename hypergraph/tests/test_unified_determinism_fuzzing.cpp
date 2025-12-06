@@ -75,7 +75,7 @@ protected:
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
 
-        // Test with multiple threads and recursive push fix
+        // Test with multiple threads (or default to hardware_concurrency)
         v2::ParallelEvolutionEngine engine(hg.get(), num_threads);
         engine.set_match_forwarding(true);
         engine.set_validate_match_forwarding(true);
@@ -213,7 +213,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Fuzz) {
 
     std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
 
-    fuzz_test_rules("SimpleRule", {rule}, initial, 4, 50);
+    fuzz_test_rules("SimpleRule", {rule}, initial, 4, 50);  // 50 runs
 }
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Steps) {
@@ -489,10 +489,16 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
 
     std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
 
-    // Run multiple times and check match forwarding stats are consistent
+    // Run multiple times and check semantic determinism
+    // Note: forwarded/invalidated counts may vary based on timing (push vs pull),
+    // but the final set of matches and states must be deterministic (CRDT property).
+    std::set<size_t> unique_states;
+    std::set<size_t> unique_events;
+    std::set<size_t> unique_new_discovered;
+
+    // Also track mechanism counts for informational purposes
     std::set<size_t> unique_forwarded;
     std::set<size_t> unique_invalidated;
-    std::set<size_t> unique_new_discovered;
 
     for (int i = 0; i < 20; ++i) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
@@ -500,26 +506,36 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
         engine.add_rule(rule);
         engine.evolve(initial, 3);
 
+        unique_states.insert(engine.num_canonical_states());
+        unique_events.insert(engine.num_events());
+
         const auto& stats = engine.stats();
         unique_forwarded.insert(stats.matches_forwarded.load());
         unique_invalidated.insert(stats.matches_invalidated.load());
         unique_new_discovered.insert(stats.new_matches_discovered.load());
     }
 
-    std::cout << "Match forwarding stats over 20 runs:\n";
-    std::cout << "  Forwarded: " << unique_forwarded.size() << " unique values";
-    if (!unique_forwarded.empty()) std::cout << " (" << *unique_forwarded.begin() << ")";
+    std::cout << "Match forwarding semantic results over 20 runs:\n";
+    std::cout << "  States: " << unique_states.size() << " unique values";
+    if (!unique_states.empty()) std::cout << " (" << *unique_states.begin() << ")";
     std::cout << "\n";
-    std::cout << "  Invalidated: " << unique_invalidated.size() << " unique values";
-    if (!unique_invalidated.empty()) std::cout << " (" << *unique_invalidated.begin() << ")";
+    std::cout << "  Events: " << unique_events.size() << " unique values";
+    if (!unique_events.empty()) std::cout << " (" << *unique_events.begin() << ")";
     std::cout << "\n";
     std::cout << "  New discovered: " << unique_new_discovered.size() << " unique values";
     if (!unique_new_discovered.empty()) std::cout << " (" << *unique_new_discovered.begin() << ")";
     std::cout << "\n";
+    std::cout << "  Forwarded (may vary): " << unique_forwarded.size() << " unique values\n";
+    std::cout << "  Invalidated (may vary): " << unique_invalidated.size() << " unique values\n";
 
-    EXPECT_EQ(unique_forwarded.size(), 1u) << "Match forwarding non-deterministic";
-    EXPECT_EQ(unique_invalidated.size(), 1u) << "Match invalidation non-deterministic";
+    // Semantic results MUST be deterministic
+    EXPECT_EQ(unique_states.size(), 1u) << "State count non-deterministic";
+    EXPECT_EQ(unique_events.size(), 1u) << "Event count non-deterministic";
     EXPECT_EQ(unique_new_discovered.size(), 1u) << "New match discovery non-deterministic";
+
+    // Note: forwarded/invalidated counts are NOT required to be deterministic
+    // because the CRDT allows push/pull race where either can deliver first.
+    // What matters is that the same matches are delivered (unique_new_discovered).
 }
 
 // =============================================================================
