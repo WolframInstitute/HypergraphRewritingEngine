@@ -5,14 +5,6 @@
 
 #include "types.hpp"
 
-// Debug logging - enabled with -DENABLE_DEBUG_OUTPUT
-#ifdef ENABLE_DEBUG_OUTPUT
-    #include <cstdio>
-    #define DEBUG_LOG_SIG(fmt, ...) printf("[DEBUG][SIG] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define DEBUG_LOG_SIG(fmt, ...) ((void)0)
-#endif
-
 namespace hypergraph::unified {
 
 // =============================================================================
@@ -233,10 +225,6 @@ inline void enumerate_partitions_recursive(
             result.pattern[i] = merged_to[pclass];
         }
 
-        DEBUG_LOG_SIG("Generated signature: [%d, %d] from merged_to [%d, %d]",
-                      result.pattern[0], result.pattern[1],
-                      merged_to[0], num_classes > 1 ? merged_to[1] : 0);
-
         visitor(result, user_data);
         return;
     }
@@ -284,9 +272,6 @@ inline void enumerate_compatible_signatures(
             num_classes++;
         }
     }
-
-    DEBUG_LOG_SIG("enumerate_compatible_signatures: arity=%d, num_classes=%d",
-                  pattern_sig.arity, num_classes);
 
     // Enumerate all set partitions of {0, 1, ..., num_classes-1}
     // Each partition represents a way that distinct pattern variables can

@@ -19,7 +19,5 @@ if(BUILD_TESTS)
 endif()
 
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_options(job_system INTERFACE -g -O0 -fsanitize=thread)
-    target_link_options(job_system INTERFACE -fsanitize=thread)
-endif()
+# Sanitizers are now controlled at the top level via ENABLE_TSAN/ENABLE_ASAN options
+# See main CMakeLists.txt for configuration

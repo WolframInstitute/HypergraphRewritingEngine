@@ -20,6 +20,8 @@
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
 #include "lock_free_list.hpp"
+#include "segmented_array.hpp"
+#include "hypergraph/debug_log.hpp"
 
 #include <job_system/job_system.hpp>
 
@@ -37,15 +39,19 @@ struct MatchRecord {
     VariableBinding binding;
     StateId source_state;
     StateId canonical_source;  // Canonical state for deterministic deduplication
+    uint64_t storage_epoch{0};  // Epoch when this match was stored (for ordering)
 
-    // Hash for deduplication - uses canonical state for determinism
+    // Hash for deduplication - uses raw source state + binding
+    // Each raw state should be matched separately (different vertex IDs)
     uint64_t hash() const {
         uint64_t h = rule_index;
-        h = h * 31 + canonical_source;
-        // Hash the binding (vertex assignments) instead of edge IDs
-        // This makes deduplication isomorphism-aware
+        h = h * 31 + source_state;  // Use raw source state
+        // Include bound_mask to distinguish different binding patterns
+        h = h * 31 + binding.bound_mask;
+        // Hash the binding (vertex assignments) - include WHICH variable is bound
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
             if (binding.is_bound(i)) {
+                h = h * 31 + i;  // Include variable index
                 h = h * 31 + binding.get(i);
             }
         }
@@ -54,8 +60,8 @@ struct MatchRecord {
 
     bool operator==(const MatchRecord& other) const {
         if (rule_index != other.rule_index || num_edges != other.num_edges ||
-            canonical_source != other.canonical_source) return false;
-        // Compare bindings instead of edge IDs
+            source_state != other.source_state) return false;
+        // Compare bindings
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
             if (binding.is_bound(i) != other.binding.is_bound(i)) return false;
             if (binding.is_bound(i) && binding.get(i) != other.binding.get(i)) return false;
@@ -76,6 +82,7 @@ struct EvolutionStats {
     std::atomic<size_t> matches_invalidated{0};
     std::atomic<size_t> new_matches_discovered{0};
     std::atomic<size_t> full_pattern_matches{0};
+    std::atomic<size_t> delta_pattern_matches{0};
 };
 
 // =============================================================================
@@ -120,16 +127,103 @@ struct ParallelRewriteResult {
 };
 
 // =============================================================================
+// MatchContext for Match Forwarding
+// =============================================================================
+// Carries information needed for incremental match discovery.
+// When a REWRITE creates a new state, it passes this context to enable
+// forwarding valid parent matches and finding only NEW matches.
+
+struct MatchContext {
+    StateId parent_state{INVALID_ID};
+    EdgeId consumed_edges[MAX_PATTERN_EDGES];
+    uint8_t num_consumed{0};
+    EdgeId produced_edges[MAX_PATTERN_EDGES];
+    uint8_t num_produced{0};
+
+    bool has_parent() const { return parent_state != INVALID_ID; }
+
+    bool edge_was_consumed(EdgeId eid) const {
+        for (uint8_t i = 0; i < num_consumed; ++i) {
+            if (consumed_edges[i] == eid) return true;
+        }
+        return false;
+    }
+
+    bool edge_was_produced(EdgeId eid) const {
+        for (uint8_t i = 0; i < num_produced; ++i) {
+            if (produced_edges[i] == eid) return true;
+        }
+        return false;
+    }
+};
+
+// =============================================================================
+// ChildInfo for Match Forwarding (Push Model)
+// =============================================================================
+// Tracks child states and their consumed edges so parent can push matches.
+
+struct ChildInfo {
+    StateId child_state;
+    EdgeId consumed_edges[MAX_PATTERN_EDGES];
+    uint8_t num_consumed;
+    uint64_t registration_epoch{0};  // Epoch when child was registered
+
+    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
+        for (uint8_t i = 0; i < num_edges; ++i) {
+            for (uint8_t j = 0; j < num_consumed; ++j) {
+                if (matched_edges[i] == consumed_edges[j]) return true;
+            }
+        }
+        return false;
+    }
+};
+
+// =============================================================================
+// ParentInfo for Match Forwarding (Pull Model from Ancestors)
+// =============================================================================
+// Tracks each state's parent and consumed edges so we can forward from ancestors.
+
+struct ParentInfo {
+    StateId parent_state;
+    EdgeId consumed_edges[MAX_PATTERN_EDGES];
+    uint8_t num_consumed;
+
+    ParentInfo() : parent_state(INVALID_ID), num_consumed(0) {}
+
+    bool has_parent() const { return parent_state != INVALID_ID; }
+
+    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
+        for (uint8_t i = 0; i < num_edges; ++i) {
+            for (uint8_t j = 0; j < num_consumed; ++j) {
+                if (matched_edges[i] == consumed_edges[j]) return true;
+            }
+        }
+        return false;
+    }
+};
+
+// =============================================================================
 // ParallelEvolutionEngine
 // =============================================================================
-// Evolution engine with parallel REWRITE task execution.
-// Uses job system for concurrent match application.
+// Dataflow-driven evolution engine with maximal parallelism.
+// Uses job system for concurrent match finding and rewrite application.
+//
+// DATAFLOW MODEL (No synchronization barriers):
+// - MATCH tasks find matches in a state, spawn REWRITE tasks
+// - REWRITE tasks apply matches, spawn MATCH tasks for new states
+// - Single wait_for_completion() at the end
+// - Work proceeds continuously as dependencies are satisfied
+//
+// MATCH FORWARDING (Incremental Pattern Matching):
+// - Full pattern matching only on initial states
+// - For child states: forward valid parent matches, find only NEW matches
+// - NEW matches must involve at least one newly produced edge
 //
 // Thread safety model (LOCK-FREE):
 // - UnifiedHypergraph uses lock-free data structures
 // - ConcurrentHeterogeneousArena for thread-safe allocation
 // - Match deduplication uses ConcurrentMap (lock-free)
-// - Results collected via lock-free list
+// - State tracking uses ConcurrentMap (lock-free)
 
 class ParallelEvolutionEngine {
     UnifiedHypergraph* hg_;
@@ -139,7 +233,63 @@ class ParallelEvolutionEngine {
     std::vector<RewriteRule> rules_;
 
     // Global match deduplication (lock-free)
-    ConcurrentMap<uint64_t, bool> seen_match_hashes_;
+    // Use non-zero EMPTY/LOCKED keys to avoid conflicts with valid hash values
+    static constexpr uint64_t MATCH_MAP_EMPTY = 1ULL << 63;
+    static constexpr uint64_t MATCH_MAP_LOCKED = (1ULL << 63) | 1;
+    ConcurrentMap<uint64_t, bool, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED> seen_match_hashes_;
+
+    // Track which raw states have been matched (lock-free)
+    // Prevents duplicate MATCH tasks for the same raw state
+    // Use uint64_t as key to avoid template issues with 32-bit StateId
+    // StateId is 32-bit, so we use keys outside that range for EMPTY/LOCKED
+    static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
+    static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) | 1;
+    ConcurrentMap<uint64_t, bool, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
+
+    // Per-state match storage for match forwarding
+    // Maps state -> list of matches found in that state
+    // Used to forward matches to child states
+    // Uses ConcurrentMap for thread-safe "get or create" semantics
+    static constexpr uint64_t MATCH_STATE_MAP_EMPTY = (1ULL << 62) + 100;
+    static constexpr uint64_t MATCH_STATE_MAP_LOCKED = (1ULL << 62) + 101;
+    ConcurrentMap<uint64_t, LockFreeList<MatchRecord>*, MATCH_STATE_MAP_EMPTY, MATCH_STATE_MAP_LOCKED> state_matches_;
+
+    // Per-state children tracking for push-based match forwarding
+    // Maps parent state -> list of children (with their consumed edges)
+    // When parent finds a match, it pushes to all children where match is valid
+    static constexpr uint64_t CHILDREN_MAP_EMPTY = (1ULL << 62) + 200;
+    static constexpr uint64_t CHILDREN_MAP_LOCKED = (1ULL << 62) + 201;
+    ConcurrentMap<uint64_t, LockFreeList<ChildInfo>*, CHILDREN_MAP_EMPTY, CHILDREN_MAP_LOCKED> state_children_;
+
+    // Per-state parent tracking for pull-based match forwarding from ancestors
+    // Maps child state -> parent info pointer (with consumed edges for validation)
+    static constexpr uint64_t PARENT_MAP_EMPTY = (1ULL << 62) + 300;
+    static constexpr uint64_t PARENT_MAP_LOCKED = (1ULL << 62) + 301;
+    ConcurrentMap<uint64_t, ParentInfo*, PARENT_MAP_EMPTY, PARENT_MAP_LOCKED> state_parent_;
+
+    // Per-state registration epoch for epoch-based match forwarding
+    // Tracks when each state was registered as a child (for epoch comparison)
+    static constexpr uint64_t EPOCH_MAP_EMPTY = (1ULL << 62) + 400;
+    static constexpr uint64_t EPOCH_MAP_LOCKED = (1ULL << 62) + 401;
+    ConcurrentMap<uint64_t, uint64_t, EPOCH_MAP_EMPTY, EPOCH_MAP_LOCKED> state_registration_epoch_;
+
+    // Global epoch counter for ordering matches and registrations
+    // Used to determine if push or pull should handle each (match, child) pair:
+    // - If match.epoch < child.epoch: child pulls (match was stored before child registered)
+    // - If match.epoch >= child.epoch: parent pushes (match stored after child registered)
+    std::atomic<uint64_t> global_epoch_{1};  // Start at 1 to avoid 0 confusion
+
+    // Match forwarding enabled flag
+    bool enable_match_forwarding_{true};
+
+    // Validation mode: compare forwarded+delta vs full matching
+    bool validate_match_forwarding_{false};
+    std::atomic<size_t> validation_mismatches_{0};
+
+    // Track missing hashes to verify they arrive later via push
+    // Value is (state_id << 16) | rule_index for debugging
+    ConcurrentMap<uint64_t, uint64_t> missing_match_hashes_{4096};
+    std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
     job_system::JobSystem<EvolutionJobType>* job_system_;
@@ -159,9 +309,6 @@ class ParallelEvolutionEngine {
     std::atomic<size_t> total_events_{0};
     std::atomic<size_t> forwarded_matches_{0};
     std::atomic<size_t> rejected_duplicates_{0};
-
-    // Per-step result collection (lock-free)
-    LockFreeList<ParallelRewriteResult> step_results_;
 
     // Evolution statistics
     EvolutionStats stats_;
@@ -206,6 +353,31 @@ public:
     void set_max_steps(size_t max) { max_steps_ = max; }
     void set_max_states(size_t max) { max_states_ = max; }
     void set_max_events(size_t max) { max_events_ = max; }
+    void set_match_forwarding(bool enable) { enable_match_forwarding_ = enable; }
+    void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
+    size_t validation_mismatches() const { return validation_mismatches_.load(); }
+    size_t late_arrivals() const { return late_arrivals_.load(); }
+    size_t still_missing() const {
+        // Count how many "missing" matches never arrived
+        size_t count = 0;
+        missing_match_hashes_.for_each([&](uint64_t h, bool) {
+            if (!seen_match_hashes_.contains(h)) {
+                ++count;
+            }
+        });
+        return count;
+    }
+
+    void dump_still_missing() const {
+        fprintf(stderr, "STILL MISSING HASHES:\n");
+        missing_match_hashes_.for_each([&](uint64_t h, uint64_t debug_info) {
+            if (!seen_match_hashes_.contains(h)) {
+                uint32_t state_id = debug_info >> 16;
+                uint16_t rule_index = debug_info & 0xFFFF;
+                fprintf(stderr, "  hash=%lu state=%u rule=%u\n", h, state_id, rule_index);
+            }
+        });
+    }
 
     size_t num_threads() const { return num_threads_; }
     size_t num_states() const { return hg_ ? hg_->num_states() : 0; }
@@ -217,13 +389,25 @@ public:
     const EvolutionStats& stats() const { return stats_; }
 
     // =========================================================================
-    // Main Evolution Loop
+    // Main Evolution Loop - Dataflow Driven
     // =========================================================================
+    //
+    // MAXIMAL PARALLELISM: No intermediate synchronization barriers.
+    //
+    // Flow:
+    // 1. Submit MATCH task for initial state
+    // 2. MATCH tasks find matches → spawn REWRITE tasks
+    // 3. REWRITE tasks apply matches → spawn MATCH tasks for new states
+    // 4. Single wait_for_completion() at the end
+    //
+    // Work proceeds continuously as dependencies are satisfied.
+    // The job system work-steals to keep all CPUs busy.
 
     void evolve(const std::vector<std::vector<VertexId>>& initial_edges, size_t steps) {
         if (!hg_ || rules_.empty()) return;
 
         max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
 
         // Create initial state
         std::vector<EdgeId> edge_ids;
@@ -243,78 +427,17 @@ public:
         }
 
         uint64_t canonical_hash = hg_->compute_canonical_hash(initial_edge_set);
-        // Use create_or_get_canonical_state to register in canonical map
-        // For initial state, raw_state == canonical state since it's the first
         auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
             std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
 
-        // Evolution loop - use raw_state for evolution (has actual edges)
-        std::vector<StateId> current_states = {raw_state};
+        // Mark initial state as matched
+        matched_raw_states_.insert_if_absent(raw_state, true);
 
-        for (size_t step = 1; step <= steps && !should_stop_.load(std::memory_order_relaxed); ++step) {
-            std::vector<RewriteTask> tasks;
+        // Submit MATCH task for initial state - this kicks off the dataflow
+        submit_match_task(raw_state, 1);
 
-            // Find all matches in current states
-            for (StateId sid : current_states) {
-                find_matches_in_state(sid, static_cast<uint32_t>(step), tasks);
-            }
-
-            if (tasks.empty()) break;
-
-            // Submit all rewrite tasks to job system
-            for (const auto& task : tasks) {
-                auto job = job_system::make_job<EvolutionJobType>(
-                    [this, task]() {
-                        apply_match_parallel(task);
-                    },
-                    EvolutionJobType::REWRITE
-                );
-                job_system_->submit(std::move(job));
-            }
-
-            // Wait for all tasks to complete
-            job_system_->wait_for_completion();
-
-            // Collect results (lock-free iteration)
-            // Use raw_state (not canonical state) for evolution, as it contains the
-            // actual produced edges. The canonical state may have different edge IDs.
-            // But only add ONE raw state per canonical state to avoid duplicate work.
-            //
-            // IMPORTANT: Pick the raw_state with smallest StateId for each canonical
-            // state to ensure deterministic behavior across runs. The lock-free list
-            // has non-deterministic iteration order, so we can't just take the first.
-            std::map<StateId, StateId> canonical_to_raw;  // canonical -> smallest raw
-            step_results_.for_each([&](const ParallelRewriteResult& result) {
-                if (result.success) {
-                    auto it = canonical_to_raw.find(result.new_state);
-                    if (it == canonical_to_raw.end()) {
-                        canonical_to_raw[result.new_state] = result.raw_state;
-                    } else {
-                        // Keep the smaller raw_state ID for determinism
-                        if (result.raw_state < it->second) {
-                            it->second = result.raw_state;
-                        }
-                    }
-                }
-            });
-
-            // Extract raw states in canonical order (std::map is sorted)
-            std::vector<StateId> next_states;
-            for (const auto& [canonical, raw] : canonical_to_raw) {
-                next_states.push_back(raw);
-            }
-
-            // Clear results for next step by creating new empty list
-            step_results_ = LockFreeList<ParallelRewriteResult>();
-
-            if (next_states.empty()) break;
-
-            current_states = std::move(next_states);
-
-            // Check limits
-            if (max_states_ > 0 && hg_->num_states() >= max_states_) break;
-            if (max_events_ > 0 && hg_->num_events() >= max_events_) break;
-        }
+        // Single synchronization point at the end
+        job_system_->wait_for_completion();
     }
 
     // =========================================================================
@@ -326,10 +449,400 @@ public:
 
 private:
     // =========================================================================
-    // Match Finding (single-threaded per state, but states can be processed in parallel)
+    // Helper: Get or create the match list for a state (thread-safe)
+    // =========================================================================
+    LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state) {
+        uint64_t key = state;
+
+        // First, try to look up existing list
+        auto result = state_matches_.lookup(key);
+        if (result.has_value()) {
+            return *result;
+        }
+
+        // Need to create - allocate new list from arena
+        auto* new_list = hg_->arena().template create<LockFreeList<MatchRecord>>();
+
+        // Try to insert - if another thread beat us, use theirs
+        auto [existing, inserted] = state_matches_.insert_if_absent(key, new_list);
+
+        // Return whichever list is now in the map
+        return inserted ? new_list : existing;
+    }
+
+    // =========================================================================
+    // Helper: Store a match for a state (for later forwarding)
+    // Sets the storage_epoch on the match and returns it.
+    // =========================================================================
+    uint64_t store_match_for_state(StateId state, MatchRecord& match) {
+        // Get epoch BEFORE storing (for ordering)
+        uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
+        match.storage_epoch = epoch;
+
+        LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
+        list->push(match, hg_->arena());
+
+        // Note: Per-store fence removed - the batch fence in execute_match_task
+        // (after ALL stores) provides sufficient visibility guarantee.
+        // Uncomment if non-batched paths are reintroduced:
+        // std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        return epoch;
+    }
+
+    // =========================================================================
+    // Helper: Get or create the children list for a state (thread-safe)
+    // =========================================================================
+    LockFreeList<ChildInfo>* get_or_create_state_children(StateId state) {
+        uint64_t key = state;
+
+        // First, try to look up existing list
+        auto result = state_children_.lookup(key);
+        if (result.has_value()) {
+            return *result;
+        }
+
+        // Need to create - allocate new list from arena
+        auto* new_list = hg_->arena().template create<LockFreeList<ChildInfo>>();
+
+        // Try to insert - if another thread beat us, use theirs
+        auto [existing, inserted] = state_children_.insert_if_absent(key, new_list);
+
+        // Return whichever list is now in the map
+        return inserted ? new_list : existing;
+    }
+
+    // =========================================================================
+    // Helper: Register a child with its parent (for push-based forwarding)
+    // Returns the epoch at which the child was registered.
+    // =========================================================================
+    //
+    // CRITICAL: The order of operations is carefully designed for correctness:
+    // 1. First, push child to parent's children list (make it visible)
+    // 2. Then, get epoch (determines push vs pull responsibility)
+    //
+    // This ordering ensures:
+    // - If a match is stored BEFORE our epoch (match.epoch < child.epoch):
+    //   Pull is responsible, and the match is already visible in the list
+    // - If a match is stored AFTER our epoch (match.epoch >= child.epoch):
+    //   Push is responsible, and the child is already visible in the list
+    //
+    // With the opposite order (epoch first, then push), there's a race where
+    // a match could be stored with epoch >= child.epoch (so push is responsible)
+    // but the child isn't visible yet (so push misses it).
+    uint64_t register_child_with_parent(StateId parent, StateId child,
+                                     const EdgeId* consumed_edges, uint8_t num_consumed) {
+        if (parent == INVALID_ID) return 0;
+
+        // Build ChildInfo (epoch will be set after push)
+        ChildInfo info;
+        info.child_state = child;
+        info.num_consumed = num_consumed;
+        info.registration_epoch = 0;  // Temporary, will update after push
+        for (uint8_t i = 0; i < num_consumed; ++i) {
+            info.consumed_edges[i] = consumed_edges[i];
+        }
+
+        // Push child to list (for push_match_to_children if called recursively)
+        LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
+        children->push(info, hg_->arena());
+
+        // Note: Fences removed - with batched matching:
+        // - Parent stores ALL matches before spawning REWRITEs
+        // - So no push_match_to_children race to worry about
+        // - Epoch-based ordering was for push vs pull; now we use CRDT-style (both try)
+        // Uncomment if epoch ordering is reintroduced:
+        // std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        // Get epoch (for tracking, though less critical now with batching)
+        uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
+
+        // Store registration epoch for this child
+        state_registration_epoch_.insert_if_absent(child, epoch);
+
+        // Track child's parent (for walking ancestor chain during forward)
+        ParentInfo pi_init;
+        pi_init.parent_state = parent;
+        pi_init.num_consumed = num_consumed;
+        for (uint8_t i = 0; i < num_consumed; ++i) {
+            pi_init.consumed_edges[i] = consumed_edges[i];
+        }
+        ParentInfo* parent_info = hg_->arena().template create<ParentInfo>(pi_init);
+        state_parent_.insert_if_absent(child, parent_info);
+
+        return epoch;
+    }
+
+    // =========================================================================
+    // Helper: Push a match to immediate children (single-level push)
+    // =========================================================================
+    // PUSH mechanism: when a match is discovered, push to immediate children.
+    //
+    // EPOCH-BASED ORDERING:
+    // - Push handles: children with registration_epoch <= match.storage_epoch
+    // - Pull handles: children with registration_epoch > match.storage_epoch
+    // This ensures exactly one of push/pull handles each (match, child) pair.
+    //
+    // VISIBILITY HANDLING:
+    // A child might have registration_epoch <= match.storage_epoch (so push is
+    // responsible) but not yet be visible in the children list. We retry if
+    // the global epoch changes during push, indicating potential new children.
+    //
+    // Note: We also push to grandchildren recursively. Each store gets a new
+    // epoch, so the epoch comparison is correct at each level.
+    void push_match_to_children(StateId parent, const MatchRecord& match, uint32_t step) {
+        // With batched matching, no retry loop needed:
+        // - Parent's MATCH task stores ALL matches before spawning any REWRITEs
+        // - No children can be registered until REWRITEs run
+        // - So children list is stable during this call
+        push_match_to_children_impl(parent, match, step);
+    }
+
+    void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step) {
+        // Use lookup_waiting to handle concurrent inserts (LOCKED slots).
+        // Even with batching, grandchildren may race with sibling match stores.
+        auto result = state_children_.lookup_waiting(parent);
+        if (!result.has_value()) return;  // No children registered
+
+        LockFreeList<ChildInfo>* children = *result;
+        children->for_each([&](const ChildInfo& child_info) {
+            // CRDT-STYLE: No epoch filtering - push to ALL children.
+            // Both push and pull may try to deliver the same match, but
+            // seen_match_hashes_.insert_if_absent provides deduplication.
+            // This avoids the race where both push and pull miss due to
+            // visibility windows in epoch checks.
+
+            // Skip if match overlaps with consumed edges (match was used to create this child)
+            if (child_info.match_overlaps_consumed(match.matched_edges, match.num_edges)) {
+                stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            // Create forwarded match with child as source
+            MatchRecord forwarded = match;
+            forwarded.source_state = child_info.child_state;
+            forwarded.canonical_source = hg_->get_canonical_state(child_info.child_state);
+
+            // Deduplicate - check if this exact (rule, state, binding) was already processed
+            uint64_t h = forwarded.hash();
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(h, true);
+            if (!inserted) {
+                DEBUG_LOG("PUSH_DUP parent=%u -> child=%u rule=%u hash=%lu step=%u",
+                          parent, child_info.child_state, match.rule_index, h, step);
+                return;  // Already processed
+            }
+
+            // Check if this was a "missing" match that arrived late via push
+            if (validate_match_forwarding_) {
+                auto missing = missing_match_hashes_.lookup(h);
+                if (missing.has_value()) {
+                    late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+                    fprintf(stderr, "LATE_ARRIVAL: PUSH hash=%lu arrived for child=%u\n",
+                            h, child_info.child_state);
+                }
+            }
+
+            total_matches_found_.fetch_add(1, std::memory_order_relaxed);
+            stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
+
+            DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u epoch=%lu",
+                      parent, child_info.child_state, match.rule_index, h, step, match.storage_epoch);
+
+            // Store match in child (so grandchildren can find it via forward_existing)
+            store_match_for_state(child_info.child_state, forwarded);
+
+            // Note: With batched matching, this push mechanism is not used in the main flow.
+            // Pull from ancestors handles everything. Push remains for non-batched paths.
+            // Fences removed - if push is needed, the caller should provide fencing.
+            // Uncomment if non-batched paths are reintroduced:
+            // std::atomic_thread_fence(std::memory_order_seq_cst);
+
+            // RECURSIVE: Push to child's existing children (grandchildren)
+            push_match_to_children(child_info.child_state, forwarded, step);
+
+            // Spawn REWRITE task for this forwarded match
+            submit_rewrite_task(forwarded, step);
+        });
+    }
+
+    // =========================================================================
+    // Helper: Forward existing parent matches to a newly created child
+    // =========================================================================
+    // Called when a child is created, to catch up on matches found in the entire
+    // ancestor chain (parent, grandparent, etc.). This ensures that matches found
+    // in ancestors AFTER intermediate states were created still reach descendants.
+    // BATCHED VERSION: Forward existing parent matches, adding to batch
+    void forward_existing_parent_matches(
+        StateId parent, StateId child,
+        const EdgeId* consumed_edges, uint8_t num_consumed,
+        uint32_t step,
+        std::vector<MatchRecord>& batch
+    ) {
+        // Accumulate all consumed edges along the path from child to ancestors
+        // Start with the edges consumed to create this child
+        EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];  // Allow for deep trees
+        uint8_t total_consumed = 0;
+        for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+            accumulated_consumed[total_consumed++] = consumed_edges[i];
+        }
+
+        // Walk up the ancestor chain, forwarding matches from each ancestor
+        StateId current_ancestor = parent;
+        while (current_ancestor != INVALID_ID) {
+            forward_matches_from_single_ancestor(current_ancestor, child,
+                                                  accumulated_consumed, total_consumed, step, batch);
+
+            // Move to the next ancestor and accumulate its consumed edges
+            auto parent_result = state_parent_.lookup(current_ancestor);
+            if (!parent_result.has_value()) break;
+
+            ParentInfo* pi = *parent_result;
+            if (!pi || !pi->has_parent()) break;
+
+            // Add this ancestor's consumed edges to the accumulated set
+            for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+                accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
+            }
+            current_ancestor = pi->parent_state;
+        }
+    }
+
+    // BATCHED VERSION: Forward matches from single ancestor, adding to batch
+    // With batching, parent's matches are guaranteed visible before child is created,
+    // so no retry loop is needed.
+    void forward_matches_from_single_ancestor(
+        StateId ancestor, StateId child,
+        const EdgeId* accumulated_consumed, uint8_t total_consumed,
+        uint32_t step,
+        std::vector<MatchRecord>& batch
+    ) {
+        forward_matches_from_single_ancestor_impl(
+            ancestor, child, accumulated_consumed, total_consumed, step,
+            0,  // child_registration_epoch unused
+            batch);
+    }
+
+    // BATCHED VERSION: Adds forwarded matches to batch instead of spawning immediately
+    void forward_matches_from_single_ancestor_impl(
+        StateId ancestor, StateId child,
+        const EdgeId* accumulated_consumed, uint8_t total_consumed,
+        uint32_t /* step */, uint64_t /* child_registration_epoch - unused */,
+        std::vector<MatchRecord>& batch  // Output: matches to add
+    ) {
+        // Use lookup_waiting to handle concurrent inserts (LOCKED slots).
+        // Even with batching, grandchildren may race with sibling match stores.
+        auto result = state_matches_.lookup_waiting(ancestor);
+        if (!result.has_value()) return;  // Ancestor has no matches yet
+
+        LockFreeList<MatchRecord>* ancestor_matches = *result;
+        ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
+            // Skip if match overlaps with ANY consumed edge along the path
+            bool overlaps = false;
+            for (uint8_t i = 0; i < ancestor_match.num_edges && !overlaps; ++i) {
+                for (uint8_t j = 0; j < total_consumed; ++j) {
+                    if (ancestor_match.matched_edges[i] == accumulated_consumed[j]) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+            }
+
+            if (overlaps) {
+                stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            // Create forwarded match for child state
+            MatchRecord forwarded = ancestor_match;
+            forwarded.source_state = child;
+            forwarded.canonical_source = hg_->get_canonical_state(child);
+
+            // Deduplicate
+            uint64_t h = forwarded.hash();
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(h, true);
+            if (!inserted) {
+                DEBUG_LOG("FWD_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
+                          ancestor, child, ancestor_match.rule_index, h);
+                return;  // Already seen
+            }
+
+            // Check if this was a "missing" match that arrived late via forward_existing
+            if (validate_match_forwarding_) {
+                auto missing = missing_match_hashes_.lookup(h);
+                if (missing.has_value()) {
+                    late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+                    fprintf(stderr, "LATE_ARRIVAL: FWD hash=%lu arrived for child=%u from ancestor=%u\n",
+                            h, child, ancestor);
+                }
+            }
+
+            total_matches_found_.fetch_add(1, std::memory_order_relaxed);
+            stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
+
+            DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu epoch=%lu",
+                      ancestor, child, ancestor_match.rule_index, h, ancestor_match.storage_epoch);
+
+            // Add to batch - will be stored and REWRITE spawned in Phase 2
+            batch.push_back(forwarded);
+        });
+    }
+
+    // =========================================================================
+    // Task Submission (Dataflow)
     // =========================================================================
 
-    void find_matches_in_state(StateId state, uint32_t step, std::vector<RewriteTask>& out_tasks) {
+    // Submit a MATCH task for a state (full matching for initial state)
+    void submit_match_task(StateId state, uint32_t step) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, state, step]() {
+                execute_match_task(state, step, MatchContext{});
+            },
+            EvolutionJobType::MATCH
+        );
+        job_system_->submit(std::move(job));
+    }
+
+    // Submit a MATCH task with context (for match forwarding)
+    void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, state, step, ctx]() {
+                execute_match_task(state, step, ctx);
+            },
+            EvolutionJobType::MATCH
+        );
+        job_system_->submit(std::move(job));
+    }
+
+    // Submit a REWRITE task for a match
+    void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, match, step]() {
+                execute_rewrite_task(match, step);
+            },
+            EvolutionJobType::REWRITE
+        );
+        job_system_->submit(std::move(job));
+    }
+
+    // =========================================================================
+    // MATCH Task Execution
+    // =========================================================================
+    // Finds matches in a state and spawns REWRITE tasks for each.
+    //
+    // With match forwarding:
+    // - If no parent (initial state): full pattern matching
+    // - If has parent: forward valid parent matches + find NEW matches
+
+    void execute_match_task(StateId state, uint32_t step, const MatchContext& ctx) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && step > max_steps_) return;
+
         const State& s = hg_->get_state(state);
 
         // Get canonical state for deterministic deduplication
@@ -340,14 +853,29 @@ private:
             return hg_->get_edge(eid);
         };
 
-        // Match callback
-        auto on_match = [&, state, canonical_state, step](
+        // =======================================================================
+        // BATCHED MATCHING: Collect all matches first, then spawn REWRITEs
+        // =======================================================================
+        // This eliminates the race condition where children are created before
+        // all parent matches are stored. With batching:
+        // 1. Find ALL matches for this state
+        // 2. Store ALL matches
+        // 3. THEN spawn REWRITEs (which create children)
+        // Children can then reliably pull ALL parent matches.
+
+        std::vector<MatchRecord> batch;
+        batch.reserve(32);  // Pre-allocate for typical cases
+        size_t delta_start = 0;  // Index where delta (discovered) matches start
+
+        // Collector callback - just adds to batch, no immediate processing
+        auto collect_match = [&, state, canonical_state](
             uint16_t rule_index,
             const EdgeId* edges,
             uint8_t num_edges,
-            const VariableBinding& binding,
-            StateId /*source_state*/
+            const VariableBinding& binding
         ) {
+            if (should_stop_.load(std::memory_order_relaxed)) return;
+
             MatchRecord match;
             match.rule_index = rule_index;
             match.num_edges = num_edges;
@@ -367,67 +895,219 @@ private:
             }
 
             total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-            out_tasks.emplace_back(match, step);
+            stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+
+            DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
+
+            batch.push_back(match);
         };
 
-        // Find all matches for each rule
-        for (uint16_t r = 0; r < rules_.size(); ++r) {
-            find_matches(
-                rules_[r], r, state, s.edges,
-                hg_->signature_index(), hg_->inverted_index(), get_edge, on_match
-            );
+        // Match callback for pattern matching
+        auto on_match = [&](
+            uint16_t rule_index,
+            const EdgeId* edges,
+            uint8_t num_edges,
+            const VariableBinding& binding,
+            StateId /*source_state*/
+        ) {
+            collect_match(rule_index, edges, num_edges, binding);
+        };
+
+        if (enable_match_forwarding_ && ctx.has_parent()) {
+            // === DELTA MATCHING MODE (child state) ===
+            // With batching, parent's MATCH task completed before this child was created.
+            // So all parent matches are already stored. We just pull them.
+            //
+            // Invariant: Forwarded (pull) + Delta = Full matches
+            stats_.delta_pattern_matches.fetch_add(1, std::memory_order_relaxed);
+
+            // Pull ALL ancestor matches into the batch - they're guaranteed to be stored because
+            // parent's MATCH task batched and stored all matches before spawning REWRITE
+            forward_existing_parent_matches(
+                ctx.parent_state, state,
+                ctx.consumed_edges, ctx.num_consumed, step, batch);
+
+            // Track where forwarded matches end - we only need to STORE delta matches
+            // (forwarded matches are already stored in ancestors and can be pulled by descendants)
+            delta_start = batch.size();
+
+            // Delta matching: find patterns involving the newly produced edges
+            for (uint16_t r = 0; r < rules_.size(); ++r) {
+                find_delta_matches(
+                    rules_[r], r, state, s.edges,
+                    hg_->signature_index(), hg_->inverted_index(), get_edge, on_match,
+                    ctx.produced_edges, ctx.num_produced
+                );
+            }
+
+            // VALIDATION: Compare forwarded+delta vs full matching
+            if (validate_match_forwarding_) {
+                size_t missing = 0;
+                auto count_missing = [&, state, canonical_state](
+                    uint16_t rule_index,
+                    const EdgeId* edges,
+                    uint8_t num_edges,
+                    const VariableBinding& binding,
+                    StateId /*source_state*/
+                ) {
+                    MatchRecord match;
+                    match.rule_index = rule_index;
+                    match.num_edges = num_edges;
+                    match.binding = binding;
+                    match.source_state = state;
+                    match.canonical_source = canonical_state;
+                    for (uint8_t i = 0; i < num_edges; ++i) {
+                        match.matched_edges[i] = edges[i];
+                    }
+                    uint64_t h = match.hash();
+                    // Check if this match was found via forwarding+delta
+                    if (!seen_match_hashes_.contains(h)) {
+                        ++missing;
+                        // Store in missing_match_hashes_ with state/rule info for debugging
+                        uint64_t debug_info = (static_cast<uint64_t>(state) << 16) | rule_index;
+                        missing_match_hashes_.insert_if_absent(h, debug_info);
+
+                        // Debug: check if this match involves produced edges
+                        uint8_t produced_count = 0;
+                        for (uint8_t i = 0; i < num_edges; ++i) {
+                            for (uint8_t j = 0; j < ctx.num_produced; ++j) {
+                                if (edges[i] == ctx.produced_edges[j]) {
+                                    ++produced_count;
+                                    break;
+                                }
+                            }
+                        }
+                        fprintf(stderr, "VALIDATION: MISSING match state=%u rule=%u hash=%lu produced=%u/%u\n",
+                                state, rule_index, h, produced_count, num_edges);
+                    }
+                };
+                for (uint16_t r = 0; r < rules_.size(); ++r) {
+                    find_matches(
+                        rules_[r], r, state, s.edges,
+                        hg_->signature_index(), hg_->inverted_index(), get_edge, count_missing
+                    );
+                }
+                if (missing > 0) {
+                    validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
+                }
+            }
+        } else {
+            // === FULL MATCHING MODE (initial state or forwarding disabled) ===
+            stats_.full_pattern_matches.fetch_add(1, std::memory_order_relaxed);
+
+            for (uint16_t r = 0; r < rules_.size(); ++r) {
+                find_matches(
+                    rules_[r], r, state, s.edges,
+                    hg_->signature_index(), hg_->inverted_index(), get_edge, on_match
+                );
+            }
+        }
+
+        // =======================================================================
+        // PHASE 2: Store all matches, then spawn all REWRITEs
+        // =======================================================================
+        // This ordering guarantees that when a child is created (by REWRITE),
+        // all parent matches are already stored and visible for pulling.
+
+        if (enable_match_forwarding_) {
+            // Only store DELTA matches (discovered in this state).
+            // Forwarded matches are already stored in ancestors - descendants can pull from there.
+            // This dramatically reduces memory usage.
+            for (size_t i = delta_start; i < batch.size(); ++i) {
+                store_match_for_state(state, batch[i]);
+            }
+            // Memory fence ensures all stores are visible before REWRITEs run
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+        }
+
+        // Now spawn REWRITEs - children will see all stored matches
+        for (const auto& match : batch) {
+            submit_rewrite_task(match, step);
         }
     }
 
     // =========================================================================
-    // Parallel Rewrite Application
+    // REWRITE Task Execution
     // =========================================================================
+    // Applies a match and spawns MATCH tasks for new states.
+    // Passes MatchContext to enable match forwarding.
 
-    void apply_match_parallel(const RewriteTask& task) {
-        const RewriteRule& rule = rules_[task.match.rule_index];
+    void execute_rewrite_task(const MatchRecord& match, uint32_t step) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        // Check step limit - don't spawn REWRITEs past max_steps
+        // Note: step for REWRITE is the step at which it was created, child MATCH uses step+1
+        if (max_steps_ > 0 && step > max_steps_) return;
+
+        // Check limits before applying
+        if (max_states_ > 0 && hg_->num_states() >= max_states_) {
+            should_stop_.store(true, std::memory_order_relaxed);
+            return;
+        }
+        if (max_events_ > 0 && hg_->num_events() >= max_events_) {
+            should_stop_.store(true, std::memory_order_relaxed);
+            return;
+        }
+
+        const RewriteRule& rule = rules_[match.rule_index];
 
         // Apply the rewrite
         RewriteResult rr = rewriter_.apply(
             rule,
-            task.match.source_state,
-            task.match.matched_edges,
-            task.match.num_edges,
-            task.match.binding,
-            task.step
+            match.source_state,
+            match.matched_edges,
+            match.num_edges,
+            match.binding,
+            step
         );
 
-        ParallelRewriteResult result;
-        result.match = task.match;
-
         if (rr.new_state != INVALID_ID) {
-            result.new_state = rr.new_state;
-            result.raw_state = rr.raw_state;
-            result.event = rr.event;
-            result.was_new_state = rr.was_new_state;
-            result.success = true;
-
-            // Copy produced edges for later match forwarding
-            result.num_produced = rr.num_produced;
-            std::memcpy(result.produced_edges, rr.produced_edges, rr.num_produced * sizeof(EdgeId));
-
-            // Track edges for forwarding
-            const State& parent_state = hg_->get_state(task.match.source_state);
-            for (uint8_t i = 0; i < task.match.num_edges; ++i) {
-                result.deleted_edges.set(task.match.matched_edges[i], hg_->arena());
-            }
-            for (uint8_t i = 0; i < rr.num_produced; ++i) {
-                result.created_edges.set(rr.produced_edges[i], hg_->arena());
-            }
-
             total_rewrites_.fetch_add(1, std::memory_order_relaxed);
+            total_events_.fetch_add(1, std::memory_order_relaxed);
+
             if (rr.was_new_state) {
                 total_new_states_.fetch_add(1, std::memory_order_relaxed);
             }
-            total_events_.fetch_add(1, std::memory_order_relaxed);
-        }
 
-        // Add to lock-free results list
-        step_results_.push(result, hg_->arena());
+            // Spawn MATCH task for the new raw state if it hasn't been matched yet
+            // In multiway rewriting, each raw state (even if isomorphic) needs to be
+            // matched to find all possible transitions
+            auto [existing, inserted] = matched_raw_states_.insert_if_absent(
+                rr.raw_state, true);
+
+            if (inserted) {
+                DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
+                          match.source_state, rr.raw_state, rr.new_state, match.rule_index, step, rr.was_new_state);
+
+                // Build MatchContext for match forwarding
+                MatchContext ctx;
+                ctx.parent_state = match.source_state;
+                ctx.num_consumed = match.num_edges;
+                for (uint8_t i = 0; i < match.num_edges; ++i) {
+                    ctx.consumed_edges[i] = match.matched_edges[i];
+                }
+                ctx.num_produced = rr.num_produced;
+                for (uint8_t i = 0; i < rr.num_produced; ++i) {
+                    ctx.produced_edges[i] = rr.produced_edges[i];
+                }
+
+                // Register child's parent pointer for ancestor chain walking.
+                // With batched matching, we don't need push-based forwarding:
+                // - Parent's MATCH task stores ALL matches before spawning REWRITEs
+                // - Child's MATCH task pulls from ancestors (all matches visible)
+                // - No race condition!
+                if (enable_match_forwarding_) {
+                    register_child_with_parent(
+                        match.source_state, rr.raw_state,
+                        match.matched_edges, match.num_edges);
+                    // Note: forward_existing is done in child's MATCH task, not here.
+                    // This avoids redundant work and keeps the logic centralized.
+                }
+
+                // Submit MATCH task with context for match forwarding
+                submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+            }
+        }
     }
 };
 

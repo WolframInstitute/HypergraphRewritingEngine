@@ -72,7 +72,8 @@ public:
         auto result = by_signature_.lookup(hash);
         if (!result.has_value()) return;
 
-        result.value()->for_each([&](EdgeId eid) {
+        LockFreeList<EdgeId>* list = result.value();
+        list->for_each([&](EdgeId eid) {
             if (state_edges.contains(eid)) {
                 visit(eid);
             }
@@ -166,7 +167,11 @@ public:
 
 class InvertedVertexIndex {
     // vertex_id → list of edges containing that vertex
-    SegmentedArray<LockFreeList<EdgeId>> vertex_to_edges_;
+    // Using ConcurrentMap for lock-free, wait-free access
+    // EMPTY_KEY = 0xFFFFFFFE, LOCKED_KEY = 0xFFFFFFFF (both are INVALID_ID-ish values)
+    static constexpr VertexId EMPTY_VERTEX = 0xFFFFFFFE;
+    static constexpr VertexId LOCKED_VERTEX = 0xFFFFFFFF;
+    ConcurrentMap<VertexId, LockFreeList<EdgeId>*, EMPTY_VERTEX, LOCKED_VERTEX> vertex_to_edges_;
 
 public:
     InvertedVertexIndex() = default;
@@ -186,11 +191,25 @@ public:
         for (uint8_t i = 0; i < arity; ++i) {
             VertexId v = vertices[i];
 
-            // Ensure vertex entry exists (thread-safe)
-            vertex_to_edges_.ensure_size(v + 1, arena);
+            // Get or create list for this vertex (lock-free)
+            auto result = vertex_to_edges_.lookup(v);
+            LockFreeList<EdgeId>* list = nullptr;
+
+            if (result.has_value()) {
+                list = result.value();
+            } else {
+                // Create new list
+                list = arena.create<LockFreeList<EdgeId>>();
+                auto [existing, inserted] = vertex_to_edges_.insert_if_absent(v, list);
+                if (!inserted) {
+                    // Another thread created it first, use theirs
+                    // (our list is wasted but that's fine - arena memory)
+                    list = existing;
+                }
+            }
 
             // Add edge to vertex's list
-            vertex_to_edges_[v].push(eid, arena);
+            list->push(eid, arena);
         }
     }
 
@@ -201,9 +220,10 @@ public:
         const SparseBitset& state_edges,
         Visitor&& visit
     ) const {
-        if (v >= vertex_to_edges_.size()) return;
+        auto result = vertex_to_edges_.lookup(v);
+        if (!result.has_value()) return;
 
-        vertex_to_edges_[v].for_each([&](EdgeId eid) {
+        result.value()->for_each([&](EdgeId eid) {
             if (state_edges.contains(eid)) {
                 visit(eid);
             }
@@ -245,10 +265,11 @@ public:
 
         for (uint8_t i = 0; i < count; ++i) {
             VertexId v = vertices[i];
-            if (v >= vertex_to_edges_.size()) return;  // No edges possible
+            auto result = vertex_to_edges_.lookup(v);
+            if (!result.has_value()) return;  // No edges possible
 
             uint32_t v_count = 0;
-            vertex_to_edges_[v].for_each([&](EdgeId) { v_count++; });
+            result.value()->for_each([&](EdgeId) { v_count++; });
 
             if (v_count < smallest_count) {
                 smallest_count = v_count;
@@ -264,8 +285,13 @@ public:
                 if (vertices[i] == smallest_v) continue;
 
                 // Check if this vertex's list contains eid
+                auto result = vertex_to_edges_.lookup(vertices[i]);
+                if (!result.has_value()) {
+                    contains_all = false;
+                    continue;
+                }
                 bool found = false;
-                vertex_to_edges_[vertices[i]].for_each([&](EdgeId other_eid) {
+                result.value()->for_each([&](EdgeId other_eid) {
                     if (other_eid == eid) found = true;
                 });
                 if (!found) contains_all = false;
@@ -279,19 +305,21 @@ public:
 
     // Get count of edges containing vertex
     uint32_t edge_count(VertexId v) const {
-        if (v >= vertex_to_edges_.size()) return 0;
+        auto result = vertex_to_edges_.lookup(v);
+        if (!result.has_value()) return 0;
 
         uint32_t count = 0;
-        vertex_to_edges_[v].for_each([&](EdgeId) { count++; });
+        result.value()->for_each([&](EdgeId) { count++; });
         return count;
     }
 
     // Get count of edges containing vertex that are in state
     uint32_t edge_count_in_state(VertexId v, const SparseBitset& state_edges) const {
-        if (v >= vertex_to_edges_.size()) return 0;
+        auto result = vertex_to_edges_.lookup(v);
+        if (!result.has_value()) return 0;
 
         uint32_t count = 0;
-        vertex_to_edges_[v].for_each([&](EdgeId eid) {
+        result.value()->for_each([&](EdgeId eid) {
             if (state_edges.contains(eid)) count++;
         });
         return count;

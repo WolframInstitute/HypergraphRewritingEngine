@@ -35,20 +35,36 @@ namespace hypergraph::unified {
 
 class CausalGraph {
     // Per-edge producer tracking (set once when edge created)
-    SegmentedArray<EdgeCausalInfo> edge_producers_;
+    // Use ConcurrentMap for thread-safe "get or create" semantics
+    // Key: EdgeId (as uint64_t), Value: pointer to EdgeCausalInfo
+    static constexpr uint64_t EDGE_PROD_MAP_EMPTY = 1ULL << 62;
+    static constexpr uint64_t EDGE_PROD_MAP_LOCKED = (1ULL << 62) + 1;
+    ConcurrentMap<uint64_t, EdgeCausalInfo*, EDGE_PROD_MAP_EMPTY, EDGE_PROD_MAP_LOCKED> edge_producers_;
 
     // Per-edge consumer lists (appended when edge consumed)
-    SegmentedArray<LockFreeList<EventId>> edge_consumers_;
+    // Use ConcurrentMap for thread-safe "get or create" semantics
+    static constexpr uint64_t EDGE_CONS_MAP_EMPTY = (1ULL << 62) + 2;
+    static constexpr uint64_t EDGE_CONS_MAP_LOCKED = (1ULL << 62) + 3;
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*, EDGE_CONS_MAP_EMPTY, EDGE_CONS_MAP_LOCKED> edge_consumers_;
 
     // Per-state event lists for branchial tracking
     // Maps StateId -> list of events that have this state as input
-    SegmentedArray<LockFreeList<EventId>> state_events_;
+    // Uses ConcurrentMap for thread-safe "get or create" semantics
+    // Key: StateId (as uint64_t), Value: pointer to LockFreeList
+    // Use special EMPTY_KEY and LOCKED_KEY outside valid StateId range (0 to 2^32-1)
+    static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
+    static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) + 1;
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*, STATE_MAP_EMPTY, STATE_MAP_LOCKED> state_events_;
 
     // Causal edges (producer -> consumer)
     LockFreeList<CausalEdge> causal_edges_;
 
     // Branchial edges (event <-> event with shared input)
     LockFreeList<BranchialEdge> branchial_edges_;
+
+    // Deduplication map for causal edges: (producer << 32 | consumer) -> true
+    // The rendezvous pattern can cause both producer and consumer to add the same edge
+    ConcurrentMap<uint64_t, bool> seen_causal_pairs_;
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
     ConcurrentMap<uint64_t, bool> seen_branchial_pairs_;
@@ -74,25 +90,64 @@ public:
     // Edge Causal Tracking
     // =========================================================================
 
-    // Ensure storage for edge ID exists (thread-safe)
-    void ensure_edge_capacity(EdgeId max_edge) {
-        edge_producers_.ensure_size(max_edge + 1, *arena_);
-        edge_consumers_.ensure_size(max_edge + 1, *arena_);
+    // Get or create producer info for an edge (thread-safe)
+    EdgeCausalInfo* get_or_create_edge_producer(EdgeId edge) {
+        uint64_t key = edge;
+
+        auto result = edge_producers_.lookup(key);
+        if (result.has_value()) {
+            return *result;
+        }
+
+        auto* new_info = arena_->template create<EdgeCausalInfo>();
+        auto [existing, inserted] = edge_producers_.insert_if_absent(key, new_info);
+        return inserted ? new_info : existing;
     }
 
-    // Ensure storage for state ID exists (thread-safe)
-    void ensure_state_capacity(StateId max_state) {
-        state_events_.ensure_size(max_state + 1, *arena_);
+    // Get or create consumer list for an edge (thread-safe)
+    LockFreeList<EventId>* get_or_create_edge_consumers(EdgeId edge) {
+        uint64_t key = edge;
+
+        auto result = edge_consumers_.lookup(key);
+        if (result.has_value()) {
+            return *result;
+        }
+
+        auto* new_list = arena_->template create<LockFreeList<EventId>>();
+        auto [existing, inserted] = edge_consumers_.insert_if_absent(key, new_list);
+        return inserted ? new_list : existing;
+    }
+
+    // Get or create the event list for a state (thread-safe)
+    // Uses ConcurrentMap for proper "create once" semantics
+    LockFreeList<EventId>* get_or_create_state_events(StateId state) {
+        uint64_t key = state;
+
+        // First, try to look up existing list
+        auto result = state_events_.lookup(key);
+        if (result.has_value()) {
+            return *result;
+        }
+
+        // Need to create - allocate new list from arena
+        auto* new_list = arena_->template create<LockFreeList<EventId>>();
+
+        // Try to insert - if another thread beat us, use theirs
+        auto [existing, inserted] = state_events_.insert_if_absent(key, new_list);
+
+        // Return whichever list is now in the map
+        return inserted ? new_list : existing;
     }
 
     // Called when an edge is produced by an event
     // Returns true if producer was set (first time), false if already set
     bool set_edge_producer(EdgeId edge, EventId producer) {
-        ensure_edge_capacity(edge);
+        EdgeCausalInfo* info = get_or_create_edge_producer(edge);
+        LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
 
         // Try to set producer atomically (only succeeds if INVALID_ID)
         EventId expected = INVALID_ID;
-        bool was_set = edge_producers_[edge].producer.compare_exchange_strong(
+        bool was_set = info->producer.compare_exchange_strong(
             expected, producer,
             std::memory_order_release,
             std::memory_order_acquire
@@ -101,7 +156,7 @@ public:
         if (was_set) {
             // We are the producer. Check for any consumers that arrived first.
             // (Rendezvous pattern: write then read)
-            edge_consumers_[edge].for_each([&](EventId consumer) {
+            consumers->for_each([&](EventId consumer) {
                 add_causal_edge(producer, consumer, edge);
             });
         }
@@ -111,13 +166,14 @@ public:
 
     // Called when an edge is consumed by an event
     void add_edge_consumer(EdgeId edge, EventId consumer) {
-        ensure_edge_capacity(edge);
+        EdgeCausalInfo* info = get_or_create_edge_producer(edge);
+        LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
 
         // Add self to consumers list (write)
-        edge_consumers_[edge].push(consumer, *arena_);
+        consumers->push(consumer, *arena_);
 
         // Check for producer (read)
-        EventId producer = edge_producers_[edge].producer.load(std::memory_order_acquire);
+        EventId producer = info->producer.load(std::memory_order_acquire);
         if (producer != INVALID_ID) {
             add_causal_edge(producer, consumer, edge);
         }
@@ -125,8 +181,9 @@ public:
 
     // Get producer of an edge (may be INVALID_ID for initial edges)
     EventId get_edge_producer(EdgeId edge) const {
-        if (edge >= edge_producers_.size()) return INVALID_ID;
-        return edge_producers_[edge].producer.load(std::memory_order_acquire);
+        auto result = edge_producers_.lookup(edge);
+        if (!result.has_value()) return INVALID_ID;
+        return (*result)->producer.load(std::memory_order_acquire);
     }
 
     // =========================================================================
@@ -141,17 +198,18 @@ public:
         const EdgeId* consumed_edges,
         uint8_t num_consumed
     ) {
-        ensure_state_capacity(input_state);
+        // Get or create the event list for this state (thread-safe)
+        LockFreeList<EventId>* list = get_or_create_state_events(input_state);
 
         // Check for branchial relationships with existing events from this state
-        state_events_[input_state].for_each([&](EventId other_event) {
+        list->for_each([&](EventId other_event) {
             // Check for edge overlap
             // Note: we need access to other event's consumed edges
             // This is deferred - the caller must provide the check function
         });
 
         // Add self to state's event list
-        state_events_[input_state].push(event, *arena_);
+        list->push(event, *arena_);
     }
 
     // More detailed branchial check with access to event data
@@ -167,14 +225,15 @@ public:
         uint8_t num_consumed,
         GetEventConsumedEdges&& get_consumed
     ) {
-        ensure_state_capacity(input_state);
+        // Get or create the event list for this state (thread-safe)
+        LockFreeList<EventId>* list = get_or_create_state_events(input_state);
 
         // Add self to state's event list FIRST (before checking)
-        state_events_[input_state].push(event, *arena_);
+        list->push(event, *arena_);
 
         // Check for branchial relationships with ALL events in the list
         // Both sides of a pair may try to add the edge - deduplication handles it
-        state_events_[input_state].for_each([&](EventId other_event) {
+        list->for_each([&](EventId other_event) {
             if (other_event == event) return;  // Skip self
 
             // Get other event's consumed edges
@@ -206,10 +265,26 @@ public:
     // Graph Access
     // =========================================================================
 
-    // Add a causal edge (producer -> consumer)
+    // Add a causal edge (producer -> consumer) with deduplication
+    // The rendezvous pattern can cause both set_edge_producer and add_edge_consumer
+    // to detect the same (producer, consumer, edge) triple, so we deduplicate here.
+    // Each edge creates its own causal relationship.
     void add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
-        causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
-        num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
+        // Hash (producer, consumer, edge) into 64 bits
+        // FNV-1a style hash for good distribution
+        uint64_t key = 14695981039346656037ULL;
+        key ^= producer;
+        key *= 1099511628211ULL;
+        key ^= consumer;
+        key *= 1099511628211ULL;
+        key ^= edge;
+        key *= 1099511628211ULL;
+
+        auto [_, inserted] = seen_causal_pairs_.insert_if_absent(key, true);
+        if (inserted) {
+            causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
+            num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     // Add a branchial edge (event <-> event)

@@ -435,4 +435,119 @@ void find_all_matches(
     }
 }
 
+// =============================================================================
+// Delta Matching - Only find NEW matches involving produced edges
+// =============================================================================
+// For match forwarding optimization: new matches must include at least one
+// produced edge. We start pattern matching from produced edges only, which
+// dramatically reduces the search space.
+//
+// For a k-edge pattern, we try each produced edge at each pattern position.
+// Deduplication handles overlaps when multiple produced edges are in one match.
+
+template<typename EdgeAccessor>
+void scan_pattern_from_edge(
+    PatternMatchingContext<EdgeAccessor>& ctx,
+    EdgeId starting_edge,
+    uint8_t pattern_position
+) {
+    if (ctx.rule->num_lhs_edges == 0) return;
+
+    const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_position];
+    const auto& edge = ctx.get_edge(starting_edge);
+
+    // Validate the starting edge matches the pattern at this position
+    VariableBinding binding;
+    if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding)) {
+        return;
+    }
+
+    // Check signature compatibility
+    EdgeSignature data_sig = EdgeSignature::from_edge(edge.vertices, edge.arity);
+    if (!signature_compatible(data_sig, ctx.pattern_sigs[pattern_position])) {
+        return;
+    }
+
+    // Create initial partial match at the specified position
+    PartialMatch partial;
+    partial.num_pattern_edges = ctx.rule->num_lhs_edges;
+    partial.add_match(pattern_position, starting_edge, binding);
+
+    // Single-edge pattern: complete match
+    if (ctx.rule->num_lhs_edges == 1) {
+        EdgeId edges_in_order[MAX_PATTERN_EDGES];
+        partial.to_pattern_order(edges_in_order);
+
+        // Deduplication
+        if (ctx.match_dedup) {
+            MatchIdentity identity(ctx.rule_index, edges_in_order, 1);
+            auto [existing, inserted] = ctx.match_dedup->insert_if_absent(
+                identity.hash(), static_cast<MatchId>(0));
+            if (!inserted) return;
+        }
+
+        if (ctx.on_match) {
+            ctx.on_match(ctx.rule_index, edges_in_order, 1, binding, ctx.state_id);
+        }
+
+        if (ctx.matches_found) {
+            size_t count = ctx.matches_found->fetch_add(1) + 1;
+            if (count >= ctx.max_matches && ctx.should_terminate) {
+                ctx.should_terminate->store(true);
+            }
+        }
+    } else {
+        // Multi-edge pattern: expand from this starting point
+        expand_match(ctx, std::move(partial));
+    }
+}
+
+// Find matches that include at least one of the produced edges
+// This is used for delta matching: only search for NEW patterns
+template<typename EdgeAccessor, typename MatchCallback>
+void find_delta_matches(
+    const RewriteRule& rule,
+    uint16_t rule_index,
+    StateId state_id,
+    const SparseBitset& state_edges,
+    const SignatureIndex& sig_index,
+    const InvertedVertexIndex& inv_index,
+    EdgeAccessor get_edge,
+    MatchCallback&& on_match,
+    const EdgeId* produced_edges,
+    uint8_t num_produced,
+    std::atomic<bool>* should_terminate = nullptr,
+    std::atomic<size_t>* matches_found = nullptr,
+    size_t max_matches = SIZE_MAX,
+    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
+) {
+    if (num_produced == 0) return;
+
+    PatternMatchingContext<EdgeAccessor> ctx(
+        &rule, rule_index, state_id, &state_edges,
+        &sig_index, &inv_index, get_edge,
+        std::forward<MatchCallback>(on_match)
+    );
+
+    ctx.should_terminate = should_terminate;
+    ctx.matches_found = matches_found;
+    ctx.max_matches = max_matches;
+    ctx.match_dedup = match_dedup;
+
+    // For each produced edge, try it at each pattern position
+    // This ensures we find all matches that include at least one produced edge
+    for (uint8_t p = 0; p < num_produced; ++p) {
+        EdgeId produced = produced_edges[p];
+
+        // Skip if edge not in state (shouldn't happen, but safety check)
+        if (!state_edges.contains(produced)) continue;
+
+        for (uint8_t pos = 0; pos < rule.num_lhs_edges; ++pos) {
+            if (should_terminate && should_terminate->load()) return;
+
+            scan_pattern_from_edge(ctx, produced, pos);
+        }
+    }
+}
+
 }  // namespace hypergraph::unified

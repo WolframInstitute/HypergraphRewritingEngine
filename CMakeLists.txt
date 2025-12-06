@@ -52,6 +52,34 @@ if(ENABLE_FUZZING_TESTS)
     add_compile_definitions(ENABLE_FUZZING_TESTS)
 endif()
 
+# Sanitizer options for detecting memory errors and race conditions
+option(ENABLE_ASAN "Enable AddressSanitizer for memory error detection" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer for race condition detection" OFF)
+option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+
+# Sanitizer configuration (only one can be enabled at a time for ASAN/TSAN)
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "Cannot enable both AddressSanitizer and ThreadSanitizer simultaneously")
+endif()
+
+if(ENABLE_ASAN)
+    message(STATUS "AddressSanitizer enabled")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(ENABLE_TSAN)
+    message(STATUS "ThreadSanitizer enabled")
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=thread)
+endif()
+
+if(ENABLE_UBSAN)
+    message(STATUS "UndefinedBehaviorSanitizer enabled")
+    add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=undefined)
+endif()
+
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
 add_subdirectory(hypergraph)

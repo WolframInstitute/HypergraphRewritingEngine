@@ -215,6 +215,34 @@ struct State {
         , canonical_hash(0)
         , parent_event(INVALID_ID)
     {}
+
+    // Move constructor
+    State(State&& other) noexcept
+        : id(other.id)
+        , edges(std::move(other.edges))
+        , step(other.step)
+        , canonical_hash(other.canonical_hash)
+        , parent_event(other.parent_event)
+    {
+        other.id = INVALID_ID;
+    }
+
+    // Move assignment
+    State& operator=(State&& other) noexcept {
+        if (this != &other) {
+            id = other.id;
+            edges = std::move(other.edges);
+            step = other.step;
+            canonical_hash = other.canonical_hash;
+            parent_event = other.parent_event;
+            other.id = INVALID_ID;
+        }
+        return *this;
+    }
+
+    // Delete copy to prevent accidental aliasing
+    State(const State&) = delete;
+    State& operator=(const State&) = delete;
 };
 
 // =============================================================================

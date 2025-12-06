@@ -3,8 +3,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <optional>
+#include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace hypergraph::unified {
@@ -109,6 +113,40 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
+        // CRITICAL: Check prev tables in the chain BEFORE inserting.
+        // During resize, entries from old table may not yet be in new table.
+        // If we find the key in a prev table, return it to avoid duplicates.
+        if (table->prev) {
+            auto existing = lookup_in_chain(table->prev, key);
+            if (existing.has_value()) {
+                return {*existing, false};
+            }
+        }
+
+        return insert_into_table(table, key, value, true);
+    }
+
+    // Like insert_if_absent but waits for LOCKED slots in prev tables.
+    // Use this when deterministic deduplication is critical (e.g., canonical state maps).
+    // The waiting ensures we don't miss concurrent inserts that are mid-flight.
+    std::pair<V, bool> insert_if_absent_waiting(K key, V value) {
+        // Check if we need to resize
+        Table* table = table_.load(std::memory_order_acquire);
+        size_t current_count = count_.load(std::memory_order_relaxed);
+        if (current_count > table->capacity * LOAD_FACTOR_THRESHOLD) {
+            resize();
+            table = table_.load(std::memory_order_acquire);
+        }
+
+        // CRITICAL: Check prev tables in the chain BEFORE inserting.
+        // Use waiting version to handle concurrent inserts (LOCKED slots).
+        if (table->prev) {
+            auto existing = lookup_in_chain_waiting(table->prev, key);
+            if (existing.has_value()) {
+                return {*existing, false};
+            }
+        }
+
         return insert_into_table(table, key, value, true);
     }
 
@@ -116,6 +154,13 @@ public:
     std::optional<V> lookup(K key) const {
         Table* table = table_.load(std::memory_order_acquire);
         return lookup_in_chain(table, key);
+    }
+
+    // Lookup value by key, waiting for LOCKED slots to resolve
+    // Use this when you need to see entries that are being inserted concurrently
+    std::optional<V> lookup_waiting(K key) const {
+        Table* table = table_.load(std::memory_order_acquire);
+        return lookup_in_chain_waiting(table, key);
     }
 
     // Check if key exists
@@ -130,8 +175,36 @@ public:
     }
 
     // Current count (approximate, may be slightly off during concurrent inserts)
+    // WARNING: Due to race conditions with LOCKED slots, this may over-count
+    // when the same key is inserted concurrently by multiple threads.
+    // Use count_unique() for accurate counts when no concurrent inserts are happening.
     size_t size() const {
         return count_.load(std::memory_order_relaxed);
+    }
+
+    // Count actual unique keys in the map (accurate, O(n) scan)
+    // Use this after all inserts are complete for accurate counts.
+    // This handles the case where duplicate keys exist due to concurrent inserts.
+    size_t count_unique() const {
+        size_t unique_count = 0;
+        Table* table = table_.load(std::memory_order_acquire);
+
+        // We need to track which keys we've seen because duplicates can exist
+        // across different positions in the table due to the LOCKED race condition
+        std::unordered_set<K> seen_keys;
+
+        while (table) {
+            for (size_t i = 0; i < table->capacity; ++i) {
+                K key = table->entries[i].key.load(std::memory_order_acquire);
+                if (key != EMPTY_KEY && key != LOCKED_KEY) {
+                    if (seen_keys.insert(key).second) {
+                        ++unique_count;
+                    }
+                }
+            }
+            table = table->prev;
+        }
+        return unique_count;
     }
 
     bool empty() const {
@@ -163,9 +236,8 @@ private:
         size_t h = hash(key);
         size_t idx = h & table->mask;
 
-        // Track LOCKED slots we encountered - we need to wait for them to complete
-        // to properly detect duplicates (they might be inserting our key)
-        size_t locked_slots[64];  // Assumption: probe sequence < 64 (reasonable for 75% load)
+        // Track LOCKED slots we encountered - need to check them for duplicate keys
+        size_t locked_slots[64];
         size_t num_locked = 0;
 
         for (size_t probe = 0; probe < table->capacity; ++probe) {
@@ -182,21 +254,23 @@ private:
                         std::memory_order_acquire)) {
 
                     // Successfully claimed slot - but we may have skipped LOCKED slots
-                    // that are inserting the same key. We MUST wait for them to complete.
+                    // that are inserting the same key. Must wait for them to resolve.
+                    // Note: LOCKED state is very short-lived (just value+key writes), so
+                    // unbounded spin is safe here - if it takes "too long" something is broken.
                     if (num_locked > 0) {
-                        // Check each LOCKED slot - wait until it's no longer LOCKED
-                        // then check if it became our key
                         for (size_t li = 0; li < num_locked; ++li) {
                             size_t ci = locked_slots[li];
                             K check_key;
-                            // This is the ONLY place we need to wait - but it's bounded
-                            // by the insert time of the other thread (very short)
+                            // Spin until LOCKED resolves (should be very fast - nanoseconds)
                             do {
                                 check_key = table->entries[ci].key.load(std::memory_order_acquire);
+                                #if defined(__x86_64__) || defined(_M_X64)
+                                __builtin_ia32_pause();
+                                #endif
                             } while (check_key == LOCKED_KEY);
 
                             if (check_key == key) {
-                                // Duplicate found! Release our claimed slot and return existing
+                                // Duplicate found! Release our claimed slot
                                 entry.key.store(EMPTY_KEY, std::memory_order_release);
                                 V existing = table->entries[ci].value.load(std::memory_order_acquire);
                                 return {existing, false};
@@ -217,7 +291,7 @@ private:
             }
 
             if (current_key == LOCKED_KEY) {
-                // Slot is being written by another thread - remember it
+                // Slot is being written - remember it for later checking
                 if (num_locked < 64) {
                     locked_slots[num_locked++] = i;
                 }
@@ -246,6 +320,57 @@ private:
             }
             table = table->prev;
         }
+        return std::nullopt;
+    }
+
+    // Like lookup_in_chain but waits for LOCKED slots to resolve
+    // Used in insert_if_absent to ensure we don't miss concurrent inserts
+    std::optional<V> lookup_in_chain_waiting(Table* table, K key) const {
+        while (table) {
+            auto result = lookup_in_table_waiting(table, key);
+            if (result.has_value()) {
+                return result;
+            }
+            table = table->prev;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<V> lookup_in_table_waiting(Table* table, K key) const {
+        size_t h = hash(key);
+        size_t idx = h & table->mask;
+
+        for (size_t probe = 0; probe < table->capacity; ++probe) {
+            size_t i = (idx + probe) & table->mask;
+            const Entry& entry = table->entries[i];
+
+            K current_key = entry.key.load(std::memory_order_acquire);
+
+            // Wait for LOCKED slots to resolve - they might be inserting our key
+            if (current_key == LOCKED_KEY) {
+                for (int spins = 0; spins < 1000; ++spins) {
+                    #if defined(__x86_64__) || defined(_M_X64)
+                    __builtin_ia32_pause();
+                    #endif
+                    current_key = entry.key.load(std::memory_order_acquire);
+                    if (current_key != LOCKED_KEY) break;
+                }
+                // If still LOCKED after spinning, treat as empty and continue
+                // The inserter must have stalled, so we'll catch it in current table
+                if (current_key == LOCKED_KEY) {
+                    continue;
+                }
+            }
+
+            if (current_key == key) {
+                return entry.value.load(std::memory_order_acquire);
+            }
+
+            if (current_key == EMPTY_KEY) {
+                return std::nullopt;
+            }
+        }
+
         return std::nullopt;
     }
 

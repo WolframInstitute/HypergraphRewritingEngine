@@ -3,9 +3,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <type_traits>
-#include <thread>
 
 namespace hypergraph::unified {
 
@@ -32,8 +33,7 @@ public:
 
     explicit SegmentedArray(size_t segment_size = DEFAULT_SEGMENT_SIZE)
         : segment_size_(segment_size)
-        , count_(0)
-        , initialized_count_(0) {
+        , count_(0) {
         // Initialize segment pointers to null
         for (size_t i = 0; i < MAX_SEGMENTS; ++i) {
             segments_[i].store(nullptr, std::memory_order_relaxed);
@@ -52,45 +52,62 @@ public:
     SegmentedArray& operator=(SegmentedArray&&) = delete;
 
     // Append a new element, return its index
-    // Thread-safe: ensures segment and element are initialized before count is incremented
+    // Thread-safe, lock-free
+    //
+    // IMPORTANT: If iterating by size(), callers must handle the case where
+    // the segment might not yet be visible. Use get() which returns nullptr
+    // for not-yet-ready slots, or only access indices returned by emplace().
     template<typename Arena, typename... Args>
     uint32_t emplace(Arena& arena, Args&&... args) {
-        // First, claim an index
-        uint32_t idx = count_.fetch_add(1, std::memory_order_acq_rel);
+        // Claim an index
+        uint32_t idx = count_.fetch_add(1, std::memory_order_relaxed);
 
         size_t seg_idx = idx / segment_size_;
         size_t offset = idx % segment_size_;
 
-        // Ensure segment exists - this must complete before we increment initialized_count_
+        // Ensure THIS segment exists (lock-free, may race with other threads)
+        // get_or_create_segment uses CAS with release semantics
         T* segment = get_or_create_segment(seg_idx, arena);
 
-        // Construct the element
+        // Pre-create next segment when nearing end of current
+        // This reduces (but doesn't eliminate) the window for the next segment
+        if (offset >= segment_size_ - 1) {
+            get_or_create_segment(seg_idx + 1, arena);
+        }
+
+        // Construct the element in place
         new (&segment[offset]) T(std::forward<Args>(args)...);
 
-        // Signal that this index is now fully initialized
-        // (increment initialized count up to this index)
-        uint32_t expected_init = idx;
-        while (!initialized_count_.compare_exchange_weak(
-                expected_init, idx + 1,
-                std::memory_order_release,
-                std::memory_order_acquire)) {
-            if (expected_init > idx) {
-                // Someone else already advanced past us
-                break;
-            }
-            expected_init = idx;
-            // Spin - another thread needs to finish first
-            std::this_thread::yield();
-        }
+        // CRITICAL: Store segment pointer with release to synchronize with
+        // the acquire load in operator[]. This ensures the constructed element
+        // is visible to other threads.
+        segments_[seg_idx].store(segment, std::memory_order_release);
 
         return idx;
     }
 
     // Access element by index - O(1)
+    // With emplace_at usage, segment should already exist. Brief spin as safety net.
     T& operator[](uint32_t idx) {
         size_t seg_idx = idx / segment_size_;
         size_t offset = idx % segment_size_;
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
+
+        // Brief spin if segment not yet visible (rare - segment creation is fast)
+        if (!segment) {
+            for (int spins = 0; spins < 1000 && !segment; ++spins) {
+                #if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+                #endif
+                segment = segments_[seg_idx].load(std::memory_order_acquire);
+            }
+            if (!segment) {
+                fprintf(stderr, "FATAL: SegmentedArray::operator[] segment null: seg_idx=%zu, idx=%u, count=%u\n",
+                        seg_idx, idx, count_.load());
+                abort();
+            }
+        }
+
         return segment[offset];
     }
 
@@ -98,6 +115,21 @@ public:
         size_t seg_idx = idx / segment_size_;
         size_t offset = idx % segment_size_;
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
+
+        if (!segment) {
+            for (int spins = 0; spins < 1000 && !segment; ++spins) {
+                #if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+                #endif
+                segment = segments_[seg_idx].load(std::memory_order_acquire);
+            }
+            if (!segment) {
+                fprintf(stderr, "FATAL: SegmentedArray::operator[] const segment null: seg_idx=%zu, idx=%u, count=%u\n",
+                        seg_idx, idx, count_.load());
+                abort();
+            }
+        }
+
         return segment[offset];
     }
 
@@ -122,13 +154,8 @@ public:
         return segment ? &segment[offset] : nullptr;
     }
 
-    // Current number of elements (returns only fully initialized elements)
+    // Current number of elements
     uint32_t size() const {
-        return initialized_count_.load(std::memory_order_acquire);
-    }
-
-    // Number of claimed slots (may include uninitialized)
-    uint32_t claimed_size() const {
         return count_.load(std::memory_order_acquire);
     }
 
@@ -136,17 +163,12 @@ public:
         return size() == 0;
     }
 
-    // Ensure array has at least 'required' elements, thread-safe
-    // Waits for all elements to be fully initialized
+    // Ensure array has at least 'required' elements, thread-safe, wait-free
+    // Each thread only emplaces what it needs - no waiting for other threads
     template<typename Arena>
     void ensure_size(uint32_t required, Arena& arena) {
-        // First, claim enough slots
-        while (claimed_size() < required) {
-            emplace(arena);
-        }
-        // Wait for all required slots to be initialized
         while (size() < required) {
-            std::this_thread::yield();
+            emplace(arena);
         }
     }
 
@@ -184,6 +206,79 @@ public:
         }
     }
 
+    // Ensure element at index is accessible without constructing it
+    // Used when elements are externally indexed (e.g., vertex IDs) and default
+    // construction is sufficient. The segment allocation already default-constructs
+    // all elements, so this just ensures the segment exists.
+    //
+    // Thread-safe: Multiple threads can call this concurrently for the same or
+    // different indices. Only one will create the segment, others will use it.
+    template<typename Arena>
+    T& get_or_default(uint32_t idx, Arena& arena) {
+        size_t seg_idx = idx / segment_size_;
+        size_t offset = idx % segment_size_;
+
+        // Ensure segment exists (thread-safe via CAS in get_or_create_segment)
+        // When segment is created, all elements are default-constructed by arena
+        T* segment = get_or_create_segment(seg_idx, arena);
+
+        // Update count_ to at least idx+1 for iteration purposes
+        // This is safe because we only increase, never decrease
+        uint32_t expected = count_.load(std::memory_order_relaxed);
+        while (expected <= idx) {
+            if (count_.compare_exchange_weak(expected, idx + 1,
+                    std::memory_order_release,
+                    std::memory_order_relaxed)) {
+                break;
+            }
+        }
+
+        return segment[offset];
+    }
+
+    // Construct element directly at a specific index
+    // Used when the index is managed by an external counter (e.g., edge IDs)
+    // This avoids the race condition in ensure_size/emplace where another thread
+    // might be constructing the same slot
+    template<typename Arena, typename... Args>
+    void emplace_at(uint32_t idx, Arena& arena, Args&&... args) {
+        size_t seg_idx = idx / segment_size_;
+        size_t offset = idx % segment_size_;
+
+        // Ensure segment exists (thread-safe)
+        T* segment = get_or_create_segment(seg_idx, arena);
+
+        // Pre-create next segment when nearing end of current
+        if (offset >= segment_size_ - 1) {
+            get_or_create_segment(seg_idx + 1, arena);
+        }
+
+        // Construct the element directly with provided arguments
+        // No need to touch count_ - the caller manages the index externally
+        new (&segment[offset]) T(std::forward<Args>(args)...);
+
+        // CRITICAL: Ensure the constructed element is visible to other threads.
+        // We use an atomic store to the segment pointer (already there) as sync point.
+        // The release ordering ensures all prior writes (including T construction)
+        // are visible to threads that see the updated segment pointer.
+        //
+        // Note: segments_[seg_idx] was already stored with release in get_or_create_segment.
+        // But that happened BEFORE construction. We need a release AFTER construction.
+        // Use a dummy release store to segments_ to create the synchronization point.
+        segments_[seg_idx].store(segment, std::memory_order_release);
+
+        // Update count_ to at least idx+1 for iteration purposes
+        // This is safe because we only increase, never decrease
+        uint32_t expected = count_.load(std::memory_order_relaxed);
+        while (expected <= idx) {
+            if (count_.compare_exchange_weak(expected, idx + 1,
+                    std::memory_order_release,
+                    std::memory_order_relaxed)) {
+                break;
+            }
+        }
+    }
+
 private:
     template<typename Arena>
     T* get_or_create_segment(size_t seg_idx, Arena& arena) {
@@ -210,8 +305,7 @@ private:
     }
 
     size_t segment_size_;
-    std::atomic<uint32_t> count_;             // Number of claimed slots
-    std::atomic<uint32_t> initialized_count_; // Number of fully initialized slots
+    std::atomic<uint32_t> count_;
     std::atomic<T*> segments_[MAX_SEGMENTS];
 };
 

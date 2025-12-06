@@ -15,7 +15,5 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_options(lockfree_deque INTERFACE -g -O0 -fsanitize=thread)
-    target_link_options(lockfree_deque INTERFACE -fsanitize=thread)
-endif()
+# Sanitizers are now controlled at the top level via ENABLE_TSAN/ENABLE_ASAN options
+# See main CMakeLists.txt for configuration

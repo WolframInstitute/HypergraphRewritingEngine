@@ -49,7 +49,7 @@ public:
         return *this;
     }
 
-    // Push value to front of list (lock-free)
+    // Push value to front of list (lock-free, wait-free)
     template<typename Arena>
     void push(const T& value, Arena& arena) {
         Node* new_node = arena.template create<Node>(value, nullptr);
@@ -64,26 +64,42 @@ public:
     }
 
     // Iterate over all elements (newest to oldest)
-    // Safe to call concurrently with push - sees snapshot at call time
+    // Keeps checking for new nodes until list is stable - no snapshot batching
     template<typename F>
     void for_each(F&& f) const {
-        Node* node = head_.load(std::memory_order_acquire);
-        while (node) {
-            f(node->value);
-            node = node->prev;
+        Node* seen_up_to = nullptr;
+        while (true) {
+            Node* current_head = head_.load(std::memory_order_acquire);
+            if (current_head == seen_up_to) break;  // No new nodes since last pass
+
+            // Walk from current_head down to seen_up_to (exclusive)
+            Node* node = current_head;
+            while (node != seen_up_to) {
+                f(node->value);
+                node = node->prev;
+            }
+            seen_up_to = current_head;
         }
     }
 
     // Iterate with early termination
     // Return false from f to stop iteration
+    // Keeps checking for new nodes until list is stable or terminated
     template<typename F>
     bool for_each_while(F&& f) const {
-        Node* node = head_.load(std::memory_order_acquire);
-        while (node) {
-            if (!f(node->value)) {
-                return false;
+        Node* seen_up_to = nullptr;
+        while (true) {
+            Node* current_head = head_.load(std::memory_order_acquire);
+            if (current_head == seen_up_to) break;
+
+            Node* node = current_head;
+            while (node != seen_up_to) {
+                if (!f(node->value)) {
+                    return false;
+                }
+                node = node->prev;
             }
-            node = node->prev;
+            seen_up_to = current_head;
         }
         return true;
     }

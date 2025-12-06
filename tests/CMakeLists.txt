@@ -126,6 +126,15 @@ add_executable(unified_tests
     test_uniqueness_tree.cpp
     test_uniqueness_tree_fuzzing.cpp
     test_brute_force_isomorphism.cpp
+    # unified architecture tests
+    ../hypergraph/tests/test_unified_pattern_matching.cpp
+    ../hypergraph/tests/test_unified_causal_branchial.cpp
+    ../hypergraph/tests/test_unified_v1_comparison.cpp
+    ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_unified_v1_count_comparison.cpp
+    ../hypergraph/tests/test_unified_parallel_evolution.cpp
+    ../hypergraph/tests/test_v1_unified_exact_comparison.cpp
+    ../hypergraph/tests/test_match_forwarding_debug.cpp
 )
 
 # Link against all required libraries
@@ -159,6 +168,11 @@ endif()
 target_include_directories(unified_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+# Pass DEBUG_OUTPUT definition to test executable (headers have ifdefs)
+if(DEBUG_OUTPUT)
+    target_compile_definitions(unified_tests PRIVATE ENABLE_DEBUG_OUTPUT)
+endif()
 
 
 # Enable GoogleTest discovery

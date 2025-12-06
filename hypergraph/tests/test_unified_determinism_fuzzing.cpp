@@ -30,6 +30,10 @@ protected:
         uint32_t final_vertex_id;
         uint32_t final_edge_id;
         uint32_t final_event_id;
+        // Match forwarding stats
+        size_t matches_forwarded;
+        size_t matches_invalidated;
+        size_t new_matches_discovered;
 
         bool operator==(const TestResult& other) const {
             return num_states == other.num_states &&
@@ -70,13 +74,19 @@ protected:
         size_t num_threads = 0  // 0 = use hardware_concurrency
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
+
+        // Test with multiple threads and recursive push fix
         v2::ParallelEvolutionEngine engine(hg.get(), num_threads);
+        engine.set_match_forwarding(true);
+        engine.set_validate_match_forwarding(true);
 
         for (const auto& rule : rules) {
             engine.add_rule(rule);
         }
 
         engine.evolve(initial, steps);
+
+        const auto& stats = engine.stats();
 
         // Use canonical states (not raw states) for determinism checking
         // Raw state count includes "wasted" states from parallel race conditions
@@ -87,7 +97,10 @@ protected:
             engine.num_branchial_edges(),
             hg->num_vertices(),
             hg->num_edges(),
-            static_cast<uint32_t>(engine.num_events())
+            static_cast<uint32_t>(engine.num_events()),
+            stats.matches_forwarded.load(),
+            stats.matches_invalidated.load(),
+            stats.new_matches_discovered.load()
         };
     }
 
@@ -138,6 +151,9 @@ protected:
                       << ", FinalVertexID=" << r.final_vertex_id
                       << ", FinalEdgeID=" << r.final_edge_id
                       << ", FinalEventID=" << r.final_event_id << "\n";
+            std::cout << "  Match Forwarding: Forwarded=" << r.matches_forwarded
+                      << ", Invalidated=" << r.matches_invalidated
+                      << ", NewDiscovered=" << r.new_matches_discovered << "\n";
         }
 
         // Assertions - check counts are deterministic
@@ -491,9 +507,15 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
     }
 
     std::cout << "Match forwarding stats over 20 runs:\n";
-    std::cout << "  Forwarded: " << unique_forwarded.size() << " unique values\n";
-    std::cout << "  Invalidated: " << unique_invalidated.size() << " unique values\n";
-    std::cout << "  New discovered: " << unique_new_discovered.size() << " unique values\n";
+    std::cout << "  Forwarded: " << unique_forwarded.size() << " unique values";
+    if (!unique_forwarded.empty()) std::cout << " (" << *unique_forwarded.begin() << ")";
+    std::cout << "\n";
+    std::cout << "  Invalidated: " << unique_invalidated.size() << " unique values";
+    if (!unique_invalidated.empty()) std::cout << " (" << *unique_invalidated.begin() << ")";
+    std::cout << "\n";
+    std::cout << "  New discovered: " << unique_new_discovered.size() << " unique values";
+    if (!unique_new_discovered.empty()) std::cout << " (" << *unique_new_discovered.begin() << ")";
+    std::cout << "\n";
 
     EXPECT_EQ(unique_forwarded.size(), 1u) << "Match forwarding non-deterministic";
     EXPECT_EQ(unique_invalidated.size(), 1u) << "Match invalidation non-deterministic";

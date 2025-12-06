@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <type_traits>
 
@@ -451,7 +452,14 @@ public:
     template<typename T, typename... Args>
     T* create(Args&&... args) {
         void* mem = allocate_raw(sizeof(T), alignof(T));
+
+        // Memory barrier: ensure prior reads see prior writes before we construct
+        std::atomic_thread_fence(std::memory_order_acquire);
+
         T* obj = new (mem) T(std::forward<Args>(args)...);
+
+        // Memory barrier: ensure construction is visible before returning
+        std::atomic_thread_fence(std::memory_order_release);
 
         if constexpr (!std::is_trivially_destructible_v<T>) {
             register_destructor(obj, [](void* p) {
@@ -472,11 +480,13 @@ public:
             size_t new_offset = aligned_offset + size;
 
             if (new_offset <= block->capacity) {
+                // Try to claim this region
                 if (block->offset.compare_exchange_weak(
                         offset, new_offset,
-                        std::memory_order_release,
-                        std::memory_order_relaxed)) {
-                    return block->data + aligned_offset;
+                        std::memory_order_acq_rel,  // Use acq_rel for stronger ordering
+                        std::memory_order_acquire)) {
+                    void* result = block->data + aligned_offset;
+                    return result;
                 }
                 continue;
             }
@@ -574,6 +584,215 @@ private:
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;
+};
+
+// =============================================================================
+// ArenaVector<T>: Vector that allocates from ConcurrentHeterogeneousArena
+// =============================================================================
+//
+// Behaves like std::vector but uses arena allocation:
+// - No individual free() calls - arena is bulk-freed at end of evolution
+// - Growth allocates new array from arena, abandons old (becomes arena garbage)
+// - Much faster than heap allocation for temporary vectors
+//
+// Thread safety: NOT thread-safe. Use one ArenaVector per thread.
+// The underlying arena IS thread-safe, but the vector itself is not.
+//
+// Usage:
+//   ArenaVector<int> vec(arena);
+//   vec.reserve(100);  // Pre-allocate from arena
+//   vec.push_back(42);
+//   vec.clear();       // Logical clear, keeps capacity
+//
+
+template<typename T>
+class ArenaVector {
+public:
+    using value_type = T;
+    using size_type = size_t;
+    using reference = T&;
+    using const_reference = const T&;
+    using pointer = T*;
+    using const_pointer = const T*;
+    using iterator = T*;
+    using const_iterator = const T*;
+
+    explicit ArenaVector(ConcurrentHeterogeneousArena& arena)
+        : arena_(&arena)
+        , data_(nullptr)
+        , size_(0)
+        , capacity_(0)
+    {}
+
+    ArenaVector(ConcurrentHeterogeneousArena& arena, size_t initial_capacity)
+        : arena_(&arena)
+        , data_(nullptr)
+        , size_(0)
+        , capacity_(0)
+    {
+        reserve(initial_capacity);
+    }
+
+    // No destructor needed - arena handles cleanup
+
+    // Non-copyable (would need arena allocation for copy)
+    ArenaVector(const ArenaVector&) = delete;
+    ArenaVector& operator=(const ArenaVector&) = delete;
+
+    // Move is okay (just pointer transfer)
+    ArenaVector(ArenaVector&& other) noexcept
+        : arena_(other.arena_)
+        , data_(other.data_)
+        , size_(other.size_)
+        , capacity_(other.capacity_)
+    {
+        other.data_ = nullptr;
+        other.size_ = 0;
+        other.capacity_ = 0;
+    }
+
+    ArenaVector& operator=(ArenaVector&& other) noexcept {
+        if (this != &other) {
+            // Abandon our data (arena garbage)
+            arena_ = other.arena_;
+            data_ = other.data_;
+            size_ = other.size_;
+            capacity_ = other.capacity_;
+            other.data_ = nullptr;
+            other.size_ = 0;
+            other.capacity_ = 0;
+        }
+        return *this;
+    }
+
+    void reserve(size_t new_capacity) {
+        if (new_capacity <= capacity_) return;
+
+        T* new_data = static_cast<T*>(
+            arena_->allocate_raw(sizeof(T) * new_capacity, alignof(T))
+        );
+
+        // Copy existing elements
+        if (size_ > 0) {
+            if constexpr (std::is_trivially_copyable_v<T>) {
+                std::memcpy(new_data, data_, sizeof(T) * size_);
+            } else {
+                for (size_t i = 0; i < size_; ++i) {
+                    new (&new_data[i]) T(std::move(data_[i]));
+                    data_[i].~T();
+                }
+            }
+        }
+
+        // Abandon old data (arena garbage)
+        data_ = new_data;
+        capacity_ = new_capacity;
+    }
+
+    void push_back(const T& value) {
+        if (size_ >= capacity_) {
+            grow();
+        }
+        new (&data_[size_]) T(value);
+        ++size_;
+    }
+
+    void push_back(T&& value) {
+        if (size_ >= capacity_) {
+            grow();
+        }
+        new (&data_[size_]) T(std::move(value));
+        ++size_;
+    }
+
+    template<typename... Args>
+    T& emplace_back(Args&&... args) {
+        if (size_ >= capacity_) {
+            grow();
+        }
+        T* obj = new (&data_[size_]) T(std::forward<Args>(args)...);
+        ++size_;
+        return *obj;
+    }
+
+    void clear() {
+        // Call destructors for non-trivial types
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            for (size_t i = 0; i < size_; ++i) {
+                data_[i].~T();
+            }
+        }
+        size_ = 0;
+        // Keep capacity for reuse
+    }
+
+    void resize(size_t new_size) {
+        if (new_size > capacity_) {
+            reserve(new_size);
+        }
+        // Default construct new elements
+        for (size_t i = size_; i < new_size; ++i) {
+            new (&data_[i]) T();
+        }
+        // Destroy excess elements
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            for (size_t i = new_size; i < size_; ++i) {
+                data_[i].~T();
+            }
+        }
+        size_ = new_size;
+    }
+
+    void resize(size_t new_size, const T& value) {
+        if (new_size > capacity_) {
+            reserve(new_size);
+        }
+        // Copy construct new elements
+        for (size_t i = size_; i < new_size; ++i) {
+            new (&data_[i]) T(value);
+        }
+        // Destroy excess elements
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            for (size_t i = new_size; i < size_; ++i) {
+                data_[i].~T();
+            }
+        }
+        size_ = new_size;
+    }
+
+    // Access
+    T& operator[](size_t i) { return data_[i]; }
+    const T& operator[](size_t i) const { return data_[i]; }
+
+    T& back() { return data_[size_ - 1]; }
+    const T& back() const { return data_[size_ - 1]; }
+
+    T* data() { return data_; }
+    const T* data() const { return data_; }
+
+    // Iterators
+    iterator begin() { return data_; }
+    iterator end() { return data_ + size_; }
+    const_iterator begin() const { return data_; }
+    const_iterator end() const { return data_ + size_; }
+    const_iterator cbegin() const { return data_; }
+    const_iterator cend() const { return data_ + size_; }
+
+    // Size
+    size_t size() const { return size_; }
+    size_t capacity() const { return capacity_; }
+    bool empty() const { return size_ == 0; }
+
+private:
+    void grow() {
+        size_t new_capacity = capacity_ == 0 ? 8 : capacity_ * 2;
+        reserve(new_capacity);
+    }
+
+    ConcurrentHeterogeneousArena* arena_;
+    T* data_;
+    size_t size_;
+    size_t capacity_;
 };
 
 }  // namespace hypergraph::unified

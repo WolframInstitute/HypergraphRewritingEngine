@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
 
@@ -97,6 +99,46 @@ public:
         , count_cached_(0)
         , count_valid_(true)
     {}
+
+    // Move constructor - takes ownership of the other's data
+    SparseBitset(SparseBitset&& other) noexcept
+        : entries_(other.entries_)
+        , num_entries_(other.num_entries_)
+        , capacity_(other.capacity_)
+        , count_cached_(other.count_cached_)
+        , count_valid_(other.count_valid_)
+    {
+        // Clear the source to prevent aliasing
+        other.entries_ = nullptr;
+        other.num_entries_ = 0;
+        other.capacity_ = 0;
+        other.count_cached_ = 0;
+        other.count_valid_ = true;
+    }
+
+    // Move assignment - takes ownership of the other's data
+    SparseBitset& operator=(SparseBitset&& other) noexcept {
+        if (this != &other) {
+            // Take over other's data
+            entries_ = other.entries_;
+            num_entries_ = other.num_entries_;
+            capacity_ = other.capacity_;
+            count_cached_ = other.count_cached_;
+            count_valid_ = other.count_valid_;
+
+            // Clear the source to prevent aliasing
+            other.entries_ = nullptr;
+            other.num_entries_ = 0;
+            other.capacity_ = 0;
+            other.count_cached_ = 0;
+            other.count_valid_ = true;
+        }
+        return *this;
+    }
+
+    // Delete copy constructor and assignment to prevent accidental aliasing
+    SparseBitset(const SparseBitset&) = delete;
+    SparseBitset& operator=(const SparseBitset&) = delete;
 
     // Check if edge is present - O(log num_chunks)
     bool contains(uint32_t edge_id) const {

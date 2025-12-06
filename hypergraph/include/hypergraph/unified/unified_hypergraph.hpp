@@ -4,6 +4,7 @@
 #include <cstring>
 #include <atomic>
 #include <vector>
+#include <memory>
 
 #include "types.hpp"
 #include "signature.hpp"
@@ -14,6 +15,7 @@
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "uniqueness_tree.hpp"
+#include "shared_uniqueness_tree.hpp"
 #include "concurrent_map.hpp"
 #include "edge_equivalence.hpp"
 
@@ -77,14 +79,26 @@ class UnifiedHypergraph {
     // Used to find existing equivalent states before creating new ones
     ConcurrentMap<uint64_t, StateId> canonical_state_map_;
 
+    // TEMP: Mutex to test if concurrent insert is causing non-determinism
+    mutable std::mutex canonical_mutex_;
+
     // Level 2 canonicalization enabled flag
     bool level2_enabled_{false};
 
     // Cached StateCanonicalInfo for each state (for correspondence computation)
     SegmentedArray<StateCanonicalInfo> state_canonical_info_;
 
+    // Shared uniqueness tree for efficient state hashing
+    std::unique_ptr<SharedUniquenessTree> shared_tree_;
+
+    // Flag to use shared tree vs exact canonicalization
+    // Enabled by default: WL hashing is O(V²×E) vs O(g!) factorial for exact canonicalization
+    bool use_shared_tree_{true};
+
 public:
-    UnifiedHypergraph() {
+    UnifiedHypergraph()
+        : shared_tree_(std::make_unique<SharedUniquenessTree>(&arena_))
+    {
         causal_graph_.set_arena(&arena_);
         edge_equiv_manager_.set_arena(&arena_);
 
@@ -148,20 +162,23 @@ public:
         VertexId* verts = arena_.allocate_array<VertexId>(arity);
         std::memcpy(verts, vertices, arity * sizeof(VertexId));
 
-        // Ensure edge array is large enough (thread-safe)
-        edges_.ensure_size(eid + 1, arena_);
+        // Directly construct edge at slot eid using emplace_at
+        // This avoids the race condition in ensure_size where another thread's
+        // emplace might be in the middle of constructing our slot
+        edges_.emplace_at(eid, arena_, eid, verts, arity, creator_event, step);
 
-        // Initialize edge (can't use assignment due to atomic member)
-        Edge& edge = edges_[eid];
-        edge.id = eid;
-        edge.vertices = verts;
-        edge.arity = arity;
-        edge.creator_event = creator_event;
-        edge.step = step;
-        edge.equiv_class.store(eid, std::memory_order_relaxed);
+        // CRITICAL: Release fence to ensure vertex data (from memcpy above) and
+        // edge struct are visible to other threads before the edge ID escapes.
+        // Without this, other threads reading edges_[eid] might see stale vertex data.
+        std::atomic_thread_fence(std::memory_order_release);
 
         // Update indices
         match_index_.add_edge(eid, vertices, arity, arena_);
+
+        // Register with shared uniqueness tree
+        if (shared_tree_) {
+            shared_tree_->register_edge(eid, vertices, arity);
+        }
 
         return eid;
     }
@@ -305,13 +322,21 @@ public:
     ) {
         StateId sid = counters_.alloc_state();
 
-        // Ensure state arrays are large enough (thread-safe)
-        states_.ensure_size(sid + 1, arena_);
+        // Ensure auxiliary arrays are large enough (thread-safe)
+        // These are LockFreeLists which only need default construction
         state_children_.ensure_size(sid + 1, arena_);
         state_matches_.ensure_size(sid + 1, arena_);
 
-        // Initialize state
-        states_[sid] = State(sid, std::move(edge_set), step, canonical_hash, parent_event);
+        // Directly construct state at slot sid using emplace_at
+        // This avoids the race condition in ensure_size where another thread's
+        // emplace might be in the middle of constructing our slot while we're
+        // trying to move-assign over it
+        states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
+
+        // CRITICAL: Release fence to ensure state data (including SparseBitset's
+        // internal pointers and the chunk data they point to) is visible to other
+        // threads before the state ID escapes.
+        std::atomic_thread_fence(std::memory_order_release);
 
         return sid;
     }
@@ -354,6 +379,9 @@ public:
 
     // Get state's edge set
     const SparseBitset& get_state_edges(StateId sid) const {
+        // CRITICAL: Acquire fence to ensure we see all state data written by
+        // the thread that created this state. Pairs with release fence in create_state.
+        std::atomic_thread_fence(std::memory_order_acquire);
         return states_[sid].edges;
     }
 
@@ -391,8 +419,13 @@ public:
         StateId new_sid = create_state(std::move(edge_set), step, canonical_hash, parent_event);
 
         // Try to insert into canonical map
-        auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent(
-            canonical_hash, new_sid);
+        // TEMP: Use mutex to test if concurrent insert is causing non-determinism
+        std::pair<StateId, bool> result;
+        {
+            std::lock_guard<std::mutex> lock(canonical_mutex_);
+            result = canonical_state_map_.insert_if_absent(canonical_hash, new_sid);
+        }
+        auto [existing_or_new, was_inserted] = result;
 
         if (!was_inserted) {
             // Another thread beat us - they have the canonical representative
@@ -427,8 +460,11 @@ public:
     }
 
     // Number of unique canonical states
+    // Uses count_unique() for accurate counting after evolution completes,
+    // handling the case where ConcurrentMap may have duplicate keys due to
+    // concurrent insertions of the same canonical hash.
     size_t num_canonical_states() const {
-        return canonical_state_map_.size();
+        return canonical_state_map_.count_unique();
     }
 
     // =========================================================================
@@ -443,6 +479,21 @@ public:
     // Check if Level 2 is enabled
     bool level2_enabled() const {
         return level2_enabled_;
+    }
+
+    // Enable shared uniqueness tree for faster hashing with incremental computation
+    void enable_shared_tree() {
+        use_shared_tree_ = true;
+    }
+
+    // Disable shared uniqueness tree (use exact canonicalization)
+    void disable_shared_tree() {
+        use_shared_tree_ = false;
+    }
+
+    // Check if shared tree is enabled
+    bool shared_tree_enabled() const {
+        return use_shared_tree_;
     }
 
     // Get or compute canonical info for a state
@@ -549,12 +600,11 @@ public:
         EdgeId* prod = arena_.allocate_array<EdgeId>(num_produced);
         std::memcpy(prod, produced, num_produced * sizeof(EdgeId));
 
-        // Ensure event array is large enough (thread-safe)
-        events_.ensure_size(eid + 1, arena_);
-
-        // Initialize event
-        events_[eid] = Event(eid, input_state, output_state, rule_index,
-                             cons, num_consumed, prod, num_produced, binding);
+        // Directly construct event at slot eid using emplace_at
+        // This avoids the race condition in ensure_size where another thread might
+        // read the event before our assignment completes
+        events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
+                           cons, num_consumed, prod, num_produced, binding);
 
         // Track parent-child relationship
         add_state_child(input_state, output_state);
@@ -594,11 +644,10 @@ public:
         EdgeId* edges = arena_.allocate_array<EdgeId>(num_edges);
         std::memcpy(edges, matched_edges, num_edges * sizeof(EdgeId));
 
-        // Ensure match array is large enough (thread-safe)
-        matches_.ensure_size(mid + 1, arena_);
-
-        // Initialize match
-        matches_[mid] = Match(mid, rule_index, edges, num_edges, binding, origin_state);
+        // Directly construct match at slot mid using emplace_at
+        // This avoids the race condition in ensure_size where another thread's
+        // emplace might be constructing our slot while we're trying to assign
+        matches_.emplace_at(mid, arena_, mid, rule_index, edges, num_edges, binding, origin_state);
 
         // Add to state's match list
         if (origin_state < state_matches_.size()) {
@@ -657,11 +706,21 @@ public:
     // Set edge producer (called when edge is created by an event)
     void set_edge_producer(EdgeId edge, EventId producer) {
         causal_graph_.set_edge_producer(edge, producer);
+
+        // Level 2: Also track in edge equivalence manager for cross-branch causal edges
+        if (level2_enabled_) {
+            edge_equiv_manager_.add_producer(edge, producer);
+        }
     }
 
     // Add edge consumer (called when edge is consumed by an event)
     void add_edge_consumer(EdgeId edge, EventId consumer) {
         causal_graph_.add_edge_consumer(edge, consumer);
+
+        // Level 2: Also track in edge equivalence manager for cross-branch causal edges
+        if (level2_enabled_) {
+            edge_equiv_manager_.add_consumer(edge, consumer);
+        }
     }
 
     // Register event for branchial tracking
@@ -715,11 +774,23 @@ public:
 
     // Compute canonical hash using exact canonicalization (isomorphism-invariant)
     // Uses factorial-time algorithm for correctness, but fast for small graphs
+    // If shared_tree is enabled, uses faster uniqueness tree hashing instead
     uint64_t compute_canonical_hash(const SparseBitset& edges) const {
+        // Use shared uniqueness tree if enabled (faster with incremental computation)
+        if (use_shared_tree_ && shared_tree_) {
+            return compute_canonical_hash_shared(edges);
+        }
+
         // Build edge vectors for canonicalizer (use std::size_t for v1 compatibility)
         std::vector<std::vector<std::size_t>> edge_vectors;
+
+        // CRITICAL: Acquire fence to ensure we see all edge data written by other threads.
+        // Pairs with release fence in create_edge after edge construction.
+        std::atomic_thread_fence(std::memory_order_acquire);
+
         edges.for_each([&](EdgeId eid) {
             const Edge& e = edges_[eid];
+
             std::vector<std::size_t> verts;
             verts.reserve(e.arity);
             for (uint8_t i = 0; i < e.arity; ++i) {
@@ -804,6 +875,45 @@ public:
         });
         s += "}";
         return s;
+    }
+
+    // Compute canonical hash using SharedUniquenessTree
+    // Uses globally cached vertex tree data for incremental computation
+    // This is faster than full canonicalization and correctly identifies isomorphism
+    uint64_t compute_canonical_hash_shared(const SparseBitset& edges) const {
+        if (!shared_tree_ || edges.empty()) {
+            return 0;
+        }
+
+        // Build accessors for SharedUniquenessTree
+        std::vector<EdgeId> edge_list;
+        edges.for_each([&](EdgeId eid) {
+            edge_list.push_back(eid);
+        });
+
+        uint32_t max_eid = 0;
+        for (EdgeId eid : edge_list) {
+            if (eid > max_eid) max_eid = eid;
+        }
+
+        // Create pointer arrays for the shared tree
+        std::vector<const VertexId*> edge_verts(max_eid + 1, nullptr);
+        std::vector<uint8_t> edge_arities(max_eid + 1, 0);
+
+        // CRITICAL: Acquire fence to ensure we see all edge data written by other threads.
+        // Pairs with release fence in create_edge after edge construction.
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        for (EdgeId eid : edge_list) {
+            edge_verts[eid] = edges_[eid].vertices;
+            edge_arities[eid] = edges_[eid].arity;
+        }
+
+        return shared_tree_->compute_state_hash(
+            edges,
+            edge_verts.data(),
+            edge_arities.data()
+        );
     }
 
     // Compute canonical hash using UniquenessTree (polynomial-time, approximate)

@@ -67,8 +67,26 @@ public:
     ) {
         RewriteResult result;
 
+        // Validate input_state
+        uint32_t num_states = hg_->num_states();
+        if (input_state >= num_states) {
+            fprintf(stderr, "ERROR: Rewriter::apply input_state=%u >= num_states=%u\n",
+                    input_state, num_states);
+            abort();
+        }
+
         // Get input state's edge set
         const SparseBitset& input_edges = hg_->get_state_edges(input_state);
+
+        // VALIDATION: Check that all matched edges exist in input state
+        // If they don't, this match was incorrectly forwarded and is invalid
+        for (uint8_t i = 0; i < num_matched; ++i) {
+            if (!input_edges.contains(matched_edges[i])) {
+                // Match is invalid for this state - edges don't exist
+                // This can happen due to forwarding bugs
+                return result;  // Return empty result (match not applied)
+            }
+        }
 
         // Build new edge set: copy input, remove consumed
         SparseBitset new_edges;

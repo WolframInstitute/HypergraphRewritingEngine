@@ -10,6 +10,7 @@ add_library(hypergraph
     src/wolfram_states.cpp
     src/thread_local_pool.cpp
     src/uniqueness_tree.cpp
+    # unified architecture is header-only (no .cpp files needed)
 )
 
 # Include directories
