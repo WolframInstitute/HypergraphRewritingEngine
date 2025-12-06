@@ -271,7 +271,9 @@ struct GlobalCounters {
     }
 
     EventId alloc_event() {
-        return next_event.fetch_add(1, std::memory_order_relaxed);
+        // Use release ordering so counter increment synchronizes with acquire fences
+        // in wait_for_completion. This ensures num_events() returns accurate count.
+        return next_event.fetch_add(1, std::memory_order_release);
     }
 
     MatchId alloc_match() {

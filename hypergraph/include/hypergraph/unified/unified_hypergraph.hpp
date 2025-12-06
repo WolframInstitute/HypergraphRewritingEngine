@@ -79,9 +79,6 @@ class UnifiedHypergraph {
     // Used to find existing equivalent states before creating new ones
     ConcurrentMap<uint64_t, StateId> canonical_state_map_;
 
-    // TEMP: Mutex to test if concurrent insert is causing non-determinism
-    mutable std::mutex canonical_mutex_;
-
     // Level 2 canonicalization enabled flag
     bool level2_enabled_{false};
 
@@ -418,14 +415,9 @@ public:
         // This ensures the StateId we insert is always valid
         StateId new_sid = create_state(std::move(edge_set), step, canonical_hash, parent_event);
 
-        // Try to insert into canonical map
-        // TEMP: Use mutex to test if concurrent insert is causing non-determinism
-        std::pair<StateId, bool> result;
-        {
-            std::lock_guard<std::mutex> lock(canonical_mutex_);
-            result = canonical_state_map_.insert_if_absent(canonical_hash, new_sid);
-        }
-        auto [existing_or_new, was_inserted] = result;
+        // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
+        // Must use waiting version to handle concurrent inserts during resize
+        auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
 
         if (!was_inserted) {
             // Another thread beat us - they have the canonical representative
@@ -444,13 +436,14 @@ public:
         return {new_sid, new_sid, true};
     }
 
-    // Lookup existing canonical state by hash
+    // Lookup existing canonical state by hash (waits for concurrent inserts)
     std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const {
-        return canonical_state_map_.lookup(canonical_hash);
+        return canonical_state_map_.lookup_waiting(canonical_hash);
     }
 
     // Get the canonical representative for a given state
     // Returns the state itself if it's already the canonical representative
+    // Uses waiting lookup to handle concurrent inserts
     StateId get_canonical_state(StateId raw_state) const {
         if (raw_state == INVALID_ID) return INVALID_ID;
         const State& s = get_state(raw_state);
@@ -623,7 +616,8 @@ public:
 
     // Number of events
     uint32_t num_events() const {
-        return counters_.next_event.load(std::memory_order_relaxed);
+        // Use acquire to synchronize with release stores in alloc_event
+        return counters_.next_event.load(std::memory_order_acquire);
     }
 
     // =========================================================================

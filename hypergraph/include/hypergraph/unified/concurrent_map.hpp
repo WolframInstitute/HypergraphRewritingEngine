@@ -347,19 +347,14 @@ private:
             K current_key = entry.key.load(std::memory_order_acquire);
 
             // Wait for LOCKED slots to resolve - they might be inserting our key
-            if (current_key == LOCKED_KEY) {
-                for (int spins = 0; spins < 1000; ++spins) {
-                    #if defined(__x86_64__) || defined(_M_X64)
-                    __builtin_ia32_pause();
-                    #endif
-                    current_key = entry.key.load(std::memory_order_acquire);
-                    if (current_key != LOCKED_KEY) break;
-                }
-                // If still LOCKED after spinning, treat as empty and continue
-                // The inserter must have stalled, so we'll catch it in current table
-                if (current_key == LOCKED_KEY) {
-                    continue;
-                }
+            // MUST spin indefinitely - if we give up on a LOCKED slot that holds our key,
+            // we'd incorrectly return nullopt and cause duplicate insertions.
+            // LOCKED state is very brief (just value + key writes), so this is safe.
+            while (current_key == LOCKED_KEY) {
+                #if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+                #endif
+                current_key = entry.key.load(std::memory_order_acquire);
             }
 
             if (current_key == key) {
@@ -432,7 +427,7 @@ private:
         Table* new_table = Table::create(new_capacity, old_table);
 
         // Rehash all entries from old table
-        // Skip EMPTY and LOCKED entries
+        // Skip EMPTY and LOCKED entries (LOCKED entries will be in new table via insert path)
         for (size_t i = 0; i < old_table->capacity; ++i) {
             K key = old_table->entries[i].key.load(std::memory_order_acquire);
             if (key != EMPTY_KEY && key != LOCKED_KEY) {

@@ -39,28 +39,63 @@ struct MatchRecord {
     VariableBinding binding;
     StateId source_state;
     StateId canonical_source;  // Canonical state for deterministic deduplication
+    uint64_t source_canonical_hash{0};  // Canonical hash of source state (deterministic)
     uint64_t storage_epoch{0};  // Epoch when this match was stored (for ordering)
 
-    // Hash for deduplication - uses raw source state + binding
-    // Each raw state should be matched separately (different vertex IDs)
+    // Hash for deduplication - uses source_state + matched edges + binding
+    // MUST use source_state (raw state ID), NOT source_canonical_hash!
+    //
+    // Why: Multiple raw states can share the same canonical hash (isomorphic states).
+    // If two raw states S1 and S2 both contain edge E (inherited from common ancestor),
+    // matches on E in both states would have same (canonical_hash, edge, binding) and
+    // incorrectly deduplicate. Using source_state ensures matches in different raw
+    // states always have different hashes.
+    //
+    // The raw state IDs are non-deterministic across runs, but that's OK - deduplication
+    // only needs to work WITHIN a single run to avoid processing the same match twice.
     uint64_t hash() const {
-        uint64_t h = rule_index;
-        h = h * 31 + source_state;  // Use raw source state
-        // Include bound_mask to distinguish different binding patterns
-        h = h * 31 + binding.bound_mask;
-        // Hash the binding (vertex assignments) - include WHICH variable is bound
+        // FNV-1a style hash for better distribution and collision resistance
+        uint64_t h = 14695981039346656037ULL;  // FNV offset basis
+        constexpr uint64_t FNV_PRIME = 1099511628211ULL;
+
+        // Mix in rule_index
+        h ^= rule_index;
+        h *= FNV_PRIME;
+
+        // Mix in source_state (raw state ID for collision-free deduplication)
+        h ^= source_state;
+        h *= FNV_PRIME;
+        h ^= (source_state >> 16);  // Extra mixing for better distribution
+        h *= FNV_PRIME;
+
+        // Mix in matched edges
+        for (uint8_t i = 0; i < num_edges; ++i) {
+            h ^= matched_edges[i];
+            h *= FNV_PRIME;
+        }
+
+        // Mix in bound_mask
+        h ^= binding.bound_mask;
+        h *= FNV_PRIME;
+
+        // Mix in bound variables
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
             if (binding.is_bound(i)) {
-                h = h * 31 + i;  // Include variable index
-                h = h * 31 + binding.get(i);
+                h ^= (static_cast<uint64_t>(i) << 32) | binding.get(i);
+                h *= FNV_PRIME;
             }
         }
+
         return h;
     }
 
     bool operator==(const MatchRecord& other) const {
         if (rule_index != other.rule_index || num_edges != other.num_edges ||
             source_state != other.source_state) return false;
+        // Compare matched edges
+        for (uint8_t i = 0; i < num_edges; ++i) {
+            if (matched_edges[i] != other.matched_edges[i]) return false;
+        }
         // Compare bindings
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
             if (binding.is_bound(i) != other.binding.is_bound(i)) return false;
@@ -430,14 +465,18 @@ public:
         auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
             std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
 
-        // Mark initial state as matched
-        matched_raw_states_.insert_if_absent(raw_state, true);
+        // Mark initial state as matched (waiting version for correctness)
+        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
 
         // Submit MATCH task for initial state - this kicks off the dataflow
         submit_match_task(raw_state, 1);
 
         // Single synchronization point at the end
         job_system_->wait_for_completion();
+
+        // CRITICAL: Acquire fence to ensure all writes from worker threads are visible
+        // This pairs with release semantics of atomic operations in worker threads
+        std::atomic_thread_fence(std::memory_order_acquire);
     }
 
     // =========================================================================
@@ -622,10 +661,12 @@ private:
             MatchRecord forwarded = match;
             forwarded.source_state = child_info.child_state;
             forwarded.canonical_source = hg_->get_canonical_state(child_info.child_state);
+            forwarded.source_canonical_hash = hg_->get_state(child_info.child_state).canonical_hash;
 
             // Deduplicate - check if this exact (rule, state, binding) was already processed
+            // Use waiting version to avoid race during resize
             uint64_t h = forwarded.hash();
-            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(h, true);
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
             if (!inserted) {
                 DEBUG_LOG("PUSH_DUP parent=%u -> child=%u rule=%u hash=%lu step=%u",
                           parent, child_info.child_state, match.rule_index, h, step);
@@ -693,7 +734,8 @@ private:
                                                   accumulated_consumed, total_consumed, step, batch);
 
             // Move to the next ancestor and accumulate its consumed edges
-            auto parent_result = state_parent_.lookup(current_ancestor);
+            // Use waiting lookup to handle concurrent registration
+            auto parent_result = state_parent_.lookup_waiting(current_ancestor);
             if (!parent_result.has_value()) break;
 
             ParentInfo* pi = *parent_result;
@@ -756,10 +798,11 @@ private:
             MatchRecord forwarded = ancestor_match;
             forwarded.source_state = child;
             forwarded.canonical_source = hg_->get_canonical_state(child);
+            forwarded.source_canonical_hash = hg_->get_state(child).canonical_hash;
 
-            // Deduplicate
+            // Deduplicate (use waiting version to avoid race during resize)
             uint64_t h = forwarded.hash();
-            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(h, true);
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
             if (!inserted) {
                 DEBUG_LOG("FWD_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
                           ancestor, child, ancestor_match.rule_index, h);
@@ -882,13 +925,14 @@ private:
             match.binding = binding;
             match.source_state = state;
             match.canonical_source = canonical_state;
+            match.source_canonical_hash = s.canonical_hash;
             for (uint8_t i = 0; i < num_edges; ++i) {
                 match.matched_edges[i] = edges[i];
             }
 
-            // Deduplicate using lock-free ConcurrentMap
+            // Deduplicate using lock-free ConcurrentMap (waiting version to avoid race during resize)
             uint64_t h = match.hash();
-            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(h, true);
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
             if (!inserted) {
                 rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
                 return;  // Already seen
@@ -956,6 +1000,7 @@ private:
                     match.binding = binding;
                     match.source_state = state;
                     match.canonical_source = canonical_state;
+                    match.source_canonical_hash = s.canonical_hash;
                     for (uint8_t i = 0; i < num_edges; ++i) {
                         match.matched_edges[i] = edges[i];
                     }
@@ -1072,7 +1117,8 @@ private:
             // Spawn MATCH task for the new raw state if it hasn't been matched yet
             // In multiway rewriting, each raw state (even if isomorphic) needs to be
             // matched to find all possible transitions
-            auto [existing, inserted] = matched_raw_states_.insert_if_absent(
+            // Use waiting version to avoid race during resize
+            auto [existing, inserted] = matched_raw_states_.insert_if_absent_waiting(
                 rr.raw_state, true);
 
             if (inserted) {
