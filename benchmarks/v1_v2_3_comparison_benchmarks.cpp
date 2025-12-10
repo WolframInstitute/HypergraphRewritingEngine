@@ -15,7 +15,7 @@
 #include <hypergraph/unified/types.hpp>
 #include <hypergraph/unified/bitset.hpp>
 #include <hypergraph/unified/unified_hypergraph.hpp>
-#include <hypergraph/unified/uniqueness_tree.hpp>
+#include <hypergraph/unified/wl_hash.hpp>
 
 using namespace hypergraph;
 using namespace benchmark;

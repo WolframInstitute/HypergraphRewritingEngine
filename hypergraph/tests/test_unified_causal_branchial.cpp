@@ -567,23 +567,29 @@ TEST(Unified_UniquenessTree, CanonicalInfo_VertexClasses) {
     edges.set(e1, hg.arena());
     edges.set(e2, hg.arena());
 
-    StateCanonicalInfo info = hg.compute_canonical_info(edges);
+    // Verify canonical hash is computed
+    uint64_t hash = hg.compute_canonical_hash(edges);
+    EXPECT_NE(hash, 0u);
 
-    EXPECT_NE(info.canonical_hash, 0u);
-    EXPECT_EQ(info.num_vertices, 4u);
+    // Create an isomorphic star graph with different vertex IDs
+    VertexId u0 = hg.alloc_vertex();  // Center
+    VertexId u1 = hg.alloc_vertex();  // Leaf
+    VertexId u2 = hg.alloc_vertex();  // Leaf
+    VertexId u3 = hg.alloc_vertex();  // Leaf
 
-    // Should have 2 equivalence classes: 1 for center (degree 3), 1 for leaves (degree 1)
-    EXPECT_EQ(info.num_classes, 2u);
+    EdgeId e3 = hg.create_edge({u0, u1});
+    EdgeId e4 = hg.create_edge({u0, u2});
+    EdgeId e5 = hg.create_edge({u0, u3});
 
-    // One class should have 1 vertex (center), other should have 3 (leaves)
-    bool found_center = false;
-    bool found_leaves = false;
-    for (uint32_t i = 0; i < info.num_classes; ++i) {
-        if (info.equiv_classes[i].count == 1) found_center = true;
-        if (info.equiv_classes[i].count == 3) found_leaves = true;
-    }
-    EXPECT_TRUE(found_center);
-    EXPECT_TRUE(found_leaves);
+    SparseBitset edges2;
+    edges2.set(e3, hg.arena());
+    edges2.set(e4, hg.arena());
+    edges2.set(e5, hg.arena());
+
+    uint64_t hash2 = hg.compute_canonical_hash(edges2);
+
+    // Isomorphic graphs should have the same canonical hash
+    EXPECT_EQ(hash, hash2);
 }
 
 // =============================================================================
@@ -800,4 +806,147 @@ TEST(Unified_Level2, EventCanonicalization_DifferentRules) {
         1, hash, &e0, 1, hash, hg.edge_equiv_manager());
 
     EXPECT_NE(event_hash_1, event_hash_2);
+}
+
+// =============================================================================
+// Online Transitive Reduction Tests (Goranci Algorithm)
+// =============================================================================
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_Basic) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // Without TR enabled, all edges should be stored
+    cg.set_transitive_reduction(false);
+
+    // Create a chain: event 0 -> event 1 -> event 2
+    // Edge 0 from event 0 to event 1
+    cg.set_edge_producer(0, 0);  // Event 0 produces edge 0
+    cg.add_edge_consumer(0, 1);  // Event 1 consumes edge 0
+
+    // Edge 1 from event 1 to event 2
+    cg.set_edge_producer(1, 1);  // Event 1 produces edge 1
+    cg.add_edge_consumer(1, 2);  // Event 2 consumes edge 1
+
+    // Without TR: 2 causal edges (0->1, 1->2)
+    EXPECT_EQ(cg.num_causal_edges(), 2u);
+    EXPECT_EQ(cg.num_redundant_edges_skipped(), 0u);
+}
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // Enable TR
+    cg.set_transitive_reduction(true);
+
+    // Create a chain: event 0 -> event 1 -> event 2
+    // Edge 0 from event 0 to event 1
+    cg.set_edge_producer(0, 0);
+    cg.add_edge_consumer(0, 1);
+
+    // Edge 1 from event 1 to event 2
+    cg.set_edge_producer(1, 1);
+    cg.add_edge_consumer(1, 2);
+
+    // Now we have: 0 -> 1 -> 2
+    EXPECT_EQ(cg.num_causal_edges(), 2u);
+
+    // Try to add redundant edge: 0 -> 2 (already reachable via 0 -> 1 -> 2)
+    cg.add_causal_edge(0, 2, 100);  // Edge 100 is just a unique identifier
+
+    // The redundant edge should be skipped
+    EXPECT_EQ(cg.num_causal_edges(), 2u);  // Still 2
+    EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);  // 1 skipped
+}
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_DirectEdgeStillAdded) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // Enable TR
+    cg.set_transitive_reduction(true);
+
+    // First add direct edge 0 -> 2
+    cg.add_causal_edge(0, 2, 0);
+    EXPECT_EQ(cg.num_causal_edges(), 1u);
+
+    // Then add edges that form a path 0 -> 1 -> 2
+    cg.add_causal_edge(0, 1, 1);
+    cg.add_causal_edge(1, 2, 2);
+
+    // All 3 edges should be stored because they were added before the path existed
+    // TR only skips edges where the target is ALREADY reachable
+    EXPECT_EQ(cg.num_causal_edges(), 3u);
+}
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_LongerPath) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // Enable TR
+    cg.set_transitive_reduction(true);
+
+    // Create a longer chain: 0 -> 1 -> 2 -> 3 -> 4
+    for (EventId i = 0; i < 4; ++i) {
+        cg.add_causal_edge(i, i + 1, i);
+    }
+    EXPECT_EQ(cg.num_causal_edges(), 4u);
+
+    // Try to add skip edges: 0 -> 2, 0 -> 3, 0 -> 4, 1 -> 3, 1 -> 4, 2 -> 4
+    size_t skipped_before = cg.num_redundant_edges_skipped();
+
+    cg.add_causal_edge(0, 2, 100);
+    cg.add_causal_edge(0, 3, 101);
+    cg.add_causal_edge(0, 4, 102);
+    cg.add_causal_edge(1, 3, 103);
+    cg.add_causal_edge(1, 4, 104);
+    cg.add_causal_edge(2, 4, 105);
+
+    // All should be skipped as redundant
+    EXPECT_EQ(cg.num_causal_edges(), 4u);  // Still 4
+    EXPECT_EQ(cg.num_redundant_edges_skipped() - skipped_before, 6u);
+}
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_DiamondPattern) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // Enable TR
+    cg.set_transitive_reduction(true);
+
+    // Create diamond: 0 -> {1, 2} -> 3
+    //      0
+    //     / \
+    //    1   2
+    //     \ /
+    //      3
+    cg.add_causal_edge(0, 1, 0);
+    cg.add_causal_edge(0, 2, 1);
+    cg.add_causal_edge(1, 3, 2);
+    cg.add_causal_edge(2, 3, 3);
+
+    EXPECT_EQ(cg.num_causal_edges(), 4u);
+
+    // Try to add 0 -> 3 (redundant via either path)
+    cg.add_causal_edge(0, 3, 100);
+    EXPECT_EQ(cg.num_causal_edges(), 4u);  // Still 4
+    EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);
+}
+
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_DisabledByDefault) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+
+    // TR should be disabled by default
+    EXPECT_FALSE(cg.transitive_reduction_enabled());
+
+    // Create chain and redundant edge
+    cg.add_causal_edge(0, 1, 0);
+    cg.add_causal_edge(1, 2, 1);
+    cg.add_causal_edge(0, 2, 2);  // Would be redundant with TR
+
+    // Without TR, all 3 edges stored
+    EXPECT_EQ(cg.num_causal_edges(), 3u);
+    EXPECT_EQ(cg.num_redundant_edges_skipped(), 0u);
 }

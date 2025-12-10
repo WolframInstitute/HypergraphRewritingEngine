@@ -50,9 +50,20 @@ public:
     }
 
     // Push value to front of list (lock-free, wait-free)
+    //
+    // MEMORY ORDERING:
+    // 1. Node construction happens-before release fence
+    // 2. Release fence happens-before release CAS
+    // 3. Release CAS synchronizes-with acquire load in for_each()
+    // 4. Therefore: node data is visible to threads that see this node
     template<typename Arena>
     void push(const T& value, Arena& arena) {
         Node* new_node = arena.template create<Node>(value, nullptr);
+
+        // CRITICAL: Release fence ensures node construction (including T's copy)
+        // is visible before the node pointer becomes visible via the CAS.
+        // Without this, readers may see the node pointer but not the node data.
+        std::atomic_thread_fence(std::memory_order_release);
 
         Node* old_head = head_.load(std::memory_order_acquire);
         do {
@@ -65,12 +76,28 @@ public:
 
     // Iterate over all elements (newest to oldest)
     // Keeps checking for new nodes until list is stable - no snapshot batching
+    //
+    // MEMORY ORDERING:
+    // The acquire load on head_ synchronizes-with the release CAS in push().
+    // The acquire fence ensures we see ALL writes that happened-before the push,
+    // including any data the pushed value references (e.g., if T is an ID, the
+    // data at that ID must be visible).
+    //
+    // Synchronization chain:
+    // 1. Writer: constructs data → release fence → push() → CAS(head_, release)
+    // 2. Reader: head_.load(acquire) → acquire fence → access data via value
+    // 3. Writer's release fence synchronizes-with reader's acquire fence
     template<typename F>
     void for_each(F&& f) const {
         Node* seen_up_to = nullptr;
         while (true) {
             Node* current_head = head_.load(std::memory_order_acquire);
             if (current_head == seen_up_to) break;  // No new nodes since last pass
+
+            // CRITICAL: Acquire fence ensures all writes that happened-before the
+            // push (including data referenced by node values) are visible.
+            // This pairs with the release fence in push().
+            std::atomic_thread_fence(std::memory_order_acquire);
 
             // Walk from current_head down to seen_up_to (exclusive)
             Node* node = current_head;
@@ -85,12 +112,18 @@ public:
     // Iterate with early termination
     // Return false from f to stop iteration
     // Keeps checking for new nodes until list is stable or terminated
+    //
+    // MEMORY ORDERING: Same as for_each() - acquire fence pairs with release fence in push()
     template<typename F>
     bool for_each_while(F&& f) const {
         Node* seen_up_to = nullptr;
         while (true) {
             Node* current_head = head_.load(std::memory_order_acquire);
             if (current_head == seen_up_to) break;
+
+            // CRITICAL: Acquire fence ensures all writes that happened-before the
+            // push (including data referenced by node values) are visible.
+            std::atomic_thread_fence(std::memory_order_acquire);
 
             Node* node = current_head;
             while (node != seen_up_to) {

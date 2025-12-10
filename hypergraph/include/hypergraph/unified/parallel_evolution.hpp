@@ -398,6 +398,13 @@ public:
     void set_match_forwarding(bool enable) { enable_match_forwarding_ = enable; }
     void set_batched_matching(bool enable) { batched_matching_ = enable; }
     void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
+
+    // Enable online transitive reduction for causal edges (Goranci algorithm)
+    // When enabled, redundant causal edges are filtered out at insertion time.
+    // Disabled by default for v1 compatibility.
+    void set_transitive_reduction(bool enable) {
+        if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
+    }
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
@@ -426,8 +433,11 @@ public:
     size_t num_states() const { return hg_ ? hg_->num_states() : 0; }
     size_t num_canonical_states() const { return hg_ ? hg_->num_canonical_states() : 0; }
     size_t num_events() const { return hg_ ? hg_->num_events() : 0; }
-    size_t num_causal_edges() const { return hg_ ? hg_->causal_graph().num_causal_edges() : 0; }
+    size_t num_causal_edges() const { return hg_ ? hg_->causal_graph().num_causal_event_pairs() : 0; }
     size_t num_branchial_edges() const { return hg_ ? hg_->causal_graph().num_branchial_edges() : 0; }
+    size_t num_redundant_edges_skipped() const {
+        return hg_ ? hg_->causal_graph().num_redundant_edges_skipped() : 0;
+    }
 
     const EvolutionStats& stats() const { return stats_; }
 
@@ -469,9 +479,19 @@ public:
             initial_edge_set.set(eid, hg_->arena());
         }
 
-        uint64_t canonical_hash = hg_->compute_canonical_hash(initial_edge_set);
+        // For initial state, use incremental path with no parent (will compute from scratch)
+        // This also returns the cache to store for future incremental computation
+        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
+            initial_edge_set,
+            INVALID_ID,  // No parent state
+            nullptr, 0,  // No consumed edges
+            edge_ids.data(), static_cast<uint8_t>(edge_ids.size())  // All edges are "produced"
+        );
         auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
             std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
+
+        // Store cache for the initial state
+        hg_->store_state_cache(raw_state, vertex_cache);
 
         // Mark initial state as matched (waiting version for correctness)
         matched_raw_states_.insert_if_absent_waiting(raw_state, true);

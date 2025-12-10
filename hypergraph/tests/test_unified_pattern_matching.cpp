@@ -770,8 +770,10 @@ TEST(Unified_Integration, SingleStepEvolution) {
     // Note: num_states() returns ALL states including "wasted" raw states
     // num_canonical_states() returns only unique canonical representatives
     EXPECT_EQ(hg.num_canonical_states(), 2);
-    // Total events: 3 (one per match applied, even though canonical state is deduplicated)
-    EXPECT_EQ(hg.num_events(), 3);
+    // With ByState event canonicalization (default), events from same canonical input
+    // to same canonical output are deduplicated. All 3 matches go from initial state
+    // to the same canonical output state, so only 1 canonical event is created.
+    EXPECT_EQ(hg.num_events(), 1);
 }
 
 TEST(Unified_Integration, MultiStepEvolution) {

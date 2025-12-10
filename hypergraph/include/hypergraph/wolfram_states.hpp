@@ -330,7 +330,7 @@ struct EventSignature {
             return canonical_input_state_id == other.canonical_input_state_id &&
                    canonical_output_state_id == other.canonical_output_state_id;
         } else {
-#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+#if 1  // RE-ENABLED: Testing Automatic mode event canonicalization
             // Automatic mode: compare edge positions, canonical state IDs, and step
             // Events are identified by which canonical edges they transform in which canonical states
             bool consumed_match = canonical_consumed_edges == other.canonical_consumed_edges;
@@ -370,7 +370,7 @@ namespace std {
                 DEBUG_LOG("[std::hash<EventSig>] FULL mode (in=%zu,out=%zu) => hash=%zu",
                          sig.canonical_input_state_id.value, sig.canonical_output_state_id.value, h);
             } else {
-#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+#if 1  // RE-ENABLED: Testing Automatic mode event canonicalization
                 // Automatic mode: hash edge positions, canonical state IDs, and step
                 // Events are identified by which canonical edges they transform in which canonical states
 

@@ -1356,7 +1356,7 @@ TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_EventCanonicaliza
 // Automatic Event Canonicalization Tests (full_event_canonicalization=false)
 // ============================================================================
 
-#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+#if 1  // RE-ENABLED: Testing Automatic mode event canonicalization
 TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule_EventCanonicalization_Automatic) {
     PatternHypergraph lhs;
     lhs.add_edge(PatternEdge{
@@ -1381,7 +1381,7 @@ TEST_F(DeterminismFuzzingTest, TestCase1_SimpleRule_EventCanonicalization_Automa
         {4, {17, 26, 0, 32}}
     };
 
-    validate_expected_results("SimpleRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("SimpleRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule_EventCanonicalization_Automatic) {
@@ -1404,7 +1404,7 @@ TEST_F(DeterminismFuzzingTest, TestCase2_TwoEdgeRule_EventCanonicalization_Autom
         {4, {13, 47, 738, 444}}
     };
 
-    validate_expected_results("TwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("TwoEdgeRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule_EventCanonicalization_Automatic) {
@@ -1428,7 +1428,7 @@ TEST_F(DeterminismFuzzingTest, TestCase3_HyperedgeRule_EventCanonicalization_Aut
         {4, {2, 1, 0, 0}}
     };
 
-    validate_expected_results("HyperedgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("HyperedgeRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule_EventCanonicalization_Automatic) {
@@ -1464,7 +1464,7 @@ TEST_F(DeterminismFuzzingTest, TestCase4_MultiRule_EventCanonicalization_Automat
         // {4, {5, 13, 0, 75}}
     };
 
-    validate_expected_results("MultiRule_Automatic", {rule1, rule2}, initial, expected_automatic, false, true, false);
+    validate_expected_results("MultiRule_Automatic", {rule1, rule2}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_EventCanonicalization_Automatic) {
@@ -1500,7 +1500,7 @@ TEST_F(DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_EventCanonicalizat
         {4, {9, 35, 657, 282}}
     };
 
-    validate_expected_results("ComplexTwoRuleSystem_Automatic", {rule1, rule2}, initial, expected_automatic, false, true, false);
+    validate_expected_results("ComplexTwoRuleSystem_Automatic", {rule1, rule2}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_EventCanonicalization_Automatic) {
@@ -1523,7 +1523,7 @@ TEST_F(DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_EventCanonicalizatio
         {4, {5, 10, 43, 32}}
     };
 
-    validate_expected_results("TwoEdgeRuleVariant_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("TwoEdgeRuleVariant_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
@@ -1546,7 +1546,7 @@ TEST_F(DeterminismFuzzingTest, TestCase7_TwoEdgeRuleWithSelfLoops_EventCanonical
         {4, {5, 29, 1173, 440}}
     };
 
-    validate_expected_results("TwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("TwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_EventCanonicalization_Automatic) {
@@ -1570,7 +1570,7 @@ TEST_F(DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_EventCanonicalizatio
         {4, {83, 136, 423, 181}}
     };
 
-    validate_expected_results("ComplexTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("ComplexTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
@@ -1593,7 +1593,7 @@ TEST_F(DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleWithSelfLoops_EventCa
         {3, {33, 57, 489, 170}}
     };
 
-    validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("ComplexTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_EventCanonicalization_Automatic) {
@@ -1617,7 +1617,7 @@ TEST_F(DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_EventCanonicalizati
         {5, {21, 54, 231, 210}}
     };
 
-    validate_expected_results("AnotherTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("AnotherTwoEdgeRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops_EventCanonicalization_Automatic) {
@@ -1640,7 +1640,7 @@ TEST_F(DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleWithSelfLoops_EventC
         {4, {18, 49, 465, 280}}
     };
 
-    validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("AnotherTwoEdgeRuleWithSelfLoops_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 
 TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_EventCanonicalization_Automatic) {
@@ -1674,6 +1674,6 @@ TEST_F(DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_EventCanonicaliza
         {5, {18, 25, 99, 88}}
     };
 
-    validate_expected_results("ComplexThreeEdgeRule_Automatic", {rule}, initial, expected_automatic, false, true, false);
+    validate_expected_results("ComplexThreeEdgeRule_Automatic", {rule}, initial, expected_automatic, true, true, false);
 }
 #endif  // Automatic mode event canonicalization tests disabled

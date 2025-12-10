@@ -131,10 +131,14 @@ add_executable(unified_tests
     ../hypergraph/tests/test_unified_causal_branchial.cpp
     ../hypergraph/tests/test_unified_v1_comparison.cpp
     ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
+    ../hypergraph/tests/test_blackhole_idempotent.cpp
     ../hypergraph/tests/test_unified_v1_count_comparison.cpp
     ../hypergraph/tests/test_unified_parallel_evolution.cpp
     ../hypergraph/tests/test_v1_unified_exact_comparison.cpp
     ../hypergraph/tests/test_match_forwarding_debug.cpp
+    ../hypergraph/tests/test_v1_unified_comprehensive.cpp
+    ../hypergraph/tests/test_unified_event_canonicalization.cpp
 )
 
 # Link against all required libraries
@@ -153,6 +157,9 @@ target_link_libraries(unified_tests
     # System libraries
     Threads::Threads
 )
+
+# GPU vs CPU comparison tests are in gpu/tests/ and built as gpu_tests
+# (unified_tests uses pure C++ and cannot link against CUDA device code)
 
 # Add paclet dependency when paclet building is enabled
 if(BUILD_MATHEMATICA_PACLET)

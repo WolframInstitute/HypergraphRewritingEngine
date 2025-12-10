@@ -1,6 +1,7 @@
 #include <hypergraph/wolfram_states.hpp>
 #include <hypergraph/pattern_matching_tasks.hpp>
 #include <hypergraph/hash_strategy.hpp>
+#include <hypergraph/uniqueness_tree.hpp>
 #include <job_system/job_system.hpp>
 #include <sstream>
 #include <algorithm>
@@ -67,6 +68,117 @@ bool are_truly_isomorphic(const std::vector<std::vector<hypergraph::GlobalVertex
 #endif
 
 namespace hypergraph {
+
+// =============================================================================
+// Edge Correspondence Helper for Automatic Event Canonicalization
+// =============================================================================
+// Finds the corresponding edge index in canonical_state for an edge in source_state.
+// Both states must be isomorphic. Uses UniquenessTree vertex hashes to match edges.
+
+namespace {
+
+// Compute edge signature from vertex subtree hashes (sorted for canonical comparison)
+using EdgeSignature = std::vector<uint64_t>;
+
+EdgeSignature compute_edge_signature(
+    const GlobalHyperedge& edge,
+    const std::unordered_map<GlobalVertexId, uint64_t>& vertex_hashes
+) {
+    EdgeSignature sig;
+    sig.reserve(edge.global_vertices.size());
+    for (GlobalVertexId v : edge.global_vertices) {
+        auto it = vertex_hashes.find(v);
+        sig.push_back(it != vertex_hashes.end() ? it->second : 0);
+    }
+    // DO NOT sort - directed hyperedges, vertex order matters!
+    // The signature (h1, h2) is different from (h2, h1) even if they have
+    // the same vertex subtree hashes. This preserves edge direction.
+    return sig;
+}
+
+// Custom hash for EdgeSignature
+struct EdgeSignatureHash {
+    std::size_t operator()(const EdgeSignature& sig) const {
+        std::size_t h = 0;
+        for (uint64_t v : sig) {
+            h ^= std::hash<uint64_t>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        }
+        return h;
+    }
+};
+
+// Build map from edge signature to edge index for a state
+std::unordered_map<EdgeSignature, std::vector<std::size_t>, EdgeSignatureHash>
+build_edge_signature_map(
+    const WolframState& state,
+    const std::unordered_map<GlobalVertexId, uint64_t>& vertex_hashes
+) {
+    std::unordered_map<EdgeSignature, std::vector<std::size_t>, EdgeSignatureHash> result;
+
+    const auto& edges = state.edges();
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        EdgeSignature sig = compute_edge_signature(edges[i], vertex_hashes);
+        result[sig].push_back(i);
+    }
+
+    return result;
+}
+
+// Build vertex hash map from UniquenessTreeSet
+std::unordered_map<GlobalVertexId, uint64_t> build_vertex_hash_map(
+    const UniquenessTreeSet& tree_set
+) {
+    std::unordered_map<GlobalVertexId, uint64_t> result;
+    for (const auto& tree : tree_set.get_trees()) {
+        result[tree.root_vertex()] = tree.hash();
+    }
+    return result;
+}
+
+// Find edge correspondence: maps edge indices in source_state to canonical_state
+// Returns map: source_edge_index -> canonical_state_edge_index
+std::unordered_map<std::size_t, std::size_t> find_edge_correspondence(
+    const WolframState& source_state,
+    const WolframState& canonical_state
+) {
+    // Build uniqueness trees for both states
+    UniquenessTreeSet source_trees(source_state.edges(),
+                                    source_state.get_vertex_to_edge_positions());
+    UniquenessTreeSet canonical_trees(canonical_state.edges(),
+                                       canonical_state.get_vertex_to_edge_positions());
+
+    // Get vertex hashes
+    auto source_vertex_hashes = build_vertex_hash_map(source_trees);
+    auto canonical_vertex_hashes = build_vertex_hash_map(canonical_trees);
+
+    // Build edge signature map for canonical state
+    auto canonical_sig_map = build_edge_signature_map(canonical_state, canonical_vertex_hashes);
+
+    // For each edge in source, find corresponding edge in canonical
+    std::unordered_map<std::size_t, std::size_t> correspondence;
+    std::unordered_set<std::size_t> used_canonical_indices;
+
+    const auto& source_edges = source_state.edges();
+    for (std::size_t src_idx = 0; src_idx < source_edges.size(); ++src_idx) {
+        EdgeSignature sig = compute_edge_signature(source_edges[src_idx], source_vertex_hashes);
+
+        auto it = canonical_sig_map.find(sig);
+        if (it != canonical_sig_map.end()) {
+            // Find first unused canonical edge with this signature
+            for (std::size_t canon_idx : it->second) {
+                if (used_canonical_indices.find(canon_idx) == used_canonical_indices.end()) {
+                    correspondence[src_idx] = canon_idx;
+                    used_canonical_indices.insert(canon_idx);
+                    break;
+                }
+            }
+        }
+    }
+
+    return correspondence;
+}
+
+} // anonymous namespace
 
 /*
  * WolframState
@@ -753,7 +865,7 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
                 true // include_state_ids=true means compare state IDs
             };
         } else {
-#if 0  // TODO: Automatic mode event canonicalization has issues - disabled pending investigation
+#if 1  // RE-ENABLED: Testing Automatic mode event canonicalization
             // Automatic mode (keys={"Input", "Output", "Step"})
             // We MUST use the canonical representative state's edge mapping, not each instance's mapping,
             // because isomorphic states with different edge orderings get different permutations.
@@ -788,22 +900,45 @@ EventId MultiwayGraph::record_state_transition(const std::shared_ptr<WolframStat
             const VertexMapping& input_mapping = canonical_input_state->get_vertex_mapping();
             const VertexMapping& output_mapping = canonical_output_state->get_vertex_mapping();
 
+            // Find edge correspondence between actual states and their canonical representatives
+            // This is needed because input_state and canonical_input_state are different objects
+            // with different edge IDs, even though they're isomorphic.
+            auto input_edge_correspondence = find_edge_correspondence(*input_state, *canonical_input_state);
+            auto output_edge_correspondence = find_edge_correspondence(*output_state, *canonical_output_state);
+
             // Convert consumed GlobalEdgeIds to canonical edge indices
+            // Step 1: edge_id -> index in input_state
+            // Step 2: index in input_state -> index in canonical_input_state (via correspondence)
+            // Step 3: index in canonical_input_state -> canonical index (via input_mapping)
             std::vector<std::size_t> canonical_consumed_indices;
             for (GlobalEdgeId edge_id : consumed_edges) {
-                std::size_t orig_idx = input_state->edge_id_to_index_.at(edge_id);
-                std::size_t canon_idx = input_mapping.map_edge(orig_idx);
+                std::size_t input_idx = input_state->edge_id_to_index_.at(edge_id);
+                auto corr_it = input_edge_correspondence.find(input_idx);
+                if (corr_it == input_edge_correspondence.end()) {
+                    DEBUG_LOG("[EDGE_MAPPING] WARNING: No correspondence for consumed edge_id=%zu input_idx=%zu", edge_id, input_idx);
+                    continue;
+                }
+                std::size_t canonical_state_idx = corr_it->second;
+                std::size_t canon_idx = input_mapping.map_edge(canonical_state_idx);
                 canonical_consumed_indices.push_back(canon_idx);
             }
             // Sort to ensure order-independent comparison
             std::sort(canonical_consumed_indices.begin(), canonical_consumed_indices.end());
 
             // Convert produced GlobalEdgeIds to canonical edge indices
+            // Same 3-step process as consumed edges
             std::vector<std::size_t> canonical_produced_indices;
             for (GlobalEdgeId edge_id : produced_edges) {
-                std::size_t orig_idx = output_state->edge_id_to_index_.at(edge_id);
-                std::size_t canon_idx = output_mapping.map_edge(orig_idx);
-                DEBUG_LOG("[EDGE_MAPPING] Produced edge_id=%zu orig_idx=%zu canon_idx=%zu", edge_id, orig_idx, canon_idx);
+                std::size_t output_idx = output_state->edge_id_to_index_.at(edge_id);
+                auto corr_it = output_edge_correspondence.find(output_idx);
+                if (corr_it == output_edge_correspondence.end()) {
+                    DEBUG_LOG("[EDGE_MAPPING] WARNING: No correspondence for produced edge_id=%zu output_idx=%zu", edge_id, output_idx);
+                    continue;
+                }
+                std::size_t canonical_state_idx = corr_it->second;
+                std::size_t canon_idx = output_mapping.map_edge(canonical_state_idx);
+                DEBUG_LOG("[EDGE_MAPPING] Produced edge_id=%zu output_idx=%zu -> canonical_state_idx=%zu -> canon_idx=%zu",
+                          edge_id, output_idx, canonical_state_idx, canon_idx);
                 canonical_produced_indices.push_back(canon_idx);
             }
             // Sort to ensure order-independent comparison

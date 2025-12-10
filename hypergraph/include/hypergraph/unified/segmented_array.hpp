@@ -54,6 +54,12 @@ public:
     // Append a new element, return its index
     // Thread-safe, lock-free
     //
+    // MEMORY ORDERING:
+    // 1. Element construction happens-before release fence
+    // 2. Release fence happens-before segment store (release)
+    // 3. Segment store (release) synchronizes-with segment load (acquire) in operator[]
+    // 4. Therefore: element data is visible to threads that load the segment
+    //
     // IMPORTANT: If iterating by size(), callers must handle the case where
     // the segment might not yet be visible. Use get() which returns nullptr
     // for not-yet-ready slots, or only access indices returned by emplace().
@@ -78,57 +84,68 @@ public:
         // Construct the element in place
         new (&segment[offset]) T(std::forward<Args>(args)...);
 
-        // CRITICAL: Store segment pointer with release to synchronize with
-        // the acquire load in operator[]. This ensures the constructed element
-        // is visible to other threads.
+        // CRITICAL: Release fence ensures element construction is complete and visible
+        // before the segment pointer store. Without this, readers may see the segment
+        // pointer but not the element data due to store reordering.
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // Store segment pointer with release (pairs with acquire in operator[])
         segments_[seg_idx].store(segment, std::memory_order_release);
 
         return idx;
     }
 
     // Access element by index - O(1)
-    // With emplace_at usage, segment should already exist. Brief spin as safety net.
+    //
+    // MEMORY ORDERING:
+    // We synchronize via count_. The thread that constructs element idx does:
+    //   1. construct element
+    //   2. release fence
+    //   3. CAS count_ to at least idx+1 (release)
+    //
+    // Readers wait for count_ > idx (acquire), which synchronizes with the
+    // constructor's CAS. This ensures the element data is visible.
+    //
+    // This is necessary because multiple threads share the same segment pointer,
+    // so synchronizing on the segment alone doesn't synchronize with a specific
+    // element's constructor.
     T& operator[](uint32_t idx) {
+        // Wait until element is constructed (count_ > idx)
+        // The acquire load syncs with the release CAS in emplace/emplace_at
+        while (count_.load(std::memory_order_acquire) <= idx) {
+            #if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+            #elif defined(__aarch64__)
+            __asm__ volatile("yield" ::: "memory");
+            #endif
+        }
+
         size_t seg_idx = idx / segment_size_;
         size_t offset = idx % segment_size_;
-        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
 
-        // Brief spin if segment not yet visible (rare - segment creation is fast)
-        if (!segment) {
-            for (int spins = 0; spins < 1000 && !segment; ++spins) {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #endif
-                segment = segments_[seg_idx].load(std::memory_order_acquire);
-            }
-            if (!segment) {
-                fprintf(stderr, "FATAL: SegmentedArray::operator[] segment null: seg_idx=%zu, idx=%u, count=%u\n",
-                        seg_idx, idx, count_.load());
-                abort();
-            }
-        }
+        // CRITICAL: Must use acquire to see segment pointer stored before count_ was updated.
+        // The count_ acquire establishes a synchronizes-with relationship with emplace_at's
+        // release CAS, but we still need acquire here to see the segment store that
+        // happened-before that CAS. Relaxed could return a stale null.
+        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
 
         return segment[offset];
     }
 
     const T& operator[](uint32_t idx) const {
+        while (count_.load(std::memory_order_acquire) <= idx) {
+            #if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+            #elif defined(__aarch64__)
+            __asm__ volatile("yield" ::: "memory");
+            #endif
+        }
+
         size_t seg_idx = idx / segment_size_;
         size_t offset = idx % segment_size_;
-        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
 
-        if (!segment) {
-            for (int spins = 0; spins < 1000 && !segment; ++spins) {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #endif
-                segment = segments_[seg_idx].load(std::memory_order_acquire);
-            }
-            if (!segment) {
-                fprintf(stderr, "FATAL: SegmentedArray::operator[] const segment null: seg_idx=%zu, idx=%u, count=%u\n",
-                        seg_idx, idx, count_.load());
-                abort();
-            }
-        }
+        // CRITICAL: Must use acquire to see segment pointer stored before count_ was updated.
+        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
 
         return segment[offset];
     }
@@ -240,6 +257,12 @@ public:
     // Used when the index is managed by an external counter (e.g., edge IDs)
     // This avoids the race condition in ensure_size/emplace where another thread
     // might be constructing the same slot
+    //
+    // MEMORY ORDERING:
+    // 1. Element construction happens-before release fence
+    // 2. Release fence happens-before segment store (release)
+    // 3. Segment store (release) synchronizes-with segment load (acquire) in operator[]
+    // 4. Therefore: element data is visible to threads that load the segment
     template<typename Arena, typename... Args>
     void emplace_at(uint32_t idx, Arena& arena, Args&&... args) {
         size_t seg_idx = idx / segment_size_;
@@ -254,17 +277,17 @@ public:
         }
 
         // Construct the element directly with provided arguments
-        // No need to touch count_ - the caller manages the index externally
         new (&segment[offset]) T(std::forward<Args>(args)...);
 
-        // CRITICAL: Ensure the constructed element is visible to other threads.
-        // We use an atomic store to the segment pointer (already there) as sync point.
-        // The release ordering ensures all prior writes (including T construction)
-        // are visible to threads that see the updated segment pointer.
-        //
-        // Note: segments_[seg_idx] was already stored with release in get_or_create_segment.
-        // But that happened BEFORE construction. We need a release AFTER construction.
-        // Use a dummy release store to segments_ to create the synchronization point.
+        // CRITICAL: Release fence ensures element construction is complete and visible
+        // before the segment pointer store. Without this, readers may see the segment
+        // pointer but not the element data due to store reordering.
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // Store segment pointer with release (pairs with acquire in operator[])
+        // Note: segments_[seg_idx] was already stored in get_or_create_segment,
+        // but that was BEFORE construction. This store creates the synchronization
+        // point AFTER construction.
         segments_[seg_idx].store(segment, std::memory_order_release);
 
         // Update count_ to at least idx+1 for iteration purposes

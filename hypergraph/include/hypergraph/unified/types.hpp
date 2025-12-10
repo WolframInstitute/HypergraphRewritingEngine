@@ -358,4 +358,194 @@ struct StateBranchialInfo {
     // Placeholder - actual event list stored externally due to dependency ordering
 };
 
+// =============================================================================
+// EventCanonicalizationMode: Controls how events are deduplicated
+// =============================================================================
+
+enum class EventCanonicalizationMode {
+    None,              // No event deduplication - all events created
+    ByState,           // Deduplicate by (canonical_input, canonical_output) only
+    ByStateAndEdges    // Deduplicate by canonical states + edge correspondence
+};
+
+// Note on naming correspondence with v1/Wolfram multicomputation library:
+// - v1 "Full mode" = our ByState (simpler, state IDs only)
+// - v1 "Automatic mode" = our ByStateAndEdges (includes edge positions)
+
+// =============================================================================
+// EdgeOccurrence: Position of a vertex within an edge
+// =============================================================================
+
+struct EdgeOccurrence {
+    EdgeId edge_id;
+    uint8_t position;
+    uint8_t arity;
+
+    EdgeOccurrence() : edge_id(INVALID_ID), position(0), arity(0) {}
+    EdgeOccurrence(EdgeId eid, uint8_t pos, uint8_t ar)
+        : edge_id(eid), position(pos), arity(ar) {}
+};
+
+// =============================================================================
+// SubtreeBloomFilter: Compact representation of vertices in a subtree
+// =============================================================================
+// Uses bloom filter to track subtree membership with O(1) membership test.
+// False positives possible (may say vertex is in subtree when it isn't),
+// but no false negatives (never says vertex is not in subtree when it is).
+// This is safe: false positives just cause unnecessary recomputation.
+
+struct SubtreeBloomFilter {
+    static constexpr size_t NUM_BITS = 256;  // 32 bytes per filter
+    static constexpr size_t NUM_WORDS = NUM_BITS / 64;
+    static constexpr size_t NUM_HASHES = 3;  // Number of hash functions
+
+    uint64_t bits[NUM_WORDS] = {0};
+
+    void clear() {
+        for (size_t i = 0; i < NUM_WORDS; ++i) bits[i] = 0;
+    }
+
+    void add(VertexId v) {
+        // Use different hash functions (simple mixing)
+        uint64_t h1 = v * 0x9e3779b97f4a7c15ULL;
+        uint64_t h2 = v * 0xc6a4a7935bd1e995ULL;
+        uint64_t h3 = v * 0x85ebca6b;
+
+        bits[(h1 >> 6) % NUM_WORDS] |= (1ULL << (h1 & 63));
+        bits[(h2 >> 6) % NUM_WORDS] |= (1ULL << (h2 & 63));
+        bits[(h3 >> 6) % NUM_WORDS] |= (1ULL << (h3 & 63));
+    }
+
+    bool might_contain(VertexId v) const {
+        uint64_t h1 = v * 0x9e3779b97f4a7c15ULL;
+        uint64_t h2 = v * 0xc6a4a7935bd1e995ULL;
+        uint64_t h3 = v * 0x85ebca6b;
+
+        return (bits[(h1 >> 6) % NUM_WORDS] & (1ULL << (h1 & 63))) &&
+               (bits[(h2 >> 6) % NUM_WORDS] & (1ULL << (h2 & 63))) &&
+               (bits[(h3 >> 6) % NUM_WORDS] & (1ULL << (h3 & 63)));
+    }
+
+    // Check if any vertex in the given set might be in this subtree
+    template<typename Container>
+    bool might_contain_any(const Container& vertices) const {
+        for (VertexId v : vertices) {
+            if (might_contain(v)) return true;
+        }
+        return false;
+    }
+};
+
+// =============================================================================
+// VertexHashCache: Cached vertex subtree hashes for a state
+// =============================================================================
+// Used by both uniqueness tree and WL implementations
+// Now includes subtree bloom filters for O(1) dirty detection
+
+struct VertexHashCache {
+    // The hash for each vertex in the state
+    // Using simple arrays + count for arena-friendly storage
+    VertexId* vertices;
+    uint64_t* hashes;
+    SubtreeBloomFilter* subtree_filters;  // Bloom filter for each vertex's subtree
+    void* adjacency_ptr;  // Type-erased pointer to adjacency map for this state
+    uint32_t count;
+    uint32_t capacity;
+
+    VertexHashCache() : vertices(nullptr), hashes(nullptr), subtree_filters(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
+
+    uint64_t lookup(VertexId v) const {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (vertices[i] == v) return hashes[i];
+        }
+        return 0;
+    }
+
+    // Lookup hash and return subtree filter if found
+    std::pair<uint64_t, const SubtreeBloomFilter*> lookup_with_subtree(VertexId v) const {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (vertices[i] == v) {
+                return {hashes[i], subtree_filters ? &subtree_filters[i] : nullptr};
+            }
+        }
+        return {0, nullptr};
+    }
+
+    void insert(VertexId v, uint64_t hash) {
+        // Note: caller must ensure capacity
+        vertices[count] = v;
+        hashes[count] = hash;
+        ++count;
+    }
+
+    void insert_with_subtree(VertexId v, uint64_t hash, const SubtreeBloomFilter& filter) {
+        vertices[count] = v;
+        hashes[count] = hash;
+        if (subtree_filters) {
+            subtree_filters[count] = filter;
+        }
+        ++count;
+    }
+};
+
+// =============================================================================
+// EdgeCorrespondence: Mapping between edges in two isomorphic states
+// =============================================================================
+
+struct EdgeCorrespondence {
+    EdgeId* state1_edges;
+    EdgeId* state2_edges;
+    uint32_t count;
+    bool valid;
+
+    EdgeCorrespondence() : state1_edges(nullptr), state2_edges(nullptr), count(0), valid(false) {}
+};
+
+// =============================================================================
+// EventSignature: Signature for event deduplication
+// =============================================================================
+
+constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
+constexpr uint64_t FNV_PRIME = 0x100000001b3ULL;
+
+inline uint64_t fnv_hash(uint64_t h, uint64_t value) {
+    h ^= value;
+    h *= FNV_PRIME;
+    return h;
+}
+
+struct EventSignature {
+    uint64_t input_state_hash;
+    uint64_t output_state_hash;
+    uint64_t consumed_edges_sig;
+    uint64_t produced_edges_sig;
+
+    uint64_t hash() const {
+        uint64_t h = FNV_OFFSET;
+        h = fnv_hash(h, input_state_hash);
+        h = fnv_hash(h, output_state_hash);
+        h = fnv_hash(h, consumed_edges_sig);
+        h = fnv_hash(h, produced_edges_sig);
+        return h;
+    }
+};
+
+// =============================================================================
+// StateIncrementalCache: Cached data for incremental hash computation
+// =============================================================================
+// Stores per-state vertex hash cache to enable incremental computation.
+// When computing a child state's hash, we can reuse unchanged vertex hashes
+// from the parent state.
+//
+// Also stores a pointer to cached adjacency (arena-allocated) to avoid
+// rebuilding adjacency for each child state.
+
+struct StateIncrementalCache {
+    VertexHashCache vertex_cache;
+    void* adjacency_ptr;  // Pointer to arena-allocated adjacency map (type-erased)
+    std::atomic<bool> valid;  // Whether cache has been computed (atomic for thread-safety)
+
+    StateIncrementalCache() : vertex_cache(), adjacency_ptr(nullptr), valid(false) {}
+};
+
 }  // namespace hypergraph::unified

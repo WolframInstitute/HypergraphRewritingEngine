@@ -140,8 +140,13 @@ public:
         }
 
         // Compute canonical hash for new state
-        // Use UniquenessTree for isomorphism-invariant hashing
-        uint64_t canonical_hash = hg_->compute_canonical_hash(new_edges);
+        // Use incremental path when IncrementalUniquenessTree strategy is selected
+        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
+            new_edges,
+            input_state,  // Parent state for incremental computation
+            matched_edges, num_matched,  // Consumed edges
+            result.produced_edges, result.num_produced  // Produced edges
+        );
 
         // Try to create or get existing canonical state
         auto [canonical_id, raw_id, was_new] = hg_->create_or_get_canonical_state(
@@ -151,14 +156,22 @@ public:
             INVALID_ID  // Will be updated when event is created
         );
 
+        // Store cache for the new state (for future incremental computation)
+        hg_->store_state_cache(raw_id, vertex_cache);
+
         result.new_state = canonical_id;
         result.raw_state = raw_id;
         result.was_new_state = was_new;
 
         // Create the event (even for duplicate states - we want to track all paths)
-        result.event = hg_->create_event(
+        // IMPORTANT: Use raw_state (not new_state/canonical_id) as output_state
+        // The raw_state contains the actual produced edges, while new_state is
+        // the canonical representative which may be a different state.
+        // This is critical for ByStateAndEdges event canonicalization which needs
+        // to find edge correspondence between the output_state and canonical_output.
+        auto event_result = hg_->create_event(
             input_state,
-            result.new_state,
+            result.raw_state,  // Use raw state that contains produced edges
             rule.index,
             matched_edges,
             num_matched,
@@ -166,6 +179,7 @@ public:
             result.num_produced,
             binding
         );
+        result.event = event_result.event_id;
 
         // =====================================================================
         // Online Causal/Branchial Tracking
@@ -183,10 +197,12 @@ public:
         }
 
         // Register for branchial tracking (checks overlap with other events from same state)
-        // Use the canonical state ID for grouping to ensure determinism across runs
-        StateId canonical_input = hg_->get_canonical_state(input_state);
+        // Use the RAW input state ID for grouping (matching v1's behavior)
+        // Branchial edges only connect events from the SAME actual state, not just canonically equivalent
+        // Pass canonical_event_id to enable skipping branchial edges between equivalent events
         hg_->register_event_for_branchial(
-            result.event, canonical_input, matched_edges, num_matched
+            result.event, input_state, matched_edges, num_matched,
+            event_result.canonical_event_id
         );
 
         result.success = true;
