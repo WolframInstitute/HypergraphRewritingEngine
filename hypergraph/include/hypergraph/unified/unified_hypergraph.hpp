@@ -1166,6 +1166,38 @@ public:
         }
     }
 
+    // Create a genesis event for an initial state.
+    // This synthetic event has input_state = INVALID_ID and output_state = initial_state.
+    // It "produces" all edges in the initial state, enabling causal tracking from gen 0.
+    // Returns the genesis event ID.
+    EventId create_genesis_event(StateId initial_state, const EdgeId* edges, uint8_t num_edges) {
+        // Allocate event ID
+        EventId eid = counters_.alloc_event();
+
+        // Allocate produced edges array
+        EdgeId* produced = arena_.allocate_array<EdgeId>(num_edges);
+        std::memcpy(produced, edges, num_edges * sizeof(EdgeId));
+
+        // Directly construct event at slot eid using emplace_at
+        // Genesis event: input_state = INVALID_ID, output_state = initial_state
+        // Rule index = -1 (no rule applied), consumes nothing, produces all initial edges
+        events_.emplace_at(eid, arena_, eid, INVALID_ID, initial_state,
+                           static_cast<RuleIndex>(-1),
+                           nullptr, 0,  // consumed_edges (none)
+                           produced, num_edges,  // produced_edges
+                           VariableBinding{});  // empty binding
+
+        // CRITICAL: Release fence to ensure event data is visible to other threads
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // Register this event as the producer of all initial edges
+        for (uint8_t i = 0; i < num_edges; ++i) {
+            set_edge_producer(edges[i], eid);
+        }
+
+        return eid;
+    }
+
     // Register event for branchial tracking
     // When event canonicalization is enabled, uses edge equivalence for overlap detection
     // and skips branchial edges between canonically equivalent events
@@ -1675,8 +1707,7 @@ public:
             return;  // Only store for incremental strategy
         }
 
-        state_incremental_cache_.ensure_size(state + 1, arena_);
-        StateIncrementalCache& slot = state_incremental_cache_[state];
+        StateIncrementalCache& slot = state_incremental_cache_.get_or_default(state, arena_);
 
         // Try to claim this slot atomically. If another thread already set valid=true,
         // skip - we don't want to race on the non-atomic vertex_cache struct.

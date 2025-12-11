@@ -19,18 +19,22 @@ struct RewriteResult {
     StateId new_state;         // The canonical state ID (for deduplication)
     StateId raw_state;         // The raw state ID we created (with actual produced edges)
     EventId event;             // The event recording this rewrite (INVALID_ID if state existed)
+    EventId canonical_event;   // The canonical event ID (same as event if is_canonical_event)
     EdgeId produced_edges[MAX_PATTERN_EDGES];  // Edges created by the rewrite
     uint8_t num_produced;      // Number of edges produced
     bool success;              // Whether rewrite succeeded
     bool was_new_state;        // true if new canonical state, false if existing canonical found
+    bool is_canonical_event;   // true if this event is canonical (first with this signature)
 
     RewriteResult()
         : new_state(INVALID_ID)
         , raw_state(INVALID_ID)
         , event(INVALID_ID)
+        , canonical_event(INVALID_ID)
         , num_produced(0)
         , success(false)
         , was_new_state(false)
+        , is_canonical_event(false)
     {
         std::memset(produced_edges, 0xFF, sizeof(produced_edges));
     }
@@ -180,6 +184,8 @@ public:
             binding
         );
         result.event = event_result.event_id;
+        result.canonical_event = event_result.canonical_event_id;
+        result.is_canonical_event = event_result.is_canonical;
 
         // =====================================================================
         // Online Causal/Branchial Tracking

@@ -124,3 +124,9 @@ if(BUILD_GPU)
         message(WARNING "CUDA not found - GPU support disabled")
     endif()
 endif()
+
+# Optional: Build interactive visualization
+option(BUILD_VISUALIZATION "Build interactive hypergraph visualization" OFF)
+if(BUILD_VISUALIZATION)
+    add_subdirectory(visualisation)
+endif()

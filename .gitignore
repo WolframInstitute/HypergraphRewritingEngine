@@ -18,3 +18,5 @@
 !/benchmark_results/*/BENCHMARKS.md
 !/benchmark_results/*/plots/
 !/benchmark_results/*/plots/*.png
+
+*.spv

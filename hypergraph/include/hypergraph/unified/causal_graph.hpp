@@ -12,6 +12,11 @@
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
 
+// Visualization event emission (compiles to no-op when disabled)
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+#include <events/viz_event_sink.hpp>
+#endif
+
 namespace hypergraph::unified {
 
 // =============================================================================
@@ -455,6 +460,11 @@ public:
             causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
             num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
 
+            // Emit visualization event for causal edge
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+            VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
+#endif
+
             // Update causal adjacency for future TR checks
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
                 LockFreeList<EventId>* successors = get_or_create_causal_successors(producer);
@@ -474,6 +484,13 @@ public:
     void add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
         branchial_edges_.push(BranchialEdge(e1, e2, shared), *arena_);
         num_branchial_edges_.fetch_add(1, std::memory_order_relaxed);
+
+        // Emit visualization event for branchial edge
+        // Note: We use generation=0 here as we don't have generation info in this context
+        // The actual generation can be determined by the visualization from event data
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+        VIZ_EMIT_BRANCHIAL_EDGE(e1, e2, 0);
+#endif
     }
 
     // Iterate over causal edges

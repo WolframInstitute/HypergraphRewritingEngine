@@ -25,6 +25,11 @@
 
 #include <job_system/job_system.hpp>
 
+// Visualization event emission (compiles to no-op when disabled)
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+#include <events/viz_event_sink.hpp>
+#endif
+
 namespace hypergraph::unified {
 
 // =============================================================================
@@ -328,6 +333,11 @@ class ParallelEvolutionEngine {
     bool validate_match_forwarding_{true};  // Enabled for debugging
     std::atomic<size_t> validation_mismatches_{0};
 
+    // Genesis events: create synthetic events for initial states that produce
+    // all initial edges. This enables causal edges from initial state to gen 1.
+    // Disabled by default to maintain backwards compatibility with tests.
+    bool enable_genesis_events_{false};
+
     // Track missing hashes to verify they arrive later via push
     // Value is (state_id << 16) | rule_index for debugging
     ConcurrentMap<uint64_t, uint64_t> missing_match_hashes_{4096};
@@ -405,6 +415,12 @@ public:
     void set_transitive_reduction(bool enable) {
         if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
     }
+
+    // Enable genesis events for initial states.
+    // When enabled, a synthetic event is created for each initial state that
+    // "produces" all edges in that state. This allows causal edges to be
+    // tracked from the initial state's edges to events that consume them.
+    void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
@@ -440,6 +456,18 @@ public:
     }
 
     const EvolutionStats& stats() const { return stats_; }
+
+    // Request early termination of evolution
+    // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
+    // Call wait_for_idle() after request_stop() to ensure all jobs have completed.
+    void request_stop() {
+        should_stop_.store(true, std::memory_order_release);
+    }
+
+    // Check if stop has been requested
+    bool stop_requested() const {
+        return should_stop_.load(std::memory_order_acquire);
+    }
 
     // =========================================================================
     // Main Evolution Loop - Dataflow Driven
@@ -493,6 +521,50 @@ public:
         // Store cache for the initial state
         hg_->store_state_cache(raw_state, vertex_cache);
 
+        // Emit visualization event for initial state
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+        {
+            const auto& state_data = hg_->get_state(raw_state);
+            VIZ_EMIT_STATE_CREATED(
+                raw_state,                // state id
+                0,                        // parent state id (0 = none)
+                0,                        // generation (initial state is gen 0)
+                state_data.edges.count(), // edge count
+                0                         // vertex count (not tracked per-state)
+            );
+            // Emit hyperedge data for each edge in the initial state
+            uint32_t edge_idx = 0;
+            state_data.edges.for_each([&](EdgeId eid) {
+                const Edge& edge = hg_->get_edge(eid);
+                VIZ_EMIT_HYPEREDGE(raw_state, edge_idx++, edge.vertices, edge.arity);
+            });
+        }
+#endif
+
+        // Create genesis event if enabled
+        // This allows causal edges from initial state edges to be tracked
+        if (enable_genesis_events_) {
+            EventId genesis_event = hg_->create_genesis_event(
+                raw_state,
+                edge_ids.data(),
+                static_cast<uint8_t>(edge_ids.size())
+            );
+
+            // Emit visualization event for the genesis event
+            // Genesis events are always canonical (unique by definition)
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+            VIZ_EMIT_REWRITE_APPLIED(
+                viz::VIZ_NO_SOURCE_STATE,  // source_state (none - genesis)
+                raw_state,      // target_state (initial state)
+                static_cast<RuleIndex>(-1),  // rule_index (none)
+                genesis_event,  // event_id (raw)
+                genesis_event,  // canonical_event_id (same as raw for genesis)
+                0,              // destroyed edges (none)
+                static_cast<uint8_t>(edge_ids.size())  // created edges
+            );
+#endif
+        }
+
         // Mark initial state as matched (waiting version for correctness)
         matched_raw_states_.insert_if_absent_waiting(raw_state, true);
 
@@ -505,6 +577,16 @@ public:
         // CRITICAL: Acquire fence to ensure all writes from worker threads are visible
         // This pairs with release semantics of atomic operations in worker threads
         std::atomic_thread_fence(std::memory_order_acquire);
+
+        // Emit visualization event for evolution completion
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+        VIZ_EMIT_EVOLUTION_COMPLETE(
+            hg_->num_states(),      // total states
+            hg_->num_events(),      // total events
+            max_steps_,             // max generation
+            hg_->num_states()       // final state count (approximation)
+        );
+#endif
     }
 
     // =========================================================================
@@ -1328,6 +1410,42 @@ private:
             if (rr.was_new_state) {
                 total_new_states_.fetch_add(1, std::memory_order_relaxed);
             }
+
+            // Emit visualization events for canonical states only
+            // For events: emit ALL events but include canonical_event_id for deduplication
+            // The visualization can then deduplicate edges using canonical event IDs
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+            if (rr.was_new_state) {
+                // Emit StateCreated only for new canonical states
+                const auto& state_data = hg_->get_state(rr.new_state);
+                VIZ_EMIT_STATE_CREATED(
+                    rr.new_state,             // state id (canonical)
+                    match.source_state,       // parent state id
+                    step + 1,                 // generation
+                    state_data.edges.count(), // edge count
+                    0                         // vertex count (not tracked)
+                );
+                // Emit hyperedge data for each edge in the new state
+                uint32_t edge_idx = 0;
+                state_data.edges.for_each([&](EdgeId eid) {
+                    const Edge& edge = hg_->get_edge(eid);
+                    VIZ_EMIT_HYPEREDGE(rr.new_state, edge_idx++, edge.vertices, edge.arity);
+                });
+            }
+            // Emit RewriteApplied for ALL events
+            // Use canonical state as target (for consistent edge endpoints)
+            // The event_id allows tracking raw→canonical mapping for causal/branchial
+            // canonical_event_id allows deduplication: only create viz edges for canonical events
+            VIZ_EMIT_REWRITE_APPLIED(
+                match.source_state,       // source state
+                rr.new_state,             // target state (canonical)
+                match.rule_index,         // rule index
+                rr.event,                 // raw event id (for tracking)
+                rr.canonical_event,       // canonical event id (for deduplication)
+                match.num_edges,          // destroyed edges count
+                rr.num_produced           // created edges count
+            );
+#endif
 
             // Spawn MATCH task for the new raw state if it hasn't been matched yet
             // In multiway rewriting, each raw state (even if isomorphic) needs to be
