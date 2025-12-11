@@ -50,7 +50,8 @@ static void enable_dpi_awareness() {
 static bool dpi_initialized = (enable_dpi_awareness(), true);
 
 // Windows virtual key to our KeyCode mapping
-static KeyCode vk_to_keycode(WPARAM vk) {
+// lParam is needed to distinguish left/right modifier keys
+static KeyCode vk_to_keycode(WPARAM vk, LPARAM lParam) {
     // Letters
     if (vk >= 'A' && vk <= 'Z') {
         return static_cast<KeyCode>(vk);
@@ -64,6 +65,23 @@ static KeyCode vk_to_keycode(WPARAM vk) {
     // Function keys
     if (vk >= VK_F1 && vk <= VK_F12) {
         return static_cast<KeyCode>(static_cast<uint16_t>(KeyCode::F1) + (vk - VK_F1));
+    }
+
+    // Handle generic modifier keys - Windows sends VK_SHIFT/VK_CONTROL/VK_MENU
+    // and we need to use MapVirtualKey with the scan code to get left/right
+    UINT scancode = (lParam >> 16) & 0xFF;
+    bool extended = (lParam >> 24) & 0x1;
+
+    switch (vk) {
+        case VK_SHIFT: {
+            // Use MapVirtualKey to distinguish left/right shift
+            UINT mapped_vk = MapVirtualKey(scancode, MAPVK_VSC_TO_VK_EX);
+            return (mapped_vk == VK_RSHIFT) ? KeyCode::RightShift : KeyCode::LeftShift;
+        }
+        case VK_CONTROL:
+            return extended ? KeyCode::RightControl : KeyCode::LeftControl;
+        case VK_MENU:
+            return extended ? KeyCode::RightAlt : KeyCode::LeftAlt;
     }
 
     // Special keys
@@ -365,7 +383,7 @@ LRESULT Win32Window::handle_message(UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN: {
-            KeyCode key = vk_to_keycode(wParam);
+            KeyCode key = vk_to_keycode(wParam, lParam);
             Modifiers mods = get_current_modifiers();
             update_key_state(key, true);
 
@@ -377,7 +395,7 @@ LRESULT Win32Window::handle_message(UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_KEYUP:
         case WM_SYSKEYUP: {
-            KeyCode key = vk_to_keycode(wParam);
+            KeyCode key = vk_to_keycode(wParam, lParam);
             Modifiers mods = get_current_modifiers();
             update_key_state(key, false);
 
