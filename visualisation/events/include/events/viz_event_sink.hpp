@@ -93,9 +93,10 @@ public:
     }
 
     // Emit a branchial edge event
-    static void emit_branchial_edge(uint64_t state_a, uint64_t state_b, uint32_t generation) {
+    // Parameters are EVENT IDs, not state IDs - branchial edges connect events that share consumed edges
+    static void emit_branchial_edge(uint64_t event_a_id, uint64_t event_b_id, uint32_t generation) {
         if (buffer_) {
-            auto event = VizEvent::make_branchial_edge(state_a, state_b, generation);
+            auto event = VizEvent::make_branchial_edge(event_a_id, event_b_id, generation);
             buffer_->try_push(event);
         }
     }
@@ -140,8 +141,8 @@ private:
 #define VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge_id) \
     ::viz::VizEventSink::emit_causal_edge(producer, consumer, edge_id)
 
-#define VIZ_EMIT_BRANCHIAL_EDGE(state_a, state_b, gen) \
-    ::viz::VizEventSink::emit_branchial_edge(state_a, state_b, gen)
+#define VIZ_EMIT_BRANCHIAL_EDGE(event_a, event_b, gen) \
+    ::viz::VizEventSink::emit_branchial_edge(event_a, event_b, gen)
 
 #define VIZ_EMIT_EVOLUTION_COMPLETE(total_states, total_events, max_gen, final_count) \
     ::viz::VizEventSink::emit_evolution_complete(total_states, total_events, max_gen, final_count)
@@ -155,7 +156,7 @@ private:
 #define VIZ_EMIT_MATCH_FOUND(state_id, rule_idx, edges, count) ((void)0)
 #define VIZ_EMIT_REWRITE_APPLIED(src_state, tgt_state, rule_idx, event_id, canonical_event_id, destroyed, created) ((void)0)
 #define VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge_id) ((void)0)
-#define VIZ_EMIT_BRANCHIAL_EDGE(state_a, state_b, gen) ((void)0)
+#define VIZ_EMIT_BRANCHIAL_EDGE(event_a, event_b, gen) ((void)0)
 #define VIZ_EMIT_EVOLUTION_COMPLETE(total_states, total_events, max_gen, final_count) ((void)0)
 #define VIZ_IS_ACTIVE() false
 

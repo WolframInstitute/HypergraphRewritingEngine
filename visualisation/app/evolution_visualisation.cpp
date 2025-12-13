@@ -31,7 +31,6 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
-#include <queue>
 #include <algorithm>
 
 using namespace viz;
@@ -315,79 +314,29 @@ EvolutionRenderer::EvolutionLayout layout_evolution_simple(const Evolution& evo)
 
     const size_t num_states = evo.states.size();
 
-    // Build adjacency: for each state, find its parent via Event edges
-    // and track children for deterministic ordering
-    std::vector<StateId> parent(num_states, UINT32_MAX);  // UINT32_MAX = no parent
-    std::vector<std::vector<StateId>> children(num_states);
-
-    for (const auto& edge : evo.evolution_edges) {
-        if (edge.type == EvolutionEdgeType::Event) {
-            if (edge.source < num_states && edge.target < num_states) {
-                // target is child of source
-                if (parent[edge.target] == UINT32_MAX) {
-                    parent[edge.target] = edge.source;
-                    children[edge.source].push_back(edge.target);
-                }
-            }
-        }
-    }
-
-    // Find root(s) - only initial states (not orphaned states waiting for edges)
-    std::vector<StateId> roots;
-    for (StateId s = 0; s < num_states; ++s) {
-        // A state is a root if it's marked as initial
-        if (evo.states[s].is_initial) {
-            roots.push_back(s);
-        }
-    }
-
-    // Sort roots and children for deterministic output
-    std::sort(roots.begin(), roots.end());
-    for (auto& child_list : children) {
-        std::sort(child_list.begin(), child_list.end());
-    }
-
-    // BFS from roots to compute generations and track which states are reachable
-    std::vector<uint32_t> generation(num_states, 0);
-    std::vector<bool> visited(num_states, false);
+    // Group states by their generation (stored in State struct from engine)
+    // This allows positioning states immediately when they arrive, without
+    // needing Event edges to determine their generation.
     std::vector<std::vector<StateId>> by_gen;
 
-    std::queue<StateId> queue;
-    for (StateId root : roots) {
-        queue.push(root);
-        visited[root] = true;
-    }
-    if (!roots.empty()) {
-        by_gen.push_back(roots);
-    }
-
-    while (!queue.empty()) {
-        StateId s = queue.front();
-        queue.pop();
-
-        uint32_t child_gen = generation[s] + 1;
-        for (StateId child : children[s]) {
-            if (!visited[child]) {
-                visited[child] = true;
-                generation[child] = child_gen;
-                while (by_gen.size() <= child_gen) {
-                    by_gen.push_back({});
-                }
-                by_gen[child_gen].push_back(child);
-                queue.push(child);
-            }
+    for (const auto& state : evo.states) {
+        uint32_t gen = state.generation;
+        while (by_gen.size() <= gen) {
+            by_gen.push_back({});
         }
+        by_gen[gen].push_back(state.id);
     }
 
-    // Sort each generation for deterministic layout
+    // Sort each generation by state ID for deterministic layout
     for (auto& gen_states : by_gen) {
         std::sort(gen_states.begin(), gen_states.end());
     }
 
     // Position states - center each generation horizontally
     // Y increases downward (positive Y = down the screen, toward camera)
+    // All states are visible since we use stored generation (no BFS needed)
     layout.state_positions.resize(num_states, {0, 0, 0});
-    layout.state_visible = visited;  // Copy visibility from BFS traversal
+    layout.state_visible.resize(num_states, true);  // All states visible
 
     for (size_t gen = 0; gen < by_gen.size(); ++gen) {
         const auto& gen_states = by_gen[gen];
@@ -426,72 +375,26 @@ EvolutionRenderer::EvolutionLayout layout_evolution_slab(const Evolution& evo,
 
     const size_t num_states = evo.states.size();
 
-    // Build parent-child relationships (same as flat layout)
-    std::vector<StateId> parent(num_states, UINT32_MAX);
-    std::vector<std::vector<StateId>> children(num_states);
-
-    for (const auto& edge : evo.evolution_edges) {
-        if (edge.type == EvolutionEdgeType::Event) {
-            if (edge.source < num_states && edge.target < num_states) {
-                if (parent[edge.target] == UINT32_MAX) {
-                    parent[edge.target] = edge.source;
-                    children[edge.source].push_back(edge.target);
-                }
-            }
-        }
-    }
-
-    // Find initial roots
-    std::vector<StateId> roots;
-    for (StateId s = 0; s < num_states; ++s) {
-        if (evo.states[s].is_initial) {
-            roots.push_back(s);
-        }
-    }
-    std::sort(roots.begin(), roots.end());
-    for (auto& child_list : children) {
-        std::sort(child_list.begin(), child_list.end());
-    }
-
-    // BFS to compute generations
-    std::vector<uint32_t> generation(num_states, 0);
-    std::vector<bool> visited(num_states, false);
+    // Group states by their generation (stored in State struct from engine)
     std::vector<std::vector<StateId>> by_gen;
 
-    std::queue<StateId> queue;
-    for (StateId root : roots) {
-        queue.push(root);
-        visited[root] = true;
-    }
-    if (!roots.empty()) {
-        by_gen.push_back(roots);
-    }
-
-    while (!queue.empty()) {
-        StateId s = queue.front();
-        queue.pop();
-
-        uint32_t child_gen = generation[s] + 1;
-        for (StateId child : children[s]) {
-            if (!visited[child]) {
-                visited[child] = true;
-                generation[child] = child_gen;
-                while (by_gen.size() <= child_gen) {
-                    by_gen.push_back({});
-                }
-                by_gen[child_gen].push_back(child);
-                queue.push(child);
-            }
+    for (const auto& state : evo.states) {
+        uint32_t gen = state.generation;
+        while (by_gen.size() <= gen) {
+            by_gen.push_back({});
         }
+        by_gen[gen].push_back(state.id);
     }
 
+    // Sort each generation by state ID for deterministic layout
     for (auto& gen_states : by_gen) {
         std::sort(gen_states.begin(), gen_states.end());
     }
 
     // Position states in 2D slabs centered at each generation's Y level
+    // All states are visible since we use stored generation (no BFS needed)
     layout.state_positions.resize(num_states, {0, 0, 0});
-    layout.state_visible = visited;
+    layout.state_visible.resize(num_states, true);  // All states visible
 
     for (size_t gen = 0; gen < by_gen.size(); ++gen) {
         const auto& gen_states = by_gen[gen];
@@ -560,7 +463,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  SPACE: Start/restart evolution with selected rule" << std::endl;
     std::cout << "  1-5: Select rule (see below)" << std::endl;
     std::cout << "  L: Toggle layout mode (Flat Layers / Slab Layers)" << std::endl;
-    std::cout << "  M: Toggle MSAA antialiasing (4x, default ON)" << std::endl;
+    std::cout << "  M: Cycle MSAA antialiasing (OFF -> 2x -> 4x -> 8x -> ...)" << std::endl;
     std::cout << "  A: Toggle debug axis (XYZ lines)" << std::endl;
     std::cout << "  R: Reset visualization" << std::endl;
     std::cout << "  ESC: Exit" << std::endl;
@@ -573,29 +476,47 @@ int main(int argc, char* argv[]) {
     std::cout << "  5: {x,y},{x,y,z} -> mixed arities  (2+3 edge -> 2+3+4 edge)" << std::endl;
     std::cout << std::endl;
 
+    auto startup_time = std::chrono::high_resolution_clock::now();
+
     // Create window
+    auto t0 = std::chrono::high_resolution_clock::now();
     platform::WindowDesc window_desc;
     window_desc.title = "Evolution Visualisation";
     window_desc.width = 1920;
     window_desc.height = 1080;
 
     auto window = platform::Window::create(window_desc);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Startup] Window create: "
+              << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms" << std::endl;
     if (!window) {
         std::cerr << "Failed to create window" << std::endl;
         return 1;
     }
 
     // Initialize GAL
+    auto t2 = std::chrono::high_resolution_clock::now();
     if (!gal::initialize(gal::Backend::Vulkan)) {
         std::cerr << "Failed to initialize GAL" << std::endl;
         return 1;
     }
+    auto t3 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Startup] GAL init: "
+              << std::chrono::duration<double, std::milli>(t3 - t2).count() << " ms" << std::endl;
 
     gal::DeviceDesc device_desc;
     device_desc.app_name = "EvolutionViz";
+#ifdef NDEBUG
+    device_desc.enable_validation = false;
+#else
     device_desc.enable_validation = true;
+#endif
 
+    auto t4 = std::chrono::high_resolution_clock::now();
     auto device = gal::Device::create(device_desc);
+    auto t5 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Startup] Device create: "
+              << std::chrono::duration<double, std::milli>(t5 - t4).count() << " ms" << std::endl;
     if (!device) {
         std::cerr << "Failed to create device" << std::endl;
         gal::shutdown();
@@ -605,6 +526,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Device: " << device->get_info().device_name << std::endl;
 
     // Create surface
+    auto t6 = std::chrono::high_resolution_clock::now();
     VkInstance vk_instance = gal::get_vk_instance(device.get());
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
@@ -613,6 +535,9 @@ int main(int argc, char* argv[]) {
 #elif defined(VIZ_PLATFORM_WINDOWS)
     surface = gal::create_win32_surface(vk_instance, GetModuleHandle(nullptr), window->get_native_window());
 #endif
+    auto t7 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Startup] Surface create: "
+              << std::chrono::duration<double, std::milli>(t7 - t6).count() << " ms" << std::endl;
 
     if (surface == VK_NULL_HANDLE) {
         std::cerr << "Failed to create surface" << std::endl;
@@ -621,9 +546,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    auto t8 = std::chrono::high_resolution_clock::now();
     auto swapchain = device->create_swapchain(
         reinterpret_cast<gal::Handle>(surface),
         window->get_width(), window->get_height());
+    auto t9 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Startup] Swapchain create: "
+              << std::chrono::duration<double, std::milli>(t9 - t8).count() << " ms" << std::endl;
 
     if (!swapchain) {
         std::cerr << "Failed to create swapchain" << std::endl;
@@ -632,7 +561,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Timing for initialization
+    auto init_start = std::chrono::high_resolution_clock::now();
+
     // Load shaders
+    auto shader_start = std::chrono::high_resolution_clock::now();
     auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
     auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
     auto instance_cone_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cone.vert.spv");
@@ -651,6 +584,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "Warning: Instanced shaders not found, instanced rendering disabled" << std::endl;
     }
 
+    auto shader_load_end = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Shader file load: "
+              << std::chrono::duration<double, std::milli>(shader_load_end - shader_start).count() << " ms" << std::endl;
+
+    auto shader_create_start = std::chrono::high_resolution_clock::now();
     gal::ShaderDesc vert_desc;
     vert_desc.stage = gal::ShaderStage::Vertex;
     vert_desc.spirv_code = vert_spirv.data();
@@ -662,6 +600,10 @@ int main(int argc, char* argv[]) {
     frag_desc.spirv_code = frag_spirv.data();
     frag_desc.spirv_size = frag_spirv.size() * sizeof(uint32_t);
     auto fragment_shader = device->create_shader(frag_desc);
+
+    auto shader_create_end = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Shader module create: "
+              << std::chrono::duration<double, std::milli>(shader_create_end - shader_create_start).count() << " ms" << std::endl;
 
     if (!vertex_shader || !fragment_shader) {
         std::cerr << "Failed to create shaders" << std::endl;
@@ -691,6 +633,9 @@ int main(int argc, char* argv[]) {
 
     gal::BlendState alpha_blend = gal::BlendState::alpha_blend();
 
+    // Depth format for all pipelines
+    gal::Format depth_format = gal::Format::D32_FLOAT;
+
     gal::RenderPipelineDesc pipeline_desc;
     pipeline_desc.vertex_shader = vertex_shader.get();
     pipeline_desc.fragment_shader = fragment_shader.get();
@@ -698,29 +643,60 @@ int main(int argc, char* argv[]) {
     pipeline_desc.vertex_layout_count = 1;
     pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
     pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-    pipeline_desc.depth_stencil.depth_test_enable = false;
+    pipeline_desc.depth_stencil.depth_test_enable = true;
+    pipeline_desc.depth_stencil.depth_write_enable = true;
+    pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
     pipeline_desc.blend_states = &opaque_blend;
     pipeline_desc.blend_state_count = 1;
     pipeline_desc.color_formats = &color_format;
     pipeline_desc.color_format_count = 1;
+    pipeline_desc.depth_format = depth_format;
     pipeline_desc.push_constant_size = sizeof(math::mat4);
 
+    auto pipeline_start = std::chrono::high_resolution_clock::now();
     auto triangle_pipeline = device->create_render_pipeline(pipeline_desc);
+    auto p1 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Pipeline 1 (triangle): "
+              << std::chrono::duration<double, std::milli>(p1 - pipeline_start).count() << " ms" << std::endl;
 
+    // Wireframe pipeline: triangles rendered as lines
+    pipeline_desc.rasterizer.polygon_mode = gal::PolygonMode::Line;
+    pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;  // No culling for wireframe
+    auto wireframe_pipeline = device->create_render_pipeline(pipeline_desc);
+    auto p2 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Pipeline 2 (wireframe): "
+              << std::chrono::duration<double, std::milli>(p2 - p1).count() << " ms" << std::endl;
+
+    // Reset for line pipeline
+    pipeline_desc.rasterizer.polygon_mode = gal::PolygonMode::Fill;
     pipeline_desc.topology = gal::PrimitiveTopology::LineList;
     pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
     auto line_pipeline = device->create_render_pipeline(pipeline_desc);
+    auto p3 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Pipeline 3 (line): "
+              << std::chrono::duration<double, std::milli>(p3 - p2).count() << " ms" << std::endl;
 
+    // Transparent pipelines: depth test enabled but write disabled
     pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+    pipeline_desc.depth_stencil.depth_write_enable = false;
     pipeline_desc.blend_states = &alpha_blend;
     auto transparent_pipeline = device->create_render_pipeline(pipeline_desc);
+    auto p4 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Pipeline 4 (transparent): "
+              << std::chrono::duration<double, std::milli>(p4 - p3).count() << " ms" << std::endl;
 
     // Transparent line pipeline (for wireframe with alpha < 1)
     pipeline_desc.topology = gal::PrimitiveTopology::LineList;
     pipeline_desc.blend_states = &alpha_blend;
     auto transparent_line_pipeline = device->create_render_pipeline(pipeline_desc);
+    auto p5 = std::chrono::high_resolution_clock::now();
+    std::cout << "[Init] Pipeline 5 (transparent_line): "
+              << std::chrono::duration<double, std::milli>(p5 - p4).count() << " ms" << std::endl;
 
-    if (!triangle_pipeline || !line_pipeline || !transparent_pipeline || !transparent_line_pipeline) {
+    std::cout << "[Init] Total basic pipelines: "
+              << std::chrono::duration<double, std::milli>(p5 - pipeline_start).count() << " ms" << std::endl;
+
+    if (!triangle_pipeline || !wireframe_pipeline || !line_pipeline || !transparent_pipeline || !transparent_line_pipeline) {
         std::cerr << "Failed to create pipelines" << std::endl;
         device.reset();
         gal::shutdown();
@@ -792,15 +768,22 @@ int main(int argc, char* argv[]) {
             cone_pipeline_desc.vertex_layout_count = 2;
             cone_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
             cone_pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-            cone_pipeline_desc.depth_stencil.depth_test_enable = false;
+            cone_pipeline_desc.depth_stencil.depth_test_enable = true;
+            cone_pipeline_desc.depth_stencil.depth_write_enable = true;
+            cone_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
             cone_pipeline_desc.blend_states = &opaque_blend;
             cone_pipeline_desc.blend_state_count = 1;
             cone_pipeline_desc.color_formats = &color_format;
             cone_pipeline_desc.color_format_count = 1;
+            cone_pipeline_desc.depth_format = depth_format;
             cone_pipeline_desc.push_constant_size = sizeof(math::mat4);
             cone_pipeline_desc.debug_name = "instanced_cone_pipeline";
 
+            auto inst_start = std::chrono::high_resolution_clock::now();
             instanced_cone_pipeline = device->create_render_pipeline(cone_pipeline_desc);
+            auto inst_cone = std::chrono::high_resolution_clock::now();
+            std::cout << "[Init] Pipeline 6 (instanced_cone): "
+                      << std::chrono::duration<double, std::milli>(inst_cone - inst_start).count() << " ms" << std::endl;
             instanced_cone_available = instanced_cone_pipeline != nullptr;
 
             // Sphere vertex layout (binding 0, per-vertex)
@@ -835,20 +818,30 @@ int main(int argc, char* argv[]) {
             sphere_pipeline_desc.vertex_layout_count = 2;
             sphere_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
             sphere_pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-            sphere_pipeline_desc.depth_stencil.depth_test_enable = false;
+            sphere_pipeline_desc.depth_stencil.depth_test_enable = true;
+            sphere_pipeline_desc.depth_stencil.depth_write_enable = true;
+            sphere_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
             sphere_pipeline_desc.blend_states = &opaque_blend;
             sphere_pipeline_desc.blend_state_count = 1;
             sphere_pipeline_desc.color_formats = &color_format;
             sphere_pipeline_desc.color_format_count = 1;
+            sphere_pipeline_desc.depth_format = depth_format;
             sphere_pipeline_desc.push_constant_size = sizeof(math::mat4);
             sphere_pipeline_desc.debug_name = "instanced_sphere_pipeline";
 
             instanced_sphere_pipeline = device->create_render_pipeline(sphere_pipeline_desc);
+            auto inst_sphere = std::chrono::high_resolution_clock::now();
+            std::cout << "[Init] Pipeline 7 (instanced_sphere): "
+                      << std::chrono::duration<double, std::milli>(inst_sphere - inst_cone).count() << " ms" << std::endl;
             instanced_sphere_available = instanced_sphere_pipeline != nullptr;
 
             if (instanced_cone_available && instanced_sphere_available) {
                 std::cout << "Instanced rendering enabled (cones + spheres)" << std::endl;
             }
+
+            auto init_end = std::chrono::high_resolution_clock::now();
+            std::cout << "[Init] TOTAL pipeline init: "
+                      << std::chrono::duration<double, std::milli>(init_end - init_start).count() << " ms" << std::endl;
         }
     }
 
@@ -857,8 +850,13 @@ int main(int argc, char* argv[]) {
     // NOTE: EvolutionObserver contains a large ring buffer (~8MB), must be heap-allocated
     auto observer = std::make_unique<EvolutionObserver>();
 
-    // Create buffers
+    // Create buffers - start with reasonable sizes, will grow if needed
     size_t buffer_size = 500000 * sizeof(Vertex);
+    size_t transparent_buffer_size = 500000 * sizeof(Vertex);  // Separate tracking for transparent
+    size_t line_buffer_size = 500000 * sizeof(Vertex);
+    size_t transparent_line_buffer_size = 500000 * sizeof(Vertex);
+    size_t bubble_buffer_size = 500000 * sizeof(Vertex);
+
     gal::BufferDesc buffer_desc;
     buffer_desc.size = buffer_size;
     buffer_desc.usage = gal::BufferUsage::Vertex;
@@ -869,6 +867,22 @@ int main(int argc, char* argv[]) {
     auto transparent_buffer = device->create_buffer(buffer_desc);
     auto line_buffer = device->create_buffer(buffer_desc);
     auto transparent_line_buffer = device->create_buffer(buffer_desc);
+    auto bubble_buffer = device->create_buffer(buffer_desc);  // For wireframe debug of bubbles
+
+    // Helper to resize a buffer if needed (returns true if resized)
+    auto ensure_buffer_capacity = [&device](std::unique_ptr<gal::Buffer>& buf, size_t& current_size,
+                                            size_t needed_size, gal::BufferUsage usage) -> bool {
+        if (needed_size <= current_size) return false;
+        // Grow by 2x to avoid frequent reallocations
+        size_t new_size = std::max(needed_size, current_size * 2);
+        gal::BufferDesc desc;
+        desc.size = new_size;
+        desc.usage = usage;
+        desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+        buf = device->create_buffer(desc);
+        current_size = new_size;
+        return true;
+    };
 
     auto axis_verts = create_axes(5.0f);
     if (axis_buffer) {
@@ -960,27 +974,51 @@ int main(int argc, char* argv[]) {
     EvolutionLayoutMode layout_mode = EvolutionLayoutMode::SlabLayers;  // Default to slab layout
     float viewport_aspect = 16.0f / 9.0f;  // Will be updated from actual window dimensions
     bool show_debug_axis = false;  // Hidden by default, toggle with 'A' key
+    bool wireframe_mode = false;   // Wireframe rendering, toggle with 'W' key
 
-    // MSAA state
-    bool msaa_enabled = true;  // MSAA on by default
-    uint32_t msaa_samples = 4;  // 4x MSAA
+    // MSAA state - build list of supported sample counts based on device limits
+    uint32_t max_msaa = device->get_info().limits.max_samples;
+    std::vector<uint32_t> supported_msaa_levels = {1};  // 1 = off
+    for (uint32_t s = 2; s <= max_msaa; s *= 2) {
+        supported_msaa_levels.push_back(s);
+    }
+    size_t msaa_level_index = (supported_msaa_levels.size() > 2) ? 2 : supported_msaa_levels.size() - 1;  // Default to 4x if available
+    uint32_t msaa_samples = supported_msaa_levels[msaa_level_index];
+    bool msaa_enabled = (msaa_samples > 1);
     bool msaa_dirty = true;     // Need to create MSAA resources
+    std::cout << "MSAA: " << (msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF")
+              << " (max supported: " << max_msaa << "x)" << std::endl;
     std::unique_ptr<gal::Texture> msaa_texture;
+    std::unique_ptr<gal::Texture> depth_texture;  // Depth buffer (with MSAA if enabled)
     std::unique_ptr<gal::RenderPipeline> msaa_triangle_pipeline;
     std::unique_ptr<gal::RenderPipeline> msaa_line_pipeline;
     std::unique_ptr<gal::RenderPipeline> msaa_transparent_pipeline;
     std::unique_ptr<gal::RenderPipeline> msaa_transparent_line_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_wireframe_pipeline;
     std::unique_ptr<gal::RenderPipeline> msaa_instanced_cone_pipeline;
     std::unique_ptr<gal::RenderPipeline> msaa_instanced_sphere_pipeline;
 
-    // Helper to create MSAA resources
+    // Helper to create MSAA and depth resources
     auto create_msaa_resources = [&](uint32_t width, uint32_t height) {
+        // Always create depth texture (with or without MSAA)
+        gal::TextureDesc depth_desc;
+        depth_desc.size = {width, height, 1};
+        depth_desc.format = depth_format;
+        depth_desc.usage = gal::TextureUsage::DepthStencil;
+        depth_desc.sample_count = msaa_enabled ? msaa_samples : 1;
+        depth_texture = device->create_texture(depth_desc);
+
+        if (!depth_texture) {
+            std::cerr << "Failed to create depth texture" << std::endl;
+        }
+
         if (!msaa_enabled) {
             msaa_texture.reset();
             msaa_triangle_pipeline.reset();
             msaa_line_pipeline.reset();
             msaa_transparent_pipeline.reset();
             msaa_transparent_line_pipeline.reset();
+            msaa_wireframe_pipeline.reset();
             msaa_instanced_cone_pipeline.reset();
             msaa_instanced_sphere_pipeline.reset();
             return;
@@ -1008,11 +1046,14 @@ int main(int argc, char* argv[]) {
         msaa_pipeline_desc.vertex_layout_count = 1;
         msaa_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
         msaa_pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-        msaa_pipeline_desc.depth_stencil.depth_test_enable = false;
+        msaa_pipeline_desc.depth_stencil.depth_test_enable = true;
+        msaa_pipeline_desc.depth_stencil.depth_write_enable = true;
+        msaa_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
         msaa_pipeline_desc.blend_states = &opaque_blend;
         msaa_pipeline_desc.blend_state_count = 1;
         msaa_pipeline_desc.color_formats = &color_format;
         msaa_pipeline_desc.color_format_count = 1;
+        msaa_pipeline_desc.depth_format = depth_format;
         msaa_pipeline_desc.push_constant_size = sizeof(math::mat4);
         msaa_pipeline_desc.multisample.count = msaa_samples;
 
@@ -1022,12 +1063,24 @@ int main(int argc, char* argv[]) {
         msaa_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
         msaa_line_pipeline = device->create_render_pipeline(msaa_pipeline_desc);
 
+        // Transparent MSAA pipelines: depth test but no depth write
         msaa_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+        msaa_pipeline_desc.depth_stencil.depth_write_enable = false;
         msaa_pipeline_desc.blend_states = &alpha_blend;
         msaa_transparent_pipeline = device->create_render_pipeline(msaa_pipeline_desc);
 
         msaa_pipeline_desc.topology = gal::PrimitiveTopology::LineList;
         msaa_transparent_line_pipeline = device->create_render_pipeline(msaa_pipeline_desc);
+
+        // MSAA wireframe pipeline for bubble debug
+        msaa_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+        msaa_pipeline_desc.rasterizer.polygon_mode = gal::PolygonMode::Line;
+        msaa_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
+        msaa_pipeline_desc.depth_stencil.depth_write_enable = true;  // Write depth for wireframe
+        msaa_pipeline_desc.blend_states = &opaque_blend;
+        msaa_wireframe_pipeline = device->create_render_pipeline(msaa_pipeline_desc);
+        // Reset polygon mode for subsequent pipelines
+        msaa_pipeline_desc.rasterizer.polygon_mode = gal::PolygonMode::Fill;
 
         if (!msaa_triangle_pipeline || !msaa_line_pipeline ||
             !msaa_transparent_pipeline || !msaa_transparent_line_pipeline) {
@@ -1076,11 +1129,14 @@ int main(int argc, char* argv[]) {
             cone_pipeline_desc.vertex_layout_count = 2;
             cone_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
             cone_pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-            cone_pipeline_desc.depth_stencil.depth_test_enable = false;
+            cone_pipeline_desc.depth_stencil.depth_test_enable = true;
+            cone_pipeline_desc.depth_stencil.depth_write_enable = true;
+            cone_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
             cone_pipeline_desc.blend_states = &opaque_blend;
             cone_pipeline_desc.blend_state_count = 1;
             cone_pipeline_desc.color_formats = &color_format;
             cone_pipeline_desc.color_format_count = 1;
+            cone_pipeline_desc.depth_format = depth_format;
             cone_pipeline_desc.push_constant_size = sizeof(math::mat4);
             cone_pipeline_desc.multisample.count = msaa_samples;
             cone_pipeline_desc.debug_name = "msaa_instanced_cone_pipeline";
@@ -1121,11 +1177,14 @@ int main(int argc, char* argv[]) {
             sphere_pipeline_desc.vertex_layout_count = 2;
             sphere_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
             sphere_pipeline_desc.rasterizer.cull_mode = gal::CullMode::Back;
-            sphere_pipeline_desc.depth_stencil.depth_test_enable = false;
+            sphere_pipeline_desc.depth_stencil.depth_test_enable = true;
+            sphere_pipeline_desc.depth_stencil.depth_write_enable = true;
+            sphere_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
             sphere_pipeline_desc.blend_states = &opaque_blend;
             sphere_pipeline_desc.blend_state_count = 1;
             sphere_pipeline_desc.color_formats = &color_format;
             sphere_pipeline_desc.color_format_count = 1;
+            sphere_pipeline_desc.depth_format = depth_format;
             sphere_pipeline_desc.push_constant_size = sizeof(math::mat4);
             sphere_pipeline_desc.multisample.count = msaa_samples;
             sphere_pipeline_desc.debug_name = "msaa_instanced_sphere_pipeline";
@@ -1133,7 +1192,6 @@ int main(int argc, char* argv[]) {
             msaa_instanced_sphere_pipeline = device->create_render_pipeline(sphere_pipeline_desc);
         }
 
-        std::cout << "MSAA " << msaa_samples << "x enabled" << std::endl;
     };
 
     // Geometry buffers
@@ -1141,6 +1199,7 @@ int main(int argc, char* argv[]) {
     std::vector<Vertex> transparent_verts;
     std::vector<Vertex> line_verts;
     std::vector<Vertex> transparent_line_verts;  // Wireframe with alpha blending
+    std::vector<Vertex> bubble_verts;            // Hyperedge bubbles (for wireframe debug)
     bool geometry_dirty = true;
 
     // Logging state (must be outside render loop for lambda access)
@@ -1243,10 +1302,17 @@ int main(int argc, char* argv[]) {
             std::cout << "Debug axis: " << (show_debug_axis ? "ON" : "OFF") << std::endl;
         }
         else if (key == platform::KeyCode::M) {
-            // Toggle MSAA
-            msaa_enabled = !msaa_enabled;
+            // Cycle through MSAA levels: OFF -> 2x -> 4x -> 8x -> ... -> OFF
+            msaa_level_index = (msaa_level_index + 1) % supported_msaa_levels.size();
+            msaa_samples = supported_msaa_levels[msaa_level_index];
+            msaa_enabled = (msaa_samples > 1);
             msaa_dirty = true;  // Will recreate resources on next frame
-            std::cout << "MSAA: " << (msaa_enabled ? "ON (4x)" : "OFF") << std::endl;
+            std::cout << "MSAA: " << (msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF") << std::endl;
+        }
+        else if (key == platform::KeyCode::W) {
+            // Toggle wireframe mode
+            wireframe_mode = !wireframe_mode;
+            std::cout << "Wireframe mode: " << (wireframe_mode ? "ON" : "OFF") << std::endl;
         }
     };
 
@@ -1276,6 +1342,9 @@ int main(int argc, char* argv[]) {
     std::cout << "\nStarting render loop..." << std::endl;
     std::cout << "Press SPACE to start evolution" << std::endl;
 
+    // Keep previous frame's command buffer alive until fence is signaled
+    std::unique_ptr<gal::CommandBuffer> in_flight_cmd;
+
     // Render loop
     while (window->is_open()) {
         window->poll_events();
@@ -1292,8 +1361,8 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Process events from evolution engine
-        size_t events_processed = observer->process_events(100);  // Process up to 100 per frame
+        // Process events from evolution engine (drain all available)
+        size_t events_processed = observer->process_events();
 
         if (events_processed > 0) {
             geometry_dirty = true;
@@ -1335,31 +1404,38 @@ int main(int argc, char* argv[]) {
 
         // Regenerate geometry if needed
         if (geometry_dirty) {
+            auto frame_start = std::chrono::high_resolution_clock::now();
+
             triangle_verts.clear();
             transparent_verts.clear();
             line_verts.clear();
             transparent_line_verts.clear();
+            bubble_verts.clear();
             sphere_instances.clear();
             cone_instances.clear();
 
             const Evolution& evo = observer->get_evolution();
             if (!evo.states.empty()) {
+                // Time layout computation
+                auto layout_start = std::chrono::high_resolution_clock::now();
                 auto layout = layout_evolution(evo, layout_mode, viewport_aspect);
-                std::cout << "[Render] Generating geometry for " << evo.states.size()
-                          << " states with " << layout.state_positions.size() << " positions"
-                          << " (mode: " << (layout_mode == EvolutionLayoutMode::SlabLayers ? "Slab" : "Flat")
-                          << ")" << std::endl;
+                auto layout_end = std::chrono::high_resolution_clock::now();
+                auto layout_ms = std::chrono::duration<double, std::milli>(layout_end - layout_start).count();
+
+                // Time geometry generation (includes Minkowski sum for bubbles)
+                auto geo_start = std::chrono::high_resolution_clock::now();
                 auto geo = evo_renderer.generate_states_graph(evo, layout);
-                std::cout << "[Render] Generated: sphere_instances=" << geo.internal_sphere_instances.size()
-                          << " cone_instances=" << geo.internal_cone_instances.size()
-                          << " internal_lines=" << geo.internal_edge_lines.size()
-                          << " internal_bubbles=" << geo.internal_bubbles.size()
-                          << " wireframe=" << geo.state_wireframe.size()
-                          << " faces=" << geo.state_faces.size()
-                          << " event_arrows=" << geo.event_arrows.size()
-                          << " event_lines=" << geo.event_lines.size()
-                          << " causal_lines=" << geo.causal_lines.size()
-                          << " branchial_lines=" << geo.branchial_lines.size() << std::endl;
+                auto geo_end = std::chrono::high_resolution_clock::now();
+                auto geo_ms = std::chrono::duration<double, std::milli>(geo_end - geo_start).count();
+
+                // Log timing every frame that has geometry changes
+                std::cout << "[Timing] Layout: " << layout_ms << " ms, "
+                          << "Geometry: " << geo_ms << " ms "
+                          << "(states=" << evo.states.size()
+                          << ", bubbles=" << geo.internal_bubbles.size() / 3 << " tris)" << std::endl;
+
+                // Print Minkowski sum timing breakdown
+                evo_renderer.print_minkowski_timing();
 
                 // Collect instanced sphere data
                 if (instanced_sphere_available) {
@@ -1375,10 +1451,15 @@ int main(int argc, char* argv[]) {
                         geo.internal_cone_instances.end());
                 }
 
-                // Event arrows still use legacy triangles (they're not internal hypergraph arrows)
-                triangle_verts.insert(triangle_verts.end(),
-                    reinterpret_cast<Vertex*>(geo.event_arrows.data()),
-                    reinterpret_cast<Vertex*>(geo.event_arrows.data() + geo.event_arrows.size()));
+                // Event and causal arrows use instanced cone rendering
+                if (instanced_cone_available) {
+                    cone_instances.insert(cone_instances.end(),
+                        geo.event_cone_instances.begin(),
+                        geo.event_cone_instances.end());
+                    cone_instances.insert(cone_instances.end(),
+                        geo.causal_cone_instances.begin(),
+                        geo.causal_cone_instances.end());
+                }
 
                 // Helper to route lines to opaque or transparent pipeline based on alpha
                 auto add_lines = [&](const std::vector<RenderVertex>& verts) {
@@ -1405,45 +1486,73 @@ int main(int argc, char* argv[]) {
                 transparent_verts.insert(transparent_verts.end(),
                     reinterpret_cast<Vertex*>(geo.internal_bubbles.data()),
                     reinterpret_cast<Vertex*>(geo.internal_bubbles.data() + geo.internal_bubbles.size()));
+
+                // Bubbles separately for wireframe debug
+                bubble_verts.insert(bubble_verts.end(),
+                    reinterpret_cast<Vertex*>(geo.internal_bubbles.data()),
+                    reinterpret_cast<Vertex*>(geo.internal_bubbles.data() + geo.internal_bubbles.size()));
             }
 
-            // Upload to buffers
-            if (triangle_buffer && !triangle_verts.empty()) {
-                triangle_buffer->write(triangle_verts.data(),
-                    std::min(triangle_verts.size() * sizeof(Vertex), buffer_size));
+            // Time buffer uploads
+            auto upload_start = std::chrono::high_resolution_clock::now();
+
+            // Upload to buffers - resize if needed
+            if (!triangle_verts.empty()) {
+                size_t needed = triangle_verts.size() * sizeof(Vertex);
+                ensure_buffer_capacity(triangle_buffer, buffer_size, needed, gal::BufferUsage::Vertex);
+                if (triangle_buffer) triangle_buffer->write(triangle_verts.data(), needed);
             }
-            if (transparent_buffer && !transparent_verts.empty()) {
-                transparent_buffer->write(transparent_verts.data(),
-                    std::min(transparent_verts.size() * sizeof(Vertex), buffer_size));
+            if (!transparent_verts.empty()) {
+                size_t needed = transparent_verts.size() * sizeof(Vertex);
+                ensure_buffer_capacity(transparent_buffer, transparent_buffer_size, needed, gal::BufferUsage::Vertex);
+                if (transparent_buffer) transparent_buffer->write(transparent_verts.data(), needed);
             }
-            if (line_buffer && !line_verts.empty()) {
-                line_buffer->write(line_verts.data(),
-                    std::min(line_verts.size() * sizeof(Vertex), buffer_size));
+            if (!line_verts.empty()) {
+                size_t needed = line_verts.size() * sizeof(Vertex);
+                ensure_buffer_capacity(line_buffer, line_buffer_size, needed, gal::BufferUsage::Vertex);
+                if (line_buffer) line_buffer->write(line_verts.data(), needed);
             }
-            if (transparent_line_buffer && !transparent_line_verts.empty()) {
-                transparent_line_buffer->write(transparent_line_verts.data(),
-                    std::min(transparent_line_verts.size() * sizeof(Vertex), buffer_size));
+            if (!transparent_line_verts.empty()) {
+                size_t needed = transparent_line_verts.size() * sizeof(Vertex);
+                ensure_buffer_capacity(transparent_line_buffer, transparent_line_buffer_size, needed, gal::BufferUsage::Vertex);
+                if (transparent_line_buffer) transparent_line_buffer->write(transparent_line_verts.data(), needed);
+            }
+            if (!bubble_verts.empty()) {
+                size_t needed = bubble_verts.size() * sizeof(Vertex);
+                ensure_buffer_capacity(bubble_buffer, bubble_buffer_size, needed, gal::BufferUsage::Vertex);
+                if (bubble_buffer) bubble_buffer->write(bubble_verts.data(), needed);
             }
 
-            // Upload instanced data
-            if (instanced_sphere_available && sphere_instance_buffer && !sphere_instances.empty()) {
-                size_t data_size = sphere_instances.size() * sizeof(SphereInstance);
-                if (data_size <= sphere_instance_buffer_size) {
-                    sphere_instance_buffer->write(sphere_instances.data(), data_size);
-                }
+            // Upload instanced data - resize if needed
+            if (instanced_sphere_available && !sphere_instances.empty()) {
+                size_t needed = sphere_instances.size() * sizeof(SphereInstance);
+                ensure_buffer_capacity(sphere_instance_buffer, sphere_instance_buffer_size,
+                    needed, gal::BufferUsage::Vertex);
+                if (sphere_instance_buffer) sphere_instance_buffer->write(sphere_instances.data(), needed);
             }
-            if (instanced_cone_available && cone_instance_buffer && !cone_instances.empty()) {
-                size_t data_size = cone_instances.size() * sizeof(ConeInstance);
-                if (data_size <= cone_instance_buffer_size) {
-                    cone_instance_buffer->write(cone_instances.data(), data_size);
-                }
+            if (instanced_cone_available && !cone_instances.empty()) {
+                size_t needed = cone_instances.size() * sizeof(ConeInstance);
+                ensure_buffer_capacity(cone_instance_buffer, cone_instance_buffer_size,
+                    needed, gal::BufferUsage::Vertex);
+                if (cone_instance_buffer) cone_instance_buffer->write(cone_instances.data(), needed);
             }
+
+            auto upload_end = std::chrono::high_resolution_clock::now();
+            auto upload_ms = std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
+
+            auto frame_end = std::chrono::high_resolution_clock::now();
+            auto total_ms = std::chrono::duration<double, std::milli>(frame_end - frame_start).count();
+
+            std::cout << "[Timing] Upload: " << upload_ms << " ms, Total frame update: " << total_ms << " ms" << std::endl;
 
             geometry_dirty = false;
         }
 
         fence->wait();
         fence->reset();
+
+        // Safe to release previous frame's command buffer now (GPU finished with it)
+        in_flight_cmd.reset();
 
         auto acquire = swapchain->acquire_next_image(image_semaphore.get(), nullptr);
         if (!acquire.success) {
@@ -1476,6 +1585,8 @@ int main(int argc, char* argv[]) {
             ? msaa_transparent_pipeline.get() : transparent_pipeline.get();
         gal::RenderPipeline* active_transparent_line_pipeline = msaa_enabled && msaa_transparent_line_pipeline
             ? msaa_transparent_line_pipeline.get() : transparent_line_pipeline.get();
+        gal::RenderPipeline* active_wireframe_pipeline = msaa_enabled && msaa_wireframe_pipeline
+            ? msaa_wireframe_pipeline.get() : wireframe_pipeline.get();
 
         // Render pass
         gal::RenderPassColorAttachment color_att;
@@ -1495,10 +1606,20 @@ int main(int argc, char* argv[]) {
         color_att.clear_color[2] = colors::BACKGROUND.z;
         color_att.clear_color[3] = colors::BACKGROUND.w;
 
+        // Depth attachment
+        gal::RenderPassDepthAttachment depth_att;
+        depth_att.texture = depth_texture.get();
+        depth_att.depth_load_op = gal::LoadOp::Clear;
+        depth_att.depth_store_op = gal::StoreOp::DontCare;
+        depth_att.clear_depth = 1.0f;
+
         gal::RenderPassBeginInfo rp_info;
         rp_info.pipeline = active_triangle_pipeline;
         rp_info.color_attachments = &color_att;
         rp_info.color_attachment_count = 1;
+        if (depth_texture) {
+            rp_info.depth_attachment = depth_att;
+        }
 
         auto rp = encoder->begin_render_pass(rp_info);
         if (rp) {
@@ -1547,6 +1668,14 @@ int main(int argc, char* argv[]) {
                 rp->draw(static_cast<uint32_t>(transparent_verts.size()), 1, 0, 0);
             }
 
+            // Wireframe debug for bubbles (only when enabled)
+            if (wireframe_mode && !bubble_verts.empty() && bubble_buffer) {
+                rp->set_pipeline(active_wireframe_pipeline);
+                rp->push_constants(vp.m, sizeof(math::mat4));
+                rp->set_vertex_buffer(0, bubble_buffer.get());
+                rp->draw(static_cast<uint32_t>(bubble_verts.size()), 1, 0, 0);
+            }
+
             // Lines
             rp->set_pipeline(active_line_pipeline);
             rp->push_constants(vp.m, sizeof(math::mat4));
@@ -1573,11 +1702,12 @@ int main(int argc, char* argv[]) {
             rp->end();
         }
 
-        auto cmd = encoder->finish();
-        device->submit(cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
+        in_flight_cmd = encoder->finish();
+        device->submit(in_flight_cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
 
         if (!swapchain->present(render_semaphore.get())) {
             device->wait_idle();
+            in_flight_cmd.reset();  // GPU idle, safe to release
             swapchain->resize(window->get_width(), window->get_height());
         }
 
@@ -1591,6 +1721,9 @@ int main(int argc, char* argv[]) {
 #endif
 
     device->wait_idle();
+
+    // Release in-flight command buffer (GPU is idle now)
+    in_flight_cmd.reset();
 
     // Cleanup
     transparent_line_buffer.reset();
@@ -1612,15 +1745,19 @@ int main(int argc, char* argv[]) {
     // MSAA resources
     msaa_instanced_sphere_pipeline.reset();
     msaa_instanced_cone_pipeline.reset();
+    msaa_wireframe_pipeline.reset();
     msaa_transparent_line_pipeline.reset();
     msaa_transparent_pipeline.reset();
     msaa_line_pipeline.reset();
     msaa_triangle_pipeline.reset();
     msaa_texture.reset();
+    depth_texture.reset();
+    bubble_buffer.reset();
 
     transparent_line_pipeline.reset();
     transparent_pipeline.reset();
     line_pipeline.reset();
+    wireframe_pipeline.reset();
     triangle_pipeline.reset();
     vertex_shader.reset();
     fragment_shader.reset();

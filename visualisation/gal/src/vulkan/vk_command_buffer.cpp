@@ -98,10 +98,29 @@ struct RenderPassKeyHash {
 static std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKeyHash> g_render_pass_cache;
 static VkDevice g_cache_device = VK_NULL_HANDLE;
 
+// Called from device destruction to clean up cached render passes
+void cleanup_render_pass_cache(VkDevice device) {
+    if (g_cache_device == device) {
+        for (auto& [key, rp] : g_render_pass_cache) {
+            vk::vkDestroyRenderPass(device, rp, nullptr);
+        }
+        g_render_pass_cache.clear();
+        g_cache_device = VK_NULL_HANDLE;
+    }
+}
+
 class VulkanCommandBuffer : public CommandBuffer {
 public:
-    VulkanCommandBuffer(VkDevice device, VkCommandBuffer cmd)
-        : device_(device), cmd_(cmd) {}
+    VulkanCommandBuffer(VkDevice device, VkCommandBuffer cmd, std::vector<VkFramebuffer>&& framebuffers)
+        : device_(device), cmd_(cmd), framebuffers_(std::move(framebuffers)) {}
+
+    ~VulkanCommandBuffer() override {
+        // Framebuffers are destroyed when command buffer is destroyed
+        // (which should happen after GPU execution completes via fence wait)
+        for (auto fb : framebuffers_) {
+            vk::vkDestroyFramebuffer(device_, fb, nullptr);
+        }
+    }
 
     Handle get_native_handle() const override { return reinterpret_cast<Handle>(cmd_); }
 
@@ -110,6 +129,7 @@ public:
 private:
     VkDevice device_;
     VkCommandBuffer cmd_;
+    std::vector<VkFramebuffer> framebuffers_;  // Owned framebuffers - destroyed when command buffer is done
 };
 
 class VulkanRenderPassEncoder : public RenderPassEncoder {
@@ -173,7 +193,8 @@ public:
         : device_(device), pool_(pool) {}
 
     ~VulkanCommandEncoder() override {
-        // Clean up any allocated framebuffers
+        // Framebuffers are transferred to the command buffer in finish()
+        // Only clean up if finish() was never called (error path)
         for (auto fb : framebuffers_) {
             vk::vkDestroyFramebuffer(device_, fb, nullptr);
         }
@@ -290,11 +311,14 @@ static VkRenderPass get_or_create_render_pass(VkDevice device, const RenderPassB
         attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
-        // Initial layout depends on loadOp:
-        // - LOAD: must be COLOR_ATTACHMENT_OPTIMAL (content preserved)
+        // Initial layout depends on loadOp and whether this is swapchain:
+        // - LOAD + swapchain: must be PRESENT_SRC_KHR (comes from presentation)
+        // - LOAD + non-swapchain: must be SHADER_READ_ONLY_OPTIMAL (was sampled) or COLOR_ATTACHMENT_OPTIMAL
         // - CLEAR/DONT_CARE: can be UNDEFINED (content discarded)
         if (key.color_load_ops[i] == VK_ATTACHMENT_LOAD_OP_LOAD) {
-            attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            // Swapchain images come from present, non-swapchain textures from shader sampling
+            attachment.initialLayout = key.is_swapchain[i] ?
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         } else {
             attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         }
@@ -381,6 +405,7 @@ static VkRenderPass get_or_create_render_pass(VkDevice device, const RenderPassB
     // Subpass dependencies for proper synchronization
     std::vector<VkSubpassDependency> dependencies;
 
+    // Dependency for render pass start (external -> subpass 0)
     VkSubpassDependency dep1{};
     dep1.srcSubpass = VK_SUBPASS_EXTERNAL;
     dep1.dstSubpass = 0;
@@ -393,6 +418,18 @@ static VkRenderPass get_or_create_render_pass(VkDevice device, const RenderPassB
                          VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     dependencies.push_back(dep1);
+
+    // Dependency for render pass end (subpass 0 -> external)
+    // This ensures layout transitions and writes complete before subsequent shader reads
+    VkSubpassDependency dep2{};
+    dep2.srcSubpass = 0;
+    dep2.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dep2.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep2.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep2.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dep2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dep2.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    dependencies.push_back(dep2);
 
     VkRenderPassCreateInfo render_pass_info{};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -470,13 +507,20 @@ std::unique_ptr<RenderPassEncoder> VulkanCommandEncoder::begin_render_pass(const
     framebuffers_.push_back(framebuffer);
 
     // Begin render pass
+    // Only include clear values for attachments that actually use CLEAR loadOp
+    // Otherwise validation warns about "ClearValueWithoutLoadOpClear"
     std::vector<VkClearValue> clear_values;
+    bool has_any_clear = false;
+
     for (uint32_t i = 0; i < info.color_attachment_count; ++i) {
         VkClearValue clear{};
-        clear.color = {{info.color_attachments[i].clear_color[0],
-                        info.color_attachments[i].clear_color[1],
-                        info.color_attachments[i].clear_color[2],
-                        info.color_attachments[i].clear_color[3]}};
+        if (info.color_attachments[i].load_op == LoadOp::Clear) {
+            clear.color = {{info.color_attachments[i].clear_color[0],
+                            info.color_attachments[i].clear_color[1],
+                            info.color_attachments[i].clear_color[2],
+                            info.color_attachments[i].clear_color[3]}};
+            has_any_clear = true;
+        }
         clear_values.push_back(clear);
     }
     // Add placeholder clear values for resolve attachments (they use DONT_CARE but VK wants the array aligned)
@@ -489,7 +533,10 @@ std::unique_ptr<RenderPassEncoder> VulkanCommandEncoder::begin_render_pass(const
     }
     if (info.depth_attachment.texture) {
         VkClearValue clear{};
-        clear.depthStencil = {info.depth_attachment.clear_depth, info.depth_attachment.clear_stencil};
+        if (info.depth_attachment.depth_load_op == LoadOp::Clear) {
+            clear.depthStencil = {info.depth_attachment.clear_depth, info.depth_attachment.clear_stencil};
+            has_any_clear = true;
+        }
         clear_values.push_back(clear);
     }
 
@@ -499,8 +546,9 @@ std::unique_ptr<RenderPassEncoder> VulkanCommandEncoder::begin_render_pass(const
     rp_begin.framebuffer = framebuffer;
     rp_begin.renderArea.offset = {0, 0};
     rp_begin.renderArea.extent = {width, height};
-    rp_begin.clearValueCount = static_cast<uint32_t>(clear_values.size());
-    rp_begin.pClearValues = clear_values.data();
+    // Only provide clear values if at least one attachment uses CLEAR loadOp
+    rp_begin.clearValueCount = has_any_clear ? static_cast<uint32_t>(clear_values.size()) : 0;
+    rp_begin.pClearValues = has_any_clear ? clear_values.data() : nullptr;
 
     vk::vkCmdBeginRenderPass(cmd_, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -598,7 +646,9 @@ std::unique_ptr<CommandBuffer> VulkanCommandEncoder::finish() {
         return nullptr;
     }
 
-    return std::make_unique<VulkanCommandBuffer>(device_, cmd_);
+    // Transfer framebuffer ownership to the command buffer
+    // They will be destroyed when the command buffer is destroyed (after fence wait)
+    return std::make_unique<VulkanCommandBuffer>(device_, cmd_, std::move(framebuffers_));
 }
 
 // Render pass encoder implementation

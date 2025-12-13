@@ -236,12 +236,19 @@ EvolutionRenderer::EvolutionLayout layout_evolution(const Evolution& evo) {
 }
 
 int main(int argc, char* argv[]) {
-    // Allow specifying initial mode via command line: ./hypergraph_test [1-5]
+    // Command line args: ./hypergraph_test [mode 1-5] [--no-instancing]
     int initial_mode = 0;
-    if (argc > 1) {
-        initial_mode = std::atoi(argv[1]) - 1;
-        if (initial_mode < 0 || initial_mode >= static_cast<int>(TestMode::COUNT)) {
-            initial_mode = 0;
+    bool force_no_instancing = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--no-instancing" || arg == "-ni") {
+            force_no_instancing = true;
+        } else {
+            int mode = std::atoi(arg.c_str()) - 1;
+            if (mode >= 0 && mode < static_cast<int>(TestMode::COUNT)) {
+                initial_mode = mode;
+            }
         }
     }
 
@@ -252,6 +259,8 @@ int main(int argc, char* argv[]) {
     std::cout << "  Scroll: Zoom" << std::endl;
     std::cout << "  1-5: Switch test mode" << std::endl;
     std::cout << "  ESC: Exit" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Options: --no-instancing (-ni) to disable instanced rendering" << std::endl;
     std::cout << std::endl;
 
     // Create window
@@ -274,7 +283,11 @@ int main(int argc, char* argv[]) {
 
     gal::DeviceDesc device_desc;
     device_desc.app_name = "HypergraphTest";
+#ifdef NDEBUG
+    device_desc.enable_validation = false;
+#else
     device_desc.enable_validation = true;
+#endif
 
     auto device = gal::Device::create(device_desc);
     if (!device) {
@@ -314,20 +327,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Load shaders
-    auto vert_spirv = load_spirv("../shaders/spirv/basic3d.vert.spv");
-    auto frag_spirv = load_spirv("../shaders/spirv/basic3d.frag.spv");
+    auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
 
     // Instanced cone shaders (uses basic3d.frag for fragment stage)
-    auto instance_cone_vert_spirv = load_spirv("../shaders/spirv/instance_cone.vert.spv");
+    auto instance_cone_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cone.vert.spv");
 
     // Instanced sphere shaders (uses basic3d.frag for fragment stage)
-    auto instance_sphere_vert_spirv = load_spirv("../shaders/spirv/instance_sphere.vert.spv");
+    auto instance_sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
 
     // WBOIT shaders
-    auto wboit_vert_spirv = load_spirv("../shaders/spirv/wboit.vert.spv");
-    auto wboit_frag_spirv = load_spirv("../shaders/spirv/wboit.frag.spv");
-    auto composite_vert_spirv = load_spirv("../shaders/spirv/composite.vert.spv");
-    auto composite_frag_spirv = load_spirv("../shaders/spirv/composite.frag.spv");
+    auto wboit_vert_spirv = load_spirv("../visualisation/shaders/spirv/wboit.vert.spv");
+    auto wboit_frag_spirv = load_spirv("../visualisation/shaders/spirv/wboit.frag.spv");
+    auto composite_vert_spirv = load_spirv("../visualisation/shaders/spirv/composite.vert.spv");
+    auto composite_frag_spirv = load_spirv("../visualisation/shaders/spirv/composite.frag.spv");
 
     if (vert_spirv.empty() || frag_spirv.empty()) {
         std::cerr << "Failed to load basic shaders" << std::endl;
@@ -444,7 +457,8 @@ int main(int argc, char* argv[]) {
     pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
     auto line_pipeline = device->create_render_pipeline(pipeline_desc);
 
-    // Transparent triangle pipeline (for bubbles) - standard alpha blending for now
+    // Transparent triangle pipeline (for bubbles) - standard alpha blending fallback
+    // Note: When WBOIT is enabled, this is only used as fallback
     pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
     pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;  // Draw both sides of bubbles
     pipeline_desc.blend_states = &alpha_blend;
@@ -604,6 +618,21 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Unified instanced rendering flag - both pipelines must be available
+    bool use_instanced_rendering = instanced_cone_available && instanced_sphere_available;
+
+    // Allow command-line override to disable instancing
+    if (force_no_instancing && use_instanced_rendering) {
+        std::cout << "Instanced rendering disabled via --no-instancing" << std::endl;
+        use_instanced_rendering = false;
+    }
+
+    if (use_instanced_rendering) {
+        std::cout << "Using instanced rendering for cones and spheres" << std::endl;
+    } else {
+        std::cout << "Using fallback triangle-based rendering" << std::endl;
+    }
+
     // ========== WBOIT Setup ==========
     // OIT render target textures - created/resized on demand
     std::unique_ptr<gal::Texture> oit_accum_texture;
@@ -729,8 +758,7 @@ int main(int argc, char* argv[]) {
         wboit_desc.vertex_layout_count = 1;
         wboit_desc.topology = gal::PrimitiveTopology::TriangleList;
         wboit_desc.rasterizer.cull_mode = gal::CullMode::None;  // Draw both sides
-        wboit_desc.depth_stencil.depth_test_enable = false;  // No depth test for OIT
-        wboit_desc.depth_stencil.depth_write_enable = false;
+        wboit_desc.depth_stencil.depth_test_enable = false;  // No depth in WBOIT pass (OIT handles ordering)
         wboit_desc.blend_states = wboit_blend_states;
         wboit_desc.blend_state_count = 2;
         wboit_desc.color_formats = wboit_formats;
@@ -958,7 +986,7 @@ int main(int argc, char* argv[]) {
                     reinterpret_cast<Vertex*>(geo.vertex_triangles.data()),
                     reinterpret_cast<Vertex*>(geo.vertex_triangles.data() + geo.vertex_triangles.size()));
                 // Arrow cones: only add legacy triangles if NOT using instanced rendering
-                if (!instanced_cone_available) {
+                if (!use_instanced_rendering) {
                     triangle_verts.insert(triangle_verts.end(),
                         reinterpret_cast<Vertex*>(geo.arrow_triangles.data()),
                         reinterpret_cast<Vertex*>(geo.arrow_triangles.data() + geo.arrow_triangles.size()));
@@ -1230,7 +1258,7 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<gal::Buffer> cone_instance_buffer;
     size_t cone_instance_buffer_size = 10000 * sizeof(ConeInstance);  // Initial capacity for 10k cones
 
-    if (instanced_cone_available) {
+    if (use_instanced_rendering) {
         // Static unit cone mesh buffer
         gal::BufferDesc cone_mesh_desc;
         cone_mesh_desc.size = unit_cone.byte_size();
@@ -1245,7 +1273,7 @@ int main(int argc, char* argv[]) {
 
         if (!cone_mesh_buffer || !cone_instance_buffer) {
             std::cerr << "Failed to create instanced cone buffers, falling back to legacy rendering" << std::endl;
-            instanced_cone_available = false;
+            use_instanced_rendering = false;
         } else {
             std::cout << "Cone mesh buffer: " << unit_cone.byte_size() << " bytes" << std::endl;
             std::cout << "Cone instance buffer: " << cone_instance_buffer_size / 1024 << " KB" << std::endl;
@@ -1257,7 +1285,7 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<gal::Buffer> sphere_instance_buffer;
     size_t sphere_instance_buffer_size = 10000 * sizeof(SphereInstance);  // Initial capacity for 10k spheres
 
-    if (instanced_sphere_available) {
+    if (use_instanced_rendering) {
         // Static unit sphere mesh buffer
         gal::BufferDesc sphere_mesh_desc;
         sphere_mesh_desc.size = unit_sphere.byte_size();
@@ -1272,7 +1300,7 @@ int main(int argc, char* argv[]) {
 
         if (!sphere_mesh_buffer || !sphere_instance_buffer) {
             std::cerr << "Failed to create instanced sphere buffers, falling back to legacy rendering" << std::endl;
-            instanced_sphere_available = false;
+            use_instanced_rendering = false;
         } else {
             std::cout << "Sphere mesh buffer: " << unit_sphere.byte_size() << " bytes" << std::endl;
             std::cout << "Sphere instance buffer: " << sphere_instance_buffer_size / 1024 << " KB" << std::endl;
@@ -1294,7 +1322,7 @@ int main(int argc, char* argv[]) {
 
     // Helper to write cone instances to buffer
     auto write_cone_instances = [&]() {
-        if (!instanced_cone_available || cone_instances.empty()) return;
+        if (!use_instanced_rendering || cone_instances.empty()) return;
 
         size_t data_size = cone_instances.size() * sizeof(ConeInstance);
         ensure_buffer_size(cone_instance_buffer, cone_instance_buffer_size, data_size, "cone_instance");
@@ -1306,7 +1334,7 @@ int main(int argc, char* argv[]) {
 
     // Helper to write sphere instances to buffer
     auto write_sphere_instances = [&]() {
-        if (!instanced_sphere_available || sphere_instances.empty()) return;
+        if (!use_instanced_rendering || sphere_instances.empty()) return;
 
         size_t data_size = sphere_instances.size() * sizeof(SphereInstance);
         ensure_buffer_size(sphere_instance_buffer, sphere_instance_buffer_size, data_size, "sphere_instance");
@@ -1398,6 +1426,9 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\nStarting render loop..." << std::endl;
 
+    // Keep previous frame's command buffer alive until fence is signaled
+    std::unique_ptr<gal::CommandBuffer> in_flight_cmd;
+
     // Render loop
     while (window->is_open()) {
         window->poll_events();
@@ -1430,6 +1461,9 @@ int main(int argc, char* argv[]) {
 
         fence->wait();
         fence->reset();
+
+        // Safe to release previous frame's command buffer now (GPU finished with it)
+        in_flight_cmd.reset();
 
         auto acquire = swapchain->acquire_next_image(image_semaphore.get(), nullptr);
         if (!acquire.success) {
@@ -1484,7 +1518,7 @@ int main(int argc, char* argv[]) {
             }
 
             // 1b. Draw instanced cones (if available)
-            if (instanced_cone_available && !cone_instances.empty()) {
+            if (use_instanced_rendering && !cone_instances.empty()) {
                 rp->set_pipeline(instanced_cone_pipeline.get());
                 rp->push_constants(vp.m, sizeof(math::mat4));
                 rp->set_vertex_buffer(0, cone_mesh_buffer.get());    // Unit cone mesh
@@ -1495,7 +1529,7 @@ int main(int argc, char* argv[]) {
             }
 
             // 1c. Draw instanced spheres (if available)
-            if (instanced_sphere_available && !sphere_instances.empty()) {
+            if (use_instanced_rendering && !sphere_instances.empty()) {
                 rp->set_pipeline(instanced_sphere_pipeline.get());
                 rp->push_constants(vp.m, sizeof(math::mat4));
                 rp->set_vertex_buffer(0, sphere_mesh_buffer.get());    // Unit sphere mesh
@@ -1639,11 +1673,12 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto cmd = encoder->finish();
-        device->submit(cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
+        in_flight_cmd = encoder->finish();
+        device->submit(in_flight_cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
 
         if (!swapchain->present(render_semaphore.get())) {
             device->wait_idle();
+            in_flight_cmd.reset();  // GPU idle, safe to release
             swapchain->resize(window->get_width(), window->get_height());
         }
 
@@ -1652,6 +1687,9 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\nShutting down..." << std::endl;
     device->wait_idle();
+
+    // Release in-flight command buffer (GPU is idle now)
+    in_flight_cmd.reset();
 
     // Cleanup
     // OIT resources

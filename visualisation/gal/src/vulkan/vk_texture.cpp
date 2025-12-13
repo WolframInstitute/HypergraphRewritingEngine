@@ -160,6 +160,15 @@ std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = mem_type;
 
+    // Add memory priority extension info if supported (reduces validation warnings on NVIDIA)
+    // Higher priority (0.8) for render targets/depth buffers, normal (0.5) for regular textures
+    VkMemoryPriorityAllocateInfoEXT priority_info{};
+    priority_info.sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT;
+    bool is_attachment = has_flag(desc.usage, TextureUsage::RenderTarget) ||
+                         has_flag(desc.usage, TextureUsage::DepthStencil);
+    priority_info.priority = is_attachment ? 0.8f : 0.5f;
+    alloc_info.pNext = &priority_info;
+
     VkDeviceMemory memory;
     if (vk::vkAllocateMemory(device, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
         std::cerr << "Failed to allocate texture memory" << std::endl;

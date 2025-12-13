@@ -143,6 +143,13 @@ bool VulkanBuffer::initialize(const BufferDesc& desc) {
         return false;
     }
 
+    // Add memory priority extension info if supported (reduces validation warnings on NVIDIA)
+    // Priority 0.5 = default, higher = more important to keep in VRAM
+    VkMemoryPriorityAllocateInfoEXT priority_info{};
+    priority_info.sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT;
+    priority_info.priority = 0.5f;  // Default priority
+    alloc_info.pNext = &priority_info;
+
     if (vk::vkAllocateMemory(device_, &alloc_info, nullptr, &memory_) != VK_SUCCESS) {
         std::cerr << "Failed to allocate buffer memory" << std::endl;
         vk::vkDestroyBuffer(device_, buffer_, nullptr);
@@ -180,14 +187,16 @@ void VulkanBuffer::destroy() {
         mapped_ptr_ = nullptr;
     }
 
-    if (memory_ != VK_NULL_HANDLE) {
-        vk::vkFreeMemory(device_, memory_, nullptr);
-        memory_ = VK_NULL_HANDLE;
-    }
-
+    // IMPORTANT: Destroy buffer BEFORE freeing memory to avoid validation warnings
+    // "VK Object VkBuffer still has a reference to mem obj VkDeviceMemory"
     if (buffer_ != VK_NULL_HANDLE) {
         vk::vkDestroyBuffer(device_, buffer_, nullptr);
         buffer_ = VK_NULL_HANDLE;
+    }
+
+    if (memory_ != VK_NULL_HANDLE) {
+        vk::vkFreeMemory(device_, memory_, nullptr);
+        memory_ = VK_NULL_HANDLE;
     }
 }
 
@@ -223,6 +232,19 @@ void VulkanBuffer::unmap() {
 void VulkanBuffer::write(const void* data, size_t size, size_t offset) {
     if (memory_location_ == MemoryLocation::GPU_ONLY) {
         std::cerr << "Cannot write directly to GPU_ONLY buffer" << std::endl;
+        return;
+    }
+
+    // Bounds check
+    if (offset + size > size_) {
+        std::cerr << "VulkanBuffer::write: OVERFLOW! offset=" << offset
+                  << " size=" << size << " buffer_size=" << size_
+                  << " (overflow by " << (offset + size - size_) << " bytes)" << std::endl;
+        return;
+    }
+
+    if (!data) {
+        std::cerr << "VulkanBuffer::write: NULL data pointer!" << std::endl;
         return;
     }
 

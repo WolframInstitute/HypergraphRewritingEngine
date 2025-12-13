@@ -121,6 +121,7 @@ PFN_vkCreateComputePipelines vkCreateComputePipelines = nullptr;
 PFN_vkDestroyPipeline vkDestroyPipeline = nullptr;
 PFN_vkCreatePipelineCache vkCreatePipelineCache = nullptr;
 PFN_vkDestroyPipelineCache vkDestroyPipelineCache = nullptr;
+PFN_vkGetPipelineCacheData vkGetPipelineCacheData = nullptr;
 
 // Descriptor sets
 PFN_vkCreateDescriptorSetLayout vkCreateDescriptorSetLayout = nullptr;
@@ -394,6 +395,7 @@ bool load_device_functions(VkDevice device) {
     LOAD_DEVICE_FUNC(vkDestroyPipeline);
     LOAD_DEVICE_FUNC(vkCreatePipelineCache);
     LOAD_DEVICE_FUNC(vkDestroyPipelineCache);
+    LOAD_DEVICE_FUNC(vkGetPipelineCacheData);
 
     // Descriptor sets
     LOAD_DEVICE_FUNC(vkCreateDescriptorSetLayout);

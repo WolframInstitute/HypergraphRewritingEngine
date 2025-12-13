@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iostream>
 #include <unordered_map>
+#include <vector>
 
 namespace viz::platform {
 
@@ -196,7 +197,7 @@ private:
     WindowCallbacks callbacks_;
 
     // Class name for window registration
-    static constexpr const wchar_t* WINDOW_CLASS_NAME = L"VizWindowClass";
+    static constexpr const char* WINDOW_CLASS_NAME = "VizWindowClass";
     static bool class_registered_;
 };
 
@@ -207,8 +208,8 @@ bool Win32Window::initialize(const WindowDesc& desc) {
 
     // Register window class (once)
     if (!class_registered_) {
-        WNDCLASSEXW wc = {};
-        wc.cbSize = sizeof(WNDCLASSEXW);
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXA);
         wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
         wc.lpfnWndProc = WindowProc;
         wc.hInstance = hinstance_;
@@ -216,7 +217,7 @@ bool Win32Window::initialize(const WindowDesc& desc) {
         wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         wc.lpszClassName = WINDOW_CLASS_NAME;
 
-        if (!RegisterClassExW(&wc)) {
+        if (!RegisterClassExA(&wc)) {
             std::cerr << "Failed to register window class" << std::endl;
             return false;
         }
@@ -238,16 +239,11 @@ bool Win32Window::initialize(const WindowDesc& desc) {
     int window_width = rect.right - rect.left;
     int window_height = rect.bottom - rect.top;
 
-    // Convert title to wide string
-    int title_len = MultiByteToWideChar(CP_UTF8, 0, desc.title, -1, nullptr, 0);
-    std::wstring wide_title(title_len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, desc.title, -1, &wide_title[0], title_len);
-
-    // Create window
-    hwnd_ = CreateWindowExW(
+    // Create window using ANSI API (title is already char*)
+    hwnd_ = CreateWindowExA(
         0,
         WINDOW_CLASS_NAME,
-        wide_title.c_str(),
+        desc.title,
         style,
         CW_USEDEFAULT, CW_USEDEFAULT,
         window_width, window_height,
@@ -286,12 +282,7 @@ void Win32Window::destroy() {
 
 void Win32Window::set_title(const char* title) {
     if (!hwnd_) return;
-
-    int title_len = MultiByteToWideChar(CP_UTF8, 0, title, -1, nullptr, 0);
-    std::wstring wide_title(title_len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, title, -1, &wide_title[0], title_len);
-
-    SetWindowTextW(hwnd_, wide_title.c_str());
+    SetWindowTextA(hwnd_, title);
 }
 
 void Win32Window::set_size(uint32_t width, uint32_t height) {

@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 
 namespace viz::scene {
@@ -48,7 +49,7 @@ struct Hyperedge {
 struct Hypergraph {
     std::vector<Hyperedge> edges;
     uint32_t vertex_count = 0;  // Max vertex ID + 1 (for layout sizing)
-    std::vector<VertexId> used_vertices;  // Actually used vertices (for rendering)
+    std::unordered_set<VertexId> used_vertices_set;  // O(1) lookup for dedup
 
     // Add a hyperedge, auto-updating vertex_count and used_vertices
     void add_edge(const std::vector<VertexId>& vertices) {
@@ -57,24 +58,19 @@ struct Hypergraph {
         e.vertices = vertices;
         for (auto v : vertices) {
             if (v >= vertex_count) vertex_count = v + 1;
-            // Track unique used vertices
-            bool found = false;
-            for (auto uv : used_vertices) {
-                if (uv == v) { found = true; break; }
-            }
-            if (!found) used_vertices.push_back(v);
+            used_vertices_set.insert(v);
         }
         edges.push_back(std::move(e));
     }
 
     // Get all unique vertices that are actually used in edges
     std::vector<VertexId> get_vertices() const {
-        return used_vertices;
+        return std::vector<VertexId>(used_vertices_set.begin(), used_vertices_set.end());
     }
 
     // Get count of actually used vertices
     uint32_t num_used_vertices() const {
-        return static_cast<uint32_t>(used_vertices.size());
+        return static_cast<uint32_t>(used_vertices_set.size());
     }
 };
 
@@ -82,6 +78,7 @@ struct Hypergraph {
 struct State {
     StateId id;
     StateId canonical_id;      // If canonicalized, points to canonical representative
+    uint32_t generation = 0;   // Evolution step when this state was created
     Hypergraph hypergraph;
     bool is_initial = false;
 
@@ -137,11 +134,12 @@ struct Evolution {
     std::unordered_map<EventId, size_t> event_index;
 
     // Add a state
-    StateId add_state(const Hypergraph& hg, bool is_initial = false) {
+    StateId add_state(const Hypergraph& hg, bool is_initial = false, uint32_t generation = 0) {
         StateId id = static_cast<StateId>(states.size());
         State s;
         s.id = id;
         s.canonical_id = id;  // Self-canonical by default
+        s.generation = generation;
         s.hypergraph = hg;
         s.is_initial = is_initial;
         state_index[id] = states.size();

@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <functional>
 #include <vector>
+#include <chrono>
 
 namespace viz::scene {
 
@@ -46,6 +47,32 @@ public:
         return event_buffer_.drain([this](const VizEvent& event) {
             process_event(event);
         }, max_count);
+    }
+
+    // Process events until time budget is exhausted (in milliseconds)
+    // Returns number of events processed
+    size_t process_events_timed(double budget_ms) {
+        using clock = std::chrono::steady_clock;
+        auto start = clock::now();
+        auto budget = std::chrono::duration<double, std::milli>(budget_ms);
+        size_t count = 0;
+
+        while (true) {
+            VizEvent event;
+            if (!event_buffer_.try_pop(event)) {
+                break;  // No more events
+            }
+            process_event(event);
+            ++count;
+
+            // Check time budget periodically (every 64 events to reduce overhead)
+            if ((count & 63) == 0) {
+                if (clock::now() - start >= budget) {
+                    break;
+                }
+            }
+        }
+        return count;
     }
 
     // Get the evolution structure (incrementally built)
@@ -175,7 +202,7 @@ private:
         }
 
         bool is_initial = (data.parent_state_id == 0 && data.generation == 0);
-        StateId viz_id = evolution_.add_state(hg, is_initial);
+        StateId viz_id = evolution_.add_state(hg, is_initial, data.generation);
         engine_state_to_viz_[data.state_id] = viz_id;
 
         if (data.generation > max_generation_) {
@@ -339,18 +366,20 @@ private:
                 ? evolution_.add_genesis_event(tgt_viz)
                 : evolution_.add_event(src_viz, tgt_viz);
 
+            // Map canonical event ID so duplicate raw events can find this viz event
+            engine_event_to_viz_[data.canonical_event_id] = event_id;
+
             if (on_event_added_) {
                 on_event_added_(event_id);
             }
         } else {
             // Duplicate canonical event - look up the existing viz event ID
-            // The canonical event should already exist in the map
             auto canonical_it = engine_event_to_viz_.find(data.canonical_event_id);
             if (canonical_it != engine_event_to_viz_.end()) {
                 event_id = canonical_it->second;
             } else {
-                // This shouldn't happen, but handle gracefully
-                // Create the event anyway to avoid breaking pending queue resolution
+                // Should not happen since we map canonical_event_id above
+                // But if it does, use the raw event mapping as fallback
                 event_id = is_genesis
                     ? evolution_.add_genesis_event(tgt_viz)
                     : evolution_.add_event(src_viz, tgt_viz);
@@ -396,26 +425,28 @@ private:
     }
 
     bool try_process_branchial(const BranchialEdgeData& data) {
-        // NOTE: The engine emits event IDs in state_a_id/state_b_id fields
-        // We need to look up the events and get their OUTPUT states
-        // Branchial edges connect the output states of co-occurring events
-        auto a_it = engine_event_to_viz_.find(data.state_a_id);  // Actually event ID
-        auto b_it = engine_event_to_viz_.find(data.state_b_id);  // Actually event ID
+        auto a_it = engine_event_to_viz_.find(data.event_a_id);
+        auto b_it = engine_event_to_viz_.find(data.event_b_id);
 
         if (a_it == engine_event_to_viz_.end() || b_it == engine_event_to_viz_.end()) {
             return false;  // Events not ready yet
         }
 
-        // Look up the events to get their output states
         const Event* event_a = evolution_.get_event(a_it->second);
         const Event* event_b = evolution_.get_event(b_it->second);
 
         if (!event_a || !event_b) {
-            return false;  // Events don't exist (shouldn't happen)
+            return false;
         }
 
-        // Branchial edge connects the output states
-        evolution_.add_branchial_edge(event_a->output_state, event_b->output_state);
+        StateId state_a = event_a->output_state;
+        StateId state_b = event_b->output_state;
+
+        if (state_a >= evolution_.states.size() || state_b >= evolution_.states.size()) {
+            return false;
+        }
+
+        evolution_.add_branchial_edge(state_a, state_b);
         return true;
     }
 

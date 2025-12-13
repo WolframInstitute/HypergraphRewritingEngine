@@ -79,8 +79,8 @@ static_assert(sizeof(CausalEdgeData) == 24, "CausalEdgeData must be 24 bytes");
 
 // Branchial edge event data
 struct BranchialEdgeData {
-    uint64_t state_a_id;         // First state
-    uint64_t state_b_id;         // Second state (same generation)
+    uint64_t event_a_id;         // First event
+    uint64_t event_b_id;         // Second event
     uint32_t generation;         // Evolution step
     uint8_t  padding[4];
 };
@@ -171,12 +171,12 @@ struct alignas(64) VizEvent {
         return e;
     }
 
-    static VizEvent make_branchial_edge(uint64_t state_a, uint64_t state_b, uint32_t gen) {
+    static VizEvent make_branchial_edge(uint64_t event_a, uint64_t event_b, uint32_t gen) {
         VizEvent e{};
         e.type = VizEventType::BranchialEdge;
         e.timestamp = get_timestamp();
-        e.data.branchial_edge.state_a_id = state_a;
-        e.data.branchial_edge.state_b_id = state_b;
+        e.data.branchial_edge.event_a_id = event_a;
+        e.data.branchial_edge.event_b_id = event_b;
         e.data.branchial_edge.generation = gen;
         return e;
     }

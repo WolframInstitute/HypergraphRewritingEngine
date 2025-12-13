@@ -1,5 +1,6 @@
 #include "vk_internal.hpp"
 
+#include <array>
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -103,7 +104,8 @@ bool VulkanBindGroupLayout::initialize(const BindGroupLayoutDesc& desc) {
 // Render pipeline implementation
 class VulkanRenderPipeline : public RenderPipeline {
 public:
-    VulkanRenderPipeline(VkDevice device) : device_(device) {}
+    VulkanRenderPipeline(VkDevice device, VkPipelineCache cache = VK_NULL_HANDLE)
+        : device_(device), pipeline_cache_(cache) {}
     ~VulkanRenderPipeline() override {
         if (pipeline_ != VK_NULL_HANDLE) {
             vk::vkDestroyPipeline(device_, pipeline_, nullptr);
@@ -131,6 +133,7 @@ private:
     bool create_pipeline(const RenderPipelineDesc& desc);
 
     VkDevice device_ = VK_NULL_HANDLE;
+    VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
@@ -321,16 +324,30 @@ bool VulkanRenderPipeline::create_render_pass(const RenderPipelineDesc& desc) {
     subpass.pColorAttachments = color_refs.data();
     subpass.pDepthStencilAttachment = has_depth ? &depth_ref : nullptr;
 
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Subpass dependencies must match what's in vk_command_buffer.cpp for render pass compatibility
+    std::array<VkSubpassDependency, 2> dependencies{};
+
+    // Dependency 1: External -> subpass 0 (for render pass begin)
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    // Dependency 2: subpass 0 -> External (for render pass end)
+    // Ensures layout transitions and writes complete before subsequent shader reads
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo render_pass_info{};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -338,8 +355,8 @@ bool VulkanRenderPipeline::create_render_pass(const RenderPipelineDesc& desc) {
     render_pass_info.pAttachments = attachments.data();
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
-    render_pass_info.dependencyCount = 1;
-    render_pass_info.pDependencies = &dependency;
+    render_pass_info.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    render_pass_info.pDependencies = dependencies.data();
 
     if (vk::vkCreateRenderPass(device_, &render_pass_info, nullptr, &render_pass_) != VK_SUCCESS) {
         std::cerr << "Failed to create render pass" << std::endl;
@@ -524,7 +541,7 @@ bool VulkanRenderPipeline::create_pipeline(const RenderPipelineDesc& desc) {
     pipeline_info.renderPass = render_pass_;
     pipeline_info.subpass = 0;
 
-    if (vk::vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_) != VK_SUCCESS) {
+    if (vk::vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, &pipeline_) != VK_SUCCESS) {
         std::cerr << "Failed to create graphics pipeline" << std::endl;
         return false;
     }
@@ -625,8 +642,8 @@ std::unique_ptr<BindGroupLayout> create_vulkan_bind_group_layout(VkDevice device
     return nullptr;
 }
 
-std::unique_ptr<RenderPipeline> create_vulkan_render_pipeline(VkDevice device, const RenderPipelineDesc& desc) {
-    auto pipeline = std::make_unique<VulkanRenderPipeline>(device);
+std::unique_ptr<RenderPipeline> create_vulkan_render_pipeline(VkDevice device, VkPipelineCache cache, const RenderPipelineDesc& desc) {
+    auto pipeline = std::make_unique<VulkanRenderPipeline>(device, cache);
     if (pipeline->initialize(desc)) {
         return pipeline;
     }

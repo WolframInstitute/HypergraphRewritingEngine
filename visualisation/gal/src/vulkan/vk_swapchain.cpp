@@ -131,10 +131,19 @@ VkSurfaceFormatKHR VulkanSwapchain::choose_surface_format() {
     std::vector<VkSurfaceFormatKHR> formats(format_count);
     vk::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, formats.data());
 
-    // Prefer UNORM B8G8R8A8 (linear output, no automatic gamma correction)
-    // This gives us direct control over colors without sRGB encoding
+    // Prefer UNORM B8G8R8A8 with SRGB color space
+    // This stores colors directly without conversion, and the display
+    // compositor handles the final gamma presentation
     for (const auto& format : formats) {
         if (format.format == VK_FORMAT_B8G8R8A8_UNORM &&
+            format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return format;
+        }
+    }
+
+    // Try RGBA UNORM as fallback
+    for (const auto& format : formats) {
+        if (format.format == VK_FORMAT_R8G8B8A8_UNORM &&
             format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             return format;
         }

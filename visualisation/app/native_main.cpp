@@ -350,7 +350,11 @@ int main(int argc, char* argv[]) {
     gal::DeviceDesc device_desc;
     device_desc.app_name = "HypergraphViz";
     device_desc.app_version = 1;
+#ifdef NDEBUG
+    device_desc.enable_validation = false;
+#else
     device_desc.enable_validation = true;
+#endif
 
     auto device = gal::Device::create(device_desc);
     if (!device) {

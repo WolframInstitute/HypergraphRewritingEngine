@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.14)
 project(HypergraphEngine VERSION 0.0.1 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Default to Release build if not specified
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    message(STATUS "Build type not specified, defaulting to Release")
+endif()
 
 # Detect WSL environment
 # WSL (Windows Subsystem for Linux) requires special handling for:

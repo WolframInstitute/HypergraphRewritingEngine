@@ -10,7 +10,13 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cassert>
+#include <numbers>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
+#include <chrono>
+#include <iostream>
 
 namespace viz::scene {
 
@@ -152,13 +158,15 @@ struct UnitSphereMesh {
                 };
 
                 // Two triangles per quad (CCW winding from outside)
+                // p1=top-left, p2=top-right, p3=bottom-right, p4=bottom-left
+                // CCW from outside: p1 -> p4 -> p3 and p1 -> p3 -> p2
                 vertices.push_back(p1);
-                vertices.push_back(p2);
+                vertices.push_back(p4);
                 vertices.push_back(p3);
 
                 vertices.push_back(p1);
                 vertices.push_back(p3);
-                vertices.push_back(p4);
+                vertices.push_back(p2);
             }
         }
     }
@@ -688,9 +696,7 @@ public:
 
                     // Generate smooth arc with optional film
                     // Film is only generated for arity 3+ edges
-                    generate_smooth_loop_arc(geo.self_loop_lines, geo.bubble_triangles,
-                                            geo.arrow_triangles,
-                                            center, virtual_pos,
+                    generate_smooth_loop_arc(geo, center, virtual_pos,
                                             config_.self_loop_color,
                                             should_fill_loop);
                 }
@@ -765,9 +771,7 @@ public:
     // generate_film: if true, fills the loop with triangles; if false, only draws outline
     //                For arity-2 self-loops ({x,x}), we don't want film - just the arc
     //                For higher arity edges with self-loops, we want film to show the loop region
-    void generate_smooth_loop_arc(std::vector<RenderVertex>& line_out,
-                                  std::vector<RenderVertex>& film_out,
-                                  std::vector<RenderVertex>& arrow_out,
+    void generate_smooth_loop_arc(HypergraphGeometry& geo,
                                   const math::vec3& center,
                                   const math::vec3& virtual_pos,
                                   const math::vec4& color,
@@ -824,7 +828,7 @@ public:
 
         // Generate line segments for the loop outline
         for (size_t i = 0; i + 1 < loop_points.size(); ++i) {
-            generate_line(line_out, loop_points[i], loop_points[i + 1], color);
+            generate_line(geo.self_loop_lines, loop_points[i], loop_points[i + 1], color);
         }
 
         // Generate arrowhead at the "return" part of the loop (around 3/4 of the way)
@@ -837,9 +841,14 @@ public:
                 arrow_dir = math::normalize(arrow_dir);
                 // Darker arrow color
                 math::vec4 arrow_color = {color.x * 0.7f, color.y * 0.7f, color.z * 0.7f, 1.0f};
-                generate_cone(arrow_out, arrow_pos, arrow_dir,
-                             config_.arrow_length * 0.8f, config_.arrow_radius * 0.8f,
-                             arrow_color);
+                float arrow_len = config_.arrow_length * 0.8f;
+                float arrow_rad = config_.arrow_radius * 0.8f;
+                // Use instanced cones when available, fallback to triangles
+                if (config_.use_instanced_rendering) {
+                    geo.add_cone_instance(arrow_pos, arrow_dir, arrow_len, arrow_rad, arrow_color);
+                } else {
+                    generate_cone(geo.arrow_triangles, arrow_pos, arrow_dir, arrow_len, arrow_rad, arrow_color);
+                }
             }
         }
 
@@ -849,18 +858,18 @@ public:
             math::vec4 film_color = {color.x, color.y, color.z, color.w * 0.5f};
             for (size_t i = 0; i + 1 < loop_points.size(); ++i) {
                 // Triangle: center, loop[i], loop[i+1]
-                film_out.push_back({center.x, center.y, center.z,
+                geo.bubble_triangles.push_back({center.x, center.y, center.z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
-                film_out.push_back({loop_points[i].x, loop_points[i].y, loop_points[i].z,
+                geo.bubble_triangles.push_back({loop_points[i].x, loop_points[i].y, loop_points[i].z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
-                film_out.push_back({loop_points[i+1].x, loop_points[i+1].y, loop_points[i+1].z,
+                geo.bubble_triangles.push_back({loop_points[i+1].x, loop_points[i+1].y, loop_points[i+1].z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
                 // Back face
-                film_out.push_back({center.x, center.y, center.z,
+                geo.bubble_triangles.push_back({center.x, center.y, center.z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
-                film_out.push_back({loop_points[i+1].x, loop_points[i+1].y, loop_points[i+1].z,
+                geo.bubble_triangles.push_back({loop_points[i+1].x, loop_points[i+1].y, loop_points[i+1].z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
-                film_out.push_back({loop_points[i].x, loop_points[i].y, loop_points[i].z,
+                geo.bubble_triangles.push_back({loop_points[i].x, loop_points[i].y, loop_points[i].z,
                                    film_color.x, film_color.y, film_color.z, film_color.w});
             }
         }
@@ -879,7 +888,7 @@ public:
         float radius = config_.bubble_extrusion;
 
         // Unified Minkowski sum for all arities (3+)
-        generate_minkowski_sum(out, points, radius, color);
+        generate_minkowski_sum_fast(out, points, radius, color);
     }
 
     // Generate a capsule between two points (cylinder + hemispherical caps)
@@ -1033,298 +1042,1243 @@ public:
     }
 
     // ==========================================================================
-    // MINKOWSKI SUM - Proper algorithm for two convex polyhedra
-    // P ⊕ Q = convex_hull({p + q : p ∈ vertices(P), q ∈ vertices(Q)})
-    // ==========================================================================
+    // Timing accumulators for Minkowski sum (static for persistence across calls)
+    struct MinkowskiTiming {
+        double icosphere_ms;
+        double sum_points_ms;
+        double hull_ms;
+        double output_ms;
+        int call_count;
 
-    // Generate icosphere vertices (unit sphere approximation)
-    std::vector<math::vec3> generate_icosphere_vertices(int subdivisions = 1) {
-        // Start with icosahedron vertices
-        const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;  // Golden ratio
-        std::vector<math::vec3> verts = {
-            math::normalize(math::vec3(-1,  t,  0)),
-            math::normalize(math::vec3( 1,  t,  0)),
-            math::normalize(math::vec3(-1, -t,  0)),
-            math::normalize(math::vec3( 1, -t,  0)),
-            math::normalize(math::vec3( 0, -1,  t)),
-            math::normalize(math::vec3( 0,  1,  t)),
-            math::normalize(math::vec3( 0, -1, -t)),
-            math::normalize(math::vec3( 0,  1, -t)),
-            math::normalize(math::vec3( t,  0, -1)),
-            math::normalize(math::vec3( t,  0,  1)),
-            math::normalize(math::vec3(-t,  0, -1)),
-            math::normalize(math::vec3(-t,  0,  1)),
-        };
+        MinkowskiTiming() : icosphere_ms(0), sum_points_ms(0), hull_ms(0), output_ms(0), call_count(0) {}
 
-        // Icosahedron faces
-        std::vector<std::array<size_t, 3>> faces = {
-            {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
-            {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
-            {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
-            {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1},
-        };
-
-        // Subdivide faces
-        for (int s = 0; s < subdivisions; ++s) {
-            std::vector<std::array<size_t, 3>> new_faces;
-            std::map<std::pair<size_t, size_t>, size_t> edge_midpoints;
-
-            auto get_midpoint = [&](size_t i1, size_t i2) -> size_t {
-                auto key = std::make_pair(std::min(i1, i2), std::max(i1, i2));
-                auto it = edge_midpoints.find(key);
-                if (it != edge_midpoints.end()) return it->second;
-                size_t idx = verts.size();
-                verts.push_back(math::normalize((verts[i1] + verts[i2]) * 0.5f));
-                edge_midpoints[key] = idx;
-                return idx;
-            };
-
-            for (const auto& f : faces) {
-                size_t a = f[0], b = f[1], c = f[2];
-                size_t ab = get_midpoint(a, b);
-                size_t bc = get_midpoint(b, c);
-                size_t ca = get_midpoint(c, a);
-                new_faces.push_back({a, ab, ca});
-                new_faces.push_back({b, bc, ab});
-                new_faces.push_back({c, ca, bc});
-                new_faces.push_back({ab, bc, ca});
+        void print_and_reset() {
+            if (call_count > 0) {
+                std::cout << "[Minkowski Breakdown] calls=" << call_count
+                          << " icosphere=" << icosphere_ms << "ms"
+                          << " sum=" << sum_points_ms << "ms"
+                          << " hull=" << hull_ms << "ms"
+                          << " output=" << output_ms << "ms" << std::endl;
             }
-            faces = std::move(new_faces);
+            icosphere_ms = sum_points_ms = hull_ms = output_ms = 0;
+            call_count = 0;
         }
+    };
 
-        return verts;
+    inline static MinkowskiTiming mink_timing_;
+
+    // Call this after geometry generation to print timing breakdown
+    void print_minkowski_timing() {
+        mink_timing_.print_and_reset();
     }
 
-    // Generate Minkowski sum of convex point set with sphere
-    // Uses the mathematically correct algorithm: hull(P + Q)
-    void generate_minkowski_sum(std::vector<RenderVertex>& out,
-                                const std::vector<math::vec3>& points,
-                                float radius, const math::vec4& color) {
-        if (points.size() < 3) return;
+    // Static version for access from other classes
+    static void print_minkowski_timing_static() {
+        mink_timing_.print_and_reset();
+    }
 
-        // Get icosphere vertices (sphere approximation)
-        // 1 subdivision = 42 vertices, 2 = 162, good enough for smooth appearance
-        std::vector<math::vec3> sphere_verts = generate_icosphere_vertices(1);
+    // =========================================================================
+    // EFFICIENT MINKOWSKI SUM: Convex Hull ⊕ Sphere
+    // =========================================================================
+    //
+    // The boundary of hull(P) ⊕ sphere(r) consists of three types of patches:
+    //
+    // 1. FACE PATCHES: For each triangular face with outward normal n,
+    //    output the same triangle offset by r*n.
+    //
+    // 2. EDGE PATCHES: For each edge shared by faces with normals n1, n2,
+    //    output a cylindrical strip. The strip sweeps from n1 to n2 around
+    //    the edge, covering the angular range where the sphere "rolls" along
+    //    the edge.
+    //
+    // 3. VERTEX PATCHES: For each vertex where faces with normals n1..nk meet,
+    //    output a spherical cap. The cap covers directions not covered by any
+    //    adjacent face's normal.
+    //
+    // =========================================================================
 
-        // Scale sphere vertices by radius
-        for (auto& v : sphere_verts) {
-            v = v * radius;
-        }
+    // Helper: emit a triangle with consistent winding (outward from centroid)
+    void emit_triangle(std::vector<RenderVertex>& out,
+                       const math::vec3& a, const math::vec3& b, const math::vec3& c,
+                       const math::vec3& centroid, const math::vec4& color) {
+        math::vec3 face_center = (a + b + c) / 3.0f;
+        math::vec3 normal = math::cross(b - a, c - a);
 
-        // Generate all pairwise sums: {p + q : p ∈ points, q ∈ sphere_verts}
-        std::vector<math::vec3> sum_points;
-        sum_points.reserve(points.size() * sphere_verts.size());
-        for (const auto& p : points) {
-            for (const auto& q : sphere_verts) {
-                sum_points.push_back(p + q);
-            }
-        }
-
-        // Compute convex hull of the sum points
-        auto hull_faces = compute_convex_hull(sum_points);
-        if (hull_faces.empty()) return;
-
-        // Compute centroid for normal orientation
-        math::vec3 centroid(0, 0, 0);
-        for (const auto& p : sum_points) centroid = centroid + p;
-        centroid = centroid * (1.0f / sum_points.size());
-
-        // Output triangles with correct winding
-        for (const auto& face : hull_faces) {
-            math::vec3 a = sum_points[face[0]];
-            math::vec3 b = sum_points[face[1]];
-            math::vec3 c = sum_points[face[2]];
-
-            // Check and fix winding for outward-facing normal
-            math::vec3 face_center = (a + b + c) / 3.0f;
-            math::vec3 normal = math::cross(b - a, c - a);
-            if (math::dot(normal, face_center - centroid) < 0) {
-                std::swap(b, c);  // Flip winding
-            }
-
+        // Ensure outward-facing
+        if (math::dot(normal, face_center - centroid) < 0) {
+            out.push_back({a.x, a.y, a.z, color.x, color.y, color.z, color.w});
+            out.push_back({c.x, c.y, c.z, color.x, color.y, color.z, color.w});
+            out.push_back({b.x, b.y, b.z, color.x, color.y, color.z, color.w});
+        } else {
             out.push_back({a.x, a.y, a.z, color.x, color.y, color.z, color.w});
             out.push_back({b.x, b.y, b.z, color.x, color.y, color.z, color.w});
             out.push_back({c.x, c.y, c.z, color.x, color.y, color.z, color.w});
         }
     }
 
-    // Legacy function - now calls unified Minkowski sum
-    void generate_rounded_triangle(std::vector<RenderVertex>& out,
-                                   const math::vec3& a, const math::vec3& b, const math::vec3& c,
-                                   float radius, const math::vec4& color) {
-        generate_minkowski_sum(out, {a, b, c}, radius, color);
+    // =========================================================================
+    // CYLINDER STRIP: Connects two faces along a shared edge
+    // =========================================================================
+    // Given an edge from e1 to e2, and two adjacent face normals n1 and n2,
+    // we generate a cylindrical strip that sweeps from n1 to n2 around the edge.
+    //
+    // The sweep goes the "short way" around - the exterior of the hull.
+    // For a planar polygon, n1 and n2 are opposite (+N and -N), so we sweep 180°.
+    //
+    // KEY INSIGHT: The cylinder surface is at distance r from the edge LINE.
+    // At each angle θ, the offset direction is:
+    //   d(θ) = n1 * cos(θ) + (edge × n1) * sin(θ)
+    // where θ goes from 0 to the angle between n1 and n2.
+    // =========================================================================
+    void emit_cylinder_strip(std::vector<RenderVertex>& out,
+                             const math::vec3& e1, const math::vec3& e2,
+                             const math::vec3& n1, const math::vec3& n2,
+                             float radius, int segments,
+                             const math::vec3& centroid, const math::vec4& color) {
+        math::vec3 edge_dir = math::normalize(e2 - e1);
+        math::vec3 edge_mid = (e1 + e2) * 0.5f;
+
+        // Angle between normals
+        float dot_n = math::dot(n1, n2);
+        dot_n = std::max(-1.0f, std::min(1.0f, dot_n));
+        float small_angle = std::acos(dot_n);  // This is the SMALL angle
+
+        // If normals are nearly identical, no cylinder needed
+        if (small_angle < 0.001f) return;
+
+        // The large angle is (2*PI - small_angle).
+        // We want to sweep the way that goes OUTWARD (away from centroid).
+        //
+        // Key insight: The direction (n1 + n2) / 2 points toward where the
+        // FACES are (between the two face normals).
+        // The OUTWARD direction for the cylinder is OPPOSITE to this:
+        // it's where the edge is exposed, away from the faces.
+        //
+        // So we sweep via the hemisphere OPPOSITE to (n1 + n2).
+
+        math::vec3 face_avg = math::normalize(n1 + n2);
+        // The outward direction at the edge is OPPOSITE to where the faces point
+        // (the edge cylinder covers the "outside" of the corner)
+
+        // There are two ways to rotate from n1 to n2 around edge_dir:
+        // 1. The short way (angle = small_angle)
+        // 2. The long way (angle = 2*PI - small_angle)
+        //
+        // Test which way goes outward: check midpoint of each sweep
+        // The correct sweep has its midpoint pointing AWAY from centroid.
+
+        // Compute midpoint direction for SHORT sweep (positive rotation)
+        float half_small = small_angle * 0.5f;
+        float cos_h = std::cos(half_small);
+        float sin_h = std::sin(half_small);
+        math::vec3 mid_short_pos = n1 * cos_h
+                                 + math::cross(edge_dir, n1) * sin_h
+                                 + edge_dir * math::dot(edge_dir, n1) * (1.0f - cos_h);
+        mid_short_pos = math::normalize(mid_short_pos);
+
+        // Compute midpoint direction for LONG sweep (the other way)
+        // Long sweep goes the other direction: negate the rotation
+        math::vec3 mid_long_pos = n1 * cos_h
+                                - math::cross(edge_dir, n1) * sin_h
+                                + edge_dir * math::dot(edge_dir, n1) * (1.0f - cos_h);
+        // But wait, that's the same angle... we need the OPPOSITE semicircle
+        // The midpoint of the long way is at angle = PI (opposite to short midpoint)
+        float half_long = std::numbers::pi_v<float>;  // midpoint of long arc is at 180 degrees
+        float cos_l = std::cos(half_long);
+        float sin_l = std::sin(half_long);
+        math::vec3 mid_long = n1 * cos_l
+                            + math::cross(edge_dir, n1) * sin_l
+                            + edge_dir * math::dot(edge_dir, n1) * (1.0f - cos_l);
+        mid_long = math::normalize(mid_long);
+
+        // Test which midpoint is more outward (farther from centroid when projected from edge)
+        // Actually, we want the direction that points AWAY from centroid
+        math::vec3 to_centroid = centroid - edge_mid;
+        float short_dot = math::dot(mid_short_pos, to_centroid);
+        float long_dot = math::dot(mid_long, to_centroid);
+
+        // We want the sweep whose midpoint has NEGATIVE dot with to_centroid
+        // (i.e., points away from centroid)
+        bool use_short_way = (short_dot < long_dot);
+
+        // If using short way: sweep angle goes from 0 to small_angle
+        // If using long way: sweep angle goes from 0 to (2*PI - small_angle)
+        // Direction of rotation: determined by cross(n1, n2) vs edge_dir
+        math::vec3 cross_n = math::cross(n1, n2);
+        float cross_dot_edge = math::dot(cross_n, edge_dir);
+        float base_sign = (cross_dot_edge >= 0) ? 1.0f : -1.0f;
+
+        float sweep_angle;
+        float sign;
+        if (use_short_way) {
+            sweep_angle = small_angle;
+            sign = base_sign;
+        } else {
+            sweep_angle = 2.0f * std::numbers::pi_v<float> - small_angle;
+            sign = -base_sign;  // Go the other way
+        }
+
+        // Generate the strip by rotating n1 around edge_dir
+        math::vec3 prev_dir = n1;
+        math::vec3 prev1 = e1 + prev_dir * radius;
+        math::vec3 prev2 = e2 + prev_dir * radius;
+
+        for (int i = 1; i <= segments; ++i) {
+            float t = static_cast<float>(i) / segments;
+            float angle = t * sweep_angle * sign;
+
+            // Rodrigues rotation of n1 around edge_dir by angle
+            float cos_a = std::cos(angle);
+            float sin_a = std::sin(angle);
+            math::vec3 curr_dir = n1 * cos_a
+                                + math::cross(edge_dir, n1) * sin_a
+                                + edge_dir * math::dot(edge_dir, n1) * (1.0f - cos_a);
+            curr_dir = math::normalize(curr_dir);
+
+            math::vec3 curr1 = e1 + curr_dir * radius;
+            math::vec3 curr2 = e2 + curr_dir * radius;
+
+            // Emit quad as two triangles
+            emit_triangle(out, prev1, prev2, curr1, centroid, color);
+            emit_triangle(out, curr1, prev2, curr2, centroid, color);
+
+            prev_dir = curr_dir;
+            prev1 = curr1;
+            prev2 = curr2;
+        }
     }
 
-    // Legacy function - now calls unified Minkowski sum
-    void generate_rounded_tetrahedron(std::vector<RenderVertex>& out,
-                                      const math::vec3& a, const math::vec3& b,
-                                      const math::vec3& c, const math::vec3& d,
-                                      float radius, const math::vec4& color) {
-        generate_minkowski_sum(out, {a, b, c, d}, radius, color);
-    }
+    // =========================================================================
+    // SPHERICAL CAP: Fills the gap at a vertex where multiple edges meet
+    // =========================================================================
+    // The spherical cap covers the solid angle at the vertex not covered by
+    // any face. For volumetric hulls, this is the spherical polygon bounded
+    // by the face normals. For planar polygons, this is a semicircle.
+    //
+    // GEOMETRY: At vertex V with adjacent face normals {n1, n2, ...}, the cap
+    // is the region of the unit sphere "outside" all the faces - the directions
+    // from which V is visible from outside the hull.
+    // =========================================================================
+    void emit_spherical_cap(std::vector<RenderVertex>& out,
+                            const math::vec3& vertex,
+                            const std::vector<math::vec3>& normals,
+                            const math::vec3& edge_dir_hint, // direction along one adjacent edge
+                            float radius, int segments,
+                            const math::vec3& centroid, const math::vec4& color) {
+        if (normals.size() < 2) return;
 
-    // Legacy function - now calls unified Minkowski sum
-    void generate_rounded_convex_hull(std::vector<RenderVertex>& out,
-                                      const std::vector<math::vec3>& points,
-                                      float radius, const math::vec4& color) {
-        generate_minkowski_sum(out, points, radius, color);
-    }
+        // Compute the "outward" direction - the center of the spherical cap
+        // For volumetric: average of normals (they all point outward)
+        // For planar: normals are opposite, use edge direction as outward
+        math::vec3 avg_normal(0, 0, 0);
+        for (const auto& n : normals) avg_normal = avg_normal + n;
+        float avg_len = math::length(avg_normal);
 
-    // REMOVED: Old generate_rounded_triangle implementation (replaced by unified)
-    // REMOVED: Old generate_rounded_tetrahedron implementation (replaced by unified)
-    // REMOVED: Old generate_rounded_convex_hull implementation (replaced by unified)
+        math::vec3 outward_dir;
+        bool is_planar = (avg_len < 0.001f);
 
-    // Simple convex hull computation (quickhull-like)
-    // Returns list of triangular faces as indices into points array
-    std::vector<std::array<size_t, 3>> compute_convex_hull(const std::vector<math::vec3>& points) {
-        std::vector<std::array<size_t, 3>> faces;
-        if (points.size() < 4) return faces;
+        if (is_planar) {
+            // Planar case: normals cancel out (+N and -N)
+            // The outward direction is along the edge (pointing away from centroid)
+            math::vec3 v_to_centroid = centroid - vertex;
+            // Project out the face-normal component to get edge direction
+            math::vec3 face_normal = normals[0];  // Either +N or -N
+            math::vec3 edge_component = edge_dir_hint - face_normal * math::dot(edge_dir_hint, face_normal);
+            if (math::length(edge_component) > 0.001f) {
+                outward_dir = math::normalize(edge_component);
+            } else {
+                outward_dir = math::normalize(edge_dir_hint);
+            }
+            // Make sure outward points away from centroid
+            if (math::dot(outward_dir, v_to_centroid) > 0) {
+                outward_dir = outward_dir * -1.0f;
+            }
+        } else {
+            // Volumetric case: outward is the average of normals
+            outward_dir = math::normalize(avg_normal);
+        }
 
-        // Find initial tetrahedron (4 non-coplanar points)
-        size_t p0 = 0, p1 = 1, p2 = 2, p3 = 3;
+        // For planar case with exactly 2 opposite normals:
+        // The cap is a semicircle from +N to -N going through outward_dir
+        if (is_planar && normals.size() == 2) {
+            math::vec3 n1 = normals[0];
+            math::vec3 n2 = normals[1];
 
-        // Find most distant pair for first edge
-        float max_dist = 0;
-        for (size_t i = 0; i < points.size(); ++i) {
-            for (size_t j = i + 1; j < points.size(); ++j) {
-                float d = math::length(points[j] - points[i]);
-                if (d > max_dist) {
-                    max_dist = d;
-                    p0 = i; p1 = j;
+            // The semicircle goes from n1 through outward_dir to n2
+            // This is a 180-degree arc with outward_dir at the middle
+            // We rotate n1 around the axis perpendicular to the plane containing n1, n2, outward
+
+            // The rotation axis is face_normal (perpendicular to the edge plane)
+            math::vec3 axis = math::cross(n1, outward_dir);
+            if (math::length(axis) < 0.001f) {
+                // n1 is parallel to outward_dir, use n2 to find axis
+                axis = math::cross(n2, outward_dir);
+            }
+            axis = math::normalize(axis);
+
+            // Generate the semicircle fan from outward_dir
+            math::vec3 cap_center = vertex + outward_dir * radius;
+
+            // Generate fan: cap_center -> arc from n1 to n2 via outward_dir
+            // First half: n1 to outward_dir (90 degrees)
+            // Second half: outward_dir to n2 (90 degrees)
+            int half_segs = segments;
+            math::vec3 prev_on_sphere = vertex + n1 * radius;
+
+            for (int s = 1; s <= 2 * half_segs; ++s) {
+                float t = static_cast<float>(s) / (2 * half_segs);
+                float angle = t * std::numbers::pi_v<float>;  // 0 to PI
+
+                // Rotate n1 around axis by angle (Rodrigues)
+                float cos_a = std::cos(angle);
+                float sin_a = std::sin(angle);
+                math::vec3 curr_dir = n1 * cos_a
+                                    + math::cross(axis, n1) * sin_a
+                                    + axis * math::dot(axis, n1) * (1.0f - cos_a);
+                curr_dir = math::normalize(curr_dir);
+
+                math::vec3 curr_on_sphere = vertex + curr_dir * radius;
+
+                // Use VERTEX as winding reference (sphere center), NOT polygon centroid
+                emit_triangle(out, cap_center, prev_on_sphere, curr_on_sphere, vertex, color);
+
+                prev_on_sphere = curr_on_sphere;
+            }
+            return;
+        }
+
+        // Volumetric case: sort normals by angle around outward direction
+        math::vec3 ref = normals[0];
+        math::vec3 tangent = math::cross(outward_dir, ref);
+        if (math::length(tangent) < 0.001f) {
+            ref = (std::abs(outward_dir.x) < 0.9f) ? math::vec3(1,0,0) : math::vec3(0,1,0);
+            tangent = math::cross(outward_dir, ref);
+        }
+        tangent = math::normalize(tangent);
+        math::vec3 bitangent = math::cross(outward_dir, tangent);
+
+        std::vector<std::pair<float, math::vec3>> sorted_normals;
+        for (const auto& n : normals) {
+            float angle = std::atan2(math::dot(n, bitangent), math::dot(n, tangent));
+            sorted_normals.push_back({angle, n});
+        }
+        std::sort(sorted_normals.begin(), sorted_normals.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        // The cap center on the sphere
+        math::vec3 cap_center = vertex + outward_dir * radius;
+
+        // For each pair of adjacent normals, create a spherical triangle fan
+        // from the cap_center to the arc between normals
+        for (size_t i = 0; i < sorted_normals.size(); ++i) {
+            size_t j = (i + 1) % sorted_normals.size();
+            math::vec3 n1 = sorted_normals[i].second;
+            math::vec3 n2 = sorted_normals[j].second;
+
+            // Arc from n1 to n2 via slerp
+            math::vec3 prev_on_sphere = vertex + n1 * radius;
+
+            for (int s = 1; s <= segments; ++s) {
+                float t = static_cast<float>(s) / segments;
+
+                // Slerp from n1 to n2
+                float dot = math::dot(n1, n2);
+                dot = std::max(-1.0f, std::min(1.0f, dot));
+                float omega = std::acos(dot);
+
+                math::vec3 curr_dir;
+                if (omega < 0.001f) {
+                    curr_dir = n1;
+                } else {
+                    float sin_omega = std::sin(omega);
+                    curr_dir = n1 * (std::sin((1-t)*omega)/sin_omega)
+                             + n2 * (std::sin(t*omega)/sin_omega);
+                    curr_dir = math::normalize(curr_dir);
                 }
+
+                math::vec3 curr_on_sphere = vertex + curr_dir * radius;
+
+                // Use VERTEX as winding reference (sphere center), NOT polygon centroid
+                emit_triangle(out, cap_center, prev_on_sphere, curr_on_sphere, vertex, color);
+
+                prev_on_sphere = curr_on_sphere;
+            }
+        }
+    }
+
+    // Fast Minkowski sum using OFFSET SURFACE approach
+    // Instead of computing hull of (n × 162) points, we:
+    // 1. Compute hull of original n points (fast for small n)
+    // 2. Offset each face outward by radius
+    // 3. Add cylinder strips for edges
+    // 4. Add spherical caps for vertices
+    // This is O(n) instead of O((n × sphere_verts)²)
+    void generate_minkowski_sum_fast(std::vector<RenderVertex>& out,
+                                     const std::vector<math::vec3>& points,
+                                     float radius, const math::vec4& color) {
+        if (points.size() < 2) return;
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        // Compute centroid for winding orientation
+        math::vec3 centroid(0, 0, 0);
+        for (const auto& p : points) centroid = centroid + p;
+        centroid = centroid * (1.0f / points.size());
+
+        const int SEGMENTS = 8;  // Arc segments for cylinders and caps
+
+        // Special case: 2 points = capsule
+        if (points.size() == 2) {
+            generate_capsule_fast(out, points[0], points[1], radius, SEGMENTS, centroid, color);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            mink_timing_.hull_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+            mink_timing_.call_count++;
+            return;
+        }
+
+        // Check if points are coplanar
+        math::vec3 plane_normal;
+        bool is_coplanar = check_coplanar(points, plane_normal);
+
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        if (is_coplanar) {
+            // 2D case: rounded polygon
+            generate_minkowski_2d(out, points, plane_normal, radius, SEGMENTS, centroid, color);
+        } else {
+            // 3D case: offset polyhedron
+            generate_minkowski_3d(out, points, radius, SEGMENTS, centroid, color);
+        }
+
+        auto t2 = std::chrono::high_resolution_clock::now();
+
+        mink_timing_.hull_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        mink_timing_.output_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
+        mink_timing_.call_count++;
+    }
+
+    // Check if points are coplanar (within tolerance)
+    bool check_coplanar(const std::vector<math::vec3>& points, math::vec3& plane_normal) {
+        if (points.size() < 3) return true;
+
+        // Compute plane from first 3 points
+        math::vec3 v1 = points[1] - points[0];
+        math::vec3 v2 = points[2] - points[0];
+        plane_normal = math::cross(v1, v2);
+        float len = math::length(plane_normal);
+        if (len < 1e-6f) {
+            // First 3 points are collinear, try to find non-collinear point
+            for (size_t i = 3; i < points.size(); ++i) {
+                v2 = points[i] - points[0];
+                plane_normal = math::cross(v1, v2);
+                len = math::length(plane_normal);
+                if (len >= 1e-6f) break;
+            }
+        }
+        if (len < 1e-6f) return true;  // All collinear
+        plane_normal = plane_normal / len;
+
+        // Check all points against plane
+        for (size_t i = 3; i < points.size(); ++i) {
+            float dist = std::abs(math::dot(plane_normal, points[i] - points[0]));
+            if (dist > 1e-4f) return false;  // Not coplanar
+        }
+        return true;
+    }
+
+    // Generate capsule (2 hemispheres + cylinder)
+    void generate_capsule_fast(std::vector<RenderVertex>& out,
+                               const math::vec3& p1, const math::vec3& p2,
+                               float radius, int segments,
+                               const math::vec3& centroid, const math::vec4& color) {
+        math::vec3 axis = p2 - p1;
+        float length = math::length(axis);
+        if (length < 1e-6f) {
+            // Degenerate: just a sphere
+            generate_sphere_triangles(out, p1, radius, segments, color);
+            return;
+        }
+        axis = axis / length;
+
+        // Find perpendicular vectors
+        math::vec3 perp1 = (std::abs(axis.x) < 0.9f) ? math::vec3(1,0,0) : math::vec3(0,1,0);
+        perp1 = math::normalize(math::cross(axis, perp1));
+        math::vec3 perp2 = math::cross(axis, perp1);
+
+        // Cylinder body
+        for (int i = 0; i < segments; ++i) {
+            float a1 = math::TAU * i / segments;
+            float a2 = math::TAU * (i + 1) / segments;
+
+            math::vec3 d1 = perp1 * std::cos(a1) + perp2 * std::sin(a1);
+            math::vec3 d2 = perp1 * std::cos(a2) + perp2 * std::sin(a2);
+
+            math::vec3 v1 = p1 + d1 * radius;
+            math::vec3 v2 = p1 + d2 * radius;
+            math::vec3 v3 = p2 + d1 * radius;
+            math::vec3 v4 = p2 + d2 * radius;
+
+            emit_triangle(out, v1, v3, v2, centroid, color);
+            emit_triangle(out, v2, v3, v4, centroid, color);
+        }
+
+        // Hemisphere at p1 (pointing away from p2)
+        generate_hemisphere(out, p1, axis * -1.0f, perp1, perp2, radius, segments, centroid, color);
+
+        // Hemisphere at p2 (pointing away from p1)
+        generate_hemisphere(out, p2, axis, perp1, perp2, radius, segments, centroid, color);
+    }
+
+    // Generate hemisphere
+    void generate_hemisphere(std::vector<RenderVertex>& out,
+                             const math::vec3& center, const math::vec3& pole,
+                             const math::vec3& perp1, const math::vec3& perp2,
+                             float radius, int segments,
+                             const math::vec3& centroid, const math::vec4& color) {
+        int rings = segments / 2;
+        for (int ring = 0; ring < rings; ++ring) {
+            float theta1 = math::PI * 0.5f * ring / rings;
+            float theta2 = math::PI * 0.5f * (ring + 1) / rings;
+
+            float r1 = std::cos(theta1);
+            float z1 = std::sin(theta1);
+            float r2 = std::cos(theta2);
+            float z2 = std::sin(theta2);
+
+            for (int seg = 0; seg < segments; ++seg) {
+                float phi1 = math::TAU * seg / segments;
+                float phi2 = math::TAU * (seg + 1) / segments;
+
+                auto make_point = [&](float r, float z, float phi) {
+                    math::vec3 dir = perp1 * (r * std::cos(phi)) + perp2 * (r * std::sin(phi)) + pole * z;
+                    return center + dir * radius;
+                };
+
+                math::vec3 v1 = make_point(r1, z1, phi1);
+                math::vec3 v2 = make_point(r1, z1, phi2);
+                math::vec3 v3 = make_point(r2, z2, phi1);
+                math::vec3 v4 = make_point(r2, z2, phi2);
+
+                // Use CENTER as winding reference (sphere center), NOT polygon centroid
+                emit_triangle(out, v1, v3, v2, center, color);
+                emit_triangle(out, v2, v3, v4, center, color);
+            }
+        }
+    }
+
+    // Generate sphere triangles (for degenerate capsule)
+    void generate_sphere_triangles(std::vector<RenderVertex>& out,
+                                   const math::vec3& center, float radius,
+                                   int segments, const math::vec4& color) {
+        for (int ring = 0; ring < segments; ++ring) {
+            float theta1 = math::PI * ring / segments;
+            float theta2 = math::PI * (ring + 1) / segments;
+
+            for (int seg = 0; seg < segments; ++seg) {
+                float phi1 = math::TAU * seg / segments;
+                float phi2 = math::TAU * (seg + 1) / segments;
+
+                auto make_point = [&](float theta, float phi) {
+                    float st = std::sin(theta), ct = std::cos(theta);
+                    float sp = std::sin(phi), cp = std::cos(phi);
+                    return center + math::vec3(st * cp, ct, st * sp) * radius;
+                };
+
+                math::vec3 v1 = make_point(theta1, phi1);
+                math::vec3 v2 = make_point(theta1, phi2);
+                math::vec3 v3 = make_point(theta2, phi1);
+                math::vec3 v4 = make_point(theta2, phi2);
+
+                out.push_back({v1.x, v1.y, v1.z, color.x, color.y, color.z, color.w});
+                out.push_back({v3.x, v3.y, v3.z, color.x, color.y, color.z, color.w});
+                out.push_back({v2.x, v2.y, v2.z, color.x, color.y, color.z, color.w});
+
+                out.push_back({v2.x, v2.y, v2.z, color.x, color.y, color.z, color.w});
+                out.push_back({v3.x, v3.y, v3.z, color.x, color.y, color.z, color.w});
+                out.push_back({v4.x, v4.y, v4.z, color.x, color.y, color.z, color.w});
+            }
+        }
+    }
+
+    // 2D Minkowski sum: rounded polygon (coplanar points)
+    void generate_minkowski_2d(std::vector<RenderVertex>& out,
+                               const std::vector<math::vec3>& points,
+                               const math::vec3& plane_normal_in,
+                               float radius, int segments,
+                               const math::vec3& centroid, const math::vec4& color) {
+        [[maybe_unused]] size_t start_size = out.size();
+
+        // Compute 2D convex hull of points projected onto plane
+        std::vector<size_t> hull_indices = convex_hull_2d(points, plane_normal_in);
+        if (hull_indices.size() < 3) return;
+
+        size_t n = hull_indices.size();
+
+        // Ensure hull is CCW when viewed from plane_normal
+        // Compute signed area to check winding
+        math::vec3 n_up = plane_normal_in;
+
+        // Project hull to 2D and compute signed area
+        math::vec3 u = (std::abs(n_up.x) < 0.9f) ? math::vec3(1,0,0) : math::vec3(0,1,0);
+        u = math::normalize(math::cross(n_up, u));
+        math::vec3 v = math::cross(n_up, u);
+
+        float signed_area = 0;
+        for (size_t i = 0; i < n; ++i) {
+            size_t j = (i + 1) % n;
+            float x1 = math::dot(points[hull_indices[i]], u);
+            float y1 = math::dot(points[hull_indices[i]], v);
+            float x2 = math::dot(points[hull_indices[j]], u);
+            float y2 = math::dot(points[hull_indices[j]], v);
+            signed_area += (x2 - x1) * (y2 + y1);
+        }
+
+        // If signed_area > 0, hull is CW → flip normal to make it CCW
+        if (signed_area > 0) {
+            n_up = n_up * -1.0f;
+        }
+
+        math::vec3 n_down = n_up * -1.0f;
+
+        // 1. Top face (offset by +radius along normal)
+        for (size_t i = 1; i + 1 < n; ++i) {
+            math::vec3 a = points[hull_indices[0]] + n_up * radius;
+            math::vec3 b = points[hull_indices[i]] + n_up * radius;
+            math::vec3 c = points[hull_indices[i + 1]] + n_up * radius;
+            emit_triangle(out, a, b, c, centroid, color);
+        }
+
+        // 2. Bottom face (offset by -radius along normal)
+        for (size_t i = 1; i + 1 < n; ++i) {
+            math::vec3 a = points[hull_indices[0]] + n_down * radius;
+            math::vec3 b = points[hull_indices[i + 1]] + n_down * radius;
+            math::vec3 c = points[hull_indices[i]] + n_down * radius;
+            emit_triangle(out, a, b, c, centroid, color);
+        }
+
+        // 3. Edge cylinders (half-cylinders, 180 degrees from +normal to -normal)
+        // For 2D polygons, we compute the outward direction directly instead of
+        // relying on emit_cylinder_strip's complex short/long way logic
+        for (size_t i = 0; i < n; ++i) {
+            size_t j = (i + 1) % n;
+            math::vec3 e1 = points[hull_indices[i]];
+            math::vec3 e2 = points[hull_indices[j]];
+
+            // Edge direction and outward perpendicular (in-plane, away from centroid)
+            math::vec3 edge_dir = math::normalize(e2 - e1);
+            math::vec3 edge_mid = (e1 + e2) * 0.5f;
+
+            // Outward direction: perpendicular to edge, in the plane
+            // For CCW polygon viewed from +n_up, right-hand perp is cross(edge_dir, n_up)
+            math::vec3 outward = math::cross(edge_dir, n_up);
+
+            // Make sure it points away from centroid
+            if (math::dot(outward, edge_mid - centroid) < 0) {
+                outward = outward * -1.0f;
+            }
+
+            // Generate half-cylinder: sweep from n_up through outward to n_down
+            math::vec3 prev_dir = n_up;
+            math::vec3 prev1 = e1 + prev_dir * radius;
+            math::vec3 prev2 = e2 + prev_dir * radius;
+
+            for (int s = 1; s <= segments; ++s) {
+                float t = static_cast<float>(s) / segments;
+                float angle = t * math::PI;  // 0 to PI
+
+                // Interpolate: n_up -> outward -> n_down
+                // At t=0: n_up, at t=0.5: outward, at t=1: n_down
+                math::vec3 curr_dir = n_up * std::cos(angle) + outward * std::sin(angle);
+                curr_dir = math::normalize(curr_dir);
+
+                math::vec3 curr1 = e1 + curr_dir * radius;
+                math::vec3 curr2 = e2 + curr_dir * radius;
+
+                emit_triangle(out, prev1, prev2, curr1, centroid, color);
+                emit_triangle(out, curr1, prev2, curr2, centroid, color);
+
+                prev_dir = curr_dir;
+                prev1 = curr1;
+                prev2 = curr2;
             }
         }
 
-        // Find point most distant from line p0-p1
-        max_dist = 0;
-        math::vec3 line_dir = math::normalize(points[p1] - points[p0]);
-        for (size_t i = 0; i < points.size(); ++i) {
-            if (i == p0 || i == p1) continue;
-            math::vec3 v = points[i] - points[p0];
-            math::vec3 proj = line_dir * math::dot(v, line_dir);
-            float d = math::length(v - proj);
-            if (d > max_dist) {
-                max_dist = d;
-                p2 = i;
-            }
+        // 4. Vertex caps (spherical wedges at corners)
+        // Each cap fills the gap between two adjacent edge cylinders
+        for (size_t i = 0; i < n; ++i) {
+            size_t prev_idx = (i + n - 1) % n;
+            size_t next_idx = (i + 1) % n;
+
+            math::vec3 v = points[hull_indices[i]];
+            math::vec3 v_prev = points[hull_indices[prev_idx]];
+            math::vec3 v_next = points[hull_indices[next_idx]];
+
+            // Edge directions (along the edges, not toward vertices)
+            math::vec3 edge_in = math::normalize(v - v_prev);   // Edge coming IN to v
+            math::vec3 edge_out = math::normalize(v_next - v);  // Edge going OUT from v
+
+            // Perpendiculars in-plane, pointing outward from polygon
+            // For CCW polygon viewed from +n_up: outward is cross(edge_dir, n_up)
+            math::vec3 perp_in = math::cross(edge_in, n_up);
+            math::vec3 perp_out = math::cross(edge_out, n_up);
+
+            // Normalize (should already be unit, but be safe)
+            perp_in = math::normalize(perp_in);
+            perp_out = math::normalize(perp_out);
+
+            // Ensure both point outward (away from centroid) - this is the ground truth
+            if (math::dot(perp_in, v - centroid) < 0) perp_in = perp_in * -1.0f;
+            if (math::dot(perp_out, v - centroid) < 0) perp_out = perp_out * -1.0f;
+
+            emit_vertex_cap_2d(out, v, n_up, perp_in, perp_out, radius, segments, centroid, color);
         }
 
-        // Find point most distant from plane p0-p1-p2
-        math::vec3 normal = math::normalize(math::cross(points[p1] - points[p0], points[p2] - points[p0]));
-        max_dist = 0;
-        for (size_t i = 0; i < points.size(); ++i) {
-            if (i == p0 || i == p1 || i == p2) continue;
-            float d = std::abs(math::dot(points[i] - points[p0], normal));
-            if (d > max_dist) {
-                max_dist = d;
-                p3 = i;
-            }
+        // Debug assertions
+        assert(out.size() > start_size && "generate_minkowski_2d produced no geometry");
+        #ifndef NDEBUG
+        for (size_t i = start_size; i < out.size(); ++i) {
+            assert(!std::isnan(out[i].x) && !std::isnan(out[i].y) && !std::isnan(out[i].z) &&
+                   "NaN detected in generated geometry");
+        }
+        #endif
+    }
+
+    // Emit spherical wedge for 2D polygon vertex
+    // Spans from perp_start to perp_end (in-plane) × from +normal to -normal (out-of-plane)
+    // This covers the exterior of the convex polygon vertex.
+    void emit_vertex_cap_2d(std::vector<RenderVertex>& out,
+                            const math::vec3& vertex,
+                            const math::vec3& plane_normal,
+                            const math::vec3& perp_start,
+                            const math::vec3& perp_end,
+                            float radius, int segments,
+                            [[maybe_unused]] const math::vec3& centroid, const math::vec4& color) {
+        // For a convex polygon, the exterior angle at a vertex is always < 180°
+        // We use SLERP to interpolate between perp_start and perp_end
+
+        // Clamp dot product to avoid acos domain errors
+        float dot_p = math::dot(perp_start, perp_end);
+        dot_p = std::max(-0.9999f, std::min(0.9999f, dot_p));
+
+        // Angle between the perpendiculars
+        float angle_between = std::acos(dot_p);
+
+        // Determine rotation direction: we want to go the EXTERIOR way
+        // For CCW polygon viewed from +normal, exterior is CCW from perp_prev to perp_next
+        math::vec3 cross_p = math::cross(perp_start, perp_end);
+        float cross_sign = math::dot(cross_p, plane_normal);
+
+        // If cross_sign > 0, CCW from start to end is the short way (< 180°)
+        // If cross_sign < 0, CCW from start to end is the long way (> 180°)
+        // For convex polygon exterior, we always want the short way
+        bool go_ccw = (cross_sign > 0);
+
+        // If the "short way" going CCW is > 180°, something is wrong with inputs
+        // Just use the direct angle
+        float angle_span = angle_between;
+        if (!go_ccw) {
+            // Need to go CW, so negative angles
+            angle_span = -angle_between;
         }
 
-        // Initial tetrahedron faces (ensure consistent winding)
-        math::vec3 centroid = (points[p0] + points[p1] + points[p2] + points[p3]) * 0.25f;
+        // Segments for horizontal (in-plane) sweep
+        int h_segs = std::max(2, (int)(segments * std::abs(angle_span) / math::PI) + 1);
+        int v_segs = segments;
 
-        auto add_face_if_outward = [&](size_t a, size_t b, size_t c) {
-            math::vec3 face_center = (points[a] + points[b] + points[c]) / 3.0f;
-            math::vec3 n = math::cross(points[b] - points[a], points[c] - points[a]);
-            if (math::dot(n, face_center - centroid) < 0) {
-                std::swap(b, c);
+        // Generate the spherical patch using explicit slerp
+        for (int h = 0; h < h_segs; ++h) {
+            float t1 = (float)h / h_segs;
+            float t2 = (float)(h + 1) / h_segs;
+
+            // Slerp between perp_start and perp_end
+            auto slerp_perp = [&](float t) -> math::vec3 {
+                if (std::abs(angle_between) < 0.001f) {
+                    return perp_start;  // Nearly parallel, just use start
+                }
+                float omega = angle_between;
+                float sin_omega = std::sin(omega);
+                float a = std::sin((1.0f - t) * omega) / sin_omega;
+                float b = std::sin(t * omega) / sin_omega;
+                math::vec3 result = perp_start * a + perp_end * b;
+                float len = math::length(result);
+                return (len > 0.001f) ? result / len : perp_start;
+            };
+
+            // If going CW, flip the interpolation direction
+            math::vec3 h_dir1 = go_ccw ? slerp_perp(t1) : slerp_perp(1.0f - t1);
+            math::vec3 h_dir2 = go_ccw ? slerp_perp(t2) : slerp_perp(1.0f - t2);
+
+            // If going CW, we started from perp_end, so swap
+            if (!go_ccw) {
+                std::swap(h_dir1, h_dir2);
             }
-            faces.push_back({a, b, c});
+
+            for (int v = 0; v < v_segs; ++v) {
+                float p1 = (float)v / v_segs;
+                float p2 = (float)(v + 1) / v_segs;
+
+                // Vertical angle: 0 = +normal, PI = -normal
+                auto make_dir = [&](const math::vec3& h_dir, float p) {
+                    float angle = p * math::PI;
+                    return plane_normal * std::cos(angle) + h_dir * std::sin(angle);
+                };
+
+                math::vec3 d11 = make_dir(h_dir1, p1);
+                math::vec3 d12 = make_dir(h_dir1, p2);
+                math::vec3 d21 = make_dir(h_dir2, p1);
+                math::vec3 d22 = make_dir(h_dir2, p2);
+
+                math::vec3 p11 = vertex + d11 * radius;
+                math::vec3 p12 = vertex + d12 * radius;
+                math::vec3 p21 = vertex + d21 * radius;
+                math::vec3 p22 = vertex + d22 * radius;
+
+                // Use VERTEX as winding reference (sphere center)
+                emit_triangle(out, p11, p21, p12, vertex, color);
+                emit_triangle(out, p12, p21, p22, vertex, color);
+            }
+        }
+    }
+
+    // Simple 2D convex hull using gift wrapping (for small point sets)
+    std::vector<size_t> convex_hull_2d(const std::vector<math::vec3>& points,
+                                        const math::vec3& plane_normal) {
+        size_t n = points.size();
+        if (n < 3) {
+            std::vector<size_t> result;
+            for (size_t i = 0; i < n; ++i) result.push_back(i);
+            return result;
+        }
+
+        // Find leftmost point (using arbitrary 2D projection)
+        math::vec3 u = (std::abs(plane_normal.x) < 0.9f) ? math::vec3(1,0,0) : math::vec3(0,1,0);
+        u = math::normalize(math::cross(plane_normal, u));
+        math::vec3 v = math::cross(plane_normal, u);
+
+        auto project = [&](const math::vec3& p) -> std::pair<float, float> {
+            return {math::dot(p, u), math::dot(p, v)};
         };
 
-        add_face_if_outward(p0, p1, p2);
-        add_face_if_outward(p0, p1, p3);
-        add_face_if_outward(p0, p2, p3);
-        add_face_if_outward(p1, p2, p3);
+        size_t start = 0;
+        auto start_2d = project(points[0]);
+        for (size_t i = 1; i < n; ++i) {
+            auto p = project(points[i]);
+            if (p.first < start_2d.first ||
+                (p.first == start_2d.first && p.second < start_2d.second)) {
+                start = i;
+                start_2d = p;
+            }
+        }
 
-        // For each remaining point, check if outside any face and expand hull
-        for (size_t i = 0; i < points.size(); ++i) {
-            if (i == p0 || i == p1 || i == p2 || i == p3) continue;
+        std::vector<size_t> hull;
+        size_t current = start;
+        size_t iterations = 0;
+        const size_t max_iterations = n + 2;
 
-            // Find faces visible from this point
-            std::vector<size_t> visible;
-            for (size_t f = 0; f < faces.size(); ++f) {
-                math::vec3 a = points[faces[f][0]];
-                math::vec3 b = points[faces[f][1]];
-                math::vec3 c = points[faces[f][2]];
-                math::vec3 n = math::normalize(math::cross(b - a, c - a));
-                math::vec3 face_center = (a + b + c) / 3.0f;
+        do {
+            hull.push_back(current);
+            size_t next = (current + 1) % n;
 
-                // Point is outside if it's on the positive side of the face
-                if (math::dot(points[i] - face_center, n) > 0.0001f) {
-                    visible.push_back(f);
+            for (size_t i = 0; i < n; ++i) {
+                if (i == current) continue;
+                auto curr_2d = project(points[current]);
+                auto next_2d = project(points[next]);
+                auto test_2d = project(points[i]);
+
+                // Cross product to determine turn direction
+                float cross = (next_2d.first - curr_2d.first) * (test_2d.second - curr_2d.second)
+                            - (next_2d.second - curr_2d.second) * (test_2d.first - curr_2d.first);
+
+                if (cross < 0 || (cross == 0 &&
+                    // Collinear: take farther point
+                    ((test_2d.first - curr_2d.first) * (test_2d.first - curr_2d.first) +
+                     (test_2d.second - curr_2d.second) * (test_2d.second - curr_2d.second)) >
+                    ((next_2d.first - curr_2d.first) * (next_2d.first - curr_2d.first) +
+                     (next_2d.second - curr_2d.second) * (next_2d.second - curr_2d.second)))) {
+                    next = i;
                 }
             }
 
-            if (visible.empty()) continue;  // Point is inside hull
+            current = next;
+            iterations++;
+        } while (current != start && hull.size() < n && iterations < max_iterations);
 
-            // Find horizon edges (edges of visible faces that border non-visible faces)
-            std::vector<std::pair<size_t, size_t>> horizon;
-            for (size_t vi : visible) {
+        // Debug assertions
+        assert(iterations < max_iterations && "convex_hull_2d hit iteration limit");
+        assert(!(hull.size() < 3 && n >= 3) && "convex_hull_2d produced degenerate hull");
+
+        return hull;
+    }
+
+    // 3D Minkowski sum: offset polyhedron (non-coplanar points)
+    void generate_minkowski_3d(std::vector<RenderVertex>& out,
+                               const std::vector<math::vec3>& points,
+                               float radius, int segments,
+                               const math::vec3& centroid, const math::vec4& color) {
+        // Compute 3D convex hull of original points
+        auto hull_faces = compute_convex_hull_fast(points);
+        if (hull_faces.empty()) return;
+
+        // Build edge and vertex adjacency info
+        std::map<std::pair<size_t, size_t>, std::vector<math::vec3>> edge_normals;
+        std::map<size_t, std::vector<math::vec3>> vertex_normals;
+        std::map<size_t, std::vector<size_t>> vertex_neighbors;
+
+        for (const auto& face : hull_faces) {
+            math::vec3 a = points[face[0]];
+            math::vec3 b = points[face[1]];
+            math::vec3 c = points[face[2]];
+
+            math::vec3 normal = math::normalize(math::cross(b - a, c - a));
+
+            // Make sure normal points outward
+            math::vec3 face_center = (a + b + c) / 3.0f;
+            if (math::dot(normal, face_center - centroid) < 0) {
+                normal = normal * -1.0f;
+            }
+
+            // 1. Emit offset face
+            math::vec3 offset = normal * radius;
+            emit_triangle(out, a + offset, b + offset, c + offset, centroid, color);
+
+            // Track edges and vertices
+            for (int e = 0; e < 3; ++e) {
+                size_t v1 = face[e];
+                size_t v2 = face[(e + 1) % 3];
+                auto edge = std::make_pair(std::min(v1, v2), std::max(v1, v2));
+                edge_normals[edge].push_back(normal);
+
+                vertex_normals[face[e]].push_back(normal);
+                vertex_neighbors[face[e]].push_back(face[(e + 1) % 3]);
+            }
+        }
+
+        // 2. Emit cylinder strips for edges
+        for (const auto& [edge, normals] : edge_normals) {
+            if (normals.size() != 2) continue;  // Internal edge (shouldn't happen for convex hull)
+
+            math::vec3 e1 = points[edge.first];
+            math::vec3 e2 = points[edge.second];
+            emit_cylinder_strip(out, e1, e2, normals[0], normals[1], radius, segments, centroid, color);
+        }
+
+        // 3. Emit spherical caps for vertices
+        for (const auto& [vi, normals] : vertex_normals) {
+            if (normals.size() < 2) continue;
+
+            math::vec3 vertex = points[vi];
+
+            // Edge direction hint: direction to first neighbor
+            math::vec3 edge_hint(1, 0, 0);
+            if (!vertex_neighbors[vi].empty()) {
+                edge_hint = math::normalize(points[vertex_neighbors[vi][0]] - vertex);
+            }
+
+            emit_spherical_cap(out, vertex, normals, edge_hint, radius, segments, centroid, color);
+        }
+    }
+
+    // ==========================================================================
+    // 3D QUICKHULL - O(n log n) expected time convex hull algorithm
+    // ==========================================================================
+    std::vector<std::array<size_t, 3>> compute_convex_hull_fast(const std::vector<math::vec3>& points) {
+        const float EPS = 1e-6f;
+        const size_t n = points.size();
+        if (n < 4) return {};
+
+        // Find extreme points along each axis
+        size_t minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+        for (size_t i = 1; i < n; ++i) {
+            if (points[i].x < points[minX].x) minX = i;
+            if (points[i].x > points[maxX].x) maxX = i;
+            if (points[i].y < points[minY].y) minY = i;
+            if (points[i].y > points[maxY].y) maxY = i;
+            if (points[i].z < points[minZ].z) minZ = i;
+            if (points[i].z > points[maxZ].z) maxZ = i;
+        }
+
+        // Find the most distant pair of extreme points
+        size_t extremes[6] = {minX, maxX, minY, maxY, minZ, maxZ};
+        size_t p0 = 0, p1 = 1;
+        float maxDistSq = 0;
+        for (int i = 0; i < 6; ++i) {
+            for (int j = i + 1; j < 6; ++j) {
+                math::vec3 diff = points[extremes[j]] - points[extremes[i]];
+                float distSq = math::dot(diff, diff);
+                if (distSq > maxDistSq) {
+                    maxDistSq = distSq;
+                    p0 = extremes[i];
+                    p1 = extremes[j];
+                }
+            }
+        }
+        if (maxDistSq < EPS * EPS) return {};
+
+        // Find point farthest from line p0-p1
+        math::vec3 lineDir = points[p1] - points[p0];
+        float lineLenSq = math::dot(lineDir, lineDir);
+        size_t p2 = p0;
+        float maxDist = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (i == p0 || i == p1) continue;
+            math::vec3 toPoint = points[i] - points[p0];
+            float t = math::dot(toPoint, lineDir) / lineLenSq;
+            math::vec3 closest = points[p0] + lineDir * t;
+            math::vec3 diff = points[i] - closest;
+            float distSq = math::dot(diff, diff);
+            if (distSq > maxDist) { maxDist = distSq; p2 = i; }
+        }
+        if (maxDist < EPS * EPS) return {};
+
+        // Find point farthest from plane p0-p1-p2
+        math::vec3 planeNormal = math::cross(points[p1] - points[p0], points[p2] - points[p0]);
+        float planeNormalLen = math::length(planeNormal);
+        if (planeNormalLen < EPS) return {};
+        planeNormal = planeNormal / planeNormalLen;
+
+        size_t p3 = p0;
+        maxDist = 0;
+        float p3Sign = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (i == p0 || i == p1 || i == p2) continue;
+            float dist = math::dot(planeNormal, points[i] - points[p0]);
+            if (std::abs(dist) > maxDist) { maxDist = std::abs(dist); p3 = i; p3Sign = dist; }
+        }
+        if (maxDist < EPS) return {};
+        if (p3Sign < 0) std::swap(p1, p2);
+
+        // Face structure with adjacency info for BFS visibility search
+        struct Face {
+            size_t v[3];
+            math::vec3 normal;
+            float dist;
+            std::vector<size_t> outsideSet;
+            size_t neighbors[3];  // Adjacent face indices for each edge
+            bool active;
+        };
+
+        std::vector<Face> faces;
+        faces.reserve(n * 2);
+
+        // Edge to face mapping for building adjacency
+        std::unordered_map<uint64_t, std::pair<size_t, int>> edgeToFace;
+
+        auto edgeKey = [](size_t a, size_t b) -> uint64_t {
+            if (a > b) std::swap(a, b);
+            return (uint64_t(a) << 32) | uint64_t(b);
+        };
+
+        math::vec3 interior = (points[p0] + points[p1] + points[p2] + points[p3]) * 0.25f;
+
+        auto createFace = [&](size_t a, size_t b, size_t c) -> size_t {
+            Face f;
+            f.v[0] = a; f.v[1] = b; f.v[2] = c;
+            f.neighbors[0] = f.neighbors[1] = f.neighbors[2] = SIZE_MAX;
+            f.active = true;
+
+            math::vec3 ab = points[b] - points[a];
+            math::vec3 ac = points[c] - points[a];
+            f.normal = math::cross(ab, ac);
+            float len = math::length(f.normal);
+            if (len > EPS) f.normal = f.normal / len;
+            else f.normal = {0, 0, 1};
+            f.dist = math::dot(f.normal, points[a]);
+
+            if (math::dot(f.normal, interior) - f.dist > EPS) {
+                std::swap(f.v[1], f.v[2]);
+                f.normal = f.normal * -1.0f;
+                f.dist = -f.dist;
+            }
+
+            size_t idx = faces.size();
+            faces.push_back(std::move(f));
+
+            // Register edges and link to neighbors
+            Face& newFace = faces[idx];
+            for (int e = 0; e < 3; ++e) {
+                size_t ea = newFace.v[e], eb = newFace.v[(e + 1) % 3];
+                uint64_t key = edgeKey(ea, eb);
+                auto it = edgeToFace.find(key);
+                if (it != edgeToFace.end()) {
+                    size_t otherIdx = it->second.first;
+                    int otherEdge = it->second.second;
+                    newFace.neighbors[e] = otherIdx;
+                    faces[otherIdx].neighbors[otherEdge] = idx;
+                    edgeToFace.erase(it);
+                } else {
+                    edgeToFace[key] = {idx, e};
+                }
+            }
+
+            return idx;
+        };
+
+        createFace(p0, p1, p2);
+        createFace(p0, p2, p3);
+        createFace(p0, p3, p1);
+        createFace(p1, p3, p2);
+
+        // Assign points to faces (only need to scan initial 4 faces)
+        std::vector<bool> assigned(n, false);
+        assigned[p0] = assigned[p1] = assigned[p2] = assigned[p3] = true;
+
+        for (size_t i = 0; i < n; ++i) {
+            if (assigned[i]) continue;
+            float bestDist = EPS;
+            size_t bestFace = SIZE_MAX;
+            for (size_t fi = 0; fi < 4; ++fi) {
+                float d = math::dot(faces[fi].normal, points[i]) - faces[fi].dist;
+                if (d > bestDist) { bestDist = d; bestFace = fi; }
+            }
+            if (bestFace != SIZE_MAX) {
+                faces[bestFace].outsideSet.push_back(i);
+                assigned[i] = true;
+            }
+        }
+
+        // Process faces with outside points
+        std::vector<size_t> faceStack;
+        for (size_t fi = 0; fi < 4; ++fi) {
+            if (!faces[fi].outsideSet.empty()) faceStack.push_back(fi);
+        }
+
+        std::vector<size_t> visibleFaces;
+        std::vector<size_t> newFaceIndices;
+        std::vector<bool> visited;
+        visited.reserve(n * 2);
+
+        while (!faceStack.empty()) {
+            size_t faceIdx = faceStack.back();
+            faceStack.pop_back();
+
+            if (!faces[faceIdx].active || faces[faceIdx].outsideSet.empty()) continue;
+
+            Face& currentFace = faces[faceIdx];
+
+            // Find farthest point
+            size_t eyeIdx = currentFace.outsideSet[0];
+            float maxEyeDist = math::dot(currentFace.normal, points[eyeIdx]) - currentFace.dist;
+            for (size_t pi : currentFace.outsideSet) {
+                float d = math::dot(currentFace.normal, points[pi]) - currentFace.dist;
+                if (d > maxEyeDist) { maxEyeDist = d; eyeIdx = pi; }
+            }
+            const math::vec3& eye = points[eyeIdx];
+
+            // Find visible faces using BFS from current face (instead of scanning all)
+            visibleFaces.clear();
+            visited.assign(faces.size(), false);
+
+            std::vector<size_t> bfsQueue;
+            bfsQueue.push_back(faceIdx);
+            visited[faceIdx] = true;
+
+            while (!bfsQueue.empty()) {
+                size_t fi = bfsQueue.back();
+                bfsQueue.pop_back();
+
+                if (!faces[fi].active) continue;
+
+                float d = math::dot(faces[fi].normal, eye) - faces[fi].dist;
+                if (d > EPS) {
+                    visibleFaces.push_back(fi);
+                    // Check neighbors
+                    for (int e = 0; e < 3; ++e) {
+                        size_t ni = faces[fi].neighbors[e];
+                        if (ni != SIZE_MAX && !visited[ni]) {
+                            visited[ni] = true;
+                            bfsQueue.push_back(ni);
+                        }
+                    }
+                }
+            }
+
+            if (visibleFaces.empty()) {
+                auto& os = currentFace.outsideSet;
+                os.erase(std::remove(os.begin(), os.end(), eyeIdx), os.end());
+                if (!os.empty()) faceStack.push_back(faceIdx);
+                continue;
+            }
+
+            // Find horizon edges - edges shared with non-visible faces
+            std::vector<std::pair<size_t, size_t>> horizonEdges;
+            std::unordered_set<size_t> visibleSet(visibleFaces.begin(), visibleFaces.end());
+
+            for (size_t vi : visibleFaces) {
+                const Face& vf = faces[vi];
                 for (int e = 0; e < 3; ++e) {
-                    size_t v1 = faces[vi][e];
-                    size_t v2 = faces[vi][(e + 1) % 3];
+                    size_t neighborIdx = vf.neighbors[e];
+                    // Horizon edge: neighbor is not visible (either inactive or not in visibleSet)
+                    if (neighborIdx == SIZE_MAX ||
+                        !faces[neighborIdx].active ||
+                        visibleSet.find(neighborIdx) == visibleSet.end()) {
+                        size_t a = vf.v[e], b = vf.v[(e + 1) % 3];
+                        horizonEdges.push_back({b, a});  // Reverse winding for new face
+                    }
+                }
+            }
 
-                    // Check if this edge is shared with a non-visible face
-                    bool shared = false;
-                    for (size_t f = 0; f < faces.size(); ++f) {
-                        bool is_visible = false;
-                        for (size_t vf : visible) if (vf == f) { is_visible = true; break; }
-                        if (is_visible) continue;
+            // Collect orphaned points
+            std::vector<size_t> orphanedPoints;
+            for (size_t vi : visibleFaces) {
+                for (size_t pi : faces[vi].outsideSet) {
+                    if (pi != eyeIdx) orphanedPoints.push_back(pi);
+                }
+            }
 
-                        for (int e2 = 0; e2 < 3; ++e2) {
-                            size_t u1 = faces[f][e2];
-                            size_t u2 = faces[f][(e2 + 1) % 3];
-                            if ((v1 == u1 && v2 == u2) || (v1 == u2 && v2 == u1)) {
-                                shared = true;
+            // Deactivate visible faces and unregister their edges
+            for (size_t vi : visibleFaces) {
+                faces[vi].active = false;
+                faces[vi].outsideSet.clear();
+                // Unlink from neighbors
+                for (int e = 0; e < 3; ++e) {
+                    size_t ni = faces[vi].neighbors[e];
+                    if (ni != SIZE_MAX) {
+                        // Find which edge of neighbor points to us
+                        for (int ne = 0; ne < 3; ++ne) {
+                            if (faces[ni].neighbors[ne] == vi) {
+                                faces[ni].neighbors[ne] = SIZE_MAX;
                                 break;
                             }
                         }
-                        if (shared) break;
-                    }
-                    if (shared) {
-                        horizon.push_back({v1, v2});
                     }
                 }
             }
 
-            // Remove visible faces
-            std::vector<std::array<size_t, 3>> new_faces;
-            for (size_t f = 0; f < faces.size(); ++f) {
-                bool is_visible = false;
-                for (size_t vi : visible) if (vi == f) { is_visible = true; break; }
-                if (!is_visible) new_faces.push_back(faces[f]);
+            // Create new faces
+            newFaceIndices.clear();
+            for (const auto& edge : horizonEdges) {
+                size_t newIdx = createFace(edge.first, edge.second, eyeIdx);
+                newFaceIndices.push_back(newIdx);
             }
-            faces = new_faces;
 
-            // Add new faces from horizon edges to the new point
-            for (const auto& edge : horizon) {
-                // Ensure consistent winding (outward facing)
-                math::vec3 a = points[edge.first];
-                math::vec3 b = points[edge.second];
-                math::vec3 c = points[i];
-                math::vec3 face_center = (a + b + c) / 3.0f;
-                math::vec3 n = math::cross(b - a, c - a);
-
-                // Recompute centroid with new point
-                math::vec3 new_centroid = centroid;  // Approximation
-                if (math::dot(n, face_center - new_centroid) < 0) {
-                    faces.push_back({edge.first, i, edge.second});
-                } else {
-                    faces.push_back({edge.first, edge.second, i});
+            // Redistribute orphaned points to new faces only
+            for (size_t pi : orphanedPoints) {
+                float bestDist = EPS;
+                size_t bestFace = SIZE_MAX;
+                for (size_t ni : newFaceIndices) {
+                    float d = math::dot(faces[ni].normal, points[pi]) - faces[ni].dist;
+                    if (d > bestDist) { bestDist = d; bestFace = ni; }
                 }
+                if (bestFace != SIZE_MAX) {
+                    faces[bestFace].outsideSet.push_back(pi);
+                }
+            }
+
+            // Add new faces with outside points to stack
+            for (size_t ni : newFaceIndices) {
+                if (!faces[ni].outsideSet.empty()) faceStack.push_back(ni);
             }
         }
 
-        return faces;
-    }
-
-    // Legacy function for backward compatibility
-    void generate_convex_hull_bubble(std::vector<RenderVertex>& out,
-                                     const std::vector<math::vec3>& points,
-                                     const math::vec4& color) {
-        generate_bubble_for_arity(out, points, color);
+        // Collect result from active faces
+        std::vector<std::array<size_t, 3>> result;
+        result.reserve(faces.size());
+        for (size_t fi = 0; fi < faces.size(); ++fi) {
+            if (faces[fi].active) {
+                result.push_back({faces[fi].v[0], faces[fi].v[1], faces[fi].v[2]});
+            }
+        }
+        return result;
     }
 
 private:
@@ -1345,6 +2299,11 @@ public:
     EvolutionRenderer() = default;
 
     void set_config(const HypergraphRenderConfig& config) { config_ = config; }
+
+    // Forward timing print to HypergraphRenderer's static timing
+    void print_minkowski_timing() {
+        HypergraphRenderer::print_minkowski_timing_static();
+    }
 
     // Layout for evolution graph (state positions)
     struct EvolutionLayout {
@@ -1381,10 +2340,13 @@ public:
 
         // Event edges (between states)
         std::vector<RenderVertex> event_lines;
-        std::vector<RenderVertex> event_arrows;  // Arrowheads for event edges
+        std::vector<RenderVertex> event_arrows;  // Arrowheads for event edges (legacy)
+        std::vector<ConeInstance> event_cone_instances;  // Instanced cones (preferred)
 
         // Causal edges
         std::vector<RenderVertex> causal_lines;
+        std::vector<RenderVertex> causal_arrows;  // Arrowheads for causal edges (legacy)
+        std::vector<ConeInstance> causal_cone_instances;  // Instanced cones (preferred)
 
         // Branchial edges
         std::vector<RenderVertex> branchial_lines;
@@ -1400,7 +2362,10 @@ public:
             internal_bubbles.clear();
             event_lines.clear();
             event_arrows.clear();
+            event_cone_instances.clear();
             causal_lines.clear();
+            causal_arrows.clear();
+            causal_cone_instances.clear();
             branchial_lines.clear();
         }
     };
@@ -1419,7 +2384,6 @@ public:
         internal_config.edge_thickness = 0.02f * internal_scale;
         internal_config.arrow_length = 0.15f * internal_scale;
         internal_config.arrow_radius = 0.06f * internal_scale;
-        internal_config.bubble_color.w = 0.15f;  // Low alpha for internal bubbles
         hg_renderer.set_config(internal_config);
 
         // Generate state containers and internal hypergraphs
@@ -1509,6 +2473,11 @@ public:
         std::map<std::pair<StateId, StateId>, std::vector<const EvolutionEdge*>> branchial_bundles;
 
         for (const auto& edge : evo.evolution_edges) {
+            // Validate state IDs are within bounds before bundling
+            if (edge.source >= evo.states.size() || edge.target >= evo.states.size()) {
+                continue;  // Skip edges with invalid state references
+            }
+
             if (edge.type == EvolutionEdgeType::Event) {
                 // Use ordered pair (source, target) as key
                 auto key = std::make_pair(edge.source, edge.target);
@@ -1526,116 +2495,77 @@ public:
         for (const auto& [key, edges] : event_bundles) {
             StateId source = key.first;
             StateId target = key.second;
+
+            // Skip edges with invalid state IDs (out of bounds)
+            if (source >= layout.state_positions.size() || target >= layout.state_positions.size()) {
+                continue;
+            }
+
+            // Skip edges involving invisible states (safety check)
+            if (!layout.is_state_visible(source) || !layout.is_state_visible(target)) {
+                continue;
+            }
+
             uint32_t multiplicity = static_cast<uint32_t>(edges.size());
 
             math::vec3 center1 = layout.get_state_pos(source);
             math::vec3 center2 = layout.get_state_pos(target);
-            math::vec4 color = config_.event_edge_color;
 
-            math::vec3 dir = center2 - center1;
-            float len = math::length(dir);
-            if (len < 0.001f) continue;
-            dir = dir / len;
-
-            // Surface points
-            math::vec3 p1 = ray_cube_exit(center1, dir, half_size);
-            math::vec3 p2 = ray_cube_enter(center2, dir * -1.0f, half_size);
-
-            // Find perpendicular direction for spreading (consistent regardless of edge direction)
-            math::vec3 perp = compute_consistent_perpendicular(p1, p2, math::vec3(0, 0, 1));
+            // Skip degenerate edges
+            if (math::length(center2 - center1) < 0.001f) continue;
 
             if (multiplicity == 1) {
-                // Single edge: straight line with arrow
+                // Single edge: straight line with arrow (special case for efficiency)
+                math::vec3 dir = math::normalize(center2 - center1);
+                math::vec3 p1 = ray_cube_exit(center1, dir, half_size);
+                math::vec3 p2 = ray_cube_enter(center2, dir * -1.0f, half_size);
                 float arrow_len = config_.event_arrow_length;
                 math::vec3 arrow_base = p2 - dir * arrow_len;
-                generate_line(geo.event_lines, p1, arrow_base, color);
-                generate_arrow_cone(geo.event_arrows, arrow_base, p2,
-                                   config_.event_arrow_radius, color);
+                generate_line(geo.event_lines, p1, arrow_base, config_.event_edge_color);
+                add_cone_instance(geo.event_cone_instances, p2, dir,
+                                 arrow_len, config_.event_arrow_radius, config_.event_edge_color);
             } else {
-                // Multiple edges: draw curved/bowed edges spread perpendicular
-                // Spread edges symmetrically around the center line
-                float spread = config_.state_size * 0.4f;  // Max spread at control point
-                float endpoint_spread = config_.state_size * 0.15f;  // Spread at endpoints
-
-                for (uint32_t i = 0; i < multiplicity; ++i) {
-                    // Compute offset: centered around 0
-                    // For n edges: positions at -spread, ..., 0, ..., +spread
-                    float t = (static_cast<float>(i) / (multiplicity - 1) - 0.5f) * 2.0f;
-                    float control_offset = t * spread;
-                    float endpoint_offset = t * endpoint_spread;
-
-                    // Offset endpoints perpendicular to edge direction
-                    math::vec3 p1_offset = p1 + perp * endpoint_offset;
-                    math::vec3 p2_offset = p2 + perp * endpoint_offset;
-
-                    // Control point for quadratic bezier is at midpoint + perpendicular offset
-                    math::vec3 midpoint = (p1_offset + p2_offset) * 0.5f;
-                    math::vec3 control = midpoint + perp * control_offset;
-
-                    // Generate curved edge as line segments
-                    generate_quadratic_bezier(geo.event_lines, p1_offset, control, p2_offset,
-                                             config_.event_arrow_length, color);
-
-                    // Arrow at end of curve (pointing along final tangent)
-                    math::vec3 final_tangent = p2_offset - control;
-                    if (math::length(final_tangent) > 0.001f) {
-                        final_tangent = math::normalize(final_tangent);
-                    } else {
-                        final_tangent = dir;
-                    }
-                    math::vec3 arrow_base = p2_offset - final_tangent * config_.event_arrow_length;
-                    generate_arrow_cone(geo.event_arrows, arrow_base, p2_offset,
-                                       config_.event_arrow_radius, color);
-                }
+                // Multiple edges: use bundled curved rendering
+                EdgeBundleParams params = compute_edge_bundle_params(
+                    center1, center2, half_size, math::vec3(0, 0, 1),
+                    config_.event_edge_color, multiplicity,
+                    0.4f, 0.15f,  // spread factors
+                    true, config_.event_arrow_length, config_.event_arrow_radius
+                );
+                render_edge_bundle(geo.event_lines, &geo.event_cone_instances, params);
             }
         }
 
-        // Generate branchial edges (always curved for visual distinction)
+        // Generate branchial edges (always curved for visual distinction, no arrows)
         for (const auto& [key, edges] : branchial_bundles) {
             StateId source = key.first;
             StateId target = key.second;
+
+            // Skip edges with invalid state IDs (out of bounds)
+            if (source >= layout.state_positions.size() || target >= layout.state_positions.size()) {
+                continue;
+            }
+
+            // Skip edges involving invisible states
+            if (!layout.is_state_visible(source) || !layout.is_state_visible(target)) {
+                continue;
+            }
+
             uint32_t multiplicity = static_cast<uint32_t>(edges.size());
 
             math::vec3 center1 = layout.get_state_pos(source);
             math::vec3 center2 = layout.get_state_pos(target);
-            math::vec4 color = config_.branchial_edge_color;
 
-            math::vec3 dir = center2 - center1;
-            float len = math::length(dir);
-            if (len < 0.001f) continue;
-            dir = dir / len;
+            // Skip degenerate edges
+            if (math::length(center2 - center1) < 0.001f) continue;
 
-            math::vec3 p1 = ray_cube_exit(center1, dir, half_size);
-            math::vec3 p2 = ray_cube_enter(center2, dir * -1.0f, half_size);
-
-            // Branchial edges are always curved (bowed) for visual distinction
-            // Use consistent perpendicular to ensure symmetric bowing
-            math::vec3 perp = compute_consistent_perpendicular(p1, p2, math::vec3(0, 0, 1));
-
-            // Equal spacing: edges spread from -spread to +spread
-            // For single edge: center line (no bowing)
-            // For multiple edges: equally spaced from -spread to +spread
-            float spread = config_.state_size * 0.3f;  // Total spread from center
-            float endpoint_spread = config_.state_size * 0.08f;
-
-            for (uint32_t i = 0; i < multiplicity; ++i) {
-                // t ranges from -1 to +1, equally spaced
-                float t = (multiplicity == 1) ? 0.0f :
-                    (static_cast<float>(i) / (multiplicity - 1) - 0.5f) * 2.0f;
-                // Simple linear offset for equal spacing
-                float control_offset = t * spread;
-                float endpoint_offset = t * endpoint_spread;
-
-                // Offset endpoints perpendicular to edge direction
-                math::vec3 p1_offset = p1 + perp * endpoint_offset;
-                math::vec3 p2_offset = p2 + perp * endpoint_offset;
-
-                math::vec3 midpoint = (p1_offset + p2_offset) * 0.5f;
-                math::vec3 control = midpoint + perp * control_offset;
-
-                // No arrow for branchial (undirected)
-                generate_quadratic_bezier_full(geo.branchial_lines, p1_offset, control, p2_offset, color);
-            }
+            EdgeBundleParams params = compute_edge_bundle_params(
+                center1, center2, half_size, math::vec3(0, 0, 1),
+                config_.branchial_edge_color, multiplicity,
+                0.3f, 0.08f,  // spread factors
+                false, 0.0f, 0.0f  // no arrows
+            );
+            render_edge_bundle(geo.branchial_lines, nullptr, params);
         }
 
         // Generate causal edges (connect producer's output state to consumer's input state)
@@ -1650,80 +2580,150 @@ public:
 
                 if (producer && consumer) {
                     // Causal edge: producer's output state → consumer's output state
-                    // This shows that an edge produced by the producer event was
-                    // consumed by the consumer event to create a new state
                     StateId src_state = producer->output_state;
                     StateId tgt_state = consumer->output_state;
 
-                    auto key = std::make_pair(src_state, tgt_state);
-                    causal_bundles[key].push_back(&edge);
+                    // Validate state IDs are within bounds
+                    if (src_state < evo.states.size() && tgt_state < evo.states.size()) {
+                        auto key = std::make_pair(src_state, tgt_state);
+                        causal_bundles[key].push_back(&edge);
+                    }
                 }
             }
         }
+
+        // Causal edges use smaller arrows to distinguish from event edges
+        float causal_arrow_len = config_.event_arrow_length * 0.7f;
+        float causal_arrow_rad = config_.event_arrow_radius * 0.7f;
 
         for (const auto& [key, edges] : causal_bundles) {
             StateId source = key.first;
             StateId target = key.second;
+
+            // Skip edges with invalid state IDs (out of bounds)
+            if (source >= layout.state_positions.size() || target >= layout.state_positions.size()) {
+                continue;
+            }
+
+            // Skip edges involving invisible states
+            if (!layout.is_state_visible(source) || !layout.is_state_visible(target)) {
+                continue;
+            }
+
             uint32_t multiplicity = static_cast<uint32_t>(edges.size());
 
             math::vec3 center1 = layout.get_state_pos(source);
             math::vec3 center2 = layout.get_state_pos(target);
-            math::vec4 color = config_.causal_edge_color;
 
-            math::vec3 dir = center2 - center1;
-            float len = math::length(dir);
-            if (len < 0.001f) continue;
-            dir = dir / len;
+            // Skip degenerate edges
+            if (math::length(center2 - center1) < 0.001f) continue;
 
-            math::vec3 p1 = ray_cube_exit(center1, dir, half_size);
-            math::vec3 p2 = ray_cube_enter(center2, dir * -1.0f, half_size);
-
-            // Causal edges are always curved (bowed) for visual distinction
-            // Use consistent perpendicular with different up_hint than branchial to distinguish
-            math::vec3 perp = compute_consistent_perpendicular(p1, p2, math::vec3(0, 1, 0));
-
-            // Equal spacing: edges spread from -spread to +spread
-            // For single edge: center line (no bowing)
-            // For multiple edges: equally spaced from -spread to +spread
-            float spread = config_.state_size * 0.25f;  // Total spread from center
-            float endpoint_spread = config_.state_size * 0.06f;
-
-            for (uint32_t i = 0; i < multiplicity; ++i) {
-                // t ranges from -1 to +1, equally spaced
-                float t = (multiplicity == 1) ? 0.0f :
-                    (static_cast<float>(i) / (multiplicity - 1) - 0.5f) * 2.0f;
-                // Simple linear offset for equal spacing
-                float control_offset = t * spread;
-                float endpoint_offset = t * endpoint_spread;
-
-                // Offset endpoints perpendicular to edge direction
-                math::vec3 p1_offset = p1 + perp * endpoint_offset;
-                math::vec3 p2_offset = p2 + perp * endpoint_offset;
-
-                math::vec3 midpoint = (p1_offset + p2_offset) * 0.5f;
-                math::vec3 control = midpoint + perp * control_offset;
-
-                // Causal edges have direction: draw with arrow
-                generate_quadratic_bezier(geo.causal_lines, p1_offset, control, p2_offset,
-                                         config_.event_arrow_length, color);
-
-                // Arrow at end of curve (pointing along final tangent)
-                math::vec3 final_tangent = p2_offset - control;
-                if (math::length(final_tangent) > 0.001f) {
-                    final_tangent = math::normalize(final_tangent);
-                } else {
-                    final_tangent = dir;
-                }
-                // Use smaller arrow for causal edges
-                float causal_arrow_len = config_.event_arrow_length * 0.7f;
-                float causal_arrow_rad = config_.event_arrow_radius * 0.7f;
-                math::vec3 arrow_base = p2_offset - final_tangent * causal_arrow_len;
-                generate_arrow_cone(geo.causal_lines, arrow_base, p2_offset,
-                                   causal_arrow_rad, color);
-            }
+            // Causal edges use different up_hint (0,1,0) than branchial (0,0,1) to distinguish
+            EdgeBundleParams params = compute_edge_bundle_params(
+                center1, center2, half_size, math::vec3(0, 1, 0),
+                config_.causal_edge_color, multiplicity,
+                0.25f, 0.06f,  // spread factors
+                true, causal_arrow_len, causal_arrow_rad
+            );
+            render_edge_bundle(geo.causal_lines, &geo.causal_cone_instances, params);
         }
 
         return geo;
+    }
+
+    // Parameters for rendering an edge bundle (common to all edge types)
+    struct EdgeBundleParams {
+        math::vec3 p1;              // Start surface point
+        math::vec3 p2;              // End surface point
+        math::vec3 dir;             // Normalized direction from p1 to p2
+        math::vec3 perp;            // Perpendicular direction for spreading
+        math::vec4 color;           // Edge color
+        uint32_t multiplicity;      // Number of edges in bundle
+        float spread;               // Max spread at control point (state_size multiplier)
+        float endpoint_spread;      // Spread at endpoints (state_size multiplier)
+        bool has_arrow;             // Whether to draw arrows
+        float arrow_length;         // Arrow length (0 if no arrow)
+        float arrow_radius;         // Arrow radius (0 if no arrow)
+    };
+
+    // Compute common edge bundle geometry from source/target positions
+    EdgeBundleParams compute_edge_bundle_params(
+        const math::vec3& center1, const math::vec3& center2,
+        float half_size, const math::vec3& up_hint,
+        const math::vec4& color, uint32_t multiplicity,
+        float spread_factor, float endpoint_spread_factor,
+        bool has_arrow, float arrow_length, float arrow_radius
+    ) {
+        EdgeBundleParams params;
+        params.color = color;
+        params.multiplicity = multiplicity;
+        params.spread = config_.state_size * spread_factor;
+        params.endpoint_spread = config_.state_size * endpoint_spread_factor;
+        params.has_arrow = has_arrow;
+        params.arrow_length = arrow_length;
+        params.arrow_radius = arrow_radius;
+
+        params.dir = center2 - center1;
+        float len = math::length(params.dir);
+        if (len < 0.001f) {
+            params.dir = math::vec3(1, 0, 0);
+        } else {
+            params.dir = params.dir / len;
+        }
+
+        params.p1 = ray_cube_exit(center1, params.dir, half_size);
+        params.p2 = ray_cube_enter(center2, params.dir * -1.0f, half_size);
+        params.perp = compute_consistent_perpendicular(params.p1, params.p2, up_hint);
+
+        return params;
+    }
+
+    // Render a single edge within a bundle at the given t value [-1, +1]
+    // t=0 is center line, negative/positive spread to either side
+    void render_bundle_edge(
+        std::vector<RenderVertex>& lines_out,
+        std::vector<ConeInstance>* cones_out,  // nullptr if no arrows
+        const EdgeBundleParams& params,
+        float t  // Position in bundle: -1 to +1, 0 = center
+    ) {
+        float control_offset = t * params.spread;
+        float endpoint_offset = t * params.endpoint_spread;
+
+        math::vec3 p1_offset = params.p1 + params.perp * endpoint_offset;
+        math::vec3 p2_offset = params.p2 + params.perp * endpoint_offset;
+        math::vec3 midpoint = (p1_offset + p2_offset) * 0.5f;
+        math::vec3 control = midpoint + params.perp * control_offset;
+
+        if (params.has_arrow && cones_out) {
+            generate_quadratic_bezier(lines_out, p1_offset, control, p2_offset,
+                                     params.arrow_length, params.color);
+
+            math::vec3 final_tangent = p2_offset - control;
+            if (math::length(final_tangent) > 0.001f) {
+                final_tangent = math::normalize(final_tangent);
+            } else {
+                final_tangent = params.dir;
+            }
+            add_cone_instance(*cones_out, p2_offset, final_tangent,
+                             params.arrow_length, params.arrow_radius, params.color);
+        } else {
+            generate_quadratic_bezier_full(lines_out, p1_offset, control, p2_offset, params.color);
+        }
+    }
+
+    // Render an entire edge bundle with all its edges spread perpendicular
+    void render_edge_bundle(
+        std::vector<RenderVertex>& lines_out,
+        std::vector<ConeInstance>* cones_out,
+        const EdgeBundleParams& params
+    ) {
+        for (uint32_t i = 0; i < params.multiplicity; ++i) {
+            // t ranges from -1 to +1, equally spaced
+            // For single edge: t = 0 (center line)
+            float t = (params.multiplicity == 1) ? 0.0f :
+                (static_cast<float>(i) / (params.multiplicity - 1) - 0.5f) * 2.0f;
+            render_bundle_edge(lines_out, cones_out, params, t);
+        }
     }
 
     // Generate quadratic bezier curve as line segments
@@ -1868,6 +2868,19 @@ private:
                       const math::vec4& color) {
         out.push_back({p1.x, p1.y, p1.z, color.x, color.y, color.z, color.w});
         out.push_back({p2.x, p2.y, p2.z, color.x, color.y, color.z, color.w});
+    }
+
+    // Add cone instance (for instanced rendering)
+    void add_cone_instance(std::vector<ConeInstance>& out,
+                          const math::vec3& tip, const math::vec3& direction,
+                          float length, float radius, const math::vec4& color) {
+        math::vec3 dir = math::normalize(direction);
+        out.push_back({
+            tip.x, tip.y, tip.z,
+            dir.x, dir.y, dir.z,
+            length, radius,
+            color.x, color.y, color.z, color.w
+        });
     }
 
     // Generate wireframe cube - 12 edges as line segments

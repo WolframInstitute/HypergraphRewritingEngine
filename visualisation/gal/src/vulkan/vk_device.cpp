@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <iostream>
 #include <cassert>
+#include <fstream>
+#include <chrono>
 
 namespace viz::gal {
 
@@ -25,9 +27,12 @@ std::unique_ptr<Buffer> create_vulkan_buffer(VkDevice device, VkPhysicalDevice p
                                               const VkPhysicalDeviceMemoryProperties& mem_props,
                                               const BufferDesc& desc);
 
+// Cleanup function for render pass cache (defined in vk_command_buffer.cpp)
+void cleanup_render_pass_cache(VkDevice device);
+
 std::unique_ptr<Shader> create_vulkan_shader(VkDevice device, const ShaderDesc& desc);
 std::unique_ptr<BindGroupLayout> create_vulkan_bind_group_layout(VkDevice device, const BindGroupLayoutDesc& desc);
-std::unique_ptr<RenderPipeline> create_vulkan_render_pipeline(VkDevice device, const RenderPipelineDesc& desc);
+std::unique_ptr<RenderPipeline> create_vulkan_render_pipeline(VkDevice device, VkPipelineCache cache, const RenderPipelineDesc& desc);
 std::unique_ptr<ComputePipeline> create_vulkan_compute_pipeline(VkDevice device, const ComputePipelineDesc& desc);
 
 std::unique_ptr<CommandEncoder> create_vulkan_command_encoder(VkDevice device, VkCommandPool pool);
@@ -165,6 +170,7 @@ public:
     VkQueue get_graphics_queue() const { return graphics_queue_; }
     uint32_t get_graphics_queue_family() const { return graphics_queue_family_; }
     VkCommandPool get_command_pool() const { return command_pool_; }
+    VkPipelineCache get_pipeline_cache() const { return pipeline_cache_; }
 
     // Memory allocation helper
     uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) const;
@@ -186,36 +192,62 @@ private:
     uint32_t compute_queue_family_ = UINT32_MAX;
     uint32_t transfer_queue_family_ = UINT32_MAX;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
+    bool pipeline_cache_loaded_from_disk_ = false;
 
     VkPhysicalDeviceMemoryProperties memory_properties_{};
     DeviceInfo info_;
     bool validation_enabled_ = false;
+    bool has_memory_priority_ = false;
+    bool has_pageable_memory_ = false;
+
+    // Pipeline cache file operations
+    bool load_pipeline_cache();
+    void save_pipeline_cache();
+    static constexpr const char* PIPELINE_CACHE_FILENAME = "pipeline_cache.bin";
 };
 
 bool VulkanDevice::initialize(const DeviceDesc& desc) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     if (!vk::load_vulkan_library()) {
         std::cerr << "Failed to load Vulkan library" << std::endl;
         return false;
     }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    std::cout << "  [Device] load_vulkan_library: "
+              << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms" << std::endl;
 
     if (!create_instance(desc)) {
         return false;
     }
+    auto t2 = std::chrono::high_resolution_clock::now();
+    std::cout << "  [Device] create_instance: "
+              << std::chrono::duration<double, std::milli>(t2 - t1).count() << " ms" << std::endl;
 
     // Instance functions loaded in create_instance()
 
     if (!select_physical_device(desc)) {
         return false;
     }
+    auto t3 = std::chrono::high_resolution_clock::now();
+    std::cout << "  [Device] select_physical_device: "
+              << std::chrono::duration<double, std::milli>(t3 - t2).count() << " ms" << std::endl;
 
     if (!create_logical_device(desc)) {
         return false;
     }
+    auto t4 = std::chrono::high_resolution_clock::now();
+    std::cout << "  [Device] create_logical_device: "
+              << std::chrono::duration<double, std::milli>(t4 - t3).count() << " ms" << std::endl;
 
     if (!vk::load_device_functions(device_)) {
         std::cerr << "Failed to load Vulkan device functions" << std::endl;
         return false;
     }
+    auto t5 = std::chrono::high_resolution_clock::now();
+    std::cout << "  [Device] load_device_functions: "
+              << std::chrono::duration<double, std::milli>(t5 - t4).count() << " ms" << std::endl;
 
     // Get queues
     vk::vkGetDeviceQueue(device_, graphics_queue_family_, 0, &graphics_queue_);
@@ -227,10 +259,13 @@ bool VulkanDevice::initialize(const DeviceDesc& desc) {
     }
 
     // Create command pool for the graphics queue
+    // Note: We use TRANSIENT_BIT since command buffers are short-lived (one-time submit)
+    // We don't use RESET_COMMAND_BUFFER_BIT - instead we recreate command buffers each frame
+    // This follows best practices for avoiding per-command-buffer reset overhead
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.queueFamilyIndex = graphics_queue_family_;
-    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
 
     if (vk::vkCreateCommandPool(device_, &pool_info, nullptr, &command_pool_) != VK_SUCCESS) {
         std::cerr << "Failed to create command pool" << std::endl;
@@ -243,12 +278,25 @@ bool VulkanDevice::initialize(const DeviceDesc& desc) {
     // Query device info
     query_device_info();
 
+    // Create pipeline cache (loads from disk if available)
+    load_pipeline_cache();
+
     return true;
 }
 
 void VulkanDevice::destroy() {
     if (device_) {
         vk::vkDeviceWaitIdle(device_);
+
+        // Save and destroy pipeline cache
+        save_pipeline_cache();
+        if (pipeline_cache_) {
+            vk::vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+            pipeline_cache_ = VK_NULL_HANDLE;
+        }
+
+        // Clean up cached render passes before destroying device
+        cleanup_render_pass_cache(device_);
 
         if (command_pool_) {
             vk::vkDestroyCommandPool(device_, command_pool_, nullptr);
@@ -270,7 +318,81 @@ void VulkanDevice::destroy() {
     }
 }
 
+bool VulkanDevice::load_pipeline_cache() {
+    std::vector<uint8_t> cache_data;
+
+    // Try to load existing cache from disk
+    std::ifstream file(PIPELINE_CACHE_FILENAME, std::ios::binary | std::ios::ate);
+    if (file.is_open()) {
+        auto size = file.tellg();
+        if (size > 0) {
+            cache_data.resize(static_cast<size_t>(size));
+            file.seekg(0, std::ios::beg);
+            file.read(reinterpret_cast<char*>(cache_data.data()), size);
+            std::cout << "[Pipeline Cache] Loaded " << size << " bytes from disk" << std::endl;
+            pipeline_cache_loaded_from_disk_ = true;
+        }
+        file.close();
+    }
+
+    VkPipelineCacheCreateInfo cache_info{};
+    cache_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    cache_info.initialDataSize = cache_data.size();
+    cache_info.pInitialData = cache_data.empty() ? nullptr : cache_data.data();
+
+    if (vk::vkCreatePipelineCache(device_, &cache_info, nullptr, &pipeline_cache_) != VK_SUCCESS) {
+        std::cerr << "[Pipeline Cache] Failed to create pipeline cache" << std::endl;
+        return false;
+    }
+
+    if (cache_data.empty()) {
+        std::cout << "[Pipeline Cache] Created new empty cache" << std::endl;
+    }
+
+    return true;
+}
+
+void VulkanDevice::save_pipeline_cache() {
+    if (!pipeline_cache_) return;
+
+    // Skip saving if we loaded from disk (cache hasn't changed)
+    if (pipeline_cache_loaded_from_disk_) {
+        return;
+    }
+
+    // Get cache data size
+    size_t cache_size = 0;
+    if (vk::vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, nullptr) != VK_SUCCESS) {
+        std::cerr << "[Pipeline Cache] Failed to get cache size" << std::endl;
+        return;
+    }
+
+    if (cache_size == 0) {
+        std::cout << "[Pipeline Cache] Cache is empty, nothing to save" << std::endl;
+        return;
+    }
+
+    // Get cache data
+    std::vector<uint8_t> cache_data(cache_size);
+    if (vk::vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, cache_data.data()) != VK_SUCCESS) {
+        std::cerr << "[Pipeline Cache] Failed to get cache data" << std::endl;
+        return;
+    }
+
+    // Write to disk
+    std::ofstream file(PIPELINE_CACHE_FILENAME, std::ios::binary);
+    if (file.is_open()) {
+        file.write(reinterpret_cast<const char*>(cache_data.data()), cache_size);
+        file.close();
+        std::cout << "[Pipeline Cache] Saved " << cache_size << " bytes to disk" << std::endl;
+    } else {
+        std::cerr << "[Pipeline Cache] Failed to open file for writing" << std::endl;
+    }
+}
+
 bool VulkanDevice::create_instance(const DeviceDesc& desc) {
+    auto ci_start = std::chrono::high_resolution_clock::now();
+
     // Check for validation layers
     std::vector<const char*> layers;
     if (desc.enable_validation) {
@@ -287,6 +409,11 @@ bool VulkanDevice::create_instance(const DeviceDesc& desc) {
             }
         }
     }
+    auto ci_layers = std::chrono::high_resolution_clock::now();
+    std::cout << "    [Instance] layer enumeration: "
+              << std::chrono::duration<double, std::milli>(ci_layers - ci_start).count()
+              << " ms (validation=" << (desc.enable_validation ? "requested" : "disabled")
+              << ", found=" << (validation_enabled_ ? "yes" : "no") << ")" << std::endl;
 
     // Required extensions
     std::vector<const char*> extensions;
@@ -335,7 +462,6 @@ bool VulkanDevice::create_instance(const DeviceDesc& desc) {
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         debug_create_info.messageType =
-            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         debug_create_info.pfnUserCallback = debug_callback;
@@ -343,7 +469,11 @@ bool VulkanDevice::create_instance(const DeviceDesc& desc) {
         create_info.pNext = &debug_create_info;
     }
 
+    auto ci_before = std::chrono::high_resolution_clock::now();
     VkResult result = vk::vkCreateInstance(&create_info, nullptr, &instance_);
+    auto ci_after = std::chrono::high_resolution_clock::now();
+    std::cout << "    [Instance] vkCreateInstance: "
+              << std::chrono::duration<double, std::milli>(ci_after - ci_before).count() << " ms" << std::endl;
     if (result != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan instance: " << result << std::endl;
         return false;
@@ -363,7 +493,6 @@ bool VulkanDevice::create_instance(const DeviceDesc& desc) {
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         messenger_info.messageType =
-            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         messenger_info.pfnUserCallback = debug_callback;
@@ -513,19 +642,63 @@ bool VulkanDevice::create_logical_device(const DeviceDesc& desc) {
         queue_create_infos.push_back(queue_info);
     }
 
-    // Device features
+    // Query available device features first (required by best practices)
+    VkPhysicalDeviceFeatures available_features{};
+    vk::vkGetPhysicalDeviceFeatures(physical_device_, &available_features);
+
+    // Enable only the features we need (and that are available)
     VkPhysicalDeviceFeatures features{};
-    features.samplerAnisotropy = VK_TRUE;
-    features.fillModeNonSolid = VK_TRUE;  // For wireframe
-    features.wideLines = VK_TRUE;         // For line width > 1
+    features.samplerAnisotropy = available_features.samplerAnisotropy;
+    features.fillModeNonSolid = available_features.fillModeNonSolid;  // For wireframe
+    features.wideLines = available_features.wideLines;                 // For line width > 1
+    features.independentBlend = available_features.independentBlend;  // For WBOIT (different blend states per attachment)
 
     // Extensions
     std::vector<const char*> extensions;
     extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
-#if defined(VIZ_PLATFORM_MACOS)
-    extensions.push_back("VK_KHR_portability_subset");
-#endif
+    // Enumerate available device extensions
+    uint32_t ext_count = 0;
+    vk::vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, nullptr);
+    std::vector<VkExtensionProperties> available_extensions(ext_count);
+    vk::vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, available_extensions.data());
+
+    // Check for optional extensions
+    bool has_portability_subset = false;
+    bool has_memory_priority = false;
+    bool has_pageable_memory = false;
+
+    for (const auto& ext : available_extensions) {
+        if (strcmp(ext.extensionName, "VK_KHR_portability_subset") == 0) {
+            has_portability_subset = true;
+        } else if (strcmp(ext.extensionName, "VK_EXT_memory_priority") == 0) {
+            has_memory_priority = true;
+        } else if (strcmp(ext.extensionName, "VK_EXT_pageable_device_local_memory") == 0) {
+            has_pageable_memory = true;
+        }
+    }
+
+    // VK_KHR_portability_subset MUST be enabled if supported
+    if (has_portability_subset) {
+        extensions.push_back("VK_KHR_portability_subset");
+    }
+
+    // VK_EXT_memory_priority is required for VK_EXT_pageable_device_local_memory
+    if (has_memory_priority) {
+        extensions.push_back("VK_EXT_memory_priority");
+    }
+    if (has_pageable_memory && has_memory_priority) {
+        extensions.push_back("VK_EXT_pageable_device_local_memory");
+    }
+
+    // Build feature chain for optional features
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT memory_priority_features{};
+    memory_priority_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT;
+    memory_priority_features.memoryPriority = VK_TRUE;
+
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_memory_features{};
+    pageable_memory_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
+    pageable_memory_features.pageableDeviceLocalMemory = VK_TRUE;
 
     // Create device
     VkDeviceCreateInfo create_info{};
@@ -536,11 +709,26 @@ bool VulkanDevice::create_logical_device(const DeviceDesc& desc) {
     create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     create_info.ppEnabledExtensionNames = extensions.data();
 
+    // Chain feature structs
+    void** next_ptr = const_cast<void**>(&create_info.pNext);
+    if (has_memory_priority) {
+        *next_ptr = &memory_priority_features;
+        next_ptr = &memory_priority_features.pNext;
+    }
+    if (has_pageable_memory && has_memory_priority) {
+        *next_ptr = &pageable_memory_features;
+        next_ptr = &pageable_memory_features.pNext;
+    }
+
     VkResult result = vk::vkCreateDevice(physical_device_, &create_info, nullptr, &device_);
     if (result != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan logical device: " << result << std::endl;
         return false;
     }
+
+    // Store feature availability for later use
+    has_memory_priority_ = has_memory_priority;
+    has_pageable_memory_ = has_pageable_memory && has_memory_priority;
 
     return true;
 }
@@ -591,6 +779,18 @@ void VulkanDevice::query_device_info() {
     info_.limits.min_storage_buffer_offset_alignment = static_cast<uint32_t>(props.limits.minStorageBufferOffsetAlignment);
     info_.limits.max_sampler_anisotropy = props.limits.maxSamplerAnisotropy;
     info_.limits.max_color_attachments = props.limits.maxColorAttachments;
+
+    // Max MSAA samples (intersection of color and depth sample counts)
+    VkSampleCountFlags sample_counts = props.limits.framebufferColorSampleCounts
+                                     & props.limits.framebufferDepthSampleCounts;
+    // Find highest bit set (max supported sample count)
+    if (sample_counts & VK_SAMPLE_COUNT_64_BIT) info_.limits.max_samples = 64;
+    else if (sample_counts & VK_SAMPLE_COUNT_32_BIT) info_.limits.max_samples = 32;
+    else if (sample_counts & VK_SAMPLE_COUNT_16_BIT) info_.limits.max_samples = 16;
+    else if (sample_counts & VK_SAMPLE_COUNT_8_BIT) info_.limits.max_samples = 8;
+    else if (sample_counts & VK_SAMPLE_COUNT_4_BIT) info_.limits.max_samples = 4;
+    else if (sample_counts & VK_SAMPLE_COUNT_2_BIT) info_.limits.max_samples = 2;
+    else info_.limits.max_samples = 1;
 
     // Memory info
     VkPhysicalDeviceMemoryProperties mem_props;
@@ -660,7 +860,7 @@ std::unique_ptr<Shader> VulkanDevice::create_shader(const ShaderDesc& desc) {
 }
 
 std::unique_ptr<RenderPipeline> VulkanDevice::create_render_pipeline(const RenderPipelineDesc& desc) {
-    return create_vulkan_render_pipeline(device_, desc);
+    return create_vulkan_render_pipeline(device_, pipeline_cache_, desc);
 }
 
 std::unique_ptr<ComputePipeline> VulkanDevice::create_compute_pipeline(const ComputePipelineDesc& desc) {

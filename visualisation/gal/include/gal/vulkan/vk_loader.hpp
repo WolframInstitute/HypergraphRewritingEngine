@@ -127,6 +127,7 @@ extern PFN_vkCreateComputePipelines vkCreateComputePipelines;
 extern PFN_vkDestroyPipeline vkDestroyPipeline;
 extern PFN_vkCreatePipelineCache vkCreatePipelineCache;
 extern PFN_vkDestroyPipelineCache vkDestroyPipelineCache;
+extern PFN_vkGetPipelineCacheData vkGetPipelineCacheData;
 
 // Descriptor sets
 extern PFN_vkCreateDescriptorSetLayout vkCreateDescriptorSetLayout;
