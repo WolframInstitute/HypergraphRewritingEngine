@@ -165,7 +165,7 @@ private:
 
         // Create hypergraph and engine
         UnifiedHypergraph hg;
-        ParallelEvolutionEngine engine(&hg, 4);  // 4 worker threads
+        ParallelEvolutionEngine engine(&hg);  // 4 worker threads
 
         // Make engine accessible for stop requests
         {

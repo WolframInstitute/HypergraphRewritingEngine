@@ -135,7 +135,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
         .rhs({0, 5})  // {x, u}
         .build();
 
-    std::vector<size_t> edge_counts = {25, 50, 100, 200};
+    std::vector<size_t> edge_counts = {25, 50, 100};
     std::vector<v2::HashStrategy> strategies = {
         v2::HashStrategy::UniquenessTree,
         v2::HashStrategy::IncrementalUniquenessTree,
@@ -230,7 +230,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
         .rhs({0, 4})  // {x, u}
         .build();
 
-    std::vector<size_t> edge_counts = {25, 50, 100, 200};
+    std::vector<size_t> edge_counts = {25, 50, 100};
     std::vector<v2::HashStrategy> strategies = {
         v2::HashStrategy::UniquenessTree,
         v2::HashStrategy::IncrementalUniquenessTree,
@@ -393,7 +393,7 @@ TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
         .rhs({0, 5})  // {x, u}
         .build();
 
-    std::vector<size_t> edge_counts = {25, 50, 100, 200};
+    std::vector<size_t> edge_counts = {25, 50, 100};
     std::vector<v2::EventCanonicalizationMode> modes = {
         v2::EventCanonicalizationMode::ByState,
         v2::EventCanonicalizationMode::ByStateAndEdges

@@ -538,24 +538,14 @@ public:
             }
         });
 
-        // Initialize hashes - use parent cache for unaffected, compute for affected
+        // Initialize hashes - ALWAYS compute initial hash from current state's structure
+        // NOTE: We cannot use parent's cached FINAL hashes as INITIAL hashes here.
+        // Parent cache contains hashes after N refinement iterations, but we need
+        // iteration-0 hashes (degree + edge positions) for correct WL refinement.
         std::vector<uint64_t> current(vertices.size());
-        bool any_from_cache = false;
 
         for (size_t i = 0; i < vertices.size(); ++i) {
-            VertexId v = vertices[i];
-
-            if (!is_affected[i]) {
-                // Try to use cached hash from parent
-                uint64_t cached = parent_cache.lookup(v);
-                if (cached != 0) {
-                    current[i] = cached;
-                    any_from_cache = true;
-                    continue;
-                }
-            }
-
-            // Compute from scratch for this vertex
+            // Compute initial hash for this vertex based on current state's structure
             auto& occ = filtered_occ[i];
             insertion_sort(occ.begin(), occ.end());
 
@@ -569,14 +559,16 @@ public:
         }
 
         // WL refinement with active vertex tracking
-        // Only process vertices that changed or have neighbors that changed
         std::vector<uint64_t> next(vertices.size());
         std::vector<uint64_t> neighbor_hashes;
         size_t iteration = 0;
 
-        // Active vertices: those that need processing this iteration
-        // Start with directly affected vertices (incident to changed edges)
-        std::vector<bool> active = is_affected;
+        // NOTE: We must mark ALL vertices as active, not just affected ones.
+        // WL requires all vertices to refine synchronously - a vertex's iteration-N
+        // hash depends on neighbors' iteration-(N-1) hashes. If we only refine
+        // affected vertices first, they get "ahead" of unaffected vertices, breaking
+        // the synchronization and producing incorrect hashes.
+        std::vector<bool> active(vertices.size(), true);
         std::vector<bool> next_active(vertices.size(), false);
 
         // Count active for early termination check
@@ -795,22 +787,17 @@ public:
             insertion_sort(begin, end);
         }
 
-        // Initialize hashes - use parent cache for unaffected, compute for affected
+        // Initialize hashes - ALWAYS compute initial hash from current state's structure
+        // NOTE: We cannot use parent's cached FINAL hashes as INITIAL hashes here.
+        // Parent cache contains hashes after N refinement iterations, but we need
+        // iteration-0 hashes (degree + edge positions) for correct WL refinement.
+        // The incremental benefit comes from the active vertex tracking in refinement,
+        // not from reusing parent's final hashes as initial values.
         ArenaVector<uint64_t> current(*arena_, num_vertices);
         current.resize(num_vertices);
 
         for (size_t i = 0; i < num_vertices; ++i) {
-            VertexId v = vertices[i];
-
-            if (!is_affected[i]) {
-                uint64_t cached = parent_cache.lookup(v);
-                if (cached != 0) {
-                    current[i] = cached;
-                    continue;
-                }
-            }
-
-            // Compute initial hash for this vertex
+            // Compute initial hash for this vertex based on current state's structure
             uint64_t h = FNV_OFFSET;
             size_t count = occ_offsets[i + 1] - occ_offsets[i];
             h = fnv_combine(h, count);
@@ -827,9 +814,14 @@ public:
         ArenaVector<uint64_t> neighbor_hashes(*arena_);
         size_t iteration = 0;
 
+        // NOTE: We must mark ALL vertices as active, not just affected ones.
+        // WL requires all vertices to refine synchronously - a vertex's iteration-N
+        // hash depends on neighbors' iteration-(N-1) hashes. If we only refine
+        // affected vertices first, they get "ahead" of unaffected vertices, breaking
+        // the synchronization and producing incorrect hashes.
         ArenaVector<bool> active(*arena_, num_vertices);
         active.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) active[i] = is_affected[i];
+        for (size_t i = 0; i < num_vertices; ++i) active[i] = true;
 
         ArenaVector<bool> next_active(*arena_, num_vertices);
         next_active.resize(num_vertices);

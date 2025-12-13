@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include <set>
 #include <map>
@@ -133,8 +134,11 @@ struct EvolutionStats {
 // =============================================================================
 
 enum class EvolutionJobType {
+    SCAN,       // Find initial candidates for first pattern edge
+    EXPAND,     // Extend partial match by one edge
+    SINK,       // Process complete match, spawn REWRITE
+    MATCH,      // Orchestrate matching for a state (spawn SCAN tasks or fallback to sync)
     REWRITE,    // Apply a match to produce new state
-    MATCH       // Find matches in a state (future use)
 };
 
 // =============================================================================
@@ -197,6 +201,71 @@ struct MatchContext {
             if (produced_edges[i] == eid) return true;
         }
         return false;
+    }
+};
+
+// =============================================================================
+// SCAN/EXPAND/SINK Task Data Structures (HGMatch Dataflow Model)
+// =============================================================================
+// These structures capture all data needed to execute matching tasks in parallel.
+// Following HGMatch paper: SCAN→EXPAND*→SINK pipeline.
+
+// SCAN task: Find initial candidates for first pattern edge
+struct ScanTaskData {
+    StateId state;                          // State to match in
+    uint16_t rule_index;                    // Which rule to match
+    uint32_t step;                          // Evolution step
+    StateId canonical_state;                // For deterministic deduplication
+    uint64_t source_canonical_hash;         // Canonical hash of source state
+    // For delta matching (only find NEW matches involving produced edges)
+    bool is_delta;                          // If true, only match involving produced_edges
+    EdgeId produced_edges[MAX_PATTERN_EDGES];
+    uint8_t num_produced;
+};
+
+// EXPAND task: Extend partial match by one edge
+// Also used for SINK (when match is complete)
+struct ExpandTaskData {
+    StateId state;                          // State being matched
+    uint16_t rule_index;                    // Rule being matched
+    uint8_t num_pattern_edges;              // Total edges in pattern
+    uint8_t next_pattern_idx;               // Which pattern edge to match next (0-based)
+    EdgeId matched_edges[MAX_PATTERN_EDGES];// Data edges matched so far
+    uint8_t match_order[MAX_PATTERN_EDGES]; // Pattern indices in match order
+    uint8_t num_matched;                    // Number of edges matched
+    VariableBinding binding;                // Current variable bindings
+    uint32_t step;                          // Evolution step
+    StateId canonical_state;                // For deterministic deduplication
+    uint64_t source_canonical_hash;         // Canonical hash of source state
+
+    bool is_complete() const {
+        return num_matched >= num_pattern_edges;
+    }
+
+    bool contains_edge(EdgeId eid) const {
+        for (uint8_t i = 0; i < num_matched; ++i) {
+            if (matched_edges[i] == eid) return true;
+        }
+        return false;
+    }
+
+    // Get next pattern index to match (first unmatched)
+    uint8_t get_next_pattern_idx() const {
+        uint32_t matched_mask = 0;
+        for (uint8_t i = 0; i < num_matched; ++i) {
+            matched_mask |= (1u << match_order[i]);
+        }
+        for (uint8_t idx = 0; idx < num_pattern_edges; ++idx) {
+            if (!(matched_mask & (1u << idx))) return idx;
+        }
+        return num_pattern_edges;  // All matched
+    }
+
+    // Convert matched edges to pattern order
+    void to_pattern_order(EdgeId* out) const {
+        for (uint8_t i = 0; i < num_matched; ++i) {
+            out[match_order[i]] = matched_edges[i];
+        }
     }
 };
 
@@ -341,14 +410,18 @@ class ParallelEvolutionEngine {
     // Disabled by default to maintain backwards compatibility with tests.
     bool enable_genesis_events_{false};
 
+    // Task-based matching: use SCAN→EXPAND→SINK task decomposition (HGMatch model)
+    // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
+    // When disabled (default), uses synchronous find_matches() within MATCH task.
+    bool task_based_matching_{true};
+
     // Track missing hashes to verify they arrive later via push
     // Value is (state_id << 16) | rule_index for debugging
     ConcurrentMap<uint64_t, uint64_t> missing_match_hashes_{4096};
     std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
-    job_system::JobSystem<EvolutionJobType>* job_system_;
-    bool owns_job_system_{false};
+    std::unique_ptr<job_system::JobSystem<EvolutionJobType>> job_system_;
     size_t num_threads_{0};
 
     // Evolution control
@@ -387,7 +460,6 @@ public:
     ParallelEvolutionEngine()
         : hg_(nullptr)
         , rewriter_(nullptr)
-        , job_system_(nullptr)
     {}
 
     explicit ParallelEvolutionEngine(UnifiedHypergraph* hg, size_t num_threads = 0)
@@ -395,16 +467,13 @@ public:
         , rewriter_(hg)
         , num_threads_(num_threads > 0 ? num_threads : std::thread::hardware_concurrency())
     {
-        // Create job system
-        job_system_ = new job_system::JobSystem<EvolutionJobType>(num_threads_);
-        owns_job_system_ = true;
+        job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(num_threads_);
         job_system_->start();
     }
 
     ~ParallelEvolutionEngine() {
-        if (owns_job_system_ && job_system_) {
+        if (job_system_) {
             job_system_->shutdown();
-            delete job_system_;
         }
     }
 
@@ -440,6 +509,12 @@ public:
     // tracked from the initial state's edges to events that consume them.
     void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
 
+    // Enable task-based matching (HGMatch SCAN→EXPAND→SINK model)
+    // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
+    // When disabled (default), uses synchronous find_matches() within MATCH task.
+    void set_task_based_matching(bool enable) { task_based_matching_ = enable; }
+    bool task_based_matching() const { return task_based_matching_; }
+
     // Pruning options (v1 compatibility)
     void set_exploration_probability(double p) {
         exploration_probability_ = std::clamp(p, 0.0, 1.0);
@@ -469,12 +544,12 @@ public:
     }
 
     void dump_still_missing() const {
-        fprintf(stderr, "STILL MISSING HASHES:\n");
+        DEBUG_LOG("STILL MISSING HASHES:");
         missing_match_hashes_.for_each([&](uint64_t h, uint64_t debug_info) {
             if (!seen_match_hashes_.contains(h)) {
                 uint32_t state_id = debug_info >> 16;
                 uint16_t rule_index = debug_info & 0xFFFF;
-                fprintf(stderr, "  hash=%lu state=%u rule=%u\n", h, state_id, rule_index);
+                DEBUG_LOG("  hash=%lu state=%u rule=%u", h, state_id, rule_index);
             }
         });
     }
@@ -1145,6 +1220,8 @@ private:
     void submit_match_task(StateId state, uint32_t step) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
 
+        DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
+
         auto job = job_system::make_job<EvolutionJobType>(
             [this, state, step]() {
                 execute_match_task(state, step, MatchContext{});
@@ -1157,6 +1234,9 @@ private:
     // Submit a MATCH task with context (for match forwarding)
     void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
+                  state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
         auto job = job_system::make_job<EvolutionJobType>(
             [this, state, step, ctx]() {
@@ -1171,11 +1251,64 @@ private:
     void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
 
+        DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index, step);
+
         auto job = job_system::make_job<EvolutionJobType>(
             [this, match, step]() {
                 execute_rewrite_task(match, step);
             },
             EvolutionJobType::REWRITE
+        );
+        job_system_->submit(std::move(job));
+    }
+
+    // Submit a SCAN task for initial candidate generation
+    void submit_scan_task(const ScanTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
+                  data.state, data.rule_index, data.step, data.is_delta);
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, data]() {
+                execute_scan_task(data);
+            },
+            EvolutionJobType::SCAN
+        );
+        // SCAN tasks use FIFO - start broadly, then depth-first via EXPAND
+        job_system_->submit(std::move(job));
+    }
+
+    // Submit an EXPAND task for partial match extension
+    // Uses LIFO scheduling for depth-first search (bounded memory, cache-friendly)
+    void submit_expand_task(const ExpandTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
+                  data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, data]() {
+                execute_expand_task(data);
+            },
+            EvolutionJobType::EXPAND
+        );
+        // LIFO scheduling: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|)
+        job_system_->submit(std::move(job), job_system::ScheduleMode::LIFO);
+    }
+
+    // Submit a SINK task for complete match processing
+    void submit_sink_task(const ExpandTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("SUBMIT_SINK state=%u rule=%u matched=%u step=%u",
+                  data.state, data.rule_index, data.num_matched, data.step);
+
+        auto job = job_system::make_job<EvolutionJobType>(
+            [this, data]() {
+                execute_sink_task(data);
+            },
+            EvolutionJobType::SINK
         );
         job_system_->submit(std::move(job));
     }
@@ -1309,7 +1442,34 @@ private:
             // (forwarded matches are already stored in ancestors and can be pulled by descendants)
             delta_start = batch.size();
 
-            // Delta matching: find patterns involving the newly produced edges
+            if (task_based_matching_) {
+                // Task-based delta matching: spawn SCAN tasks for each rule with is_delta=true
+                // SCAN→EXPAND→SINK handles match discovery and REWRITEs
+                for (uint16_t r = 0; r < rules_.size(); ++r) {
+                    ScanTaskData scan_data;
+                    scan_data.state = state;
+                    scan_data.rule_index = r;
+                    scan_data.step = step;
+                    scan_data.canonical_state = canonical_state;
+                    scan_data.source_canonical_hash = s.canonical_hash;
+                    scan_data.is_delta = true;
+                    scan_data.num_produced = ctx.num_produced;
+                    for (uint8_t i = 0; i < ctx.num_produced; ++i) {
+                        scan_data.produced_edges[i] = ctx.produced_edges[i];
+                    }
+                    submit_scan_task(scan_data);
+                }
+                // Spawn REWRITEs for forwarded matches before returning
+                // (SCAN tasks only handle delta matches, not the already-forwarded ones)
+                for (size_t i = 0; i < delta_start; ++i) {
+                    submit_rewrite_task(batch[i], step);
+                }
+                return;  // SCAN tasks handle delta matches asynchronously
+            }
+
+            // Synchronous delta matching: find patterns involving the newly produced edges (SCAN→EXPAND→SINK fused)
+            DEBUG_LOG("SYNC_DELTA_MATCH state=%u step=%u rules=%zu produced=%u (SCAN->EXPAND->SINK fused)",
+                      state, step, rules_.size(), ctx.num_produced);
             for (uint16_t r = 0; r < rules_.size(); ++r) {
                 find_delta_matches(
                     rules_[r], r, state, s.edges,
@@ -1373,6 +1533,26 @@ private:
             // === FULL MATCHING MODE (initial state or forwarding disabled) ===
             stats_.full_pattern_matches.fetch_add(1, std::memory_order_relaxed);
 
+            if (task_based_matching_) {
+                // Task-based matching: spawn SCAN tasks for each rule
+                // SCAN→EXPAND→SINK handles match discovery and REWRITEs
+                for (uint16_t r = 0; r < rules_.size(); ++r) {
+                    ScanTaskData scan_data;
+                    scan_data.state = state;
+                    scan_data.rule_index = r;
+                    scan_data.step = step;
+                    scan_data.canonical_state = canonical_state;
+                    scan_data.source_canonical_hash = s.canonical_hash;
+                    scan_data.is_delta = false;
+                    scan_data.num_produced = 0;
+                    submit_scan_task(scan_data);
+                }
+                return;  // SCAN tasks handle everything asynchronously
+            }
+
+            // Synchronous matching: find all matches directly (SCAN→EXPAND→SINK fused)
+            DEBUG_LOG("SYNC_MATCH state=%u step=%u rules=%zu (SCAN->EXPAND->SINK fused)",
+                      state, step, rules_.size());
             for (uint16_t r = 0; r < rules_.size(); ++r) {
                 find_matches(
                     rules_[r], r, state, s.edges,
@@ -1405,6 +1585,254 @@ private:
                 submit_rewrite_task(match, step);
             }
         }
+    }
+
+    // =========================================================================
+    // SCAN Task Execution (HGMatch Dataflow Model)
+    // =========================================================================
+    // Finds initial candidates for first pattern edge, spawns EXPAND tasks.
+    // For delta matching, starts from produced edges instead.
+
+    void execute_scan_task(const ScanTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+
+        DEBUG_LOG("EXEC_SCAN state=%u rule=%u step=%u delta=%d",
+                  data.state, data.rule_index, data.step, data.is_delta);
+
+        const State& s = hg_->get_state(data.state);
+        const RewriteRule& rule = rules_[data.rule_index];
+
+        if (rule.num_lhs_edges == 0) return;
+
+        // Edge accessor
+        auto get_edge = [this](EdgeId eid) -> const Edge& {
+            return hg_->get_edge(eid);
+        };
+
+        // Signature accessor
+        auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
+            return hg_->edge_signature(eid);
+        };
+
+        // Pre-compute pattern signatures
+        EdgeSignature pattern_sigs[MAX_PATTERN_EDGES];
+        CompatibleSignatureCache sig_caches[MAX_PATTERN_EDGES];
+        for (uint8_t i = 0; i < rule.num_lhs_edges; ++i) {
+            pattern_sigs[i] = rule.lhs[i].signature();
+            sig_caches[i] = CompatibleSignatureCache::from_pattern(pattern_sigs[i]);
+        }
+
+        if (data.is_delta) {
+            // Delta matching: start from produced edges
+            for (uint8_t p = 0; p < data.num_produced; ++p) {
+                EdgeId produced = data.produced_edges[p];
+                if (!s.edges.contains(produced)) continue;
+
+                // Try this produced edge at each pattern position
+                for (uint8_t pos = 0; pos < rule.num_lhs_edges; ++pos) {
+                    if (should_stop_.load(std::memory_order_relaxed)) return;
+
+                    const PatternEdge& pattern_edge = rule.lhs[pos];
+                    const auto& edge = get_edge(produced);
+
+                    // Check signature compatibility
+                    const EdgeSignature& data_sig = get_signature(produced);
+                    if (!signature_compatible(data_sig, pattern_sigs[pos])) continue;
+
+                    // Validate candidate
+                    VariableBinding binding;
+                    if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding)) continue;
+
+                    // Create EXPAND task data
+                    ExpandTaskData expand_data;
+                    expand_data.state = data.state;
+                    expand_data.rule_index = data.rule_index;
+                    expand_data.num_pattern_edges = rule.num_lhs_edges;
+                    expand_data.next_pattern_idx = 0;  // Will be computed
+                    expand_data.matched_edges[0] = produced;
+                    expand_data.match_order[0] = pos;
+                    expand_data.num_matched = 1;
+                    expand_data.binding = binding;
+                    expand_data.step = data.step;
+                    expand_data.canonical_state = data.canonical_state;
+                    expand_data.source_canonical_hash = data.source_canonical_hash;
+
+                    if (rule.num_lhs_edges == 1) {
+                        // Single-edge pattern: complete match
+                        submit_sink_task(expand_data);
+                    } else {
+                        // Multi-edge: spawn EXPAND
+                        submit_expand_task(expand_data);
+                    }
+                }
+            }
+        } else {
+            // Full matching: start from first pattern edge
+            const PatternEdge& first_edge = rule.lhs[0];
+            const EdgeSignature& first_sig = pattern_sigs[0];
+            const CompatibleSignatureCache& first_cache = sig_caches[0];
+
+            // Generate candidates for first edge
+            generate_candidates(
+                first_edge, first_sig, first_cache,
+                VariableBinding{}, s.edges,
+                hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
+                [&](EdgeId candidate) {
+                    if (should_stop_.load(std::memory_order_relaxed)) return;
+
+                    // Validate candidate
+                    const auto& edge = get_edge(candidate);
+                    VariableBinding binding;
+                    if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding)) return;
+
+                    // Create EXPAND task data
+                    ExpandTaskData expand_data;
+                    expand_data.state = data.state;
+                    expand_data.rule_index = data.rule_index;
+                    expand_data.num_pattern_edges = rule.num_lhs_edges;
+                    expand_data.next_pattern_idx = 1;
+                    expand_data.matched_edges[0] = candidate;
+                    expand_data.match_order[0] = 0;
+                    expand_data.num_matched = 1;
+                    expand_data.binding = binding;
+                    expand_data.step = data.step;
+                    expand_data.canonical_state = data.canonical_state;
+                    expand_data.source_canonical_hash = data.source_canonical_hash;
+
+                    if (rule.num_lhs_edges == 1) {
+                        // Single-edge pattern: complete match
+                        submit_sink_task(expand_data);
+                    } else {
+                        // Multi-edge: spawn EXPAND
+                        submit_expand_task(expand_data);
+                    }
+                }
+            );
+        }
+    }
+
+    // =========================================================================
+    // EXPAND Task Execution (HGMatch Dataflow Model)
+    // =========================================================================
+    // Extends partial match by one edge, spawns more EXPAND or SINK tasks.
+
+    void execute_expand_task(const ExpandTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("EXEC_EXPAND state=%u rule=%u matched=%u/%u step=%u",
+                  data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
+
+        // Check if complete (shouldn't happen, but safety check)
+        if (data.is_complete()) {
+            submit_sink_task(data);
+            return;
+        }
+
+        const State& s = hg_->get_state(data.state);
+        const RewriteRule& rule = rules_[data.rule_index];
+
+        // Edge accessor
+        auto get_edge = [this](EdgeId eid) -> const Edge& {
+            return hg_->get_edge(eid);
+        };
+
+        // Signature accessor
+        auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
+            return hg_->edge_signature(eid);
+        };
+
+        // Get next pattern edge to match
+        uint8_t pattern_idx = data.get_next_pattern_idx();
+        if (pattern_idx >= rule.num_lhs_edges) return;
+
+        const PatternEdge& pattern_edge = rule.lhs[pattern_idx];
+        EdgeSignature pattern_sig = pattern_edge.signature();
+        CompatibleSignatureCache sig_cache = CompatibleSignatureCache::from_pattern(pattern_sig);
+
+        // Generate candidates
+        generate_candidates(
+            pattern_edge, pattern_sig, sig_cache,
+            data.binding, s.edges,
+            hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
+            [&](EdgeId candidate) {
+                if (should_stop_.load(std::memory_order_relaxed)) return;
+
+                // Skip if already matched
+                if (data.contains_edge(candidate)) return;
+
+                // Validate candidate
+                const auto& edge = get_edge(candidate);
+                VariableBinding extended = data.binding;
+                if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) return;
+
+                // Create new EXPAND task with extended match
+                ExpandTaskData new_data = data;
+                new_data.matched_edges[new_data.num_matched] = candidate;
+                new_data.match_order[new_data.num_matched] = pattern_idx;
+                new_data.num_matched++;
+                new_data.binding = extended;
+
+                if (new_data.is_complete()) {
+                    // Complete match: spawn SINK
+                    submit_sink_task(new_data);
+                } else {
+                    // Not complete: spawn another EXPAND
+                    submit_expand_task(new_data);
+                }
+            }
+        );
+    }
+
+    // =========================================================================
+    // SINK Task Execution (HGMatch Dataflow Model)
+    // =========================================================================
+    // Processes complete match: deduplicate, store for forwarding, spawn REWRITE.
+
+    void execute_sink_task(const ExpandTaskData& data) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+
+        DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
+                  data.state, data.rule_index, data.num_matched, data.step);
+
+        // Convert matched edges to pattern order
+        EdgeId edges_in_order[MAX_PATTERN_EDGES];
+        data.to_pattern_order(edges_in_order);
+
+        // Build MatchRecord
+        MatchRecord match;
+        match.rule_index = data.rule_index;
+        match.num_edges = data.num_pattern_edges;
+        match.binding = data.binding;
+        match.source_state = data.state;
+        match.canonical_source = data.canonical_state;
+        match.source_canonical_hash = data.source_canonical_hash;
+        for (uint8_t i = 0; i < data.num_pattern_edges; ++i) {
+            match.matched_edges[i] = edges_in_order[i];
+        }
+
+        // Deduplicate using lock-free ConcurrentMap
+        uint64_t h = match.hash();
+        auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
+        if (!inserted) {
+            rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
+            return;  // Already seen
+        }
+
+        total_matches_found_.fetch_add(1, std::memory_order_relaxed);
+        stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+
+        DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
+
+        // Store and push match for forwarding (mirroring synchronous eager path)
+        // Push closes the race window: children created before store still get notified
+        if (enable_match_forwarding_) {
+            store_match_for_state(data.state, match, true);  // with fence
+            push_match_to_children(data.state, match, data.step);
+        }
+
+        // Spawn REWRITE task
+        submit_rewrite_task(match, data.step);
     }
 
     // =========================================================================

@@ -47,7 +47,7 @@ protected:
         size_t steps
     ) {
         WolframEvolution evolution(steps, 1, true, false);  // single thread
-        evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+        evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
         for (const auto& rule : rules) {
             evolution.add_rule(rule);
         }
@@ -270,7 +270,7 @@ TEST_F(V1_Unified_CountComparisonTest, DebugCanonicalHashes_Step3) {
     RewritingRule v1_rule(v1_lhs, v1_rhs);
 
     WolframEvolution v1_evolution(3, 1, true, false);
-    v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+    v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
     v1_evolution.add_rule(v1_rule);
 
     std::vector<std::vector<GlobalVertexId>> v1_initial = {{1, 2}};
@@ -355,7 +355,7 @@ TEST_F(V1_Unified_CountComparisonTest, DebugStep4Events) {
     RewritingRule v1_rule(v1_lhs, v1_rhs);
 
     WolframEvolution v1_evolution(4, 1, true, false);
-    v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+    v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
     v1_evolution.add_rule(v1_rule);
 
     std::vector<std::vector<GlobalVertexId>> v1_initial = {{1, 2}};
@@ -528,7 +528,7 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_TwoEdgeRule) {
         // v1 - use hardware_concurrency for fair comparison
         auto v1_start = std::chrono::high_resolution_clock::now();
         WolframEvolution v1_evolution(steps, hw_threads, true, false);
-        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
         v1_evolution.add_rule(v1_rule);
         v1_evolution.evolve({{0, 1}, {1, 2}});
         auto v1_end = std::chrono::high_resolution_clock::now();
@@ -540,7 +540,6 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_TwoEdgeRule) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
         hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // use all threads
-        //engine.set_match_forwarding(false);
         engine.add_rule(v2_rule);
         engine.evolve({{0, 1}, {1, 2}}, steps);
         auto v2_end = std::chrono::high_resolution_clock::now();
@@ -603,7 +602,7 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_TwoEdgeRule2) {
         // v1 - use hardware_concurrency for fair comparison
         auto v1_start = std::chrono::high_resolution_clock::now();
         WolframEvolution v1_evolution(steps, hw_threads, true, false);
-        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
         v1_evolution.add_rule(v1_rule);
         v1_evolution.evolve({{0, 0}, {0, 0}});
         auto v1_end = std::chrono::high_resolution_clock::now();
@@ -678,7 +677,7 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_LargerInitialState) {
         // v1 - use hardware_concurrency for fair comparison
         auto v1_start = std::chrono::high_resolution_clock::now();
         WolframEvolution v1_evolution(steps, hw_threads, true, false);
-        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::CANONICALIZATION);
+        v1_evolution.get_multiway_graph().set_hash_strategy_type(HashStrategyType::UNIQUENESS_TREE);
         v1_evolution.add_rule(v1_rule);
         v1_evolution.evolve(v1_initial);
         auto v1_end = std::chrono::high_resolution_clock::now();

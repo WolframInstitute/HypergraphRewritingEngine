@@ -185,10 +185,10 @@ class UnifiedHypergraph {
     SegmentedArray<LockFreeList<EdgeOccurrence>> vertex_adjacency_;
 
     // Hash strategy implementations
-    std::unique_ptr<UnifiedUniquenessTree> unified_tree_;  // Gorard-style uniqueness trees
+    std::unique_ptr<UnifiedUniquenessTree> unified_tree_;                 // Gorard-style uniqueness trees
     std::unique_ptr<IncrementalUnifiedUniquenessTree> incremental_tree_;  // Incremental version
-    std::unique_ptr<WLHash> wl_hash_;                      // Weisfeiler-Lehman hashing
-    HashStrategy hash_strategy_{HashStrategy::IncrementalWL};  // UT-Inc with cached adjacency
+    std::unique_ptr<WLHash> wl_hash_;                                     // Weisfeiler-Lehman hashing
+    HashStrategy hash_strategy_{HashStrategy::WL}; // UT-Inc with cached adjacency
 
     // Stats for bloom filter-based vertex hash reuse in compute_canonical_hash_incremental
     mutable std::atomic<size_t> bloom_reused_{0};
@@ -943,8 +943,9 @@ public:
                 VertexHashCache canonical_input_cache, canonical_output_cache;
                 EdgeCorrespondence input_correspondence, output_correspondence;
 
-                if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
+                if ((hash_strategy_ == HashStrategy::WL || hash_strategy_ == HashStrategy::IncrementalWL) && wl_hash_) {
                     // Use memoized cache - many events share the same canonical states
+                    // Both WL and IncrementalWL use the same wl_hash_ object for edge correspondence
                     canonical_input_cache = get_or_compute_wl_cache(canonical_input);
                     canonical_output_cache = get_or_compute_wl_cache(canonical_output);
 
@@ -953,12 +954,9 @@ public:
                     output_correspondence = wl_hash_->find_edge_correspondence(
                         out_state.edges, canonical_out_state.edges, vert_acc, arity_acc);
                 } else if (hash_strategy_ == HashStrategy::IncrementalUniquenessTree && incremental_tree_) {
-                    auto [in_hash, in_cache] = incremental_tree_->compute_state_hash_with_cache(
-                        canonical_in_state.edges, vert_acc, arity_acc);
-                    auto [out_hash, out_cache] = incremental_tree_->compute_state_hash_with_cache(
-                        canonical_out_state.edges, vert_acc, arity_acc);
-                    canonical_input_cache = in_cache;
-                    canonical_output_cache = out_cache;
+                    // Use memoized cache - many events share the same canonical states
+                    canonical_input_cache = get_or_compute_ut_cache(canonical_input);
+                    canonical_output_cache = get_or_compute_ut_cache(canonical_output);
 
                     input_correspondence = incremental_tree_->find_edge_correspondence(
                         in_state.edges, canonical_in_state.edges, vert_acc, arity_acc);
@@ -1513,6 +1511,31 @@ public:
         entry.valid.store(true, std::memory_order_release);
 
         return entry.cache;
+    }
+
+    // Get or compute UT-Inc hash cache for a state (memoized)
+    // Thread-safe: uses atomic valid flag for synchronization
+    const VertexHashCache& get_or_compute_ut_cache(StateId state_id) {
+        StateIncrementalCache& entry = state_incremental_cache_.get_or_default(state_id, arena_);
+
+        // Fast path: already computed
+        if (entry.valid.load(std::memory_order_acquire)) {
+            return entry.vertex_cache;
+        }
+
+        // Slow path: compute and cache
+        const State& state = get_state(state_id);
+        EdgeVertexAccessorRaw vert_acc(this);
+        EdgeArityAccessorRaw arity_acc(this);
+
+        auto [hash, cache] = incremental_tree_->compute_state_hash_with_cache(
+            state.edges, vert_acc, arity_acc);
+
+        // Store the cache (may race with other threads, but result is same)
+        entry.vertex_cache = cache;
+        entry.valid.store(true, std::memory_order_release);
+
+        return entry.vertex_cache;
     }
 
     // =========================================================================

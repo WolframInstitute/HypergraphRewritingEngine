@@ -7,6 +7,7 @@
 #include "signature.hpp"
 #include "pattern.hpp"
 #include "unified_hypergraph.hpp"
+#include "hypergraph/debug_log.hpp"
 
 namespace hypergraph::unified {
 
@@ -74,8 +75,8 @@ public:
         // Validate input_state
         uint32_t num_states = hg_->num_states();
         if (input_state >= num_states) {
-            fprintf(stderr, "ERROR: Rewriter::apply input_state=%u >= num_states=%u\n",
-                    input_state, num_states);
+            DEBUG_LOG("ERROR: Rewriter::apply input_state=%u >= num_states=%u",
+                      input_state, num_states);
             abort();
         }
 
