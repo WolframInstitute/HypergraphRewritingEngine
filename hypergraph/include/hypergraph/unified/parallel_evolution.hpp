@@ -5,6 +5,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <unordered_set>
 #include <functional>
 #include <thread>
 #include <cstring>
@@ -1083,16 +1084,16 @@ private:
         auto result = state_matches_.lookup_waiting(ancestor);
         if (!result.has_value()) return;
 
+        // Build consumed set once for O(1) amortized overlap checks
+        std::unordered_set<EdgeId> consumed_set(accumulated_consumed, accumulated_consumed + total_consumed);
+
         LockFreeList<MatchRecord>* ancestor_matches = *result;
         ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
-            // Skip if match overlaps with ANY consumed edge along the path
+            // Skip if match overlaps with ANY consumed edge - O(n) vs O(n*m)
             bool overlaps = false;
             for (uint8_t i = 0; i < ancestor_match.num_edges && !overlaps; ++i) {
-                for (uint8_t j = 0; j < total_consumed; ++j) {
-                    if (ancestor_match.matched_edges[i] == accumulated_consumed[j]) {
-                        overlaps = true;
-                        break;
-                    }
+                if (consumed_set.count(ancestor_match.matched_edges[i])) {
+                    overlaps = true;
                 }
             }
 
@@ -1202,6 +1203,11 @@ private:
             return hg_->get_edge(eid);
         };
 
+        // Signature accessor (cached signatures for O(1) lookup)
+        auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
+            return hg_->edge_signature(eid);
+        };
+
         // =======================================================================
         // BATCHED MATCHING: Collect all matches first, then spawn REWRITEs
         // =======================================================================
@@ -1307,7 +1313,7 @@ private:
             for (uint16_t r = 0; r < rules_.size(); ++r) {
                 find_delta_matches(
                     rules_[r], r, state, s.edges,
-                    hg_->signature_index(), hg_->inverted_index(), get_edge, on_match,
+                    hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, on_match,
                     ctx.produced_edges, ctx.num_produced
                 );
             }
@@ -1356,7 +1362,7 @@ private:
                 for (uint16_t r = 0; r < rules_.size(); ++r) {
                     find_matches(
                         rules_[r], r, state, s.edges,
-                        hg_->signature_index(), hg_->inverted_index(), get_edge, count_missing
+                        hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, count_missing
                     );
                 }
                 if (missing > 0) {
@@ -1370,7 +1376,7 @@ private:
             for (uint16_t r = 0; r < rules_.size(); ++r) {
                 find_matches(
                     rules_[r], r, state, s.edges,
-                    hg_->signature_index(), hg_->inverted_index(), get_edge, on_match
+                    hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, on_match
                 );
             }
         }

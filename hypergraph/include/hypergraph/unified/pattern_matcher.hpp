@@ -91,7 +91,7 @@ inline VariableBinding merge_bindings(const VariableBinding& a, const VariableBi
 // =============================================================================
 // Shared context for all tasks in a matching session.
 
-template<typename EdgeAccessor>
+template<typename EdgeAccessor, typename SignatureAccessor = std::function<const EdgeSignature&(EdgeId)>>
 struct PatternMatchingContext {
     // Rule being matched
     const RewriteRule* rule;
@@ -107,6 +107,9 @@ struct PatternMatchingContext {
 
     // Edge accessor
     EdgeAccessor get_edge;
+
+    // Signature accessor (cached signatures for O(1) lookup)
+    SignatureAccessor get_signature;
 
     // Pre-computed pattern signatures (optimization)
     EdgeSignature pattern_sigs[MAX_PATTERN_EDGES];
@@ -133,6 +136,7 @@ struct PatternMatchingContext {
         const SignatureIndex* sig,
         const InvertedVertexIndex* inv,
         EdgeAccessor accessor,
+        SignatureAccessor sig_accessor,
         MatchCallback callback
     )
         : rule(r)
@@ -142,6 +146,7 @@ struct PatternMatchingContext {
         , sig_index(sig)
         , inv_index(inv)
         , get_edge(accessor)
+        , get_signature(sig_accessor)
         , should_terminate(nullptr)
         , matches_found(nullptr)
         , max_matches(SIZE_MAX)
@@ -159,7 +164,7 @@ struct PatternMatchingContext {
 // Candidate Generation (HGMatch Algorithm 4)
 // =============================================================================
 
-template<typename EdgeAccessor, typename CandidateCallback>
+template<typename EdgeAccessor, typename SignatureAccessor, typename CandidateCallback>
 void generate_candidates(
     const PatternEdge& pattern_edge,
     const EdgeSignature& pattern_sig,
@@ -168,6 +173,7 @@ void generate_candidates(
     const SignatureIndex& sig_index,
     const InvertedVertexIndex& inv_index,
     const EdgeAccessor& get_edge,
+    const SignatureAccessor& get_signature,
     CandidateCallback&& on_candidate
 ) {
     // Collect bound vertices and their required positions
@@ -194,16 +200,14 @@ void generate_candidates(
         inv_index.for_each_edge_containing_all(
             bound_vertices, num_bound, state_edges,
             [&](EdgeId eid) {
-                const auto& edge = get_edge(eid);
-
-                // Check signature compatibility
-                EdgeSignature data_sig = EdgeSignature::from_edge(
-                    edge.vertices, edge.arity);
+                // Check signature compatibility using cached signature
+                const EdgeSignature& data_sig = get_signature(eid);
                 if (!signature_compatible(data_sig, pattern_sig)) {
                     return;
                 }
 
                 // Check bound vertices at correct positions
+                const auto& edge = get_edge(eid);
                 bool valid = true;
                 for (uint8_t i = 0; i < num_bound && valid; ++i) {
                     if (edge.vertices[bound_positions[i]] != bound_vertices[i]) {
@@ -225,9 +229,9 @@ void generate_candidates(
 // Extends partial match with next pattern edge.
 // Executes synchronously (depth-first) - does not spawn jobs.
 
-template<typename EdgeAccessor>
+template<typename EdgeAccessor, typename SignatureAccessor>
 void expand_match(
-    PatternMatchingContext<EdgeAccessor>& ctx,
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx,
     PartialMatch partial
 ) {
     // Check termination
@@ -279,7 +283,7 @@ void expand_match(
     generate_candidates(
         pattern_edge, pattern_sig,
         partial.binding, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
+        *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
         [&](EdgeId candidate) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
@@ -310,9 +314,9 @@ void expand_match(
 // Finds initial candidates for first pattern edge, then calls expand_match.
 // Executes synchronously.
 
-template<typename EdgeAccessor>
+template<typename EdgeAccessor, typename SignatureAccessor>
 void scan_pattern(
-    PatternMatchingContext<EdgeAccessor>& ctx
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx
 ) {
     if (ctx.rule->num_lhs_edges == 0) return;
 
@@ -324,7 +328,7 @@ void scan_pattern(
     generate_candidates(
         first_edge, first_sig,
         VariableBinding{}, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
+        *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
         [&](EdgeId candidate) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
@@ -378,6 +382,38 @@ void scan_pattern(
 // =============================================================================
 
 // Find all matches for a rule in a state
+template<typename EdgeAccessor, typename SignatureAccessor, typename MatchCallback>
+void find_matches(
+    const RewriteRule& rule,
+    uint16_t rule_index,
+    StateId state_id,
+    const SparseBitset& state_edges,
+    const SignatureIndex& sig_index,
+    const InvertedVertexIndex& inv_index,
+    EdgeAccessor get_edge,
+    SignatureAccessor get_signature,
+    MatchCallback&& on_match,
+    std::atomic<bool>* should_terminate = nullptr,
+    std::atomic<size_t>* matches_found = nullptr,
+    size_t max_matches = SIZE_MAX,
+    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
+) {
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor> ctx(
+        &rule, rule_index, state_id, &state_edges,
+        &sig_index, &inv_index, get_edge, get_signature,
+        std::forward<MatchCallback>(on_match)
+    );
+
+    ctx.should_terminate = should_terminate;
+    ctx.matches_found = matches_found;
+    ctx.max_matches = max_matches;
+    ctx.match_dedup = match_dedup;
+
+    scan_pattern(ctx);
+}
+
+// Backward-compatible overload: computes signatures on-the-fly
+// Use the version with SignatureAccessor for better performance
 template<typename EdgeAccessor, typename MatchCallback>
 void find_matches(
     const RewriteRule& rule,
@@ -393,18 +429,16 @@ void find_matches(
     size_t max_matches = SIZE_MAX,
     ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
 ) {
-    PatternMatchingContext<EdgeAccessor> ctx(
-        &rule, rule_index, state_id, &state_edges,
-        &sig_index, &inv_index, get_edge,
-        std::forward<MatchCallback>(on_match)
-    );
+    // Create a signature accessor that computes on-the-fly
+    auto compute_signature = [&get_edge](EdgeId eid) -> EdgeSignature {
+        const auto& edge = get_edge(eid);
+        return EdgeSignature::from_edge(edge.vertices, edge.arity);
+    };
 
-    ctx.should_terminate = should_terminate;
-    ctx.matches_found = matches_found;
-    ctx.max_matches = max_matches;
-    ctx.match_dedup = match_dedup;
-
-    scan_pattern(ctx);
+    find_matches(rule, rule_index, state_id, state_edges,
+                 sig_index, inv_index, get_edge, compute_signature,
+                 std::forward<MatchCallback>(on_match),
+                 should_terminate, matches_found, max_matches, match_dedup);
 }
 
 // Find all matches for multiple rules
@@ -445,9 +479,9 @@ void find_all_matches(
 // For a k-edge pattern, we try each produced edge at each pattern position.
 // Deduplication handles overlaps when multiple produced edges are in one match.
 
-template<typename EdgeAccessor>
+template<typename EdgeAccessor, typename SignatureAccessor>
 void scan_pattern_from_edge(
-    PatternMatchingContext<EdgeAccessor>& ctx,
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx,
     EdgeId starting_edge,
     uint8_t pattern_position
 ) {
@@ -462,8 +496,8 @@ void scan_pattern_from_edge(
         return;
     }
 
-    // Check signature compatibility
-    EdgeSignature data_sig = EdgeSignature::from_edge(edge.vertices, edge.arity);
+    // Check signature compatibility using cached signature
+    const EdgeSignature& data_sig = ctx.get_signature(starting_edge);
     if (!signature_compatible(data_sig, ctx.pattern_sigs[pattern_position])) {
         return;
     }
@@ -504,7 +538,7 @@ void scan_pattern_from_edge(
 
 // Find matches that include at least one of the produced edges
 // This is used for delta matching: only search for NEW patterns
-template<typename EdgeAccessor, typename MatchCallback>
+template<typename EdgeAccessor, typename SignatureAccessor, typename MatchCallback>
 void find_delta_matches(
     const RewriteRule& rule,
     uint16_t rule_index,
@@ -513,6 +547,7 @@ void find_delta_matches(
     const SignatureIndex& sig_index,
     const InvertedVertexIndex& inv_index,
     EdgeAccessor get_edge,
+    SignatureAccessor get_signature,
     MatchCallback&& on_match,
     const EdgeId* produced_edges,
     uint8_t num_produced,
@@ -523,9 +558,9 @@ void find_delta_matches(
 ) {
     if (num_produced == 0) return;
 
-    PatternMatchingContext<EdgeAccessor> ctx(
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor> ctx(
         &rule, rule_index, state_id, &state_edges,
-        &sig_index, &inv_index, get_edge,
+        &sig_index, &inv_index, get_edge, get_signature,
         std::forward<MatchCallback>(on_match)
     );
 

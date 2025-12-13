@@ -125,6 +125,9 @@ class UnifiedHypergraph {
     // Edge storage
     SegmentedArray<Edge> edges_;
 
+    // Cached edge signatures (computed once at edge creation, immutable)
+    SegmentedArray<EdgeSignature> edge_signatures_;
+
     // State storage
     SegmentedArray<State> states_;
 
@@ -272,6 +275,9 @@ public:
         // Without this, other threads reading edges_[eid] might see stale vertex data.
         std::atomic_thread_fence(std::memory_order_release);
 
+        // Compute and cache edge signature (immutable after creation)
+        edge_signatures_.emplace_at(eid, arena_, EdgeSignature::from_edge(vertices, arity));
+
         // Update indices
         match_index_.add_edge(eid, vertices, arity, arena_);
 
@@ -347,6 +353,11 @@ public:
         return edges_[eid].arity;
     }
 
+    // Get cached signature for an edge (computed once at creation)
+    const EdgeSignature& edge_signature(EdgeId eid) const {
+        return edge_signatures_[eid];
+    }
+
     // Helper class to provide indexed access to edge vertices
     class EdgeVertexAccessor {
         const UnifiedHypergraph* hg_;
@@ -377,80 +388,26 @@ public:
 
     // Raw accessor that returns a pointer-indexable object
     // This creates a temporary vector of vertex pointers for UniquenessTree
-    // The vector is dynamically extended if new edges are accessed (thread-safe read)
+    // Optimized accessor: direct access without caching overhead
     class EdgeVertexAccessorRaw {
-        mutable std::vector<const VertexId*> vertex_ptrs_;
         const UnifiedHypergraph* hg_;
     public:
-        explicit EdgeVertexAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {
-            // Don't pre-populate - will be populated on demand
-        }
+        explicit EdgeVertexAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {}
+
         const VertexId* operator[](EdgeId eid) const {
-            // Dynamically extend if needed
-            if (eid >= vertex_ptrs_.size()) {
-                // Need to resize to at least eid+1
-                size_t old_size = vertex_ptrs_.size();
-                vertex_ptrs_.resize(eid + 1, nullptr);
-                // Don't pre-populate - just resize
-            }
-            // Lazily fetch edge vertices if not already cached
-            if (vertex_ptrs_[eid] == nullptr) {
-                vertex_ptrs_[eid] = hg_->edge_vertices(eid);
-            }
-            return vertex_ptrs_[eid];
-        }
-        operator const VertexId* const*() const {
-            // This conversion is no longer safe - use operator[] instead
-            // Pre-populate all known edges
-            uint32_t num_edges = hg_->num_edges();
-            if (num_edges > vertex_ptrs_.size()) {
-                vertex_ptrs_.resize(num_edges, nullptr);
-            }
-            for (size_t i = 0; i < num_edges; ++i) {
-                if (vertex_ptrs_[i] == nullptr) {
-                    vertex_ptrs_[i] = hg_->edge_vertices(static_cast<EdgeId>(i));
-                }
-            }
-            return vertex_ptrs_.data();
+            return hg_->edges_[eid].vertices;  // Direct access
         }
     };
 
+    // Optimized accessor: direct access without caching overhead
+    // edge_arity() is already O(1), caching added more overhead than it saved
     class EdgeArityAccessorRaw {
-        mutable std::vector<uint8_t> arities_;
-        mutable std::vector<bool> valid_;
         const UnifiedHypergraph* hg_;
     public:
-        explicit EdgeArityAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {
-            // Don't pre-populate - will be populated on demand
-        }
+        explicit EdgeArityAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {}
+
         uint8_t operator[](EdgeId eid) const {
-            // Dynamically extend if needed
-            if (eid >= arities_.size()) {
-                size_t old_size = arities_.size();
-                arities_.resize(eid + 1, 0);
-                valid_.resize(eid + 1, false);
-            }
-            // Lazily fetch arity if not already cached
-            if (!valid_[eid]) {
-                arities_[eid] = hg_->edge_arity(eid);
-                valid_[eid] = true;
-            }
-            return arities_[eid];
-        }
-        operator const uint8_t*() const {
-            // Pre-populate all known edges
-            uint32_t num_edges = hg_->num_edges();
-            if (num_edges > arities_.size()) {
-                arities_.resize(num_edges, 0);
-                valid_.resize(num_edges, false);
-            }
-            for (size_t i = 0; i < num_edges; ++i) {
-                if (!valid_[i]) {
-                    arities_[i] = hg_->edge_arity(static_cast<EdgeId>(i));
-                    valid_[i] = true;
-                }
-            }
-            return arities_.data();
+            return hg_->edges_[eid].arity;  // Direct access, no function call
         }
     };
 
