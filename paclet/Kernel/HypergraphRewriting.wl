@@ -3,10 +3,12 @@
 BeginPackage["HypergraphRewriting`"]
 
 PackageExport["HGEvolve"]
+PackageExport["HGEvolveV2"]
 PackageExport["EdgeId"]
 
 (* Public symbols - exposed API functions *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution and returns the specified property."
+HGEvolveV2::usage = "HGEvolveV2[rules, initialEdges, steps, property] performs multiway rewriting using the unified V2 engine with selectable hash strategy."
 EdgeId::usage = "EdgeId[id] wraps an edge identifier in state visualizations."
 
 (* Options for HGEvolve *)
@@ -22,6 +24,18 @@ Options[HGEvolve] = {
   "MaxSuccessorStatesPerParent" -> 0,  (* 0 = unlimited *)
   "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
   "ExplorationProbability" -> 1.0       (* 1.0 = always explore *)
+};
+
+(* Options for HGEvolveV2 - includes hash strategy selection *)
+Options[HGEvolveV2] = {
+  "CanonicalizeStates" -> True,
+  "CanonicalizeEvents" -> True,         (* V2 defaults to True *)
+  "CausalTransitiveReduction" -> True,
+  "AspectRatio" -> None,
+  "MaxSuccessorStatesPerParent" -> 0,   (* 0 = unlimited *)
+  "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
+  "ExplorationProbability" -> 1.0,      (* 1.0 = always explore *)
+  "HashStrategy" -> "iUT"               (* "WL" | "UT" | "iUT" *)
 };
 
 Begin["`Private`"]
@@ -79,10 +93,11 @@ If[$HypergraphLibrary === $Failed,
 (* LibraryLink function declarations *)
 If[$HypergraphLibrary =!= $Failed,
   performRewriting = LibraryFunctionLoad[$HypergraphLibrary, "performRewriting", {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+  performRewritingV2 = LibraryFunctionLoad[$HypergraphLibrary, "performRewritingV2", {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
 
-  If[Head[performRewriting] === LibraryFunction,
-    Print["HypergraphRewriting: Library functions loaded successfully from ", $HypergraphLibrary],
-    Print["HypergraphRewriting: Failed to load performRewriting from ", $HypergraphLibrary]
+  If[Head[performRewriting] === LibraryFunction && Head[performRewritingV2] === LibraryFunction,
+    Print["HypergraphRewriting: Library functions (v1 + v2) loaded successfully from ", $HypergraphLibrary],
+    Print["HypergraphRewriting: Failed to load library functions from ", $HypergraphLibrary]
   ],
   Print["HypergraphRewriting: Library not found - functions will not work"]
 ];
@@ -489,6 +504,114 @@ HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}
     },
     AspectRatio -> aspectRatio,
     PlotLabel -> None
+  ]
+]
+
+(* HGEvolveV2 - Unified V2 engine with hash strategy selection *)
+HGEvolveV2[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, wxfByteArray, resultByteArray, rulesAssoc, result, options},
+  If[Head[performRewritingV2] =!= LibraryFunction,
+    Return["Library function performRewritingV2 not loaded"]
+  ];
+
+  (* Parse options with defaults *)
+  options = Association[
+    "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
+    "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
+    "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
+    "AspectRatio" -> OptionValue["AspectRatio"],
+    "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
+    "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
+    "ExplorationProbability" -> OptionValue["ExplorationProbability"],
+    "HashStrategy" -> OptionValue["HashStrategy"]
+  ];
+
+  (* Convert rules to Association format for WXF *)
+  rulesAssoc = Association[
+    Table[
+      "Rule" <> ToString[i] -> rules[[i]],
+      {i, Length[rules]}
+    ]
+  ];
+
+  (* Detect if we have single state or multiple states using Depth *)
+  (* Depth 3: {{1,2},{2,3}} = single state (list of edges) *)
+  (* Depth 4: {{{1,2}},{{3,4}}} = multiple states (list of states) *)
+  initialStatesData = If[Depth[initialEdges] == 3,
+    (* Single state: wrap in outer list to make uniform *)
+    {initialEdges},
+    (* Multiple states: already in correct format *)
+    initialEdges
+  ];
+
+  (* Create input association with options *)
+  inputData = Association[
+    "InitialStates" -> initialStatesData,
+    "Rules" -> rulesAssoc,
+    "Steps" -> steps,
+    "Options" -> options
+  ];
+
+  (* Serialize to WXF and call library function using ByteArray directly *)
+  wxfByteArray = BinarySerialize[inputData];
+  resultByteArray = performRewritingV2[wxfByteArray];
+
+  If[ByteArrayQ[resultByteArray] && Length[resultByteArray] > 0,
+    Module[{wxfData, states, events, causalEdges, branchialEdges, numStates, numEvents, numCausalEdges, numBranchialEdges},
+      (* Deserialize WXF result *)
+      wxfData = BinaryDeserialize[resultByteArray];
+
+      If[AssociationQ[wxfData],
+        (* Extract data *)
+        states = Lookup[wxfData, "States", Association[]];
+        events = Lookup[wxfData, "Events", {}];
+        causalEdges = Lookup[wxfData, "CausalEdges", {}];
+        branchialEdges = Lookup[wxfData, "BranchialEdges", {}];
+        numStates = Lookup[wxfData, "NumStates", Length[states]];
+        numEvents = Lookup[wxfData, "NumEvents", Length[events]];
+        numCausalEdges = Lookup[wxfData, "NumCausalEdges", Length[causalEdges]];
+        numBranchialEdges = Lookup[wxfData, "NumBranchialEdges", Length[branchialEdges]];
+
+        (* Return requested property - same as HGEvolve *)
+        Switch[property,
+          "States", states,
+          "Events", events,
+          "CausalEdges", causalEdges,
+          "BranchialEdges", branchialEdges,
+          "NumStates", numStates,
+          "NumEvents", numEvents,
+          "NumCausalEdges", numCausalEdges,
+          "NumBranchialEdges", numBranchialEdges,
+          "Debug", Association[
+            "NumStates" -> numStates,
+            "NumEvents" -> numEvents,
+            "NumCausalEdges" -> numCausalEdges,
+            "NumBranchialEdges" -> numBranchialEdges,
+            "StatesLength" -> Length[states],
+            "EventsLength" -> Length[events],
+            "CausalEdgesLength" -> Length[causalEdges],
+            "BranchialEdgesLength" -> Length[branchialEdges]
+          ],
+          "StatesGraph", HGCreateStatesGraph[states, events, True, options["AspectRatio"]],
+          "StatesGraphStructure", HGCreateStatesGraph[states, events, False, options["AspectRatio"]],
+          "CausalGraph", HGCreateCausalGraph[states, events, causalEdges, True, options["AspectRatio"]],
+          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False, options["AspectRatio"]],
+          "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
+          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
+          "EvolutionGraph", HGCreateEvolutionGraph[states, events, {}, {}, True, options["AspectRatio"]],
+          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False, options["AspectRatio"]],
+          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges, {}, True, options["AspectRatio"]],
+          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False, options["AspectRatio"]],
+          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges, True, options["AspectRatio"]],
+          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False, options["AspectRatio"]],
+          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, True, options["AspectRatio"]],
+          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False, options["AspectRatio"]],
+          _, $Failed
+        ],
+        (* WXF parsing failed *)
+        $Failed
+      ]
+    ],
+    $Failed
   ]
 ]
 

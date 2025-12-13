@@ -8,6 +8,8 @@
 #include <functional>
 #include <thread>
 #include <cstring>
+#include <random>
+#include <algorithm>
 
 #include "types.hpp"
 #include "arena.hpp"
@@ -354,6 +356,21 @@ class ParallelEvolutionEngine {
     size_t max_states_{0};
     size_t max_events_{0};
 
+    // Pruning and random termination (v1 compatibility)
+    double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
+    size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
+    size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+
+    // Per-parent successor count tracking (for max_successor_states_per_parent)
+    static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
+    static constexpr uint64_t SUCCESSOR_MAP_LOCKED = (1ULL << 62) + 501;
+    ConcurrentMap<uint64_t, std::atomic<size_t>*, SUCCESSOR_MAP_EMPTY, SUCCESSOR_MAP_LOCKED> parent_successor_count_;
+
+    // Per-step state count tracking (for max_states_per_step)
+    static constexpr uint64_t STEP_MAP_EMPTY = (1ULL << 62) + 600;
+    static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
+    ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
+
     // Statistics (atomics for thread-safety)
     std::atomic<size_t> total_matches_found_{0};
     std::atomic<size_t> total_rewrites_{0};
@@ -421,6 +438,22 @@ public:
     // "produces" all edges in that state. This allows causal edges to be
     // tracked from the initial state's edges to events that consume them.
     void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
+
+    // Pruning options (v1 compatibility)
+    void set_exploration_probability(double p) {
+        exploration_probability_ = std::clamp(p, 0.0, 1.0);
+    }
+    void set_max_successor_states_per_parent(size_t max) {
+        max_successor_states_per_parent_ = max;
+    }
+    void set_max_states_per_step(size_t max) {
+        max_states_per_step_ = max;
+    }
+
+    double exploration_probability() const { return exploration_probability_; }
+    size_t max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
+    size_t max_states_per_step() const { return max_states_per_step_; }
+
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
@@ -1369,6 +1402,83 @@ private:
     }
 
     // =========================================================================
+    // Pruning Helpers (v1 compatibility)
+    // =========================================================================
+
+    // Try to reserve a successor slot for the parent state.
+    // Returns true if allowed to create another child, false if limit reached.
+    bool try_reserve_successor_slot(StateId parent_state) {
+        if (max_successor_states_per_parent_ == 0) return true;  // Unlimited
+
+        // Get or create atomic counter for this parent
+        uint64_t key = parent_state;
+        auto result = parent_successor_count_.lookup(key);
+        std::atomic<size_t>* counter = nullptr;
+
+        if (result.has_value()) {
+            counter = *result;
+        } else {
+            // Allocate new counter from arena
+            counter = hg_->arena().template create<std::atomic<size_t>>(0);
+            auto [existing, inserted] = parent_successor_count_.insert_if_absent(key, counter);
+            if (!inserted) {
+                counter = existing;  // Another thread beat us
+            }
+        }
+
+        // Try to increment, fail if at limit
+        size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
+        if (old_val >= max_successor_states_per_parent_) {
+            counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
+            return false;
+        }
+        return true;
+    }
+
+    // Try to reserve a state slot for the given step/generation.
+    // Returns true if allowed to create another state at this step, false if limit reached.
+    bool try_reserve_step_slot(uint32_t step) {
+        if (max_states_per_step_ == 0) return true;  // Unlimited
+
+        // Get or create atomic counter for this step
+        uint64_t key = step;
+        auto result = states_per_step_.lookup(key);
+        std::atomic<size_t>* counter = nullptr;
+
+        if (result.has_value()) {
+            counter = *result;
+        } else {
+            // Allocate new counter from arena
+            counter = hg_->arena().template create<std::atomic<size_t>>(0);
+            auto [existing, inserted] = states_per_step_.insert_if_absent(key, counter);
+            if (!inserted) {
+                counter = existing;  // Another thread beat us
+            }
+        }
+
+        // Try to increment, fail if at limit
+        size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
+        if (old_val >= max_states_per_step_) {
+            counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
+            return false;
+        }
+        return true;
+    }
+
+    // Check if we should explore a new state based on exploration_probability.
+    // Uses thread-local random state to avoid contention.
+    bool should_explore() {
+        if (exploration_probability_ >= 1.0) return true;
+        if (exploration_probability_ <= 0.0) return false;
+
+        // Thread-local random number generation
+        thread_local std::mt19937 rng(std::random_device{}());
+        thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+        return dist(rng) < exploration_probability_;
+    }
+
+    // =========================================================================
     // REWRITE Task Execution
     // =========================================================================
     // Applies a match and spawns MATCH tasks for new states.
@@ -1389,6 +1499,16 @@ private:
         if (max_events_ > 0 && hg_->num_events() >= max_events_) {
             should_stop_.store(true, std::memory_order_relaxed);
             return;
+        }
+
+        // Pruning: check max_successor_states_per_parent
+        if (!try_reserve_successor_slot(match.source_state)) {
+            return;  // Parent has too many children already
+        }
+
+        // Pruning: check max_states_per_step (child will be at step+1)
+        if (!try_reserve_step_slot(step + 1)) {
+            return;  // Too many states at this generation
         }
 
         const RewriteRule& rule = rules_[match.rule_index];
@@ -1468,6 +1588,14 @@ private:
                 ctx.num_produced = rr.num_produced;
                 for (uint8_t i = 0; i < rr.num_produced; ++i) {
                     ctx.produced_edges[i] = rr.produced_edges[i];
+                }
+
+                // Pruning: check exploration_probability (v1 style)
+                // State is created and event recorded, but we may skip further exploration.
+                // This is checked AFTER state creation to match v1 behavior.
+                if (!should_explore()) {
+                    // State exists but won't be explored further
+                    return;
                 }
 
                 // Register child's parent pointer for ancestor chain walking.

@@ -9,6 +9,11 @@
 #include "hypergraph/rewriting.hpp"
 #include "hypergraph/wolfram_states.hpp"
 
+// Include unified engine headers (V2)
+#include "hypergraph/unified/unified_hypergraph.hpp"
+#include "hypergraph/unified/parallel_evolution.hpp"
+#include "hypergraph/unified/pattern.hpp"
+
 // Include comprehensive WXF library
 #include "wxf.hpp"
 
@@ -481,6 +486,357 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         return LIBRARY_FUNCTION_ERROR;
     } catch (const std::exception& e) {
         handle_error(libData, e.what());
+        return LIBRARY_FUNCTION_ERROR;
+    }
+}
+
+/**
+ * Perform multiway rewriting evolution using unified V2 engine
+ * Input: WXF binary data as 1D byte tensor containing:
+ *   Association[
+ *     "InitialEdges" -> {{vertices...}, ...},
+ *     "Rules" -> <"Rule1" -> {{lhs edges}, {rhs edges}}, ...>,
+ *     "Steps" -> integer,
+ *     "Options" -> Association[..., "HashStrategy" -> "iUT"|"UT"|"WL", ...]
+ *   ]
+ *
+ * Output: WXF Association with States, Events, CausalEdges, BranchialEdges
+ */
+EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+    try {
+        if (argc != 1) {
+            handle_error(libData, "performRewritingV2 expects 1 argument: WXF ByteArray data");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        // Get WXF data as ByteArray (MNumericArray)
+        MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
+
+        // Get array properties
+        mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
+        if (rank != 1) {
+            handle_error(libData, "WXF ByteArray must be 1-dimensional");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
+        mint wxf_size = dims[0];
+
+        // Get raw byte data
+        void* raw_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(wxf_array);
+        const uint8_t* wxf_byte_data = static_cast<const uint8_t*>(raw_data);
+
+        // Convert to vector
+        std::vector<uint8_t> wxf_bytes(wxf_byte_data, wxf_byte_data + wxf_size);
+
+        // Parse WXF input
+        wxf::Parser parser(wxf_bytes);
+        parser.skip_header();
+
+        std::vector<std::vector<std::vector<int64_t>>> initial_states_raw;
+        std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> parsed_rules_raw;
+        int steps = 1;
+
+        // Option values
+        bool canonicalize_states = true;
+        bool canonicalize_events = true;
+        bool causal_transitive_reduction = true;
+        size_t max_successor_states_per_parent = 0;
+        size_t max_states_per_step = 0;
+        double exploration_probability = 1.0;
+        std::string hash_strategy = "iUT";  // Default: IncrementalUniquenessTree
+
+        // Parse main association
+        parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
+            if (key == "InitialStates") {
+                initial_states_raw = value_parser.read<std::vector<std::vector<std::vector<int64_t>>>>();
+            }
+            else if (key == "InitialEdges") {
+                // Legacy single-state format
+                auto edges_data = value_parser.read<std::vector<std::vector<int64_t>>>();
+                initial_states_raw.push_back(edges_data);
+            }
+            else if (key == "Rules") {
+                parsed_rules_raw = ffi_helpers::read_rules_association(value_parser);
+            }
+            else if (key == "Steps") {
+                steps = value_parser.read<int>();
+            }
+            else if (key == "Options") {
+                value_parser.read_association([&](const std::string& option_key, wxf::Parser& option_parser) {
+                    try {
+                        if (option_key == "MaxSuccessorStatesPerParent") {
+                            max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "MaxStatesPerStep") {
+                            max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "ExplorationProbability") {
+                            exploration_probability = option_parser.read<double>();
+                        } else if (option_key == "HashStrategy") {
+                            hash_strategy = option_parser.read<std::string>();
+                        } else {
+                            std::string symbol = option_parser.read<std::string>();
+                            bool value = (symbol == "True");
+
+                            if (option_key == "CanonicalizeStates") {
+                                canonicalize_states = value;
+                            } else if (option_key == "CanonicalizeEvents") {
+                                canonicalize_events = value;
+                            } else if (option_key == "CausalTransitiveReduction") {
+                                causal_transitive_reduction = value;
+                            }
+                        }
+                    } catch (...) {
+                        option_parser.skip_value();
+                    }
+                });
+            }
+            else {
+                value_parser.skip_value();
+            }
+        });
+
+        if (initial_states_raw.empty()) {
+            handle_error(libData, "No initial states provided");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        if (parsed_rules_raw.empty()) {
+            handle_error(libData, "No valid rules found");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        // Create unified hypergraph
+        unified::UnifiedHypergraph hg;
+
+        // Set hash strategy
+        if (hash_strategy == "WL") {
+            hg.set_hash_strategy(unified::HashStrategy::WL);
+        } else if (hash_strategy == "UT") {
+            hg.set_hash_strategy(unified::HashStrategy::UniquenessTree);
+        } else {
+            hg.set_hash_strategy(unified::HashStrategy::IncrementalUniquenessTree);
+        }
+
+        // Configure event canonicalization
+        if (canonicalize_events) {
+            hg.set_event_canonicalization_mode(unified::EventCanonicalizationMode::ByStateAndEdges);
+        } else {
+            hg.set_event_canonicalization_mode(unified::EventCanonicalizationMode::None);
+        }
+
+        // Create parallel evolution engine
+        unified::ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
+
+        // Configure engine options
+        engine.set_max_steps(static_cast<size_t>(steps));
+        engine.set_transitive_reduction(causal_transitive_reduction);
+        engine.set_exploration_probability(exploration_probability);
+        engine.set_max_successor_states_per_parent(max_successor_states_per_parent);
+        engine.set_max_states_per_step(max_states_per_step);
+
+        // Convert rules to unified format
+        uint16_t rule_index = 0;
+        for (const auto& [rule_name, rule_data] : parsed_rules_raw) {
+            if (rule_data.size() != 2) continue;
+
+            unified::RewriteRule rule;
+            rule.index = rule_index++;
+
+            // Track max variable seen for variable counting
+            uint8_t max_lhs_var = 0;
+            uint8_t max_rhs_var = 0;
+
+            // Parse LHS edges
+            rule.num_lhs_edges = 0;
+            for (const auto& edge : rule_data[0]) {
+                if (rule.num_lhs_edges >= unified::MAX_PATTERN_EDGES) break;
+                unified::PatternEdge& pe = rule.lhs[rule.num_lhs_edges];
+                pe.arity = 0;
+                for (int64_t v : edge) {
+                    if (v >= 0 && pe.arity < unified::MAX_ARITY) {
+                        pe.vars[pe.arity++] = static_cast<uint8_t>(v);
+                        if (v > max_lhs_var) max_lhs_var = static_cast<uint8_t>(v);
+                    }
+                }
+                if (pe.arity > 0) {
+                    rule.num_lhs_edges++;
+                }
+            }
+
+            // Parse RHS edges
+            rule.num_rhs_edges = 0;
+            for (const auto& edge : rule_data[1]) {
+                if (rule.num_rhs_edges >= unified::MAX_PATTERN_EDGES) break;
+                unified::PatternEdge& pe = rule.rhs[rule.num_rhs_edges];
+                pe.arity = 0;
+                for (int64_t v : edge) {
+                    if (v >= 0 && pe.arity < unified::MAX_ARITY) {
+                        pe.vars[pe.arity++] = static_cast<uint8_t>(v);
+                        if (v > max_rhs_var) max_rhs_var = static_cast<uint8_t>(v);
+                    }
+                }
+                if (pe.arity > 0) {
+                    rule.num_rhs_edges++;
+                }
+            }
+
+            rule.num_lhs_vars = max_lhs_var + 1;
+            rule.num_rhs_vars = max_rhs_var + 1;
+            rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
+
+            if (rule.num_lhs_edges > 0 && rule.num_rhs_edges > 0) {
+                engine.add_rule(rule);
+            }
+        }
+
+        // Convert first initial state to vector of edges
+        // (V2 currently supports single initial state - take first)
+        std::vector<std::vector<unified::VertexId>> initial_edges;
+        if (!initial_states_raw.empty()) {
+            for (const auto& edge : initial_states_raw[0]) {
+                std::vector<unified::VertexId> edge_vertices;
+                for (int64_t v : edge) {
+                    if (v >= 0) {
+                        edge_vertices.push_back(static_cast<unified::VertexId>(v));
+                    }
+                }
+                if (!edge_vertices.empty()) {
+                    initial_edges.push_back(edge_vertices);
+                }
+            }
+        }
+
+        // Run evolution
+        engine.evolve(initial_edges, static_cast<size_t>(steps));
+
+        // Build WXF output
+        wxf::Writer wxf_writer;
+        wxf_writer.write_header();
+
+        wxf::ValueAssociation full_result;
+
+        // States -> Association[state_id -> Association["Edges" -> edges, "IsInitialState" -> bool]]
+        wxf::ValueAssociation states_assoc;
+        uint32_t num_states = hg.num_states();
+        for (uint32_t sid = 0; sid < num_states; ++sid) {
+            const unified::State& state = hg.get_state(sid);
+            if (state.id == unified::INVALID_ID) continue;
+
+            wxf::ValueList edge_list;
+            state.edges.for_each([&](unified::EdgeId eid) {
+                const unified::Edge& edge = hg.get_edge(eid);
+                wxf::ValueList edge_data;
+                edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                for (uint8_t i = 0; i < edge.arity; ++i) {
+                    edge_data.push_back(wxf::Value(static_cast<int64_t>(edge.vertices[i])));
+                }
+                edge_list.push_back(wxf::Value(edge_data));
+            });
+
+            bool is_initial = (state.step == 0);
+
+            wxf::ValueAssociation state_assoc;
+            state_assoc.push_back({wxf::Value("Edges"), wxf::Value(edge_list)});
+            state_assoc.push_back({wxf::Value("IsInitialState"), wxf::Value(is_initial ? "True" : "False")});
+
+            states_assoc.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_assoc)});
+        }
+        full_result.push_back({wxf::Value("States"), wxf::Value(states_assoc)});
+
+        // Events -> Association[event_id -> event_data]
+        wxf::ValueAssociation events_assoc;
+        uint32_t num_events = hg.num_events();
+        for (uint32_t eid = 0; eid < num_events; ++eid) {
+            const unified::Event& event = hg.get_event(eid);
+            if (event.id == unified::INVALID_ID) continue;
+
+            wxf::ValueAssociation event_data;
+            event_data.push_back({wxf::Value("EventId"), wxf::Value(static_cast<int64_t>(eid))});
+            event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
+            event_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(1))});
+            event_data.push_back({wxf::Value("InputStateId"), wxf::Value(static_cast<int64_t>(event.input_state))});
+            event_data.push_back({wxf::Value("OutputStateId"), wxf::Value(static_cast<int64_t>(event.output_state))});
+
+            // Get canonical states
+            unified::StateId canonical_input = hg.get_canonical_state(event.input_state);
+            unified::StateId canonical_output = hg.get_canonical_state(event.output_state);
+            event_data.push_back({wxf::Value("CanonicalInputStateId"), wxf::Value(static_cast<int64_t>(canonical_input))});
+            event_data.push_back({wxf::Value("CanonicalOutputStateId"), wxf::Value(static_cast<int64_t>(canonical_output))});
+
+            // Consumed/produced edges
+            wxf::ValueList consumed_list, produced_list;
+            for (uint8_t i = 0; i < event.num_consumed; ++i) {
+                consumed_list.push_back(wxf::Value(static_cast<int64_t>(event.consumed_edges[i])));
+            }
+            for (uint8_t i = 0; i < event.num_produced; ++i) {
+                produced_list.push_back(wxf::Value(static_cast<int64_t>(event.produced_edges[i])));
+            }
+            event_data.push_back({wxf::Value("ConsumedEdges"), wxf::Value(consumed_list)});
+            event_data.push_back({wxf::Value("ProducedEdges"), wxf::Value(produced_list)});
+
+            events_assoc.push_back({wxf::Value(static_cast<int64_t>(eid)), wxf::Value(event_data)});
+        }
+        full_result.push_back({wxf::Value("Events"), wxf::Value(events_assoc)});
+
+        // CausalEdges
+        wxf::ValueList causal_edges;
+        auto causal_edge_vec = hg.causal_graph().get_causal_edges();
+        for (const auto& edge : causal_edge_vec) {
+            wxf::ValueAssociation edge_data;
+            edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(edge.producer))});
+            edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(edge.consumer))});
+            edge_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(1))});
+            causal_edges.push_back(wxf::Value(edge_data));
+        }
+        full_result.push_back({wxf::Value("CausalEdges"), wxf::Value(causal_edges)});
+
+        // BranchialEdges
+        wxf::ValueList branchial_edges;
+        auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
+        for (const auto& edge : branchial_edge_vec) {
+            wxf::ValueAssociation edge_data;
+            edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(edge.event1))});
+            edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(edge.event2))});
+            edge_data.push_back({wxf::Value("Multiplicity"), wxf::Value(static_cast<int64_t>(1))});
+            branchial_edges.push_back(wxf::Value(edge_data));
+        }
+        full_result.push_back({wxf::Value("BranchialEdges"), wxf::Value(branchial_edges)});
+
+        // Counts
+        full_result.push_back({wxf::Value("NumStates"), wxf::Value(static_cast<int64_t>(hg.num_canonical_states()))});
+        full_result.push_back({wxf::Value("NumEvents"), wxf::Value(static_cast<int64_t>(engine.num_events()))});
+        full_result.push_back({wxf::Value("NumCausalEdges"), wxf::Value(static_cast<int64_t>(hg.num_causal_edges()))});
+        full_result.push_back({wxf::Value("NumBranchialEdges"), wxf::Value(static_cast<int64_t>(hg.num_branchial_edges()))});
+
+        // Write final association
+        wxf_writer.write(wxf::Value(full_result));
+        const auto& wxf_data = wxf_writer.data();
+
+        // Create output ByteArray
+        mint wxf_dims[1] = {static_cast<mint>(wxf_data.size())};
+        MNumericArray result_array;
+        int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, wxf_dims, &result_array);
+        if (err != LIBRARY_NO_ERROR) {
+            return err;
+        }
+
+        // Copy byte data
+        void* result_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array);
+        uint8_t* byte_result_data = static_cast<uint8_t*>(result_data);
+        std::memcpy(byte_result_data, wxf_data.data(), wxf_data.size());
+
+        MArgument_setMNumericArray(res, result_array);
+        return LIBRARY_NO_ERROR;
+
+    } catch (const wxf::TypeError& e) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "WXF TypeError in V2: %.200s", e.what());
+        handle_error(libData, err_msg);
+        return LIBRARY_FUNCTION_ERROR;
+    } catch (const std::exception& e) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "Exception in V2: %.200s", e.what());
+        handle_error(libData, err_msg);
         return LIBRARY_FUNCTION_ERROR;
     }
 }
