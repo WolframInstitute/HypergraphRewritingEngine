@@ -416,6 +416,7 @@ protected:
             case v2::HashStrategy::UniquenessTree: return "UT";
             case v2::HashStrategy::IncrementalUniquenessTree: return "UT-Inc";
             case v2::HashStrategy::WL: return "WL";
+            case v2::HashStrategy::IncrementalWL: return "WL-Inc";
         }
         return "Unknown";
     }
@@ -439,14 +440,15 @@ protected:
         std::vector<v2::HashStrategy> strategies = {
             v2::HashStrategy::UniquenessTree,
             v2::HashStrategy::IncrementalUniquenessTree,
-            v2::HashStrategy::WL
+            v2::HashStrategy::WL,
+            v2::HashStrategy::IncrementalWL
         };
 
         for (auto mode : {v2::EventCanonicalizationMode::None,
                           v2::EventCanonicalizationMode::ByState,
                           v2::EventCanonicalizationMode::ByStateAndEdges}) {
 
-            EvolutionResult results[3];
+            EvolutionResult results[4];
             for (size_t i = 0; i < strategies.size(); ++i) {
                 results[i] = run_with_strategy(rules, initial, steps, strategies[i], mode);
             }
@@ -478,7 +480,9 @@ protected:
             }
 
             // Verify all strategies produce same counts
-            bool all_match = results[0].counts_equal(results[1]) && results[0].counts_equal(results[2]);
+            bool all_match = results[0].counts_equal(results[1]) &&
+                             results[0].counts_equal(results[2]) &&
+                             results[0].counts_equal(results[3]);
             if (!all_match) {
                 std::cout << "  *** MISMATCH between strategies! ***\n";
             }
@@ -487,6 +491,8 @@ protected:
                 << "UT vs UT-Inc mismatch in " << mode_name(mode);
             EXPECT_TRUE(results[0].counts_equal(results[2]))
                 << "UT vs WL mismatch in " << mode_name(mode);
+            EXPECT_TRUE(results[0].counts_equal(results[3]))
+                << "UT vs WL-Inc mismatch in " << mode_name(mode);
         }
     }
 

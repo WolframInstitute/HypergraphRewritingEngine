@@ -337,6 +337,7 @@ public:
 
         // Compute tree hashes with lazy dirty detection
         std::unordered_map<VertexId, std::pair<uint64_t, bool>> child_memo;
+        child_memo.reserve(vertices.size());  // Pre-size to avoid rehashing
         ArenaVector<uint64_t> tree_hashes(*arena_, vertices.size());
 
         size_t reused = 0;
@@ -457,6 +458,7 @@ public:
     template<typename EdgeAccessor, typename ArityAccessor, typename AdjacencyProvider>
     std::pair<uint64_t, VertexHashCache> compute_state_hash_incremental_external(
         const SparseBitset& child_edges,
+        const ArenaVector<VertexId>& child_vertices,  // Pre-computed incrementally
         const EdgeId* consumed_edges, uint8_t num_consumed,
         const EdgeId* produced_edges, uint8_t num_produced,
         const VertexHashCache& parent_cache,
@@ -466,7 +468,7 @@ public:
     ) {
         VertexHashCache cache;
 
-        if (child_edges.empty()) {
+        if (child_vertices.empty()) {
             return {0, cache};
         }
 
@@ -493,25 +495,8 @@ public:
             }
         }
 
-        // Collect all vertices in child state
-        ArenaVector<VertexId> vertices(*arena_);
-        std::unordered_set<VertexId> seen_vertices;
-
-        child_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                if (seen_vertices.insert(verts[j]).second) {
-                    vertices.push_back(verts[j]);
-                }
-            }
-        });
-
-        std::sort(vertices.begin(), vertices.end());
-
-        if (vertices.empty()) {
-            return {0, cache};
-        }
+        // Use pre-computed vertices (already sorted)
+        const ArenaVector<VertexId>& vertices = child_vertices;
 
         // Allocate cache arrays
         cache.capacity = static_cast<uint32_t>(vertices.size());
@@ -521,6 +506,7 @@ public:
 
         // Compute tree hashes with lazy dirty detection
         std::unordered_map<VertexId, std::pair<uint64_t, bool>> child_memo;
+        child_memo.reserve(vertices.size());  // Pre-size to avoid rehashing
         ArenaVector<uint64_t> tree_hashes(*arena_, vertices.size());
 
         size_t reused = 0;
@@ -718,6 +704,7 @@ public:
         // Step 4: Compute tree hashes with lazy dirty detection
         // Memoization map for vertices computed in this child state
         std::unordered_map<VertexId, std::pair<uint64_t, bool>> child_memo;  // vertex -> (hash, is_dirty)
+        child_memo.reserve(vertices.size());  // Pre-size to avoid rehashing
 
         ArenaVector<uint64_t> tree_hashes(*arena_, vertices.size());
 
@@ -851,6 +838,7 @@ public:
 
         // Use lazy dirty detection
         std::unordered_map<VertexId, std::pair<uint64_t, bool>> child_memo;
+        child_memo.reserve(vertices.size());  // Pre-size to avoid rehashing
         ArenaVector<uint64_t> tree_hashes(*arena_, vertices.size());
 
         for (VertexId root : vertices) {

@@ -34,7 +34,8 @@ namespace hypergraph::unified {
 enum class HashStrategy {
     UniquenessTree,            // True Gorard-style uniqueness trees (BFS tree structure)
     IncrementalUniquenessTree, // Incremental version that caches subtree hashes
-    WL                         // Weisfeiler-Lehman style iterative refinement
+    WL,                        // Weisfeiler-Lehman style iterative refinement
+    IncrementalWL              // Incremental WL that reuses parent vertex hashes
 };
 
 // =============================================================================
@@ -149,6 +150,14 @@ class UnifiedHypergraph {
     // Per-state incremental cache for IncrementalUniquenessTree strategy
     SegmentedArray<StateIncrementalCache> state_incremental_cache_;
 
+    // Per-state WL hash cache (VertexHashCache + validity flag)
+    // Used to memoize compute_state_hash_with_cache for canonical states
+    struct WLHashCacheEntry {
+        VertexHashCache cache;
+        std::atomic<bool> valid{false};
+    };
+    SegmentedArray<WLHashCacheEntry> wl_hash_cache_;
+
     // Causal and branchial graph
     CausalGraph causal_graph_;
 
@@ -179,7 +188,7 @@ class UnifiedHypergraph {
     std::unique_ptr<UnifiedUniquenessTree> unified_tree_;  // Gorard-style uniqueness trees
     std::unique_ptr<IncrementalUnifiedUniquenessTree> incremental_tree_;  // Incremental version
     std::unique_ptr<WLHash> wl_hash_;                      // Weisfeiler-Lehman hashing
-    HashStrategy hash_strategy_{HashStrategy::IncrementalUniquenessTree};  // UT-Inc with cached adjacency
+    HashStrategy hash_strategy_{HashStrategy::IncrementalWL};  // UT-Inc with cached adjacency
 
     // Stats for bloom filter-based vertex hash reuse in compute_canonical_hash_incremental
     mutable std::atomic<size_t> bloom_reused_{0};
@@ -498,10 +507,111 @@ public:
                 }
             });
         }
+
+        // For compute_tree_hash_external_adjacency which expects EdgeOccurrence
+        template<typename Callback>
+        void for_each_occurrence(VertexId v, Callback&& cb) const {
+            if (v >= vertex_adjacency_->size()) return;
+            (*vertex_adjacency_)[v].for_each([&](const EdgeOccurrence& occ) {
+                if (state_edges_->contains(occ.edge_id)) {
+                    cb(occ);
+                }
+            });
+        }
     };
 
     StateFilteredAdjacencyProvider state_filtered_adjacency(const SparseBitset& state_edges) const {
         return StateFilteredAdjacencyProvider(&vertex_adjacency_, &state_edges);
+    }
+
+    // =========================================================================
+    // Incremental Vertex Collection
+    // =========================================================================
+    // Computes child vertices from parent in O(delta) instead of O(E).
+    // child_vertices = parent_vertices - orphaned + new_from_produced
+    //
+    // orphaned = vertices in consumed edges that don't appear in any child edge
+    // new = vertices in produced edges that weren't in parent
+
+    template<typename EdgeAccessor, typename ArityAccessor>
+    ArenaVector<VertexId> compute_child_vertices_incremental(
+        const VertexHashCache& parent_cache,
+        const EdgeId* consumed_edges, uint8_t num_consumed,
+        const EdgeId* produced_edges, uint8_t num_produced,
+        const SparseBitset& child_edges,
+        const EdgeAccessor& edge_vertices,
+        const ArityAccessor& edge_arities
+    ) {
+        // Build set of parent vertices for fast lookup
+        std::unordered_set<VertexId> parent_vertex_set;
+        parent_vertex_set.reserve(parent_cache.count);
+        for (uint32_t i = 0; i < parent_cache.count; ++i) {
+            parent_vertex_set.insert(parent_cache.vertices[i]);
+        }
+
+        // Collect vertices from consumed edges that might be orphaned
+        std::unordered_set<VertexId> maybe_orphaned;
+        for (uint8_t i = 0; i < num_consumed; ++i) {
+            EdgeId eid = consumed_edges[i];
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t j = 0; j < arity; ++j) {
+                maybe_orphaned.insert(verts[j]);
+            }
+        }
+
+        // Check which are actually orphaned (no edges in child_edges)
+        std::unordered_set<VertexId> orphaned;
+        for (VertexId v : maybe_orphaned) {
+            bool has_edge_in_child = false;
+            // Use global adjacency to check vertex's edges
+            if (v < vertex_adjacency_.size()) {
+                vertex_adjacency_[v].for_each([&](const EdgeOccurrence& occ) {
+                    if (!has_edge_in_child && child_edges.contains(occ.edge_id)) {
+                        has_edge_in_child = true;
+                    }
+                });
+            }
+            if (!has_edge_in_child) {
+                orphaned.insert(v);
+            }
+        }
+
+        // Collect new vertices from produced edges
+        std::unordered_set<VertexId> new_vertices;
+        for (uint8_t i = 0; i < num_produced; ++i) {
+            EdgeId eid = produced_edges[i];
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t j = 0; j < arity; ++j) {
+                VertexId v = verts[j];
+                if (parent_vertex_set.find(v) == parent_vertex_set.end()) {
+                    new_vertices.insert(v);
+                }
+            }
+        }
+
+        // Build result: parent - orphaned + new
+        ArenaVector<VertexId> result(arena_);
+        result.reserve(parent_cache.count - orphaned.size() + new_vertices.size());
+
+        // Add parent vertices that aren't orphaned
+        for (uint32_t i = 0; i < parent_cache.count; ++i) {
+            VertexId v = parent_cache.vertices[i];
+            if (orphaned.find(v) == orphaned.end()) {
+                result.push_back(v);
+            }
+        }
+
+        // Add new vertices
+        for (VertexId v : new_vertices) {
+            result.push_back(v);
+        }
+
+        // Sort for consistency
+        std::sort(result.begin(), result.end());
+
+        return result;
     }
 
     // =========================================================================
@@ -834,12 +944,9 @@ public:
                 EdgeCorrespondence input_correspondence, output_correspondence;
 
                 if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
-                    auto [in_hash, in_cache] = wl_hash_->compute_state_hash_with_cache(
-                        canonical_in_state.edges, vert_acc, arity_acc);
-                    auto [out_hash, out_cache] = wl_hash_->compute_state_hash_with_cache(
-                        canonical_out_state.edges, vert_acc, arity_acc);
-                    canonical_input_cache = in_cache;
-                    canonical_output_cache = out_cache;
+                    // Use memoized cache - many events share the same canonical states
+                    canonical_input_cache = get_or_compute_wl_cache(canonical_input);
+                    canonical_output_cache = get_or_compute_wl_cache(canonical_output);
 
                     input_correspondence = wl_hash_->find_edge_correspondence(
                         in_state.edges, canonical_in_state.edges, vert_acc, arity_acc);
@@ -1363,7 +1470,7 @@ public:
         EdgeVertexAccessorRaw verts_accessor(this);
         EdgeArityAccessorRaw arities_accessor(this);
 
-        if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
+        if ((hash_strategy_ == HashStrategy::WL || hash_strategy_ == HashStrategy::IncrementalWL) && wl_hash_) {
             return wl_hash_->compute_state_hash(edges, verts_accessor, arities_accessor);
         } else if (hash_strategy_ == HashStrategy::IncrementalUniquenessTree && incremental_tree_) {
             // Note: For standalone hash computation (no parent state), incremental tree
@@ -1381,6 +1488,31 @@ public:
     uint64_t compute_canonical_hash_wl(const SparseBitset& edges) {
         // Delegate to compute_canonical_hash_shared
         return compute_canonical_hash_shared(edges);
+    }
+
+    // Get or compute WL hash cache for a state (memoized)
+    // Thread-safe: uses atomic valid flag for synchronization
+    const VertexHashCache& get_or_compute_wl_cache(StateId state_id) {
+        WLHashCacheEntry& entry = wl_hash_cache_.get_or_default(state_id, arena_);
+
+        // Fast path: already computed
+        if (entry.valid.load(std::memory_order_acquire)) {
+            return entry.cache;
+        }
+
+        // Slow path: compute and cache
+        const State& state = get_state(state_id);
+        EdgeVertexAccessorRaw vert_acc(this);
+        EdgeArityAccessorRaw arity_acc(this);
+
+        auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
+            state.edges, vert_acc, arity_acc);
+
+        // Store the cache (may race with other threads, but result is same)
+        entry.cache = cache;
+        entry.valid.store(true, std::memory_order_release);
+
+        return entry.cache;
     }
 
     // =========================================================================
@@ -1411,17 +1543,52 @@ public:
             return {0, VertexHashCache()};
         }
 
-        // Only use incremental path for IncrementalUniquenessTree strategy
-        if (hash_strategy_ != HashStrategy::IncrementalUniquenessTree || !incremental_tree_) {
-            // Fall back to non-incremental computation
+        // Handle WL strategy (non-incremental)
+        if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
+            EdgeVertexAccessorRaw verts_accessor(this);
+            EdgeArityAccessorRaw arities_accessor(this);
+            auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
+                new_edges, verts_accessor, arities_accessor);
+            return {hash, cache};
+        }
+
+        // Handle IncrementalWL strategy
+        if (hash_strategy_ == HashStrategy::IncrementalWL && wl_hash_) {
             EdgeVertexAccessorRaw verts_accessor(this);
             EdgeArityAccessorRaw arities_accessor(this);
 
-            if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
+            // Try to get parent cache for incremental computation
+            const VertexHashCache* parent_wl_cache = nullptr;
+            if (parent_state != INVALID_ID && parent_state < wl_hash_cache_.size()) {
+                const WLHashCacheEntry& entry = wl_hash_cache_[parent_state];
+                if (entry.valid.load(std::memory_order_acquire) && entry.cache.count > 0) {
+                    parent_wl_cache = &entry.cache;
+                }
+            }
+
+            if (parent_wl_cache) {
+                // Use incremental WL computation
+                auto [hash, cache] = wl_hash_->compute_state_hash_incremental_with_cache(
+                    new_edges, *parent_wl_cache,
+                    consumed_edges, num_consumed,
+                    produced_edges, num_produced,
+                    verts_accessor, arities_accessor);
+                return {hash, cache};
+            } else {
+                // No parent cache, use full computation
                 auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
                     new_edges, verts_accessor, arities_accessor);
                 return {hash, cache};
-            } else if (unified_tree_) {
+            }
+        }
+
+        // Use incremental path only for IncrementalUniquenessTree strategy
+        if (hash_strategy_ != HashStrategy::IncrementalUniquenessTree || !incremental_tree_) {
+            // Fall back to non-incremental computation for other strategies
+            EdgeVertexAccessorRaw verts_accessor(this);
+            EdgeArityAccessorRaw arities_accessor(this);
+
+            if (unified_tree_) {
                 auto [hash, cache] = unified_tree_->compute_state_hash_with_cache(
                     new_edges, verts_accessor, arities_accessor);
                 return {hash, cache};
@@ -1527,7 +1694,8 @@ public:
 
         // Bloom filter reuse path - should have good reuse potential if we reach here
 
-        // Collect all vertices in child state
+        // Collect all vertices in child state (O(E) scan)
+        // TODO: Consider incremental vertex collection once performance is validated
         ArenaVector<VertexId> vertices(arena_);
         std::unordered_set<VertexId> seen_vertices;
         new_edges.for_each([&](EdgeId eid) {
@@ -1559,8 +1727,8 @@ public:
         size_t local_reused = 0;
         size_t local_recomputed = 0;
 
-        // Build adjacency only once for vertices we need to recompute
-        // We'll use a lazy approach: only build adjacency if we have recomputes
+        // Lazy adjacency building: only build if we need to recompute vertices
+        // This is O(E) but only when needed, and subsequent lookups are O(1)
         std::unordered_map<VertexId, ArenaVector<std::pair<EdgeId, uint8_t>>> adjacency;
         bool adjacency_built = false;
 
@@ -1624,7 +1792,6 @@ public:
             ++local_recomputed;
 
             // Use DirectAdjacencyWithArity wrapper for the tree hash computation
-            // This provides for_each_occurrence which compute_tree_hash_external_adjacency expects
             DirectAdjacencyWithArity<decltype(adjacency), EdgeArityAccessorRaw> adj_provider(adjacency, arities_accessor);
 
             // Compute tree hash with bloom filter
@@ -1660,8 +1827,24 @@ public:
     // Prevents race condition where two threads try to store the same state,
     // which could cause torn reads of the vertex_cache struct.
     void store_state_cache(StateId state, const VertexHashCache& cache) {
+        // Store for IncrementalWL strategy
+        if (hash_strategy_ == HashStrategy::IncrementalWL) {
+            WLHashCacheEntry& slot = wl_hash_cache_.get_or_default(state, arena_);
+
+            bool expected = false;
+            if (!slot.valid.compare_exchange_strong(expected, false,
+                    std::memory_order_relaxed, std::memory_order_relaxed)) {
+                return;  // Another thread already stored - skip
+            }
+
+            slot.cache = cache;
+            slot.valid.store(true, std::memory_order_release);
+            return;
+        }
+
+        // Store for iUT strategy
         if (hash_strategy_ != HashStrategy::IncrementalUniquenessTree) {
-            return;  // Only store for incremental strategy
+            return;  // Only store for incremental strategies (iUT, iWL)
         }
 
         StateIncrementalCache& slot = state_incremental_cache_.get_or_default(state, arena_);

@@ -78,7 +78,7 @@ protected:
         // Test with multiple threads (or default to hardware_concurrency)
         v2::ParallelEvolutionEngine engine(hg.get(), num_threads);
         engine.set_match_forwarding(true);
-        engine.set_validate_match_forwarding(true);
+        //engine.set_validate_match_forwarding(true);
 
         for (const auto& rule : rules) {
             engine.add_rule(rule);

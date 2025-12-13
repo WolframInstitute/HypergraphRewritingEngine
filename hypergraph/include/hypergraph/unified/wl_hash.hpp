@@ -123,38 +123,19 @@ public:
         const size_t num_vertices = vertices.size();
         const VertexId range = max_vertex - min_vertex + 1;
 
-        // Use dense array for vertex index if range is reasonable (< 4x vertices)
-        // This avoids hash table overhead for the common case
-        const bool use_dense_index = (range <= num_vertices * 4) && (range <= 65536);
-
-        // Arena-allocate dense index array (SIZE_MAX = not present)
-        ArenaVector<size_t> dense_index(*arena_);
-        if (use_dense_index) {
-            dense_index.resize(range);
-            for (size_t i = 0; i < range; ++i) {
-                dense_index[i] = SIZE_MAX;
-            }
-            for (size_t i = 0; i < num_vertices; ++i) {
-                dense_index[vertices[i] - min_vertex] = i;
-            }
+        // Always use arena-allocated dense array for O(1) lookup without hash overhead
+        ArenaVector<size_t> vertex_index(*arena_, range);
+        vertex_index.resize(range);
+        for (size_t i = 0; i < range; ++i) {
+            vertex_index[i] = SIZE_MAX;
+        }
+        for (size_t i = 0; i < num_vertices; ++i) {
+            vertex_index[vertices[i] - min_vertex] = i;
         }
 
-        // Fallback sparse index for very sparse vertex IDs
-        std::unordered_map<VertexId, size_t> sparse_index;
-        if (!use_dense_index) {
-            sparse_index.reserve(num_vertices);
-            for (size_t i = 0; i < num_vertices; ++i) {
-                sparse_index[vertices[i]] = i;
-            }
-        }
-
-        // Lambda for vertex lookup (inlined by compiler)
+        // Direct array lookup - no hash overhead
         auto get_vertex_idx = [&](VertexId v) -> size_t {
-            if (use_dense_index) {
-                return dense_index[v - min_vertex];
-            } else {
-                return sparse_index[v];
-            }
+            return vertex_index[v - min_vertex];
         };
 
         // Count total edge occurrences for pre-allocation
@@ -273,8 +254,7 @@ public:
 
         // Build canonical hash from vertex and edge structure
         return build_canonical_hash_dense(current, vertices, min_vertex,
-                                          use_dense_index ? &dense_index : nullptr,
-                                          use_dense_index ? nullptr : &sparse_index,
+                                          vertex_index,
                                           state_edges, edge_vertices, edge_arities);
     }
 
@@ -320,36 +300,20 @@ public:
         const size_t num_vertices = vertices.size();
         const VertexId range = max_vertex - min_vertex + 1;
 
-        // Use dense array for vertex index if range is reasonable
-        const bool use_dense_index = (range <= num_vertices * 4) && (range <= 65536);
-
-        ArenaVector<size_t> dense_index(*arena_);
-        if (use_dense_index) {
-            dense_index.resize(range);
-            for (size_t i = 0; i < range; ++i) {
-                dense_index[i] = SIZE_MAX;
-            }
-            for (size_t i = 0; i < num_vertices; ++i) {
-                dense_index[vertices[i] - min_vertex] = i;
-            }
+        // Always use arena-allocated dense array for O(1) lookup without hash overhead
+        // 1M vertices = 8MB which is acceptable for performance
+        ArenaVector<size_t> vertex_index(*arena_, range);
+        vertex_index.resize(range);
+        for (size_t i = 0; i < range; ++i) {
+            vertex_index[i] = SIZE_MAX;
+        }
+        for (size_t i = 0; i < num_vertices; ++i) {
+            vertex_index[vertices[i] - min_vertex] = i;
         }
 
-        // Fallback sparse index for very sparse vertex IDs
-        std::unordered_map<VertexId, size_t> sparse_index;
-        if (!use_dense_index) {
-            sparse_index.reserve(num_vertices);
-            for (size_t i = 0; i < num_vertices; ++i) {
-                sparse_index[vertices[i]] = i;
-            }
-        }
-
-        // Lambda for vertex lookup
+        // Direct array lookup - no hash overhead
         auto get_vertex_idx = [&](VertexId v) -> size_t {
-            if (use_dense_index) {
-                return dense_index[v - min_vertex];
-            } else {
-                return sparse_index[v];
-            }
+            return vertex_index[v - min_vertex];
         };
 
         // Count total edge occurrences for pre-allocation
@@ -474,8 +438,7 @@ public:
         }
 
         uint64_t hash = build_canonical_hash_dense(current, vertices, min_vertex,
-                                                   use_dense_index ? &dense_index : nullptr,
-                                                   use_dense_index ? nullptr : &sparse_index,
+                                                   vertex_index,
                                                    state_edges, edge_vertices, edge_arities);
 
         return {hash, cache};
@@ -682,6 +645,274 @@ public:
 
         return build_canonical_hash(current, vertices, vertex_index, state_edges,
                                    edge_vertices, edge_arities);
+    }
+
+    // Compute state hash incrementally with cache for children to use
+    // Returns both hash and cache (similar to compute_state_hash_with_cache)
+    template<typename VertexAccessor, typename ArityAccessor>
+    std::pair<uint64_t, VertexHashCache> compute_state_hash_incremental_with_cache(
+        const SparseBitset& state_edges,
+        const VertexHashCache& parent_cache,
+        const EdgeId* removed_edges, uint8_t num_removed,
+        const EdgeId* added_edges, uint8_t num_added,
+        const VertexAccessor& edge_vertices,
+        const ArityAccessor& edge_arities
+    ) const {
+        VertexHashCache cache;
+
+        if (state_edges.empty()) {
+            return {0, cache};
+        }
+
+        // Find affected vertices (those incident to removed or added edges)
+        ArenaVector<VertexId> affected_vertices(*arena_);
+
+        for (uint8_t i = 0; i < num_removed; ++i) {
+            EdgeId eid = removed_edges[i];
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t j = 0; j < arity; ++j) {
+                affected_vertices.push_back(verts[j]);
+            }
+        }
+
+        for (uint8_t i = 0; i < num_added; ++i) {
+            EdgeId eid = added_edges[i];
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t j = 0; j < arity; ++j) {
+                affected_vertices.push_back(verts[j]);
+            }
+        }
+
+        std::sort(affected_vertices.begin(), affected_vertices.end());
+        auto new_end = std::unique(affected_vertices.begin(), affected_vertices.end());
+        affected_vertices.resize(new_end - affected_vertices.begin());
+
+        // If many vertices affected, fall back to full computation
+        if (affected_vertices.size() > parent_cache.count / 2) {
+            return compute_state_hash_with_cache(state_edges, edge_vertices, edge_arities);
+        }
+
+        // Collect all vertices in the new state
+        ArenaVector<VertexId> vertices(*arena_);
+        VertexId max_vertex = 0;
+        VertexId min_vertex = UINT32_MAX;
+
+        state_edges.for_each([&](EdgeId eid) {
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t i = 0; i < arity; ++i) {
+                vertices.push_back(verts[i]);
+                if (verts[i] > max_vertex) max_vertex = verts[i];
+                if (verts[i] < min_vertex) min_vertex = verts[i];
+            }
+        });
+
+        std::sort(vertices.begin(), vertices.end());
+        auto vert_end = std::unique(vertices.begin(), vertices.end());
+        vertices.resize(vert_end - vertices.begin());
+
+        if (vertices.empty()) {
+            return {0, cache};
+        }
+
+        const size_t num_vertices = vertices.size();
+        const VertexId range = max_vertex - min_vertex + 1;
+
+        // Build vertex index (dense)
+        ArenaVector<size_t> vertex_index(*arena_, range);
+        vertex_index.resize(range);
+        for (size_t i = 0; i < range; ++i) {
+            vertex_index[i] = SIZE_MAX;
+        }
+        for (size_t i = 0; i < num_vertices; ++i) {
+            vertex_index[vertices[i] - min_vertex] = i;
+        }
+
+        auto get_vertex_idx = [&](VertexId v) -> size_t {
+            return vertex_index[v - min_vertex];
+        };
+
+        // Mark which vertices are affected
+        ArenaVector<bool> is_affected(*arena_, num_vertices);
+        is_affected.resize(num_vertices);
+        for (size_t i = 0; i < num_vertices; ++i) is_affected[i] = false;
+        for (VertexId v : affected_vertices) {
+            if (v >= min_vertex && v <= max_vertex && vertex_index[v - min_vertex] != SIZE_MAX) {
+                is_affected[vertex_index[v - min_vertex]] = true;
+            }
+        }
+
+        // Count occurrences for adjacency building
+        size_t total_occurrences = 0;
+        state_edges.for_each([&](EdgeId eid) {
+            total_occurrences += edge_arities[eid];
+        });
+
+        // Build flat adjacency structure
+        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(*arena_, total_occurrences);
+        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(*arena_, total_occurrences);
+        ArenaVector<uint32_t> occ_counts(*arena_, num_vertices);
+        occ_counts.resize(num_vertices);
+        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
+
+        state_edges.for_each([&](EdgeId eid) {
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t i = 0; i < arity; ++i) {
+                size_t idx = get_vertex_idx(verts[i]);
+                occ_counts[idx]++;
+            }
+        });
+
+        ArenaVector<uint32_t> occ_offsets(*arena_, num_vertices + 1);
+        occ_offsets.resize(num_vertices + 1);
+        occ_offsets[0] = 0;
+        for (size_t i = 0; i < num_vertices; ++i) {
+            occ_offsets[i + 1] = occ_offsets[i] + occ_counts[i];
+        }
+
+        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
+
+        filtered_occ_data.resize(total_occurrences);
+        vertex_to_edges_data.resize(total_occurrences);
+        state_edges.for_each([&](EdgeId eid) {
+            uint8_t arity = edge_arities[eid];
+            const VertexId* verts = edge_vertices[eid];
+            for (uint8_t i = 0; i < arity; ++i) {
+                size_t idx = get_vertex_idx(verts[i]);
+                size_t pos = occ_offsets[idx] + occ_counts[idx];
+                filtered_occ_data[pos] = {arity, i};
+                vertex_to_edges_data[pos] = {eid, i};
+                occ_counts[idx]++;
+            }
+        });
+
+        for (size_t i = 0; i < num_vertices; ++i) {
+            auto begin = filtered_occ_data.begin() + occ_offsets[i];
+            auto end = filtered_occ_data.begin() + occ_offsets[i + 1];
+            insertion_sort(begin, end);
+        }
+
+        // Initialize hashes - use parent cache for unaffected, compute for affected
+        ArenaVector<uint64_t> current(*arena_, num_vertices);
+        current.resize(num_vertices);
+
+        for (size_t i = 0; i < num_vertices; ++i) {
+            VertexId v = vertices[i];
+
+            if (!is_affected[i]) {
+                uint64_t cached = parent_cache.lookup(v);
+                if (cached != 0) {
+                    current[i] = cached;
+                    continue;
+                }
+            }
+
+            // Compute initial hash for this vertex
+            uint64_t h = FNV_OFFSET;
+            size_t count = occ_offsets[i + 1] - occ_offsets[i];
+            h = fnv_combine(h, count);
+            for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
+                h = fnv_combine(h, filtered_occ_data[j].first);
+                h = fnv_combine(h, filtered_occ_data[j].second);
+            }
+            current[i] = h;
+        }
+
+        // WL refinement with active vertex tracking
+        ArenaVector<uint64_t> next(*arena_, num_vertices);
+        next.resize(num_vertices);
+        ArenaVector<uint64_t> neighbor_hashes(*arena_);
+        size_t iteration = 0;
+
+        ArenaVector<bool> active(*arena_, num_vertices);
+        active.resize(num_vertices);
+        for (size_t i = 0; i < num_vertices; ++i) active[i] = is_affected[i];
+
+        ArenaVector<bool> next_active(*arena_, num_vertices);
+        next_active.resize(num_vertices);
+        for (size_t i = 0; i < num_vertices; ++i) next_active[i] = false;
+
+        size_t num_active = 0;
+        for (size_t i = 0; i < num_vertices; ++i) {
+            if (active[i]) ++num_active;
+        }
+
+        while (num_active > 0 && iteration < MAX_REFINEMENT_DEPTH) {
+            ++iteration;
+            size_t next_num_active = 0;
+
+            for (size_t i = 0; i < num_vertices; ++i) {
+                if (!active[i]) {
+                    next[i] = current[i];
+                    continue;
+                }
+
+                uint64_t h = current[i];
+                neighbor_hashes.clear();
+
+                for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
+                    EdgeId eid = vertex_to_edges_data[j].first;
+                    uint8_t my_pos = vertex_to_edges_data[j].second;
+                    uint8_t arity = edge_arities[eid];
+                    const VertexId* verts = edge_vertices[eid];
+
+                    for (uint8_t k = 0; k < arity; ++k) {
+                        if (k != my_pos) {
+                            size_t neighbor_idx = get_vertex_idx(verts[k]);
+                            neighbor_hashes.push_back(fnv_combine(current[neighbor_idx], k));
+                        }
+                    }
+                }
+
+                insertion_sort(neighbor_hashes.begin(), neighbor_hashes.end());
+                for (uint64_t nh : neighbor_hashes) {
+                    h = fnv_combine(h, nh);
+                }
+
+                next[i] = h;
+
+                if (h != current[i]) {
+                    for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
+                        EdgeId eid = vertex_to_edges_data[j].first;
+                        uint8_t my_pos = vertex_to_edges_data[j].second;
+                        uint8_t arity = edge_arities[eid];
+                        const VertexId* verts = edge_vertices[eid];
+                        for (uint8_t k = 0; k < arity; ++k) {
+                            if (k != my_pos) {
+                                size_t neighbor_idx = get_vertex_idx(verts[k]);
+                                if (!next_active[neighbor_idx]) {
+                                    next_active[neighbor_idx] = true;
+                                    ++next_num_active;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            std::swap(current, next);
+            std::swap(active, next_active);
+            for (size_t i = 0; i < num_vertices; ++i) next_active[i] = false;
+            num_active = next_num_active;
+        }
+
+        // Build cache for children
+        cache.count = static_cast<uint32_t>(num_vertices);
+        cache.vertices = arena_->allocate_array<VertexId>(cache.count);
+        cache.hashes = arena_->allocate_array<uint64_t>(cache.count);
+
+        for (size_t i = 0; i < num_vertices; ++i) {
+            cache.vertices[i] = vertices[i];
+            cache.hashes[i] = current[i];
+        }
+
+        uint64_t hash = build_canonical_hash_dense(current, vertices, min_vertex, vertex_index,
+                                                    state_edges, edge_vertices, edge_arities);
+
+        return {hash, cache};
     }
 
     // =========================================================================
@@ -930,25 +1161,20 @@ private:
         return hash;
     }
 
-    // Arena-based version for optimized compute_state_hash with dense/sparse index
+    // Arena-based version for optimized compute_state_hash with dense index
     template<typename VertexAccessor, typename ArityAccessor>
     uint64_t build_canonical_hash_dense(
         const ArenaVector<uint64_t>& vertex_hashes,
         const ArenaVector<VertexId>& vertices,
         VertexId min_vertex,
-        const ArenaVector<size_t>* dense_index,  // nullptr if using sparse
-        const std::unordered_map<VertexId, size_t>* sparse_index,  // nullptr if using dense
+        const ArenaVector<size_t>& vertex_index,
         const SparseBitset& state_edges,
         const VertexAccessor& edge_vertices,
         const ArityAccessor& edge_arities
     ) const {
-        // Lambda for vertex lookup
+        // Direct array lookup - no hash overhead
         auto get_vertex_idx = [&](VertexId v) -> size_t {
-            if (dense_index) {
-                return (*dense_index)[v - min_vertex];
-            } else {
-                return sparse_index->find(v)->second;
-            }
+            return vertex_index[v - min_vertex];
         };
 
         // Sort vertices by hash for canonical ordering

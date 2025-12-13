@@ -333,7 +333,7 @@ class ParallelEvolutionEngine {
     bool batched_matching_{false};  // Disabled to test eager single-threaded
 
     // Validation mode: compare forwarded+delta vs full matching
-    bool validate_match_forwarding_{true};  // Enabled for debugging
+    bool validate_match_forwarding_{false};  // Enabled for debugging
     std::atomic<size_t> validation_mismatches_{0};
 
     // Genesis events: create synthetic events for initial states that produce

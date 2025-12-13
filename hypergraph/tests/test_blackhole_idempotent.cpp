@@ -104,6 +104,7 @@ protected:
             case v2::HashStrategy::UniquenessTree: return "UT";
             case v2::HashStrategy::IncrementalUniquenessTree: return "UT-Inc";
             case v2::HashStrategy::WL: return "WL";
+            case v2::HashStrategy::IncrementalWL: return "WL-Inc";
             default: return "?";
         }
     }
@@ -138,7 +139,8 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
     std::vector<v2::HashStrategy> strategies = {
         v2::HashStrategy::UniquenessTree,
         v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL
+        v2::HashStrategy::WL,
+        v2::HashStrategy::IncrementalWL
     };
     std::vector<v2::EventCanonicalizationMode> modes = {
         v2::EventCanonicalizationMode::ByState,
@@ -232,7 +234,8 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
     std::vector<v2::HashStrategy> strategies = {
         v2::HashStrategy::UniquenessTree,
         v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL
+        v2::HashStrategy::WL,
+        v2::HashStrategy::IncrementalWL
     };
     std::vector<v2::EventCanonicalizationMode> modes = {
         v2::EventCanonicalizationMode::ByState,
@@ -331,7 +334,8 @@ TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
     std::vector<v2::HashStrategy> strategies = {
         v2::HashStrategy::UniquenessTree,
         v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL
+        v2::HashStrategy::WL,
+        v2::HashStrategy::IncrementalWL
     };
 
     std::cout << "\n=== Detailed Timing: 100 edges, black hole rule ===\n";
