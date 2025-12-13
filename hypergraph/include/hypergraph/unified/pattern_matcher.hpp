@@ -114,6 +114,9 @@ struct PatternMatchingContext {
     // Pre-computed pattern signatures (optimization)
     EdgeSignature pattern_sigs[MAX_PATTERN_EDGES];
 
+    // Pre-computed compatible data signatures per pattern edge (avoids Bell enumeration)
+    CompatibleSignatureCache sig_caches[MAX_PATTERN_EDGES];
+
     // Coordination
     std::atomic<bool>* should_terminate;
     std::atomic<size_t>* matches_found;
@@ -153,9 +156,10 @@ struct PatternMatchingContext {
         , on_match(callback)
         , match_dedup(nullptr)
     {
-        // Pre-compute pattern signatures
+        // Pre-compute pattern signatures and compatible signature caches
         for (uint8_t i = 0; i < r->num_lhs_edges; ++i) {
             pattern_sigs[i] = r->lhs[i].signature();
+            sig_caches[i] = CompatibleSignatureCache::from_pattern(pattern_sigs[i]);
         }
     }
 };
@@ -168,6 +172,7 @@ template<typename EdgeAccessor, typename SignatureAccessor, typename CandidateCa
 void generate_candidates(
     const PatternEdge& pattern_edge,
     const EdgeSignature& pattern_sig,
+    const CompatibleSignatureCache& sig_cache,  // Pre-computed compatible signatures
     const VariableBinding& binding,
     const SparseBitset& state_edges,
     const SignatureIndex& sig_index,
@@ -191,14 +196,14 @@ void generate_candidates(
     }
 
     if (num_bound == 0) {
-        // No bound variables: scan signature partition
-        sig_index.for_each_candidate(pattern_sig, state_edges, [&](EdgeId eid) {
+        // No bound variables: scan signature partition using cached signatures
+        sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
             on_candidate(eid);
         });
     } else {
         // Have bound variables: use inverted index intersection
         inv_index.for_each_edge_containing_all(
-            bound_vertices, num_bound, state_edges,
+            bound_vertices, num_bound, state_edges, get_edge,
             [&](EdgeId eid) {
                 // Check signature compatibility using cached signature
                 const EdgeSignature& data_sig = get_signature(eid);
@@ -278,10 +283,11 @@ void expand_match(
 
     const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_idx];
     const EdgeSignature& pattern_sig = ctx.pattern_sigs[pattern_idx];
+    const CompatibleSignatureCache& sig_cache = ctx.sig_caches[pattern_idx];
 
     // Generate candidates
     generate_candidates(
-        pattern_edge, pattern_sig,
+        pattern_edge, pattern_sig, sig_cache,
         partial.binding, *ctx.state_edges,
         *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
         [&](EdgeId candidate) {
@@ -323,10 +329,11 @@ void scan_pattern(
     // Start with first pattern edge (could optimize with matching order)
     const PatternEdge& first_edge = ctx.rule->lhs[0];
     const EdgeSignature& first_sig = ctx.pattern_sigs[0];
+    const CompatibleSignatureCache& first_cache = ctx.sig_caches[0];
 
     // Generate candidates for first edge
     generate_candidates(
-        first_edge, first_sig,
+        first_edge, first_sig, first_cache,
         VariableBinding{}, *ctx.state_edges,
         *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
         [&](EdgeId candidate) {

@@ -110,6 +110,19 @@ public:
         );
     }
 
+    // Get candidate edges using pre-computed compatible signatures (faster)
+    // Use this when the same pattern signature is queried repeatedly
+    template<typename Visitor>
+    void for_each_candidate_cached(
+        const CompatibleSignatureCache& sig_cache,
+        const SparseBitset& state_edges,
+        Visitor&& visit
+    ) const {
+        sig_cache.for_each([&](const EdgeSignature& data_sig) {
+            for_each_edge_with_signature(data_sig, state_edges, visit);
+        });
+    }
+
     // Get candidates into array (for use with stack arrays)
     uint32_t get_candidates(
         const EdgeSignature& pattern_sig,
@@ -250,50 +263,40 @@ public:
 
     // Intersect: edges containing ALL specified vertices, filtered by state
     // This is the key operation for candidate generation with bound variables
-    template<typename Visitor>
+    //
+    // EdgeAccessor: functor returning edge data with .vertices and .arity members
+    // This allows O(arity) vertex containment check instead of O(edges_per_vertex) list scan
+    template<typename EdgeAccessor, typename Visitor>
     void for_each_edge_containing_all(
         const VertexId* vertices,
         uint8_t count,
         const SparseBitset& state_edges,
+        const EdgeAccessor& get_edge,
         Visitor&& visit
     ) const {
         if (count == 0) return;
 
-        // Find vertex with smallest edge list (for efficiency)
-        VertexId smallest_v = vertices[0];
-        uint32_t smallest_count = UINT32_MAX;
+        // Just use first vertex's list - the edge vertex check is O(arity) anyway
+        // No need to find smallest list since we're not doing O(n) membership scans
+        VertexId first_v = vertices[0];
+        auto result = vertex_to_edges_.lookup(first_v);
+        if (!result.has_value()) return;
 
-        for (uint8_t i = 0; i < count; ++i) {
-            VertexId v = vertices[i];
-            auto result = vertex_to_edges_.lookup(v);
-            if (!result.has_value()) return;  // No edges possible
-
-            uint32_t v_count = 0;
-            result.value()->for_each([&](EdgeId) { v_count++; });
-
-            if (v_count < smallest_count) {
-                smallest_count = v_count;
-                smallest_v = v;
-            }
-        }
-
-        // Iterate through smallest list, filter by other vertices
-        for_each_edge(smallest_v, state_edges, [&](EdgeId eid) {
-            // Check if edge contains all other vertices
+        // Iterate through first vertex's edge list
+        for_each_edge(first_v, state_edges, [&](EdgeId eid) {
+            // Check if edge contains all required vertices by examining edge data directly
+            // This is O(arity * count) instead of O(edges_per_vertex * count)
+            const auto& edge = get_edge(eid);
             bool contains_all = true;
-            for (uint8_t i = 0; i < count && contains_all; ++i) {
-                if (vertices[i] == smallest_v) continue;
 
-                // Check if this vertex's list contains eid
-                auto result = vertex_to_edges_.lookup(vertices[i]);
-                if (!result.has_value()) {
-                    contains_all = false;
-                    continue;
-                }
+            for (uint8_t i = 1; i < count && contains_all; ++i) {  // Skip first, already in list
+                VertexId required_v = vertices[i];
                 bool found = false;
-                result.value()->for_each([&](EdgeId other_eid) {
-                    if (other_eid == eid) found = true;
-                });
+                for (uint8_t j = 0; j < edge.arity && !found; ++j) {
+                    if (edge.vertices[j] == required_v) {
+                        found = true;
+                    }
+                }
                 if (!found) contains_all = false;
             }
 

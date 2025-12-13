@@ -317,4 +317,48 @@ inline uint32_t count_compatible_signatures(const EdgeSignature& pattern_sig) {
     return num_distinct < 16 ? bell[num_distinct] : UINT32_MAX;
 }
 
+// =============================================================================
+// CompatibleSignatureCache
+// =============================================================================
+// Pre-computed cache of compatible data signatures for a pattern signature.
+// This avoids repeated Bell number enumeration during matching.
+//
+// For a pattern like [0, 1] (2 distinct vars), stores the 2 compatible sigs:
+// [0, 0] and [0, 1]. These are computed once at rule initialization.
+
+struct CompatibleSignatureCache {
+    static constexpr uint8_t MAX_CACHED_SIGS = 64;  // Bell(5)=52, Bell(6)=203
+
+    EdgeSignature signatures[MAX_CACHED_SIGS];
+    uint8_t count = 0;
+
+    CompatibleSignatureCache() = default;
+
+    // Build cache from pattern signature
+    static CompatibleSignatureCache from_pattern(const EdgeSignature& pattern_sig) {
+        CompatibleSignatureCache cache;
+
+        enumerate_compatible_signatures(
+            pattern_sig,
+            [](const EdgeSignature& sig, void* user_data) {
+                auto* c = static_cast<CompatibleSignatureCache*>(user_data);
+                if (c->count < MAX_CACHED_SIGS) {
+                    c->signatures[c->count++] = sig;
+                }
+            },
+            &cache
+        );
+
+        return cache;
+    }
+
+    // Iterate over cached signatures
+    template<typename Visitor>
+    void for_each(Visitor&& visit) const {
+        for (uint8_t i = 0; i < count; ++i) {
+            visit(signatures[i]);
+        }
+    }
+};
+
 }  // namespace hypergraph::unified

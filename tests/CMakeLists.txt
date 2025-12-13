@@ -139,6 +139,7 @@ add_executable(unified_tests
     ../hypergraph/tests/test_match_forwarding_debug.cpp
     ../hypergraph/tests/test_v1_unified_comprehensive.cpp
     ../hypergraph/tests/test_unified_event_canonicalization.cpp
+    test_grid_performance.cpp
 )
 
 # Link against all required libraries
