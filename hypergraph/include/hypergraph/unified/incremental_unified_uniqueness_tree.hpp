@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
@@ -50,6 +51,12 @@ public:
 
     explicit IncrementalUnifiedUniquenessTree(ConcurrentHeterogeneousArena* arena)
         : arena_(arena) {}
+
+    // Abort flag for early termination of long-running hash computations
+    void set_abort_flag(std::atomic<bool>* flag) { abort_flag_ = flag; }
+    bool should_abort() const {
+        return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
+    }
 
     // =========================================================================
     // Edge Registration (called when edges are added to unified hypergraph)
@@ -129,38 +136,21 @@ public:
         }
 
         const size_t num_vertices = vertices.size();
-        const VertexId range = max_vertex - min_vertex + 1;
 
-        // Use dense array for vertex index if range is reasonable
-        const bool use_dense_index = (range <= num_vertices * 4) && (range <= 65536);
+        // Always use sparse index for simplicity and predictable behavior
+        // Dense index optimization was removed as an unprincipled heuristic
+        const bool use_dense_index = false;
+        ArenaVector<size_t> dense_index(*arena_);  // Empty, unused
 
-        ArenaVector<size_t> dense_index(*arena_);
-        if (use_dense_index) {
-            dense_index.resize(range);
-            for (size_t i = 0; i < range; ++i) {
-                dense_index[i] = SIZE_MAX;
-            }
-            for (size_t i = 0; i < num_vertices; ++i) {
-                dense_index[vertices[i] - min_vertex] = i;
-            }
-        }
-
-        // Fallback sparse index
         std::unordered_map<VertexId, size_t> sparse_index;
-        if (!use_dense_index) {
-            sparse_index.reserve(num_vertices);
-            for (size_t i = 0; i < num_vertices; ++i) {
-                sparse_index[vertices[i]] = i;
-            }
+        sparse_index.reserve(num_vertices);
+        for (size_t i = 0; i < num_vertices; ++i) {
+            sparse_index[vertices[i]] = i;
         }
 
         // Lambda for vertex lookup
         auto get_vertex_idx = [&](VertexId v) -> size_t {
-            if (use_dense_index) {
-                return dense_index[v - min_vertex];
-            } else {
-                return sparse_index[v];
-            }
+            return sparse_index[v];
         };
 
         // Count total edge occurrences for pre-allocation
@@ -227,6 +217,7 @@ public:
         buffers.init_if_needed(*arena_, MAX_TREE_DEPTH);
 
         for (size_t vi = 0; vi < num_vertices; ++vi) {
+            if (should_abort()) throw AbortedException{};
             VertexId root = vertices[vi];
             SubtreeBloomFilter filter;
             filter.clear();
@@ -344,6 +335,7 @@ public:
         size_t recomputed = 0;
 
         for (VertexId root : vertices) {
+            if (should_abort()) throw AbortedException{};
             auto [tree_hash, is_dirty] = compute_tree_hash_incremental_no_adjacency(
                 root, child_edges, edge_vertices, edge_arities,
                 directly_affected, parent_cache, child_memo);
@@ -433,6 +425,7 @@ public:
         SparseBitset visited;
 
         for (VertexId root : vertices) {
+            if (should_abort()) throw AbortedException{};
             SubtreeBloomFilter filter;
             filter.clear();
 
@@ -513,6 +506,7 @@ public:
         size_t recomputed = 0;
 
         for (VertexId root : vertices) {
+            if (should_abort()) throw AbortedException{};
             auto [tree_hash, is_dirty] = compute_tree_hash_incremental_external(
                 root, child_edges, edge_vertices, edge_arities,
                 adjacency_provider, directly_affected, parent_cache, child_memo);
@@ -1043,6 +1037,9 @@ public:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -1244,6 +1241,7 @@ public:
 
 private:
     ConcurrentHeterogeneousArena* arena_;
+    std::atomic<bool>* abort_flag_{nullptr};
 
     // Per-vertex edge occurrences
     SegmentedArray<LockFreeList<EdgeOccurrence>> vertex_occurrences_;
@@ -1357,6 +1355,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -1711,6 +1712,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -1934,6 +1938,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -2196,6 +2203,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -2405,7 +2415,7 @@ private:
         SubtreeBloomFilter& bloom_filter,  // OUTPUT: populated with subtree vertices
         const ArenaVector<std::pair<EdgeId, uint8_t>>& adj_data,
         const ArenaVector<uint32_t>& adj_offsets,
-        const SparseBitset& state_edges,
+        [[maybe_unused]] const SparseBitset& state_edges,
         const EdgeAccessor& edge_vertices,
         const ArityAccessor& edge_arities
     ) {
@@ -2438,6 +2448,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 
@@ -2671,6 +2684,9 @@ private:
         uint64_t result = 0;
 
         while (!stack.empty()) {
+            // Check for abort periodically
+            if (should_abort()) throw AbortedException{};
+
             DFSFrame& frame = stack[stack.size() - 1];
             uint32_t level = frame.level;
 

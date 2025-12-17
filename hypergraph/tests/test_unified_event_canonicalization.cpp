@@ -48,7 +48,7 @@ protected:
         size_t steps
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::ByStateAndEdges);
+        hg->set_event_signature_keys(v2::EVENT_SIG_AUTOMATIC);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);  // single thread for determinism
 
         for (const auto& rule : rules) {
@@ -376,13 +376,13 @@ protected:
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps,
         v2::HashStrategy strategy,
-        v2::EventCanonicalizationMode mode
+        v2::EventSignatureKeys mode
     ) {
         auto start = std::chrono::high_resolution_clock::now();
 
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
         hg->set_hash_strategy(strategy);
-        hg->set_event_canonicalization_mode(mode);
+        hg->set_event_signature_keys(mode);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);
 
         for (const auto& rule : rules) {
@@ -402,12 +402,10 @@ protected:
         };
     }
 
-    static const char* mode_name(v2::EventCanonicalizationMode mode) {
-        switch (mode) {
-            case v2::EventCanonicalizationMode::None: return "None";
-            case v2::EventCanonicalizationMode::ByState: return "ByState";
-            case v2::EventCanonicalizationMode::ByStateAndEdges: return "ByStateAndEdges";
-        }
+    static const char* mode_name(v2::EventSignatureKeys mode) {
+        if (mode == v2::EVENT_SIG_NONE) return "None";
+        if (mode == v2::EVENT_SIG_FULL) return "ByState";
+        if (mode == v2::EVENT_SIG_AUTOMATIC) return "ByStateAndEdges";
         return "Unknown";
     }
 
@@ -444,9 +442,9 @@ protected:
             v2::HashStrategy::IncrementalWL
         };
 
-        for (auto mode : {v2::EventCanonicalizationMode::None,
-                          v2::EventCanonicalizationMode::ByState,
-                          v2::EventCanonicalizationMode::ByStateAndEdges}) {
+        for (auto mode : {v2::EVENT_SIG_NONE,
+                          v2::EVENT_SIG_FULL,
+                          v2::EVENT_SIG_AUTOMATIC}) {
 
             EvolutionResult results[4];
             for (size_t i = 0; i < strategies.size(); ++i) {
@@ -505,7 +503,7 @@ protected:
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
         hg->set_hash_strategy(v2::HashStrategy::IncrementalUniquenessTree);
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::ByState);
+        hg->set_event_signature_keys(v2::EVENT_SIG_FULL);
         hg->reset_incremental_tree_stats();
 
         v2::ParallelEvolutionEngine engine(hg.get(), 1);

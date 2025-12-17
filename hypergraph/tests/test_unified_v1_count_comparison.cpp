@@ -69,8 +69,9 @@ protected:
         size_t steps
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        // Disable event canonicalization to match v1's default behavior (canonicalize_events=false)
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+        // Match v1's default behavior: canonicalize_states=true, canonicalize_events=false
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 4);
 
         for (const auto& rule : rules) {
@@ -286,7 +287,9 @@ TEST_F(V1_Unified_CountComparisonTest, DebugCanonicalHashes_Step3) {
         .build();
 
     auto hg = std::make_unique<v2::UnifiedHypergraph>();
-    hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+    // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+    hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+    hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
     v2::ParallelEvolutionEngine engine(hg.get(), 4);
     engine.add_rule(v2_rule);
 
@@ -371,7 +374,9 @@ TEST_F(V1_Unified_CountComparisonTest, DebugStep4Events) {
         .build();
 
     auto hg = std::make_unique<v2::UnifiedHypergraph>();
-    hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+    // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+    hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+    hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
     v2::ParallelEvolutionEngine engine(hg.get(), 4);
     engine.add_rule(v2_rule);
 
@@ -464,7 +469,9 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_SimpleRule) {
         // unified - always run
         auto v2_start = std::chrono::high_resolution_clock::now();
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // use all threads
         engine.add_rule(v2_rule);
         engine.evolve({{0, 1}}, steps);
@@ -538,7 +545,9 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_TwoEdgeRule) {
         // unified
         auto v2_start = std::chrono::high_resolution_clock::now();
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // use all threads
         engine.add_rule(v2_rule);
         engine.evolve({{0, 1}, {1, 2}}, steps);
@@ -612,7 +621,9 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_TwoEdgeRule2) {
         // unified
         auto v2_start = std::chrono::high_resolution_clock::now();
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // use all threads
         engine.add_rule(v2_rule);
         engine.evolve({{0, 0}, {0, 0}}, steps);
@@ -687,7 +698,9 @@ TEST_F(V1_Unified_CountComparisonTest, ScalingComparison_LargerInitialState) {
         // unified
         auto v2_start = std::chrono::high_resolution_clock::now();
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
-        hg->set_event_canonicalization_mode(v2::EventCanonicalizationMode::None);
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // use all threads
         engine.add_rule(v2_rule);
         engine.evolve(v2_initial, steps);

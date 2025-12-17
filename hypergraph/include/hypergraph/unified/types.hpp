@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 
 #include "bitset.hpp"
 
@@ -23,6 +24,16 @@ using EquivClassId = uint32_t;
 using RuleIndex = uint16_t;
 
 constexpr uint32_t INVALID_ID = UINT32_MAX;
+
+// =============================================================================
+// AbortedException
+// =============================================================================
+// Thrown when a long-running operation detects abort request.
+// Caught by job system's exception handler, which sets ErrorType::Exception.
+
+struct AbortedException : std::exception {
+    const char* what() const noexcept override { return "Operation aborted"; }
+};
 
 // =============================================================================
 // VariableBinding
@@ -153,11 +164,13 @@ struct Event {
     uint8_t num_consumed;
     uint8_t num_produced;
     VariableBinding binding;
+    EventId canonical_event_id;  // Points to canonical event if this is a duplicate, INVALID_ID if this is canonical
 
     Event(EventId id_, StateId input, StateId output, RuleIndex rule,
           EdgeId* consumed, uint8_t n_consumed,
           EdgeId* produced, uint8_t n_produced,
-          const VariableBinding& bind)
+          const VariableBinding& bind,
+          EventId canonical_id = INVALID_ID)
         : id(id_)
         , input_state(input)
         , output_state(output)
@@ -167,6 +180,7 @@ struct Event {
         , num_consumed(n_consumed)
         , num_produced(n_produced)
         , binding(bind)
+        , canonical_event_id(canonical_id)
     {}
 
     // Default constructor for array allocation
@@ -180,7 +194,11 @@ struct Event {
         , num_consumed(0)
         , num_produced(0)
         , binding()
+        , canonical_event_id(INVALID_ID)
     {}
+
+    // Check if this event is canonical (not a duplicate)
+    bool is_canonical() const { return canonical_event_id == INVALID_ID; }
 };
 
 // =============================================================================
@@ -197,14 +215,16 @@ struct State {
     uint32_t step;
     uint64_t canonical_hash;  // Computed via uniqueness tree
     EventId parent_event;     // Event that created this, INVALID_ID for initial
+    StateId canonical_id;     // Canonical representative (cached, set on creation)
 
     State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
-          uint64_t hash, EventId parent)
+          uint64_t hash, EventId parent, StateId canonical = INVALID_ID)
         : id(id_)
         , edges(std::move(edge_set))
         , step(step_)
         , canonical_hash(hash)
         , parent_event(parent)
+        , canonical_id(canonical == INVALID_ID ? id_ : canonical)
     {}
 
     // Default constructor
@@ -214,6 +234,7 @@ struct State {
         , step(0)
         , canonical_hash(0)
         , parent_event(INVALID_ID)
+        , canonical_id(INVALID_ID)
     {}
 
     // Move constructor
@@ -223,6 +244,7 @@ struct State {
         , step(other.step)
         , canonical_hash(other.canonical_hash)
         , parent_event(other.parent_event)
+        , canonical_id(other.canonical_id)
     {
         other.id = INVALID_ID;
     }
@@ -235,6 +257,7 @@ struct State {
             step = other.step;
             canonical_hash = other.canonical_hash;
             parent_event = other.parent_event;
+            canonical_id = other.canonical_id;
             other.id = INVALID_ID;
         }
         return *this;
@@ -359,18 +382,71 @@ struct StateBranchialInfo {
 };
 
 // =============================================================================
-// EventCanonicalizationMode: Controls how events are deduplicated
+// Canonicalization vs Exploration Deduplication
+// =============================================================================
+// There are THREE orthogonal modes that control multiway evolution behavior:
+//
+// 1. StateCanonicalizationMode (UnifiedHypergraph):
+//    - Controls state BOOKKEEPING - which states are considered equivalent
+//    - None: Pure tree mode, each state is unique (no equivalence checking)
+//    - Automatic: Content hash (fast, not isomorphism-invariant)
+//    - Full: Isomorphism-invariant hash (WL/UT)
+//    - Affects: num_canonical_states(), get_canonical_state(), was_new_state
+//
+// 2. EventSignatureKeys (UnifiedHypergraph):
+//    - Controls event BOOKKEEPING - which events are considered equivalent
+//    - Affects: canonical_event_id, event multiplicity counting
+//    - Independent of state mode (always uses isomorphism hashes internally)
+//
+// 3. explore_from_canonical_states_only (ParallelEvolutionEngine):
+//    - Controls EXPLORATION - which states to explore from
+//    - false: Explore all states (default multiway behavior)
+//    - true: Only explore from first canonical representative (deduplication)
+//    - Requires StateCanonicalizationMode::Full to have any effect
+//    - States/events are still created, just MATCH tasks are not spawned
+//
+// Common configurations:
+// - Pure tree: State=None, Event=None, Explore=false
+// - Full bookkeeping: State=Full, Event=Full, Explore=false
+// - Exploration dedup: State=Full, Event=Full, Explore=true
 // =============================================================================
 
-enum class EventCanonicalizationMode {
-    None,              // No event deduplication - all events created
-    ByState,           // Deduplicate by (canonical_input, canonical_output) only
-    ByStateAndEdges    // Deduplicate by canonical states + edge correspondence
+// =============================================================================
+// EventSignatureKeys: Bitflags controlling event equivalence
+// =============================================================================
+// Events with identical signatures are considered equivalent and deduplicated.
+// Corresponds to Multicomputation's CanonicalEventFunction key selection.
+// When 0 (None), no event canonicalization occurs.
+
+enum EventSignatureKey : uint8_t {
+    EventKey_InputState     = 1 << 0,  // Canonical input state ID
+    EventKey_OutputState    = 1 << 1,  // Canonical output state ID
+    EventKey_Step           = 1 << 2,  // Evolution step number
+    EventKey_Rule           = 1 << 3,  // Rule index
+    EventKey_ConsumedEdges  = 1 << 4,  // Canonical positions of consumed edges
+    EventKey_ProducedEdges  = 1 << 5,  // Canonical positions of produced edges
 };
 
-// Note on naming correspondence with v1/Wolfram multicomputation library:
-// - v1 "Full mode" = our ByState (simpler, state IDs only)
-// - v1 "Automatic mode" = our ByStateAndEdges (includes edge positions)
+using EventSignatureKeys = uint8_t;
+
+// Presets matching Multicomputation's CanonicalEventFunction modes
+constexpr EventSignatureKeys EVENT_SIG_NONE = 0;
+constexpr EventSignatureKeys EVENT_SIG_FULL =
+    EventKey_InputState | EventKey_OutputState;
+constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
+    EventKey_InputState | EventKey_OutputState | EventKey_Step |
+    EventKey_ConsumedEdges | EventKey_ProducedEdges;
+
+// =============================================================================
+// StateCanonicalizationMode: Controls state canonicalization/deduplication
+// =============================================================================
+// Corresponds to Multicomputation's CanonicalStateFunction modes.
+
+enum class StateCanonicalizationMode : uint8_t {
+    None,       // Tree mode: no deduplication, each state is unique
+    Automatic,  // Content-ordered hash: hash(edge_contents) - fast but not isomorphism-invariant
+    Full        // Isomorphism-invariant hash: WL/UT - detects isomorphic states
+};
 
 // =============================================================================
 // EdgeOccurrence: Position of a vertex within an edge
@@ -508,10 +584,29 @@ struct EdgeCorrespondence {
 constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
 constexpr uint64_t FNV_PRIME = 0x100000001b3ULL;
 
+// Mix a raw integer value for better avalanche (MurmurHash3 finalizer)
+// Use this when hashing small raw integers like vertex IDs
+inline uint64_t mix64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+// Combine a pre-hashed value into an accumulator (FNV-1a style)
+// Use this when the value is already well-distributed (e.g., another hash)
 inline uint64_t fnv_hash(uint64_t h, uint64_t value) {
     h ^= value;
     h *= FNV_PRIME;
     return h;
+}
+
+// Combine a raw integer value with mixing for better avalanche
+// Use this when the value is a small raw integer (e.g., vertex ID)
+inline uint64_t fnv_hash_raw(uint64_t h, uint64_t raw_value) {
+    return fnv_hash(h, mix64(raw_value));
 }
 
 struct EventSignature {
@@ -539,13 +634,20 @@ struct EventSignature {
 //
 // Also stores a pointer to cached adjacency (arena-allocated) to avoid
 // rebuilding adjacency for each child state.
+//
+// Uses atomic pointer for thread-safe initialization without torn writes.
 
-struct StateIncrementalCache {
+struct StateIncrementalCacheData {
     VertexHashCache vertex_cache;
     void* adjacency_ptr;  // Pointer to arena-allocated adjacency map (type-erased)
-    std::atomic<bool> valid;  // Whether cache has been computed (atomic for thread-safety)
 
-    StateIncrementalCache() : vertex_cache(), adjacency_ptr(nullptr), valid(false) {}
+    StateIncrementalCacheData() : vertex_cache(), adjacency_ptr(nullptr) {}
+};
+
+struct StateIncrementalCache {
+    std::atomic<StateIncrementalCacheData*> data_ptr{nullptr};
+
+    StateIncrementalCache() = default;
 };
 
 }  // namespace hypergraph::unified

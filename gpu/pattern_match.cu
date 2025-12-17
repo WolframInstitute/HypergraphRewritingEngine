@@ -630,7 +630,6 @@ __global__ void count_matches_kernel(
 
     StateId sid = states[tid];
     const DeviceState* state = state_pool.states + sid;
-    const uint64_t* bitmap = state_pool.all_bitmaps + sid * BITMAP_WORDS;
 
     uint32_t count = 0;
 

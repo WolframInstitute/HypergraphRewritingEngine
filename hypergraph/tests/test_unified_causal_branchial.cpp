@@ -593,202 +593,149 @@ TEST(Unified_UniquenessTree, CanonicalInfo_VertexClasses) {
 }
 
 // =============================================================================
-// Level 2 Edge Correspondence Tests
+// Event Canonicalization with Edge Correspondence Tests
 // =============================================================================
+// These tests verify that event canonicalization correctly identifies equivalent
+// events using on-the-fly edge correspondence computation.
 
-TEST(Unified_Level2, EdgeCorrespondence_IsomorphicStates) {
+TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
+    // Test that events from isomorphic states consuming corresponding edges
+    // are identified as the same canonical event.
     UnifiedHypergraph hg;
-    hg.enable_level2();
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);  // Enable state canonicalization
+    hg.set_event_signature_keys(EVENT_SIG_FULL);  // Enable full event canonicalization
 
-    // Create first triangle: vertices 0, 1, 2
+    // Create first state: single edge {0, 1}
     VertexId v0 = hg.alloc_vertex();
     VertexId v1 = hg.alloc_vertex();
-    VertexId v2 = hg.alloc_vertex();
-
     EdgeId e0 = hg.create_edge({v0, v1});
-    EdgeId e1 = hg.create_edge({v1, v2});
-    EdgeId e2 = hg.create_edge({v2, v0});
 
     SparseBitset state1_edges;
     state1_edges.set(e0, hg.arena());
-    state1_edges.set(e1, hg.arena());
-    state1_edges.set(e2, hg.arena());
-
     uint64_t hash1 = hg.compute_canonical_hash(state1_edges);
 
-    // Create state 1
-    auto [state1, raw1, was_new1] = hg.create_or_get_canonical_state(
+    auto [canonical1, raw1, was_new1] = hg.create_or_get_canonical_state(
         std::move(state1_edges), hash1, 0, INVALID_ID);
     EXPECT_TRUE(was_new1);
 
-    // Create second triangle: vertices 3, 4, 5 (isomorphic to first)
-    VertexId v3 = hg.alloc_vertex();
-    VertexId v4 = hg.alloc_vertex();
-    VertexId v5 = hg.alloc_vertex();
-
-    EdgeId e3 = hg.create_edge({v3, v4});
-    EdgeId e4 = hg.create_edge({v4, v5});
-    EdgeId e5 = hg.create_edge({v5, v3});
-
-    SparseBitset state2_edges;
-    state2_edges.set(e3, hg.arena());
-    state2_edges.set(e4, hg.arena());
-    state2_edges.set(e5, hg.arena());
-
-    uint64_t hash2 = hg.compute_canonical_hash(state2_edges);
-    EXPECT_EQ(hash1, hash2);  // Should be isomorphic
-
-    // Try to create state 2 - should detect duplicate and compute correspondence
-    auto [state2, raw2, was_new2] = hg.create_or_get_canonical_state(
-        std::move(state2_edges), hash2, 0, INVALID_ID);
-    EXPECT_FALSE(was_new2);  // Should find existing state
-    EXPECT_EQ(state2, state1);  // Should return existing canonical state
-
-    // Check that edges are now in equivalence classes
-    // e0 and e3 should correspond (both are first edge of triangle)
-    // e1 and e4 should correspond (both are second edge)
-    // e2 and e5 should correspond (both are third edge closing triangle)
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e0, e3));
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e1, e4));
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e2, e5));
-
-    // Edges from different positions should NOT be equivalent
-    EXPECT_FALSE(hg.edge_equiv_manager().are_equivalent(e0, e4));
-    EXPECT_FALSE(hg.edge_equiv_manager().are_equivalent(e1, e5));
-}
-
-TEST(Unified_Level2, EdgeCorrespondence_Disabled) {
-    UnifiedHypergraph hg;
-    // Level 2 disabled by default
-
-    // Create first triangle
-    VertexId v0 = hg.alloc_vertex();
-    VertexId v1 = hg.alloc_vertex();
+    // Create second state: isomorphic single edge {2, 3}
     VertexId v2 = hg.alloc_vertex();
-
-    EdgeId e0 = hg.create_edge({v0, v1});
-    EdgeId e1 = hg.create_edge({v1, v2});
-    EdgeId e2 = hg.create_edge({v2, v0});
-
-    SparseBitset state1_edges;
-    state1_edges.set(e0, hg.arena());
-    state1_edges.set(e1, hg.arena());
-    state1_edges.set(e2, hg.arena());
-
-    uint64_t hash1 = hg.compute_canonical_hash(state1_edges);
-    auto [state1, raw1, was_new1] = hg.create_or_get_canonical_state(
-        std::move(state1_edges), hash1, 0, INVALID_ID);
-    EXPECT_TRUE(was_new1);
-
-    // Create second triangle (isomorphic)
     VertexId v3 = hg.alloc_vertex();
-    VertexId v4 = hg.alloc_vertex();
-    VertexId v5 = hg.alloc_vertex();
-
-    EdgeId e3 = hg.create_edge({v3, v4});
-    EdgeId e4 = hg.create_edge({v4, v5});
-    EdgeId e5 = hg.create_edge({v5, v3});
+    EdgeId e1 = hg.create_edge({v2, v3});
 
     SparseBitset state2_edges;
-    state2_edges.set(e3, hg.arena());
-    state2_edges.set(e4, hg.arena());
-    state2_edges.set(e5, hg.arena());
-
+    state2_edges.set(e1, hg.arena());
     uint64_t hash2 = hg.compute_canonical_hash(state2_edges);
-    auto [state2, raw2, was_new2] = hg.create_or_get_canonical_state(
+
+    EXPECT_EQ(hash1, hash2);  // States should be isomorphic
+
+    auto [canonical2, raw2, was_new2] = hg.create_or_get_canonical_state(
         std::move(state2_edges), hash2, 0, INVALID_ID);
-    EXPECT_FALSE(was_new2);
+    EXPECT_FALSE(was_new2);  // Should find existing canonical state
+    EXPECT_EQ(canonical1, canonical2);
 
-    // With Level 2 disabled, edges should NOT be in equivalence classes
-    // Each edge is its own representative
-    EXPECT_FALSE(hg.edge_equiv_manager().are_equivalent(e0, e3));
-    EXPECT_FALSE(hg.edge_equiv_manager().are_equivalent(e1, e4));
-    EXPECT_FALSE(hg.edge_equiv_manager().are_equivalent(e2, e5));
-}
-
-TEST(Unified_Level2, EventCanonicalization_EquivalentEvents) {
-    UnifiedHypergraph hg;
-    hg.enable_level2();
-
-    // Create first triangle with edge correspondence
-    VertexId v0 = hg.alloc_vertex();
-    VertexId v1 = hg.alloc_vertex();
-    VertexId v2 = hg.alloc_vertex();
-
-    EdgeId e0 = hg.create_edge({v0, v1});
-    EdgeId e1 = hg.create_edge({v1, v2});
-    EdgeId e2 = hg.create_edge({v2, v0});
-
-    SparseBitset state1_edges;
-    state1_edges.set(e0, hg.arena());
-    state1_edges.set(e1, hg.arena());
-    state1_edges.set(e2, hg.arena());
-
-    uint64_t hash1 = hg.compute_canonical_hash(state1_edges);
-    auto [state1, raw1, was_new1] = hg.create_or_get_canonical_state(
-        std::move(state1_edges), hash1, 0, INVALID_ID);
-
-    // Create second triangle (isomorphic)
-    VertexId v3 = hg.alloc_vertex();
+    // Create output states (just single edges for simplicity)
     VertexId v4 = hg.alloc_vertex();
+    EdgeId out_e0 = hg.create_edge({v1, v4});
+    SparseBitset out1_edges;
+    out1_edges.set(out_e0, hg.arena());
+    uint64_t out_hash1 = hg.compute_canonical_hash(out1_edges);
+    auto [out_canonical1, out_raw1, out_new1] = hg.create_or_get_canonical_state(
+        std::move(out1_edges), out_hash1, 1, canonical1);
+
     VertexId v5 = hg.alloc_vertex();
+    EdgeId out_e1 = hg.create_edge({v3, v5});
+    SparseBitset out2_edges;
+    out2_edges.set(out_e1, hg.arena());
+    uint64_t out_hash2 = hg.compute_canonical_hash(out2_edges);
+    auto [out_canonical2, out_raw2, out_new2] = hg.create_or_get_canonical_state(
+        std::move(out2_edges), out_hash2, 1, canonical2);
 
-    EdgeId e3 = hg.create_edge({v3, v4});
-    EdgeId e4 = hg.create_edge({v4, v5});
-    EdgeId e5 = hg.create_edge({v5, v3});
+    EXPECT_EQ(out_canonical1, out_canonical2);  // Output states should also be canonical equivalent
 
-    SparseBitset state2_edges;
-    state2_edges.set(e3, hg.arena());
-    state2_edges.set(e4, hg.arena());
-    state2_edges.set(e5, hg.arena());
-
-    uint64_t hash2 = hg.compute_canonical_hash(state2_edges);
-    auto [state2, raw2, was_new2] = hg.create_or_get_canonical_state(
-        std::move(state2_edges), hash2, 0, INVALID_ID);
-
-    // Edges should now be in equivalence classes
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e0, e3));
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e1, e4));
-    EXPECT_TRUE(hg.edge_equiv_manager().are_equivalent(e2, e5));
-
-    // Compute canonical hash for two hypothetical events that consume corresponding edges
-    // Event 1: rule 0, consumes e0 from state1
-    // Event 2: rule 0, consumes e3 from state1 (equivalent to e0)
-
-    uint64_t event_hash_1 = EventCanonicalizer::compute_canonical_hash(
-        0,       // rule_index
-        hash1,   // input_state_hash
-        &e0, 1,  // consumed_edges
-        hash1,   // output_state_hash (hypothetical)
-        hg.edge_equiv_manager()
+    // Create events from both raw states consuming corresponding edges
+    // Event 1: from raw1, consumes e0, produces out_e0
+    VariableBinding empty_binding;
+    auto result1 = hg.create_event(
+        raw1, out_raw1,  // raw input -> raw output
+        0,               // rule_index
+        &e0, 1,          // consumed edges
+        &out_e0, 1,      // produced edges
+        empty_binding    // binding
     );
 
-    uint64_t event_hash_2 = EventCanonicalizer::compute_canonical_hash(
-        0,       // same rule
-        hash1,   // same input state hash
-        &e3, 1,  // corresponding edge
-        hash1,   // same output state hash
-        hg.edge_equiv_manager()
-    );
-
-    // Events consuming corresponding edges should have same canonical hash
-    EXPECT_EQ(event_hash_1, event_hash_2);
-
-    // Event with different edge should have different hash
-    uint64_t event_hash_3 = EventCanonicalizer::compute_canonical_hash(
+    // Event 2: from raw2, consumes e1 (corresponds to e0), produces out_e1
+    auto result2 = hg.create_event(
+        raw2, out_raw2,
         0,
-        hash1,
-        &e1, 1,  // Different edge (not equivalent to e0)
-        hash1,
-        hg.edge_equiv_manager()
+        &e1, 1,
+        &out_e1, 1,
+        empty_binding
     );
 
-    EXPECT_NE(event_hash_1, event_hash_3);
+    // Both events should have the same canonical event
+    // The canonical_event_id should match for both (either both canonical to same, or one points to other)
+    EXPECT_EQ(result1.canonical_event_id, result2.canonical_event_id);
 }
 
-TEST(Unified_Level2, EventCanonicalization_DifferentRules) {
+TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
+    // Test that events consuming non-corresponding edges have different canonical events.
     UnifiedHypergraph hg;
-    hg.enable_level2();
+    hg.set_event_signature_keys(EVENT_SIG_FULL);
+
+    // Create state with two edges
+    VertexId v0 = hg.alloc_vertex();
+    VertexId v1 = hg.alloc_vertex();
+    VertexId v2 = hg.alloc_vertex();
+    EdgeId e0 = hg.create_edge({v0, v1});
+    EdgeId e1 = hg.create_edge({v1, v2});
+
+    SparseBitset state_edges;
+    state_edges.set(e0, hg.arena());
+    state_edges.set(e1, hg.arena());
+    uint64_t hash = hg.compute_canonical_hash(state_edges);
+
+    auto [canonical, raw, was_new] = hg.create_or_get_canonical_state(
+        std::move(state_edges), hash, 0, INVALID_ID);
+
+    // Create output states
+    VertexId v3 = hg.alloc_vertex();
+    EdgeId out_e0 = hg.create_edge({v1, v3});
+    SparseBitset out1_edges;
+    out1_edges.set(out_e0, hg.arena());
+    out1_edges.set(e1, hg.arena());  // Keep e1
+    uint64_t out_hash1 = hg.compute_canonical_hash(out1_edges);
+    auto [out1, out_raw1, _1] = hg.create_or_get_canonical_state(
+        std::move(out1_edges), out_hash1, 1, canonical);
+
+    VertexId v4 = hg.alloc_vertex();
+    EdgeId out_e1 = hg.create_edge({v2, v4});
+    SparseBitset out2_edges;
+    out2_edges.set(e0, hg.arena());  // Keep e0
+    out2_edges.set(out_e1, hg.arena());
+    uint64_t out_hash2 = hg.compute_canonical_hash(out2_edges);
+    auto [out2, out_raw2, _2] = hg.create_or_get_canonical_state(
+        std::move(out2_edges), out_hash2, 1, canonical);
+
+    // Event 1: consumes e0
+    VariableBinding empty_binding;
+    auto result1 = hg.create_event(raw, out_raw1, 0, &e0, 1, &out_e0, 1, empty_binding);
+
+    // Event 2: consumes e1 (NOT corresponding to e0)
+    auto result2 = hg.create_event(raw, out_raw2, 0, &e1, 1, &out_e1, 1, empty_binding);
+
+    // Both events should be canonical (different signatures - consuming different edges)
+    // So they should NOT share the same canonical event
+    EXPECT_NE(result1.canonical_event_id, result2.canonical_event_id);
+    EXPECT_TRUE(result1.is_canonical);
+    EXPECT_TRUE(result2.is_canonical);
+}
+
+TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
+    // Test that events with different rules have different canonical events.
+    UnifiedHypergraph hg;
+    // Include Rule in signature so different rules produce different canonical events
+    hg.set_event_signature_keys(EVENT_SIG_FULL | EventKey_Rule);
 
     VertexId v0 = hg.alloc_vertex();
     VertexId v1 = hg.alloc_vertex();
@@ -797,15 +744,61 @@ TEST(Unified_Level2, EventCanonicalization_DifferentRules) {
     SparseBitset state_edges;
     state_edges.set(e0, hg.arena());
     uint64_t hash = hg.compute_canonical_hash(state_edges);
+    auto [canonical, raw, _] = hg.create_or_get_canonical_state(
+        std::move(state_edges), hash, 0, INVALID_ID);
 
-    // Same edge, different rules -> different hash
-    uint64_t event_hash_1 = EventCanonicalizer::compute_canonical_hash(
-        0, hash, &e0, 1, hash, hg.edge_equiv_manager());
+    // Create output state
+    VertexId v2 = hg.alloc_vertex();
+    EdgeId out_e = hg.create_edge({v1, v2});
+    SparseBitset out_edges;
+    out_edges.set(out_e, hg.arena());
+    uint64_t out_hash = hg.compute_canonical_hash(out_edges);
+    auto [out_canonical, out_raw, __] = hg.create_or_get_canonical_state(
+        std::move(out_edges), out_hash, 1, canonical);
 
-    uint64_t event_hash_2 = EventCanonicalizer::compute_canonical_hash(
-        1, hash, &e0, 1, hash, hg.edge_equiv_manager());
+    // Event 1: rule 0
+    VariableBinding empty_binding;
+    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
 
-    EXPECT_NE(event_hash_1, event_hash_2);
+    // Event 2: rule 1 (same edges, different rule)
+    auto result2 = hg.create_event(raw, out_raw, 1, &e0, 1, &out_e, 1, empty_binding);
+
+    // Both should be canonical (different rule indices)
+    EXPECT_TRUE(result1.is_canonical);
+    EXPECT_TRUE(result2.is_canonical);
+}
+
+TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
+    // Test that with EVENT_SIG_NONE, all events are canonical.
+    UnifiedHypergraph hg;
+    hg.set_event_signature_keys(EVENT_SIG_NONE);  // No canonicalization
+
+    VertexId v0 = hg.alloc_vertex();
+    VertexId v1 = hg.alloc_vertex();
+    EdgeId e0 = hg.create_edge({v0, v1});
+
+    SparseBitset state_edges;
+    state_edges.set(e0, hg.arena());
+    uint64_t hash = hg.compute_canonical_hash(state_edges);
+    auto [canonical, raw, _] = hg.create_or_get_canonical_state(
+        std::move(state_edges), hash, 0, INVALID_ID);
+
+    VertexId v2 = hg.alloc_vertex();
+    EdgeId out_e = hg.create_edge({v1, v2});
+    SparseBitset out_edges;
+    out_edges.set(out_e, hg.arena());
+    uint64_t out_hash = hg.compute_canonical_hash(out_edges);
+    auto [out_canonical, out_raw, __] = hg.create_or_get_canonical_state(
+        std::move(out_edges), out_hash, 1, canonical);
+
+    // Create two identical events
+    VariableBinding empty_binding;
+    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
+    auto result2 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
+
+    // Both should be canonical since canonicalization is disabled
+    EXPECT_TRUE(result1.is_canonical);
+    EXPECT_TRUE(result2.is_canonical);
 }
 
 // =============================================================================

@@ -512,16 +512,27 @@ CanonicalizationResult Canonicalizer::canonicalize(const Hypergraph& hg) const {
 template<typename VertexType>
 CanonicalizationResult Canonicalizer::canonicalize_edges(const std::vector<std::vector<VertexType>>& edges) const {
     CanonicalizationResult result;
-    
+
     if (edges.empty()) {
         result.canonical_form.vertex_count = 0;
         return result;
     }
-    
+
     // Apply Wolfram canonicalization directly
-    result.canonical_form.edges = wolfram_canonical_hypergraph(edges, result.vertex_mapping);
+    auto canonical_edges = wolfram_canonical_hypergraph(edges, result.vertex_mapping);
+
+    // Convert to CanonicalForm's VertexId type (std::size_t) if needed
+    result.canonical_form.edges.reserve(canonical_edges.size());
+    for (const auto& edge : canonical_edges) {
+        std::vector<VertexId> converted_edge;
+        converted_edge.reserve(edge.size());
+        for (auto v : edge) {
+            converted_edge.push_back(static_cast<VertexId>(v));
+        }
+        result.canonical_form.edges.push_back(std::move(converted_edge));
+    }
     result.canonical_form.vertex_count = result.vertex_mapping.canonical_to_original.size();
-    
+
     return result;
 }
 
@@ -531,5 +542,11 @@ template CanonicalizationResult Canonicalizer::canonicalize_edges<VertexId>(cons
 
 template std::vector<std::vector<VertexId>> Canonicalizer::wolfram_canonical_hypergraph<VertexId>(
     const std::vector<std::vector<VertexId>>& edges, VertexMapping& mapping) const;
+
+// Also instantiate for uint32_t (used by unified::VertexId)
+template CanonicalizationResult Canonicalizer::canonicalize_edges<uint32_t>(const std::vector<std::vector<uint32_t>>& edges) const;
+
+template std::vector<std::vector<uint32_t>> Canonicalizer::wolfram_canonical_hypergraph<uint32_t>(
+    const std::vector<std::vector<uint32_t>>& edges, VertexMapping& mapping) const;
 
 } // namespace hypergraph

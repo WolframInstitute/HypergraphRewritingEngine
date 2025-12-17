@@ -712,6 +712,9 @@ TEST(Unified_Rewriter, EventCreation) {
 
 TEST(Unified_Integration, SingleStepEvolution) {
     UnifiedHypergraph hg;
+    // Enable canonicalization for this test
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(EVENT_SIG_FULL);
 
     // Initial state: triangle {0,1}, {1,2}, {2,0}
     EdgeId e0 = hg.create_edge({0, 1});

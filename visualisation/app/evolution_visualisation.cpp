@@ -165,6 +165,8 @@ private:
 
         // Create hypergraph and engine
         UnifiedHypergraph hg;
+        // Enable state canonicalization for equivalencing (isomorphic states merge)
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         ParallelEvolutionEngine engine(&hg);  // 4 worker threads
 
         // Make engine accessible for stop requests

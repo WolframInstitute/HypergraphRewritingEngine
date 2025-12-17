@@ -403,7 +403,7 @@ struct PartialMatch {
     }
 
     // Convert to MatchIdentity (reorder edges to pattern order)
-    MatchIdentity to_identity(const RewriteRule& rule) const {
+    MatchIdentity to_identity([[maybe_unused]] const RewriteRule& rule) const {
         MatchIdentity mid;
         mid.rule_index = rule_index;
         mid.num_edges = num_matched;

@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <queue>
 #include <vector>
 
 #include "types.hpp"
@@ -83,18 +82,27 @@ class CausalGraph {
     // =========================================================================
     // Online Transitive Reduction (Goranci Algorithm)
     // =========================================================================
-    // For each event, track direct causal successors for reachability queries.
-    // Before storing a causal edge (P → C), check if C is already reachable
-    // from P via existing edges. If reachable, the edge is redundant.
+    // Maintains Desc[u] (events reachable from u) and Anc[u] (events reaching u)
+    // for O(1) redundancy checking. Edge (p,c) is redundant iff c ∈ Desc[p].
     //
-    // Thread-safety: Uses "check then insert" with deduplication fallback.
-    // Races can cause occasional redundant edges to slip through, but the
-    // deduplication layer ensures no duplicates.
+    // When edge (p,c) is added (if not redundant):
+    //   - For all a ∈ {p} ∪ Anc[p]: Desc[a] ∪= {c} ∪ Desc[c]
+    //   - For all d ∈ {c} ∪ Desc[c]: Anc[d] ∪= {p} ∪ Anc[p]
+    //
+    // Thread-safety: Uses concurrent sets with atomic operations.
+    // Some redundant edges may slip through in races, but no duplicates.
 
-    // Adjacency list for online TR: event -> list of direct successors
-    static constexpr uint64_t CAUSAL_ADJ_EMPTY = (1ULL << 62) + 4;
-    static constexpr uint64_t CAUSAL_ADJ_LOCKED = (1ULL << 62) + 5;
-    ConcurrentMap<uint64_t, LockFreeList<EventId>*, CAUSAL_ADJ_EMPTY, CAUSAL_ADJ_LOCKED> causal_adjacency_;
+    // Desc[u] = all events reachable from u (transitive closure)
+    // Anc[u] = all events that can reach u (transitive closure)
+    // Uses ConcurrentMap<EventId, bool> as lock-free set (key present = in set)
+    static constexpr uint64_t DESC_ANC_SET_EMPTY = (1ULL << 62) + 4;
+    static constexpr uint64_t DESC_ANC_SET_LOCKED = (1ULL << 62) + 5;
+    using DescAncSet = ConcurrentMap<uint64_t, bool, DESC_ANC_SET_EMPTY, DESC_ANC_SET_LOCKED>;
+
+    static constexpr uint64_t DESC_ANC_EMPTY = (1ULL << 62) + 6;
+    static constexpr uint64_t DESC_ANC_LOCKED = (1ULL << 62) + 7;
+    ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> desc_;
+    ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> anc_;
 
     // Whether online TR is enabled (default: disabled for v1 compatibility)
     std::atomic<bool> transitive_reduction_enabled_{false};
@@ -161,63 +169,45 @@ public:
         return inserted ? new_list : existing;
     }
 
-    // Get or create adjacency list for an event (for online TR)
-    LockFreeList<EventId>* get_or_create_causal_successors(EventId event) {
+    // Get or create Desc set for an event (Goranci algorithm)
+    // Returns lock-free ConcurrentMap used as a set (key present = in set)
+    DescAncSet* get_or_create_desc(EventId event) {
         uint64_t key = event;
 
-        auto result = causal_adjacency_.lookup(key);
+        auto result = desc_.lookup(key);
         if (result.has_value()) {
             return *result;
         }
 
-        auto* new_list = arena_->template create<LockFreeList<EventId>>();
-        auto [existing, inserted] = causal_adjacency_.insert_if_absent(key, new_list);
-        return inserted ? new_list : existing;
+        auto* new_set = arena_->template create<DescAncSet>();
+        auto [existing, inserted] = desc_.insert_if_absent(key, new_set);
+        return inserted ? new_set : existing;
     }
 
-    // Check if 'target' is reachable from 'source' via existing causal edges (BFS)
-    // Used for online transitive reduction: if reachable, edge is redundant.
-    // Max depth prevents infinite loops and bounds worst-case latency.
-    bool is_reachable_via_causal_edges(EventId source, EventId target, size_t max_depth = 100) const {
-        if (source == target) return true;  // Trivially reachable
+    // Get or create Anc set for an event (Goranci algorithm)
+    // Returns lock-free ConcurrentMap used as a set (key present = in set)
+    DescAncSet* get_or_create_anc(EventId event) {
+        uint64_t key = event;
 
-        // BFS from source
-        std::queue<EventId> frontier;
-        std::vector<bool> visited(std::max(source, target) + 1, false);
-
-        frontier.push(source);
-        visited[source] = true;
-        size_t depth = 0;
-
-        while (!frontier.empty() && depth < max_depth) {
-            size_t level_size = frontier.size();
-            for (size_t i = 0; i < level_size; ++i) {
-                EventId current = frontier.front();
-                frontier.pop();
-
-                // Get successors of current event
-                auto adj_result = causal_adjacency_.lookup(current);
-                if (!adj_result.has_value()) continue;
-
-                bool found = false;
-                (*adj_result)->for_each([&](EventId successor) {
-                    if (found) return;  // Early exit once found
-                    if (successor == target) {
-                        found = true;
-                        return;
-                    }
-                    if (successor < visited.size() && !visited[successor]) {
-                        visited[successor] = true;
-                        frontier.push(successor);
-                    }
-                });
-
-                if (found) return true;
-            }
-            ++depth;
+        auto result = anc_.lookup(key);
+        if (result.has_value()) {
+            return *result;
         }
 
-        return false;
+        auto* new_set = arena_->template create<DescAncSet>();
+        auto [existing, inserted] = anc_.insert_if_absent(key, new_set);
+        return inserted ? new_set : existing;
+    }
+
+    // O(1) redundancy check: is consumer reachable from producer?
+    // Uses Desc[producer] set from Goranci algorithm (lock-free)
+    bool is_reachable_via_desc(EventId producer, EventId consumer) const {
+        if (producer == consumer) return true;
+
+        auto desc_result = desc_.lookup(producer);
+        if (!desc_result.has_value()) return false;
+
+        return (*desc_result)->contains(consumer);  // O(1) lock-free lookup
     }
 
     // Get or create the event list for a state (thread-safe)
@@ -297,14 +287,14 @@ public:
     void register_event_from_state(
         EventId event,
         StateId input_state,
-        const EdgeId* consumed_edges,
-        uint8_t num_consumed
+        [[maybe_unused]] const EdgeId* consumed_edges,
+        [[maybe_unused]] uint8_t num_consumed
     ) {
         // Get or create the event list for this state (thread-safe)
         LockFreeList<EventId>* list = get_or_create_state_events(input_state);
 
         // Check for branchial relationships with existing events from this state
-        list->for_each([&](EventId other_event) {
+        list->for_each([]([[maybe_unused]] EventId other_event) {
             // Check for edge overlap
             // Note: we need access to other event's consumed edges
             // This is deferred - the caller must provide the check function
@@ -424,11 +414,11 @@ public:
     // to detect the same (producer, consumer, edge) triple, so we deduplicate here.
     // Each edge creates its own causal relationship.
     //
-    // Online Transitive Reduction (when enabled):
-    // Before storing, check if consumer is already reachable from producer via
-    // existing causal edges. If so, this edge is redundant and is skipped.
+    // Online Transitive Reduction (Goranci Algorithm):
+    // Before storing, check if consumer ∈ Desc[producer]. If so, edge is redundant.
+    // After storing, update Desc/Anc sets for transitive closure maintenance.
     void add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
-        // Online TR check: skip if consumer already reachable from producer
+        // Online TR check using Goranci algorithm: O(1) lookup
         if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
             // First check if we already have a DIRECT edge (producer -> consumer)
             // If so, this is a duplicate, not a TR skip - let deduplication handle it
@@ -436,8 +426,8 @@ public:
             auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
 
             if (!existing_pair.has_value()) {
-                // No direct edge yet - check for transitive path
-                if (is_reachable_via_causal_edges(producer, consumer)) {
+                // No direct edge yet - check if consumer already reachable via Desc set
+                if (is_reachable_via_desc(producer, consumer)) {
                     // Consumer already reachable - edge is redundant
                     num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
                     return;
@@ -465,10 +455,9 @@ public:
             VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
 #endif
 
-            // Update causal adjacency for future TR checks
+            // Update Desc/Anc sets for Goranci algorithm (maintains transitive closure)
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-                LockFreeList<EventId>* successors = get_or_create_causal_successors(producer);
-                successors->push(consumer, *arena_);
+                update_transitive_closure(producer, consumer);
             }
 
             // Also track unique event pairs (for v1 compatibility)
@@ -476,6 +465,51 @@ public:
             auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
             if (pair_inserted) {
                 num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    // Update Desc and Anc sets after adding edge (producer -> consumer)
+    // Goranci algorithm: propagate reachability through transitive closure
+    // Thread-safe: uses lock-free ConcurrentMap operations throughout
+    void update_transitive_closure(EventId producer, EventId consumer) {
+        // Get consumer's descendants (events reachable from consumer)
+        DescAncSet* desc_consumer = get_or_create_desc(consumer);
+
+        // Get producer's ancestors (events that can reach producer)
+        DescAncSet* anc_producer = get_or_create_anc(producer);
+
+        // Collect events to update: {producer} ∪ Anc[producer]
+        // Reserve based on current size (approximate, but avoids most reallocs)
+        std::vector<EventId> ancestors_to_update;
+        ancestors_to_update.reserve(1 + anc_producer->size());
+        ancestors_to_update.push_back(producer);
+        anc_producer->for_each([&](uint64_t id, bool) {
+            ancestors_to_update.push_back(static_cast<EventId>(id));
+        });
+
+        // Collect new reachable events: {consumer} ∪ Desc[consumer]
+        std::vector<EventId> descendants_to_add;
+        descendants_to_add.reserve(1 + desc_consumer->size());
+        descendants_to_add.push_back(consumer);
+        desc_consumer->for_each([&](uint64_t id, bool) {
+            descendants_to_add.push_back(static_cast<EventId>(id));
+        });
+
+        // Update Desc sets: for all a ∈ {producer} ∪ Anc[producer], add {consumer} ∪ Desc[consumer]
+        for (EventId a : ancestors_to_update) {
+            DescAncSet* desc_a = get_or_create_desc(a);
+            for (EventId d : descendants_to_add) {
+                desc_a->insert_if_absent(d, true);  // Lock-free, idempotent
+            }
+        }
+
+        // Update Anc sets: for all d ∈ {consumer} ∪ Desc[consumer], add {producer} ∪ Anc[producer]
+        // Reuse ancestors_to_update - no need to rebuild
+        for (EventId d : descendants_to_add) {
+            DescAncSet* anc_d = get_or_create_anc(d);
+            for (EventId a : ancestors_to_update) {
+                anc_d->insert_if_absent(a, true);  // Lock-free, idempotent
             }
         }
     }
@@ -548,6 +582,16 @@ public:
             result.push_back(e);
         });
         return result;
+    }
+
+    // Iterate over all (input_state -> events) mappings
+    // Visitor signature: void(StateId input_state, LockFreeList<EventId>* event_list)
+    // Caller can use event_list->for_each() to iterate events
+    template<typename Visitor>
+    void for_each_state_events(Visitor&& visit) const {
+        state_events_.for_each([&](uint64_t state_key, LockFreeList<EventId>* event_list) {
+            visit(static_cast<StateId>(state_key), event_list);
+        });
     }
 
 private:

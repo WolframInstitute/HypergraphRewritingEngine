@@ -13,8 +13,18 @@
 #include <memory>
 #include <stdexcept>
 #include <random>
+#include <string>
 
 namespace job_system {
+
+// Error types that can occur during job execution
+enum class ErrorType {
+    None = 0,
+    OutOfMemory,   // std::bad_alloc caught
+    Aborted,       // AbortedException caught (user requested abort)
+    Exception,     // std::exception caught
+    Unhandled      // Non-std::exception type caught
+};
 
 template<typename JobType>
 class JobSystem {
@@ -40,6 +50,9 @@ private:
     std::atomic<size_t> total_completed_{0};
     std::mutex completion_mutex_;
     std::condition_variable completion_cv_;
+
+    // Error tracking - set by worker threads on exception
+    std::atomic<ErrorType> error_type_{ErrorType::None};
     
     // Try to steal half the tasks from a victim worker
     std::vector<JobPtr<JobType>> try_steal_from(WorkerData* victim) {
@@ -119,7 +132,34 @@ private:
 
             if (job) {
                 data->jobs_executing.fetch_add(1);
-                job->execute();
+
+                // Execute with exception protection - worker threads must not throw
+                try {
+                    job->execute();
+                } catch (const std::bad_alloc&) {
+                    // OOM - set error flag, stop accepting new work
+                    error_type_.store(ErrorType::OutOfMemory, std::memory_order_release);
+                    for (auto& w : workers_) {
+                        w->stop.store(true);
+                    }
+                } catch (const std::exception& e) {
+                    // Check if it's an abort exception (by message)
+                    if (std::string(e.what()) == "Operation aborted") {
+                        error_type_.store(ErrorType::Aborted, std::memory_order_release);
+                    } else {
+                        error_type_.store(ErrorType::Exception, std::memory_order_release);
+                    }
+                    for (auto& w : workers_) {
+                        w->stop.store(true);
+                    }
+                } catch (...) {
+                    // Unhandled exception type (not derived from std::exception)
+                    error_type_.store(ErrorType::Unhandled, std::memory_order_release);
+                    for (auto& w : workers_) {
+                        w->stop.store(true);
+                    }
+                }
+
                 data->jobs_executing.fetch_sub(1);
                 data->jobs_executed.fetch_add(1);
 
@@ -149,10 +189,11 @@ public:
     
     void start() {
         if (is_running_.load()) return;
-        
-        // Reset counters for new session
+
+        // Reset counters and error state for new session
         total_submitted_.store(0);
         total_completed_.store(0);
+        error_type_.store(ErrorType::None, std::memory_order_relaxed);
         
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
@@ -252,7 +293,75 @@ public:
     }
     
     // No futures/promises - keep it simple
-    
+
+    // Wait for completion with optional abort callback
+    // If abort_check returns true, stops waiting and returns true (aborted)
+    // Returns false if completed normally
+    template<typename AbortCheck>
+    bool wait_for_completion_with_abort(AbortCheck&& abort_check) {
+#ifdef JOBSYSTEM_DEBUG
+        int debug_count = 0;
+#endif
+
+        while (true) {
+            // Check abort condition (called from main thread)
+            if (abort_check()) {
+                return true;  // Aborted
+            }
+
+            // Use condition variable to wait efficiently
+            std::unique_lock<std::mutex> lock(completion_mutex_);
+
+            // Wait until all submitted jobs are completed OR timeout
+            completion_cv_.wait_for(lock, std::chrono::milliseconds(50), [this] {
+                return total_submitted_.load() == total_completed_.load();
+            });
+
+            size_t submitted = total_submitted_.load();
+            size_t completed = total_completed_.load();
+
+#ifdef JOBSYSTEM_DEBUG
+            if (++debug_count % 100 == 0) {
+                printf("[JOB_SYSTEM DEBUG] wait_for_completion loop %d: submitted=%zu, completed=%zu, pending=%zu\n",
+                       debug_count, submitted, completed, submitted - completed);
+                fflush(stdout);
+            }
+#endif
+
+            // Check if all work is done
+            if (submitted == completed) {
+                bool truly_done = true;
+                for (const auto& worker : workers_) {
+                    std::lock_guard<std::mutex> worker_lock(worker->mutex);
+                    if (!worker->tasks.empty() || worker->jobs_executing.load() > 0) {
+                        truly_done = false;
+                        break;
+                    }
+                }
+
+                if (truly_done) {
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                    submitted = total_submitted_.load();
+                    completed = total_completed_.load();
+
+                    if (submitted == completed) {
+                        bool any_executing = false;
+                        for (const auto& worker : workers_) {
+                            if (worker->jobs_executing.load() > 0) {
+                                any_executing = true;
+                                break;
+                            }
+                        }
+
+                        if (!any_executing) {
+                            return false;  // Completed normally
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     void wait_for_completion() {
 #ifdef JOBSYSTEM_DEBUG
         int debug_count = 0;
@@ -328,12 +437,48 @@ public:
     size_t get_num_workers() const {
         return workers_.size();
     }
-    
+
+    // Get count of pending jobs (submitted but not yet completed)
+    size_t get_pending_count() const {
+        size_t submitted = total_submitted_.load(std::memory_order_relaxed);
+        size_t completed = total_completed_.load(std::memory_order_relaxed);
+        return submitted > completed ? submitted - completed : 0;
+    }
+
+    // Get count of currently executing jobs across all workers
+    size_t get_executing_count() const {
+        size_t count = 0;
+        for (const auto& worker : workers_) {
+            count += worker->jobs_executing.load(std::memory_order_relaxed);
+        }
+        return count;
+    }
+
     bool is_running() const {
         return is_running_.load();
     }
-    
-    
+
+    // Check if an error occurred during job execution
+    ErrorType get_error_type() const {
+        return error_type_.load(std::memory_order_acquire);
+    }
+
+    bool has_error() const {
+        return get_error_type() != ErrorType::None;
+    }
+
+    // Get human-readable error description
+    const char* get_error_description() const {
+        switch (get_error_type()) {
+            case ErrorType::None: return "No error";
+            case ErrorType::OutOfMemory: return "Out of memory";
+            case ErrorType::Aborted: return "Aborted";
+            case ErrorType::Exception: return "Exception thrown";
+            case ErrorType::Unhandled: return "Unhandled exception type";
+        }
+        return "Unknown error";
+    }
+
     struct SystemStatistics {
         size_t total_jobs_executed;
         size_t total_jobs_stolen;

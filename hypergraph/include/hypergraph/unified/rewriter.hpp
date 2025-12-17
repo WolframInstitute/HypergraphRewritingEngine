@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "types.hpp"
 #include "signature.hpp"
@@ -199,8 +201,37 @@ public:
 
         // Register consumed edges (add this event as consumer)
         // This triggers causal edge creation via rendezvous pattern
+        //
+        // IMPORTANT: For correct online transitive reduction, we must process
+        // edges in DESCENDING order by producer event ID. This ensures edges
+        // from closer (newer) producers are added first, propagating transitive
+        // closure to farther (older) producers before checking their edges.
+        //
+        // Example: If P1→P2 path exists and consumer C has edges from both:
+        // - Add P2→C first: Desc[P1] gets C (via Anc[P2] containing P1)
+        // - Add P1→C second: Check Desc[P1] → C found → SKIP (correct!)
+        // Wrong order would store P1→C before P2→C updates Desc[P1].
+
+        // Collect (producer_id, edge_index) pairs for sorting
+        std::vector<std::pair<EventId, uint8_t>> sorted_consumed;
+        sorted_consumed.reserve(num_matched);
         for (uint8_t i = 0; i < num_matched; ++i) {
-            hg_->add_edge_consumer(matched_edges[i], result.event);
+            EventId producer = hg_->get_edge_producer(matched_edges[i]);
+            sorted_consumed.emplace_back(producer, i);
+        }
+
+        // Sort by producer ID DESCENDING (newest producers first)
+        // INVALID_ID producers (initial edges with no producer) sort to end
+        std::sort(sorted_consumed.begin(), sorted_consumed.end(),
+            [](const auto& a, const auto& b) {
+                if (a.first == INVALID_ID) return false;
+                if (b.first == INVALID_ID) return true;
+                return a.first > b.first;
+            });
+
+        // Add causal edges in sorted order
+        for (const auto& [producer, idx] : sorted_consumed) {
+            hg_->add_edge_consumer(matched_edges[idx], result.event);
         }
 
         // Register for branchial tracking (checks overlap with other events from same state)

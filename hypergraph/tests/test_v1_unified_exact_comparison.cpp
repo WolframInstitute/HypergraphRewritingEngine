@@ -99,6 +99,9 @@ TEST(V1_Unified_Exact, Step1_SimpleRule) {
     size_t v2_states = 0, v2_canonical = 0, v2_events = 0, v2_causal = 0, v2_branchial = 0;
     {
         auto hg = make_unique<v2::UnifiedHypergraph>();
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=true
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_FULL);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);  // 1 thread for determinism
 
         v2::RewriteRule rule = v2::make_rule(0)
@@ -222,6 +225,10 @@ TEST(V1_Unified_Exact, Step2_SimpleRule) {
     size_t v2_states = 0, v2_canonical = 0, v2_events = 0, v2_causal = 0, v2_branchial = 0;
     {
         auto hg = make_unique<v2::UnifiedHypergraph>();
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=false
+        // (v1's simple constructor doesn't enable event canonicalization)
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_NONE);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);
 
         v2::RewriteRule rule = v2::make_rule(0)
@@ -350,6 +357,9 @@ TEST(V1_Unified_Exact, TwoEdges_Step1) {
     size_t v2_states = 0, v2_canonical = 0, v2_events = 0, v2_causal = 0, v2_branchial = 0;
     {
         auto hg = make_unique<v2::UnifiedHypergraph>();
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=true
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_FULL);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);
 
         v2::RewriteRule rule = v2::make_rule(0)

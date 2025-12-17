@@ -69,11 +69,11 @@ protected:
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps,
         v2::HashStrategy hash_strategy,
-        v2::EventCanonicalizationMode event_mode
+        v2::EventSignatureKeys event_keys
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
         hg->set_hash_strategy(hash_strategy);
-        hg->set_event_canonicalization_mode(event_mode);
+        hg->set_event_signature_keys(event_keys);
         hg->reset_incremental_tree_stats();
 
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // Use all threads
@@ -109,13 +109,11 @@ protected:
         }
     }
 
-    const char* event_mode_name(v2::EventCanonicalizationMode m) {
-        switch (m) {
-            case v2::EventCanonicalizationMode::None: return "None";
-            case v2::EventCanonicalizationMode::ByState: return "ByState";
-            case v2::EventCanonicalizationMode::ByStateAndEdges: return "ByStateAndEdges";
-            default: return "?";
-        }
+    const char* event_keys_name(v2::EventSignatureKeys k) {
+        if (k == v2::EVENT_SIG_NONE) return "None";
+        if (k == v2::EVENT_SIG_FULL) return "Full";
+        if (k == v2::EVENT_SIG_AUTOMATIC) return "Automatic";
+        return "?";
     }
 };
 
@@ -142,9 +140,9 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
         v2::HashStrategy::WL,
         v2::HashStrategy::IncrementalWL
     };
-    std::vector<v2::EventCanonicalizationMode> modes = {
-        v2::EventCanonicalizationMode::ByState,
-        v2::EventCanonicalizationMode::ByStateAndEdges
+    std::vector<v2::EventSignatureKeys> modes = {
+        v2::EVENT_SIG_FULL,
+        v2::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 1;
@@ -184,7 +182,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
                     : 0.0;
 
                 std::cout << std::fixed << std::setprecision(2);
-                std::cout << std::setw(10) << event_mode_name(mode)
+                std::cout << std::setw(10) << event_keys_name(mode)
                           << std::setw(8) << hash_strategy_name(strategy)
                           << std::setw(10) << result.num_states
                           << std::setw(10) << result.num_events
@@ -237,9 +235,9 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
         v2::HashStrategy::WL,
         v2::HashStrategy::IncrementalWL
     };
-    std::vector<v2::EventCanonicalizationMode> modes = {
-        v2::EventCanonicalizationMode::ByState,
-        v2::EventCanonicalizationMode::ByStateAndEdges
+    std::vector<v2::EventSignatureKeys> modes = {
+        v2::EVENT_SIG_FULL,
+        v2::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 1;
@@ -278,7 +276,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
                     : 0.0;
 
                 std::cout << std::fixed << std::setprecision(2);
-                std::cout << std::setw(10) << event_mode_name(mode)
+                std::cout << std::setw(10) << event_keys_name(mode)
                           << std::setw(8) << hash_strategy_name(strategy)
                           << std::setw(10) << result.num_states
                           << std::setw(10) << result.num_events
@@ -342,9 +340,9 @@ TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
     std::cout << "Rule: {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}\n";
     std::cout << "Averaging over " << num_runs << " runs\n\n";
 
-    for (auto mode : {v2::EventCanonicalizationMode::ByState,
-                      v2::EventCanonicalizationMode::ByStateAndEdges}) {
-        std::cout << "Event mode: " << event_mode_name(mode) << "\n";
+    for (auto mode : {v2::EVENT_SIG_FULL,
+                      v2::EVENT_SIG_AUTOMATIC}) {
+        std::cout << "Event mode: " << event_keys_name(mode) << "\n";
         std::cout << std::setw(10) << "Strategy"
                   << std::setw(12) << "Avg(ms)"
                   << std::setw(12) << "Min(ms)"
@@ -394,9 +392,9 @@ TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::EventCanonicalizationMode> modes = {
-        v2::EventCanonicalizationMode::ByState,
-        v2::EventCanonicalizationMode::ByStateAndEdges
+    std::vector<v2::EventSignatureKeys> modes = {
+        v2::EVENT_SIG_FULL,
+        v2::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 2;
@@ -424,7 +422,7 @@ TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
 
             std::cout << std::fixed << std::setprecision(2);
             std::cout << std::setw(8) << num_edges
-                      << std::setw(18) << event_mode_name(mode)
+                      << std::setw(18) << event_keys_name(mode)
                       << std::setw(10) << result.num_states
                       << std::setw(10) << result.num_events
                       << std::setw(10) << result.num_causal

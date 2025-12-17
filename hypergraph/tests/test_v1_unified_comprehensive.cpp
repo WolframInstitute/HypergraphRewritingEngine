@@ -82,8 +82,10 @@ protected:
         bool debug = false
     ) {
         auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        // Match v1's settings: canonicalize_states=true, canonicalize_events=true (full mode)
+        hg->set_state_canonicalization_mode(v2::StateCanonicalizationMode::Full);
+        hg->set_event_signature_keys(v2::EVENT_SIG_FULL);
         v2::ParallelEvolutionEngine engine(hg.get(), 4);
-        // Defaults: match_forwarding=true, batched_matching=false
 
         for (const auto& rule : rules) {
             engine.add_rule(rule);

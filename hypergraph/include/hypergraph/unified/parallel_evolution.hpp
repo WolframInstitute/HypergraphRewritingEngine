@@ -212,31 +212,31 @@ struct MatchContext {
 
 // SCAN task: Find initial candidates for first pattern edge
 struct ScanTaskData {
-    StateId state;                          // State to match in
-    uint16_t rule_index;                    // Which rule to match
-    uint32_t step;                          // Evolution step
-    StateId canonical_state;                // For deterministic deduplication
-    uint64_t source_canonical_hash;         // Canonical hash of source state
+    StateId state{INVALID_ID};              // State to match in
+    uint16_t rule_index{0};                 // Which rule to match
+    uint32_t step{0};                       // Evolution step
+    StateId canonical_state{INVALID_ID};    // For deterministic deduplication
+    uint64_t source_canonical_hash{0};      // Canonical hash of source state
     // For delta matching (only find NEW matches involving produced edges)
-    bool is_delta;                          // If true, only match involving produced_edges
-    EdgeId produced_edges[MAX_PATTERN_EDGES];
-    uint8_t num_produced;
+    bool is_delta{false};                   // If true, only match involving produced_edges
+    EdgeId produced_edges[MAX_PATTERN_EDGES]{};  // Zero-initialized
+    uint8_t num_produced{0};
 };
 
 // EXPAND task: Extend partial match by one edge
 // Also used for SINK (when match is complete)
 struct ExpandTaskData {
-    StateId state;                          // State being matched
-    uint16_t rule_index;                    // Rule being matched
-    uint8_t num_pattern_edges;              // Total edges in pattern
-    uint8_t next_pattern_idx;               // Which pattern edge to match next (0-based)
-    EdgeId matched_edges[MAX_PATTERN_EDGES];// Data edges matched so far
-    uint8_t match_order[MAX_PATTERN_EDGES]; // Pattern indices in match order
-    uint8_t num_matched;                    // Number of edges matched
-    VariableBinding binding;                // Current variable bindings
-    uint32_t step;                          // Evolution step
-    StateId canonical_state;                // For deterministic deduplication
-    uint64_t source_canonical_hash;         // Canonical hash of source state
+    StateId state{INVALID_ID};              // State being matched
+    uint16_t rule_index{0};                 // Rule being matched
+    uint8_t num_pattern_edges{0};           // Total edges in pattern
+    uint8_t next_pattern_idx{0};            // Which pattern edge to match next (0-based)
+    EdgeId matched_edges[MAX_PATTERN_EDGES]{};  // Data edges matched so far
+    uint8_t match_order[MAX_PATTERN_EDGES]{};   // Pattern indices in match order
+    uint8_t num_matched{0};                 // Number of edges matched
+    VariableBinding binding{};              // Current variable bindings
+    uint32_t step{0};                       // Evolution step
+    StateId canonical_state{INVALID_ID};    // For deterministic deduplication
+    uint64_t source_canonical_hash{0};      // Canonical hash of source state
 
     bool is_complete() const {
         return num_matched >= num_pattern_edges;
@@ -407,7 +407,7 @@ class ParallelEvolutionEngine {
 
     // Genesis events: create synthetic events for initial states that produce
     // all initial edges. This enables causal edges from initial state to gen 1.
-    // Disabled by default to maintain backwards compatibility with tests.
+    // Disabled by default to match v1 behavior.
     bool enable_genesis_events_{false};
 
     // Task-based matching: use SCAN→EXPAND→SINK task decomposition (HGMatch model)
@@ -434,6 +434,12 @@ class ParallelEvolutionEngine {
     double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
     size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
     size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+
+    // Exploration deduplication: only explore from canonical state representatives.
+    // When enabled, states equivalent to already-seen states are created (with events)
+    // but MATCH tasks are not spawned - we don't explore further from them.
+    // This focuses compute on discovering new states rather than all transition paths.
+    bool explore_from_canonical_states_only_{false};
 
     // Per-parent successor count tracking (for max_successor_states_per_parent)
     static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
@@ -473,7 +479,16 @@ public:
 
     ~ParallelEvolutionEngine() {
         if (job_system_) {
+            // Defensive: ensure all jobs complete before destruction
+            // This prevents use-after-free if caller forgot to wait
+            request_stop();
+            job_system_->wait_for_completion();
             job_system_->shutdown();
+        }
+        // CRITICAL: Clear abort flag pointer in hg_ before should_stop_ is destroyed
+        // Otherwise hg_ and its trees hold a dangling pointer
+        if (hg_) {
+            hg_->set_abort_flag(nullptr);
         }
     }
 
@@ -525,6 +540,12 @@ public:
     void set_max_states_per_step(size_t max) {
         max_states_per_step_ = max;
     }
+    void set_explore_from_canonical_states_only(bool enable) {
+        explore_from_canonical_states_only_ = enable;
+    }
+    bool explore_from_canonical_states_only() const {
+        return explore_from_canonical_states_only_;
+    }
 
     double exploration_probability() const { return exploration_probability_; }
     size_t max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
@@ -547,8 +568,8 @@ public:
         DEBUG_LOG("STILL MISSING HASHES:");
         missing_match_hashes_.for_each([&](uint64_t h, uint64_t debug_info) {
             if (!seen_match_hashes_.contains(h)) {
-                uint32_t state_id = debug_info >> 16;
-                uint16_t rule_index = debug_info & 0xFFFF;
+                [[maybe_unused]] uint32_t state_id = debug_info >> 16;
+                [[maybe_unused]] uint16_t rule_index = debug_info & 0xFFFF;
                 DEBUG_LOG("  hash=%lu state=%u rule=%u", h, state_id, rule_index);
             }
         });
@@ -598,6 +619,9 @@ public:
 
         max_steps_ = steps;
         should_stop_.store(false, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
+        hg_->set_abort_flag(&should_stop_);
 
         // Create initial state
         std::vector<EdgeId> edge_ids;
@@ -653,7 +677,7 @@ public:
         // Create genesis event if enabled
         // This allows causal edges from initial state edges to be tracked
         if (enable_genesis_events_) {
-            EventId genesis_event = hg_->create_genesis_event(
+            [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
                 raw_state,
                 edge_ids.data(),
                 static_cast<uint8_t>(edge_ids.size())
@@ -683,6 +707,119 @@ public:
         // Single synchronization point at the end
         job_system_->wait_for_completion();
 
+        finalize_evolution();
+    }
+
+    // Evolve with abort callback - allows external abort control (e.g., from Mathematica)
+    // The abort_check callback is called from the main thread periodically (~50ms)
+    // If it returns true, evolution stops early and this function returns true (aborted)
+    // Returns false if evolution completed normally
+    template<typename AbortCheck>
+    bool evolve_with_abort(const std::vector<std::vector<VertexId>>& initial_edges,
+                           size_t steps,
+                           AbortCheck&& abort_check) {
+        if (!hg_ || rules_.empty()) return false;
+
+        max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
+        hg_->set_abort_flag(&should_stop_);
+
+        // Create initial state (same setup as evolve())
+        std::vector<EdgeId> edge_ids;
+        for (const auto& edge : initial_edges) {
+            EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+            edge_ids.push_back(eid);
+            for (VertexId v : edge) {
+                hg_->reserve_vertices(v);
+            }
+        }
+
+        SparseBitset initial_edge_set;
+        for (EdgeId eid : edge_ids) {
+            initial_edge_set.set(eid, hg_->arena());
+        }
+
+        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
+            initial_edge_set,
+            INVALID_ID,
+            nullptr, 0,
+            edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
+        );
+        auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
+            std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
+
+        hg_->store_state_cache(raw_state, vertex_cache);
+
+        if (enable_genesis_events_) {
+            hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        }
+
+        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+        submit_match_task(raw_state, 1);
+
+        // Wait with abort checking - abort_check called from main thread
+        bool aborted = job_system_->wait_for_completion_with_abort([&]() {
+            if (abort_check()) {
+                request_stop();
+                return true;
+            }
+            return false;
+        });
+
+        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
+        // before returning. Jobs that passed the should_stop_ check are still running
+        // and accessing hg_. Returning early would cause use-after-free.
+        if (aborted) {
+            job_system_->wait_for_completion();
+        }
+
+        finalize_evolution();
+        return aborted;
+    }
+
+    // Overload for multiple initial states
+    // Each initial state is evolved from independently, exploring the full multiway system
+    template<typename AbortCheck>
+    bool evolve_with_abort(const std::vector<std::vector<std::vector<VertexId>>>& initial_states,
+                           size_t steps,
+                           AbortCheck&& abort_check) {
+        if (!hg_ || rules_.empty() || initial_states.empty()) return false;
+
+        max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
+        hg_->set_abort_flag(&should_stop_);
+
+        // Create all initial states - they will all be explored
+        for (const auto& state_edges : initial_states) {
+            create_and_register_initial_state(state_edges);
+        }
+
+        // Wait with abort checking - abort_check called from main thread
+        bool aborted = job_system_->wait_for_completion_with_abort([&]() {
+            if (abort_check()) {
+                request_stop();
+                return true;
+            }
+            return false;
+        });
+
+        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
+        // before returning. Jobs that passed the should_stop_ check are still running
+        // and accessing hg_. Returning early would cause use-after-free.
+        if (aborted) {
+            job_system_->wait_for_completion();
+        }
+
+        finalize_evolution();
+        return aborted;
+    }
+
+private:
+    void finalize_evolution() {
         // CRITICAL: Acquire fence to ensure all writes from worker threads are visible
         // This pairs with release semantics of atomic operations in worker threads
         std::atomic_thread_fence(std::memory_order_acquire);
@@ -698,12 +835,69 @@ public:
 #endif
     }
 
+    // Helper: Create an initial state from a set of edges and register it for matching
+    // Returns the raw state ID, or INVALID_ID if creation failed
+    StateId create_and_register_initial_state(const std::vector<std::vector<VertexId>>& edges) {
+        // Create edges
+        std::vector<EdgeId> edge_ids;
+        for (const auto& edge : edges) {
+            EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+            edge_ids.push_back(eid);
+            for (VertexId v : edge) {
+                hg_->reserve_vertices(v);
+            }
+        }
+
+        SparseBitset initial_edge_set;
+        for (EdgeId eid : edge_ids) {
+            initial_edge_set.set(eid, hg_->arena());
+        }
+
+        // Compute canonical hash
+        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
+            initial_edge_set,
+            INVALID_ID,  // No parent state
+            nullptr, 0,  // No consumed edges
+            edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
+        );
+        auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
+            std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
+
+        // Store cache for the initial state
+        hg_->store_state_cache(raw_state, vertex_cache);
+
+        // Create genesis event if enabled
+        if (enable_genesis_events_) {
+            hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        }
+
+        // Mark initial state as matched and submit for pattern matching
+        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+        submit_match_task(raw_state, 1);
+
+        return raw_state;
+    }
+
+public:
     // =========================================================================
     // Statistics
     // =========================================================================
 
     size_t total_matches() const { return total_matches_found_.load(std::memory_order_relaxed); }
     size_t total_rewrites() const { return total_rewrites_.load(std::memory_order_relaxed); }
+
+    // Job system diagnostics
+    size_t pending_jobs() const { return job_system_ ? job_system_->get_pending_count() : 0; }
+    size_t executing_jobs() const { return job_system_ ? job_system_->get_executing_count() : 0; }
+
+    // Error state - check after evolution completes
+    bool has_error() const { return job_system_ && job_system_->has_error(); }
+    job_system::ErrorType get_error_type() const {
+        return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
+    }
+    const char* get_error_description() const {
+        return job_system_ ? job_system_->get_error_description() : "No job system";
+    }
 
 private:
     // =========================================================================
@@ -879,7 +1073,7 @@ private:
         }
     }
 
-    void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step) {
+    void push_match_to_children_impl(StateId parent, const MatchRecord& match, [[maybe_unused]] uint32_t step) {
         // Use lookup_waiting to handle concurrent inserts (LOCKED slots).
         // Even with batching, grandchildren may race with sibling match stores.
         auto result = state_children_.lookup_waiting(parent);
@@ -1219,6 +1413,9 @@ private:
     // Submit a MATCH task for a state (full matching for initial state)
     void submit_match_task(StateId state, uint32_t step) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && step > max_steps_) return;
+        if (!can_create_states_at_step(step + 1)) return;
+        if (!can_have_more_children(state)) return;
 
         DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
@@ -1234,6 +1431,9 @@ private:
     // Submit a MATCH task with context (for match forwarding)
     void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && step > max_steps_) return;
+        if (!can_create_states_at_step(step + 1)) return;
+        if (!can_have_more_children(state)) return;
 
         DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
                   state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
@@ -1250,6 +1450,10 @@ private:
     // Submit a REWRITE task for a match
     void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && step > max_steps_) return;
+        // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
+        if (!can_create_states_at_step(step + 1)) return;
+        if (!can_have_more_children(match.source_state)) return;
 
         DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index, step);
 
@@ -1265,6 +1469,9 @@ private:
     // Submit a SCAN task for initial candidate generation
     void submit_scan_task(const ScanTaskData& data) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
 
         DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
                   data.state, data.rule_index, data.step, data.is_delta);
@@ -1283,6 +1490,9 @@ private:
     // Uses LIFO scheduling for depth-first search (bounded memory, cache-friendly)
     void submit_expand_task(const ExpandTaskData& data) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
 
         DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
                   data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
@@ -1300,6 +1510,9 @@ private:
     // Submit a SINK task for complete match processing
     void submit_sink_task(const ExpandTaskData& data) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
 
         DEBUG_LOG("SUBMIT_SINK state=%u rule=%u matched=%u step=%u",
                   data.state, data.rule_index, data.num_matched, data.step);
@@ -1325,6 +1538,17 @@ private:
     void execute_match_task(StateId state, uint32_t step, const MatchContext& ctx) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
         if (max_steps_ > 0 && step > max_steps_) return;
+
+        // Early exit if rewrites are impossible due to limits
+        // This prevents spawning millions of SCAN/EXPAND/SINK tasks that would all fail
+        if (!can_create_states_at_step(step + 1)) {
+            // Next step is full - no point finding matches
+            return;
+        }
+        if (!can_have_more_children(state)) {
+            // This state already has max children - no point finding matches
+            return;
+        }
 
         const State& s = hg_->get_state(state);
 
@@ -1597,6 +1821,10 @@ private:
         if (should_stop_.load(std::memory_order_relaxed)) return;
         if (max_steps_ > 0 && data.step > max_steps_) return;
 
+        // Early exit if rewrites are impossible due to limits
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
+
         DEBUG_LOG("EXEC_SCAN state=%u rule=%u step=%u delta=%d",
                   data.state, data.rule_index, data.step, data.is_delta);
 
@@ -1719,6 +1947,11 @@ private:
 
     void execute_expand_task(const ExpandTaskData& data) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+
+        // Early exit if rewrites are impossible due to limits
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
 
         DEBUG_LOG("EXEC_EXPAND state=%u rule=%u matched=%u/%u step=%u",
                   data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
@@ -1791,6 +2024,11 @@ private:
 
     void execute_sink_task(const ExpandTaskData& data) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (max_steps_ > 0 && data.step > max_steps_) return;
+
+        // Early exit if rewrites are impossible due to limits
+        if (!can_create_states_at_step(data.step + 1)) return;
+        if (!can_have_more_children(data.state)) return;
 
         DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
                   data.state, data.rule_index, data.num_matched, data.step);
@@ -1838,6 +2076,30 @@ private:
     // =========================================================================
     // Pruning Helpers (v1 compatibility)
     // =========================================================================
+
+    // Check if parent state can still have more children (without reserving a slot)
+    bool can_have_more_children(StateId parent_state) const {
+        if (max_successor_states_per_parent_ == 0) return true;  // Unlimited
+
+        uint64_t key = parent_state;
+        auto result = parent_successor_count_.lookup(key);
+        if (!result.has_value()) return true;  // No children yet
+
+        size_t current = (*result)->load(std::memory_order_relaxed);
+        return current < max_successor_states_per_parent_;
+    }
+
+    // Check if next step can have more states (without reserving a slot)
+    bool can_create_states_at_step(uint32_t step) const {
+        if (max_states_per_step_ == 0) return true;  // Unlimited
+
+        uint64_t key = step;
+        auto result = states_per_step_.lookup(key);
+        if (!result.has_value()) return true;  // No states yet at this step
+
+        size_t current = (*result)->load(std::memory_order_relaxed);
+        return current < max_states_per_step_;
+    }
 
     // Try to reserve a successor slot for the parent state.
     // Returns true if allowed to create another child, false if limit reached.
@@ -2029,6 +2291,14 @@ private:
                 // This is checked AFTER state creation to match v1 behavior.
                 if (!should_explore()) {
                     // State exists but won't be explored further
+                    return;
+                }
+
+                // Exploration deduplication: only explore from canonical representatives.
+                // If this state is equivalent to one we've already seen, skip exploration.
+                // The state and event are already recorded above - we just don't expand.
+                if (explore_from_canonical_states_only_ && !rr.was_new_state) {
+                    // State is equivalent to already-seen state - don't explore further
                     return;
                 }
 

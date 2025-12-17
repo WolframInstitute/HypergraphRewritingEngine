@@ -140,6 +140,7 @@ add_executable(unified_tests
     ../hypergraph/tests/test_v1_unified_comprehensive.cpp
     ../hypergraph/tests/test_unified_event_canonicalization.cpp
     test_grid_performance.cpp
+    test_repeated_invocation.cpp
 )
 
 # Link against all required libraries

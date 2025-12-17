@@ -257,7 +257,6 @@ __device__ uint64_t compute_wl_hash_warp(
 ) {
     // Use cooperative groups for warp-level coordination
     const uint32_t lane = threadIdx.x % 32;
-    const uint32_t warp_id = threadIdx.x / 32;
 
     uint64_t* colors_a = scratch_colors;
     uint64_t* colors_b = scratch_colors + max_vertex;
@@ -930,11 +929,9 @@ __global__ void wl_edge_correspondence_kernel(
     // First, collect edges from state1 and compute signatures
     // Then find matching edges in state2
 
-    __shared__ uint32_t edge1_count;
     __shared__ uint32_t match_count;
 
     if (threadIdx.x == 0) {
-        edge1_count = 0;
         match_count = 0;
         *valid_flag = 1;  // Assume valid until proven otherwise
     }

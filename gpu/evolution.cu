@@ -757,7 +757,7 @@ __global__ void hgmatch_megakernel(
 
                             // Deduplicate by canonical hash
                             GPUHashTableView<>* canonical_map = (GPUHashTableView<>*)ctx->canonical_state_map;
-                            auto [existing_state, was_new] = canonical_map->insert(hash, output.new_state);
+                            [[maybe_unused]] auto [existing_state, was_new] = canonical_map->insert(hash, output.new_state);
 
                             // Spawn SCAN tasks for each rule on new state
                             uint32_t next_step = task.step + 1;

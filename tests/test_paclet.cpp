@@ -40,8 +40,8 @@ TEST_F(PacletTest, TestWolframScriptBasicExecution) {
 
     // Debug: Check what architecture cmd.exe thinks it's running
     std::cout << "=== Architecture Debug ===" << std::endl;
-    std::system("echo PROCESSOR_ARCHITECTURE=%PROCESSOR_ARCHITECTURE%");
-    std::system("echo PROCESSOR_ARCHITEW6432=%PROCESSOR_ARCHITEW6432%");
+    [[maybe_unused]] int r1 = std::system("echo PROCESSOR_ARCHITECTURE=%PROCESSOR_ARCHITECTURE%");
+    [[maybe_unused]] int r2 = std::system("echo PROCESSOR_ARCHITEW6432=%PROCESSOR_ARCHITEW6432%");
 
     int result = test_utils::executeWolframScript(code);
     EXPECT_EQ(0, result) << "Basic WolframScript execution failed";

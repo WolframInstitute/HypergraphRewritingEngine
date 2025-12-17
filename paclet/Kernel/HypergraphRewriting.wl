@@ -6,615 +6,505 @@ PackageExport["HGEvolve"]
 PackageExport["HGEvolveV2"]
 PackageExport["EdgeId"]
 
-(* Public symbols - exposed API functions *)
-HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution and returns the specified property."
-HGEvolveV2::usage = "HGEvolveV2[rules, initialEdges, steps, property] performs multiway rewriting using the unified V2 engine with selectable hash strategy."
-EdgeId::usage = "EdgeId[id] wraps an edge identifier in state visualizations."
+(* Public symbols *)
+HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution."
+HGEvolveV2::usage = "HGEvolveV2[rules, initialEdges, steps, property] performs multiway rewriting using the V2 engine."
+EdgeId::usage = "EdgeId[id] wraps an edge identifier."
 
-(* Options for HGEvolve *)
-Options[HGEvolve] = {
-  "CanonicalizeStates" -> True,
-  "CanonicalizeEvents" -> False,
-  "DeduplicateEvents" -> False,
-  "CausalTransitiveReduction" -> True,
-  "EarlyTermination" -> False,
-  "PatchBasedMatching" -> False,
-  "FullCapture" -> True,
-  "AspectRatio" -> None,
-  "MaxSuccessorStatesPerParent" -> 0,  (* 0 = unlimited *)
-  "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
-  "ExplorationProbability" -> 1.0       (* 1.0 = always explore *)
-};
-
-(* Options for HGEvolveV2 - includes hash strategy selection *)
 Options[HGEvolveV2] = {
-  "CanonicalizeStates" -> True,
-  "CanonicalizeEvents" -> True,         (* V2 defaults to True *)
+  "HashStrategy" -> "WL",
+  "CanonicalizeStates" -> None,  (* None, Automatic, Full *)
+  "CanonicalizeEvents" -> None,  (* None, Full, Automatic, or {keys...} *)
   "CausalTransitiveReduction" -> True,
+  "MaxSuccessorStatesPerParent" -> 0,
+  "MaxStatesPerStep" -> 0,
+  "ExplorationProbability" -> 1.0,
+  "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
+  "ShowProgress" -> False,
+  "ShowGenesisEvents" -> False,
   "AspectRatio" -> None,
-  "MaxSuccessorStatesPerParent" -> 0,   (* 0 = unlimited *)
-  "MaxStatesPerStep" -> 0,              (* 0 = unlimited *)
-  "ExplorationProbability" -> 1.0,      (* 1.0 = always explore *)
-  "HashStrategy" -> "iUT"               (* "WL" | "UT" | "iUT" *)
+  "DebugFFI" -> False,
+  "IncludeStateContents" -> False,
+  "IncludeEventContents" -> False,
+  "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
+  "EdgeDeduplication" -> True  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
 };
 
 Begin["`Private`"]
 
-(* Load the compiled library *)
-$HypergraphLibrary = Quiet[FindLibrary["HypergraphRewriting"]]
+(* ============================================================================ *)
+(* Library Loading *)
+(* ============================================================================ *)
+
+$HypergraphLibrary = Quiet[FindLibrary["HypergraphRewriting"]];
 
 If[$HypergraphLibrary === $Failed,
-  (* Manual library path construction with platform-specific naming *)
-  Module[{libraryName, libraryPath, pacletRoot, attemptedPath},
-    (* Windows uses no prefix, Unix-like systems use "lib" prefix *)
-    libraryName = If[StringMatchQ[$SystemID, "Windows*"],
-      "HypergraphRewriting",
-      "libHypergraphRewriting"
-    ];
-
-    (* Get paclet root directory *)
+  Module[{libraryName, libraryPath, pacletRoot},
+    libraryName = If[StringMatchQ[$SystemID, "Windows*"], "HypergraphRewriting", "libHypergraphRewriting"];
     pacletRoot = DirectoryName[$InputFileName, 2];
-
-    (* Construct full library path *)
-    libraryPath = FileNameJoin[{
-      pacletRoot,
-      "LibraryResources",
-      $SystemID,
-      libraryName <> "." <> Internal`DynamicLibraryExtension[]
-    }];
-
-    (* Try to find the library *)
+    libraryPath = FileNameJoin[{pacletRoot, "LibraryResources", $SystemID,
+      libraryName <> "." <> Internal`DynamicLibraryExtension[]}];
     $HypergraphLibrary = Quiet[FindFile[libraryPath]];
-
-    (* Debug output if still failed *)
-    If[$HypergraphLibrary === $Failed,
-      Print["HypergraphRewriting: Failed to find library"];
-      Print["  SystemID: ", $SystemID];
-      Print["  Paclet root: ", pacletRoot];
-      Print["  Attempted path: ", libraryPath];
-      Print["  File exists: ", FileExistsQ[libraryPath]];
-
-      (* List what's actually in the LibraryResources directory *)
-      If[DirectoryQ[FileNameJoin[{pacletRoot, "LibraryResources"}]],
-        Print["  Available platforms: ", FileNames[All, FileNameJoin[{pacletRoot, "LibraryResources"}]]];
-        If[DirectoryQ[FileNameJoin[{pacletRoot, "LibraryResources", $SystemID}]],
-          Print["  Files in ", $SystemID, ": ", FileNames[All, FileNameJoin[{pacletRoot, "LibraryResources", $SystemID}]]];
-        ];
-      ];
-    ];
   ]
-]
-
-If[$HypergraphLibrary === $Failed,
-  Message[HypergraphRewriting::nolib, "Could not find HypergraphRewriting library. Please ensure it is compiled and installed."];
-  $Failed
-]
-
-(* LibraryLink function declarations *)
-If[$HypergraphLibrary =!= $Failed,
-  performRewriting = LibraryFunctionLoad[$HypergraphLibrary, "performRewriting", {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
-  performRewritingV2 = LibraryFunctionLoad[$HypergraphLibrary, "performRewritingV2", {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
-
-  If[Head[performRewriting] === LibraryFunction && Head[performRewritingV2] === LibraryFunction,
-    Print["HypergraphRewriting: Library functions (v1 + v2) loaded successfully from ", $HypergraphLibrary],
-    Print["HypergraphRewriting: Failed to load library functions from ", $HypergraphLibrary]
-  ],
-  Print["HypergraphRewriting: Library not found - functions will not work"]
 ];
 
-(* Error messages *)
-HypergraphRewriting::nolib = "Could not load HypergraphRewriting library: `1`"
-HypergraphRewriting::invarg = "Invalid argument: `1`"
-HypergraphRewriting::libcall = "Library function call failed: `1`"
-HypergraphRewriting::notimpl = "`1`"
+If[$HypergraphLibrary =!= $Failed,
+  performRewritingV2 = LibraryFunctionLoad[$HypergraphLibrary, "performRewritingV2",
+    {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+];
 
 (* ============================================================================ *)
-(* Vertex Shape Functions - Factored out to avoid repetition *)
+(* Property -> Required Data Mapping *)
 (* ============================================================================ *)
 
-(* State vertex shape function - renders hypergraph states *)
-stateVertexShapeFunction := Function[
-  Inset[
-    Framed[
-      ResourceFunction["WolframModelPlot"][Rest /@ #2, ImageSize -> {32, 32}],
-      Background -> LightBlue, RoundingRadius -> 3
-    ], #1, {0, 0}
-  ]
+(* Base data requirements for each property - truly minimal *)
+(* Structure graphs use even less data; optional content controlled by Include* options *)
+propertyRequirementsBase = <|
+  (* Raw data - minimal *)
+  "States" -> {"States"},
+  "Events" -> {"Events"},
+  "CausalEdges" -> {"CausalEdges"},
+  "BranchialEdges" -> {"BranchialEdges"},
+  (* All graph properties - FFI handles via GraphProperty option, no WL-side data needed *)
+  "StatesGraph" -> {}, "StatesGraphStructure" -> {},
+  "CausalGraph" -> {}, "CausalGraphStructure" -> {},
+  "BranchialGraph" -> {}, "BranchialGraphStructure" -> {},
+  "EvolutionGraph" -> {}, "EvolutionGraphStructure" -> {},
+  "EvolutionCausalGraph" -> {}, "EvolutionCausalGraphStructure" -> {},
+  "EvolutionBranchialGraph" -> {}, "EvolutionBranchialGraphStructure" -> {},
+  "EvolutionCausalBranchialGraph" -> {}, "EvolutionCausalBranchialGraphStructure" -> {},
+  (* Counts - request specific count from FFI *)
+  "NumStates" -> {"NumStates"},
+  "NumEvents" -> {"NumEvents"},
+  "NumCausalEdges" -> {"NumCausalEdges"},
+  "NumBranchialEdges" -> {"NumBranchialEdges"},
+  (* Debug/All *)
+  "Debug" -> {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
+  "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}
+|>;
+
+(* Compute union of required data for a list of properties *)
+(* Graph properties have empty requirements - FFI handles them via GraphProperty option *)
+computeRequiredData[props_List, includeStateContents_, includeEventContents_, canonicalizeStates_:None] := Module[
+  {unknown, requirements},
+
+  unknown = Complement[props, Keys[propertyRequirementsBase]];
+  If[Length[unknown] > 0,
+    Message[HGEvolveV2::unknownprop, unknown];
+    Return[$Failed]
+  ];
+
+  requirements = Lookup[propertyRequirementsBase, props];
+  DeleteDuplicates[Flatten[requirements]]
 ]
 
-(* Event vertex shape function - renders from->to transitions *)
-eventVertexShapeFunction := Function[
-  With[{from = #2[[1]], to = #2[[2]], tag = #2[[3]]},
-    Inset[
-      Framed[
-        Row[{
-          ResourceFunction["WolframModelPlot"][
-            Rest /@ from,
-            GraphHighlight -> Rest /@ Select[from, MemberQ[tag["ConsumedEdges"], First[#]] &],
-            GraphHighlightStyle -> Dashed,
-            ImageSize -> 32
-          ],
-          Graphics[{LightGray, FilledCurve[
-            {{{0, 2, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}}},
-            {{{-1., 0.1848}, {0.2991, 0.1848}, {-0.1531, 0.6363}, {0.109, 0.8982}, {1., 0.0034},
-            {0.109, -0.8982}, {-0.1531, -0.6363}, {0.2991, -0.1848}, {-1., -0.1848}, {-1., 0.1848}}}
-          ]}, ImageSize -> 8],
-          ResourceFunction["WolframModelPlot"][
-            Rest /@ to,
-            GraphHighlight -> Rest /@ Select[to, MemberQ[tag["ProducedEdges"], First[#]] &],
-            ImageSize -> 32
-          ]
-        }],
-        Background -> LightYellow, RoundingRadius -> 3
-      ], #1, {0, 0}
+computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
+  computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
+
+HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, and their Structure variants.";
+HGEvolveV2::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
+
+(* ============================================================================ *)
+(* Graph Creation Helpers *)
+(* ============================================================================ *)
+
+(* Vertex styles for Structure variants *)
+stateVertexStyle = Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]];
+eventVertexStyle = Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]];
+
+(* Helper function to format edges for display: bold edge ID, truncate if over limit *)
+formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
+  {displayed = Take[stateEdges, UpTo[maxEdges]], formatted},
+  formatted = Map[Prepend[Rest[#], Style[First[#], Bold]] &, displayed];
+  If[Length[stateEdges] > maxEdges, Append[formatted, "..."], formatted]
+];
+
+(* Format state tooltip with full info *)
+formatStateTooltip[stateData_Association] := Column[{
+  Row[{Style["State", Bold]}],
+  Grid[{
+    {"Id:", stateData["Id"]},
+    {"CanonicalId:", stateData["CanonicalId"]},
+    {"Step:", stateData["Step"]},
+    {"IsInitial:", stateData["IsInitial"]},
+    {Row[{"Edges (", Length[stateData["Edges"]], "):"}], formatEdgesForDisplay[stateData["Edges"]]}
+  }, Alignment -> Left, Spacings -> {1, 0.5}]
+}, Spacings -> 0.5];
+
+(* Format event tooltip with full info *)
+formatEventTooltip[eventData_Association] := Module[
+  {rows = {
+    {"Id:", eventData["Id"]},
+    {"CanonicalId:", eventData["CanonicalId"]},
+    {"RuleIndex:", eventData["RuleIndex"]},
+    {"InputState:", eventData["InputState"]},
+    {"OutputState:", eventData["OutputState"]}
+  }},
+  If[!MissingQ[eventData["ConsumedEdges"]], AppendTo[rows, {"ConsumedEdges:", eventData["ConsumedEdges"]}]];
+  If[!MissingQ[eventData["ProducedEdges"]], AppendTo[rows, {"ProducedEdges:", eventData["ProducedEdges"]}]];
+  Column[{
+    Row[{Style["Event", Bold]}],
+    Grid[rows, Alignment -> Left, Spacings -> {1, 0.5}]
+  }, Spacings -> 0.5]
+];
+
+(* Format causal edge tooltip *)
+formatCausalEdgeTooltip[data_Association] := Column[{
+  Row[{Style["Causal Edge", Bold]}],
+  Grid[{
+    {"Producer Event:", data["ProducerEvent"]},
+    {"Consumer Event:", data["ConsumerEvent"]}
+  }, Alignment -> Left, Spacings -> {1, 0.5}]
+}, Spacings -> 0.5];
+
+(* Format branchial edge tooltip - shows states or events depending on context *)
+formatBranchialEdgeTooltip[data_Association] := Column[{
+  Row[{Style["Branchial Edge", Bold]}],
+  Grid[
+    If[KeyExistsQ[data, "State1"],
+      {{"State 1:", data["State1"]}, {"State 2:", data["State2"]}},
+      {{"Event 1:", data["Event1"]}, {"Event 2:", data["Event2"]}}
+    ],
+    Alignment -> Left, Spacings -> {1, 0.5}]
+}, Spacings -> 0.5];
+
+(* ============================================================================ *)
+(* Graph Creation Functions *)
+(* ============================================================================ *)
+
+(* Edge styles by type for GraphData-based graphs *)
+graphDataEdgeStyles = <|
+  "Directed" -> Directive[Gray, Arrowheads[0.02]],
+  "Causal" -> Directive[Orange, Arrowheads[0.02]],
+  "Branchial" -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"],
+  "StateEvent" -> Directive[Gray],  (* Same gray as EventState for consistency *)
+  "EventState" -> Directive[Gray, Arrowheads[0.02]]
+|>;
+
+(* Check if vertex data represents a state (has Edges but no RuleIndex) *)
+isStateVertexData[data_Association] := KeyExistsQ[data, "Edges"] && !KeyExistsQ[data, "RuleIndex"];
+
+(* State vertex shape function for styled mode using GraphData *)
+makeStyledStateVertexShapeFn[vertexData_] := Function[{pos, v, size},
+  With[{data = vertexData[v]},
+    If[AssociationQ[data] && KeyExistsQ[data, "Edges"],
+      Inset[Framed[
+        ResourceFunction["WolframModelPlot"][Rest /@ data["Edges"], ImageSize -> {32, 32}],
+        Background -> LightBlue, RoundingRadius -> 3
+      ], pos, {0, 0}],
+      (* Fallback for missing data *)
+      Inset[Framed[v, Background -> LightBlue], pos, {0, 0}]
     ]
   ]
-]
+];
 
-HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, wxfByteArray, resultByteArray, rulesAssoc, result, options},
-  If[Head[performRewriting] =!= LibraryFunction,
-    Return["Library function performRewriting not loaded"]
-  ];
-
-  (* Parse options with defaults *)
-  options = Association[
-    "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
-    "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
-    "DeduplicateEvents" -> OptionValue["DeduplicateEvents"],
-    "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
-    "EarlyTermination" -> OptionValue["EarlyTermination"],
-    "PatchBasedMatching" -> OptionValue["PatchBasedMatching"],
-    "FullCapture" -> OptionValue["FullCapture"],
-    "AspectRatio" -> OptionValue["AspectRatio"],
-    "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
-    "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
-    "ExplorationProbability" -> OptionValue["ExplorationProbability"]
-  ];
-
-  (* Convert rules to Association format for WXF *)
-  rulesAssoc = Association[
-    Table[
-      "Rule" <> ToString[i] -> rules[[i]],
-      {i, Length[rules]}
+(* Event vertex shape function for styled mode using GraphData *)
+makeStyledEventVertexShapeFn[vertexData_] := Function[{pos, v, size},
+  With[{data = vertexData[v]},
+    If[AssociationQ[data] && KeyExistsQ[data, "InputStateEdges"],
+      Inset[Framed[Row[{
+        ResourceFunction["WolframModelPlot"][
+          Rest /@ data["InputStateEdges"],
+          GraphHighlight -> Rest /@ Select[data["InputStateEdges"], MemberQ[data["ConsumedEdges"], First[#]] &],
+          GraphHighlightStyle -> Dashed, ImageSize -> 32],
+        Graphics[{LightGray, Polygon[{{-0.5, 0.3}, {0.5, 0}, {-0.5, -0.3}}]}, ImageSize -> 8],
+        ResourceFunction["WolframModelPlot"][
+          Rest /@ data["OutputStateEdges"],
+          GraphHighlight -> Rest /@ Select[data["OutputStateEdges"], MemberQ[data["ProducedEdges"], First[#]] &],
+          ImageSize -> 32]
+      }], Background -> LightYellow, RoundingRadius -> 3], pos, {0, 0}],
+      (* Fallback for missing data *)
+      Inset[Framed[v, Background -> LightYellow], pos, {0, 0}]
     ]
+  ]
+];
+
+(* Create graph from FFI GraphData - main entry point *)
+(* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
+(* styled: True for full hypergraph rendering, False for structure only *)
+createGraphFromData[graphData_Association, aspectRatio_, styled_:False] := Module[
+  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeLabels},
+
+  vertices = graphData["Vertices"];
+  vertexData = graphData["VertexData"];
+
+  (* Build edges with appropriate constructors based on Type *)
+  edgeList = Map[
+    Switch[#["Type"],
+      "StateEvent", UndirectedEdge[#["From"], #["To"], Lookup[#, "Data", <||>]],
+      "Branchial", UndirectedEdge[#["From"], #["To"], Lookup[#, "Data", <||>]],
+      _, DirectedEdge[#["From"], #["To"], Lookup[#, "Data", #]]
+    ] &,
+    graphData["Edges"]
   ];
 
-  (* Detect if we have single state or multiple states using Depth *)
-  (* Depth 3: {{1,2},{2,3}} = single state (list of edges) *)
-  (* Depth 4: {{{1,2}},{{3,4}}} = multiple states (list of states) *)
-  initialStatesData = If[Depth[initialEdges] == 3,
-    (* Single state: wrap in outer list to make uniform *)
-    {initialEdges},
-    (* Multiple states: already in correct format *)
-    initialEdges
-  ];
-
-  (* Create input association with options *)
-  inputData = Association[
-    "InitialStates" -> initialStatesData,
-    "Rules" -> rulesAssoc,
-    "Steps" -> steps,
-    "Options" -> options
-  ];
-
-  (* Serialize to WXF and call library function using ByteArray directly *)
-  wxfByteArray = BinarySerialize[inputData];
-  resultByteArray = performRewriting[wxfByteArray];
-
-  If[ByteArrayQ[resultByteArray] && Length[resultByteArray] > 0,
-    Module[{wxfData, states, events, causalEdges, branchialEdges, numStates, numEvents, numCausalEdges, numBranchialEdges},
-      (* Deserialize WXF result *)
-      wxfData = BinaryDeserialize[resultByteArray];
-
-      If[AssociationQ[wxfData],
-        (* Extract data *)
-        states = Lookup[wxfData, "States", Association[]];
-        events = Lookup[wxfData, "Events", {}];
-        causalEdges = Lookup[wxfData, "CausalEdges", {}];
-        branchialEdges = Lookup[wxfData, "BranchialEdges", {}];
-        numStates = Lookup[wxfData, "NumStates", Length[states]];
-        numEvents = Lookup[wxfData, "NumEvents", Length[events]];
-        numCausalEdges = Lookup[wxfData, "NumCausalEdges", Length[causalEdges]];
-        numBranchialEdges = Lookup[wxfData, "NumBranchialEdges", Length[branchialEdges]];
-
-        (* Return requested property *)
-        Switch[property,
-          "States", states,
-          "Events", events,
-          "CausalEdges", causalEdges,
-          "BranchialEdges", branchialEdges,
-          "NumStates", numStates,
-          "NumEvents", numEvents,
-          "NumCausalEdges", numCausalEdges,
-          "NumBranchialEdges", numBranchialEdges,
-          "Debug", Association[
-            "NumStates" -> numStates,
-            "NumEvents" -> numEvents,
-            "NumCausalEdges" -> numCausalEdges,
-            "NumBranchialEdges" -> numBranchialEdges,
-            "StatesLength" -> Length[states],
-            "EventsLength" -> Length[events],
-            "CausalEdgesLength" -> Length[causalEdges],
-            "BranchialEdgesLength" -> Length[branchialEdges]
-          ],
-          "StatesGraph", HGCreateStatesGraph[states, events, True, options["AspectRatio"]],
-          "StatesGraphStructure", HGCreateStatesGraph[states, events, False, options["AspectRatio"]],
-          "CausalGraph", HGCreateCausalGraph[states, events, causalEdges, True, options["AspectRatio"]],
-          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False, options["AspectRatio"]],
-          "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
-          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
-          "EvolutionGraph", HGCreateEvolutionGraph[states, events, {}, {}, True, options["AspectRatio"]],
-          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False, options["AspectRatio"]],
-          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges, {}, True, options["AspectRatio"]],
-          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False, options["AspectRatio"]],
-          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges, True, options["AspectRatio"]],
-          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False, options["AspectRatio"]],
-          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, True, options["AspectRatio"]],
-          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False, options["AspectRatio"]],
-          _, $Failed
-        ],
-        (* WXF parsing failed *)
-        $Failed
+  (* Vertex labels (tooltips) - use appropriate formatter based on vertex data type *)
+  vertexLabels = Map[
+    Function[v,
+      With[{data = vertexData[v]},
+        v -> Placed[
+          If[AssociationQ[data],
+            If[isStateVertexData[data], formatStateTooltip[data], formatEventTooltip[data]],
+            ToString[v]  (* Fallback for missing data *)
+          ], Tooltip]
       ]
     ],
-    $Failed
-  ]
-]
+    vertices
+  ];
 
-HGCreateStatesGraph[states_, events_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{stateEdges, eventList},
-  (* Events is now an Association, get values and expand by multiplicity *)
-  eventList = Flatten[Map[
-    ConstantArray[#, Lookup[#, "Multiplicity", 1]] &,
-    Values[events]
-  ], 1];
-
-  (* Use canonical state IDs for graph edges to link isomorphic states *)
-  (* Extract state edges (now states are Associations with "Edges" and "IsInitialState") *)
-  stateEdges = Map[
-    DirectedEdge[
-      Lookup[states[Lookup[#, "CanonicalInputStateId", #["InputStateId"]]], "Edges"],
-      Lookup[states[Lookup[#, "CanonicalOutputStateId", #["OutputStateId"]]], "Edges"]
+  (* Edge styles by type *)
+  edgeStyles = Map[
+    With[{e = #},
+      Switch[e["Type"],
+        "StateEvent", UndirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles["StateEvent"],
+        "Branchial", UndirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles["Branchial"],
+        _, DirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles[e["Type"]]
+      ]
     ] &,
-    eventList
+    graphData["Edges"]
   ];
 
-  (* Include states that are either connected by events OR are initial states *)
-  connectedOrInitialStates = If[Length[stateEdges] == 0,
-    (* No events: include all state edges *)
-    Map[Lookup[#, "Edges"] &, Values[states]],
-    (* Has events: include connected states plus any initial states *)
-    DeleteDuplicates[Join[
-      Flatten[List @@@ stateEdges, 1],
-      Map[Lookup[#, "Edges"] &, Select[Values[states], Lookup[#, "IsInitialState", False] == "True" &]]
-    ]]
-  ];
+  (* Edge labels (tooltips for edges with Data) *)
+  edgeLabels = {
+    DirectedEdge[_, _, tag_?AssociationQ] :> Placed[
+      Which[
+        KeyExistsQ[tag, "RuleIndex"], formatEventTooltip[tag],
+        KeyExistsQ[tag, "ProducerEvent"], formatCausalEdgeTooltip[tag],
+        KeyExistsQ[tag, "EventId"], Row[{"Event ", tag["EventId"]}],
+        True, ""
+      ], Tooltip],
+    UndirectedEdge[_, _, tag_?AssociationQ] :> Placed[
+      Which[
+        KeyExistsQ[tag, "State1"] || KeyExistsQ[tag, "Event1"], formatBranchialEdgeTooltip[tag],
+        KeyExistsQ[tag, "EventId"], Row[{"Event ", tag["EventId"]}],
+        True, ""
+      ], Tooltip]
+  };
 
-  Graph[
-    connectedOrInitialStates,
-    stateEdges,
-    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
-    VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
-    VertexStyle -> If[enableVertexStyles,
-      Automatic,
-      Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
-    ],
-    EdgeStyle -> Hue[0.75, 0, 0.35],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
-    AspectRatio -> aspectRatio
-  ]
-]
-
-HGCreateCausalGraph[states_, events_, causalEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{eventVertices, causalEventEdges, connectedEvents},
-  (* Events is now an Association keyed by event ID *)
-  eventVertices = Association[Map[
-    #["EventId"] -> DirectedEdge[
-      Lookup[states[#["InputStateId"]], "Edges"],
-      Lookup[states[#["OutputStateId"]], "Edges"],
-      #
-    ] &,
-    Values[events]
-  ]];
-
-  (* Causal edges now have From/To/Multiplicity structure *)
-  causalEventEdges = If[Length[causalEdges] > 0 && Length[eventVertices] > 0,
-    Flatten[Map[
-      ConstantArray[
-        DirectedEdge[eventVertices[#["From"]], eventVertices[#["To"]]],
-        #["Multiplicity"]
-      ] &,
-      causalEdges
-    ], 1],
-    {}
-  ];
-
-  (* Only include events that have causal edges *)
-  connectedEvents = DeleteDuplicates[Flatten[List @@@ causalEventEdges]];
-
-  Graph[
-    connectedEvents,
-    causalEventEdges,
-    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
-    VertexShapeFunction -> If[enableVertexStyles, {_DirectedEdge -> eventVertexShapeFunction}, Automatic],
-    VertexStyle -> If[enableVertexStyles,
-      Automatic,
-      {_DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]]}
-    ],
-    EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["CausalGraph"]["EdgeStyle"],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
-    AspectRatio -> aspectRatio
-  ]
-]
-
-HGCreateBranchialGraph[states_, events_, branchialEdges_, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{branchialStateEdges},
-  (* Use canonical state IDs for graph edges to link isomorphic states *)
-  (* Branchial edges now have From/To/Multiplicity structure *)
-  branchialStateEdges = If[Length[branchialEdges] > 0 && Length[events] > 0,
-    Flatten[Map[
-      Module[{fromEvent, toEvent},
-        fromEvent = events[#["From"]];
-        toEvent = events[#["To"]];
-        ConstantArray[
-          UndirectedEdge[
-            Lookup[states[Lookup[fromEvent, "CanonicalOutputStateId", fromEvent["OutputStateId"]]], "Edges"],
-            Lookup[states[Lookup[toEvent, "CanonicalOutputStateId", toEvent["OutputStateId"]]], "Edges"]
-          ],
-          #["Multiplicity"]
+  If[styled,
+    (* Styled mode: use shape functions for hypergraph rendering *)
+    vertexShapes = Map[
+      Function[v,
+        With[{data = vertexData[v]},
+          v -> If[AssociationQ[data] && isStateVertexData[data],
+            makeStyledStateVertexShapeFn[vertexData],
+            makeStyledEventVertexShapeFn[vertexData]
+          ]
         ]
-      ] &,
-      branchialEdges
-    ], 1],
-    {}
-  ];
-
-  Graph[
-    branchialStateEdges,
-    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
-    VertexShapeFunction -> If[enableVertexStyles, stateVertexShapeFunction, Automatic],
-    VertexStyle -> If[enableVertexStyles,
-      Automatic,
-      Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
-    ],
-    EdgeStyle -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"],
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
-    AspectRatio -> aspectRatio
-  ]
-]
-
-HGCreateEvolutionGraph[states_, events_, causalEdges_ : {}, branchialEdges_ : {}, enableVertexStyles_ : True, aspectRatio_ : None] := Module[{
-  stateVertices, eventVertices, eventList, allVertices, stateToEventEdges,
-  eventToStateEdges, causalGraphEdges, branchialGraphEdges, allEdges, baseGraph, baseEdges,
-  formatStateForTooltip
-},
-  (* Helper function to format state for tooltip: wrap EdgeID with EdgeId[...] *)
-  formatStateForTooltip[stateEdges_List] := Map[
-    Prepend[Rest[#], EdgeId[First[#]]] &,
-    stateEdges
-  ];
-
-  (* Extract just the edges from state data *)
-  stateVertices = Map[Lookup[#, "Edges"] &, Values[states]];
-
-  (* Events is now an Association, expand by multiplicity for visualization *)
-  eventList = Flatten[Map[
-    ConstantArray[#, Lookup[#, "Multiplicity", 1]] &,
-    Values[events]
-  ], 1];
-
-  (* Event vertices contain raw state data for visualization, but carry event metadata *)
-  eventVertices = Map[
-    DirectedEdge[
-      Lookup[states[#["InputStateId"]], "Edges"],
-      Lookup[states[#["OutputStateId"]], "Edges"],
-      #
-    ] &,
-    eventList
-  ];
-
-  (* Build association for edge lookup *)
-  eventVertexAssoc = Association[Map[
-    #["EventId"] -> DirectedEdge[
-      Lookup[states[#["InputStateId"]], "Edges"],
-      Lookup[states[#["OutputStateId"]], "Edges"],
-      #
-    ] &,
-    Values[events]
-  ]];
-
-  (* Graph edges use canonical state IDs to link isomorphic states *)
-  stateToEventEdges = MapThread[
-    UndirectedEdge[Lookup[states[Lookup[#1, "CanonicalInputStateId", #1["InputStateId"]]], "Edges"], #2] &,
-    {eventList, eventVertices}
-  ];
-
-  eventToStateEdges = MapThread[
-    DirectedEdge[#2, Lookup[states[Lookup[#1, "CanonicalOutputStateId", #1["OutputStateId"]]], "Edges"]] &,
-    {eventList, eventVertices}
-  ];
-
-  causalGraphEdges = If[Length[causalEdges] > 0 && Length[eventVertexAssoc] > 0,
-    Flatten[Map[
-      ConstantArray[
-        DirectedEdge[eventVertexAssoc[#["From"]], eventVertexAssoc[#["To"]]],
-        #["Multiplicity"]
-      ] &,
-      causalEdges
-    ], 1],
-    {}
-  ];
-
-  branchialGraphEdges = If[Length[branchialEdges] > 0 && Length[eventVertexAssoc] > 0,
-    Flatten[Map[
-      ConstantArray[
-        UndirectedEdge[eventVertexAssoc[#["From"]], eventVertexAssoc[#["To"]]],
-        #["Multiplicity"]
-      ] &,
-      branchialEdges
-    ], 1],
-    {}
-  ];
-
-  allEdges = Join[stateToEventEdges, eventToStateEdges, causalGraphEdges, branchialGraphEdges];
-
-  (* Include states that are either connected by events OR are initial states *)
-  connectedOrInitialStateVertices = If[Length[stateToEventEdges] == 0 && Length[eventToStateEdges] == 0,
-    (* No state-event edges: include all states *)
-    stateVertices,
-    (* Has edges: include connected states plus any initial states *)
-    DeleteDuplicates[Join[
-      Cases[
-        Join[stateToEventEdges, eventToStateEdges],
-        (UndirectedEdge | DirectedEdge)[s_List, _] | (UndirectedEdge | DirectedEdge)[_, s_List] :> s,
-        {1}
       ],
-      Map[Lookup[#, "Edges"] &, Select[Values[states], Lookup[#, "IsInitialState", False] == "True" &]]
-    ]]
-  ];
-
-  allVertices = Join[connectedOrInitialStateVertices, eventVertices];
-
-  Graph[
-    allVertices,
-    allEdges,
-    GraphLayout -> {"LayeredDigraphEmbedding", "Orientation" -> Top},
-    PerformanceGoal -> "Quality",
-    VertexLabels -> {
-      v_List :> With[{formatted = formatStateForTooltip[v]}, Placed[HoldForm[formatted], Tooltip]],
-      DirectedEdge[_, _, tag_] :> Placed[tag, Tooltip]
-    },
-    VertexSize -> If[enableVertexStyles, 1/2, Automatic],
-    VertexShapeFunction -> If[enableVertexStyles,
-      {
-        _DirectedEdge -> eventVertexShapeFunction,
-        Except[_DirectedEdge] -> stateVertexShapeFunction
-      },
-      Automatic
-    ],
-    VertexStyle -> If[enableVertexStyles,
-      Automatic,
-      {
-        _DirectedEdge -> Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]],
-        Except[_DirectedEdge] -> Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]]
-      }
-    ],
-    EdgeStyle -> {
-      UndirectedEdge[Except[_DirectedEdge], _DirectedEdge] -> Hue[0.75, 0, 0.35],
-      DirectedEdge[_DirectedEdge, Except[_DirectedEdge]] -> Hue[0.75, 0, 0.35],
-      DirectedEdge[_DirectedEdge, _DirectedEdge] -> ResourceFunction["WolframPhysicsProjectStyleData"]["CausalGraph"]["EdgeStyle"],
-      UndirectedEdge[_DirectedEdge, _DirectedEdge] -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"]
-    },
-    AspectRatio -> aspectRatio,
-    PlotLabel -> None
+      vertices
+    ];
+    Graph[vertices, edgeList,
+      VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
+      EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]
+    ,
+    (* Structure mode: simple styles *)
+    vertexStyles = Map[
+      Function[v,
+        With[{data = vertexData[v]},
+          v -> If[AssociationQ[data] && isStateVertexData[data], stateVertexStyle, eventVertexStyle]
+        ]
+      ],
+      vertices
+    ];
+    Graph[vertices, edgeList,
+      VertexLabels -> vertexLabels, VertexStyle -> vertexStyles,
+      EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]
   ]
-]
+];
 
-(* HGEvolveV2 - Unified V2 engine with hash strategy selection *)
-HGEvolveV2[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", OptionsPattern[]] := Module[{inputData, wxfByteArray, resultByteArray, rulesAssoc, result, options},
+(* ============================================================================ *)
+(* Main Function: HGEvolveV2 *)
+(* ============================================================================ *)
+
+HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
+           property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
+           OptionsPattern[]] := Module[
+  {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
+   states, events, causalEdges, branchialEdges, aspectRatio, props,
+   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties},
+
   If[Head[performRewritingV2] =!= LibraryFunction,
-    Return["Library function performRewritingV2 not loaded"]
+    Return[$Failed]
   ];
 
-  (* Parse options with defaults *)
-  options = Association[
+  (* Normalize property to list and deduplicate *)
+  props = DeleteDuplicates[Flatten[{property}]];
+
+  (* Get content options *)
+  includeStateContents = OptionValue["IncludeStateContents"];
+  includeEventContents = OptionValue["IncludeEventContents"];
+
+  (* Get canonicalization options - used for per-graph-type ID selection *)
+  canonicalizeStates = OptionValue["CanonicalizeStates"];
+  canonicalizeEvents = OptionValue["CanonicalizeEvents"];
+
+  (* Compute required data components - fail explicitly on unknown properties *)
+  (* Pass canonicalizeStates to conditionally add States when state canonicalization is needed *)
+  requiredData = computeRequiredData[props, includeStateContents, includeEventContents, canonicalizeStates];
+  If[requiredData === $Failed, Return[$Failed]];
+
+  (* Collect all graph properties for FFI *)
+  graphProperties = Select[props, StringMatchQ[#, "*Graph*"]&];
+
+  (* Debug: print what data we're requesting from FFI *)
+  If[OptionValue["DebugFFI"],
+    Print["HGEvolveV2 FFI Debug:"];
+    Print["  Requested properties: ", props];
+    Print["  Required data components: ", requiredData];
+    Print["  Graph properties: ", graphProperties];
+  ];
+
+  (* Build options *)
+  aspectRatio = OptionValue["AspectRatio"];
+  (* Convert BranchialStep: All -> 0, positive for 1-based step, negative for from-end *)
+  (* EvolutionCausalBranchialGraph defaults to All, BranchialGraph defaults to -1 (final step) *)
+  (* Use first graph property for branchial step default, or empty string if none *)
+  branchialStepValue = Replace[OptionValue["BranchialStep"], {
+    Automatic :> If[Length[graphProperties] > 0 && StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
+    All -> 0
+  }];
+
+  options = <|
+    "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
-    "AspectRatio" -> OptionValue["AspectRatio"],
     "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
     "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
     "ExplorationProbability" -> OptionValue["ExplorationProbability"],
-    "HashStrategy" -> OptionValue["HashStrategy"]
-  ];
+    "ExploreFromCanonicalStatesOnly" -> OptionValue["ExploreFromCanonicalStatesOnly"],
+    "ShowProgress" -> OptionValue["ShowProgress"],
+    "ShowGenesisEvents" -> OptionValue["ShowGenesisEvents"],
+    "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
+    "EdgeDeduplication" -> OptionValue["EdgeDeduplication"],
+    "RequestedData" -> requiredData,
+    "GraphProperties" -> graphProperties  (* List of graph properties for FFI to generate *)
+  |>;
 
-  (* Convert rules to Association format for WXF *)
-  rulesAssoc = Association[
-    Table[
-      "Rule" <> ToString[i] -> rules[[i]],
-      {i, Length[rules]}
-    ]
-  ];
+  (* Convert rules to Association *)
+  rulesAssoc = Association[Table["Rule" <> ToString[i] -> rules[[i]], {i, Length[rules]}]];
 
-  (* Detect if we have single state or multiple states using Depth *)
-  (* Depth 3: {{1,2},{2,3}} = single state (list of edges) *)
-  (* Depth 4: {{{1,2}},{{3,4}}} = multiple states (list of states) *)
-  initialStatesData = If[Depth[initialEdges] == 3,
-    (* Single state: wrap in outer list to make uniform *)
-    {initialEdges},
-    (* Multiple states: already in correct format *)
-    initialEdges
-  ];
+  (* Handle single vs multiple initial states *)
+  initialStatesData = If[Depth[initialEdges] == 3, {initialEdges}, initialEdges];
 
-  (* Create input association with options *)
-  inputData = Association[
+  (* Build input *)
+  inputData = <|
     "InitialStates" -> initialStatesData,
     "Rules" -> rulesAssoc,
     "Steps" -> steps,
     "Options" -> options
+  |>;
+
+  (* Call FFI *)
+  wxfBytes = BinarySerialize[inputData];
+  resultBytes = performRewritingV2[wxfBytes];
+
+  If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
+
+  wxfData = BinaryDeserialize[resultBytes];
+  If[!AssociationQ[wxfData], Return[$Failed]];
+
+  (* Extract data - validate that requested data was returned *)
+  (* Only use defaults for data we didn't request *)
+  states = If[MemberQ[requiredData, "States"],
+    If[KeyExistsQ[wxfData, "States"], wxfData["States"],
+      Message[HGEvolveV2::missingdata, "States"]; Return[$Failed]],
+    <||>
+  ];
+  events = If[MemberQ[requiredData, "Events"] || MemberQ[requiredData, "EventsMinimal"],
+    If[KeyExistsQ[wxfData, "Events"], wxfData["Events"],
+      Message[HGEvolveV2::missingdata, "Events"]; Return[$Failed]],
+    <||>
+  ];
+  causalEdges = If[MemberQ[requiredData, "CausalEdges"],
+    If[KeyExistsQ[wxfData, "CausalEdges"], wxfData["CausalEdges"],
+      Message[HGEvolveV2::missingdata, "CausalEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialEdges = If[MemberQ[requiredData, "BranchialEdges"],
+    If[KeyExistsQ[wxfData, "BranchialEdges"], wxfData["BranchialEdges"],
+      Message[HGEvolveV2::missingdata, "BranchialEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialStateEdges = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
+    If[KeyExistsQ[wxfData, "BranchialStateEdges"], wxfData["BranchialStateEdges"],
+      Message[HGEvolveV2::missingdata, "BranchialStateEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialStateVertices = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
+    If[KeyExistsQ[wxfData, "BranchialStateVertices"], wxfData["BranchialStateVertices"], {}],
+    {}
   ];
 
-  (* Serialize to WXF and call library function using ByteArray directly *)
-  wxfByteArray = BinarySerialize[inputData];
-  resultByteArray = performRewritingV2[wxfByteArray];
+  (* Debug: print what was returned from FFI *)
+  If[OptionValue["DebugFFI"],
+    Print["  FFI response keys: ", Keys[wxfData]];
+    Print["  FFI response size: ", ByteCount[wxfData], " bytes"];
+    Print["  States count: ", Length[states]];
+    Print["  Events count: ", Length[events]];
+    Print["  CausalEdges count: ", Length[causalEdges]];
+    Print["  BranchialEdges count: ", Length[branchialEdges]];
+  ];
 
-  If[ByteArrayQ[resultByteArray] && Length[resultByteArray] > 0,
-    Module[{wxfData, states, events, causalEdges, branchialEdges, numStates, numEvents, numCausalEdges, numBranchialEdges},
-      (* Deserialize WXF result *)
-      wxfData = BinaryDeserialize[resultByteArray];
-
-      If[AssociationQ[wxfData],
-        (* Extract data *)
-        states = Lookup[wxfData, "States", Association[]];
-        events = Lookup[wxfData, "Events", {}];
-        causalEdges = Lookup[wxfData, "CausalEdges", {}];
-        branchialEdges = Lookup[wxfData, "BranchialEdges", {}];
-        numStates = Lookup[wxfData, "NumStates", Length[states]];
-        numEvents = Lookup[wxfData, "NumEvents", Length[events]];
-        numCausalEdges = Lookup[wxfData, "NumCausalEdges", Length[causalEdges]];
-        numBranchialEdges = Lookup[wxfData, "NumBranchialEdges", Length[branchialEdges]];
-
-        (* Return requested property - same as HGEvolve *)
-        Switch[property,
-          "States", states,
-          "Events", events,
-          "CausalEdges", causalEdges,
-          "BranchialEdges", branchialEdges,
-          "NumStates", numStates,
-          "NumEvents", numEvents,
-          "NumCausalEdges", numCausalEdges,
-          "NumBranchialEdges", numBranchialEdges,
-          "Debug", Association[
-            "NumStates" -> numStates,
-            "NumEvents" -> numEvents,
-            "NumCausalEdges" -> numCausalEdges,
-            "NumBranchialEdges" -> numBranchialEdges,
-            "StatesLength" -> Length[states],
-            "EventsLength" -> Length[events],
-            "CausalEdgesLength" -> Length[causalEdges],
-            "BranchialEdgesLength" -> Length[branchialEdges]
-          ],
-          "StatesGraph", HGCreateStatesGraph[states, events, True, options["AspectRatio"]],
-          "StatesGraphStructure", HGCreateStatesGraph[states, events, False, options["AspectRatio"]],
-          "CausalGraph", HGCreateCausalGraph[states, events, causalEdges, True, options["AspectRatio"]],
-          "CausalGraphStructure", HGCreateCausalGraph[states, events, causalEdges, False, options["AspectRatio"]],
-          "BranchialGraph", HGCreateBranchialGraph[states, events, branchialEdges, True, options["AspectRatio"]],
-          "BranchialGraphStructure", HGCreateBranchialGraph[states, events, branchialEdges, False, options["AspectRatio"]],
-          "EvolutionGraph", HGCreateEvolutionGraph[states, events, {}, {}, True, options["AspectRatio"]],
-          "EvolutionGraphStructure", HGCreateEvolutionGraph[states, events, {}, {}, False, options["AspectRatio"]],
-          "EvolutionCausalGraph", HGCreateEvolutionGraph[states, events, causalEdges, {}, True, options["AspectRatio"]],
-          "EvolutionCausalGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, {}, False, options["AspectRatio"]],
-          "EvolutionBranchialGraph", HGCreateEvolutionGraph[states, events, {}, branchialEdges, True, options["AspectRatio"]],
-          "EvolutionBranchialGraphStructure", HGCreateEvolutionGraph[states, events, {}, branchialEdges, False, options["AspectRatio"]],
-          "EvolutionCausalBranchialGraph", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, True, options["AspectRatio"]],
-          "EvolutionCausalBranchialGraphStructure", HGCreateEvolutionGraph[states, events, causalEdges, branchialEdges, False, options["AspectRatio"]],
-          _, $Failed
-        ],
-        (* WXF parsing failed *)
-        $Failed
-      ]
-    ],
-    $Failed
+  (* Return requested properties *)
+  If[Length[props] == 1,
+    (* Single property: return directly *)
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents],
+    (* Multiple properties: return association *)
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents] & /@ props]
   ]
 ]
 
-End[]  (* `Private` *)
+(* Property getter *)
+(* Graph properties are handled via FFI GraphData - keyed by property name *)
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_] := Module[
+  {isGraphProperty, isStyled, graphData},
 
-EndPackage[]  (* `HypergraphRewriting` *)
+  (* Graph properties: use FFI-provided GraphData keyed by property name *)
+  isGraphProperty = StringMatchQ[prop, "*Graph*"];
+  If[isGraphProperty,
+    If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
+      graphData = wxfData["GraphData"][prop];
+      isStyled = !StringMatchQ[prop, "*Structure"];
+      Return[createGraphFromData[graphData, aspectRatio, isStyled]],
+      (* GraphData for this property not available *)
+      Return[$Failed]
+    ]
+  ];
+
+  (* Non-graph properties: return raw data or counts *)
+  Switch[prop,
+    "States", states,
+    "Events", events,
+    "CausalEdges", causalEdges,
+    "BranchialEdges", branchialEdges,
+    "BranchialStateEdges", branchialStateEdges,
+    "NumStates", wxfData["NumStates"],
+    "NumEvents", wxfData["NumEvents"],
+    "NumCausalEdges", wxfData["NumCausalEdges"],
+    "NumBranchialEdges", wxfData["NumBranchialEdges"],
+    "Debug", <|
+      "NumStates" -> wxfData["NumStates"],
+      "NumEvents" -> wxfData["NumEvents"],
+      "NumCausalEdges" -> wxfData["NumCausalEdges"],
+      "NumBranchialEdges" -> wxfData["NumBranchialEdges"]
+    |>,
+    "All", wxfData,
+    _, $Failed
+  ]
+]
+
+(* ============================================================================ *)
+(* Legacy HGEvolve (V1) - kept for backward compatibility *)
+(* ============================================================================ *)
+
+Options[HGEvolve] = Options[HGEvolveV2];
+
+HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", opts:OptionsPattern[]] :=
+  HGEvolveV2[rules, initialEdges, steps, property, opts]
+
+End[]
+EndPackage[]
