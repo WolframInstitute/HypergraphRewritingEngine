@@ -72,9 +72,13 @@ static VkMemoryPropertyFlags to_vk_memory_properties(MemoryLocation location) {
         case MemoryLocation::GPU_ONLY:
             return VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         case MemoryLocation::CPU_TO_GPU:
-            return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            // Use HOST_CACHED for better write performance (writes go through CPU cache)
+            // Requires explicit flush after writes
+            return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         case MemoryLocation::GPU_TO_CPU:
-            return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+            // For readback, HOST_CACHED is essential for read performance
+            // Requires explicit invalidate before reads
+            return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         default:
             return VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     }
@@ -251,6 +255,17 @@ void VulkanBuffer::write(const void* data, size_t size, size_t offset) {
     void* ptr = map();
     if (ptr) {
         memcpy(static_cast<uint8_t*>(ptr) + offset, data, size);
+
+        // Explicit flush for non-coherent memory (HOST_CACHED)
+        // This ensures CPU cache is flushed to GPU-visible memory
+        // Use VK_WHOLE_SIZE to avoid alignment issues with nonCoherentAtomSize
+        VkMappedMemoryRange flush_range{};
+        flush_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        flush_range.memory = memory_;
+        flush_range.offset = 0;
+        flush_range.size = VK_WHOLE_SIZE;
+        vk::vkFlushMappedMemoryRanges(device_, 1, &flush_range);
+
         if (!persistently_mapped_) {
             unmap();
         }
@@ -265,6 +280,15 @@ void VulkanBuffer::read(void* data, size_t size, size_t offset) {
 
     void* ptr = map();
     if (ptr) {
+        // Explicit invalidate for non-coherent memory (HOST_CACHED)
+        // This ensures CPU cache is invalidated so we read fresh GPU data
+        VkMappedMemoryRange invalidate_range{};
+        invalidate_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        invalidate_range.memory = memory_;
+        invalidate_range.offset = offset;
+        invalidate_range.size = size;
+        vk::vkInvalidateMappedMemoryRanges(device_, 1, &invalidate_range);
+
         memcpy(data, static_cast<uint8_t*>(ptr) + offset, size);
         if (!persistently_mapped_) {
             unmap();

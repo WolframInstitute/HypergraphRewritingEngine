@@ -278,7 +278,9 @@ private:
 
 // Factory functions
 std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice physical_device,
-                                               const TextureDesc& desc);
+                                               const TextureDesc& desc,
+                                               VkCommandPool cmd_pool = VK_NULL_HANDLE,
+                                               VkQueue graphics_queue = VK_NULL_HANDLE);
 std::unique_ptr<Sampler> create_vulkan_sampler(VkDevice device, const SamplerDesc& desc);
 std::unique_ptr<BindGroup> create_vulkan_bind_group(VkDevice device, const BindGroupDesc& desc);
 

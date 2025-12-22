@@ -111,14 +111,18 @@ void cleanup_render_pass_cache(VkDevice device) {
 
 class VulkanCommandBuffer : public CommandBuffer {
 public:
-    VulkanCommandBuffer(VkDevice device, VkCommandBuffer cmd, std::vector<VkFramebuffer>&& framebuffers)
-        : device_(device), cmd_(cmd), framebuffers_(std::move(framebuffers)) {}
+    VulkanCommandBuffer(VkDevice device, VkCommandPool pool, VkCommandBuffer cmd, std::vector<VkFramebuffer>&& framebuffers)
+        : device_(device), pool_(pool), cmd_(cmd), framebuffers_(std::move(framebuffers)) {}
 
     ~VulkanCommandBuffer() override {
         // Framebuffers are destroyed when command buffer is destroyed
         // (which should happen after GPU execution completes via fence wait)
         for (auto fb : framebuffers_) {
             vk::vkDestroyFramebuffer(device_, fb, nullptr);
+        }
+        // Free command buffer back to pool (fixes memory leak!)
+        if (cmd_ != VK_NULL_HANDLE && pool_ != VK_NULL_HANDLE) {
+            vk::vkFreeCommandBuffers(device_, pool_, 1, &cmd_);
         }
     }
 
@@ -128,6 +132,7 @@ public:
 
 private:
     VkDevice device_;
+    VkCommandPool pool_;
     VkCommandBuffer cmd_;
     std::vector<VkFramebuffer> framebuffers_;  // Owned framebuffers - destroyed when command buffer is done
 };
@@ -648,7 +653,7 @@ std::unique_ptr<CommandBuffer> VulkanCommandEncoder::finish() {
 
     // Transfer framebuffer ownership to the command buffer
     // They will be destroyed when the command buffer is destroyed (after fence wait)
-    return std::make_unique<VulkanCommandBuffer>(device_, cmd_, std::move(framebuffers_));
+    return std::make_unique<VulkanCommandBuffer>(device_, pool_, cmd_, std::move(framebuffers_));
 }
 
 // Render pass encoder implementation

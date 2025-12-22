@@ -38,7 +38,9 @@ std::unique_ptr<ComputePipeline> create_vulkan_compute_pipeline(VkDevice device,
 std::unique_ptr<CommandEncoder> create_vulkan_command_encoder(VkDevice device, VkCommandPool pool);
 
 std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice physical_device,
-                                               const TextureDesc& desc);
+                                               const TextureDesc& desc,
+                                               VkCommandPool cmd_pool,
+                                               VkQueue graphics_queue);
 std::unique_ptr<Sampler> create_vulkan_sampler(VkDevice device, const SamplerDesc& desc);
 std::unique_ptr<BindGroup> create_vulkan_bind_group(VkDevice device, const BindGroupDesc& desc);
 
@@ -848,7 +850,7 @@ std::unique_ptr<Buffer> VulkanDevice::create_buffer(const BufferDesc& desc) {
 }
 
 std::unique_ptr<Texture> VulkanDevice::create_texture(const TextureDesc& desc) {
-    return create_vulkan_texture(device_, physical_device_, desc);
+    return create_vulkan_texture(device_, physical_device_, desc, command_pool_, graphics_queue_);
 }
 
 std::unique_ptr<Sampler> VulkanDevice::create_sampler(const SamplerDesc& desc) {

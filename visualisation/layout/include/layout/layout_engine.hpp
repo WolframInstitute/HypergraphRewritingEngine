@@ -43,6 +43,8 @@ struct LayoutGraph {
     std::vector<float> positions_z;
     std::vector<float> masses;          // Vertex masses (affects forces)
     std::vector<bool> pinned;           // Pinned vertices don't move
+    std::vector<bool> visible;          // Visibility mask for ghost layout (empty = all visible)
+                                        // Hidden vertices receive forces but don't influence visible ones
 
     // Edge data (springs)
     std::vector<uint32_t> edge_sources;
@@ -78,6 +80,7 @@ struct LayoutGraph {
         positions_z.clear();
         masses.clear();
         pinned.clear();
+        visible.clear();
         edge_sources.clear();
         edge_targets.clear();
         edge_rest_lengths.clear();
@@ -114,6 +117,11 @@ struct LayoutParams {
 
     // Per-iteration limits
     float max_displacement = 1.0f;
+
+    // Edge budget for stochastic spring updates (0 = no limit, process all edges)
+    // When edge_count > edge_budget, randomly sample edge_budget edges per iteration
+    // This provides O(edge_budget) spring forces instead of O(E)
+    uint32_t edge_budget = 0;
 };
 
 // Callback for progress during layout

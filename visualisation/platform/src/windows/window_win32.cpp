@@ -53,7 +53,7 @@ static bool dpi_initialized = (enable_dpi_awareness(), true);
 // Windows virtual key to our KeyCode mapping
 // lParam is needed to distinguish left/right modifier keys
 static KeyCode vk_to_keycode(WPARAM vk, LPARAM lParam) {
-    // Letters
+    // Letters (VK codes for A-Z are same as ASCII 'A'-'Z')
     if (vk >= 'A' && vk <= 'Z') {
         return static_cast<KeyCode>(vk);
     }
@@ -366,6 +366,7 @@ LRESULT Win32Window::handle_message(UINT msg, WPARAM wParam, LPARAM lParam) {
             if (callbacks_.on_close) {
                 callbacks_.on_close();
             }
+            DestroyWindow(hwnd_);
             return 0;
 
         case WM_DESTROY:
@@ -380,6 +381,11 @@ LRESULT Win32Window::handle_message(UINT msg, WPARAM wParam, LPARAM lParam) {
 
             if (callbacks_.on_key) {
                 callbacks_.on_key(key, true, mods);
+            }
+
+            // Let Alt+F4 through to DefWindowProc so it generates WM_CLOSE
+            if (msg == WM_SYSKEYDOWN && wParam == VK_F4 && (GetKeyState(VK_MENU) & 0x8000)) {
+                return DefWindowProc(hwnd_, msg, wParam, lParam);
             }
             return 0;
         }

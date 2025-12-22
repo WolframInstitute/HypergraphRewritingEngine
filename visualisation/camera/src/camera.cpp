@@ -85,6 +85,13 @@ void PerspectiveCamera::orbit(float delta_yaw, float delta_pitch) {
     view_dirty_ = true;
 }
 
+void PerspectiveCamera::set_orbit_angles(float yaw, float pitch) {
+    yaw_ = yaw;
+    pitch_ = clamp(pitch, min_pitch_, max_pitch_);
+    update_orbit_position();
+    view_dirty_ = true;
+}
+
 void PerspectiveCamera::pan(float dx, float dy) {
     // Move target in screen-space (right/up relative to camera view)
     // Scale by distance so panning feels consistent at different zoom levels
@@ -104,7 +111,7 @@ void PerspectiveCamera::pan(float dx, float dy) {
     vec3 forward(-sy * cp, -sp, -cy * cp);
     vec3 up = right.cross(forward).normalized();
 
-    target_ += right * (-dx * scale) + up * (dy * scale);
+    target_ += right * (-dx * scale) + up * (-dy * scale);
     update_orbit_position();
     view_dirty_ = true;
 }

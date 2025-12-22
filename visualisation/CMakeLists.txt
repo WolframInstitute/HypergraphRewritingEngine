@@ -210,12 +210,56 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
         message(STATUS "Skipping evolution_viz (hypergraph target not available)")
     endif()
 
+    # Black hole Hausdorff dimension analysis library
+    if(TARGET hypergraph)
+        add_library(viz_blackhole STATIC
+            blackhole/src/bh_initial_condition.cpp
+            blackhole/src/bh_serialization.cpp
+            blackhole/src/hausdorff_analysis.cpp
+            blackhole/src/bh_evolution.cpp
+        )
+        target_include_directories(viz_blackhole PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include
+        )
+        target_link_libraries(viz_blackhole PUBLIC
+            hypergraph
+            job_system
+            viz_layout
+        )
+
+        # Black hole visualisation application
+        add_executable(blackhole_viz
+            app/blackhole_viz.cpp
+        )
+        target_link_libraries(blackhole_viz PRIVATE
+            viz_platform
+            viz_gal
+            viz_camera
+            viz_math
+            viz_events
+            viz_blackhole
+        )
+        target_compile_definitions(blackhole_viz PRIVATE HYPERGRAPH_ENABLE_VISUALIZATION=1)
+        message(STATUS "Building blackhole_viz with hypergraph engine integration")
+
+        # Analysis tool for .bhdata files
+        add_executable(analyze_bhdata
+            tools/analyze_bhdata.cpp
+        )
+        target_link_libraries(analyze_bhdata PRIVATE viz_blackhole)
+    else()
+        message(STATUS "Skipping blackhole_viz (hypergraph target not available)")
+    endif()
+
     # Windows: Static link C++ runtime to avoid DLL dependencies
     if(VIZ_PLATFORM_WINDOWS)
         target_link_options(hypergraph_viz PRIVATE -static-libgcc -static-libstdc++ -static -pthread)
         target_link_options(hypergraph_test PRIVATE -static-libgcc -static-libstdc++ -static -pthread)
         if(TARGET evolution_viz)
             target_link_options(evolution_viz PRIVATE -static-libgcc -static-libstdc++ -static -pthread)
+        endif()
+        if(TARGET blackhole_viz)
+            target_link_options(blackhole_viz PRIVATE -static-libgcc -static-libstdc++ -static -pthread)
         endif()
     endif()
 endif()

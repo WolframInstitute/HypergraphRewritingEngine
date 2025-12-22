@@ -66,6 +66,7 @@ public:
     // Orbit mode controls
     void set_target(const vec3& target);
     void set_distance(float distance);
+    void set_orbit_angles(float yaw, float pitch);  // Set absolute yaw/pitch (radians)
     void orbit(float delta_yaw, float delta_pitch);
     void pan(float dx, float dy);  // Move target in screen-space (for orbit origin movement)
     void zoom(float delta);  // Adjust distance

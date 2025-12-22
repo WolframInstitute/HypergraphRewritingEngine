@@ -1,7 +1,9 @@
 // Vulkan texture, sampler, and bind group implementation
 
 #include "vk_internal.hpp"
+#include <gal/types.hpp>  // for format_size
 #include <iostream>
+#include <cstring>  // for memcpy
 
 namespace viz::gal {
 
@@ -110,7 +112,9 @@ static uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type
 }
 
 std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice physical_device,
-                                               const TextureDesc& desc) {
+                                               const TextureDesc& desc,
+                                               VkCommandPool cmd_pool,
+                                               VkQueue graphics_queue) {
     VkFormat vk_format = to_vk_format(desc.format);
     if (vk_format == VK_FORMAT_UNDEFINED) {
         std::cerr << "Invalid texture format" << std::endl;
@@ -130,6 +134,12 @@ std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice
     image_info.samples = static_cast<VkSampleCountFlagBits>(desc.sample_count);
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_info.usage = to_vk_image_usage(desc.usage);
+
+    // Add transfer dst if we have initial data to upload
+    if (desc.initial_data && cmd_pool != VK_NULL_HANDLE && graphics_queue != VK_NULL_HANDLE) {
+        image_info.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    }
+
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -201,6 +211,134 @@ std::unique_ptr<Texture> create_vulkan_texture(VkDevice device, VkPhysicalDevice
         vk::vkFreeMemory(device, memory, nullptr);
         vk::vkDestroyImage(device, image, nullptr);
         return nullptr;
+    }
+
+    // Upload initial data using staging buffer if provided
+    if (desc.initial_data && cmd_pool != VK_NULL_HANDLE && graphics_queue != VK_NULL_HANDLE) {
+        // Calculate data size
+        VkDeviceSize data_size = desc.size.width * desc.size.height * desc.size.depth *
+                                 desc.array_layers * format_size(desc.format);
+
+        // Create staging buffer
+        VkBufferCreateInfo staging_buffer_info{};
+        staging_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        staging_buffer_info.size = data_size;
+        staging_buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging_buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VkBuffer staging_buffer;
+        if (vk::vkCreateBuffer(device, &staging_buffer_info, nullptr, &staging_buffer) != VK_SUCCESS) {
+            std::cerr << "Failed to create staging buffer for texture upload" << std::endl;
+            // Continue without initial data - texture is still valid
+        } else {
+            VkMemoryRequirements staging_mem_reqs;
+            vk::vkGetBufferMemoryRequirements(device, staging_buffer, &staging_mem_reqs);
+
+            uint32_t staging_mem_type = find_memory_type(physical_device, staging_mem_reqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+            if (staging_mem_type == UINT32_MAX) {
+                std::cerr << "Failed to find host-visible memory for staging buffer" << std::endl;
+                vk::vkDestroyBuffer(device, staging_buffer, nullptr);
+            } else {
+                VkMemoryAllocateInfo staging_alloc_info{};
+                staging_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                staging_alloc_info.allocationSize = staging_mem_reqs.size;
+                staging_alloc_info.memoryTypeIndex = staging_mem_type;
+
+                VkDeviceMemory staging_memory;
+                if (vk::vkAllocateMemory(device, &staging_alloc_info, nullptr, &staging_memory) != VK_SUCCESS) {
+                    std::cerr << "Failed to allocate staging memory" << std::endl;
+                    vk::vkDestroyBuffer(device, staging_buffer, nullptr);
+                } else {
+                    vk::vkBindBufferMemory(device, staging_buffer, staging_memory, 0);
+
+                    // Copy data to staging buffer
+                    void* mapped;
+                    vk::vkMapMemory(device, staging_memory, 0, data_size, 0, &mapped);
+                    memcpy(mapped, desc.initial_data, data_size);
+                    vk::vkUnmapMemory(device, staging_memory);
+
+                    // Create one-time command buffer
+                    VkCommandBufferAllocateInfo cmd_alloc_info{};
+                    cmd_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmd_alloc_info.commandPool = cmd_pool;
+                    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmd_alloc_info.commandBufferCount = 1;
+
+                    VkCommandBuffer cmd;
+                    vk::vkAllocateCommandBuffers(device, &cmd_alloc_info, &cmd);
+
+                    VkCommandBufferBeginInfo begin_info{};
+                    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    vk::vkBeginCommandBuffer(cmd, &begin_info);
+
+                    // Transition image to transfer-dst layout
+                    VkImageMemoryBarrier barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = image;
+                    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    barrier.subresourceRange.baseMipLevel = 0;
+                    barrier.subresourceRange.levelCount = desc.mip_levels;
+                    barrier.subresourceRange.baseArrayLayer = 0;
+                    barrier.subresourceRange.layerCount = desc.array_layers;
+                    barrier.srcAccessMask = 0;
+                    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+                    vk::vkCmdPipelineBarrier(cmd,
+                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+                    // Copy buffer to image
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = 0;
+                    region.bufferRowLength = 0;
+                    region.bufferImageHeight = 0;
+                    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel = 0;
+                    region.imageSubresource.baseArrayLayer = 0;
+                    region.imageSubresource.layerCount = desc.array_layers;
+                    region.imageOffset = {0, 0, 0};
+                    region.imageExtent = {desc.size.width, desc.size.height, desc.size.depth};
+
+                    vk::vkCmdCopyBufferToImage(cmd, staging_buffer, image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+                    // Transition image to shader-read layout
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                    vk::vkCmdPipelineBarrier(cmd,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+                    vk::vkEndCommandBuffer(cmd);
+
+                    // Submit and wait
+                    VkSubmitInfo submit_info{};
+                    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                    submit_info.commandBufferCount = 1;
+                    submit_info.pCommandBuffers = &cmd;
+
+                    vk::vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+                    vk::vkQueueWaitIdle(graphics_queue);
+
+                    // Cleanup
+                    vk::vkFreeCommandBuffers(device, cmd_pool, 1, &cmd);
+                    vk::vkDestroyBuffer(device, staging_buffer, nullptr);
+                    vk::vkFreeMemory(device, staging_memory, nullptr);
+                }
+            }
+        }
     }
 
     return std::make_unique<VulkanTexture>(device, image, memory, view, desc);

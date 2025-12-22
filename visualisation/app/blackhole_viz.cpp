@@ -1,0 +1,5321 @@
+// Black Hole Hausdorff Dimension Visualisation
+// Visualizes multiway hypergraph evolution from binary black hole initial conditions
+// with Hausdorff dimension coloring
+
+#include <platform/window.hpp>
+#include <gal/gal.hpp>
+#include <gal/vulkan/vk_loader.hpp>
+#include <camera/camera.hpp>
+#include <math/types.hpp>
+
+#include <blackhole/bh_types.hpp>
+#include <blackhole/bh_serialization.hpp>
+#include <blackhole/bh_initial_condition.hpp>
+#include <blackhole/bh_evolution.hpp>
+#include <blackhole/hausdorff_analysis.hpp>
+#include <layout/layout_engine.hpp>
+
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <set>
+#include <chrono>
+#include <iomanip>
+#include <algorithm>
+#include <random>
+#include <numeric>
+#include <cmath>
+#include <cstdlib>
+#include <unordered_map>
+#include <unordered_set>
+#include <csignal>
+#include <atomic>
+#include <functional>
+
+// Global flag for Ctrl-C handling
+static std::atomic<bool> g_shutdown_requested{false};
+
+static void signal_handler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        g_shutdown_requested.store(true);
+    }
+}
+
+using namespace viz;
+using namespace viz::blackhole;
+using namespace viz::layout;
+
+// Edge display mode (forward declaration for init_layout_from_timestep)
+enum class EdgeDisplayMode {
+    Union,        // Show all edges present in ANY state (default)
+    Frequent,     // Show edges present in MORE than one state (excludes singletons)
+    Intersection, // Show only edges present in ALL states
+    SingleState   // Show one specific state (for path exploration)
+};
+
+// Persistent position cache - maps VertexId to (x, y) position
+// This persists across timesteps to prevent layout snapping when looping
+using PositionCache = std::unordered_map<VertexId, std::pair<float, float>>;
+
+// Initialize layout graph from a timestep's graph
+// If prev_graph and prev_vertices are provided, seed positions from them for existing vertices
+// edge_mode controls whether to use union or intersection edges
+// global_cache provides persistent positions across all timesteps (prevents snap on loop)
+// out_vertices receives the list of vertex IDs in layout order (for cache updates)
+void init_layout_from_timestep(
+    LayoutGraph& graph,
+    const TimestepAggregation& ts,
+    const BHInitialCondition& initial,
+    EdgeDisplayMode edge_mode,
+    PositionCache& global_cache,
+    std::vector<VertexId>& out_vertices,
+    int edge_freq_threshold = 2,  // Threshold for frequent edge filtering
+    const std::vector<StateData>* states = nullptr,  // Per-state data for edge counting
+    const LayoutGraph* prev_graph = nullptr,
+    const std::vector<VertexId>* prev_vertices = nullptr
+) {
+    // Build map from previous vertex IDs to their positions
+    std::unordered_map<VertexId, std::pair<float, float>> prev_positions;
+    if (prev_graph && prev_vertices && prev_graph->vertex_count() == prev_vertices->size()) {
+        for (size_t i = 0; i < prev_vertices->size(); ++i) {
+            prev_positions[(*prev_vertices)[i]] = {
+                prev_graph->positions_x[i],
+                prev_graph->positions_y[i]
+            };
+        }
+    }
+
+    graph.clear();
+
+    // Helper to compute vertex pair key (for rendering lookup)
+    auto vertex_pair_key = [](const Edge& e) -> uint64_t {
+        VertexId v1 = std::min(e.v1, e.v2);
+        VertexId v2 = std::max(e.v1, e.v2);
+        return (static_cast<uint64_t>(v1) << 32) | v2;
+    };
+
+    // Select edge list based on display mode
+    // Fall back to union if the selected mode has no edges
+    // Use SAME filtering logic as build_render_data for consistency
+    const std::vector<Edge>* edges_to_use = &ts.union_edges;
+    std::vector<Edge> freq_filtered_edges;  // Storage for dynamically filtered edges
+    EdgeDisplayMode effective_mode = edge_mode;
+
+    if (edge_mode == EdgeDisplayMode::Intersection) {
+        if (!ts.intersection_edges.empty()) {
+            edges_to_use = &ts.intersection_edges;
+        } else {
+            effective_mode = EdgeDisplayMode::Union;
+        }
+    } else if (edge_mode == EdgeDisplayMode::Frequent) {
+        // Use threshold-based filtering (same as build_render_data)
+        if (states && !states->empty()) {
+            // Compute edge counts by vertex pair (count each pair once per state)
+            std::unordered_map<uint64_t, int> edge_counts_by_pair;
+            for (const auto& state : *states) {
+                std::unordered_set<uint64_t> seen_pairs_this_state;
+                for (const auto& e : state.edges) {
+                    uint64_t pair_key = vertex_pair_key(e);
+                    if (seen_pairs_this_state.insert(pair_key).second) {
+                        edge_counts_by_pair[pair_key]++;
+                    }
+                }
+            }
+            // Filter edges that appear in >= threshold states
+            for (const auto& e : ts.union_edges) {
+                auto it = edge_counts_by_pair.find(vertex_pair_key(e));
+                if (it != edge_counts_by_pair.end() && it->second >= edge_freq_threshold) {
+                    freq_filtered_edges.push_back(e);
+                }
+            }
+            if (!freq_filtered_edges.empty()) {
+                edges_to_use = &freq_filtered_edges;
+            } else {
+                effective_mode = EdgeDisplayMode::Union;  // Fallback if no edges match
+            }
+        } else if (!ts.frequent_edges.empty()) {
+            // Fall back to pre-computed frequent edges if no per-state data
+            edges_to_use = &ts.frequent_edges;
+        } else {
+            effective_mode = EdgeDisplayMode::Union;
+        }
+    }
+
+    // In non-union modes, only include vertices that have edges
+    std::unordered_set<VertexId> active_vertices;
+    if (effective_mode != EdgeDisplayMode::Union) {
+        for (const auto& e : *edges_to_use) {
+            active_vertices.insert(e.v1);
+            active_vertices.insert(e.v2);
+        }
+    } else {
+        for (VertexId v : ts.union_vertices) {
+            active_vertices.insert(v);
+        }
+    }
+
+    // Build list of vertices to include (preserving order from union_vertices)
+    std::vector<VertexId> vertices_to_use;
+    for (VertexId v : ts.union_vertices) {
+        if (active_vertices.count(v)) {
+            vertices_to_use.push_back(v);
+        }
+    }
+
+    // Build vertex ID to index map (for the filtered vertices)
+    std::unordered_map<VertexId, uint32_t> vid_to_idx;
+    for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+        vid_to_idx[vertices_to_use[i]] = static_cast<uint32_t>(i);
+    }
+
+    // Build adjacency for neighbor-based placement
+    std::vector<std::vector<uint32_t>> adjacency(vertices_to_use.size());
+    for (const auto& e : *edges_to_use) {
+        auto it1 = vid_to_idx.find(e.v1);
+        auto it2 = vid_to_idx.find(e.v2);
+        if (it1 != vid_to_idx.end() && it2 != vid_to_idx.end()) {
+            adjacency[it1->second].push_back(it2->second);
+            adjacency[it2->second].push_back(it1->second);
+        }
+    }
+
+    // Track which vertices have known good positions
+    std::vector<bool> has_good_position(vertices_to_use.size(), false);
+    std::vector<float> pos_x(vertices_to_use.size(), 0.0f);
+    std::vector<float> pos_y(vertices_to_use.size(), 0.0f);
+
+    // Are we seeding from a live layout? (prev_positions is non-empty)
+    // If so, we MUST NOT fall back to initial/stored positions - they're at a different scale!
+    bool have_live_layout = !prev_positions.empty();
+
+    // First pass: collect positions from caches and initial conditions
+    // Priority: 1) prev_positions (current frame), 2) global_cache (persistent), 3) initial/stored
+    for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+        VertexId vid = vertices_to_use[i];
+
+        // Check previous layout first (live positions have highest priority)
+        auto prev_it = prev_positions.find(vid);
+        if (prev_it != prev_positions.end()) {
+            pos_x[i] = prev_it->second.first;
+            pos_y[i] = prev_it->second.second;
+            has_good_position[i] = true;
+            continue;
+        }
+
+        // Check global cache (persistent positions from previous timesteps)
+        auto cache_it = global_cache.find(vid);
+        if (cache_it != global_cache.end()) {
+            pos_x[i] = cache_it->second.first;
+            pos_y[i] = cache_it->second.second;
+            has_good_position[i] = true;
+            continue;
+        }
+
+        // ONLY use initial/stored positions if we DON'T have a live layout running
+        // If we have a live layout, new vertices must be placed via neighbor-based placement
+        if (!have_live_layout) {
+            // Check stored LAYOUT positions first (pre-computed, scaled to match geodesic)
+            // Find the index in union_vertices
+            for (size_t j = 0; j < ts.union_vertices.size(); ++j) {
+                if (ts.union_vertices[j] == vid) {
+                    // Prefer layout_positions if available (pre-computed force-directed layout)
+                    if (j < ts.layout_positions.size()) {
+                        float lx = ts.layout_positions[j].x;
+                        float ly = ts.layout_positions[j].y;
+                        pos_x[i] = lx;
+                        pos_y[i] = ly;
+                        has_good_position[i] = true;
+                        break;
+                    }
+                    // Fall back to geodesic vertex_positions if no layout positions
+                    if (j < ts.vertex_positions.size()) {
+                        float sx = ts.vertex_positions[j].x;
+                        float sy = ts.vertex_positions[j].y;
+                        if (std::abs(sx) > 0.5f || std::abs(sy) > 0.5f) {
+                            pos_x[i] = sx;
+                            pos_y[i] = sy;
+                            has_good_position[i] = true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // If still no position, check initial condition (for original vertices)
+            if (!has_good_position[i] && vid < initial.vertex_positions.size()) {
+                pos_x[i] = initial.vertex_positions[vid].x;
+                pos_y[i] = initial.vertex_positions[vid].y;
+                has_good_position[i] = true;
+            }
+        }
+        // If have_live_layout and vertex not in prev_positions or global_cache, it's NEW
+        // It will be placed via neighbor-based placement in the next pass
+    }
+
+    // Second pass: place vertices without positions at centroid of their positioned neighbors
+    // May need multiple iterations for chains of new vertices
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        bool any_placed = false;
+        for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+            if (has_good_position[i]) continue;
+
+            float sum_x = 0, sum_y = 0;
+            int count = 0;
+
+            for (uint32_t neighbor_idx : adjacency[i]) {
+                if (has_good_position[neighbor_idx]) {
+                    sum_x += pos_x[neighbor_idx];
+                    sum_y += pos_y[neighbor_idx];
+                    count++;
+                }
+            }
+
+            if (count > 0) {
+                pos_x[i] = sum_x / count;
+                pos_y[i] = sum_y / count;
+                has_good_position[i] = true;
+                any_placed = true;
+            }
+        }
+        if (!any_placed) break;
+    }
+
+    // Third pass: any remaining vertices get placed at graph centroid
+    float centroid_x = 0, centroid_y = 0;
+    int positioned_count = 0;
+    for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+        if (has_good_position[i]) {
+            centroid_x += pos_x[i];
+            centroid_y += pos_y[i];
+            positioned_count++;
+        }
+    }
+    if (positioned_count > 0) {
+        centroid_x /= positioned_count;
+        centroid_y /= positioned_count;
+    }
+
+    for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+        if (!has_good_position[i]) {
+            // Last resort: place at graph centroid with unique offset based on vertex ID
+            // Use vertex ID (not index) to ensure uniqueness even with many vertices
+            VertexId vid = vertices_to_use[i];
+            // Golden ratio offset for better distribution
+            float phi = 1.618033988749895f;
+            float angle = vid * phi * 2.0f * 3.14159265f;
+            float radius = 0.1f + 0.01f * std::sqrt(static_cast<float>(vid % 1000));
+            pos_x[i] = centroid_x + radius * std::cos(angle);
+            pos_y[i] = centroid_y + radius * std::sin(angle);
+        }
+    }
+
+    // Add vertices to layout graph
+    for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+        graph.add_vertex(pos_x[i], pos_y[i], 0.0f, 1.0f, false);
+    }
+
+    // Add edges with fixed target rest_length
+    // All edges try to reach the same length - springiness handles the rest
+    constexpr float target_edge_length = 1.0f;
+    for (const auto& e : *edges_to_use) {
+        auto it1 = vid_to_idx.find(e.v1);
+        auto it2 = vid_to_idx.find(e.v2);
+        if (it1 != vid_to_idx.end() && it2 != vid_to_idx.end()) {
+            graph.add_edge(it1->second, it2->second, target_edge_length, 1.0f);
+        }
+    }
+
+    // Output the vertex list for cache updates
+    out_vertices = std::move(vertices_to_use);
+}
+
+// Helper to update the global position cache from current layout
+void update_position_cache(
+    PositionCache& cache,
+    const LayoutGraph& graph,
+    const std::vector<VertexId>& vertices
+) {
+    if (graph.vertex_count() != vertices.size()) return;
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        cache[vertices[i]] = {graph.positions_x[i], graph.positions_y[i]};
+    }
+}
+
+// Vulkan surface creation helpers
+namespace viz::gal {
+    VkSurfaceKHR create_xcb_surface(VkInstance instance, void* connection, void* window);
+    VkSurfaceKHR create_win32_surface(VkInstance instance, void* hinstance, void* hwnd);
+    VkInstance get_vk_instance(Device* device);
+}
+
+// Load SPIR-V shader
+std::vector<uint32_t> load_spirv(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open shader: " << path << std::endl;
+        return {};
+    }
+    size_t size = file.tellg();
+    file.seekg(0);
+    std::vector<uint32_t> spirv(size / sizeof(uint32_t));
+    file.read(reinterpret_cast<char*>(spirv.data()), size);
+    return spirv;
+}
+
+// Vertex format matching the basic3d shaders
+struct Vertex {
+    float x, y, z;
+    float r, g, b, a;
+};
+
+// Mesh vertex with position and normal (for lit meshes)
+struct MeshVertex {
+    float px, py, pz;  // Position
+    float nx, ny, nz;  // Normal
+};
+
+// Index type
+using Index = uint16_t;
+
+// Static mesh data
+struct Mesh {
+    std::vector<MeshVertex> vertices;
+    std::vector<Index> indices;
+};
+
+// Instance data for edges (cylinders) - matches instance_cylinder.vert
+struct CylinderInstance {
+    float start_x, start_y, start_z;  // location 2: vec3
+    float end_x, end_y, end_z;        // location 3: vec3
+    float radius;                      // location 4: float
+    float _pad1;
+    float r1, g1, b1, a1;             // location 5: vec4 (start color)
+    float r2, g2, b2, a2;             // location 6: vec4 (end color)
+};
+
+// Instance data for vertices (spheres) - matches instance_sphere.vert
+struct SphereInstance {
+    float x, y, z;                    // location 2: vec3
+    float radius;                     // location 3: float
+    float r, g, b, a;                 // location 4: vec4
+};
+
+// Generate a unit cylinder mesh (height 1 along Y, radius 1)
+// Will be scaled/rotated per-instance
+Mesh generate_cylinder_mesh(int segments = 16) {
+    Mesh mesh;
+    const float pi = 3.14159265f;
+
+    // Generate cap vertices and side vertices
+    for (int i = 0; i <= segments; ++i) {
+        float angle = 2.0f * pi * i / segments;
+        float cos_a = std::cos(angle);
+        float sin_a = std::sin(angle);
+
+        // Bottom cap vertex
+        mesh.vertices.push_back({cos_a, 0.0f, sin_a, 0.0f, -1.0f, 0.0f});
+        // Top cap vertex
+        mesh.vertices.push_back({cos_a, 1.0f, sin_a, 0.0f, 1.0f, 0.0f});
+        // Side bottom vertex
+        mesh.vertices.push_back({cos_a, 0.0f, sin_a, cos_a, 0.0f, sin_a});
+        // Side top vertex
+        mesh.vertices.push_back({cos_a, 1.0f, sin_a, cos_a, 0.0f, sin_a});
+    }
+
+    // Center vertices for caps
+    Index bottom_center = static_cast<Index>(mesh.vertices.size());
+    mesh.vertices.push_back({0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f});
+    Index top_center = static_cast<Index>(mesh.vertices.size());
+    mesh.vertices.push_back({0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f});
+
+    // Generate indices
+    for (int i = 0; i < segments; ++i) {
+        int base = i * 4;
+        int next = ((i + 1) % (segments + 1)) * 4;
+
+        // Bottom cap triangle
+        mesh.indices.push_back(bottom_center);
+        mesh.indices.push_back(static_cast<Index>(next));
+        mesh.indices.push_back(static_cast<Index>(base));
+
+        // Top cap triangle
+        mesh.indices.push_back(top_center);
+        mesh.indices.push_back(static_cast<Index>(base + 1));
+        mesh.indices.push_back(static_cast<Index>(next + 1));
+
+        // Side quad (two triangles)
+        mesh.indices.push_back(static_cast<Index>(base + 2));
+        mesh.indices.push_back(static_cast<Index>(next + 2));
+        mesh.indices.push_back(static_cast<Index>(base + 3));
+
+        mesh.indices.push_back(static_cast<Index>(next + 2));
+        mesh.indices.push_back(static_cast<Index>(next + 3));
+        mesh.indices.push_back(static_cast<Index>(base + 3));
+    }
+
+    return mesh;
+}
+
+// Generate a UV sphere mesh (radius 1)
+Mesh generate_sphere_mesh(int longitude_segments = 16, int latitude_segments = 8) {
+    Mesh mesh;
+    const float pi = 3.14159265f;
+
+    // Generate vertices
+    for (int lat = 0; lat <= latitude_segments; ++lat) {
+        float theta = pi * lat / latitude_segments;
+        float sin_theta = std::sin(theta);
+        float cos_theta = std::cos(theta);
+
+        for (int lon = 0; lon <= longitude_segments; ++lon) {
+            float phi = 2.0f * pi * lon / longitude_segments;
+            float sin_phi = std::sin(phi);
+            float cos_phi = std::cos(phi);
+
+            float x = sin_theta * cos_phi;
+            float y = cos_theta;
+            float z = sin_theta * sin_phi;
+
+            // Position and normal are the same for unit sphere
+            mesh.vertices.push_back({x, y, z, x, y, z});
+        }
+    }
+
+    // Generate indices
+    for (int lat = 0; lat < latitude_segments; ++lat) {
+        for (int lon = 0; lon < longitude_segments; ++lon) {
+            int current = lat * (longitude_segments + 1) + lon;
+            int next = current + longitude_segments + 1;
+
+            mesh.indices.push_back(static_cast<Index>(current));
+            mesh.indices.push_back(static_cast<Index>(next));
+            mesh.indices.push_back(static_cast<Index>(current + 1));
+
+            mesh.indices.push_back(static_cast<Index>(current + 1));
+            mesh.indices.push_back(static_cast<Index>(next));
+            mesh.indices.push_back(static_cast<Index>(next + 1));
+        }
+    }
+
+    return mesh;
+}
+
+// Generate a circle mesh (for 2D mode) - just a flat disc
+Mesh generate_circle_mesh(int segments = 16) {
+    Mesh mesh;
+    const float pi = 3.14159265f;
+
+    // Center vertex
+    mesh.vertices.push_back({0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f});
+
+    // Edge vertices
+    for (int i = 0; i <= segments; ++i) {
+        float angle = 2.0f * pi * i / segments;
+        float x = std::cos(angle);
+        float y = std::sin(angle);
+        mesh.vertices.push_back({x, y, 0.0f, 0.0f, 0.0f, 1.0f});
+    }
+
+    // Triangles from center to edge
+    for (int i = 0; i < segments; ++i) {
+        mesh.indices.push_back(0);
+        mesh.indices.push_back(static_cast<Index>(i + 1));
+        mesh.indices.push_back(static_cast<Index>(i + 2));
+    }
+
+    return mesh;
+}
+
+// View mode
+enum class ViewMode {
+    View2D,  // XY plane with dimension coloring
+    View3D   // 3D with dimension as Z/height
+};
+
+// Heatmap mode (what to color by)
+enum class HeatmapMode {
+    Mean,     // Mean dimension (default)
+    Variance  // Variance of dimension across states
+};
+
+// Dimension source mode (where dimension values come from)
+enum class DimensionSource {
+    Branchial,  // Per-state dimension, averaged across states (default)
+    Foliation,  // Dimension on union graph at current timestep
+    Global      // Dimension on mega-union across ALL timesteps (constant values)
+};
+
+// EdgeDisplayMode is defined earlier in the file (before init_layout_from_timestep)
+
+// =============================================================================
+// Rendering Data
+// =============================================================================
+
+struct RenderData {
+    // Legacy vertex data (for timeline bar, horizon circles)
+    std::vector<Vertex> vertex_data;   // Points (quads) - legacy
+    std::vector<Vertex> edge_data;     // Lines - legacy
+    size_t vertex_count = 0;
+    size_t edge_count = 0;
+
+    // Instanced data for 3D mode
+    std::vector<SphereInstance> sphere_instances;      // Vertices as spheres
+    std::vector<CylinderInstance> cylinder_instances;  // Edges as cylinders
+
+    // Frequency data for legend (when edge_color_mode == Frequency)
+    int min_freq = 1;   // Minimum frequency (edges and vertices)
+    int max_freq = 1;   // Maximum frequency
+    bool has_freq_data = false;  // True if frequency was computed
+};
+
+// =============================================================================
+// Text Rendering - Embedded 8x8 Font
+// =============================================================================
+
+// 8x8 bitmap font - CP437-style, 95 printable ASCII chars (32-126)
+// Each character is 8 bytes (8 rows of 8 bits)
+// Layout: 16 chars per row, 6 rows = 96 chars
+// Texture size: 128x48 pixels (8*16 x 8*6)
+static const uint8_t FONT_8X8[95 * 8] = {
+    // Space (32)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // ! (33)
+    0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x00,
+    // " (34)
+    0x6C, 0x6C, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // # (35)
+    0x6C, 0x6C, 0xFE, 0x6C, 0xFE, 0x6C, 0x6C, 0x00,
+    // $ (36)
+    0x18, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x18, 0x00,
+    // % (37)
+    0x00, 0xC6, 0xCC, 0x18, 0x30, 0x66, 0xC6, 0x00,
+    // & (38)
+    0x38, 0x6C, 0x38, 0x76, 0xDC, 0xCC, 0x76, 0x00,
+    // ' (39)
+    0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // ( (40)
+    0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00,
+    // ) (41)
+    0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00,
+    // * (42)
+    0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00,
+    // + (43)
+    0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00,
+    // , (44)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x30,
+    // - (45)
+    0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00,
+    // . (46)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00,
+    // / (47)
+    0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x80, 0x00,
+    // 0 (48)
+    0x7C, 0xCE, 0xDE, 0xF6, 0xE6, 0xC6, 0x7C, 0x00,
+    // 1 (49)
+    0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00,
+    // 2 (50)
+    0x7C, 0xC6, 0x06, 0x1C, 0x30, 0x66, 0xFE, 0x00,
+    // 3 (51)
+    0x7C, 0xC6, 0x06, 0x3C, 0x06, 0xC6, 0x7C, 0x00,
+    // 4 (52)
+    0x1C, 0x3C, 0x6C, 0xCC, 0xFE, 0x0C, 0x1E, 0x00,
+    // 5 (53)
+    0xFE, 0xC0, 0xC0, 0xFC, 0x06, 0xC6, 0x7C, 0x00,
+    // 6 (54)
+    0x38, 0x60, 0xC0, 0xFC, 0xC6, 0xC6, 0x7C, 0x00,
+    // 7 (55)
+    0xFE, 0xC6, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00,
+    // 8 (56)
+    0x7C, 0xC6, 0xC6, 0x7C, 0xC6, 0xC6, 0x7C, 0x00,
+    // 9 (57)
+    0x7C, 0xC6, 0xC6, 0x7E, 0x06, 0x0C, 0x78, 0x00,
+    // : (58)
+    0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x00,
+    // ; (59)
+    0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x30,
+    // < (60)
+    0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00,
+    // = (61)
+    0x00, 0x00, 0x7E, 0x00, 0x00, 0x7E, 0x00, 0x00,
+    // > (62)
+    0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0x00,
+    // ? (63)
+    0x7C, 0xC6, 0x0C, 0x18, 0x18, 0x00, 0x18, 0x00,
+    // @ (64)
+    0x7C, 0xC6, 0xDE, 0xDE, 0xDE, 0xC0, 0x78, 0x00,
+    // A (65)
+    0x38, 0x6C, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0x00,
+    // B (66)
+    0xFC, 0x66, 0x66, 0x7C, 0x66, 0x66, 0xFC, 0x00,
+    // C (67)
+    0x3C, 0x66, 0xC0, 0xC0, 0xC0, 0x66, 0x3C, 0x00,
+    // D (68)
+    0xF8, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0xF8, 0x00,
+    // E (69)
+    0xFE, 0x62, 0x68, 0x78, 0x68, 0x62, 0xFE, 0x00,
+    // F (70)
+    0xFE, 0x62, 0x68, 0x78, 0x68, 0x60, 0xF0, 0x00,
+    // G (71)
+    0x3C, 0x66, 0xC0, 0xC0, 0xCE, 0x66, 0x3A, 0x00,
+    // H (72)
+    0xC6, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0x00,
+    // I (73)
+    0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00,
+    // J (74)
+    0x1E, 0x0C, 0x0C, 0x0C, 0xCC, 0xCC, 0x78, 0x00,
+    // K (75)
+    0xE6, 0x66, 0x6C, 0x78, 0x6C, 0x66, 0xE6, 0x00,
+    // L (76)
+    0xF0, 0x60, 0x60, 0x60, 0x62, 0x66, 0xFE, 0x00,
+    // M (77)
+    0xC6, 0xEE, 0xFE, 0xFE, 0xD6, 0xC6, 0xC6, 0x00,
+    // N (78)
+    0xC6, 0xE6, 0xF6, 0xDE, 0xCE, 0xC6, 0xC6, 0x00,
+    // O (79)
+    0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00,
+    // P (80)
+    0xFC, 0x66, 0x66, 0x7C, 0x60, 0x60, 0xF0, 0x00,
+    // Q (81)
+    0x7C, 0xC6, 0xC6, 0xC6, 0xD6, 0xDE, 0x7C, 0x06,
+    // R (82)
+    0xFC, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0xE6, 0x00,
+    // S (83)
+    0x3C, 0x66, 0x30, 0x18, 0x0C, 0x66, 0x3C, 0x00,
+    // T (84)
+    0x7E, 0x5A, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00,
+    // U (85)
+    0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00,
+    // V (86)
+    0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00,
+    // W (87)
+    0xC6, 0xC6, 0xC6, 0xD6, 0xD6, 0xFE, 0x6C, 0x00,
+    // X (88)
+    0xC6, 0xC6, 0x6C, 0x38, 0x6C, 0xC6, 0xC6, 0x00,
+    // Y (89)
+    0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x3C, 0x00,
+    // Z (90)
+    0xFE, 0xC6, 0x8C, 0x18, 0x32, 0x66, 0xFE, 0x00,
+    // [ (91)
+    0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00,
+    // \ (92)
+    0xC0, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x02, 0x00,
+    // ] (93)
+    0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00,
+    // ^ (94)
+    0x10, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00, 0x00,
+    // _ (95)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+    // ` (96)
+    0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // a (97)
+    0x00, 0x00, 0x78, 0x0C, 0x7C, 0xCC, 0x76, 0x00,
+    // b (98)
+    0xE0, 0x60, 0x7C, 0x66, 0x66, 0x66, 0xDC, 0x00,
+    // c (99)
+    0x00, 0x00, 0x7C, 0xC6, 0xC0, 0xC6, 0x7C, 0x00,
+    // d (100)
+    0x1C, 0x0C, 0x7C, 0xCC, 0xCC, 0xCC, 0x76, 0x00,
+    // e (101)
+    0x00, 0x00, 0x7C, 0xC6, 0xFE, 0xC0, 0x7C, 0x00,
+    // f (102)
+    0x3C, 0x66, 0x60, 0xF8, 0x60, 0x60, 0xF0, 0x00,
+    // g (103)
+    0x00, 0x00, 0x76, 0xCC, 0xCC, 0x7C, 0x0C, 0xF8,
+    // h (104)
+    0xE0, 0x60, 0x6C, 0x76, 0x66, 0x66, 0xE6, 0x00,
+    // i (105)
+    0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x3C, 0x00,
+    // j (106)
+    0x06, 0x00, 0x06, 0x06, 0x06, 0x66, 0x66, 0x3C,
+    // k (107)
+    0xE0, 0x60, 0x66, 0x6C, 0x78, 0x6C, 0xE6, 0x00,
+    // l (108)
+    0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00,
+    // m (109)
+    0x00, 0x00, 0xEC, 0xFE, 0xD6, 0xD6, 0xD6, 0x00,
+    // n (110)
+    0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x00,
+    // o (111)
+    0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7C, 0x00,
+    // p (112)
+    0x00, 0x00, 0xDC, 0x66, 0x66, 0x7C, 0x60, 0xF0,
+    // q (113)
+    0x00, 0x00, 0x76, 0xCC, 0xCC, 0x7C, 0x0C, 0x1E,
+    // r (114)
+    0x00, 0x00, 0xDC, 0x76, 0x60, 0x60, 0xF0, 0x00,
+    // s (115)
+    0x00, 0x00, 0x7E, 0xC0, 0x7C, 0x06, 0xFC, 0x00,
+    // t (116)
+    0x30, 0x30, 0xFC, 0x30, 0x30, 0x36, 0x1C, 0x00,
+    // u (117)
+    0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00,
+    // v (118)
+    0x00, 0x00, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00,
+    // w (119)
+    0x00, 0x00, 0xC6, 0xD6, 0xD6, 0xFE, 0x6C, 0x00,
+    // x (120)
+    0x00, 0x00, 0xC6, 0x6C, 0x38, 0x6C, 0xC6, 0x00,
+    // y (121)
+    0x00, 0x00, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0xFC,
+    // z (122)
+    0x00, 0x00, 0xFE, 0x8C, 0x18, 0x32, 0xFE, 0x00,
+    // { (123)
+    0x0E, 0x18, 0x18, 0x70, 0x18, 0x18, 0x0E, 0x00,
+    // | (124)
+    0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00,
+    // } (125)
+    0x70, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x70, 0x00,
+    // ~ (126)
+    0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+// Font atlas dimensions
+static const int FONT_CHAR_WIDTH = 8;
+static const int FONT_CHAR_HEIGHT = 8;
+static const int FONT_ATLAS_COLS = 16;  // 16 chars per row
+static const int FONT_ATLAS_ROWS = 6;   // 6 rows
+static const int FONT_ATLAS_WIDTH = FONT_ATLAS_COLS * FONT_CHAR_WIDTH;   // 128
+static const int FONT_ATLAS_HEIGHT = FONT_ATLAS_ROWS * FONT_CHAR_HEIGHT; // 48
+static const int FONT_FIRST_CHAR = 32;  // Space
+static const int FONT_LAST_CHAR = 126;  // Tilde
+
+// Generate font atlas texture data (R8 format)
+std::vector<uint8_t> generate_font_atlas() {
+    std::vector<uint8_t> atlas(FONT_ATLAS_WIDTH * FONT_ATLAS_HEIGHT, 0);
+
+    for (int char_idx = 0; char_idx < 95; ++char_idx) {
+        int col = char_idx % FONT_ATLAS_COLS;
+        int row = char_idx / FONT_ATLAS_COLS;
+
+        for (int y = 0; y < FONT_CHAR_HEIGHT; ++y) {
+            uint8_t line = FONT_8X8[char_idx * 8 + y];
+            for (int x = 0; x < FONT_CHAR_WIDTH; ++x) {
+                // Bit 7 is leftmost pixel
+                bool pixel_set = (line & (0x80 >> x)) != 0;
+                int atlas_x = col * FONT_CHAR_WIDTH + x;
+                int atlas_y = row * FONT_CHAR_HEIGHT + y;
+                atlas[atlas_y * FONT_ATLAS_WIDTH + atlas_x] = pixel_set ? 255 : 0;
+            }
+        }
+    }
+
+    return atlas;
+}
+
+// Glyph instance for text rendering
+struct GlyphInstance {
+    float x, y;           // Screen position (pixels)
+    float u_min, v_min;   // UV rect min
+    float u_max, v_max;   // UV rect max
+    float r, g, b, a;     // Color
+};
+static_assert(sizeof(GlyphInstance) == 40, "GlyphInstance must be 40 bytes");
+static_assert(offsetof(GlyphInstance, x) == 0, "x offset wrong");
+static_assert(offsetof(GlyphInstance, u_min) == 8, "u_min offset wrong");
+static_assert(offsetof(GlyphInstance, r) == 24, "r offset wrong");
+
+// Text color constants
+namespace TextColor {
+    const Vec4 White    = {0.9f, 0.9f, 0.9f, 1.0f};
+    const Vec4 Gray     = {0.6f, 0.6f, 0.6f, 1.0f};
+    const Vec4 Yellow   = {1.0f, 0.9f, 0.2f, 1.0f};
+    const Vec4 Cyan     = {0.4f, 0.8f, 1.0f, 1.0f};
+    const Vec4 Green    = {0.4f, 1.0f, 0.4f, 1.0f};
+    const Vec4 Red      = {1.0f, 0.4f, 0.4f, 1.0f};
+    const Vec4 Orange   = {1.0f, 0.6f, 0.2f, 1.0f};
+}
+
+// =============================================================================
+// Edge Coloring Mode
+// =============================================================================
+
+enum class EdgeColorMode {
+    Vertex,     // Color edges by vertex dimension (gradient between endpoints)
+    Frequency   // Color edges by state frequency (how many states contain this edge)
+};
+
+// =============================================================================
+// Keybinding Definitions (Unified for stdout and overlay)
+// =============================================================================
+
+struct KeyBinding {
+    std::string key;
+    std::string description;
+    std::function<std::string()> get_value;  // nullptr for static bindings
+};
+
+struct KeyBindingGroup {
+    std::string name;
+    std::vector<KeyBinding> bindings;
+};
+
+// Build render data for a specific timestep
+// If live_positions is provided, use those instead of stored positions
+// layout_vertices maps layout indices to vertex IDs (needed for correct position lookup)
+RenderData build_render_data(
+    const BHAnalysisResult& analysis,
+    int timestep,
+    ViewMode view_mode,
+    EdgeDisplayMode edge_mode = EdgeDisplayMode::Union,  // Which edges to show
+    int edge_freq_threshold = 2,  // Edges must appear in >= N states (for Frequent mode)
+    int selected_state_index = 0,  // Which state to show in SingleState mode
+    HeatmapMode heatmap_mode = HeatmapMode::Mean,  // What to color by
+    DimensionSource dim_source = DimensionSource::Branchial,  // Branchial, Foliation, or Global
+    bool per_frame_normalization = true,  // Per-frame (local) vs global normalization
+    bool z_mapping_enabled = true,  // Map dimension to Z/height (false = flat)
+    MissingDataMode missing_mode = MissingDataMode::Show,  // How to display missing vertices
+    ColorPalette palette = ColorPalette::Temperature,  // Color palette for dimension heatmap
+    EdgeColorMode edge_color_mode = EdgeColorMode::Vertex,  // How to color edges
+    const layout::LayoutGraph* live_layout = nullptr,  // Optional live positions from layout engine
+    const std::vector<VertexId>* layout_vertices = nullptr,  // Vertex IDs in layout order
+    const PositionCache* position_cache = nullptr,  // Persistent positions from layout engine
+    float vertex_radius = 0.04f,  // Smaller spheres for cleaner visualization
+    float edge_radius = 0.015f,   // Thinner edges
+    float z_scale = 3.0f,  // Z height scale factor
+    bool timeslice_enabled = false,  // Aggregate across multiple timesteps
+    int timeslice_width = 5,  // Number of timesteps to aggregate
+    const std::vector<std::vector<int>>* all_selected_states = nullptr  // Per-timestep selected state indices (for path selection)
+) {
+    RenderData data;
+
+    if (timestep < 0 || timestep >= static_cast<int>(analysis.per_timestep.size())) {
+        return data;
+    }
+
+    // Determine timestep range for aggregation
+    int half_width = timeslice_width / 2;
+    int slice_start = timestep;
+    int slice_end = timestep;
+    if (timeslice_enabled && timeslice_width > 1) {
+        slice_start = std::max(0, timestep - half_width);
+        slice_end = std::min(static_cast<int>(analysis.per_timestep.size()) - 1, timestep + half_width);
+    }
+
+    // Aggregate data from timestep range using pre-computed prefix sums (O(1) range queries)
+    std::vector<VertexId> agg_vertices;
+    std::vector<Edge> agg_edges;
+    std::unordered_map<VertexId, Vec2> agg_positions;  // Position from center timestep
+    std::unordered_map<VertexId, float> agg_dimensions;  // Averaged dimension values
+
+    const auto& center_ts = analysis.per_timestep[timestep];
+    if (center_ts.union_vertices.empty()) return data;
+
+    // Handle SingleState mode: use vertices/edges from a specific state
+    if (edge_mode == EdgeDisplayMode::SingleState &&
+        timestep < static_cast<int>(analysis.states_per_step.size()) &&
+        !analysis.states_per_step[timestep].empty()) {
+        int state_idx = selected_state_index % static_cast<int>(analysis.states_per_step[timestep].size());
+        const auto& state = analysis.states_per_step[timestep][state_idx];
+        agg_vertices = state.vertices;
+        agg_edges = state.edges;
+        // Note: dimension values still come from center_ts (aggregated), which is correct
+        // since we want to show per-vertex colors using the aggregated dimension data
+    } else if (!timeslice_enabled || slice_start == slice_end) {
+        // Single timestep - use directly
+        agg_vertices = center_ts.union_vertices;
+        agg_edges = center_ts.union_edges;
+    } else {
+        // Use prefix sums for dimension averaging (O(V) instead of O(W*V))
+        const auto& end_ts = analysis.per_timestep[slice_end];
+
+        // Select which prefix sums to use based on dim_source and heatmap_mode
+        // Foliation/Global use union-graph dimensions, Branchial uses per-state averaged dimensions
+        // TODO: True Global mode uses mega-union across all timesteps (constant values, no timeslicing)
+        const bool use_foliation_data = (dim_source == DimensionSource::Foliation || dim_source == DimensionSource::Global);
+        const auto* end_sum = use_foliation_data
+            ? ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.global_var_prefix_sum : &end_ts.global_dim_prefix_sum)
+            : ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.var_prefix_sum : &end_ts.dim_prefix_sum);
+        const auto* end_count = use_foliation_data
+            ? ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.global_var_prefix_count : &end_ts.global_dim_prefix_count)
+            : ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.var_prefix_count : &end_ts.dim_prefix_count);
+
+        // Get start-1 prefix sums (or empty if slice_start == 0)
+        const std::unordered_map<VertexId, float>* start_sum = nullptr;
+        const std::unordered_map<VertexId, int>* start_count = nullptr;
+        if (slice_start > 0) {
+            const auto& start_ts = analysis.per_timestep[slice_start - 1];
+            start_sum = use_foliation_data
+                ? ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.global_var_prefix_sum : &start_ts.global_dim_prefix_sum)
+                : ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.var_prefix_sum : &start_ts.dim_prefix_sum);
+            start_count = use_foliation_data
+                ? ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.global_var_prefix_count : &start_ts.global_dim_prefix_count)
+                : ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.var_prefix_count : &start_ts.dim_prefix_count);
+        }
+
+        // Use dim_prefix_count to filter vertices to only those in the slice range
+        // (a vertex is in the range if its count increased between start-1 and end)
+        const auto& end_presence_count = end_ts.dim_prefix_count;  // Always use dim count for presence check
+        const std::unordered_map<VertexId, int>* start_presence_count = nullptr;
+        if (slice_start > 0) {
+            start_presence_count = &analysis.per_timestep[slice_start - 1].dim_prefix_count;
+        }
+
+        // Compute range averages for each vertex, filtering to only vertices in range
+        for (VertexId v : analysis.all_vertices) {
+            // Check if vertex is present in slice range
+            int presence_end = 0, presence_start = 0;
+            auto it_pres_end = end_presence_count.find(v);
+            if (it_pres_end != end_presence_count.end()) {
+                presence_end = it_pres_end->second;
+            }
+            if (start_presence_count) {
+                auto it_pres_start = start_presence_count->find(v);
+                if (it_pres_start != start_presence_count->end()) {
+                    presence_start = it_pres_start->second;
+                }
+            }
+
+            // Only include vertex if it appears in the slice range
+            if (presence_end - presence_start <= 0) {
+                continue;  // Vertex not in slice range
+            }
+
+            agg_vertices.push_back(v);
+
+            // Compute dimension average
+            float sum_end = 0, sum_start = 0;
+            int count_end = 0, count_start = 0;
+
+            auto it_end = end_sum->find(v);
+            if (it_end != end_sum->end()) {
+                sum_end = it_end->second;
+            }
+            auto it_count_end = end_count->find(v);
+            if (it_count_end != end_count->end()) {
+                count_end = it_count_end->second;
+            }
+
+            if (start_sum) {
+                auto it_start = start_sum->find(v);
+                if (it_start != start_sum->end()) {
+                    sum_start = it_start->second;
+                }
+            }
+            if (start_count) {
+                auto it_count_start = start_count->find(v);
+                if (it_count_start != start_count->end()) {
+                    count_start = it_count_start->second;
+                }
+            }
+
+            float range_sum = sum_end - sum_start;
+            int range_count = count_end - count_start;
+
+            if (range_count > 0) {
+                agg_dimensions[v] = range_sum / static_cast<float>(range_count);
+            }
+        }
+
+        // Build edge set for vertices in slice range (using all_edges but filtering)
+        std::unordered_set<VertexId> vertex_set(agg_vertices.begin(), agg_vertices.end());
+        for (const auto& e : analysis.all_edges) {
+            if (vertex_set.count(e.v1) > 0 && vertex_set.count(e.v2) > 0) {
+                agg_edges.push_back(e);
+            }
+        }
+    }
+
+    // Build position map from timesteps in slice range
+    // For timeslice mode, we need positions for vertices in the whole slice, not just center
+    // Priority for position sources:
+    //   1. position_cache (live layout positions from previous frames - most accurate)
+    //   2. layout_positions from timestep data (pre-computed during analysis)
+    //   3. vertex_positions from timestep data (geodesic coordinates)
+    //   4. initial.vertex_positions (for original vertices)
+    //   5. (0, 0) as last resort (should rarely happen with good data)
+
+    // Build vertex-to-index map for step 0 (for fallback lookup when layout is off)
+    std::unordered_map<VertexId, size_t> step0_vertex_idx;
+    const auto& step0 = analysis.per_timestep[0];
+    for (size_t i = 0; i < step0.union_vertices.size(); ++i) {
+        step0_vertex_idx[step0.union_vertices[i]] = i;
+    }
+
+    // Helper lambda to get best position for a vertex
+    auto get_vertex_position = [&](VertexId v, const TimestepAggregation& ts, size_t idx) -> Vec2 {
+        // Check position cache first (highest priority - live layout positions)
+        if (position_cache) {
+            auto cache_it = position_cache->find(v);
+            if (cache_it != position_cache->end()) {
+                return Vec2{cache_it->second.first, cache_it->second.second};
+            }
+        }
+
+        // Check layout_positions from timestep (pre-computed layout)
+        if (idx < ts.layout_positions.size()) {
+            const Vec2& pos = ts.layout_positions[idx];
+            // Skip if it's at origin (likely placeholder)
+            if (std::abs(pos.x) > 0.001f || std::abs(pos.y) > 0.001f) {
+                return pos;
+            }
+        }
+
+        // Check vertex_positions (geodesic coordinates)
+        if (idx < ts.vertex_positions.size()) {
+            const Vec2& pos = ts.vertex_positions[idx];
+            // Skip if it's at origin (placeholder for new vertices)
+            if (std::abs(pos.x) > 0.001f || std::abs(pos.y) > 0.001f) {
+                return pos;
+            }
+        }
+
+        // Check step 0's layout_positions (if vertex exists there and has a layout)
+        // This is crucial when layout is off - step 0 has the only pre-computed layout
+        auto step0_it = step0_vertex_idx.find(v);
+        if (step0_it != step0_vertex_idx.end()) {
+            size_t step0_idx = step0_it->second;
+            if (step0_idx < step0.layout_positions.size()) {
+                const Vec2& pos = step0.layout_positions[step0_idx];
+                if (std::abs(pos.x) > 0.001f || std::abs(pos.y) > 0.001f) {
+                    return pos;
+                }
+            }
+        }
+
+        // Check initial condition positions
+        if (v < analysis.initial.vertex_positions.size()) {
+            return analysis.initial.vertex_positions[v];
+        }
+
+        // Last resort - will be fixed up later via neighbor interpolation
+        return Vec2{0, 0};
+    };
+
+    if (timeslice_enabled && slice_start != slice_end) {
+        // Build positions from all timesteps in slice range (outer to inner so center wins)
+        for (int s = slice_start; s <= slice_end; ++s) {
+            if (s == timestep) continue;  // Do center last
+            const auto& step_ts = analysis.per_timestep[s];
+            for (size_t i = 0; i < step_ts.union_vertices.size(); ++i) {
+                VertexId v = step_ts.union_vertices[i];
+                if (agg_positions.count(v) > 0) continue;  // Already have position
+                agg_positions[v] = get_vertex_position(v, step_ts, i);
+            }
+        }
+    }
+    // Always include center timestep positions (these take priority)
+    for (size_t i = 0; i < center_ts.union_vertices.size(); ++i) {
+        VertexId v = center_ts.union_vertices[i];
+        agg_positions[v] = get_vertex_position(v, center_ts, i);
+    }
+
+    // Fill in any missing positions from initial condition (for vertices in agg_vertices not in any timestep)
+    if (timeslice_enabled && !agg_vertices.empty()) {
+        for (VertexId v : agg_vertices) {
+            if (agg_positions.count(v) == 0) {
+                // Try position cache first
+                if (position_cache) {
+                    auto cache_it = position_cache->find(v);
+                    if (cache_it != position_cache->end()) {
+                        agg_positions[v] = Vec2{cache_it->second.first, cache_it->second.second};
+                        continue;
+                    }
+                }
+                // Fall back to initial
+                if (v < analysis.initial.vertex_positions.size()) {
+                    agg_positions[v] = analysis.initial.vertex_positions[v];
+                } else {
+                    agg_positions[v] = Vec2{0, 0};
+                }
+            }
+        }
+    }
+
+    // Second pass: fix up any (0,0) positions using neighbor interpolation
+    // This ensures vertices created during evolution get reasonable positions
+    // Applied when: timeslice is enabled OR layout is disabled (live_layout == nullptr)
+    bool need_interpolation = timeslice_enabled || (live_layout == nullptr);
+    if (need_interpolation) {
+        // Always use center timestep for interpolation (timeslice only affects dimension averaging)
+        const std::vector<VertexId>& verts_for_interp = center_ts.union_vertices;
+        const std::vector<Edge>& edges_for_interp = center_ts.union_edges;
+
+        // Ensure all vertices have entries in agg_positions
+        for (VertexId v : verts_for_interp) {
+            if (agg_positions.count(v) == 0) {
+                if (v < analysis.initial.vertex_positions.size()) {
+                    agg_positions[v] = analysis.initial.vertex_positions[v];
+                } else {
+                    agg_positions[v] = Vec2{0, 0};
+                }
+            }
+        }
+
+        // Build adjacency from edges
+        std::unordered_map<VertexId, std::vector<VertexId>> adjacency;
+        for (const auto& e : edges_for_interp) {
+            adjacency[e.v1].push_back(e.v2);
+            adjacency[e.v2].push_back(e.v1);
+        }
+
+        // Multiple passes to handle chains
+        for (int pass = 0; pass < 3; ++pass) {
+            bool any_fixed = false;
+            for (VertexId v : verts_for_interp) {
+                auto pos_it = agg_positions.find(v);
+                if (pos_it == agg_positions.end()) continue;
+
+                // Check if position is at origin (needs fixing)
+                if (std::abs(pos_it->second.x) < 0.001f && std::abs(pos_it->second.y) < 0.001f) {
+                    // Find neighbors with good positions
+                    auto adj_it = adjacency.find(v);
+                    if (adj_it != adjacency.end()) {
+                        float sum_x = 0, sum_y = 0;
+                        int count = 0;
+                        for (VertexId neighbor : adj_it->second) {
+                            auto neighbor_pos = agg_positions.find(neighbor);
+                            if (neighbor_pos != agg_positions.end() &&
+                                (std::abs(neighbor_pos->second.x) > 0.001f || std::abs(neighbor_pos->second.y) > 0.001f)) {
+                                sum_x += neighbor_pos->second.x;
+                                sum_y += neighbor_pos->second.y;
+                                count++;
+                            }
+                        }
+                        if (count > 0) {
+                            pos_it->second.x = sum_x / count;
+                            pos_it->second.y = sum_y / count;
+                            any_fixed = true;
+                        }
+                    }
+                }
+            }
+            if (!any_fixed) break;
+        }
+    }
+
+    // Reference for the rest of the function - use center timestep for stats
+    const auto& ts = center_ts;
+
+    // Color scaling - use appropriate range based on dimension mode
+    float value_min, value_max;
+    if (dim_source == DimensionSource::Global) {
+        // Global mode uses mega-union (constant across all timesteps, no per-frame option)
+        value_min = analysis.mega_dim_min;
+        value_max = analysis.mega_dim_max;
+    } else if (dim_source == DimensionSource::Foliation) {
+        if (heatmap_mode == HeatmapMode::Variance) {
+            // Foliation variance (not really applicable, but handle anyway)
+            if (per_frame_normalization) {
+                value_min = ts.global_var_min;
+                value_max = ts.global_var_max;
+            } else {
+                value_min = analysis.global_var_q05;
+                value_max = analysis.global_var_q95;
+            }
+        } else {
+            // Foliation mean
+            if (per_frame_normalization) {
+                value_min = ts.global_mean_min;
+                value_max = ts.global_mean_max;
+            } else {
+                value_min = analysis.global_dim_q05;
+                value_max = analysis.global_dim_q95;
+            }
+        }
+    } else {
+        // Branchial mode uses per-state averaged dimensions
+        if (heatmap_mode == HeatmapMode::Variance) {
+            // Branchial variance
+            if (per_frame_normalization) {
+                value_min = ts.var_min;
+                value_max = ts.var_max;
+            } else {
+                value_min = analysis.var_q05;
+                value_max = analysis.var_q95;
+            }
+        } else {
+            // Branchial mean
+            if (per_frame_normalization) {
+                value_min = ts.pooled_min;
+                value_max = ts.pooled_max;
+            } else {
+                value_min = analysis.dim_q05;
+                value_max = analysis.dim_q95;
+            }
+        }
+    }
+
+    // ALWAYS use center timestep vertices for rendering
+    // Timeslice only affects dimension value averaging (stored in agg_dimensions), not visibility
+    const std::vector<VertexId>& vertices_to_render = ts.union_vertices;
+
+    // Build vertex index map, positions, and lookup tables
+    std::unordered_map<VertexId, size_t> vertex_to_idx;
+    std::vector<float> vertex_x, vertex_y, vertex_z;
+    std::vector<float> vertex_dims;
+    std::vector<Vec4> vertex_colors;
+    std::vector<bool> vertex_hidden;  // Track which vertices should be hidden (missing data)
+
+    vertex_x.reserve(vertices_to_render.size());
+    vertex_y.reserve(vertices_to_render.size());
+    vertex_z.reserve(vertices_to_render.size());
+    vertex_dims.reserve(vertices_to_render.size());
+    vertex_colors.reserve(vertices_to_render.size());
+    vertex_hidden.reserve(vertices_to_render.size());
+
+    // Build reverse mapping: vertex ID -> layout index (if layout_vertices provided)
+    std::unordered_map<VertexId, size_t> vid_to_layout_idx;
+    if (live_layout && layout_vertices) {
+        for (size_t li = 0; li < layout_vertices->size(); ++li) {
+            vid_to_layout_idx[(*layout_vertices)[li]] = li;
+        }
+    }
+
+    for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+        VertexId vid = vertices_to_render[i];
+        vertex_to_idx[vid] = i;
+
+        // Use live layout positions if provided and this vertex is in the layout
+        float px, py;
+        auto layout_it = vid_to_layout_idx.find(vid);
+        if (live_layout && layout_it != vid_to_layout_idx.end()) {
+            size_t layout_idx = layout_it->second;
+            px = live_layout->positions_x[layout_idx];
+            py = live_layout->positions_y[layout_idx];
+        } else {
+            // Use aggregated positions (from center timestep) or fall back
+            auto pos_it = agg_positions.find(vid);
+            if (pos_it != agg_positions.end() &&
+                (std::abs(pos_it->second.x) > 0.001f || std::abs(pos_it->second.y) > 0.001f)) {
+                px = pos_it->second.x;
+                py = pos_it->second.y;
+            } else if (position_cache) {
+                // Try position cache (live layout positions from previous frames)
+                auto cache_it = position_cache->find(vid);
+                if (cache_it != position_cache->end()) {
+                    px = cache_it->second.first;
+                    py = cache_it->second.second;
+                } else if (vid < analysis.initial.vertex_positions.size()) {
+                    px = analysis.initial.vertex_positions[vid].x;
+                    py = analysis.initial.vertex_positions[vid].y;
+                } else {
+                    px = 0;
+                    py = 0;
+                }
+            } else if (vid < analysis.initial.vertex_positions.size()) {
+                // Fall back to initial condition position
+                px = analysis.initial.vertex_positions[vid].x;
+                py = analysis.initial.vertex_positions[vid].y;
+            } else {
+                // Last resort: default position (should rarely happen)
+                px = 0;
+                py = 0;
+            }
+        }
+        vertex_x.push_back(px);
+        vertex_y.push_back(py);
+
+        // Get value based on dimension source and heatmap mode
+        float value = -1.0f;
+        if (timeslice_enabled && !agg_dimensions.empty()) {
+            // Use pre-computed averaged value from timeslice aggregation (O(1) lookup)
+            auto it = agg_dimensions.find(vid);
+            if (it != agg_dimensions.end()) {
+                value = it->second;
+            }
+        } else {
+            // Find dimension value based on mode
+            if (dim_source == DimensionSource::Global) {
+                // Global mode: use mega_dimension (constant across all timesteps)
+                auto it = analysis.mega_dimension.find(vid);
+                if (it != analysis.mega_dimension.end()) {
+                    value = it->second;
+                }
+            } else {
+                // Branchial/Foliation: find vertex in center timestep
+                for (size_t j = 0; j < ts.union_vertices.size(); ++j) {
+                    if (ts.union_vertices[j] == vid) {
+                        if (dim_source == DimensionSource::Foliation) {
+                            if (heatmap_mode == HeatmapMode::Variance) {
+                                value = (j < ts.global_variance_dimensions.size()) ? ts.global_variance_dimensions[j] : -1.0f;
+                            } else {
+                                value = (j < ts.global_mean_dimensions.size()) ? ts.global_mean_dimensions[j] : -1.0f;
+                            }
+                        } else {
+                            // Branchial mode
+                            if (heatmap_mode == HeatmapMode::Variance) {
+                                value = (j < ts.variance_dimensions.size()) ? ts.variance_dimensions[j] : -1.0f;
+                            } else {
+                                value = (j < ts.mean_dimensions.size()) ? ts.mean_dimensions[j] : -1.0f;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        vertex_dims.push_back(value);
+
+        // Track if this vertex should be hidden (only in Hide mode for missing/invalid data)
+        bool is_missing = (value < 0 || !std::isfinite(value));
+        bool is_hidden = (missing_mode == MissingDataMode::Hide) && is_missing;
+        vertex_hidden.push_back(is_hidden);
+
+        // Color using palette and missing data mode
+        Vec4 color = dimension_to_color(value, value_min, value_max, palette, missing_mode);
+        vertex_colors.push_back(color);
+
+        // 3D position: map value to height (clamped to reasonable range)
+        // Only elevate if z_mapping_enabled is true
+        float z = 0;
+        if (z_mapping_enabled && view_mode == ViewMode::View3D && value >= 0 && std::isfinite(value)) {
+            // Use same normalization logic as dimension_to_color
+            float vmin = value_min, vmax = value_max;
+            if (std::isfinite(vmin) && std::isfinite(vmax)) {
+                if (vmin > vmax) std::swap(vmin, vmax);
+                float range = vmax - vmin;
+                if (range >= 0.001f) {
+                    float t = std::clamp((value - vmin) / range, 0.0f, 1.0f);
+                    z = t * z_scale;  // Use z_scale parameter
+                } else {
+                    z = z_scale * 0.5f;  // Middle height when all values are same
+                }
+            }
+        }
+        vertex_z.push_back(z);
+    }
+
+    // Debug output for hidden vertices disabled (was spamming stdout)
+    // Uncomment to debug missing dimension data:
+    // if (missing_mode == MissingDataMode::Hide) {
+    //     struct HiddenVertexInfo { VertexId id; float dim; Vec2 pos; };
+    //     std::vector<HiddenVertexInfo> hidden_info;
+    //     for (size_t i = 0; i < vertex_hidden.size(); ++i) {
+    //         if (vertex_hidden[i]) {
+    //             VertexId vid = vertices_to_render[i];
+    //             Vec2 pos{0, 0};
+    //             auto it = agg_positions.find(vid);
+    //             if (it != agg_positions.end()) pos = it->second;
+    //             hidden_info.push_back({vid, vertex_dims[i], pos});
+    //         }
+    //     }
+    //     if (!hidden_info.empty()) {
+    //         std::cout << "[Debug] Hiding " << hidden_info.size() << "/" << vertices_to_render.size()
+    //                   << " vertices with missing dimension data at step " << timestep << std::endl;
+    //     }
+    // }
+
+    // Select edge list based on display mode
+    // ALWAYS use center timestep edges for rendering
+    // Timeslice only affects dimension value averaging, not edge visibility
+    const std::vector<Edge>* edges_to_render;
+    EdgeDisplayMode effective_mode = edge_mode;
+    std::vector<Edge> freq_filtered_edges;  // Storage for dynamically filtered edges
+
+    // Edge and vertex frequency computation (needed for Frequent mode filtering and Frequency coloring)
+    // We maintain two counts:
+    // - edge_counts_by_id: counts by edge ID for correct frequency (handles edge multiplicity)
+    // - edge_counts_by_pair: counts by vertex pair for rendering lookup (union_edges don't have IDs)
+    std::unordered_map<EdgeId, int> edge_counts_by_id;    // Keyed by edge ID
+    std::unordered_map<uint64_t, int> edge_counts_by_pair;  // Keyed by vertex pair for rendering
+    std::unordered_map<VertexId, int> vertex_counts;  // How many states each vertex appears in
+    int max_edge_count = 1;    // For normalizing frequency colors
+    int min_edge_count = 1;
+    int max_vertex_count = 1;
+    int min_vertex_count = 1;
+
+    // Vertex pair key for rendering lookup
+    auto vertex_pair_key = [](const Edge& e) -> uint64_t {
+        VertexId v1 = std::min(e.v1, e.v2);
+        VertexId v2 = std::max(e.v1, e.v2);
+        return (static_cast<uint64_t>(v1) << 32) | v2;
+    };
+
+    // Compute edge and vertex frequencies if we need them (Frequent mode or Frequency coloring)
+    // IMPORTANT: Frequencies are computed at the CENTER timestep only, NOT across the timeslice.
+    // Timeslice only affects dimension value averaging, not frequency counts.
+    // This ensures max frequency <= num_states at the current timestep.
+    bool need_freq_counts = (edge_mode == EdgeDisplayMode::Frequent || edge_color_mode == EdgeColorMode::Frequency);
+    if (need_freq_counts) {
+        // Count frequencies at the CENTER timestep only
+        if (timestep < static_cast<int>(analysis.states_per_step.size())) {
+            for (const auto& state : analysis.states_per_step[timestep]) {
+                // Track which vertex pairs we've seen in THIS state (for pair counts)
+                std::unordered_set<uint64_t> seen_pairs_this_state;
+
+                // Count edges by edge ID (each edge counted once per state it appears in)
+                for (const auto& e : state.edges) {
+                    // Count by edge ID if available
+                    if (e.id != INVALID_EDGE_ID) {
+                        int count = ++edge_counts_by_id[e.id];
+                        max_edge_count = std::max(max_edge_count, count);
+                    }
+
+                    // Also count by vertex pair (for rendering lookup)
+                    // Only count each pair once per state even if there's edge multiplicity
+                    uint64_t pair_key = vertex_pair_key(e);
+                    if (seen_pairs_this_state.insert(pair_key).second) {
+                        int count = ++edge_counts_by_pair[pair_key];
+                        // Update max from pair counts too
+                        max_edge_count = std::max(max_edge_count, count);
+                    }
+                }
+                // Count vertices (each vertex counted once per state it appears in)
+                for (VertexId v : state.vertices) {
+                    int count = ++vertex_counts[v];
+                    max_vertex_count = std::max(max_vertex_count, count);
+                }
+            }
+        }
+        // Compute min counts (for legend) - use pair counts for edges
+        for (const auto& [k, c] : edge_counts_by_pair) {
+            min_edge_count = std::min(min_edge_count, c);
+        }
+        for (const auto& [v, c] : vertex_counts) {
+            min_vertex_count = std::min(min_vertex_count, c);
+        }
+
+        // In Frequency color mode, recolor vertices by their frequency
+        if (edge_color_mode == EdgeColorMode::Frequency && !vertex_counts.empty()) {
+            int freq_range = max_vertex_count - min_vertex_count;
+            for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+                VertexId vid = vertices_to_render[i];
+                auto it = vertex_counts.find(vid);
+                int count = (it != vertex_counts.end()) ? it->second : 1;
+
+                // Normalize frequency to 0-1 range
+                float t = (freq_range > 0)
+                    ? static_cast<float>(count - min_vertex_count) / static_cast<float>(freq_range)
+                    : 1.0f;
+
+                Vec3 freq_color = apply_palette(t, palette);
+                vertex_colors[i] = Vec4(freq_color, 1.0f);
+            }
+        }
+    }
+
+    // Base edge set is always center timestep (timeslice only affects dimension averaging)
+    const std::vector<Edge>* base_edges = &ts.union_edges;
+    edges_to_render = base_edges;
+
+    // Apply edge mode filtering (works with both timeslice and single timestep)
+    if (edge_mode == EdgeDisplayMode::Intersection) {
+        if (!ts.intersection_edges.empty()) {
+            if (timeslice_enabled) {
+                // Filter agg_edges to only include those in center timestep's intersection
+                std::unordered_set<uint64_t> intersection_set;
+                for (const auto& e : ts.intersection_edges) {
+                    intersection_set.insert(vertex_pair_key(e));
+                }
+                for (const auto& e : *base_edges) {
+                    if (intersection_set.count(vertex_pair_key(e))) {
+                        freq_filtered_edges.push_back(e);
+                    }
+                }
+                if (!freq_filtered_edges.empty()) {
+                    edges_to_render = &freq_filtered_edges;
+                } else {
+                    effective_mode = EdgeDisplayMode::Union;  // Fallback
+                }
+            } else {
+                edges_to_render = &ts.intersection_edges;
+            }
+        } else {
+            effective_mode = EdgeDisplayMode::Union;  // Fallback
+        }
+    } else if (edge_mode == EdgeDisplayMode::Frequent) {
+        // Use pre-computed edge counts (by vertex pair) for filtering
+        if (!edge_counts_by_pair.empty()) {
+            // Filter edges that appear in >= threshold states
+            for (const auto& e : *base_edges) {
+                auto it = edge_counts_by_pair.find(vertex_pair_key(e));
+                if (it != edge_counts_by_pair.end() && it->second >= edge_freq_threshold) {
+                    freq_filtered_edges.push_back(e);
+                }
+            }
+            if (!freq_filtered_edges.empty()) {
+                edges_to_render = &freq_filtered_edges;
+            } else {
+                effective_mode = EdgeDisplayMode::Union;  // Fallback if no edges match
+            }
+        } else if (!ts.frequent_edges.empty()) {
+            // Fall back to pre-computed frequent edges if no per-state data
+            edges_to_render = &ts.frequent_edges;
+        } else {
+            effective_mode = EdgeDisplayMode::Union;  // Fallback
+        }
+    }
+
+    // Apply path selection filter if provided (combined with timeslicing if enabled)
+    // Collect edges from selected states across the entire timeslice range
+    std::vector<Edge> path_filtered_edges;
+    bool has_path_selection = all_selected_states && !all_selected_states->empty();
+    if (has_path_selection) {
+        std::unordered_set<uint64_t> path_edge_set;
+        // Iterate over all timesteps in the timeslice range (or just current if timeslice disabled)
+        for (int t = slice_start; t <= slice_end; ++t) {
+            if (t >= static_cast<int>(all_selected_states->size()) ||
+                t >= static_cast<int>(analysis.states_per_step.size())) continue;
+            const auto& selected_for_step = (*all_selected_states)[t];
+            for (int state_idx : selected_for_step) {
+                if (state_idx >= 0 && state_idx < static_cast<int>(analysis.states_per_step[t].size())) {
+                    const auto& state = analysis.states_per_step[t][state_idx];
+                    for (const auto& e : state.edges) {
+                        VertexId v1 = std::min(e.v1, e.v2);
+                        VertexId v2 = std::max(e.v1, e.v2);
+                        path_edge_set.insert((static_cast<uint64_t>(v1) << 32) | v2);
+                    }
+                }
+            }
+        }
+        // Filter edges_to_render to only those in the selected states
+        for (const auto& e : *edges_to_render) {
+            VertexId v1 = std::min(e.v1, e.v2);
+            VertexId v2 = std::max(e.v1, e.v2);
+            uint64_t key = (static_cast<uint64_t>(v1) << 32) | v2;
+            if (path_edge_set.count(key) > 0) {
+                path_filtered_edges.push_back(e);
+            }
+        }
+        if (!path_filtered_edges.empty()) {
+            edges_to_render = &path_filtered_edges;
+        }
+    }
+
+    // In non-union modes OR path selection mode, only show vertices that have edges
+    // This prevents showing "orphan" vertices not connected to any visible edge
+    bool filter_edgeless = (effective_mode != EdgeDisplayMode::Union) || has_path_selection;
+    std::unordered_set<VertexId> vertices_with_edges;
+    if (filter_edgeless) {
+        for (const auto& e : *edges_to_render) {
+            vertices_with_edges.insert(e.v1);
+            vertices_with_edges.insert(e.v2);
+        }
+    }
+
+    // Build sphere instances for vertices
+    data.sphere_instances.reserve(vertices_to_render.size());
+    for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+        // Skip hidden vertices (missing data mode)
+        if (vertex_hidden[i]) {
+            continue;
+        }
+
+        // In filtered modes, skip vertices without edges
+        if (filter_edgeless &&
+            vertices_with_edges.find(vertices_to_render[i]) == vertices_with_edges.end()) {
+            continue;
+        }
+
+        SphereInstance inst;
+        inst.x = vertex_x[i];
+        inst.y = vertex_y[i];
+        inst.z = vertex_z[i];
+        inst.radius = vertex_radius;
+        inst.r = vertex_colors[i].x;
+        inst.g = vertex_colors[i].y;
+        inst.b = vertex_colors[i].z;
+        inst.a = vertex_colors[i].w;
+        data.sphere_instances.push_back(inst);
+    }
+
+    // Build cylinder instances for edges
+    data.cylinder_instances.reserve(edges_to_render->size());
+    for (const auto& edge : *edges_to_render) {
+        auto it1 = vertex_to_idx.find(edge.v1);
+        auto it2 = vertex_to_idx.find(edge.v2);
+        if (it1 == vertex_to_idx.end() || it2 == vertex_to_idx.end()) continue;
+
+        size_t idx1 = it1->second;
+        size_t idx2 = it2->second;
+
+        // Skip edges where either endpoint is hidden (missing data mode)
+        if (vertex_hidden[idx1] || vertex_hidden[idx2]) continue;
+
+        // Determine edge color based on mode
+        Vec4 c1, c2;
+        if (edge_color_mode == EdgeColorMode::Frequency && !edge_counts_by_pair.empty()) {
+            // Color by frequency (uniform color for whole edge)
+            auto it = edge_counts_by_pair.find(vertex_pair_key(edge));
+            int count = (it != edge_counts_by_pair.end()) ? it->second : min_edge_count;
+            // Scale from min to max (not 1 to max!) to use full color range
+            int edge_freq_range = max_edge_count - min_edge_count;
+            float t = (edge_freq_range > 0)
+                ? static_cast<float>(count - min_edge_count) / static_cast<float>(edge_freq_range)
+                : 1.0f;
+            Vec3 freq_color = apply_palette(t, palette);
+            c1 = c2 = Vec4(freq_color, 1.0f);
+        } else {
+            // Color by vertex dimension (gradient between endpoints)
+            c1 = vertex_colors[idx1];
+            c2 = vertex_colors[idx2];
+        }
+
+        CylinderInstance inst;
+        inst.start_x = vertex_x[idx1];
+        inst.start_y = vertex_y[idx1];
+        inst.start_z = vertex_z[idx1];
+        inst.end_x = vertex_x[idx2];
+        inst.end_y = vertex_y[idx2];
+        inst.end_z = vertex_z[idx2];
+        inst.radius = edge_radius;
+        inst._pad1 = 0;
+        inst.r1 = c1.x;
+        inst.g1 = c1.y;
+        inst.b1 = c1.z;
+        inst.a1 = 0.8f;
+        inst.r2 = c2.x;
+        inst.g2 = c2.y;
+        inst.b2 = c2.z;
+        inst.a2 = 0.8f;
+        data.cylinder_instances.push_back(inst);
+    }
+
+    // Also build legacy line data for 2D mode fallback
+    if (view_mode == ViewMode::View2D) {
+        data.edge_data.reserve(edges_to_render->size() * 2);
+        for (const auto& edge : *edges_to_render) {
+            auto it1 = vertex_to_idx.find(edge.v1);
+            auto it2 = vertex_to_idx.find(edge.v2);
+            if (it1 == vertex_to_idx.end() || it2 == vertex_to_idx.end()) continue;
+
+            size_t idx1 = it1->second;
+            size_t idx2 = it2->second;
+
+            // Use same coloring logic as 3D mode
+            Vec4 c1, c2;
+            if (edge_color_mode == EdgeColorMode::Frequency && !edge_counts_by_pair.empty()) {
+                auto it = edge_counts_by_pair.find(vertex_pair_key(edge));
+                int count = (it != edge_counts_by_pair.end()) ? it->second : min_edge_count;
+                // Scale from min to max (not 1 to max!) to use full color range
+                int edge_freq_range = max_edge_count - min_edge_count;
+                float t = (edge_freq_range > 0)
+                    ? static_cast<float>(count - min_edge_count) / static_cast<float>(edge_freq_range)
+                    : 1.0f;
+                Vec3 freq_color = apply_palette(t, palette);
+                c1 = c2 = Vec4(freq_color, 0.8f);
+            } else {
+                c1 = vertex_colors[idx1];
+                c2 = vertex_colors[idx2];
+                c1.w = 0.8f;
+                c2.w = 0.8f;
+            }
+
+            data.edge_data.push_back({vertex_x[idx1], vertex_y[idx1], 0, c1.x, c1.y, c1.z, c1.w});
+            data.edge_data.push_back({vertex_x[idx2], vertex_y[idx2], 0, c2.x, c2.y, c2.z, c2.w});
+        }
+        data.edge_count = data.edge_data.size();
+
+        // Build quads for 2D vertices
+        // In non-union modes, only show vertices that have edges (same as 3D mode)
+        data.vertex_data.reserve(ts.union_vertices.size() * 6);
+        float s = vertex_radius;
+        for (size_t i = 0; i < ts.union_vertices.size(); ++i) {
+            // In filtered modes (non-union or path selection), skip vertices without edges
+            if (filter_edgeless &&
+                vertices_with_edges.find(ts.union_vertices[i]) == vertices_with_edges.end()) {
+                continue;
+            }
+            float x = vertex_x[i], y = vertex_y[i];
+            Vec4 c = vertex_colors[i];
+            data.vertex_data.push_back({x - s, y - s, 0, c.x, c.y, c.z, c.w});
+            data.vertex_data.push_back({x + s, y - s, 0, c.x, c.y, c.z, c.w});
+            data.vertex_data.push_back({x + s, y + s, 0, c.x, c.y, c.z, c.w});
+            data.vertex_data.push_back({x - s, y - s, 0, c.x, c.y, c.z, c.w});
+            data.vertex_data.push_back({x + s, y + s, 0, c.x, c.y, c.z, c.w});
+            data.vertex_data.push_back({x - s, y + s, 0, c.x, c.y, c.z, c.w});
+        }
+        data.vertex_count = data.vertex_data.size();
+    }
+
+    // Store frequency data for legend (when in Frequency color mode)
+    if (edge_color_mode == EdgeColorMode::Frequency) {
+        int overall_min = std::min(min_edge_count, min_vertex_count);
+        int overall_max = std::max(max_edge_count, max_vertex_count);
+        data.min_freq = overall_min;
+        data.max_freq = overall_max;
+        data.has_freq_data = true;
+    }
+
+    return data;
+}
+
+// Build timeline bar (2D overlay)
+// Returns vertices for: background bar + position marker + control buttons
+// Uses screen coordinates: x in [-1, 1], y at bottom
+struct TimelineData {
+    std::vector<Vertex> panel_verts;    // Semi-transparent background panels (alpha-blended)
+    std::vector<Vertex> bar_verts;      // Background bar (triangles)
+    std::vector<Vertex> marker_verts;   // Position marker (triangles)
+    std::vector<Vertex> button_verts;   // Control buttons (triangles)
+
+    // Hit regions in NDC for mouse interaction
+    float scrubber_left, scrubber_right, scrubber_bottom, scrubber_top;
+    float rewind_left, rewind_right;    // Rewind button bounds
+    float play_left, play_right;        // Play/pause button bounds
+    float skip_end_left, skip_end_right; // Skip to end button bounds
+};
+
+// Helper to add a triangle (3 vertices)
+static void add_triangle(std::vector<Vertex>& verts,
+    float x1, float y1, float x2, float y2, float x3, float y3,
+    float z, const Vec4& color) {
+    verts.push_back({x1, y1, z, color.x, color.y, color.z, color.w});
+    verts.push_back({x2, y2, z, color.x, color.y, color.z, color.w});
+    verts.push_back({x3, y3, z, color.x, color.y, color.z, color.w});
+}
+
+// Helper to add a quad (2 triangles, 6 vertices)
+static void add_quad(std::vector<Vertex>& verts,
+    float left, float bottom, float right, float top,
+    float z, const Vec4& color) {
+    verts.push_back({left, bottom, z, color.x, color.y, color.z, color.w});
+    verts.push_back({right, bottom, z, color.x, color.y, color.z, color.w});
+    verts.push_back({right, top, z, color.x, color.y, color.z, color.w});
+    verts.push_back({left, bottom, z, color.x, color.y, color.z, color.w});
+    verts.push_back({right, top, z, color.x, color.y, color.z, color.w});
+    verts.push_back({left, top, z, color.x, color.y, color.z, color.w});
+}
+
+// Helper to add a filled circle using triangle fan (center + perimeter vertices)
+// aspect_ratio = width/height of viewport (for circular circles in NDC space)
+static void add_circle(std::vector<Vertex>& verts,
+    float cx, float cy, float radius, float z, const Vec4& color,
+    float aspect_ratio = 1.0f, int segments = 12) {
+    // In NDC space, adjust radius for aspect ratio
+    float rx = radius;  // X radius
+    float ry = radius * aspect_ratio;  // Y radius scaled for circular appearance
+
+    // Create triangles from center to each edge segment
+    for (int i = 0; i < segments; ++i) {
+        float angle1 = 2.0f * 3.14159265f * i / segments;
+        float angle2 = 2.0f * 3.14159265f * (i + 1) / segments;
+
+        float x1 = cx + rx * std::cos(angle1);
+        float y1 = cy + ry * std::sin(angle1);
+        float x2 = cx + rx * std::cos(angle2);
+        float y2 = cy + ry * std::sin(angle2);
+
+        // Triangle: center, point1, point2
+        verts.push_back({cx, cy, z, color.x, color.y, color.z, color.w});
+        verts.push_back({x1, y1, z, color.x, color.y, color.z, color.w});
+        verts.push_back({x2, y2, z, color.x, color.y, color.z, color.w});
+    }
+}
+
+// Helper to add a rounded rectangle using triangle fans for corners
+// corner_segments controls roundness (4-8 is usually enough)
+// aspect_ratio = width/height of viewport (needed for circular corners in NDC space)
+static void add_rounded_rect(std::vector<Vertex>& verts,
+    float left, float top, float right, float bottom,
+    float radius, float z, const Vec4& color, float aspect_ratio = 1.0f, int corner_segments = 6) {
+    // In NDC space, X and Y both range from -1 to 1, but the viewport is typically wider
+    // To get circular corners, we need to scale the X component of the radius
+    float radius_x = radius;        // X radius in NDC
+    float radius_y = radius * aspect_ratio;  // Y radius scaled by aspect ratio
+
+    // Clamp radii to half the smaller dimension
+    float max_radius_x = (right - left) / 2;
+    float max_radius_y = (bottom - top) / 2;
+    radius_x = std::min(radius_x, max_radius_x);
+    radius_y = std::min(radius_y, max_radius_y);
+
+    // Corner centers
+    float tl_cx = left + radius_x, tl_cy = top + radius_y;      // Top-left
+    float tr_cx = right - radius_x, tr_cy = top + radius_y;     // Top-right
+    float bl_cx = left + radius_x, bl_cy = bottom - radius_y;   // Bottom-left
+    float br_cx = right - radius_x, br_cy = bottom - radius_y;  // Bottom-right
+
+    // Center rectangle (between all corners)
+    add_quad(verts, tl_cx, tl_cy, br_cx, br_cy, z, color);
+
+    // Top edge (between TL and TR corners)
+    add_quad(verts, tl_cx, top, tr_cx, tl_cy, z, color);
+    // Bottom edge (between BL and BR corners)
+    add_quad(verts, bl_cx, bl_cy, br_cx, bottom, z, color);
+    // Left edge (between TL and BL corners)
+    add_quad(verts, left, tl_cy, tl_cx, bl_cy, z, color);
+    // Right edge (between TR and BR corners)
+    add_quad(verts, tr_cx, tr_cy, right, br_cy, z, color);
+
+    // Corner triangle fans (elliptical to appear circular after aspect ratio)
+    float angle_step = (3.14159265f / 2.0f) / corner_segments;
+
+    // Top-left corner (angles from PI to PI/2)
+    // Note: In Vulkan NDC, +Y is DOWN, so we SUBTRACT sin to go UP toward the corner
+    for (int i = 0; i < corner_segments; i++) {
+        float a1 = 3.14159265f - i * angle_step;
+        float a2 = 3.14159265f - (i + 1) * angle_step;
+        float x1 = tl_cx + radius_x * std::cos(a1);
+        float y1 = tl_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
+        float x2 = tl_cx + radius_x * std::cos(a2);
+        float y2 = tl_cy - radius_y * std::sin(a2);  // Subtract for Vulkan Y-down
+        add_triangle(verts, tl_cx, tl_cy, x1, y1, x2, y2, z, color);
+    }
+
+    // Top-right corner (angles from PI/2 to 0)
+    for (int i = 0; i < corner_segments; i++) {
+        float a1 = 3.14159265f / 2.0f - i * angle_step;
+        float a2 = 3.14159265f / 2.0f - (i + 1) * angle_step;
+        float x1 = tr_cx + radius_x * std::cos(a1);
+        float y1 = tr_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
+        float x2 = tr_cx + radius_x * std::cos(a2);
+        float y2 = tr_cy - radius_y * std::sin(a2);  // Subtract for Vulkan Y-down
+        add_triangle(verts, tr_cx, tr_cy, x1, y1, x2, y2, z, color);
+    }
+
+    // Bottom-left corner (angles from -PI to -PI/2)
+    for (int i = 0; i < corner_segments; i++) {
+        float a1 = -3.14159265f + i * angle_step;
+        float a2 = -3.14159265f + (i + 1) * angle_step;
+        float x1 = bl_cx + radius_x * std::cos(a1);
+        float y1 = bl_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
+        float x2 = bl_cx + radius_x * std::cos(a2);
+        float y2 = bl_cy - radius_y * std::sin(a2);  // Subtract for Vulkan Y-down
+        add_triangle(verts, bl_cx, bl_cy, x1, y1, x2, y2, z, color);
+    }
+
+    // Bottom-right corner (angles from 0 to -PI/2)
+    for (int i = 0; i < corner_segments; i++) {
+        float a1 = -i * angle_step;
+        float a2 = -(i + 1) * angle_step;
+        float x1 = br_cx + radius_x * std::cos(a1);
+        float y1 = br_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
+        float x2 = br_cx + radius_x * std::cos(a2);
+        float y2 = br_cy - radius_y * std::sin(a2);  // Subtract for Vulkan Y-down
+        add_triangle(verts, br_cx, br_cy, x1, y1, x2, y2, z, color);
+    }
+}
+
+TimelineData build_timeline_bar(int current_step, int max_step, float aspect_ratio,
+                                 bool is_playing, int playback_direction,
+                                 bool timeslice_enabled = false, int timeslice_width = 5) {
+    TimelineData data;
+
+    // Layout constants
+    float button_size = 0.04f;
+    float button_margin = 0.02f;
+    float viewport_padding = 0.03f;  // Padding from viewport bottom
+    // Z values near 0 to render in front of everything (Vulkan NDC: 0=near, 1=far)
+    float panel_z = 0.002f;     // Panels furthest back
+    float bar_z = 0.001f;
+    float button_z = 0.0005f;
+    float marker_z = 0.0001f;
+
+    // Panel styling
+    Vec4 panel_color{0.0f, 0.0f, 0.0f, 0.5f};  // Semi-transparent black
+    float panel_padding = 0.025f;  // Padding inside panel around content (increased)
+    float corner_radius = 0.015f;  // Rounded corner radius (slightly larger)
+
+    // Button positions (left side): rewind | play | skip_end
+    float buttons_left = -0.95f;
+    float rewind_center = buttons_left + button_size/2;
+    float play_center = rewind_center + button_size + button_margin;
+    float skip_end_center = play_center + button_size + button_margin;
+
+    // Scrubber bar (to the right of buttons)
+    // Vulkan coordinates: y=-1 at top of screen, y=+1 at bottom of screen
+    // Bar should be at bottom of screen, so use positive Y values (with padding)
+    // Add extra gap to prevent panel overlap (panel_padding on each side + small gap)
+    float bar_left = skip_end_center + button_size/2 + panel_padding * 2 + 0.02f;
+    float bar_right = 0.95f;
+    float bar_y_min = 0.90f - viewport_padding;   // Top edge of bar (smaller Y = higher on screen)
+    float bar_y_max = 0.95f - viewport_padding;   // Bottom edge of bar (with padding from bottom)
+    float bar_center_y = (bar_y_min + bar_y_max) / 2;
+
+    // Store hit regions (in Vulkan NDC)
+    // Extend hit area slightly beyond bar to include the marker at edges (0 and t_max)
+    float marker_half_width = 0.008f;  // Same as marker rendering
+    data.scrubber_left = bar_left - marker_half_width;
+    data.scrubber_right = bar_right + marker_half_width;
+    data.scrubber_bottom = bar_y_min - 0.02f;  // Slightly larger hit area (extend upward)
+    data.scrubber_top = bar_y_max + 0.02f;     // Extend downward
+    data.rewind_left = rewind_center - button_size/2;
+    data.rewind_right = rewind_center + button_size/2;
+    data.play_left = play_center - button_size/2;
+    data.play_right = play_center + button_size/2;
+    data.skip_end_left = skip_end_center - button_size/2;
+    data.skip_end_right = skip_end_center + button_size/2;
+
+    // === ROUNDED PANEL BACKGROUNDS ===
+
+    // Panel behind all three buttons (one continuous panel)
+    float buttons_panel_left = rewind_center - button_size/2 - panel_padding;
+    float buttons_panel_right = skip_end_center + button_size/2 + panel_padding;
+    float buttons_panel_top = bar_center_y - button_size/2 - panel_padding;
+    float buttons_panel_bottom = bar_center_y + button_size/2 + panel_padding;
+    add_rounded_rect(data.panel_verts, buttons_panel_left, buttons_panel_top,
+                     buttons_panel_right, buttons_panel_bottom, corner_radius, panel_z, panel_color, aspect_ratio);
+
+    // Panel behind scrubber/timeline
+    float scrubber_panel_left = bar_left - panel_padding;
+    float scrubber_panel_right = bar_right + panel_padding;
+    float scrubber_panel_top = bar_y_min - panel_padding;
+    float scrubber_panel_bottom = bar_y_max + panel_padding;
+    // If timeslice is enabled, extend panel to include the indicator
+    if (timeslice_enabled && timeslice_width > 1) {
+        scrubber_panel_bottom = bar_y_max + 0.025f + panel_padding;
+    }
+    add_rounded_rect(data.panel_verts, scrubber_panel_left, scrubber_panel_top,
+                     scrubber_panel_right, scrubber_panel_bottom, corner_radius, panel_z, panel_color, aspect_ratio);
+
+    // Background bar (dark gray) - now on top of panel
+    Vec4 bg_color{0.2f, 0.2f, 0.2f, 0.8f};
+    add_quad(data.bar_verts, bar_left, bar_y_min, bar_right, bar_y_max, bar_z, bg_color);
+
+    // Progress fill (dim cyan)
+    float t = (max_step > 0) ? static_cast<float>(current_step) / max_step : 0.0f;
+    float progress_right = bar_left + t * (bar_right - bar_left);
+    Vec4 progress_color{0.0f, 0.4f, 0.5f, 0.8f};
+    add_quad(data.bar_verts, bar_left, bar_y_min, progress_right, bar_y_max, bar_z - 0.01f, progress_color);
+
+    // Position marker (white vertical line)
+    float marker_x = progress_right;
+    // marker_half_width already defined above for hit regions
+    float marker_y_min = bar_y_min - 0.015f;  // Extend above bar
+    float marker_y_max = bar_y_max + 0.015f;  // Extend below bar
+    Vec4 marker_color{1.0f, 1.0f, 1.0f, 1.0f};
+    add_quad(data.marker_verts, marker_x - marker_half_width, marker_y_min,
+             marker_x + marker_half_width, marker_y_max, marker_z, marker_color);
+
+    // Timeslice indicator (red bar under the scrubber showing the time window)
+    // Only show when timeslice is enabled AND width > 1 (width=1 is same as no timeslice)
+    if (timeslice_enabled && max_step > 0 && timeslice_width > 1) {
+        // Calculate the timeslice range centered on current step
+        int half_width = timeslice_width / 2;
+        int slice_start = std::max(0, current_step - half_width);
+        int slice_end = std::min(max_step, current_step + half_width);
+
+        // Convert to bar coordinates
+        float bar_width = bar_right - bar_left;
+        float slice_left_x = bar_left + (static_cast<float>(slice_start) / max_step) * bar_width;
+        float slice_right_x = bar_left + (static_cast<float>(slice_end) / max_step) * bar_width;
+
+        // Ensure minimum visual width so the bar is always visible
+        float min_visual_width = 0.02f;  // Minimum width in NDC
+        float actual_width = slice_right_x - slice_left_x;
+        if (actual_width < min_visual_width) {
+            float center = (slice_left_x + slice_right_x) / 2.0f;
+            slice_left_x = center - min_visual_width / 2.0f;
+            slice_right_x = center + min_visual_width / 2.0f;
+        }
+
+        // Draw red bar slightly below the main bar
+        float slice_y_min = bar_y_max + 0.005f;
+        float slice_y_max = bar_y_max + 0.020f;
+        Vec4 slice_color{0.9f, 0.2f, 0.2f, 0.9f};  // Red
+        add_quad(data.marker_verts, slice_left_x, slice_y_min,
+                 slice_right_x, slice_y_max, marker_z, slice_color);
+    }
+
+    // Rewind button (double left-pointing triangles)
+    Vec4 btn_color{0.7f, 0.7f, 0.7f, 1.0f};
+    float tri_h = button_size * 0.6f;
+    float tri_w = button_size * 0.4f;
+    // First triangle (left)
+    add_triangle(data.button_verts,
+        rewind_center - tri_w, bar_center_y,  // left point
+        rewind_center, bar_center_y - tri_h/2,  // top right
+        rewind_center, bar_center_y + tri_h/2,  // bottom right
+        button_z, btn_color);
+    // Second triangle (right, slightly overlapping)
+    add_triangle(data.button_verts,
+        rewind_center, bar_center_y,
+        rewind_center + tri_w, bar_center_y - tri_h/2,
+        rewind_center + tri_w, bar_center_y + tri_h/2,
+        button_z, btn_color);
+
+    // Play/Pause button
+    if (is_playing) {
+        // Pause icon: two vertical bars
+        float pause_w = button_size * 0.12f;
+        float pause_gap = button_size * 0.1f;
+        float pause_h = button_size * 0.5f;
+        add_quad(data.button_verts,
+            play_center - pause_gap - pause_w, bar_center_y - pause_h/2,
+            play_center - pause_gap, bar_center_y + pause_h/2,
+            button_z, btn_color);
+        add_quad(data.button_verts,
+            play_center + pause_gap, bar_center_y - pause_h/2,
+            play_center + pause_gap + pause_w, bar_center_y + pause_h/2,
+            button_z, btn_color);
+    } else {
+        // Play icon: right-pointing triangle
+        Vec4 play_color = (playback_direction > 0) ? btn_color : Vec4{0.5f, 0.7f, 0.9f, 1.0f};
+        add_triangle(data.button_verts,
+            play_center - tri_w/2, bar_center_y - tri_h/2,  // top left
+            play_center - tri_w/2, bar_center_y + tri_h/2,  // bottom left
+            play_center + tri_w/2, bar_center_y,            // right point
+            button_z, play_color);
+    }
+
+    // Skip to end button (double right-pointing triangles - mirror of rewind)
+    // First triangle (left)
+    add_triangle(data.button_verts,
+        skip_end_center - tri_w, bar_center_y - tri_h/2,  // top left
+        skip_end_center - tri_w, bar_center_y + tri_h/2,  // bottom left
+        skip_end_center, bar_center_y,                     // right point
+        button_z, btn_color);
+    // Second triangle (right)
+    add_triangle(data.button_verts,
+        skip_end_center, bar_center_y - tri_h/2,          // top left
+        skip_end_center, bar_center_y + tri_h/2,          // bottom left
+        skip_end_center + tri_w, bar_center_y,            // right point
+        button_z, btn_color);
+
+    return data;
+}
+
+// Build color palette legend (vertical gradient bar in top right)
+struct LegendData {
+    std::vector<Vertex> verts;  // Triangles for gradient
+    float label_x;              // X position for labels (right of bar)
+    float max_y;                // Y position for max label (top)
+    float min_y;                // Y position for min label (bottom)
+    float title_x, title_y;     // Position for palette name
+    float bar_center_x;         // Center X of gradient bar (for centering text)
+};
+
+LegendData build_legend(float aspect_ratio, ColorPalette palette, float value_min, float value_max) {
+    LegendData data;
+
+    // Legend position (top right, with padding)
+    // NDC: x=-1 left, x=+1 right, y=-1 top, y=+1 bottom (Vulkan)
+    float padding = 0.03f;
+    float bar_width = 0.025f;
+    float bar_height = 0.35f;
+    float right_edge = 0.95f;
+    float top_edge = -0.85f;  // Near top (negative Y in Vulkan NDC)
+
+    float bar_right = right_edge;
+    float bar_left = bar_right - bar_width;
+    float bar_top = top_edge;
+    float bar_bottom = bar_top + bar_height;
+
+    // Background (dark semi-transparent)
+    float bg_padding = 0.01f;
+    Vec4 bg_color{0.1f, 0.1f, 0.1f, 0.7f};
+    add_quad(data.verts,
+        bar_left - bg_padding, bar_top - bg_padding,
+        bar_right + bg_padding, bar_bottom + bg_padding,
+        0.002f, bg_color);
+
+    // Gradient bar - draw as horizontal strips with interpolated colors
+    int num_strips = 32;
+    float strip_height = bar_height / num_strips;
+    for (int i = 0; i < num_strips; ++i) {
+        float t_top = 1.0f - static_cast<float>(i) / num_strips;      // Top = 1.0 (max)
+        float t_bot = 1.0f - static_cast<float>(i + 1) / num_strips;  // Bottom = 0.0 (min)
+        Vec3 c_top = apply_palette(t_top, palette);
+        Vec3 c_bot = apply_palette(t_bot, palette);
+        float y_top = bar_top + i * strip_height;
+        float y_bot = bar_top + (i + 1) * strip_height;
+
+        // Two triangles with different colors at top and bottom
+        // First triangle: top-left, bottom-left, bottom-right
+        data.verts.push_back({bar_left, y_top, 0.001f, c_top.x, c_top.y, c_top.z, 1.0f});
+        data.verts.push_back({bar_left, y_bot, 0.001f, c_bot.x, c_bot.y, c_bot.z, 1.0f});
+        data.verts.push_back({bar_right, y_bot, 0.001f, c_bot.x, c_bot.y, c_bot.z, 1.0f});
+        // Second triangle: top-left, bottom-right, top-right
+        data.verts.push_back({bar_left, y_top, 0.001f, c_top.x, c_top.y, c_top.z, 1.0f});
+        data.verts.push_back({bar_right, y_bot, 0.001f, c_bot.x, c_bot.y, c_bot.z, 1.0f});
+        data.verts.push_back({bar_right, y_top, 0.001f, c_top.x, c_top.y, c_top.z, 1.0f});
+    }
+
+    // Calculate label positions (for text rendering, need pixel coords not NDC)
+    // These will be converted to pixel coords by the caller
+    data.label_x = bar_left - bg_padding * 4;  // To the left of bar
+    data.max_y = bar_top;
+    data.min_y = bar_bottom;
+    data.title_x = bar_left;
+    data.title_y = bar_top - 0.025f;  // Above the bar
+    data.bar_center_x = (bar_left + bar_right) / 2.0f;  // Center of gradient bar
+
+    return data;
+}
+
+// Build multiway states graph (left panel showing states at each timestep)
+struct StatesGraphData {
+    std::vector<Vertex> verts;       // Triangles for background, states, highlights
+    std::vector<std::pair<float, float>> row_centers;  // NDC (x, y) for each row center (for labels)
+    float panel_right;               // Right edge of panel in NDC
+    // State positions: [step][state_index] -> (x, y) in NDC
+    std::vector<std::vector<std::pair<float, float>>> state_positions;
+};
+
+StatesGraphData build_states_graph(
+    const BHAnalysisResult& analysis,
+    int current_step,
+    int max_step,
+    bool timeslice_enabled,
+    int timeslice_width,
+    float scrubber_position,  // 0-1 for interpolating between steps
+    bool path_selection_enabled,
+    const std::vector<std::vector<int>>& selected_state_indices,  // Per-step selected states
+    float aspect_ratio = 1.0f  // Viewport aspect ratio for circular shapes
+) {
+    StatesGraphData data;
+
+    if (analysis.states_per_step.empty() || max_step <= 0) {
+        return data;
+    }
+
+    // Panel layout (left side of screen)
+    // NDC: x=-1 left, x=+1 right, y=-1 top, y=+1 bottom (Vulkan)
+    float panel_left = -0.98f;
+    float panel_right = -0.70f;  // Wider panel for edges
+    float panel_top = -0.85f;      // Leave room for legend at top
+    float panel_bottom = 0.85f;    // Leave room for timeline at bottom
+    float panel_width = panel_right - panel_left;
+    float panel_height = panel_bottom - panel_top;
+
+    data.panel_right = panel_right;
+
+    // Background panel (always full size)
+    Vec4 bg_color{0.05f, 0.05f, 0.1f, 0.85f};
+    add_quad(data.verts, panel_left, panel_top, panel_right, panel_bottom, 0.003f, bg_color);
+
+    // Zoom: show ~10 rows at a time for better visibility
+    // If timeslice is enabled and wider than 10, zoom out to show entire timeslice
+    // If we have fewer than 10 rows, show all
+    int num_rows = max_step + 1;
+    int base_visible = 10;  // Default zoom level
+    int visible_rows = std::min(base_visible, num_rows);
+
+    // If timeslice is enabled, ensure we can see the entire timeslice range
+    if (timeslice_enabled && timeslice_width > visible_rows) {
+        visible_rows = std::min(timeslice_width + 2, num_rows);  // +2 for context
+    }
+
+    float row_height = panel_height / visible_rows;  // Row height based on visible rows, not total
+    float row_padding = row_height * 0.1f;
+    float usable_row_height = row_height - 2 * row_padding;
+
+    // Calculate viewport offset to center current step
+    // viewport_offset is in row units (how many rows to scroll down)
+    float center_row = current_step + scrubber_position;
+    float half_visible = visible_rows / 2.0f;
+    float viewport_offset = center_row - half_visible;
+    // Clamp viewport so we don't scroll past ends
+    viewport_offset = std::max(0.0f, std::min(viewport_offset, static_cast<float>(num_rows - visible_rows)));
+    // If we have fewer rows than visible_rows, no scrolling needed
+    if (num_rows <= visible_rows) viewport_offset = 0.0f;
+
+    // Convert viewport_offset to Y coordinate offset
+    float y_offset = viewport_offset * row_height;
+
+    // Find max states at any step for normalization
+    int max_states = 1;
+    for (int step = 0; step <= max_step; ++step) {
+        if (step < static_cast<int>(analysis.states_per_step.size())) {
+            max_states = std::max(max_states, static_cast<int>(analysis.states_per_step[step].size()));
+        }
+    }
+
+    // Helper to check if Y position is within visible panel
+    auto is_visible = [&](float y) {
+        return y >= panel_top - row_height && y <= panel_bottom + row_height;
+    };
+
+    // Helper to clamp and draw a quad, clipping to panel bounds
+    auto add_clipped_quad = [&](float left, float top, float right, float bottom, float z, Vec4 color) {
+        float clipped_top = std::max(top, panel_top);
+        float clipped_bottom = std::min(bottom, panel_bottom);
+        if (clipped_top < clipped_bottom) {
+            add_quad(data.verts, left, clipped_top, right, clipped_bottom, z, color);
+        }
+    };
+
+    // Draw highlight for current timestep (thin yellow line, ~1.5x row separator thickness)
+    {
+        float sep_thickness = 0.001f;  // Same as row separator lines
+        float highlight_thickness = sep_thickness * 1.5f;
+        // Center the highlight line on the current row
+        float row_center_y = panel_top + (current_step + scrubber_position + 0.5f) * row_height - y_offset;
+        float highlight_top = row_center_y - highlight_thickness / 2;
+        float highlight_bottom = row_center_y + highlight_thickness / 2;
+
+        Vec4 highlight_color{1.0f, 0.9f, 0.2f, 0.8f};  // Yellow, brighter since it's thinner
+        add_clipped_quad(panel_left, highlight_top, panel_right, highlight_bottom,
+                 0.002f, highlight_color);
+    }
+
+    // Draw timeslice range highlight if enabled
+    if (timeslice_enabled && timeslice_width > 1) {
+        int half_width = timeslice_width / 2;
+        int slice_start = std::max(0, current_step - half_width);
+        int slice_end = std::min(max_step, current_step + half_width);
+
+        float slice_top = panel_top + slice_start * row_height - y_offset;
+        float slice_bottom = panel_top + (slice_end + 1) * row_height - y_offset;
+
+        Vec4 slice_color{0.2f, 0.6f, 1.0f, 0.15f};  // Blue, 15% alpha
+        add_clipped_quad(panel_left, slice_top, panel_right, slice_bottom, 0.0025f, slice_color);
+    }
+
+    // Prepare state positions storage
+    data.state_positions.resize(max_step + 1);
+
+    // First pass: compute all state positions
+    float dot_radius = std::min(usable_row_height * 0.3f, panel_width * 0.02f);
+    float state_margin = panel_width * 0.08f;  // Margin from panel edges
+
+    for (int step = 0; step <= max_step; ++step) {
+        int num_states = 0;
+        if (step < static_cast<int>(analysis.states_per_step.size())) {
+            num_states = static_cast<int>(analysis.states_per_step[step].size());
+        }
+
+        float row_y = panel_top + step * row_height + row_height / 2 - y_offset;
+        data.row_centers.push_back({panel_left + panel_width / 2, row_y});
+
+        if (num_states == 0) {
+            data.state_positions[step].clear();
+            continue;
+        }
+
+        data.state_positions[step].resize(num_states);
+
+        // Distribute states evenly across the row (with margins)
+        float usable_width = panel_width - 2 * state_margin;
+        float state_spacing = (num_states > 1) ? usable_width / (num_states - 1) : 0;
+
+        for (int s = 0; s < num_states; ++s) {
+            float state_x = panel_left + state_margin + s * state_spacing;
+            if (num_states == 1) state_x = panel_left + panel_width / 2;
+            data.state_positions[step][s] = {state_x, row_y};
+        }
+    }
+
+    // Build set of selected states for quick lookup
+    std::set<std::pair<int, int>> selected_set;  // (step, state_index)
+    if (path_selection_enabled && !selected_state_indices.empty()) {
+        for (size_t step = 0; step < selected_state_indices.size(); ++step) {
+            for (int idx : selected_state_indices[step]) {
+                selected_set.insert({static_cast<int>(step), idx});
+            }
+        }
+    }
+
+    // Second pass: draw edges between adjacent timesteps
+    // For each state at step N, draw edges to all states at step N+1
+    // (Without parent-child data, we show all possible transitions as faint lines)
+    Vec4 edge_color_dim{0.3f, 0.3f, 0.4f, 0.2f};      // Dim gray for all edges
+    Vec4 edge_color_selected{0.2f, 0.8f, 1.0f, 0.8f}; // Bright cyan for selected path
+    float edge_thickness = 0.001f;  // Thin lines between states
+
+    for (int step = 0; step < max_step; ++step) {
+        if (step >= static_cast<int>(data.state_positions.size()) ||
+            step + 1 >= static_cast<int>(data.state_positions.size())) continue;
+
+        const auto& from_states = data.state_positions[step];
+        const auto& to_states = data.state_positions[step + 1];
+
+        // Skip if both rows are off-screen
+        if (!from_states.empty() && !to_states.empty()) {
+            float from_y = from_states[0].second;
+            float to_y = to_states[0].second;
+            if ((from_y < panel_top - row_height && to_y < panel_top - row_height) ||
+                (from_y > panel_bottom + row_height && to_y > panel_bottom + row_height)) {
+                continue;
+            }
+        }
+
+        if (from_states.empty() || to_states.empty()) continue;
+
+        // Draw edges: each state connects to "nearby" states in the next step
+        // For simplicity, draw edges from each state to states with similar relative position
+        for (size_t i = 0; i < from_states.size(); ++i) {
+            float from_x = from_states[i].first;
+            float from_y = from_states[i].second;
+
+            bool from_selected = selected_set.count({step, static_cast<int>(i)}) > 0;
+
+            // Determine which states in the next step to connect to
+            // Simple heuristic: connect to states with similar fractional position ± spread
+            float from_frac = (from_states.size() > 1) ? static_cast<float>(i) / (from_states.size() - 1) : 0.5f;
+
+            for (size_t j = 0; j < to_states.size(); ++j) {
+                float to_frac = (to_states.size() > 1) ? static_cast<float>(j) / (to_states.size() - 1) : 0.5f;
+                float frac_dist = std::abs(to_frac - from_frac);
+
+                // Only draw edges to nearby states (within 30% fractional distance)
+                // OR if both states are selected (for path highlighting)
+                bool to_selected = selected_set.count({step + 1, static_cast<int>(j)}) > 0;
+                bool is_selected_edge = from_selected && to_selected;
+
+                if (frac_dist > 0.35f && !is_selected_edge) continue;
+
+                float to_x = to_states[j].first;
+                float to_y = to_states[j].second;
+
+                // Draw edge as a thin quad
+                Vec4 edge_col = is_selected_edge ? edge_color_selected : edge_color_dim;
+                float z = is_selected_edge ? 0.0018f : 0.0022f;  // Selected edges in front
+
+                // Calculate perpendicular direction for line thickness
+                float dx = to_x - from_x;
+                float dy = to_y - from_y;
+                float len = std::sqrt(dx*dx + dy*dy);
+                if (len < 0.001f) continue;
+
+                float nx = -dy / len * edge_thickness;
+                float ny = dx / len * edge_thickness;
+
+                // Draw as two triangles
+                Vertex v0 = {from_x - nx, from_y - ny, z, edge_col.x, edge_col.y, edge_col.z, edge_col.w};
+                Vertex v1 = {from_x + nx, from_y + ny, z, edge_col.x, edge_col.y, edge_col.z, edge_col.w};
+                Vertex v2 = {to_x + nx, to_y + ny, z, edge_col.x, edge_col.y, edge_col.z, edge_col.w};
+                Vertex v3 = {to_x - nx, to_y - ny, z, edge_col.x, edge_col.y, edge_col.z, edge_col.w};
+
+                data.verts.push_back(v0);
+                data.verts.push_back(v1);
+                data.verts.push_back(v2);
+                data.verts.push_back(v0);
+                data.verts.push_back(v2);
+                data.verts.push_back(v3);
+            }
+        }
+    }
+
+    // Third pass: draw state dots (on top of edges)
+    for (int step = 0; step <= max_step; ++step) {
+        if (step >= static_cast<int>(data.state_positions.size())) continue;
+        const auto& positions = data.state_positions[step];
+
+        // Skip if row is off-screen
+        if (!positions.empty()) {
+            float row_y = positions[0].second;
+            if (row_y < panel_top - row_height || row_y > panel_bottom + row_height) {
+                continue;
+            }
+        }
+
+        for (size_t s = 0; s < positions.size(); ++s) {
+            float state_x = positions[s].first;
+            float row_y = positions[s].second;
+
+            bool is_selected = selected_set.count({step, static_cast<int>(s)}) > 0;
+
+            // State dot color
+            Vec4 dot_color;
+            if (is_selected) {
+                dot_color = Vec4{0.2f, 1.0f, 0.8f, 1.0f};  // Bright cyan-green for selected
+            } else if (step == current_step) {
+                dot_color = Vec4{1.0f, 1.0f, 1.0f, 0.9f};  // White for current step
+            } else {
+                dot_color = Vec4{0.6f, 0.6f, 0.6f, 0.7f};  // Gray for others
+            }
+
+            float r = is_selected ? dot_radius * 1.3f : dot_radius;
+
+            // Draw state as a circle
+            add_circle(data.verts, state_x, row_y, r, 0.001f, dot_color, aspect_ratio, 16);
+        }
+    }
+
+    // Draw row separators (subtle lines) - only for visible rows
+    Vec4 sep_color{0.3f, 0.3f, 0.4f, 0.3f};
+    float sep_thickness = 0.001f;
+    for (int step = 1; step <= max_step; ++step) {
+        float sep_y = panel_top + step * row_height - y_offset;
+        if (sep_y >= panel_top && sep_y <= panel_bottom) {
+            add_quad(data.verts, panel_left, sep_y - sep_thickness/2, panel_right, sep_y + sep_thickness/2,
+                     0.0015f, sep_color);
+        }
+    }
+
+    return data;
+}
+
+// Build horizon circles (debug visualization)
+std::vector<Vertex> build_horizon_circles(const BHConfig& config, int segments = 64) {
+    std::vector<Vertex> verts;
+
+    auto add_circle = [&](Vec2 center, float radius, Vec4 color) {
+        for (int i = 0; i < segments; ++i) {
+            float a1 = 2.0f * 3.14159f * i / segments;
+            float a2 = 2.0f * 3.14159f * (i + 1) / segments;
+            verts.push_back({
+                center.x + radius * std::cos(a1),
+                center.y + radius * std::sin(a1),
+                0,
+                color.x, color.y, color.z, color.w
+            });
+            verts.push_back({
+                center.x + radius * std::cos(a2),
+                center.y + radius * std::sin(a2),
+                0,
+                color.x, color.y, color.z, color.w
+            });
+        }
+    };
+
+    // BH1 horizon (positive x)
+    Vec2 c1{config.separation / 2.0f, 0};
+    float r1 = config.mass1 / 2.0f;
+    add_circle(c1, r1, {1, 1, 1, 0.5f});
+
+    // BH2 horizon (negative x)
+    Vec2 c2{-config.separation / 2.0f, 0};
+    float r2 = config.mass2 / 2.0f;
+    add_circle(c2, r2, {1, 1, 1, 0.5f});
+
+    return verts;
+}
+
+// =============================================================================
+// Main Application
+// =============================================================================
+
+void print_usage() {
+    std::cout << "Black Hole Hausdorff Dimension Visualisation" << std::endl;
+    std::cout << "============================================" << std::endl;
+    std::cout << std::endl;
+    std::cout << "This tool generates multiway hypergraph evolution from black hole initial" << std::endl;
+    std::cout << "conditions and computes Hausdorff dimension estimates for visualization." << std::endl;
+    std::cout << std::endl;
+    std::cout << "COMMANDS:" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  run [options]" << std::endl;
+    std::cout << "  generate [options]" << std::endl;
+    std::cout << "      Full pipeline: generate initial condition, evolve, analyze, save, view." << std::endl;
+    std::cout << "      Saves analysis to .bhdata file (default: blackhole_analysis.bhdata)" << std::endl;
+    std::cout << "      Use --no-view to skip the viewer." << std::endl;
+    std::cout << std::endl;
+    std::cout << "  evolve [options]" << std::endl;
+    std::cout << "      Generate initial condition, evolve, analyze, and view." << std::endl;
+    std::cout << "      Saves .bhevo (evolution) and .bhdata (analysis) files." << std::endl;
+    std::cout << "      --no-analyze  Stop after evolution (only save .bhevo)" << std::endl;
+    std::cout << "      --no-view     Stop after analysis (save both, skip viewer)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  analyze [file.bhevo] [options]" << std::endl;
+    std::cout << "      Load cached evolution data and run Hausdorff analysis." << std::endl;
+    std::cout << "      Default input: blackhole_evolution.bhevo" << std::endl;
+    std::cout << "      Saves analysis to .bhdata file, then optionally launches viewer." << std::endl;
+    std::cout << "      Use --no-view to skip the viewer." << std::endl;
+    std::cout << std::endl;
+    std::cout << "  view [file.bhdata]" << std::endl;
+    std::cout << "      Load and view a previously saved analysis file." << std::endl;
+    std::cout << "      Default input: blackhole_analysis.bhdata" << std::endl;
+    std::cout << std::endl;
+    std::cout << "GENERATION OPTIONS (for run, generate, evolve):" << std::endl;
+    std::cout << "  --grid WxH        Use grid with holes (e.g., 10x10 or '10 10', default: 30x30)" << std::endl;
+    std::cout << "  --brill N         Use Brill-Lindquist sampling with N vertices" << std::endl;
+    std::cout << "  --steps N         Max evolution steps (default: 100 if not specified)" << std::endl;
+    std::cout << "  --threshold F     Edge connectivity threshold (default: 1.5 brill, 0.8 grid)" << std::endl;
+    std::cout << "  --max-states N    Max states per step (default: 0 = unlimited)" << std::endl;
+    std::cout << "  --max-children N  Max successors per parent (default: 0 = unlimited)" << std::endl;
+    std::cout << "  --rule RULE       Rewrite rule (default: BH 4->4 rule)" << std::endl;
+    std::cout << "  --batched         Enable batched matching mode" << std::endl;
+    std::cout << "  --uniform-random  Step-synchronized evolution with random match selection" << std::endl;
+    std::cout << "  --matches-per-step N  Matches to apply per step in uniform mode (default: 1, 0=all)" << std::endl;
+    std::cout << "  --fast-reservoir  Early termination when reservoir is full (faster, less uniform)" << std::endl;
+    std::cout << "  --shuffle-edges   Shuffle initial edge order for randomness" << std::endl;
+    std::cout << "  --no-canonicalize Disable state canonicalization (all states unique)" << std::endl;
+    std::cout << "  --no-explore-dedup Disable explore-from-canonical-only (explore all states)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "ANALYSIS OPTIONS (for run, generate, analyze):" << std::endl;
+    std::cout << "  --max-radius N    Max radius for ball counting (default: 8)" << std::endl;
+    std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "OUTPUT OPTIONS:" << std::endl;
+    std::cout << "  --output FILE     Output file path (auto-selects extension based on command)" << std::endl;
+    std::cout << "  --no-analyze      Skip analysis after evolve (for 'evolve' command)" << std::endl;
+    std::cout << "  --no-view         Skip viewer after analysis (for 'evolve' or 'analyze')" << std::endl;
+    std::cout << "  --verify          Print verification/debug output (evolution stats per step)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "VIEWER CONTROLS:" << std::endl;
+    std::cout << "  Space        Play/pause timeline" << std::endl;
+    std::cout << "  Left/Right   Step backward/forward" << std::endl;
+    std::cout << "  Home/End     Jump to start/end" << std::endl;
+    std::cout << "  2/3          Toggle 2D/3D view" << std::endl;
+    std::cout << "  Z            Toggle Z/depth mapping (flat vs elevated)" << std::endl;
+    std::cout << "  < / >        Decrease/increase Z scale" << std::endl;
+    std::cout << "  T            Toggle timeslice view" << std::endl;
+    std::cout << "  - / =        Decrease/increase timeslice width" << std::endl;
+    std::cout << "  H            Toggle horizon circles" << std::endl;
+    std::cout << "  I            Toggle edge display (union/intersection)" << std::endl;
+    std::cout << "  V            Toggle heatmap (mean dimension / variance)" << std::endl;
+    std::cout << "  L            Toggle dynamic layout" << std::endl;
+    std::cout << "  M            Cycle MSAA antialiasing (OFF -> 2x -> 4x -> ...)" << std::endl;
+    std::cout << "  N            Toggle color normalization (per-frame / global)" << std::endl;
+    std::cout << "  Mouse drag   Orbit camera (3D) / Pan (2D)" << std::endl;
+    std::cout << "  Scroll       Zoom" << std::endl;
+    std::cout << "  R            Reset camera" << std::endl;
+    std::cout << "  ESC          Exit" << std::endl;
+    std::cout << std::endl;
+    std::cout << "WORKFLOW EXAMPLES:" << std::endl;
+    std::cout << "  # Full pipeline (evolve + analyze + view)" << std::endl;
+    std::cout << "  blackhole_viz run --grid 40x40 --steps 50" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  # Cache evolution for later re-analysis" << std::endl;
+    std::cout << "  blackhole_viz evolve --grid 40x40 --steps 50 --output my_evolution.bhevo" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  # Re-analyze with different parameters (without re-evolving)" << std::endl;
+    std::cout << "  blackhole_viz analyze my_evolution.bhevo --max-radius 12 --output analysis_r12.bhdata" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  # View saved analysis" << std::endl;
+    std::cout << "  blackhole_viz view analysis_r12.bhdata" << std::endl;
+    std::cout << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        print_usage();
+        return 0;
+    }
+
+    // Check for help flag
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h" || arg == "help") {
+            print_usage();
+            return 0;
+        }
+    }
+
+    // Install signal handler for Ctrl-C
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+
+    // Parse command line
+    std::string mode;  // Must be explicitly set
+    std::string data_file;       // Input file for view/analyze
+    std::string output_file;     // Output file (default depends on mode)
+    // Black hole rule: 4 edges chain -> 4 edges with fresh vertex
+    std::string rule = "{{x,y},{y,z},{z,w},{w,v}}->{{y,u},{u,v},{w,x},{x,u}}";
+    int grid_width = 30, grid_height = 30;
+    int brill_vertices = 0;
+    int steps = 100;
+    float edge_threshold = -1.0f;  // -1 means use default
+    int max_states = 0;     // 0 = unlimited (no pruning)
+    int max_children = 0;   // 0 = unlimited (no pruning)
+    int max_radius = 8;        // Analysis: max radius for ball counting
+    int num_anchors = 6;       // Analysis: number of anchor vertices
+    bool no_analyze = false;   // Skip analysis after evolve
+    bool no_view = false;      // Skip viewer after analyze
+    bool verify = false;       // Enable verification/debug output
+    bool batched = false;      // Enable batched matching mode
+    bool shuffle_edges = false;    // Shuffle initial edges
+    bool no_canonicalize = false;  // Disable state canonicalization
+    bool no_explore_dedup = false; // Disable explore-from-canonical-only
+    bool uniform_random = false;   // Step-synchronized uniform random mode
+    int matches_per_step = 1;      // Matches to apply per step in uniform mode
+    bool fast_reservoir = false;   // Early termination when reservoir full
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "view") {
+            mode = "view";
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                data_file = argv[++i];
+            }
+        } else if (arg == "analyze") {
+            mode = "analyze";
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                data_file = argv[++i];
+            }
+        } else if (arg == "run") {
+            mode = "run";
+        } else if (arg == "generate") {
+            mode = "generate";
+        } else if (arg == "evolve") {
+            mode = "evolve";
+        } else if (arg == "--grid" && i + 1 < argc) {
+            std::string dim = argv[++i];
+            auto x = dim.find('x');
+            if (x != std::string::npos) {
+                // Format: WxH (e.g., 10x10)
+                grid_width = std::stoi(dim.substr(0, x));
+                grid_height = std::stoi(dim.substr(x + 1));
+            } else {
+                // Format: W H (e.g., 10 10) - width is first arg, height is next
+                grid_width = std::stoi(dim);
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    grid_height = std::stoi(argv[++i]);
+                } else {
+                    grid_height = grid_width;  // Square grid if only one number
+                }
+            }
+        } else if (arg == "--brill" && i + 1 < argc) {
+            brill_vertices = std::stoi(argv[++i]);
+        } else if (arg == "--steps" && i + 1 < argc) {
+            steps = std::stoi(argv[++i]);
+        } else if (arg == "--threshold" && i + 1 < argc) {
+            edge_threshold = std::stof(argv[++i]);
+        } else if (arg == "--max-states" && i + 1 < argc) {
+            max_states = std::stoi(argv[++i]);
+        } else if (arg == "--max-children" && i + 1 < argc) {
+            max_children = std::stoi(argv[++i]);
+        } else if (arg == "--max-radius" && i + 1 < argc) {
+            max_radius = std::stoi(argv[++i]);
+        } else if (arg == "--anchors" && i + 1 < argc) {
+            num_anchors = std::stoi(argv[++i]);
+        } else if (arg == "--output" && i + 1 < argc) {
+            output_file = argv[++i];
+        } else if (arg == "--rule" && i + 1 < argc) {
+            rule = argv[++i];
+        } else if (arg == "--no-analyze") {
+            no_analyze = true;
+        } else if (arg == "--no-view") {
+            no_view = true;
+        } else if (arg == "--verify") {
+            verify = true;
+        } else if (arg == "--batched") {
+            batched = true;
+        } else if (arg == "--uniform-random") {
+            uniform_random = true;
+        } else if (arg == "--matches-per-step" && i + 1 < argc) {
+            matches_per_step = std::stoi(argv[++i]);
+        } else if (arg == "--fast-reservoir") {
+            fast_reservoir = true;
+        } else if (arg == "--shuffle-edges") {
+            shuffle_edges = true;
+        } else if (arg == "--no-canonicalize") {
+            no_canonicalize = true;
+        } else if (arg == "--no-explore-dedup") {
+            no_explore_dedup = true;
+        }
+    }
+
+    // Set default input file based on mode
+    if (data_file.empty()) {
+        if (mode == "analyze") {
+            data_file = "blackhole_evolution.bhevo";
+        } else if (mode == "view") {
+            data_file = "blackhole_analysis.bhdata";
+        }
+    }
+
+    // Set default output file based on mode
+    if (output_file.empty()) {
+        if (mode == "evolve") {
+            output_file = "blackhole_evolution.bhevo";
+        } else {
+            output_file = "blackhole_analysis.bhdata";
+        }
+    }
+
+    // Load or generate analysis data
+    BHAnalysisResult analysis;
+    bool should_view = true;  // Whether to launch viewer after processing
+
+    if (mode == "view") {
+        // Load existing analysis
+        std::cout << "Loading analysis from " << data_file << "..." << std::endl;
+        if (!read_analysis(data_file, analysis)) {
+            std::cerr << "Failed to load analysis file" << std::endl;
+            return 1;
+        }
+        std::cout << "Loaded: " << analysis.total_states << " states, "
+                  << analysis.per_timestep.size() << " timesteps" << std::endl;
+
+        // Check if layout positions are present
+        if (!analysis.per_timestep.empty()) {
+            const auto& ts0 = analysis.per_timestep[0];
+            std::cout << "  Step 0: " << ts0.union_vertices.size() << " vertices, "
+                      << ts0.layout_positions.size() << " layout positions" << std::endl;
+            if (!ts0.layout_positions.empty()) {
+                float max_r = 0;
+                for (const auto& p : ts0.layout_positions) {
+                    float r = std::sqrt(p.x * p.x + p.y * p.y);
+                    if (r > max_r) max_r = r;
+                }
+                std::cout << "  Layout bounding radius: " << max_r << std::endl;
+                // Show first few positions
+                std::cout << "  First 5 layout positions: ";
+                for (size_t i = 0; i < std::min(size_t(5), ts0.layout_positions.size()); ++i) {
+                    std::cout << "(" << ts0.layout_positions[i].x << "," << ts0.layout_positions[i].y << ") ";
+                }
+                std::cout << std::endl;
+            } else {
+                std::cout << "  WARNING: No layout positions in analysis file!" << std::endl;
+            }
+        }
+
+        if (verify) {
+            std::cout << "\n=== VERIFICATION OUTPUT ===" << std::endl;
+            std::cout << "File: " << data_file << std::endl;
+            std::cout << "Total steps: " << analysis.total_steps << std::endl;
+            std::cout << "Total states: " << analysis.total_states << std::endl;
+            std::cout << "per_timestep.size(): " << analysis.per_timestep.size() << std::endl;
+            std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
+            std::cout << "Initial: " << analysis.initial.vertex_positions.size() << " vertices, "
+                      << analysis.initial.edges.size() << " edges" << std::endl;
+
+            std::cout << "\nTimestep summary:" << std::endl;
+            for (size_t i = 0; i < analysis.per_timestep.size(); ++i) {
+                const auto& ts = analysis.per_timestep[i];
+                if (ts.union_vertices.empty()) {
+                    std::cout << "  [" << i << "] step=" << ts.step << " num_states=" << ts.num_states
+                              << " (EMPTY union)" << std::endl;
+                } else {
+                    std::cout << "  [" << i << "] step=" << ts.step << " num_states=" << ts.num_states
+                              << " V=" << ts.union_vertices.size() << " E=" << ts.union_edges.size()
+                              << " pos=" << ts.vertex_positions.size() << " dim=" << ts.mean_dimensions.size()
+                              << std::endl;
+                }
+            }
+            std::cout << "=== END VERIFICATION ===" << std::endl << std::endl;
+        }
+
+    } else if (mode == "evolve") {
+        // Evolution only - no analysis
+        std::cout << "Running evolution only (no analysis)..." << std::endl;
+
+        BHConfig bh_config;
+        bh_config.mass1 = 1.0f;
+        bh_config.mass2 = 0.8f;
+        bh_config.separation = 3.0f;
+        if (edge_threshold > 0) {
+            bh_config.edge_threshold = edge_threshold;
+        } else {
+            bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
+        }
+        bh_config.box_x = {-5.0f, 5.0f};
+        bh_config.box_y = {-4.0f, 4.0f};
+
+        BHInitialCondition initial;
+        if (brill_vertices > 0) {
+            initial = generate_brill_lindquist(brill_vertices, bh_config);
+        } else {
+            initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+        }
+
+        std::cout << "Initial condition: " << initial.vertex_positions.size() << " vertices, "
+                  << initial.edges.size() << " edges" << std::endl;
+
+        // Shuffle initial edges if requested (helps avoid systematic bias)
+        if (shuffle_edges && !initial.edges.empty()) {
+            std::random_device rd;
+            std::mt19937 rng(rd());
+            std::shuffle(initial.edges.begin(), initial.edges.end(), rng);
+            std::cout << "  (edges shuffled)" << std::endl;
+        }
+
+        EvolutionConfig evo_config;
+        evo_config.rule = rule;
+        evo_config.max_steps = steps;
+        evo_config.max_states_per_step = max_states;
+        evo_config.max_successors_per_parent = max_children;
+        evo_config.exploration_probability = 1.0f;
+        evo_config.canonicalize_states = !no_canonicalize;
+        evo_config.explore_from_canonical_only = !no_explore_dedup;
+        evo_config.batched_matching = batched;
+        evo_config.uniform_random = uniform_random;
+        evo_config.matches_per_step = matches_per_step;
+        evo_config.early_terminate_reservoir = fast_reservoir;
+
+        EvolutionRunner runner;
+        runner.set_progress_callback([](const std::string& stage, float progress) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "\r[%s] %d%%\033[K", stage.c_str(), static_cast<int>(progress * 100));
+            fputs(buf, stdout);
+            fflush(stdout);
+        });
+
+        auto evo_result = runner.run_evolution(initial, evo_config);
+        std::cout << std::endl;
+
+        if (evo_result.total_states == 0) {
+            std::cerr << "Evolution failed (no states generated)" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Evolution complete: " << evo_result.total_states << " states, "
+                  << evo_result.max_step_reached << " steps" << std::endl;
+
+        // Verification output
+        if (verify) {
+            std::cout << "\n=== VERIFICATION OUTPUT ===" << std::endl;
+            std::cout << "Rule: " << rule << std::endl;
+            std::cout << "Initial condition: " << initial.vertex_positions.size() << " vertices, "
+                      << initial.edges.size() << " edges" << std::endl;
+            std::cout << "\nStates per step:" << std::endl;
+
+            for (size_t step = 0; step < evo_result.states_by_step.size(); ++step) {
+                const auto& step_states = evo_result.states_by_step[step];
+                if (step_states.empty()) {
+                    std::cout << "  Step " << step << ": 0 states (EMPTY)" << std::endl;
+                    continue;
+                }
+
+                // Sample first state at this step
+                const auto& sample = step_states[0];
+                size_t min_v = sample.vertex_count(), max_v = sample.vertex_count();
+                size_t min_e = sample.edge_count(), max_e = sample.edge_count();
+
+                for (const auto& g : step_states) {
+                    min_v = std::min(min_v, g.vertex_count());
+                    max_v = std::max(max_v, g.vertex_count());
+                    min_e = std::min(min_e, g.edge_count());
+                    max_e = std::max(max_e, g.edge_count());
+                }
+
+                std::cout << "  Step " << step << ": " << step_states.size() << " states, "
+                          << "V=[" << min_v << "-" << max_v << "], "
+                          << "E=[" << min_e << "-" << max_e << "]" << std::endl;
+            }
+
+            // Check if rewrites are happening (compare step 0 vs step 1)
+            std::cout << "\nRewrite verification:" << std::endl;
+            if (!evo_result.states_by_step.empty() && !evo_result.states_by_step[0].empty()) {
+                const auto& step0 = evo_result.states_by_step[0][0];
+                std::cout << "  Step 0 (initial): " << step0.vertex_count() << " vertices, "
+                          << step0.edge_count() << " edges" << std::endl;
+            }
+
+            if (evo_result.states_by_step.size() > 1 && !evo_result.states_by_step[1].empty()) {
+                const auto& step1 = evo_result.states_by_step[1][0];
+                std::cout << "  Step 1 (first rewrite): " << step1.vertex_count() << " vertices, "
+                          << step1.edge_count() << " edges" << std::endl;
+
+                int64_t v_diff = static_cast<int64_t>(step1.vertex_count()) -
+                                static_cast<int64_t>(evo_result.states_by_step[0][0].vertex_count());
+                int64_t e_diff = static_cast<int64_t>(step1.edge_count()) -
+                                static_cast<int64_t>(evo_result.states_by_step[0][0].edge_count());
+                std::cout << "  Delta: V=" << (v_diff >= 0 ? "+" : "") << v_diff
+                          << ", E=" << (e_diff >= 0 ? "+" : "") << e_diff << std::endl;
+
+                // Rule consumes 4 edges, produces 4 edges, adds 1 vertex
+                // So expected: V+1, E+0 (4-4=0)
+                if (v_diff == 1 && e_diff == 0) {
+                    std::cout << "  (Matches expected BH rule: +1 vertex, +0 edges)" << std::endl;
+                }
+            } else {
+                std::cout << "  Step 1: NO STATES (rule did not match!)" << std::endl;
+                std::cout << "  Possible causes:" << std::endl;
+                std::cout << "    - Rule pattern not found in initial graph" << std::endl;
+                std::cout << "    - Rule parsing error" << std::endl;
+                std::cout << "    - Graph connectivity issue" << std::endl;
+            }
+
+            std::cout << "=== END VERIFICATION ===" << std::endl << std::endl;
+        }
+
+        // Save evolution data
+        EvolutionData evo_data;
+        evo_data.initial = initial;
+        evo_data.config = evo_config;
+        evo_data.states_by_step = evo_result.states_by_step;  // Keep copy for analysis
+        evo_data.total_states = evo_result.total_states;
+        evo_data.total_events = evo_result.total_events;
+        evo_data.max_step_reached = evo_result.max_step_reached;
+
+        if (write_evolution(output_file, evo_data)) {
+            std::cout << "Saved evolution data to " << output_file << std::endl;
+        } else {
+            std::cerr << "Failed to save evolution data" << std::endl;
+            return 1;
+        }
+
+        if (no_analyze) {
+            std::cout << "Use 'analyze " << output_file << "' to run Hausdorff analysis." << std::endl;
+            return 0;
+        }
+
+        // Fall through to analysis
+        std::cout << "\nRunning Hausdorff analysis (max_radius=" << max_radius
+                  << ", anchors=" << num_anchors << ")..." << std::endl;
+
+        AnalysisConfig ana_config;
+        ana_config.num_anchors = num_anchors;
+        ana_config.anchor_min_separation = 3;
+        ana_config.max_radius = max_radius;
+
+        // Reuse the runner for analysis
+        analysis = runner.run_analysis(
+            initial,
+            evo_config,
+            evo_data.states_by_step,
+            evo_data.total_states,
+            evo_data.total_events,
+            evo_data.max_step_reached,
+            ana_config
+        );
+        std::cout << std::endl;
+
+        if (analysis.total_states == 0) {
+            std::cerr << "Analysis failed" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Analysis complete: " << analysis.total_states << " states, "
+                  << analysis.per_timestep.size() << " timesteps" << std::endl;
+        std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
+
+        std::string analysis_file = "blackhole_analysis.bhdata";
+        if (write_analysis(analysis_file, analysis)) {
+            std::cout << "Saved analysis to " << analysis_file << std::endl;
+        }
+
+        if (no_view) {
+            std::cout << "Use 'view " << analysis_file << "' to visualize." << std::endl;
+            return 0;
+        }
+
+        // Fall through to viewer
+
+    } else if (mode == "analyze") {
+        // Load evolution data and run analysis
+        std::cout << "Loading evolution data from " << data_file << "..." << std::endl;
+
+        EvolutionData evo_data;
+        if (!read_evolution(data_file, evo_data)) {
+            std::cerr << "Failed to load evolution file" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Loaded: " << evo_data.total_states << " states, "
+                  << evo_data.max_step_reached << " steps" << std::endl;
+
+        std::cout << "Running Hausdorff analysis (max_radius=" << max_radius
+                  << ", anchors=" << num_anchors << ")..." << std::endl;
+
+        AnalysisConfig ana_config;
+        ana_config.num_anchors = num_anchors;
+        ana_config.anchor_min_separation = 3;
+        ana_config.max_radius = max_radius;
+
+        EvolutionRunner runner;
+        runner.set_progress_callback([](const std::string& stage, float progress) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "\r[%s] %d%%\033[K", stage.c_str(), static_cast<int>(progress * 100));
+            fputs(buf, stdout);
+            fflush(stdout);
+        });
+
+        analysis = runner.run_analysis(
+            evo_data.initial,
+            evo_data.config,
+            evo_data.states_by_step,
+            evo_data.total_states,
+            evo_data.total_events,
+            evo_data.max_step_reached,
+            ana_config
+        );
+        std::cout << std::endl;
+
+        if (analysis.total_states == 0) {
+            std::cerr << "Analysis failed" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Analysis complete: " << analysis.total_states << " states, "
+                  << analysis.per_timestep.size() << " timesteps" << std::endl;
+        std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
+
+        if (write_analysis(output_file, analysis)) {
+            std::cout << "Saved analysis to " << output_file << std::endl;
+        }
+
+        if (no_view) {
+            std::cout << "Use 'view " << output_file << "' to visualize." << std::endl;
+            return 0;
+        }
+
+    } else if (mode == "run" || mode == "generate") {
+        // Full pipeline: generate + evolve + analyze
+        std::cout << "Generating black hole analysis..." << std::endl;
+
+        BHConfig bh_config;
+        bh_config.mass1 = 1.0f;
+        bh_config.mass2 = 0.8f;
+        bh_config.separation = 3.0f;
+        if (edge_threshold > 0) {
+            bh_config.edge_threshold = edge_threshold;
+        } else {
+            bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
+        }
+        bh_config.box_x = {-5.0f, 5.0f};
+        bh_config.box_y = {-4.0f, 4.0f};
+
+        BHInitialCondition initial;
+        if (brill_vertices > 0) {
+            initial = generate_brill_lindquist(brill_vertices, bh_config);
+        } else {
+            initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+        }
+
+        // Shuffle initial edges if requested (helps avoid systematic bias)
+        if (shuffle_edges && !initial.edges.empty()) {
+            std::random_device rd;
+            std::mt19937 rng(rd());
+            std::shuffle(initial.edges.begin(), initial.edges.end(), rng);
+            std::cout << "  (edges shuffled)" << std::endl;
+        }
+
+        EvolutionConfig evo_config;
+        evo_config.rule = rule;
+        evo_config.max_steps = steps;
+        evo_config.max_states_per_step = max_states;
+        evo_config.max_successors_per_parent = max_children;
+        evo_config.exploration_probability = 1.0f;
+        evo_config.canonicalize_states = !no_canonicalize;
+        evo_config.explore_from_canonical_only = !no_explore_dedup;
+        evo_config.batched_matching = batched;
+        evo_config.uniform_random = uniform_random;
+        evo_config.matches_per_step = matches_per_step;
+        evo_config.early_terminate_reservoir = fast_reservoir;
+
+        AnalysisConfig ana_config;
+        ana_config.num_anchors = num_anchors;
+        ana_config.anchor_min_separation = 3;
+        ana_config.max_radius = max_radius;
+
+        EvolutionRunner runner;
+        runner.set_progress_callback([](const std::string& stage, float progress) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "\r[%s] %d%%\033[K", stage.c_str(), static_cast<int>(progress * 100));
+            fputs(buf, stdout);
+            fflush(stdout);
+        });
+
+        analysis = runner.run_full_analysis(initial, evo_config, ana_config);
+        std::cout << std::endl;
+
+        if (analysis.total_states == 0) {
+            std::cerr << "Analysis failed (no states generated)" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Analysis complete: " << analysis.total_states << " states, "
+                  << analysis.per_timestep.size() << " timesteps" << std::endl;
+        std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
+
+        if (write_analysis(output_file, analysis)) {
+            std::cout << "Saved analysis to " << output_file << std::endl;
+        }
+
+        // Cascade to view unless --no-view was specified
+        if (no_view) {
+            std::cout << "Use 'view " << output_file << "' to visualize." << std::endl;
+            return 0;
+        }
+
+    } else {
+        // Unknown mode
+        std::cerr << "Unknown command: " << mode << std::endl;
+        print_usage();
+        return 1;
+    }
+
+    // Create window
+    platform::WindowDesc window_desc;
+    window_desc.title = "Black Hole Hausdorff Dimension";
+    window_desc.width = 1600;
+    window_desc.height = 900;
+
+    auto window = platform::Window::create(window_desc);
+    if (!window) {
+        std::cerr << "Failed to create window" << std::endl;
+        return 1;
+    }
+
+    // Initialize GAL
+    if (!gal::initialize(gal::Backend::Vulkan)) {
+        std::cerr << "Failed to initialize GAL" << std::endl;
+        return 1;
+    }
+
+    gal::DeviceDesc device_desc;
+    device_desc.app_name = "BlackHoleViz";
+#ifdef NDEBUG
+    device_desc.enable_validation = false;
+#else
+    device_desc.enable_validation = true;
+#endif
+
+    auto device = gal::Device::create(device_desc);
+    if (!device) {
+        std::cerr << "Failed to create device" << std::endl;
+        gal::shutdown();
+        return 1;
+    }
+
+    std::cout << "Device: " << device->get_info().device_name << std::endl;
+
+    // Create surface
+    VkInstance vk_instance = gal::get_vk_instance(device.get());
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+
+#if defined(VIZ_PLATFORM_LINUX)
+    surface = gal::create_xcb_surface(vk_instance, window->get_native_display(), window->get_native_window());
+#elif defined(VIZ_PLATFORM_WINDOWS)
+    surface = gal::create_win32_surface(vk_instance, GetModuleHandle(nullptr), window->get_native_window());
+#endif
+
+    if (surface == VK_NULL_HANDLE) {
+        std::cerr << "Failed to create surface" << std::endl;
+        device.reset();
+        gal::shutdown();
+        return 1;
+    }
+
+    auto swapchain = device->create_swapchain(
+        reinterpret_cast<gal::Handle>(surface),
+        window->get_width(), window->get_height());
+    if (!swapchain) {
+        std::cerr << "Failed to create swapchain" << std::endl;
+        device.reset();
+        gal::shutdown();
+        return 1;
+    }
+
+    // Load shaders
+    auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
+    auto cylinder_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cylinder.vert.spv");
+    auto sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
+
+    if (vert_spirv.empty() || frag_spirv.empty()) {
+        std::cerr << "Failed to load basic shaders" << std::endl;
+        device.reset();
+        gal::shutdown();
+        return 1;
+    }
+
+    if (cylinder_vert_spirv.empty() || sphere_vert_spirv.empty()) {
+        std::cerr << "Failed to load instanced shaders" << std::endl;
+        device.reset();
+        gal::shutdown();
+        return 1;
+    }
+
+    gal::ShaderDesc vert_desc;
+    vert_desc.stage = gal::ShaderStage::Vertex;
+    vert_desc.spirv_code = vert_spirv.data();
+    vert_desc.spirv_size = vert_spirv.size() * sizeof(uint32_t);
+    auto vertex_shader = device->create_shader(vert_desc);
+
+    gal::ShaderDesc frag_desc;
+    frag_desc.stage = gal::ShaderStage::Fragment;
+    frag_desc.spirv_code = frag_spirv.data();
+    frag_desc.spirv_size = frag_spirv.size() * sizeof(uint32_t);
+    auto fragment_shader = device->create_shader(frag_desc);
+
+    gal::ShaderDesc cyl_vert_desc;
+    cyl_vert_desc.stage = gal::ShaderStage::Vertex;
+    cyl_vert_desc.spirv_code = cylinder_vert_spirv.data();
+    cyl_vert_desc.spirv_size = cylinder_vert_spirv.size() * sizeof(uint32_t);
+    auto cylinder_vertex_shader = device->create_shader(cyl_vert_desc);
+
+    gal::ShaderDesc sph_vert_desc;
+    sph_vert_desc.stage = gal::ShaderStage::Vertex;
+    sph_vert_desc.spirv_code = sphere_vert_spirv.data();
+    sph_vert_desc.spirv_size = sphere_vert_spirv.size() * sizeof(uint32_t);
+    auto sphere_vertex_shader = device->create_shader(sph_vert_desc);
+
+    // Create pipelines
+    gal::VertexAttribute vertex_attribs[] = {
+        {0, gal::Format::RGB32_FLOAT, 0},
+        {1, gal::Format::RGBA32_FLOAT, sizeof(float) * 3},
+    };
+
+    gal::VertexBufferLayout vertex_layout;
+    vertex_layout.stride = sizeof(Vertex);
+    vertex_layout.step_mode = gal::VertexStepMode::Vertex;
+    vertex_layout.attributes = vertex_attribs;
+    vertex_layout.attribute_count = 2;
+
+    gal::Format color_format = swapchain->get_format();
+    gal::Format depth_format = gal::Format::D32_FLOAT;
+
+    gal::BlendState opaque_blend;  // defaults to blend_enable = false
+
+    gal::BlendState alpha_blend = gal::BlendState::alpha_blend();
+
+    // Triangle pipeline (opaque)
+    gal::RenderPipelineDesc tri_pipeline_desc;
+    tri_pipeline_desc.vertex_shader = vertex_shader.get();
+    tri_pipeline_desc.fragment_shader = fragment_shader.get();
+    tri_pipeline_desc.vertex_layouts = &vertex_layout;
+    tri_pipeline_desc.vertex_layout_count = 1;
+    tri_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+    tri_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
+    tri_pipeline_desc.depth_stencil.depth_test_enable = true;
+    tri_pipeline_desc.depth_stencil.depth_write_enable = true;
+    tri_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
+    tri_pipeline_desc.blend_states = &opaque_blend;
+    tri_pipeline_desc.blend_state_count = 1;
+    tri_pipeline_desc.color_formats = &color_format;
+    tri_pipeline_desc.color_format_count = 1;
+    tri_pipeline_desc.depth_format = depth_format;
+    tri_pipeline_desc.push_constant_size = sizeof(math::mat4);
+
+    auto triangle_pipeline = device->create_render_pipeline(tri_pipeline_desc);
+
+    // Alpha-blended triangle pipeline (for transparent overlays)
+    gal::RenderPipelineDesc alpha_tri_desc = tri_pipeline_desc;
+    alpha_tri_desc.blend_states = &alpha_blend;
+    alpha_tri_desc.depth_stencil.depth_test_enable = false;   // No depth test for 2D overlays
+    alpha_tri_desc.depth_stencil.depth_write_enable = false;  // Don't write depth for overlays
+    auto alpha_triangle_pipeline = device->create_render_pipeline(alpha_tri_desc);
+
+    // Line pipeline (with alpha)
+    gal::RenderPipelineDesc line_pipeline_desc = tri_pipeline_desc;
+    line_pipeline_desc.topology = gal::PrimitiveTopology::LineList;
+    line_pipeline_desc.blend_states = &alpha_blend;
+    auto line_pipeline = device->create_render_pipeline(line_pipeline_desc);
+
+    // ==========================================================================
+    // Instanced rendering pipelines for 3D mode
+    // ==========================================================================
+
+    // Mesh vertex layout (location 0 = position, location 1 = normal)
+    gal::VertexAttribute mesh_attribs[] = {
+        {0, gal::Format::RGB32_FLOAT, 0},                    // position
+        {1, gal::Format::RGB32_FLOAT, sizeof(float) * 3},    // normal
+    };
+    gal::VertexBufferLayout mesh_layout;
+    mesh_layout.stride = sizeof(MeshVertex);
+    mesh_layout.step_mode = gal::VertexStepMode::Vertex;
+    mesh_layout.attributes = mesh_attribs;
+    mesh_layout.attribute_count = 2;
+
+    // Sphere instance layout (location 2 = center, location 3 = radius, location 4 = color)
+    gal::VertexAttribute sphere_inst_attribs[] = {
+        {2, gal::Format::RGB32_FLOAT, 0},                                      // center (x,y,z)
+        {3, gal::Format::R32_FLOAT, sizeof(float) * 3},                        // radius
+        {4, gal::Format::RGBA32_FLOAT, sizeof(float) * 4},                     // color
+    };
+    gal::VertexBufferLayout sphere_inst_layout;
+    sphere_inst_layout.stride = sizeof(SphereInstance);
+    sphere_inst_layout.step_mode = gal::VertexStepMode::Instance;
+    sphere_inst_layout.attributes = sphere_inst_attribs;
+    sphere_inst_layout.attribute_count = 3;
+
+    // Cylinder instance layout (location 2 = start, location 3 = end, location 4 = radius, location 5 = color)
+    gal::VertexAttribute cylinder_inst_attribs[] = {
+        {2, gal::Format::RGB32_FLOAT, 0},                                      // start (x,y,z)
+        {3, gal::Format::RGB32_FLOAT, sizeof(float) * 3},                      // end (x,y,z)
+        {4, gal::Format::R32_FLOAT, sizeof(float) * 6},                        // radius
+        {5, gal::Format::RGBA32_FLOAT, sizeof(float) * 8},                     // start_color
+        {6, gal::Format::RGBA32_FLOAT, sizeof(float) * 12},                    // end_color
+    };
+    gal::VertexBufferLayout cylinder_inst_layout;
+    cylinder_inst_layout.stride = sizeof(CylinderInstance);
+    cylinder_inst_layout.step_mode = gal::VertexStepMode::Instance;
+    cylinder_inst_layout.attributes = cylinder_inst_attribs;
+    cylinder_inst_layout.attribute_count = 5;
+
+    // Sphere pipeline
+    gal::VertexBufferLayout sphere_layouts[] = {mesh_layout, sphere_inst_layout};
+    gal::RenderPipelineDesc sphere_pipeline_desc;
+    sphere_pipeline_desc.vertex_shader = sphere_vertex_shader.get();
+    sphere_pipeline_desc.fragment_shader = fragment_shader.get();
+    sphere_pipeline_desc.vertex_layouts = sphere_layouts;
+    sphere_pipeline_desc.vertex_layout_count = 2;
+    sphere_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+    sphere_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;  // No culling for debugging
+    sphere_pipeline_desc.depth_stencil.depth_test_enable = true;
+    sphere_pipeline_desc.depth_stencil.depth_write_enable = true;
+    sphere_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
+    sphere_pipeline_desc.blend_states = &opaque_blend;
+    sphere_pipeline_desc.blend_state_count = 1;
+    sphere_pipeline_desc.color_formats = &color_format;
+    sphere_pipeline_desc.color_format_count = 1;
+    sphere_pipeline_desc.depth_format = depth_format;
+    sphere_pipeline_desc.push_constant_size = sizeof(math::mat4);
+    auto sphere_pipeline = device->create_render_pipeline(sphere_pipeline_desc);
+
+    // Cylinder pipeline
+    gal::VertexBufferLayout cylinder_layouts[] = {mesh_layout, cylinder_inst_layout};
+    gal::RenderPipelineDesc cylinder_pipeline_desc;
+    cylinder_pipeline_desc.vertex_shader = cylinder_vertex_shader.get();
+    cylinder_pipeline_desc.fragment_shader = fragment_shader.get();
+    cylinder_pipeline_desc.vertex_layouts = cylinder_layouts;
+    cylinder_pipeline_desc.vertex_layout_count = 2;
+    cylinder_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+    cylinder_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;  // No culling for debugging
+    cylinder_pipeline_desc.depth_stencil.depth_test_enable = true;
+    cylinder_pipeline_desc.depth_stencil.depth_write_enable = true;
+    cylinder_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
+    cylinder_pipeline_desc.blend_states = &alpha_blend;  // Cylinders use alpha for transparency
+    cylinder_pipeline_desc.blend_state_count = 1;
+    cylinder_pipeline_desc.color_formats = &color_format;
+    cylinder_pipeline_desc.color_format_count = 1;
+    cylinder_pipeline_desc.depth_format = depth_format;
+    cylinder_pipeline_desc.push_constant_size = sizeof(math::mat4);
+    auto cylinder_pipeline = device->create_render_pipeline(cylinder_pipeline_desc);
+
+    // Generate meshes
+    Mesh cylinder_mesh = generate_cylinder_mesh(16);
+    Mesh sphere_mesh = generate_sphere_mesh(16, 8);
+
+    // Create depth texture
+    auto create_depth_texture = [&](uint32_t w, uint32_t h) {
+        gal::TextureDesc depth_desc;
+        depth_desc.size = {w, h, 1};
+        depth_desc.format = depth_format;
+        depth_desc.usage = gal::TextureUsage::DepthStencil;
+        depth_desc.sample_count = 1;
+        return device->create_texture(depth_desc);
+    };
+
+    auto depth_texture = create_depth_texture(window->get_width(), window->get_height());
+
+    // Create buffers (16MB initial size to handle large graphs)
+    size_t buffer_size = 16 * 1024 * 1024;
+    gal::BufferDesc buffer_desc;
+    buffer_desc.size = buffer_size;
+    buffer_desc.usage = gal::BufferUsage::Vertex;
+    buffer_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+
+    auto vertex_buffer = device->create_buffer(buffer_desc);
+    auto edge_buffer = device->create_buffer(buffer_desc);
+    auto horizon_buffer = device->create_buffer(buffer_desc);
+    auto timeline_buffer = device->create_buffer(buffer_desc);
+    auto overlay_buffer = device->create_buffer(buffer_desc);  // For help overlay background
+
+    // Mesh buffers (static, uploaded once)
+    gal::BufferDesc mesh_vb_desc;
+    mesh_vb_desc.usage = gal::BufferUsage::Vertex;
+    mesh_vb_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+
+    mesh_vb_desc.size = cylinder_mesh.vertices.size() * sizeof(MeshVertex);
+    auto cylinder_vb = device->create_buffer(mesh_vb_desc);
+    cylinder_vb->write(cylinder_mesh.vertices.data(), mesh_vb_desc.size);
+
+    mesh_vb_desc.size = sphere_mesh.vertices.size() * sizeof(MeshVertex);
+    auto sphere_vb = device->create_buffer(mesh_vb_desc);
+    sphere_vb->write(sphere_mesh.vertices.data(), mesh_vb_desc.size);
+
+    gal::BufferDesc mesh_ib_desc;
+    mesh_ib_desc.usage = gal::BufferUsage::Index;
+    mesh_ib_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+
+    mesh_ib_desc.size = cylinder_mesh.indices.size() * sizeof(Index);
+    auto cylinder_ib = device->create_buffer(mesh_ib_desc);
+    cylinder_ib->write(cylinder_mesh.indices.data(), mesh_ib_desc.size);
+
+    mesh_ib_desc.size = sphere_mesh.indices.size() * sizeof(Index);
+    auto sphere_ib = device->create_buffer(mesh_ib_desc);
+    sphere_ib->write(sphere_mesh.indices.data(), mesh_ib_desc.size);
+
+    // Instance buffers (dynamic, updated per frame)
+    gal::BufferDesc instance_buffer_desc;
+    instance_buffer_desc.usage = gal::BufferUsage::Vertex;
+    instance_buffer_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+    instance_buffer_desc.size = buffer_size;  // Start with 2MB, resize if needed
+
+    auto sphere_instance_buffer = device->create_buffer(instance_buffer_desc);
+    auto cylinder_instance_buffer = device->create_buffer(instance_buffer_desc);
+
+    // Camera - compute distance from bounding radius for good initial framing
+    // Multiply by ~2.5 to fit the graph nicely in view with some margin
+    float base_camera_distance = analysis.layout_bounding_radius * 2.5f;
+    float camera_distance_2d = base_camera_distance * 0.8f;  // 2D needs less distance (orthographic)
+    float camera_distance_3d = base_camera_distance;          // 3D uses full distance
+
+    camera::PerspectiveCamera cam;
+    cam.set_perspective(60.0f, static_cast<float>(window->get_width()) / window->get_height(), 0.1f, base_camera_distance * 10.0f);
+    cam.set_target(math::vec3(0, 0, 0));
+    cam.set_distance(camera_distance_3d);  // Start in 3D
+    cam.orbit(0.5f, -0.8f);  // 3D default angle
+
+    camera::CameraController controller(&cam);
+
+    // Sync objects
+    auto image_semaphore = device->create_semaphore();
+    auto render_semaphore = device->create_semaphore();
+    auto fence = device->create_fence(true);
+
+    // Command buffer for in-flight frame
+    std::unique_ptr<gal::CommandEncoder> in_flight_cmd;
+
+    // ==========================================================================
+    // MSAA setup
+    // ==========================================================================
+    uint32_t max_msaa = device->get_info().limits.max_samples;
+    std::vector<uint32_t> supported_msaa_levels = {1};  // 1 = off
+    for (uint32_t s = 2; s <= max_msaa; s *= 2) {
+        supported_msaa_levels.push_back(s);
+    }
+    // Default to maximum available MSAA
+    size_t msaa_level_index = supported_msaa_levels.size() - 1;
+    uint32_t msaa_samples = supported_msaa_levels[msaa_level_index];
+    bool msaa_enabled = (msaa_samples > 1);
+    bool msaa_dirty = true;
+    std::cout << "MSAA: " << (msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF")
+              << " (max supported: " << max_msaa << "x)" << std::endl;
+
+    std::unique_ptr<gal::Texture> msaa_color_texture;
+    std::unique_ptr<gal::Texture> msaa_depth_texture;
+    std::unique_ptr<gal::RenderPipeline> msaa_triangle_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_alpha_triangle_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_line_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_sphere_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_cylinder_pipeline;
+    std::unique_ptr<gal::RenderPipeline> msaa_text_pipeline;
+
+    // Function pointer for creating text pipeline (set after text setup)
+    std::function<std::unique_ptr<gal::RenderPipeline>(uint32_t)> create_text_pipeline_fn;
+
+    auto create_msaa_resources = [&](uint32_t width, uint32_t height) {
+        // Depth texture (always needed, sample count matches MSAA state)
+        gal::TextureDesc depth_desc;
+        depth_desc.size = {width, height, 1};
+        depth_desc.format = depth_format;
+        depth_desc.usage = gal::TextureUsage::DepthStencil;
+        depth_desc.sample_count = msaa_enabled ? msaa_samples : 1;
+        msaa_depth_texture = device->create_texture(depth_desc);
+
+        if (!msaa_enabled) {
+            msaa_color_texture.reset();
+            msaa_triangle_pipeline.reset();
+            msaa_alpha_triangle_pipeline.reset();
+            msaa_line_pipeline.reset();
+            msaa_sphere_pipeline.reset();
+            msaa_cylinder_pipeline.reset();
+            msaa_text_pipeline.reset();
+            return;
+        }
+
+        // MSAA color texture
+        gal::TextureDesc msaa_desc;
+        msaa_desc.size = {width, height, 1};
+        msaa_desc.format = swapchain->get_format();
+        msaa_desc.usage = gal::TextureUsage::RenderTarget;
+        msaa_desc.sample_count = msaa_samples;
+        msaa_color_texture = device->create_texture(msaa_desc);
+
+        if (!msaa_color_texture) {
+            std::cerr << "Failed to create MSAA texture, falling back to no MSAA" << std::endl;
+            msaa_enabled = false;
+            return;
+        }
+
+        // MSAA triangle pipeline
+        gal::RenderPipelineDesc msaa_tri_desc = tri_pipeline_desc;
+        msaa_tri_desc.multisample.count = msaa_samples;
+        msaa_triangle_pipeline = device->create_render_pipeline(msaa_tri_desc);
+
+        // MSAA alpha-blended triangle pipeline (for transparent overlays with MSAA)
+        gal::RenderPipelineDesc msaa_alpha_tri_desc = alpha_tri_desc;
+        msaa_alpha_tri_desc.multisample.count = msaa_samples;
+        msaa_alpha_triangle_pipeline = device->create_render_pipeline(msaa_alpha_tri_desc);
+
+        // MSAA line pipeline
+        gal::RenderPipelineDesc msaa_line_desc = line_pipeline_desc;
+        msaa_line_desc.multisample.count = msaa_samples;
+        msaa_line_pipeline = device->create_render_pipeline(msaa_line_desc);
+
+        // MSAA sphere pipeline
+        gal::RenderPipelineDesc msaa_sphere_desc = sphere_pipeline_desc;
+        msaa_sphere_desc.multisample.count = msaa_samples;
+        msaa_sphere_pipeline = device->create_render_pipeline(msaa_sphere_desc);
+
+        // MSAA cylinder pipeline
+        gal::RenderPipelineDesc msaa_cyl_desc = cylinder_pipeline_desc;
+        msaa_cyl_desc.multisample.count = msaa_samples;
+        msaa_cylinder_pipeline = device->create_render_pipeline(msaa_cyl_desc);
+
+        // MSAA text pipeline (if text rendering is set up)
+        if (create_text_pipeline_fn) {
+            msaa_text_pipeline = create_text_pipeline_fn(msaa_samples);
+        }
+
+        if (!msaa_triangle_pipeline || !msaa_line_pipeline ||
+            !msaa_sphere_pipeline || !msaa_cylinder_pipeline) {
+            std::cerr << "Failed to create MSAA pipelines, falling back to no MSAA" << std::endl;
+            msaa_enabled = false;
+            msaa_color_texture.reset();
+        }
+    };
+
+    // ==========================================================================
+    // Text Rendering Setup
+    // ==========================================================================
+
+    // Load text shaders
+    auto text_vert_spirv = load_spirv("../visualisation/shaders/spirv/text.vert.spv");
+    auto text_frag_spirv = load_spirv("../visualisation/shaders/spirv/text.frag.spv");
+    bool text_rendering_available = !text_vert_spirv.empty() && !text_frag_spirv.empty();
+    std::unique_ptr<gal::Shader> text_vertex_shader;
+    std::unique_ptr<gal::Shader> text_fragment_shader;
+    std::unique_ptr<gal::Texture> font_texture;
+    std::unique_ptr<gal::Sampler> font_sampler;
+    std::unique_ptr<gal::BindGroupLayout> text_bind_group_layout;
+    std::unique_ptr<gal::BindGroup> text_bind_group;
+    std::unique_ptr<gal::RenderPipeline> text_pipeline;
+    std::unique_ptr<gal::Buffer> text_quad_vb;
+    std::unique_ptr<gal::Buffer> text_quad_ib;
+    std::unique_ptr<gal::Buffer> text_instance_buffer;
+    const size_t MAX_TEXT_GLYPHS = 8192;  // Maximum glyphs per frame
+
+    if (text_rendering_available) {
+        // Create text shaders
+        gal::ShaderDesc text_vert_desc;
+        text_vert_desc.stage = gal::ShaderStage::Vertex;
+        text_vert_desc.spirv_code = text_vert_spirv.data();
+        text_vert_desc.spirv_size = text_vert_spirv.size() * sizeof(uint32_t);
+        text_vertex_shader = device->create_shader(text_vert_desc);
+
+        gal::ShaderDesc text_frag_desc;
+        text_frag_desc.stage = gal::ShaderStage::Fragment;
+        text_frag_desc.spirv_code = text_frag_spirv.data();
+        text_frag_desc.spirv_size = text_frag_spirv.size() * sizeof(uint32_t);
+        text_fragment_shader = device->create_shader(text_frag_desc);
+
+        if (!text_vertex_shader || !text_fragment_shader) {
+            std::cerr << "Failed to create text shaders" << std::endl;
+            text_rendering_available = false;
+        }
+    }
+
+    if (text_rendering_available) {
+        // Generate and create font atlas texture
+        auto font_atlas_data = generate_font_atlas();
+
+        gal::TextureDesc font_tex_desc;
+        font_tex_desc.size = {FONT_ATLAS_WIDTH, FONT_ATLAS_HEIGHT, 1};
+        font_tex_desc.format = gal::Format::R8_UNORM;
+        font_tex_desc.usage = gal::TextureUsage::Sampled;
+        font_tex_desc.initial_data = font_atlas_data.data();
+        font_tex_desc.debug_name = "FontAtlas";
+        font_texture = device->create_texture(font_tex_desc);
+
+        // Create font sampler (nearest for crisp text)
+        gal::SamplerDesc font_sampler_desc;
+        font_sampler_desc.mag_filter = gal::Filter::Nearest;
+        font_sampler_desc.min_filter = gal::Filter::Nearest;
+        font_sampler_desc.address_u = gal::AddressMode::ClampToEdge;
+        font_sampler_desc.address_v = gal::AddressMode::ClampToEdge;
+        font_sampler = device->create_sampler(font_sampler_desc);
+
+        if (!font_texture || !font_sampler) {
+            std::cerr << "Failed to create font resources" << std::endl;
+            text_rendering_available = false;
+        }
+    }
+
+    if (text_rendering_available) {
+        // Create bind group layout for font texture
+        gal::BindGroupLayoutEntry layout_entry = {
+            0,                                      // binding
+            gal::ShaderStage::Fragment,             // visibility
+            gal::BindingType::CombinedTextureSampler,  // type
+            1                                       // count
+        };
+        gal::BindGroupLayoutDesc layout_desc;
+        layout_desc.entries = &layout_entry;
+        layout_desc.entry_count = 1;
+        layout_desc.debug_name = "TextBindGroupLayout";
+        text_bind_group_layout = device->create_bind_group_layout(layout_desc);
+
+        if (text_bind_group_layout) {
+            // Create bind group
+            gal::BindGroupEntry bind_entry = {
+                0, nullptr, 0, 0, font_texture.get(), font_sampler.get()
+            };
+            gal::BindGroupDesc bind_desc;
+            bind_desc.layout = text_bind_group_layout.get();
+            bind_desc.entries = &bind_entry;
+            bind_desc.entry_count = 1;
+            bind_desc.debug_name = "TextBindGroup";
+            text_bind_group = device->create_bind_group(bind_desc);
+        }
+
+        if (!text_bind_group_layout || !text_bind_group) {
+            std::cerr << "Failed to create text bind group" << std::endl;
+            text_rendering_available = false;
+        }
+    }
+
+    if (text_rendering_available) {
+        // Quad vertex data: position (x, y) and UV (u, v)
+        // Two triangles forming a unit quad [0,1] x [0,1]
+        struct TextQuadVertex {
+            float x, y;   // position
+            float u, v;   // texture coords
+        };
+        TextQuadVertex quad_vertices[4] = {
+            {0.0f, 0.0f, 0.0f, 0.0f},  // vertex 0: pos(0,0), uv(0,0)
+            {1.0f, 0.0f, 1.0f, 0.0f},  // vertex 1: pos(1,0), uv(1,0)
+            {1.0f, 1.0f, 1.0f, 1.0f},  // vertex 2: pos(1,1), uv(1,1)
+            {0.0f, 1.0f, 0.0f, 1.0f},  // vertex 3: pos(0,1), uv(0,1)
+        };
+        uint16_t quad_indices[6] = {0, 1, 2, 0, 2, 3};
+
+        gal::BufferDesc quad_vb_desc;
+        quad_vb_desc.size = sizeof(quad_vertices);
+        quad_vb_desc.usage = gal::BufferUsage::Vertex;
+        quad_vb_desc.memory = gal::MemoryLocation::CPU_TO_GPU;  // Need CPU_TO_GPU for initial_data
+        quad_vb_desc.initial_data = quad_vertices;
+        text_quad_vb = device->create_buffer(quad_vb_desc);
+
+        gal::BufferDesc quad_ib_desc;
+        quad_ib_desc.size = sizeof(quad_indices);
+        quad_ib_desc.usage = gal::BufferUsage::Index;
+        quad_ib_desc.memory = gal::MemoryLocation::CPU_TO_GPU;  // Need CPU_TO_GPU for initial_data
+        quad_ib_desc.initial_data = quad_indices;
+        text_quad_ib = device->create_buffer(quad_ib_desc);
+
+        gal::BufferDesc instance_desc;
+        instance_desc.size = MAX_TEXT_GLYPHS * sizeof(GlyphInstance);
+        instance_desc.usage = gal::BufferUsage::Vertex;
+        instance_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+        text_instance_buffer = device->create_buffer(instance_desc);
+
+        if (!text_quad_vb || !text_quad_ib || !text_instance_buffer) {
+            std::cerr << "Failed to create text buffers" << std::endl;
+            text_rendering_available = false;
+        }
+    }
+
+    // Text vertex layouts (defined outside if block for persistence)
+    gal::VertexAttribute text_quad_attribs[] = {
+        {0, gal::Format::RG32_FLOAT, 0},                    // position
+        {1, gal::Format::RG32_FLOAT, sizeof(float) * 2},    // uv
+    };
+    gal::VertexBufferLayout text_quad_layout;
+    text_quad_layout.stride = sizeof(float) * 4;
+    text_quad_layout.step_mode = gal::VertexStepMode::Vertex;
+    text_quad_layout.attributes = text_quad_attribs;
+    text_quad_layout.attribute_count = 2;
+
+    gal::VertexAttribute text_inst_attribs[] = {
+        {2, gal::Format::RG32_FLOAT, offsetof(GlyphInstance, x)},       // pos
+        {3, gal::Format::RGBA32_FLOAT, offsetof(GlyphInstance, u_min)}, // uv_rect
+        {4, gal::Format::RGBA32_FLOAT, offsetof(GlyphInstance, r)},     // color
+    };
+    gal::VertexBufferLayout text_inst_layout;
+    text_inst_layout.stride = sizeof(GlyphInstance);
+    text_inst_layout.step_mode = gal::VertexStepMode::Instance;
+    text_inst_layout.attributes = text_inst_attribs;
+    text_inst_layout.attribute_count = 3;
+
+    gal::VertexBufferLayout text_layouts[] = {text_quad_layout, text_inst_layout};
+
+    // Lambda to create text pipeline with given sample count
+    auto create_text_pipeline = [&](uint32_t sample_count) -> std::unique_ptr<gal::RenderPipeline> {
+        if (!text_vertex_shader || !text_fragment_shader || !text_bind_group_layout) {
+            return nullptr;
+        }
+        gal::RenderPipelineDesc desc;
+        desc.vertex_shader = text_vertex_shader.get();
+        desc.fragment_shader = text_fragment_shader.get();
+        desc.vertex_layouts = text_layouts;
+        desc.vertex_layout_count = 2;
+        desc.topology = gal::PrimitiveTopology::TriangleList;
+        desc.rasterizer.cull_mode = gal::CullMode::None;
+        desc.depth_stencil.depth_test_enable = false;
+        desc.depth_stencil.depth_write_enable = false;
+        desc.blend_states = &alpha_blend;
+        desc.blend_state_count = 1;
+        desc.color_formats = &color_format;
+        desc.color_format_count = 1;
+        desc.depth_format = depth_format;
+        desc.push_constant_size = sizeof(float) * 4;
+        const gal::BindGroupLayout* bgl = text_bind_group_layout.get();
+        desc.bind_group_layouts = &bgl;
+        desc.bind_group_layout_count = 1;
+        desc.multisample.count = sample_count;
+        return device->create_render_pipeline(desc);
+    };
+
+    if (text_rendering_available) {
+        // Store the lambda for MSAA pipeline recreation
+        create_text_pipeline_fn = create_text_pipeline;
+
+        text_pipeline = create_text_pipeline(1);
+        if (!text_pipeline) {
+            std::cerr << "Failed to create text pipeline" << std::endl;
+            text_rendering_available = false;
+        }
+    }
+
+    if (text_rendering_available) {
+        std::cout << "Text rendering: AVAILABLE" << std::endl;
+    } else {
+        std::cout << "Text rendering: NOT AVAILABLE (overlay will be disabled)" << std::endl;
+    }
+
+    // Glyph instance buffer for text overlay (rebuilt each frame)
+    std::vector<GlyphInstance> glyph_instances;
+    glyph_instances.reserve(MAX_TEXT_GLYPHS);
+
+    // Helper to queue a single glyph
+    auto queue_glyph = [&](float x, float y, char c, const Vec4& color) {
+        if (c < FONT_FIRST_CHAR || c > FONT_LAST_CHAR) c = '?';
+        int char_idx = c - FONT_FIRST_CHAR;
+        int col = char_idx % FONT_ATLAS_COLS;
+        int row = char_idx / FONT_ATLAS_COLS;
+
+        // Round screen position to whole pixels for pixel-perfect text rendering
+        x = std::floor(x);
+        y = std::floor(y);
+
+        // UV coordinates - no half-texel inset needed with nearest sampling
+        // The fragment shader receives fragments at pixel centers (not edges), so the
+        // UV interpolation naturally samples the correct texels.
+        // For N screen pixels covering M texels with nearest sampling:
+        //   - Fragment at pixel center i+0.5 gets in_uv = (i+0.5)/N
+        //   - UV = u_min + in_uv * (u_max - u_min) maps to the appropriate texel
+        //   - Nearest sampling selects texel floor(UV * atlas_width)
+        // With in_uv ranging from 0.5/N to (N-0.5)/N, we never hit exact texel boundaries.
+        float u_min = static_cast<float>(col * FONT_CHAR_WIDTH) / FONT_ATLAS_WIDTH;
+        float u_max = static_cast<float>((col + 1) * FONT_CHAR_WIDTH) / FONT_ATLAS_WIDTH;
+        float v_top = static_cast<float>(row * FONT_CHAR_HEIGHT) / FONT_ATLAS_HEIGHT;
+        float v_bot = static_cast<float>((row + 1) * FONT_CHAR_HEIGHT) / FONT_ATLAS_HEIGHT;
+
+        // The quad has UV (0,0) at position (0,0) which becomes screen top-left after Y-flip.
+        // After the Y-flip in NDC, the quad's position (0,0) is at screen TOP.
+        // The quad's UV (0,0) samples inst_uv_rect.xy.
+        // We want screen TOP to sample atlas TOP (v_top).
+        // But the position Y increases DOWNWARD in screen coords, so position (0,1) is at screen BOTTOM.
+        // This means in_uv.y=1 should sample atlas BOTTOM (v_bot).
+        // So: inst_uv_rect.y = v_top, inst_uv_rect.w = v_bot
+        glyph_instances.push_back({x, y, u_min, v_top, u_max, v_bot, color.x, color.y, color.z, color.w});
+    };
+
+    // Helper to queue a string of text
+    auto queue_text = [&](float x, float y, const std::string& text, const Vec4& color, float scale = 1.0f) {
+        float char_w = FONT_CHAR_WIDTH * scale;
+        for (size_t i = 0; i < text.size(); ++i) {
+            queue_glyph(x + i * char_w, y, text[i], color);
+        }
+    };
+
+    // Application state
+    int current_step = 0;
+    int max_step = static_cast<int>(analysis.per_timestep.size()) - 1;
+    bool playing = false;
+    float playback_speed = 2.0f;  // Steps per second
+    int playback_direction = 1;  // 1 = forward, -1 = backward
+    bool ping_pong_mode = false; // Reverse direction at boundaries
+
+    // Time-based playback with latch
+    // When play starts or direction changes, we record the start time and step
+    // Current step is computed as: latch_step + elapsed_time * speed * direction
+    std::chrono::high_resolution_clock::time_point play_latch_time;
+    int play_latch_step = 0;
+
+    // Helper to reset the playback latch (call when play starts or direction changes)
+    auto reset_playback_latch = [&]() {
+        play_latch_time = std::chrono::high_resolution_clock::now();
+        play_latch_step = current_step;
+    };
+
+    // UI interaction state
+    bool scrubber_dragging = false;
+    TimelineData last_timeline;  // Store for hit testing
+    int window_width = static_cast<int>(window->get_width());
+    int window_height = static_cast<int>(window->get_height());
+
+    ViewMode view_mode = ViewMode::View3D;
+    EdgeDisplayMode edge_mode = EdgeDisplayMode::Union;
+    int edge_freq_threshold = 1;   // Edges must appear in >= N states (for Frequent mode, 1 = show all)
+    int selected_state_index = 0;  // Which state to show in SingleState mode (cycles with '[' and ']')
+    HeatmapMode heatmap_mode = HeatmapMode::Mean;  // Mean dimension or Variance
+    DimensionSource dim_source = DimensionSource::Branchial;  // Branchial, Foliation, or Global
+    bool per_frame_normalization = true;  // Per-frame (local) vs global color normalization
+    bool show_horizons = false;  // Horizon rings off by default
+    bool timeslice_enabled = false;  // Timeslice view (shows range of timesteps)
+    int timeslice_width = 5;         // Number of timesteps in the slice
+    bool z_mapping_enabled = true;   // Map bucket dimension values to Z/height
+    MissingDataMode missing_mode = MissingDataMode::Show;  // How to display missing dimension data
+    ColorPalette current_palette = ColorPalette::Temperature;  // Color palette for heatmap
+    EdgeColorMode edge_color_mode = EdgeColorMode::Vertex;  // How to color edges
+    bool show_states_graph = false;  // Show multiway states graph panel (toggle with B)
+    bool path_selection_enabled = false;  // Filter to N random paths/states (toggle with A)
+    int path_selection_count = 1;         // Number of paths/states to select
+    std::vector<std::vector<int>> selected_state_indices;  // Per-timestep selected state indices
+    bool show_overlay = false;       // Show help overlay (toggle with / or ?)
+    float z_scale = 3.0f;            // Z height multiplier (adjusted with < / >)
+    bool geometry_dirty = true;
+    bool layout_enabled = true;  // Live layout on - seeds from pre-computed step 0 positions
+    bool layout_use_all_vertices = false;  // Layout ALL union vertices regardless of edge display mode
+    int layout_step = -1;        // Which step the layout is currently for
+    std::vector<VertexId> layout_vertices;  // Vertex IDs for current layout (for seeding next step)
+    PositionCache global_position_cache;    // Persistent positions across all timesteps (prevents snap on loop)
+
+    // ==========================================================================
+    // Keybinding Definitions (unified for stdout and overlay)
+    // ==========================================================================
+
+    // Helper to convert edge mode to string
+    auto edge_mode_str = [&]() -> std::string {
+        switch (edge_mode) {
+            case EdgeDisplayMode::Union: return "Union";
+            case EdgeDisplayMode::Frequent: return "Freq(>=" + std::to_string(edge_freq_threshold) + ")";
+            case EdgeDisplayMode::Intersection: return "Intersection";
+            case EdgeDisplayMode::SingleState: return "SingleState";
+            default: return "?";
+        }
+    };
+
+    std::vector<KeyBindingGroup> keybindings = {
+        {"Navigation", {
+            {"Mouse drag", "Rotate camera", nullptr},
+            {"Scroll", "Zoom in/out", nullptr},
+            {"Arrow keys", "Step through timesteps", nullptr},
+            {"Home/End", "Jump to first/last", nullptr},
+        }},
+        {"Playback", {
+            {"Space", "Play/pause", [&]{ return playing ? "PLAYING" : "PAUSED"; }},
+            {"[ / ]", "Playback speed", [&]{ return std::to_string(playback_speed).substr(0, 4) + "x"; }},
+            {"\\", "Reverse direction", [&]{ return playback_direction > 0 ? "FORWARD" : "REVERSE"; }},
+            {"P", "Ping-pong mode", [&]{ return ping_pong_mode ? "ON" : "OFF"; }},
+        }},
+        {"Dimension Mode", {
+            {"G", "Dimension source", [&]{
+                switch (dim_source) {
+                    case DimensionSource::Branchial: return "Branchial";
+                    case DimensionSource::Foliation: return "Foliation";
+                    case DimensionSource::Global: return "Global";
+                }
+                return "Unknown";
+            }},
+            {"V", "Heatmap mode", [&]{
+                // Variance only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) return "(N/A)";
+                return heatmap_mode == HeatmapMode::Mean ? "Mean" : "Variance";
+            }},
+            {"N", "Normalization", [&]{
+                // Per-frame normalization not applicable for Global mode
+                if (dim_source == DimensionSource::Global) return "(N/A)";
+                return per_frame_normalization ? "Local" : "Global";
+            }},
+        }},
+        {"Display", {
+            {"2 / 3", "View mode", [&]{ return view_mode == ViewMode::View2D ? "2D" : "3D"; }},
+            {"Z", "Z/depth mapping", [&]{ return z_mapping_enabled ? "ON" : "OFF"; }},
+            {"< / >", "Z scale", [&]{ return std::to_string(z_scale).substr(0, 4); }},
+            {"I", "Edge filter", edge_mode_str},
+            {"{ / }", "Freq threshold", [&]{ return ">=" + std::to_string(edge_freq_threshold); }},
+            {"O", "Edge coloring", [&]{ return edge_color_mode == EdgeColorMode::Vertex ? "Vertex" : "Frequency"; }},
+            {"PgUp/PgDn", "Cycle states", [&]{ return std::to_string(selected_state_index); }},
+            {"H", "Horizon rings", [&]{ return show_horizons ? "ON" : "OFF"; }},
+            {"T", "Timeslice view", [&]{
+                // Timeslice not applicable for Global mode
+                if (dim_source == DimensionSource::Global) return std::string("(N/A)");
+                return timeslice_enabled ? "ON (w=" + std::to_string(timeslice_width) + ")" : std::string("OFF");
+            }},
+            {"- / +", "Timeslice width", [&]{
+                // Timeslice not applicable for Global mode
+                if (dim_source == DimensionSource::Global) return std::string("(N/A)");
+                return std::to_string(timeslice_width);
+            }},
+            {"U", "Missing data mode", [&]{ return missing_mode_name(missing_mode); }},
+            {"C", "Color palette", [&]{ return palette_name(current_palette); }},
+            {"L", "Dynamic layout", [&]{ return layout_enabled ? "ON" : "OFF"; }},
+            {"Shift+L", "Layout all verts", [&]{ return layout_use_all_vertices ? "ON" : "OFF"; }},
+            {"M", "MSAA level", [&]{ return msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF"; }},
+            {"R", "Reset camera", nullptr},
+            {"B", "States graph", [&]{ return show_states_graph ? "ON" : "OFF"; }},
+            {"A", "Path selection", [&]{
+                // Path selection only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) return std::string("(N/A)");
+                return path_selection_enabled ? "N=" + std::to_string(path_selection_count) : std::string("OFF");
+            }},
+            {"9 / 0", "Path count -/+", [&]{
+                // Path count only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) return std::string("(N/A)");
+                return std::to_string(path_selection_count);
+            }},
+        }},
+        {"Help", {
+            {"/ or ?", "Toggle this overlay", [&]{ return show_overlay ? "VISIBLE" : "HIDDEN"; }},
+            {"ESC", "Exit", nullptr},
+        }},
+    };
+
+    // Layout engine for dynamic graph layout
+    auto layout_engine = create_layout_engine(LayoutBackend::CPU);
+    LayoutGraph layout_graph;
+    LayoutParams layout_params;
+    layout_params.algorithm = LayoutAlgorithm::Direct;
+    layout_params.dimension = LayoutDimension::Layout2D;
+    layout_params.spring_constant = 0.5f;    // Strong springs to maintain edge lengths
+    layout_params.repulsion_constant = 0.25f; // Weak repulsion to prevent expansion
+    layout_params.damping = 0.1f;            // High damping for stability
+    layout_params.gravity = 0.1f;            // Pull toward center to prevent drift
+    layout_params.max_displacement = 0.01f;  // Small steps for smooth animation
+    layout_params.edge_budget = 2000;        // Limit spring updates for large graphs
+
+    RenderData render_data;
+    std::vector<Vertex> horizon_verts;
+
+    // Build horizon visualization
+    if (!analysis.initial.vertex_positions.empty()) {
+        horizon_verts = build_horizon_circles(analysis.initial.config);
+        if (horizon_buffer && !horizon_verts.empty()) {
+            horizon_buffer->write(horizon_verts.data(), horizon_verts.size() * sizeof(Vertex));
+        }
+    }
+
+    // Input state
+    bool left_mouse_down = false;
+    float last_mouse_x = 0, last_mouse_y = 0;
+    bool should_resize = false;
+    uint32_t new_width = 0, new_height = 0;
+
+    auto last_frame = std::chrono::high_resolution_clock::now();
+
+    // Window callbacks
+    platform::WindowCallbacks callbacks;
+
+    callbacks.on_resize = [&](uint32_t w, uint32_t h) {
+        should_resize = true;
+        new_width = w;
+        new_height = h;
+        window_width = static_cast<int>(w);
+        window_height = static_cast<int>(h);
+        cam.set_aspect_ratio(static_cast<float>(w) / h);
+    };
+
+    callbacks.on_key = [&](platform::KeyCode key, bool pressed, platform::Modifiers mods) {
+        if (key == platform::KeyCode::LeftShift || key == platform::KeyCode::RightShift) {
+            controller.set_shift_held(pressed);
+        }
+
+        if (!pressed) return;
+
+        switch (key) {
+            case platform::KeyCode::Escape:
+                window->request_close();
+                break;
+
+            case platform::KeyCode::Space:
+                playing = !playing;
+                if (playing) {
+                    reset_playback_latch();  // Start latch from current position
+                }
+                std::cout << (playing ? "Playing" : "Paused")
+                          << " (speed=" << playback_speed << "x, "
+                          << (playback_direction > 0 ? "forward" : "backward")
+                          << (ping_pong_mode ? ", ping-pong" : "") << ")" << std::endl;
+                break;
+
+            case platform::KeyCode::LeftBracket:  // [ = slower, Shift+[ = decrease freq threshold
+                if (platform::has_modifier(mods, platform::Modifiers::Shift) && edge_mode == EdgeDisplayMode::Frequent) {
+                    // { - Decrease frequency threshold (min 1)
+                    if (edge_freq_threshold > 1) {
+                        edge_freq_threshold--;
+                        geometry_dirty = true;
+                        std::cout << "Edge frequency threshold: >= " << edge_freq_threshold << " states" << std::endl;
+                    }
+                } else {
+                    // [ - Decrease playback speed
+                    playback_speed = std::max(0.25f, playback_speed * 0.5f);
+                    if (playing) reset_playback_latch();  // Reset latch when speed changes
+                    std::cout << "Playback speed: " << playback_speed << "x" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::RightBracket:  // ] = faster, Shift+] = increase freq threshold
+                if (platform::has_modifier(mods, platform::Modifiers::Shift) && edge_mode == EdgeDisplayMode::Frequent) {
+                    // } - Increase frequency threshold (max = number of states at this step)
+                    int max_states = (current_step < static_cast<int>(analysis.states_per_step.size()))
+                        ? static_cast<int>(analysis.states_per_step[current_step].size()) : 1;
+                    if (edge_freq_threshold < max_states) {
+                        edge_freq_threshold++;
+                        geometry_dirty = true;
+                        std::cout << "Edge frequency threshold: >= " << edge_freq_threshold << " states"
+                                  << " (max=" << max_states << ")" << std::endl;
+                    }
+                } else {
+                    // ] - Increase playback speed
+                    playback_speed = std::min(256.0f, playback_speed * 2.0f);
+                    if (playing) reset_playback_latch();  // Reset latch when speed changes
+                    std::cout << "Playback speed: " << playback_speed << "x" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Backslash:  // \ = Reverse direction
+                playback_direction = -playback_direction;
+                if (playing) {
+                    reset_playback_latch();  // Reset latch when direction changes during playback
+                }
+                std::cout << "Playback direction: " << (playback_direction > 0 ? "forward" : "backward") << std::endl;
+                break;
+
+            case platform::KeyCode::P:  // Ping-pong mode
+                ping_pong_mode = !ping_pong_mode;
+                std::cout << "Ping-pong mode: " << (ping_pong_mode ? "ON" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::Left:
+                if (current_step > 0) {
+                    current_step--;
+                    geometry_dirty = true;
+                }
+                break;
+
+            case platform::KeyCode::Right:
+                if (current_step < max_step) {
+                    current_step++;
+                    geometry_dirty = true;
+                }
+                break;
+
+            case platform::KeyCode::Home:
+                current_step = 0;
+                playing = false;
+                geometry_dirty = true;
+                global_position_cache.clear();  // Clear cache to prevent memory growth
+                break;
+
+            case platform::KeyCode::End:
+                current_step = max_step;
+                playing = false;
+                geometry_dirty = true;
+                break;
+
+            case platform::KeyCode::Num2:
+                view_mode = ViewMode::View2D;
+                cam.set_target(math::vec3(0, 0, 0));
+                cam.set_distance(camera_distance_2d);
+                cam.set_orbit_angles(0.0f, -1.57f);  // Top-down view
+                geometry_dirty = true;
+                std::cout << "2D View" << std::endl;
+                break;
+
+            case platform::KeyCode::Num3:
+                view_mode = ViewMode::View3D;
+                cam.set_target(math::vec3(0, 0, 2.5f));
+                cam.set_distance(camera_distance_3d);
+                cam.set_orbit_angles(0.5f, -0.8f);  // Angled 3D view
+                geometry_dirty = true;
+                std::cout << "3D View" << std::endl;
+                break;
+
+            case platform::KeyCode::H:
+                show_horizons = !show_horizons;
+                std::cout << "Horizons: " << (show_horizons ? "ON" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::I:
+                // Cycle: Union -> Frequent -> Intersection -> SingleState -> Union
+                if (edge_mode == EdgeDisplayMode::Union) {
+                    edge_mode = EdgeDisplayMode::Frequent;
+                } else if (edge_mode == EdgeDisplayMode::Frequent) {
+                    edge_mode = EdgeDisplayMode::Intersection;
+                } else if (edge_mode == EdgeDisplayMode::Intersection) {
+                    // Check if we have per-state data
+                    if (!analysis.states_per_step.empty() &&
+                        current_step < static_cast<int>(analysis.states_per_step.size()) &&
+                        !analysis.states_per_step[current_step].empty()) {
+                        edge_mode = EdgeDisplayMode::SingleState;
+                        selected_state_index = 0;  // Reset to first state
+                    } else {
+                        edge_mode = EdgeDisplayMode::Union;  // Skip SingleState if no data
+                    }
+                } else {
+                    edge_mode = EdgeDisplayMode::Union;
+                }
+                geometry_dirty = true;
+                {
+                    std::string mode_name;
+                    int n_states = (current_step < static_cast<int>(analysis.states_per_step.size()))
+                        ? static_cast<int>(analysis.states_per_step[current_step].size()) : 0;
+                    if (edge_mode == EdgeDisplayMode::Union) {
+                        mode_name = "Union (all)";
+                    } else if (edge_mode == EdgeDisplayMode::Frequent) {
+                        mode_name = "Frequent (>=" + std::to_string(edge_freq_threshold) + " states, max="
+                                  + std::to_string(n_states) + ") - use { } (Shift+[ ]) to adjust threshold";
+                    } else if (edge_mode == EdgeDisplayMode::Intersection) {
+                        mode_name = "Intersection (all " + std::to_string(n_states) + " states)";
+                    } else {
+                        mode_name = "Single State (" + std::to_string(selected_state_index + 1)
+                                  + "/" + std::to_string(n_states) + ") - use PgUp/PgDn to cycle";
+                    }
+                    std::cout << "Edge mode: " << mode_name << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::O:  // Toggle edge coloring mode
+                edge_color_mode = (edge_color_mode == EdgeColorMode::Vertex)
+                    ? EdgeColorMode::Frequency
+                    : EdgeColorMode::Vertex;
+                geometry_dirty = true;
+                std::cout << "Edge coloring: " << (edge_color_mode == EdgeColorMode::Vertex ? "Vertex (by dimension)" : "Frequency (by state count)");
+                if (edge_color_mode == EdgeColorMode::Frequency && analysis.states_per_step.empty()) {
+                    std::cout << " [No per-state data - regenerate file to enable]";
+                }
+                std::cout << std::endl;
+                break;
+
+            case platform::KeyCode::V:
+                // V toggles between mean and variance
+                // Variance is only applicable for Branchial mode (averaging across states)
+                if (dim_source != DimensionSource::Branchial) {
+                    std::cout << "Variance: N/A for "
+                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
+                              << " mode (no per-state averaging)" << std::endl;
+                    break;
+                }
+                heatmap_mode = (heatmap_mode == HeatmapMode::Mean)
+                    ? HeatmapMode::Variance
+                    : HeatmapMode::Mean;
+                geometry_dirty = true;
+                {
+                    std::cout << "Heatmap: Branchial "
+                              << (heatmap_mode == HeatmapMode::Mean ? "Mean" : "Variance") << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::G:
+                // G cycles through dimension sources: Branchial -> Foliation -> Global -> Branchial
+                switch (dim_source) {
+                    case DimensionSource::Branchial: dim_source = DimensionSource::Foliation; break;
+                    case DimensionSource::Foliation: dim_source = DimensionSource::Global; break;
+                    case DimensionSource::Global: dim_source = DimensionSource::Branchial; break;
+                }
+                // Reset variance to mean when leaving Branchial mode (variance only valid for Branchial)
+                if (dim_source != DimensionSource::Branchial && heatmap_mode == HeatmapMode::Variance) {
+                    heatmap_mode = HeatmapMode::Mean;
+                }
+                // Disable inapplicable features based on new mode
+                if (dim_source == DimensionSource::Global) {
+                    // Global mode: disable timeslice, path selection, per-frame normalization
+                    if (timeslice_enabled) {
+                        timeslice_enabled = false;
+                        std::cout << "  (Timeslice disabled - N/A for Global mode)" << std::endl;
+                    }
+                    if (path_selection_enabled) {
+                        path_selection_enabled = false;
+                        std::cout << "  (Path selection disabled - N/A for Global mode)" << std::endl;
+                    }
+                    if (per_frame_normalization) {
+                        per_frame_normalization = false;
+                        std::cout << "  (Per-frame normalization disabled - N/A for Global mode)" << std::endl;
+                    }
+                    // Debug: show mega_dimension stats
+                    std::cout << "  [DEBUG] mega_dimension: " << analysis.mega_dimension.size() << " vertices"
+                              << ", range: [" << analysis.mega_dim_min << ", " << analysis.mega_dim_max << "]" << std::endl;
+                } else if (dim_source == DimensionSource::Foliation) {
+                    // Foliation mode: disable path selection
+                    if (path_selection_enabled) {
+                        path_selection_enabled = false;
+                        std::cout << "  (Path selection disabled - N/A for Foliation mode)" << std::endl;
+                    }
+                }
+                geometry_dirty = true;
+                {
+                    const char* src_name = (dim_source == DimensionSource::Global) ? "Global" :
+                                           (dim_source == DimensionSource::Foliation) ? "Foliation" : "Branchial";
+                    std::cout << "Dimension: " << src_name << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::L:
+                if (platform::has_modifier(mods, platform::Modifiers::Shift)) {
+                    // Shift+L - Toggle layout all vertices mode
+                    layout_use_all_vertices = !layout_use_all_vertices;
+                    std::cout << "Layout all vertices: " << (layout_use_all_vertices ? "ON" : "OFF");
+                    if (layout_use_all_vertices) {
+                        std::cout << " (layout uses full union graph regardless of edge mode)";
+                    }
+                    std::cout << std::endl;
+                    // Reset layout to force re-initialization with new mode
+                    layout_step = -1;
+                    geometry_dirty = true;
+                } else {
+                    // L - Toggle dynamic layout
+                    layout_enabled = !layout_enabled;
+                    std::cout << "Dynamic layout: " << (layout_enabled ? "ON" : "OFF") << std::endl;
+                    if (layout_enabled) {
+                        // Reset layout to force re-initialization
+                        layout_step = -1;
+                    }
+                    geometry_dirty = true;  // Always update geometry when toggling layout
+                }
+                break;
+
+            case platform::KeyCode::R:
+                if (view_mode == ViewMode::View2D) {
+                    cam.set_target(math::vec3(0, 0, 0));
+                    cam.set_distance(camera_distance_2d);
+                    cam.set_orbit_angles(0.0f, -1.57f);
+                } else {
+                    cam.set_target(math::vec3(0, 0, 2.5f));
+                    cam.set_distance(camera_distance_3d);
+                    cam.set_orbit_angles(0.5f, -0.8f);
+                }
+                std::cout << "Camera reset" << std::endl;
+                break;
+
+            case platform::KeyCode::B:  // Toggle states graph panel
+                show_states_graph = !show_states_graph;
+                std::cout << "States graph: " << (show_states_graph ? "ON" : "OFF");
+                if (show_states_graph && analysis.states_per_step.empty()) {
+                    std::cout << " [No per-state data - regenerate analysis file]";
+                } else if (show_states_graph) {
+                    std::cout << " (" << analysis.states_per_step.size() << " timesteps)";
+                }
+                std::cout << std::endl;
+                break;
+
+            case platform::KeyCode::A:  // Toggle path selection mode
+            {
+                // Path selection is only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) {
+                    std::cout << "Path selection: N/A for "
+                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
+                              << " mode" << std::endl;
+                    break;
+                }
+                path_selection_enabled = !path_selection_enabled;
+                if (path_selection_enabled) {
+                    // Generate random state selections
+                    selected_state_indices.clear();
+                    selected_state_indices.resize(analysis.states_per_step.size());
+                    std::mt19937 rng(42);  // Fixed seed for reproducibility
+                    for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+                        int n_states = static_cast<int>(analysis.states_per_step[step].size());
+                        if (n_states > 0) {
+                            int count = std::min(path_selection_count, n_states);
+                            std::vector<int> indices(n_states);
+                            std::iota(indices.begin(), indices.end(), 0);
+                            std::shuffle(indices.begin(), indices.end(), rng);
+                            selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
+                            std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
+                        }
+                    }
+                }
+                geometry_dirty = true;
+                std::cout << "Path selection: " << (path_selection_enabled ? "ON (N=" + std::to_string(path_selection_count) + ")" : "OFF") << std::endl;
+                break;
+            }
+
+            case platform::KeyCode::Num9:  // ( - Decrease path count
+                // Path count is only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) {
+                    std::cout << "Path count: N/A for "
+                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
+                              << " mode" << std::endl;
+                    break;
+                }
+                if (path_selection_count > 1) {
+                    path_selection_count--;
+                    if (path_selection_enabled) {
+                        // Regenerate selections with new count
+                        selected_state_indices.clear();
+                        selected_state_indices.resize(analysis.states_per_step.size());
+                        std::mt19937 rng(42);
+                        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+                            int n_states = static_cast<int>(analysis.states_per_step[step].size());
+                            if (n_states > 0) {
+                                int count = std::min(path_selection_count, n_states);
+                                std::vector<int> indices(n_states);
+                                std::iota(indices.begin(), indices.end(), 0);
+                                std::shuffle(indices.begin(), indices.end(), rng);
+                                selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
+                                std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
+                            }
+                        }
+                        geometry_dirty = true;
+                    }
+                    std::cout << "Path count: " << path_selection_count << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Num0:  // ) - Increase path count
+            {
+                // Path count is only applicable for Branchial mode
+                if (dim_source != DimensionSource::Branchial) {
+                    std::cout << "Path count: N/A for "
+                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
+                              << " mode" << std::endl;
+                    break;
+                }
+                int max_count = 1;
+                for (const auto& states : analysis.states_per_step) {
+                    max_count = std::max(max_count, static_cast<int>(states.size()));
+                }
+                if (path_selection_count < max_count) {
+                    path_selection_count++;
+                    if (path_selection_enabled) {
+                        // Regenerate selections with new count
+                        selected_state_indices.clear();
+                        selected_state_indices.resize(analysis.states_per_step.size());
+                        std::mt19937 rng(42);
+                        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+                            int n_states = static_cast<int>(analysis.states_per_step[step].size());
+                            if (n_states > 0) {
+                                int count = std::min(path_selection_count, n_states);
+                                std::vector<int> indices(n_states);
+                                std::iota(indices.begin(), indices.end(), 0);
+                                std::shuffle(indices.begin(), indices.end(), rng);
+                                selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
+                                std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
+                            }
+                        }
+                        geometry_dirty = true;
+                    }
+                    std::cout << "Path count: " << path_selection_count << std::endl;
+                }
+                break;
+            }
+
+            case platform::KeyCode::M:
+                // Cycle MSAA: OFF -> 2x -> 4x -> 8x -> ... -> OFF
+                msaa_level_index = (msaa_level_index + 1) % supported_msaa_levels.size();
+                msaa_samples = supported_msaa_levels[msaa_level_index];
+                msaa_enabled = (msaa_samples > 1);
+                msaa_dirty = true;
+                std::cout << "MSAA: " << (msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::N:
+                // Per-frame normalization is not applicable for Global mode (values are constant)
+                if (dim_source == DimensionSource::Global) {
+                    std::cout << "Normalization: N/A for Global mode (values are constant)" << std::endl;
+                    break;
+                }
+                per_frame_normalization = !per_frame_normalization;
+                geometry_dirty = true;
+                std::cout << "Color normalization: " << (per_frame_normalization ? "Local (per-frame)" : "Global") << std::endl;
+                break;
+
+            case platform::KeyCode::T:
+                // Timeslice is not applicable for Global mode (values are constant across all timesteps)
+                if (dim_source == DimensionSource::Global) {
+                    std::cout << "Timeslice: N/A for Global mode (values are constant)" << std::endl;
+                    break;
+                }
+                timeslice_enabled = !timeslice_enabled;
+                std::cout << "Timeslice view: " << (timeslice_enabled ? "ON (width=" + std::to_string(timeslice_width) + ")" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::Z:
+                if (!z_mapping_enabled && z_scale <= 0.0f) {
+                    // Can't enable Z mapping when scale is zero
+                    std::cout << "Z/depth mapping: Cannot enable (z_scale is 0, use > to increase)" << std::endl;
+                } else {
+                    z_mapping_enabled = !z_mapping_enabled;
+                    geometry_dirty = true;
+                    std::cout << "Z/depth mapping: " << (z_mapping_enabled ? "ON (elevated by dimension)" : "OFF (flat)") << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::U:  // Cycle missing data display mode: Show -> Hide -> Highlight
+            {
+                int m = static_cast<int>(missing_mode);
+                m = (m + 1) % 3;  // Cycle through Show(0), Hide(1), Highlight(2)
+                missing_mode = static_cast<MissingDataMode>(m);
+                geometry_dirty = true;
+                std::cout << "Missing data mode: " << missing_mode_name(missing_mode) << std::endl;
+                break;
+            }
+
+            case platform::KeyCode::C:  // Cycle color palette
+            {
+                int p = static_cast<int>(current_palette);
+                p = (p + 1) % static_cast<int>(ColorPalette::COUNT);
+                current_palette = static_cast<ColorPalette>(p);
+                geometry_dirty = true;
+                std::cout << "Color palette: " << palette_name(current_palette) << std::endl;
+                break;
+            }
+
+            case platform::KeyCode::Slash:  // / or ? - Toggle help overlay
+                show_overlay = !show_overlay;
+                std::cout << "Help overlay: " << (show_overlay ? "ON" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::Minus:
+                // Timeslice width is not applicable for Global mode
+                if (dim_source == DimensionSource::Global) {
+                    std::cout << "Timeslice width: N/A for Global mode" << std::endl;
+                    break;
+                }
+                if (timeslice_width > 1) {
+                    timeslice_width = std::max(1, timeslice_width - 2);
+                    geometry_dirty = true;
+                    std::cout << "Timeslice width: " << timeslice_width << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Equal:
+                // Timeslice width is not applicable for Global mode
+                if (dim_source == DimensionSource::Global) {
+                    std::cout << "Timeslice width: N/A for Global mode" << std::endl;
+                    break;
+                }
+                timeslice_width = std::min(max_step, timeslice_width + 2);
+                geometry_dirty = true;
+                std::cout << "Timeslice width: " << timeslice_width << std::endl;
+                break;
+
+            case platform::KeyCode::Comma:  // < key - decrease Z scale
+                z_scale = std::max(0.0f, z_scale - 0.5f);
+                geometry_dirty = true;
+                // Implicitly turn off Z mapping when scale reaches 0
+                if (z_scale <= 0.0f && z_mapping_enabled) {
+                    z_mapping_enabled = false;
+                    std::cout << "Z scale: 0 (Z mapping OFF)" << std::endl;
+                } else {
+                    std::cout << "Z scale: " << z_scale << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Period:  // > key - increase Z scale
+                // If Z mapping is off, turn it back on when user increases scale
+                if (!z_mapping_enabled) {
+                    z_mapping_enabled = true;
+                    z_scale = 0.5f;  // Start at minimum visible scale
+                    std::cout << "Z scale: " << z_scale << " (Z mapping ON)" << std::endl;
+                } else {
+                    z_scale = std::min(20.0f, z_scale + 0.5f);
+                    std::cout << "Z scale: " << z_scale << std::endl;
+                }
+                geometry_dirty = true;
+                break;
+
+            case platform::KeyCode::PageUp:  // Cycle to previous state in SingleState mode
+                if (edge_mode == EdgeDisplayMode::SingleState) {
+                    int n_states = (current_step < static_cast<int>(analysis.states_per_step.size()))
+                        ? static_cast<int>(analysis.states_per_step[current_step].size()) : 0;
+                    if (n_states > 0) {
+                        selected_state_index = (selected_state_index - 1 + n_states) % n_states;
+                        geometry_dirty = true;
+                        std::cout << "State: " << (selected_state_index + 1) << "/" << n_states << std::endl;
+                    }
+                }
+                break;
+
+            case platform::KeyCode::PageDown:  // Cycle to next state in SingleState mode
+                if (edge_mode == EdgeDisplayMode::SingleState) {
+                    int n_states = (current_step < static_cast<int>(analysis.states_per_step.size()))
+                        ? static_cast<int>(analysis.states_per_step[current_step].size()) : 0;
+                    if (n_states > 0) {
+                        selected_state_index = (selected_state_index + 1) % n_states;
+                        geometry_dirty = true;
+                        std::cout << "State: " << (selected_state_index + 1) << "/" << n_states << std::endl;
+                    }
+                }
+                break;
+
+            default:
+                break;
+        }
+    };
+
+    // Helper to convert screen coords to NDC (Vulkan coordinates)
+    // Screen: y=0 at top, y=height at bottom
+    // Vulkan NDC: y=-1 at top, y=+1 at bottom
+    auto screen_to_ndc = [&](int x, int y) -> std::pair<float, float> {
+        float ndc_x = (2.0f * x / window_width) - 1.0f;
+        float ndc_y = (2.0f * y / window_height) - 1.0f;  // Vulkan-style: no flip
+        return {ndc_x, ndc_y};
+    };
+
+    // Helper to check if point is in timeline UI region
+    auto is_in_timeline = [&](float ndc_x, float ndc_y) -> bool {
+        // Need valid timeline data (initialized after first render)
+        if (last_timeline.scrubber_right <= last_timeline.scrubber_left) return false;
+
+        // Check scrubber region (the entire bar)
+        if (ndc_x >= last_timeline.scrubber_left && ndc_x <= last_timeline.scrubber_right &&
+            ndc_y >= last_timeline.scrubber_bottom && ndc_y <= last_timeline.scrubber_top) {
+            return true;
+        }
+        // Check button regions
+        float btn_bottom = last_timeline.scrubber_bottom;
+        float btn_top = last_timeline.scrubber_top;
+        if (ndc_y >= btn_bottom && ndc_y <= btn_top) {
+            if (ndc_x >= last_timeline.rewind_left && ndc_x <= last_timeline.rewind_right) return true;
+            if (ndc_x >= last_timeline.play_left && ndc_x <= last_timeline.play_right) return true;
+            if (ndc_x >= last_timeline.skip_end_left && ndc_x <= last_timeline.skip_end_right) return true;
+        }
+        return false;
+    };
+
+    // Helper to check if point is specifically in the scrubber bar area
+    auto is_in_scrubber_bar = [&](float ndc_x, float ndc_y) -> bool {
+        return ndc_x >= last_timeline.scrubber_left && ndc_x <= last_timeline.scrubber_right &&
+               ndc_y >= last_timeline.scrubber_bottom && ndc_y <= last_timeline.scrubber_top;
+    };
+
+    // Helper to update step from scrubber position (direct set)
+    auto scrubber_set_step = [&](float ndc_x) {
+        float t = (ndc_x - last_timeline.scrubber_left) /
+                  (last_timeline.scrubber_right - last_timeline.scrubber_left);
+        t = std::clamp(t, 0.0f, 1.0f);
+        int new_step = static_cast<int>(t * max_step + 0.5f);
+        if (new_step != current_step) {
+            current_step = new_step;
+            geometry_dirty = true;
+        }
+    };
+
+    // Helper to jump halfway between current position and click position
+    auto scrubber_jump_halfway = [&](float ndc_x) {
+        float bar_width = last_timeline.scrubber_right - last_timeline.scrubber_left;
+        if (bar_width <= 0) return;
+
+        // Current marker position in NDC
+        float current_t = (max_step > 0) ? static_cast<float>(current_step) / max_step : 0.0f;
+        float current_ndc = last_timeline.scrubber_left + current_t * bar_width;
+
+        // Target is halfway between current and click
+        float target_ndc = (current_ndc + ndc_x) / 2.0f;
+
+        // Convert to step
+        float t = (target_ndc - last_timeline.scrubber_left) / bar_width;
+        t = std::clamp(t, 0.0f, 1.0f);
+        int new_step = static_cast<int>(t * max_step + 0.5f);
+        if (new_step != current_step) {
+            current_step = new_step;
+            geometry_dirty = true;
+        }
+    };
+
+    callbacks.on_mouse_button = [&](platform::MouseButton button, bool pressed, int x, int y, platform::Modifiers mods) {
+        if (button == platform::MouseButton::Left) {
+            auto [ndc_x, ndc_y] = screen_to_ndc(x, y);
+
+            if (pressed) {
+                // Check if clicking on timeline UI
+                if (is_in_timeline(ndc_x, ndc_y)) {
+                    // Check buttons first
+                    float btn_bottom = last_timeline.scrubber_bottom;
+                    float btn_top = last_timeline.scrubber_top;
+                    if (ndc_y >= btn_bottom && ndc_y <= btn_top) {
+                        if (ndc_x >= last_timeline.rewind_left && ndc_x <= last_timeline.rewind_right) {
+                            // Rewind: go to start and stop playback
+                            current_step = 0;
+                            playing = false;
+                            geometry_dirty = true;
+                            global_position_cache.clear();  // Clear cache to prevent memory growth
+                            return;
+                        }
+                        if (ndc_x >= last_timeline.play_left && ndc_x <= last_timeline.play_right) {
+                            // Play/pause toggle
+                            playing = !playing;
+                            if (playing) reset_playback_latch();
+                            std::cout << (playing ? "Playing" : "Paused") << std::endl;
+                            return;
+                        }
+                        if (ndc_x >= last_timeline.skip_end_left && ndc_x <= last_timeline.skip_end_right) {
+                            // Skip to end and stop playback
+                            current_step = max_step;
+                            playing = false;
+                            geometry_dirty = true;
+                            return;
+                        }
+                    }
+
+                    // Clicking on scrubber bar
+                    if (is_in_scrubber_bar(ndc_x, ndc_y)) {
+                        scrubber_dragging = true;
+                        playing = false;  // Stop playback when user drags timeline
+                        // Jump halfway to click position (standard behavior for media scrubbers)
+                        scrubber_jump_halfway(ndc_x);
+                        return;
+                    }
+                }
+
+                // Not on UI, enable camera movement
+                left_mouse_down = true;
+                controller.set_mouse_captured(true);
+            } else {
+                // Mouse released
+                left_mouse_down = false;
+                scrubber_dragging = false;
+                controller.set_mouse_captured(false);
+            }
+        }
+    };
+
+    callbacks.on_mouse_move = [&](int x, int y) {
+        float fx = static_cast<float>(x);
+        float fy = static_cast<float>(y);
+
+        if (scrubber_dragging) {
+            auto [ndc_x, ndc_y] = screen_to_ndc(x, y);
+            scrubber_set_step(ndc_x);
+        } else if (left_mouse_down) {
+            float dx = fx - last_mouse_x;
+            float dy = fy - last_mouse_y;
+            if (view_mode == ViewMode::View2D) {
+                // In 2D mode, pan in XY plane (layout plane)
+                // Scale by zoom level for consistent feel
+                float scale = cam.get_distance() * 0.001f;
+                math::vec3 target = cam.get_target();
+                target.x -= dx * scale;  // Drag right → move target left → show more right
+                target.y -= dy * scale;  // Drag down → move target down → show more bottom
+                cam.set_target(target);
+            } else {
+                controller.on_mouse_move(dx, dy);
+            }
+        }
+        last_mouse_x = fx;
+        last_mouse_y = fy;
+    };
+
+    callbacks.on_scroll = [&](float dx, float dy) {
+        controller.on_mouse_scroll(-dy);
+    };
+
+    window->set_callbacks(callbacks);
+
+    // Print key map
+    // Print help from unified keybinding definitions
+    std::cout << "\n=== Black Hole Visualization Controls ===" << std::endl;
+    for (const auto& group : keybindings) {
+        std::cout << group.name << ":" << std::endl;
+        for (const auto& binding : group.bindings) {
+            std::cout << "  " << std::left << std::setw(14) << binding.key
+                      << " - " << binding.description << std::endl;
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "Press / or ? to toggle on-screen help overlay" << std::endl;
+    std::cout << "==========================================" << std::endl;
+    std::cout << std::endl;
+
+    // Main loop
+    while (window->is_open() && !g_shutdown_requested.load()) {
+        window->poll_events();
+
+        // Check for Ctrl-C
+        if (g_shutdown_requested.load()) {
+            std::cout << "\nShutdown requested (Ctrl-C), exiting..." << std::endl;
+            break;
+        }
+
+        // Calculate delta time
+        auto now = std::chrono::high_resolution_clock::now();
+        float dt = std::chrono::duration<float>(now - last_frame).count();
+        last_frame = now;
+
+        // Handle resize
+        if (should_resize && new_width > 0 && new_height > 0) {
+            device->wait_idle();
+            swapchain->resize(new_width, new_height);
+            depth_texture = create_depth_texture(new_width, new_height);
+            msaa_dirty = true;  // Need to recreate MSAA resources at new size
+            should_resize = false;
+        }
+
+        // Handle MSAA resource creation/recreation
+        if (msaa_dirty) {
+            // Must wait for GPU to finish before destroying/recreating resources
+            device->wait_idle();
+            uint32_t w = swapchain->get_texture(0)->get_size().width;
+            uint32_t h = swapchain->get_texture(0)->get_size().height;
+            create_msaa_resources(w, h);
+            msaa_dirty = false;
+        }
+
+        // Time-based playback with latch
+        if (playing && max_step > 0) {
+            auto now = std::chrono::high_resolution_clock::now();
+            float elapsed = std::chrono::duration<float>(now - play_latch_time).count();
+
+            // Compute target step based on elapsed time
+            int target_step = play_latch_step + static_cast<int>(elapsed * playback_speed) * playback_direction;
+
+            // Handle boundaries
+            bool direction_changed = false;
+            if (target_step > max_step) {
+                if (ping_pong_mode) {
+                    // Bounce back - compute how far past the end we are
+                    int overshoot = target_step - max_step;
+                    target_step = max_step - overshoot;
+                    if (target_step < 0) target_step = 0;
+                    playback_direction = -1;
+                    direction_changed = true;
+                } else {
+                    // Loop around
+                    target_step = target_step % (max_step + 1);
+                }
+            } else if (target_step < 0) {
+                if (ping_pong_mode) {
+                    // Bounce forward
+                    int overshoot = -target_step;
+                    target_step = overshoot;
+                    if (target_step > max_step) target_step = max_step;
+                    playback_direction = 1;
+                    direction_changed = true;
+                } else {
+                    // Loop around
+                    target_step = max_step + 1 + (target_step % (max_step + 1));
+                    if (target_step > max_step) target_step = max_step;
+                }
+            }
+
+            // Reset latch if direction changed (for ping-pong mode)
+            if (direction_changed) {
+                play_latch_time = now;
+                play_latch_step = target_step;
+            }
+
+            // Update current step if changed
+            if (target_step != current_step) {
+                // Clear position cache when looping back significantly
+                // This prevents unbounded memory growth in long-running sessions
+                if (target_step < current_step - max_step / 2) {
+                    global_position_cache.clear();
+                }
+                current_step = target_step;
+                geometry_dirty = true;
+            }
+        }
+
+        // Dynamic layout: reinitialize when step, edge mode, OR frequency threshold changes
+        // Layout uses current edge mode's edges for forces
+        // When layout_use_all_vertices is true, we use Union mode always (ignore edge_mode changes)
+        static EdgeDisplayMode layout_edge_mode = EdgeDisplayMode::Union;
+        static int layout_freq_threshold = 2;  // Track threshold for re-initialization
+        static bool layout_all_verts_tracked = false;  // Track toggle state for re-init detection
+
+        // Check if layout needs re-initialization
+        bool layout_needs_reinit = (current_step != layout_step) ||
+                                   (layout_use_all_vertices != layout_all_verts_tracked) ||
+                                   (!layout_use_all_vertices && edge_mode != layout_edge_mode) ||
+                                   (edge_mode == EdgeDisplayMode::Frequent && edge_freq_threshold != layout_freq_threshold);
+
+        if (layout_enabled && layout_needs_reinit) {
+            if (current_step >= 0 && current_step < static_cast<int>(analysis.per_timestep.size())) {
+                const auto& ts = analysis.per_timestep[current_step];
+
+                // Get per-state data for threshold-based filtering (if available)
+                const std::vector<StateData>* states_ptr = nullptr;
+                if (current_step < static_cast<int>(analysis.states_per_step.size()) &&
+                    !analysis.states_per_step[current_step].empty()) {
+                    states_ptr = &analysis.states_per_step[current_step];
+                }
+
+                // Initialize layout with global cache for persistent positions across timesteps
+                // Seed from previous layout positions if available (preserves positions across mode changes)
+                // When layout_use_all_vertices is true, always use Union mode for layout
+                // (prevents layout snapping when switching edge display modes)
+                EdgeDisplayMode layout_effective_mode = layout_use_all_vertices ? EdgeDisplayMode::Union : edge_mode;
+                if (layout_step >= 0 && !layout_vertices.empty()) {
+                    init_layout_from_timestep(layout_graph, ts, analysis.initial, layout_effective_mode,
+                                              global_position_cache, layout_vertices,
+                                              edge_freq_threshold, states_ptr,
+                                              &layout_graph, &layout_vertices);
+                } else {
+                    init_layout_from_timestep(layout_graph, ts, analysis.initial, layout_effective_mode,
+                                              global_position_cache, layout_vertices,
+                                              edge_freq_threshold, states_ptr);
+                }
+
+                layout_edge_mode = edge_mode;
+                layout_freq_threshold = edge_freq_threshold;
+                layout_all_verts_tracked = layout_use_all_vertices;  // Track toggle state
+                layout_engine->upload_graph(layout_graph);
+                layout_step = current_step;
+                geometry_dirty = true;
+
+                // Diagnostic: print step info (uncomment for GPU layout debugging)
+                // std::cout << "[Step " << current_step << "] V=" << ts.union_vertices.size()
+                //           << " E_union=" << ts.union_edges.size()
+                //           << " E_inter=" << ts.intersection_edges.size()
+                //           << " layout_V=" << layout_graph.vertex_count()
+                //           << " layout_E=" << layout_graph.edge_count() << std::endl;
+            }
+        }
+
+        // Run layout iterations per frame when enabled
+        static int frame_count = 0;
+        if (layout_enabled && layout_engine->has_graph()) {
+            // Run a few iterations per frame for smooth animation
+            constexpr int iterations_per_frame = 3;
+            auto t0 = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < iterations_per_frame; ++i) {
+                layout_engine->iterate(layout_params);
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+            layout_engine->download_positions(layout_graph);  // Get updated positions
+            geometry_dirty = true;  // Always update when layout is running
+
+            // Update global position cache with current positions (for persistence across timesteps)
+            update_position_cache(global_position_cache, layout_graph, layout_vertices);
+
+            // Print timing every 60 frames (uncomment for GPU layout debugging)
+            frame_count++;
+            // if (frame_count % 60 == 0) {
+            //     auto ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            //     std::cout << "  [Layout] " << iterations_per_frame << " iters in "
+            //               << std::fixed << std::setprecision(2) << ms << " ms"
+            //               << " (V=" << layout_graph.vertex_count()
+            //               << ", E=" << layout_graph.edge_count() << ")" << std::endl;
+            // }
+        }
+
+        // Wait for previous frame BEFORE buffer writes to prevent race conditions
+        // (GPU may still be reading buffers from previous frame)
+        fence->wait();
+        fence->reset();
+        in_flight_cmd.reset();
+
+        // Rebuild geometry if needed
+        if (geometry_dirty) {
+            auto geom_t0 = std::chrono::high_resolution_clock::now();
+
+            // Use live layout positions when layout is enabled
+            const layout::LayoutGraph* live_layout = layout_enabled ? &layout_graph : nullptr;
+            const std::vector<VertexId>* layout_verts = layout_enabled ? &layout_vertices : nullptr;
+
+            // Get path selection (full vector for timeslice combination)
+            const std::vector<std::vector<int>>* path_selection_ptr = nullptr;
+            if (path_selection_enabled && !selected_state_indices.empty()) {
+                path_selection_ptr = &selected_state_indices;
+            }
+
+            // Pass position cache for vertices not in current layout (e.g., during timeslice mode)
+            const PositionCache* pos_cache = layout_enabled ? &global_position_cache : nullptr;
+            render_data = build_render_data(analysis, current_step, view_mode, edge_mode, edge_freq_threshold,
+                                            selected_state_index, heatmap_mode, dim_source, per_frame_normalization,
+                                            z_mapping_enabled, missing_mode, current_palette, edge_color_mode,
+                                            live_layout, layout_verts, pos_cache, 0.04f, 0.015f, z_scale, timeslice_enabled,
+                                            timeslice_width, path_selection_ptr);
+
+            auto geom_t1 = std::chrono::high_resolution_clock::now();
+            // Print geometry timing every 60 frames (uncomment for GPU layout debugging)
+            // if (frame_count % 60 == 0 && layout_enabled) {
+            //     auto ms = std::chrono::duration<double, std::milli>(geom_t1 - geom_t0).count();
+            //     std::cout << "  [Geom] build_render_data in " << std::fixed << std::setprecision(2) << ms << " ms"
+            //               << " (spheres=" << render_data.sphere_instances.size()
+            //               << ", cylinders=" << render_data.cylinder_instances.size() << ")" << std::endl;
+            // }
+            (void)geom_t0; (void)geom_t1;  // Suppress unused variable warnings
+
+            // Upload legacy vertex data (for 2D mode)
+            if (vertex_buffer && render_data.vertex_count > 0) {
+                size_t needed = render_data.vertex_data.size() * sizeof(Vertex);
+                if (needed > buffer_size) {
+                    buffer_size = needed * 2;
+                    buffer_desc.size = buffer_size;
+                    vertex_buffer = device->create_buffer(buffer_desc);
+                }
+                vertex_buffer->write(render_data.vertex_data.data(), needed);
+            }
+
+            // Upload legacy edge data (for 2D mode)
+            if (edge_buffer && render_data.edge_count > 0) {
+                size_t needed = render_data.edge_data.size() * sizeof(Vertex);
+                if (needed > buffer_size) {
+                    buffer_size = needed * 2;
+                    buffer_desc.size = buffer_size;
+                    edge_buffer = device->create_buffer(buffer_desc);
+                }
+                edge_buffer->write(render_data.edge_data.data(), needed);
+            }
+
+            // Upload sphere instance data (for 3D mode)
+            if (sphere_instance_buffer && !render_data.sphere_instances.empty()) {
+                size_t needed = render_data.sphere_instances.size() * sizeof(SphereInstance);
+                if (needed > instance_buffer_desc.size) {
+                    instance_buffer_desc.size = needed * 2;
+                    sphere_instance_buffer = device->create_buffer(instance_buffer_desc);
+                }
+                sphere_instance_buffer->write(render_data.sphere_instances.data(), needed);
+            }
+
+            // Upload cylinder instance data (for 3D mode)
+            if (cylinder_instance_buffer && !render_data.cylinder_instances.empty()) {
+                size_t needed = render_data.cylinder_instances.size() * sizeof(CylinderInstance);
+                if (needed > instance_buffer_desc.size) {
+                    instance_buffer_desc.size = needed * 2;
+                    cylinder_instance_buffer = device->create_buffer(instance_buffer_desc);
+                }
+                cylinder_instance_buffer->write(render_data.cylinder_instances.data(), needed);
+            }
+
+            geometry_dirty = false;
+        }
+
+        // Acquire swapchain image
+        auto acquire = swapchain->acquire_next_image(image_semaphore.get(), nullptr);
+        if (!acquire.success) {
+            device->wait_idle();
+            swapchain->resize(window->get_width(), window->get_height());
+            continue;
+        }
+
+        auto* tex = swapchain->get_texture(acquire.image_index);
+        uint32_t w = tex->get_size().width;
+        uint32_t h = tex->get_size().height;
+
+        math::mat4 vp;
+        if (view_mode == ViewMode::View2D) {
+            // Orthographic projection for 2D mode
+            // Layout is in XY plane, looking down Z axis at XY plane
+            // Use camera distance as zoom factor, target as center
+            float aspect = static_cast<float>(w) / static_cast<float>(h);
+            float zoom = cam.get_distance();  // Distance controls zoom level
+            float half_width = zoom * aspect * 0.5f;
+            float half_height = zoom * 0.5f;
+            math::vec3 target = cam.get_target();
+
+            // Orthographic projection centered on target
+            // X is horizontal, Y is vertical (screen layout matches world XY plane)
+            math::mat4 ortho_proj = math::mat4::ortho(
+                target.x - half_width, target.x + half_width,
+                target.y - half_height, target.y + half_height,
+                -100.0f, 100.0f  // Near/far for Z clipping
+            );
+            vp = ortho_proj;  // No view matrix needed - ortho is already world-space
+        } else {
+            // Perspective projection for 3D mode
+            vp = cam.get_view_projection_matrix();
+        }
+
+        auto encoder = device->create_command_encoder();
+
+        // Select active pipelines based on MSAA state
+        gal::RenderPipeline* active_triangle_pipeline = (msaa_enabled && msaa_triangle_pipeline)
+            ? msaa_triangle_pipeline.get() : triangle_pipeline.get();
+        gal::RenderPipeline* active_line_pipeline = (msaa_enabled && msaa_line_pipeline)
+            ? msaa_line_pipeline.get() : line_pipeline.get();
+        gal::RenderPipeline* active_sphere_pipeline = (msaa_enabled && msaa_sphere_pipeline)
+            ? msaa_sphere_pipeline.get() : sphere_pipeline.get();
+        gal::RenderPipeline* active_cylinder_pipeline = (msaa_enabled && msaa_cylinder_pipeline)
+            ? msaa_cylinder_pipeline.get() : cylinder_pipeline.get();
+
+        // Render pass setup
+        gal::RenderPassColorAttachment color_att;
+        if (msaa_enabled && msaa_color_texture) {
+            // MSAA: render to MSAA texture, resolve to swapchain
+            color_att.texture = msaa_color_texture.get();
+            color_att.resolve_texture = tex;
+        } else {
+            // Non-MSAA: render directly to swapchain
+            color_att.texture = tex;
+            color_att.resolve_texture = nullptr;
+        }
+        color_att.load_op = gal::LoadOp::Clear;
+        color_att.store_op = gal::StoreOp::Store;
+        color_att.clear_color[0] = 0.05f;
+        color_att.clear_color[1] = 0.05f;
+        color_att.clear_color[2] = 0.08f;
+        color_att.clear_color[3] = 1.0f;
+
+        gal::RenderPassDepthAttachment depth_att;
+        depth_att.texture = (msaa_enabled && msaa_depth_texture) ? msaa_depth_texture.get() : depth_texture.get();
+        depth_att.depth_load_op = gal::LoadOp::Clear;
+        depth_att.depth_store_op = gal::StoreOp::DontCare;
+        depth_att.clear_depth = 1.0f;
+
+        gal::RenderPassBeginInfo rp_info;
+        rp_info.pipeline = active_triangle_pipeline;
+        rp_info.color_attachments = &color_att;
+        rp_info.color_attachment_count = 1;
+        rp_info.depth_attachment = depth_att;
+
+        auto rp = encoder->begin_render_pass(rp_info);
+        if (rp) {
+            rp->set_viewport(0, 0, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f);
+            rp->set_scissor(0, 0, w, h);
+
+            if (view_mode == ViewMode::View3D) {
+                // =====================================================
+                // 3D Mode: Instanced rendering with cylinders and spheres
+                // =====================================================
+
+                // Draw edges as cylinders (instanced)
+                if (active_cylinder_pipeline && !render_data.cylinder_instances.empty()) {
+                    rp->set_pipeline(active_cylinder_pipeline);
+                    rp->push_constants(vp.m, sizeof(math::mat4));
+                    rp->set_vertex_buffer(0, cylinder_vb.get());
+                    rp->set_vertex_buffer(1, cylinder_instance_buffer.get());
+                    rp->set_index_buffer(cylinder_ib.get(), gal::IndexFormat::Uint16);
+                    rp->draw_indexed(
+                        static_cast<uint32_t>(cylinder_mesh.indices.size()),
+                        static_cast<uint32_t>(render_data.cylinder_instances.size()),
+                        0, 0, 0
+                    );
+                }
+
+                // Draw vertices as spheres (instanced)
+                if (active_sphere_pipeline && !render_data.sphere_instances.empty()) {
+                    rp->set_pipeline(active_sphere_pipeline);
+                    rp->push_constants(vp.m, sizeof(math::mat4));
+                    rp->set_vertex_buffer(0, sphere_vb.get());
+                    rp->set_vertex_buffer(1, sphere_instance_buffer.get());
+                    rp->set_index_buffer(sphere_ib.get(), gal::IndexFormat::Uint16);
+                    rp->draw_indexed(
+                        static_cast<uint32_t>(sphere_mesh.indices.size()),
+                        static_cast<uint32_t>(render_data.sphere_instances.size()),
+                        0, 0, 0
+                    );
+                }
+            } else {
+                // =====================================================
+                // 2D Mode: Legacy line and quad rendering
+                // =====================================================
+
+                // Draw edges (lines)
+                if (line_pipeline && edge_buffer && render_data.edge_count > 0) {
+                    rp->set_pipeline(active_line_pipeline);
+                    rp->push_constants(vp.m, sizeof(math::mat4));
+                    rp->set_vertex_buffer(0, edge_buffer.get());
+                    rp->draw(static_cast<uint32_t>(render_data.edge_count), 1, 0, 0);
+                }
+
+                // Draw vertices (quads as triangles)
+                if (triangle_pipeline && vertex_buffer && render_data.vertex_count > 0) {
+                    rp->set_pipeline(active_triangle_pipeline);
+                    rp->push_constants(vp.m, sizeof(math::mat4));
+                    rp->set_vertex_buffer(0, vertex_buffer.get());
+                    rp->draw(static_cast<uint32_t>(render_data.vertex_count), 1, 0, 0);
+                }
+            }
+
+            // Draw horizon circles (both modes)
+            if (show_horizons && line_pipeline && horizon_buffer && !horizon_verts.empty()) {
+                rp->set_pipeline(active_line_pipeline);
+                rp->push_constants(vp.m, sizeof(math::mat4));
+                rp->set_vertex_buffer(0, horizon_buffer.get());
+                rp->draw(static_cast<uint32_t>(horizon_verts.size()), 1, 0, 0);
+            }
+
+            // Legend data - declared outside timeline block so it persists for text rendering
+            LegendData legend;
+            float legend_min = 0, legend_max = 3;
+
+            // Draw timeline bar (2D overlay with identity matrix)
+            if (triangle_pipeline && timeline_buffer && max_step > 0) {
+                // Update window size for hit testing
+                window_width = w;
+                window_height = h;
+
+                // Build timeline bar geometry (includes buttons)
+                last_timeline = build_timeline_bar(current_step, max_step, static_cast<float>(w) / h,
+                                                   playing, playback_direction,
+                                                   timeslice_enabled, timeslice_width);
+                std::vector<Vertex> timeline_verts;
+                timeline_verts.insert(timeline_verts.end(), last_timeline.bar_verts.begin(), last_timeline.bar_verts.end());
+                timeline_verts.insert(timeline_verts.end(), last_timeline.marker_verts.begin(), last_timeline.marker_verts.end());
+                timeline_verts.insert(timeline_verts.end(), last_timeline.button_verts.begin(), last_timeline.button_verts.end());
+
+                // Build and add color legend (always visible)
+                if (edge_color_mode == EdgeColorMode::Frequency && render_data.has_freq_data) {
+                    // Frequency mode: show frequency range (integer counts)
+                    legend_min = static_cast<float>(render_data.min_freq);
+                    legend_max = static_cast<float>(render_data.max_freq);
+                } else if (current_step < static_cast<int>(analysis.per_timestep.size())) {
+                    const auto& ts = analysis.per_timestep[current_step];
+                    if (dim_source == DimensionSource::Global) {
+                        // Global mode: constant range from mega-union
+                        legend_min = analysis.mega_dim_min;
+                        legend_max = analysis.mega_dim_max;
+                    } else if (dim_source == DimensionSource::Foliation) {
+                        legend_min = heatmap_mode == HeatmapMode::Variance ? ts.global_var_min : ts.global_mean_min;
+                        legend_max = heatmap_mode == HeatmapMode::Variance ? ts.global_var_max : ts.global_mean_max;
+                    } else {
+                        // Branchial mode
+                        legend_min = heatmap_mode == HeatmapMode::Variance ? ts.var_min : ts.pooled_min;
+                        legend_max = heatmap_mode == HeatmapMode::Variance ? ts.var_max : ts.pooled_max;
+                    }
+                }
+                legend = build_legend(static_cast<float>(w) / h, current_palette, legend_min, legend_max);
+                timeline_verts.insert(timeline_verts.end(), legend.verts.begin(), legend.verts.end());
+
+                // Build and add states graph panel if enabled
+                StatesGraphData states_graph;
+                if (show_states_graph && !analysis.states_per_step.empty()) {
+                    float states_aspect = static_cast<float>(w) / static_cast<float>(h);
+                    states_graph = build_states_graph(analysis, current_step, max_step,
+                                                       timeslice_enabled, timeslice_width, 0.0f,
+                                                       path_selection_enabled, selected_state_indices,
+                                                       states_aspect);
+                    timeline_verts.insert(timeline_verts.end(), states_graph.verts.begin(), states_graph.verts.end());
+                }
+
+                math::mat4 identity = math::mat4::identity();
+
+                // =================================================================
+                // ACCUMULATION-BASED RENDERING
+                //
+                // ARCHITECTURE: To avoid buffer overwrites before GPU execution,
+                // we accumulate ALL overlay geometry into ONE buffer and draw ONCE.
+                // Same for text - all text uses uniform scale, one buffer, one draw.
+                // =================================================================
+
+                gal::RenderPipeline* alpha_pipe = (msaa_enabled && msaa_alpha_triangle_pipeline)
+                    ? msaa_alpha_triangle_pipeline.get() : alpha_triangle_pipeline.get();
+
+                // --- STEP 1: Accumulate ALL overlay geometry ---
+                std::vector<Vertex> all_overlay_verts;
+
+                // 1a. Add panel backgrounds (drawn first, furthest back in painter's order)
+                all_overlay_verts.insert(all_overlay_verts.end(),
+                    last_timeline.panel_verts.begin(), last_timeline.panel_verts.end());
+
+                // 1b. Add help overlay background (if visible)
+                float overlay_scale = 1.0f;  // Will be set if overlay is shown
+                if (show_overlay) {
+                    // Use integer multiple of font size for pixel-perfect nearest sampling
+                    // With nearest filtering, non-integer scales cause sampling artifacts
+                    // 2x scale = 16x16 pixels (from 8x8 base)
+                    constexpr float TEXT_SCALE_FACTOR = 2.0f;
+                    float target_char_w = FONT_CHAR_WIDTH * TEXT_SCALE_FACTOR;   // 16 pixels
+                    float target_char_h = FONT_CHAR_HEIGHT * TEXT_SCALE_FACTOR;  // 16 pixels
+                    overlay_scale = TEXT_SCALE_FACTOR;
+
+                    float overlay_char_w = target_char_w;
+                    float overlay_char_h = target_char_h;
+                    float line_h = overlay_char_h + 3;
+                    float margin = 12.0f;
+
+                    float indent = overlay_char_w * 2;
+                    float val_col = margin + indent + 42 * overlay_char_w;
+
+                    // Calculate height based on actual text content (matching text rendering below)
+                    // Start with top margin
+                    float overlay_height = margin;
+                    for (const auto& group : keybindings) {
+                        overlay_height += line_h;  // Group header
+                        overlay_height += group.bindings.size() * line_h;  // Bindings
+                        overlay_height += line_h * 0.5f;  // Spacing after group
+                    }
+                    overlay_height += line_h;  // Frame info line
+                    overlay_height += margin;  // Bottom margin (same as top for equal padding)
+                    float overlay_width = val_col + 15 * overlay_char_w + margin;
+
+                    float bg_left = (margin - 8) / w * 2.0f - 1.0f;
+                    float bg_right = (overlay_width + 8) / w * 2.0f - 1.0f;
+                    float bg_top = (margin - 8) / h * 2.0f - 1.0f;
+                    float bg_bottom = (overlay_height + 8) / h * 2.0f - 1.0f;
+                    Vec4 bg_color{0.0f, 0.0f, 0.0f, 0.5f};
+                    float corner_radius = 0.02f;
+                    float help_aspect = static_cast<float>(w) / static_cast<float>(h);
+                    add_rounded_rect(all_overlay_verts, bg_left, bg_top, bg_right, bg_bottom,
+                                     corner_radius, 0.002f, bg_color, help_aspect);
+                }
+
+                // 1c. Add timeline UI (bar, markers, buttons, legend, states graph)
+                // These go LAST in the buffer so they're drawn on top (painter's algorithm)
+                all_overlay_verts.insert(all_overlay_verts.end(),
+                    timeline_verts.begin(), timeline_verts.end());
+
+                // --- STEP 2: Single draw call for ALL overlay geometry ---
+                if (!all_overlay_verts.empty()) {
+                    overlay_buffer->write(all_overlay_verts.data(),
+                                          all_overlay_verts.size() * sizeof(Vertex));
+                    rp->set_pipeline(alpha_pipe);
+                    rp->push_constants(identity.m, sizeof(math::mat4));
+                    rp->set_vertex_buffer(0, overlay_buffer.get());
+                    rp->draw(static_cast<uint32_t>(all_overlay_verts.size()), 1, 0, 0);
+                }
+
+                // --- STEP 3: Accumulate ALL text with UNIFORM scale ---
+                // Use integer multiple of font size for pixel-perfect nearest sampling
+                // 2x scale = 16x16 pixels (from 8x8 base)
+                glyph_instances.clear();
+                constexpr float TEXT_SCALE_FACTOR = 2.0f;
+                float text_char_w = FONT_CHAR_WIDTH * TEXT_SCALE_FACTOR;   // 16 pixels
+                float text_char_h = FONT_CHAR_HEIGHT * TEXT_SCALE_FACTOR;  // 16 pixels
+                float text_scale = TEXT_SCALE_FACTOR;
+
+                // 3a. Queue help overlay text (if visible)
+                if (show_overlay && text_rendering_available) {
+                    float margin = 12.0f;
+                    float line_h = text_char_h + 3;
+                    float x = margin;
+                    float y = margin;
+
+                    float indent = text_char_w * 2;
+                    float key_col = x + indent;
+                    float desc_col = x + 16 * text_char_w;
+                    float val_col = x + 42 * text_char_w;
+
+                    for (const auto& group : keybindings) {
+                        queue_text(x, y, group.name, TextColor::Yellow, text_scale);
+                        y += line_h;
+                        for (const auto& binding : group.bindings) {
+                            queue_text(key_col, y, binding.key, TextColor::Cyan, text_scale);
+                            queue_text(desc_col, y, binding.description, TextColor::White, text_scale);
+                            if (binding.get_value) {
+                                std::string val = binding.get_value();
+                                Vec4 val_color = TextColor::White;
+                                if (val == "ON" || val == "PLAYING" || val == "FORWARD" || val == "VISIBLE") {
+                                    val_color = TextColor::Green;
+                                } else if (val == "OFF" || val == "PAUSED" || val == "REVERSE" || val == "HIDDEN") {
+                                    val_color = TextColor::Red;
+                                }
+                                queue_text(val_col, y, val, val_color, text_scale);
+                            }
+                            y += line_h;
+                        }
+                        y += line_h * 0.5f;
+                    }
+                    y += line_h;
+                    queue_text(x, y, "Frame: " + std::to_string(current_step) + " / " + std::to_string(max_step),
+                               TextColor::Orange, text_scale);
+                }
+
+                // 3b. Queue legend text
+                if (legend.bar_center_x != 0.0f) {
+                    auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * w; };
+                    auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * h; };
+
+                    std::string desc_line1, desc_line2;
+                    if (edge_color_mode == EdgeColorMode::Frequency) {
+                        desc_line1 = "State";
+                        desc_line2 = "Frequency";
+                    } else {
+                        switch (dim_source) {
+                            case DimensionSource::Branchial: desc_line1 = "Branchial"; break;
+                            case DimensionSource::Foliation: desc_line1 = "Foliation"; break;
+                            case DimensionSource::Global:    desc_line1 = "Global"; break;
+                        }
+                        desc_line2 = (heatmap_mode == HeatmapMode::Variance) ? "Variance" : "Dimension";
+                    }
+
+                    std::ostringstream max_ss, min_ss;
+                    if (edge_color_mode == EdgeColorMode::Frequency && render_data.has_freq_data) {
+                        // Integer values for frequency counts
+                        max_ss << static_cast<int>(legend_max);
+                        min_ss << static_cast<int>(legend_min);
+                    } else {
+                        // Floating point values for dimension
+                        max_ss << std::fixed << std::setprecision(2) << legend_max;
+                        min_ss << std::fixed << std::setprecision(2) << legend_min;
+                    }
+
+                    float line_spacing = text_char_h * 1.4f;
+                    float bar_center_px = ndc_to_pixel_x(legend.bar_center_x);
+                    float desc_y1 = ndc_to_pixel_y(legend.title_y) - line_spacing * 3.5f;
+                    float desc_y2 = ndc_to_pixel_y(legend.title_y) - line_spacing * 2.5f;
+                    float desc_x1 = bar_center_px - (desc_line1.length() * text_char_w) / 2.0f;
+                    float desc_x2 = bar_center_px - (desc_line2.length() * text_char_w) / 2.0f;
+                    queue_text(desc_x1, desc_y1, desc_line1, TextColor::White, text_scale);
+                    queue_text(desc_x2, desc_y2, desc_line2, TextColor::White, text_scale);
+
+                    float max_x = ndc_to_pixel_x(legend.label_x) - max_ss.str().length() * text_char_w;
+                    float max_y = ndc_to_pixel_y(legend.max_y);
+                    queue_text(max_x, max_y, max_ss.str(), TextColor::White, text_scale);
+
+                    float min_x = ndc_to_pixel_x(legend.label_x) - min_ss.str().length() * text_char_w;
+                    float min_y = ndc_to_pixel_y(legend.min_y) - text_char_h;
+                    queue_text(min_x, min_y, min_ss.str(), TextColor::White, text_scale);
+                }
+
+                // --- STEP 4: Single draw call for ALL text ---
+                if (text_rendering_available && text_pipeline &&
+                    !glyph_instances.empty() && glyph_instances.size() <= MAX_TEXT_GLYPHS) {
+                    text_instance_buffer->write(glyph_instances.data(),
+                                                glyph_instances.size() * sizeof(GlyphInstance));
+                    gal::RenderPipeline* text_pipe = (msaa_enabled && msaa_text_pipeline)
+                        ? msaa_text_pipeline.get() : text_pipeline.get();
+                    rp->set_pipeline(text_pipe);
+                    float screen_data[4] = {static_cast<float>(w), static_cast<float>(h),
+                                            text_char_w, text_char_h};
+                    rp->push_constants(screen_data, sizeof(screen_data));
+                    rp->set_bind_group(0, text_bind_group.get());
+                    rp->set_vertex_buffer(0, text_quad_vb.get());
+                    rp->set_vertex_buffer(1, text_instance_buffer.get());
+                    rp->set_index_buffer(text_quad_ib.get(), gal::IndexFormat::Uint16);
+                    rp->draw_indexed(6, static_cast<uint32_t>(glyph_instances.size()), 0, 0, 0);
+                }
+            }
+
+            rp->end();
+        }
+
+        auto cmd = encoder->finish();
+        device->submit(cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
+        in_flight_cmd = std::move(encoder);
+
+        swapchain->present(render_semaphore.get());
+    }
+
+    // Cleanup
+    device->wait_idle();
+    device.reset();
+    gal::shutdown();
+
+    return 0;
+}

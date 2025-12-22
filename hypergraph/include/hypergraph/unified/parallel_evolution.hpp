@@ -405,6 +405,19 @@ class ParallelEvolutionEngine {
     bool validate_match_forwarding_{false};  // Enabled for debugging
     std::atomic<size_t> validation_mismatches_{0};
 
+    // Uniform random mode: control flags for step-synchronized evolution
+    // When true, MATCH tasks don't spawn REWRITEs (main loop does selection)
+    // When true, REWRITE tasks don't spawn MATCH tasks (main loop collects new states)
+    bool uniform_random_mode_{false};
+    LockFreeList<StateId>* pending_new_states_simple_{nullptr};  // Simple state collection (no forwarding)
+    LockFreeList<MatchRecord>* pending_matches_{nullptr};  // Temporary match collection (cleared each step)
+
+    // Early termination: stop pattern matching for a job when its reservoir is full
+    // Trades strict uniform sampling (over ALL matches) for speed
+    // When true: uniform over matches found before termination (faster, less uniform)
+    // When false: uniform over ALL possible matches (slower, strictly uniform)
+    bool early_terminate_on_reservoir_full_{false};
+
     // Genesis events: create synthetic events for initial states that produce
     // all initial edges. This enables causal edges from initial state to gen 1.
     // Disabled by default to match v1 behavior.
@@ -540,6 +553,10 @@ public:
     void set_max_states_per_step(size_t max) {
         max_states_per_step_ = max;
     }
+    void set_early_terminate_on_reservoir_full(bool enable) {
+        early_terminate_on_reservoir_full_ = enable;
+    }
+
     void set_explore_from_canonical_states_only(bool enable) {
         explore_from_canonical_states_only_ = enable;
     }
@@ -818,6 +835,267 @@ public:
         return aborted;
     }
 
+    // =========================================================================
+    // Uniform Random Evolution - Step-Synchronized
+    // =========================================================================
+    // Evolves by completing all MATCH tasks at each step, collecting all matches,
+    // randomly selecting which to apply, then completing all REWRITEs before
+    // moving to the next step. This enables uniform random sampling across the
+    // entire multiway system at each generation.
+    //
+    // Parameters:
+    //   initial_edges: Initial hypergraph edges
+    //   steps: Maximum number of evolution steps
+    //   matches_per_step: How many matches to randomly select per step (0 = all)
+
+    void evolve_uniform_random(
+        const std::vector<std::vector<VertexId>>& initial_edges,
+        size_t steps,
+        size_t matches_per_step = 1
+    ) {
+        if (!hg_ || rules_.empty()) return;
+
+        // DISABLE match forwarding for uniform random mode
+        // Match forwarding is designed for full multiway evolution
+        bool prev_match_forwarding = enable_match_forwarding_;
+        enable_match_forwarding_ = false;
+
+        max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
+        hg_->set_abort_flag(&should_stop_);
+
+        // Create initial state WITHOUT submitting to job system
+        // (uniform random mode is synchronous - we don't want background evolution)
+        StateId initial_state = create_initial_state_only(initial_edges);
+        if (initial_state == INVALID_ID) {
+            enable_match_forwarding_ = prev_match_forwarding;
+            return;
+        }
+
+        // Debug stats
+        fprintf(stderr, "[uniform_random] Initial arena: %zu bytes\n", hg_->arena().bytes_allocated());
+        fprintf(stderr, "[uniform_random] Initial edges: %u, states: %u\n",
+                hg_->num_edges(), hg_->num_states());
+
+        // Track states to process at current step
+        std::vector<StateId> current_states;
+        current_states.push_back(initial_state);
+
+        // Matches collected this step (reused across steps)
+        std::vector<MatchRecord> step_matches;
+        step_matches.reserve(matches_per_step * 10);  // Small buffer
+
+        // New states produced this step
+        std::vector<StateId> next_states;
+        next_states.reserve(matches_per_step);
+
+        // Random generator
+        std::random_device rd;
+        std::mt19937 rng(rd());
+
+        // Edge/signature accessors
+        auto get_edge = [this](EdgeId eid) -> const Edge& {
+            return hg_->get_edge(eid);
+        };
+        auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
+            return hg_->edge_signature(eid);
+        };
+
+        size_t total_rewrites_applied = 0;
+        size_t total_states_created = 0;
+
+        for (size_t step = 1; step <= steps && !current_states.empty(); ++step) {
+            if (should_stop_.load(std::memory_order_relaxed)) break;
+
+            step_matches.clear();
+
+            // Parallel pattern matching using per-job vectors (NOT arena allocation)
+            const size_t num_jobs = current_states.size() * rules_.size();
+            // Reservoir size per job: distribute matches_per_step evenly across jobs
+            const size_t max_matches_per_job = std::max(size_t(1), (matches_per_step + num_jobs - 1) / num_jobs);
+
+            // Per-job output vectors - these get freed when they go out of scope
+            std::vector<std::vector<MatchRecord>> job_outputs(num_jobs);
+            for (auto& v : job_outputs) {
+                v.reserve(std::min(max_matches_per_job, size_t(100)));
+            }
+
+            size_t job_idx = 0;
+            for (StateId state : current_states) {
+                if (should_stop_.load(std::memory_order_relaxed)) break;
+
+                // Capture state data by value to avoid reference issues
+                StateId canonical = hg_->get_canonical_state(state);
+                uint64_t canonical_hash = hg_->get_state(state).canonical_hash;
+
+                for (uint16_t r = 0; r < rules_.size(); ++r) {
+                    // Each job writes to its own vector slot (no contention)
+                    std::vector<MatchRecord>* output = &job_outputs[job_idx++];
+
+                    // Capture early_terminate flag for the lambda
+                    bool early_term = early_terminate_on_reservoir_full_;
+
+                    job_system_->submit_function(
+                        [this, output, &get_edge, &get_signature,
+                         state, canonical, canonical_hash, r, max_matches_per_job, early_term]() {
+                            if (should_stop_.load(std::memory_order_relaxed)) return;
+
+                            const State& s = hg_->get_state(state);
+
+                            // Reservoir sampling for uniform random selection
+                            // Each match has equal probability of being in final sample
+                            std::random_device rd;
+                            std::mt19937 local_rng(rd());
+                            size_t match_count = 0;
+                            output->reserve(max_matches_per_job);
+
+                            // When early termination is enabled, stop pattern matching once we have
+                            // enough matches for the reservoir. This trades strict uniform sampling
+                            // (over ALL possible matches) for speed, but still provides a valid sample.
+                            size_t match_limit = early_term ? max_matches_per_job : SIZE_MAX;
+
+                            find_matches(
+                                rules_[r], r, state, s.edges,
+                                hg_->signature_index(), hg_->inverted_index(),
+                                get_edge, get_signature,
+                                [&](uint16_t rule_index, const EdgeId* edges, uint8_t num_edges,
+                                    const VariableBinding& binding, StateId /*src*/) {
+                                    MatchRecord match;
+                                    match.rule_index = rule_index;
+                                    match.num_edges = num_edges;
+                                    match.binding = binding;
+                                    match.source_state = state;
+                                    match.canonical_source = canonical;
+                                    match.source_canonical_hash = canonical_hash;
+                                    for (uint8_t i = 0; i < num_edges; ++i) {
+                                        match.matched_edges[i] = edges[i];
+                                    }
+
+                                    // When early termination is enabled, just fill the reservoir directly
+                                    // (no replacement needed since we stop at max_matches_per_job)
+                                    if (early_term) {
+                                        output->push_back(match);
+                                    } else {
+                                        // Full reservoir sampling algorithm
+                                        if (output->size() < max_matches_per_job) {
+                                            // Reservoir not full - add directly
+                                            output->push_back(match);
+                                        } else {
+                                            // Reservoir full - replace with probability k/n
+                                            std::uniform_int_distribution<size_t> dist(0, match_count);
+                                            size_t j = dist(local_rng);
+                                            if (j < max_matches_per_job) {
+                                                (*output)[j] = match;
+                                            }
+                                        }
+                                    }
+                                    match_count++;
+                                },
+                                nullptr, nullptr, match_limit, nullptr
+                            );
+                        },
+                        EvolutionJobType::MATCH
+                    );
+                }
+            }
+
+            // Wait for all pattern matching to complete
+            job_system_->wait_for_completion();
+
+            // Merge job outputs into step_matches
+            for (auto& output : job_outputs) {
+                for (auto& m : output) {
+                    step_matches.push_back(std::move(m));
+                }
+            }
+            // job_outputs goes out of scope here, freeing all per-job vectors
+
+            if (step_matches.empty()) {
+                DEBUG_LOG("[uniform_random] step %zu: no matches found, stopping", step);
+                break;
+            }
+
+            DEBUG_LOG("[uniform_random] step %zu: found %zu matches from %zu states",
+                      step, step_matches.size(), current_states.size());
+
+            // Shuffle ALL matches for truly uniform random selection
+            std::shuffle(step_matches.begin(), step_matches.end(), rng);
+
+            // Apply matches until we get matches_per_step unique new states (or run out)
+            // CRITICAL: Limit total attempts to prevent arena memory explosion
+            // Each rewriter_.apply() allocates in arena even for duplicates
+            next_states.clear();
+            size_t matches_tried = 0;
+            size_t duplicates_rejected = 0;
+            size_t rewrites_failed = 0;
+            size_t target_states = (matches_per_step == 0) ? SIZE_MAX : matches_per_step;
+            size_t max_attempts = target_states * 5;  // Allow 5x attempts per desired state
+
+            for (size_t i = 0; i < step_matches.size() && next_states.size() < target_states && matches_tried < max_attempts; ++i) {
+                const auto& match = step_matches[i];
+                const RewriteRule& rule = rules_[match.rule_index];
+                matches_tried++;
+
+                RewriteResult rr = rewriter_.apply(
+                    rule,
+                    match.source_state,
+                    match.matched_edges,
+                    match.num_edges,
+                    match.binding,
+                    static_cast<uint32_t>(step)
+                );
+
+                if (rr.raw_state != INVALID_ID) {
+                    total_rewrites_applied++;
+                    // Check if this raw state was already seen (at ANY step)
+                    auto [existing, inserted] = matched_raw_states_.insert_if_absent_waiting(rr.raw_state, true);
+                    if (inserted) {
+                        next_states.push_back(rr.raw_state);
+                        total_states_created++;
+                    } else {
+                        duplicates_rejected++;
+                    }
+                } else {
+                    rewrites_failed++;
+                }
+            }
+
+            DEBUG_LOG("[uniform_random] step %zu: tried %zu matches, got %zu/%zu new states "
+                      "(rejected %zu duplicates, %zu failed)",
+                      step, matches_tried, next_states.size(), target_states,
+                      duplicates_rejected, rewrites_failed);
+
+            // Per-step debug stats (always printed)
+            fprintf(stderr, "[uniform_random] Step %zu complete:\n", step);
+            fprintf(stderr, "  Matches found: %zu, tried: %zu, accepted: %zu\n",
+                    step_matches.size(), matches_tried, next_states.size());
+            fprintf(stderr, "  Duplicates rejected: %zu, rewrites failed: %zu\n",
+                    duplicates_rejected, rewrites_failed);
+            fprintf(stderr, "  Arena: %zu bytes, Edges: %u, States: %u, Events: %u\n",
+                    hg_->arena().bytes_allocated(), hg_->num_edges(),
+                    hg_->num_states(), hg_->num_events());
+
+            // Move to next step
+            current_states.swap(next_states);
+        }
+
+        // Summary stats
+        fprintf(stderr, "[uniform_random] Evolution complete:\n");
+        fprintf(stderr, "  Steps completed: %zu\n", steps);
+        fprintf(stderr, "  Total rewrites applied: %zu\n", total_rewrites_applied);
+        fprintf(stderr, "  Total unique states created: %zu\n", total_states_created);
+        fprintf(stderr, "  Final: States=%u, Edges=%u, Events=%u\n",
+                hg_->num_states(), hg_->num_edges(), hg_->num_events());
+        fprintf(stderr, "  Final arena: %zu bytes (%.2f MB)\n",
+                hg_->arena().bytes_allocated(),
+                hg_->arena().bytes_allocated() / (1024.0 * 1024.0));
+
+        // Restore match forwarding setting
+        enable_match_forwarding_ = prev_match_forwarding;
+
+        finalize_evolution();
+    }
+
 private:
     void finalize_evolution() {
         // CRITICAL: Acquire fence to ensure all writes from worker threads are visible
@@ -833,6 +1111,48 @@ private:
             hg_->num_states()       // final state count (approximation)
         );
 #endif
+    }
+
+    // Helper: Create an initial state from a set of edges WITHOUT submitting for matching
+    // Used by uniform random mode which does synchronous matching
+    StateId create_initial_state_only(const std::vector<std::vector<VertexId>>& edges) {
+        // Create edges
+        std::vector<EdgeId> edge_ids;
+        for (const auto& edge : edges) {
+            EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+            edge_ids.push_back(eid);
+            for (VertexId v : edge) {
+                hg_->reserve_vertices(v);
+            }
+        }
+
+        SparseBitset initial_edge_set;
+        for (EdgeId eid : edge_ids) {
+            initial_edge_set.set(eid, hg_->arena());
+        }
+
+        // Compute canonical hash
+        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
+            initial_edge_set,
+            INVALID_ID,  // No parent state
+            nullptr, 0,  // No consumed edges
+            edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
+        );
+        auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
+            std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
+
+        // Store cache for the initial state
+        hg_->store_state_cache(raw_state, vertex_cache);
+
+        // Create genesis event if enabled
+        if (enable_genesis_events_) {
+            hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        }
+
+        // Mark as seen but do NOT submit match task
+        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+
+        return raw_state;
     }
 
     // Helper: Create an initial state from a set of edges and register it for matching
@@ -1141,7 +1461,10 @@ private:
             push_match_to_children(child_info.child_state, forwarded, child_step);
 
             // Spawn REWRITE task for this forwarded match
-            submit_rewrite_task(forwarded, child_step);
+            // (unless uniform random mode - main loop handles selection)
+            if (!uniform_random_mode_) {
+                submit_rewrite_task(forwarded, child_step);
+            }
         });
     }
 
@@ -1402,7 +1725,10 @@ private:
 
             // EAGER: Immediately spawn REWRITE task
             // No need to store - match is already stored in ancestor, descendants can pull from there
-            submit_rewrite_task(forwarded, step);
+            // (unless uniform random mode - main loop handles selection)
+            if (!uniform_random_mode_) {
+                submit_rewrite_task(forwarded, step);
+            }
         });
     }
 
@@ -1622,7 +1948,10 @@ private:
                     store_match_for_state(state, match, true);  // with fence
                     push_match_to_children(state, match, step);
                 }
-                submit_rewrite_task(match, step);
+                // (unless uniform random mode - main loop handles selection)
+                if (!uniform_random_mode_) {
+                    submit_rewrite_task(match, step);
+                }
             }
         };
 
@@ -1685,8 +2014,11 @@ private:
                 }
                 // Spawn REWRITEs for forwarded matches before returning
                 // (SCAN tasks only handle delta matches, not the already-forwarded ones)
-                for (size_t i = 0; i < delta_start; ++i) {
-                    submit_rewrite_task(batch[i], step);
+                // In uniform random mode, main loop handles REWRITE selection
+                if (!uniform_random_mode_) {
+                    for (size_t i = 0; i < delta_start; ++i) {
+                        submit_rewrite_task(batch[i], step);
+                    }
                 }
                 return;  // SCAN tasks handle delta matches asynchronously
             }
@@ -1792,8 +2124,13 @@ private:
         // (by REWRITE), all parent matches are already stored and visible for pulling.
         // In eager mode, matches were already stored and REWRITEs spawned above.
 
-        if (batched_matching_) {
-            if (enable_match_forwarding_) {
+        if (batched_matching_ || uniform_random_mode_) {
+            if (uniform_random_mode_ && pending_matches_) {
+                // Uniform random mode: push to temporary list (cleared each step)
+                for (const auto& match : batch) {
+                    pending_matches_->push(match, hg_->arena());
+                }
+            } else if (enable_match_forwarding_) {
                 // Only store DELTA matches (discovered in this state).
                 // Forwarded matches are already stored in ancestors - descendants can pull from there.
                 // This dramatically reduces memory usage.
@@ -1804,9 +2141,12 @@ private:
                 std::atomic_thread_fence(std::memory_order_seq_cst);
             }
 
-            // Now spawn REWRITEs - children will see all stored matches
-            for (const auto& match : batch) {
-                submit_rewrite_task(match, step);
+            // In uniform random mode, don't spawn REWRITEs - main loop does selection
+            if (!uniform_random_mode_) {
+                // Now spawn REWRITEs - children will see all stored matches
+                for (const auto& match : batch) {
+                    submit_rewrite_task(match, step);
+                }
             }
         }
     }
@@ -2062,15 +2402,20 @@ private:
 
         DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
-        // Store and push match for forwarding (mirroring synchronous eager path)
-        // Push closes the race window: children created before store still get notified
-        if (enable_match_forwarding_) {
+        // Store match for collection/forwarding
+        if (uniform_random_mode_ && pending_matches_) {
+            // Uniform random mode: push to temporary list (cleared each step)
+            pending_matches_->push(match, hg_->arena());
+        } else if (enable_match_forwarding_) {
+            // Forwarding mode: store and push to children
             store_match_for_state(data.state, match, true);  // with fence
             push_match_to_children(data.state, match, data.step);
         }
 
-        // Spawn REWRITE task
-        submit_rewrite_task(match, data.step);
+        // Spawn REWRITE task (unless uniform random mode - main loop handles selection)
+        if (!uniform_random_mode_) {
+            submit_rewrite_task(match, data.step);
+        }
     }
 
     // =========================================================================
@@ -2317,11 +2662,17 @@ private:
                     // This avoids redundant work and keeps the logic centralized.
                 }
 
-                // Submit MATCH task with context for match forwarding
-                submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                // In uniform random mode, push to pending list for main loop to collect
+                if (uniform_random_mode_ && pending_new_states_simple_) {
+                    pending_new_states_simple_->push(rr.raw_state, hg_->arena());
+                } else {
+                    // Submit MATCH task with context for match forwarding
+                    submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                }
             }
         }
     }
+
 };
 
 }  // namespace hypergraph::unified

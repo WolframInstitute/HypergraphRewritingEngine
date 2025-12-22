@@ -984,7 +984,7 @@ int main(int argc, char* argv[]) {
     for (uint32_t s = 2; s <= max_msaa; s *= 2) {
         supported_msaa_levels.push_back(s);
     }
-    size_t msaa_level_index = (supported_msaa_levels.size() > 2) ? 2 : supported_msaa_levels.size() - 1;  // Default to 4x if available
+    size_t msaa_level_index = supported_msaa_levels.size() - 1;  // Default to maximum available
     uint32_t msaa_samples = supported_msaa_levels[msaa_level_index];
     bool msaa_enabled = (msaa_samples > 1);
     bool msaa_dirty = true;     // Need to create MSAA resources
