@@ -38,6 +38,19 @@ BHInitialCondition generate_grid_with_holes(
 );
 
 // =============================================================================
+// Solid Grid Initial Condition Generator
+// =============================================================================
+//
+// Generates a regular grid graph without any holes (ignores black hole positions).
+// Useful for testing on uniform topology.
+
+BHInitialCondition generate_solid_grid(
+    int grid_width,
+    int grid_height,
+    const BHConfig& config
+);
+
+// =============================================================================
 // Utility Functions
 // =============================================================================
 

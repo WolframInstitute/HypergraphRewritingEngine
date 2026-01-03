@@ -210,4 +210,14 @@ BHAnalysisResult run_analysis(
 // Helper: compute quantiles from a vector of values
 float quantile(std::vector<float> values, float q);
 
+// =============================================================================
+// Performance Timing Utilities
+// =============================================================================
+
+// Reset all analysis timing accumulators (call before starting analysis)
+void reset_analysis_timers();
+
+// Print accumulated analysis timing (call after analysis completes)
+void print_analysis_timing();
+
 } // namespace viz::blackhole

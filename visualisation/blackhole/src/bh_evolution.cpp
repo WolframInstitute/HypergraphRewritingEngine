@@ -1,6 +1,7 @@
 #include <blackhole/bh_evolution.hpp>
 #include <sstream>
 #include <iostream>
+#include <iomanip>
 #include <regex>
 #include <mutex>
 #include <cmath>
@@ -8,6 +9,7 @@
 #include <unordered_set>
 #include <numeric>
 #include <limits>
+#include <chrono>
 
 namespace viz::blackhole {
 
@@ -338,6 +340,8 @@ EvolutionResult EvolutionRunner::run_evolution(
 
     report_progress("Running evolution", 0.1f);
 
+    auto evolution_start = std::chrono::high_resolution_clock::now();
+
     // Run evolution - use uniform random mode if configured
     if (config.uniform_random) {
         std::cout << "  Using uniform random mode, matches_per_step=" << config.matches_per_step << std::endl;
@@ -349,6 +353,10 @@ EvolutionResult EvolutionRunner::run_evolution(
     } else {
         engine_->evolve(initial_edges, config.max_steps);
     }
+
+    auto evolution_end = std::chrono::high_resolution_clock::now();
+    auto evolution_ms = std::chrono::duration<double, std::milli>(evolution_end - evolution_start).count();
+    std::cout << "\n[TIMING] Evolution: " << std::fixed << std::setprecision(1) << evolution_ms << " ms" << std::endl;
 
     // Print evolution stats (only for non-uniform-random mode, as these stats
     // are for the match forwarding system which uniform_random doesn't use)
@@ -366,8 +374,14 @@ EvolutionResult EvolutionRunner::run_evolution(
 
     report_progress("Extracting states", 0.8f);
 
+    auto extract_start = std::chrono::high_resolution_clock::now();
+
     // Extract states
     auto result = extract_states();
+
+    auto extract_end = std::chrono::high_resolution_clock::now();
+    auto extract_ms = std::chrono::duration<double, std::milli>(extract_end - extract_start).count();
+    std::cout << "[TIMING] Extract states: " << std::fixed << std::setprecision(1) << extract_ms << " ms" << std::endl;
 
     // MEMORY OPTIMIZATION: Clear hypergraph and engine after extraction
     // The data has been copied to result, so we don't need the originals anymore
@@ -435,6 +449,9 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
     const AnalysisConfig& analysis_config
 ) {
     report_progress("Starting analysis", 0.0f);
+
+    // Reset fine-grained analysis timers
+    reset_analysis_timers();
 
     // Use the run_analysis function from hausdorff_analysis.hpp
     // but with parallel state analysis
@@ -518,6 +535,8 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     report_progress("Analyzing states", 0.1f);
 
+    auto state_analysis_start = std::chrono::high_resolution_clock::now();
+
     // Start analysis job system for parallel processing
     analysis_job_system_->start();
 
@@ -576,12 +595,19 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
     // Wait for all state analyses to complete
     analysis_job_system_->wait_for_completion();
 
+    auto state_analysis_end = std::chrono::high_resolution_clock::now();
+    auto state_analysis_ms = std::chrono::duration<double, std::milli>(state_analysis_end - state_analysis_start).count();
+    std::cout << "[TIMING] State analysis (per-vertex dimensions): " << std::fixed << std::setprecision(1)
+              << state_analysis_ms << " ms (" << total_states << " states)" << std::endl;
+
     if (should_stop_.load()) {
         analysis_job_system_->shutdown();
         return result;
     }
 
     report_progress("Aggregating timesteps", 0.85f);
+
+    auto aggregate_start = std::chrono::high_resolution_clock::now();
 
     // Aggregate each timestep in parallel
     result.per_timestep.resize(num_steps);
@@ -617,6 +643,11 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
     // Wait for all aggregation jobs to complete
     analysis_job_system_->wait_for_completion();
 
+    auto aggregate_end = std::chrono::high_resolution_clock::now();
+    auto aggregate_ms = std::chrono::duration<double, std::milli>(aggregate_end - aggregate_start).count();
+    std::cout << "[TIMING] Aggregation (LCC, edges, etc): " << std::fixed << std::setprecision(1)
+              << aggregate_ms << " ms (" << num_steps << " steps)" << std::endl;
+
     if (should_stop_.load()) {
         analysis_job_system_->shutdown();
         return result;
@@ -624,6 +655,41 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     // Shutdown analysis job system
     analysis_job_system_->shutdown();
+
+    // Populate per_state for histogram/distribution analysis
+    // This converts LightweightAnalysis to StateAnalysis for each state
+    report_progress("Storing per-state data", 0.92f);
+    StateId state_counter = 0;
+    for (uint32_t step = 0; step < num_steps; ++step) {
+        const auto& step_graphs = evolution_result.states_by_step[step];
+        const auto& step_analyses = analyses_by_step[step];
+
+        for (size_t g_idx = 0; g_idx < step_graphs.size(); ++g_idx) {
+            const auto& graph = step_graphs[g_idx];
+            const auto& lightweight = step_analyses[g_idx];
+
+            StateAnalysis state_analysis;
+            state_analysis.state_id = state_counter++;
+            state_analysis.step = step;
+            state_analysis.vertices = graph.vertices();
+            state_analysis.vertex_dimensions = lightweight.vertex_dimensions;
+
+            // Copy edges from graph
+            std::set<std::pair<VertexId, VertexId>> edge_set;
+            for (VertexId v : graph.vertices()) {
+                for (VertexId u : graph.neighbors(v)) {
+                    VertexId v1 = std::min(v, u);
+                    VertexId v2 = std::max(v, u);
+                    edge_set.insert({v1, v2});
+                }
+            }
+            for (const auto& [v1, v2] : edge_set) {
+                state_analysis.edges.push_back({v1, v2});
+            }
+
+            result.per_state.push_back(std::move(state_analysis));
+        }
+    }
 
     // Collect all dimensions, variances, and global dimensions for global statistics
     std::vector<float> all_dimensions;
@@ -691,7 +757,12 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     // Compute layouts for all timesteps
     std::cout << "  Computing layouts..." << std::endl;
+    auto layout_start = std::chrono::high_resolution_clock::now();
     compute_all_layouts(result.per_timestep, initial.vertex_positions, analysis_config.layout);
+    auto layout_end = std::chrono::high_resolution_clock::now();
+    auto layout_ms = std::chrono::duration<double, std::milli>(layout_end - layout_start).count();
+    std::cout << "[TIMING] Layout computation: " << std::fixed << std::setprecision(1)
+              << layout_ms << " ms" << std::endl;
 
     // Compute overall bounding radius from laid-out positions (for camera framing)
     float max_radius = 0.0f;
@@ -868,6 +939,9 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         evolution_result.state_data_by_step.shrink_to_fit();
         std::cout << "  Memory freed: ~" << (cleared_bytes / (1024 * 1024)) << " MB (evolution data)" << std::endl;
     }
+
+    // Print fine-grained timing breakdown
+    print_analysis_timing();
 
     report_progress("Analysis complete", 1.0f);
 

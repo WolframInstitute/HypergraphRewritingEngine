@@ -548,6 +548,53 @@ enum class DimensionSource {
 // EdgeDisplayMode is defined earlier in the file (before init_layout_from_timestep)
 
 // =============================================================================
+// Vertex Selection & Histogram State
+// =============================================================================
+
+struct VertexSelectionState {
+    bool has_selection = false;
+    VertexId selected_vertex = 0;
+    float panel_ndc_x = 0.0f;      // Panel position in NDC (clamped to screen)
+    float panel_ndc_y = 0.0f;
+    int click_screen_x = 0;        // Original click position
+    int click_screen_y = 0;
+
+    // User-adjustable histogram settings
+    int histogram_bin_count = 10;  // Adjustable with +/- keys
+
+    // Cached histogram data (recomputed when selection/timestep/mode changes)
+    std::vector<float> dimension_values;  // Raw dimension values
+    std::vector<int> bin_counts;          // Histogram bin counts
+    int num_bins = 0;
+    float bin_min = 0.0f;
+    float bin_max = 0.0f;
+    float bin_width = 0.0f;
+    int max_bin_count = 0;
+    float mean_value = 0.0f;
+    float std_dev = 0.0f;
+    DimensionSource cached_dim_source = DimensionSource::Branchial;
+    int cached_timestep = -1;
+    int cached_bin_count = 10;
+
+    // Distribution mode info (for Foliation/Global - shows all vertices)
+    bool is_distribution_mode = false;
+    float selected_vertex_value = -1.0f;  // For highlighting selected vertex in distribution
+    int selected_vertex_bin = -1;         // Which bin contains selected vertex
+
+    // Hit testing bounds (for dismissing when clicking outside)
+    float panel_left = 0.0f, panel_right = 0.0f;
+    float panel_top = 0.0f, panel_bottom = 0.0f;
+};
+
+// Picking sphere instance - outputs vertex index instead of color
+struct PickingSphereInstance {
+    float x, y, z;          // Same as SphereInstance
+    float radius;
+    uint32_t vertex_index;  // Index into vertices array
+    uint32_t _pad[3];       // Padding to 32 bytes for alignment
+};
+
+// =============================================================================
 // Rendering Data
 // =============================================================================
 
@@ -2124,6 +2171,183 @@ LegendData build_legend(float aspect_ratio, ColorPalette palette, float value_mi
     return data;
 }
 
+// Build histogram panel for vertex selection
+struct HistogramData {
+    std::vector<Vertex> verts;  // Background + bars
+    // Label positions in NDC for text rendering
+    float title_x, title_y;
+    float stats_x, stats_y;
+    float axis_min_x, axis_min_y;
+    float axis_max_x, axis_max_y;
+    // Hit test bounds
+    float panel_left, panel_right, panel_top, panel_bottom;
+};
+
+HistogramData build_histogram_panel(
+    const VertexSelectionState& selection,
+    float click_ndc_x, float click_ndc_y,
+    float aspect_ratio,
+    int screen_width, int screen_height,
+    ColorPalette palette,
+    DimensionSource dim_source,
+    float global_dim_min, float global_dim_max
+) {
+    HistogramData data;
+
+    if (!selection.has_selection || selection.bin_counts.empty()) {
+        return data;
+    }
+
+    // Panel dimensions in NDC
+    float panel_w = 0.40f;
+    float panel_h = 0.32f;
+
+    // Position panel near click, with offset so it doesn't cover the clicked point
+    float offset_x = 0.05f;
+    float offset_y = -0.05f;
+
+    float panel_left = click_ndc_x + offset_x;
+    float panel_top = click_ndc_y + offset_y;
+
+    // Clamp to screen bounds (flip if necessary)
+    if (panel_left + panel_w > 0.98f) {
+        panel_left = click_ndc_x - offset_x - panel_w;  // Flip to left
+    }
+    if (panel_left < -0.98f) {
+        panel_left = -0.98f;
+    }
+    if (panel_top + panel_h > 0.98f) {
+        panel_top = 0.98f - panel_h;  // Move up
+    }
+    if (panel_top < -0.98f) {
+        panel_top = -0.98f;
+    }
+
+    float panel_right = panel_left + panel_w;
+    float panel_bottom = panel_top + panel_h;
+
+    data.panel_left = panel_left;
+    data.panel_right = panel_right;
+    data.panel_top = panel_top;
+    data.panel_bottom = panel_bottom;
+
+    // Background (dark semi-transparent)
+    Vec4 bg_color{0.08f, 0.08f, 0.12f, 0.92f};
+    float corner_radius = 0.012f;
+    add_rounded_rect(data.verts, panel_left, panel_top, panel_right, panel_bottom,
+                     corner_radius, 0.002f, bg_color);
+
+    // Layout inside panel
+    float padding = 0.02f;
+    float inner_left = panel_left + padding;
+    float inner_right = panel_right - padding;
+    float inner_top = panel_top + padding;
+    float inner_bottom = panel_bottom - padding;
+
+    // Title area at top
+    float title_height = 0.035f;
+    data.title_x = inner_left;
+    data.title_y = inner_top + 0.01f;
+
+    // Stats area below title
+    float stats_y = inner_top + title_height + 0.01f;
+    data.stats_x = inner_left;
+    data.stats_y = stats_y;
+
+    // Bar chart area
+    float chart_top = stats_y + 0.03f;
+    float chart_bottom = inner_bottom - 0.025f;  // Room for axis labels
+    float chart_left = inner_left + 0.01f;
+    float chart_right = inner_right - 0.01f;
+    float chart_height = chart_bottom - chart_top;
+    float chart_width = chart_right - chart_left;
+
+    // Axis label positions
+    data.axis_min_x = chart_left;
+    data.axis_min_y = chart_bottom + 0.008f;
+    data.axis_max_x = chart_right - 0.05f;
+    data.axis_max_y = chart_bottom + 0.008f;
+
+    // Draw bars
+    int num_bins = selection.num_bins;
+    if (num_bins <= 0) return data;
+
+    float bar_width = chart_width / num_bins;
+    float bar_gap = bar_width * 0.1f;
+    float actual_bar_width = bar_width - bar_gap;
+
+    // Normalize bar heights
+    float max_count = static_cast<float>(selection.max_bin_count);
+    if (max_count < 1.0f) max_count = 1.0f;
+
+    for (int i = 0; i < num_bins; ++i) {
+        float bar_left_x = chart_left + i * bar_width + bar_gap / 2;
+        float bar_right_x = bar_left_x + actual_bar_width;
+
+        // Bar height proportional to count
+        float norm_height = selection.bin_counts[i] / max_count;
+        float bar_height = norm_height * chart_height;
+        float bar_top_y = chart_bottom - bar_height;
+        float bar_bottom_y = chart_bottom;
+
+        // Color based on bin center value using palette
+        float bin_center = selection.bin_min + (i + 0.5f) * selection.bin_width;
+        // Normalize to global range for consistent coloring
+        float norm_value = 0.5f;
+        if (global_dim_max > global_dim_min) {
+            norm_value = (bin_center - global_dim_min) / (global_dim_max - global_dim_min);
+            norm_value = std::max(0.0f, std::min(1.0f, norm_value));
+        }
+        Vec3 c = apply_palette(norm_value, palette);
+        Vec4 bar_color{c.x, c.y, c.z, 1.0f};
+
+        // In distribution mode, highlight the bin containing the selected vertex
+        bool is_selected_bin = selection.is_distribution_mode && (i == selection.selected_vertex_bin);
+
+        // Skip empty bins (but leave the space)
+        if (selection.bin_counts[i] > 0) {
+            // Draw bar as two triangles
+            float z = 0.001f;
+            data.verts.push_back({bar_left_x, bar_top_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+            data.verts.push_back({bar_left_x, bar_bottom_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+            data.verts.push_back({bar_right_x, bar_bottom_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+
+            data.verts.push_back({bar_left_x, bar_top_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+            data.verts.push_back({bar_right_x, bar_bottom_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+            data.verts.push_back({bar_right_x, bar_top_y, z, bar_color.x, bar_color.y, bar_color.z, bar_color.w});
+
+            // Draw highlight border for selected vertex's bin in distribution mode
+            if (is_selected_bin) {
+                Vec4 highlight_color{1.0f, 1.0f, 1.0f, 1.0f};
+                float bw = 0.003f;  // Border width
+                float z2 = 0.0005f;
+                // Top border
+                add_quad(data.verts, bar_left_x, bar_top_y - bw, bar_right_x, bar_top_y, z2, highlight_color);
+                // Left border
+                add_quad(data.verts, bar_left_x - bw, bar_top_y - bw, bar_left_x, bar_bottom_y, z2, highlight_color);
+                // Right border
+                add_quad(data.verts, bar_right_x, bar_top_y - bw, bar_right_x + bw, bar_bottom_y, z2, highlight_color);
+                // Bottom border
+                add_quad(data.verts, bar_left_x - bw, bar_bottom_y, bar_right_x + bw, bar_bottom_y + bw, z2, highlight_color);
+            }
+        }
+    }
+
+    // Draw chart border (thin outline)
+    Vec4 border_color{0.4f, 0.4f, 0.5f, 0.8f};
+    float border_w = 0.002f;
+    // Top border
+    add_quad(data.verts, chart_left, chart_top, chart_right, chart_top + border_w, 0.0005f, border_color);
+    // Bottom border
+    add_quad(data.verts, chart_left, chart_bottom - border_w, chart_right, chart_bottom, 0.0005f, border_color);
+    // Left border
+    add_quad(data.verts, chart_left, chart_top, chart_left + border_w, chart_bottom, 0.0005f, border_color);
+    // Right border
+    add_quad(data.verts, chart_right - border_w, chart_top, chart_right, chart_bottom, 0.0005f, border_color);
+
+    return data;
+}
+
 // Build multiway states graph (left panel showing states at each timestep)
 struct StatesGraphData {
     std::vector<Vertex> verts;       // Triangles for background, states, highlights
@@ -2491,6 +2715,7 @@ void print_usage() {
     std::cout << std::endl;
     std::cout << "GENERATION OPTIONS (for run, generate, evolve):" << std::endl;
     std::cout << "  --grid WxH        Use grid with holes (e.g., 10x10 or '10 10', default: 30x30)" << std::endl;
+    std::cout << "  --solid-grid      Use solid grid without holes (ignores black hole positions)" << std::endl;
     std::cout << "  --brill N         Use Brill-Lindquist sampling with N vertices" << std::endl;
     std::cout << "  --steps N         Max evolution steps (default: 100 if not specified)" << std::endl;
     std::cout << "  --threshold F     Edge connectivity threshold (default: 1.5 brill, 0.8 grid)" << std::endl;
@@ -2550,6 +2775,202 @@ void print_usage() {
     std::cout << std::endl;
 }
 
+// =============================================================================
+// Vertex Selection Helpers
+// =============================================================================
+
+// Collect dimension values for histogram display
+// For Branchial mode: returns dimension of selected vertex across all states at timestep
+// For Foliation/Global: returns dimensions of ALL vertices at timestep (distribution view)
+// Also returns the selected vertex's value for highlighting
+struct HistogramCollectionResult {
+    std::vector<float> values;           // All values for histogram
+    float selected_vertex_value = -1.0f; // Value of selected vertex (for highlighting)
+    bool is_distribution_mode = false;   // True if showing all vertices (Foliation/Global)
+};
+
+HistogramCollectionResult collect_vertex_dimensions(
+    const BHAnalysisResult& analysis,
+    VertexId vertex_id,
+    int timestep,
+    DimensionSource dim_source
+) {
+    HistogramCollectionResult result;
+
+    if (timestep < 0 || timestep >= static_cast<int>(analysis.per_timestep.size())) {
+        return result;
+    }
+
+    const auto& ts = analysis.per_timestep[timestep];
+
+    if (dim_source == DimensionSource::Global) {
+        // Global mode: show distribution of ALL vertices' global dimensions
+        // Highlight where the selected vertex falls
+        result.is_distribution_mode = true;
+
+        for (const auto& [vid, dim] : analysis.mega_dimension) {
+            if (dim > 0) {
+                result.values.push_back(dim);
+                if (vid == vertex_id) {
+                    result.selected_vertex_value = dim;
+                }
+            }
+        }
+    } else if (dim_source == DimensionSource::Foliation) {
+        // Foliation mode: show distribution of ALL vertices' dimensions at this timestep
+        result.is_distribution_mode = true;
+
+        for (size_t i = 0; i < ts.union_vertices.size(); ++i) {
+            if (i < ts.global_mean_dimensions.size() && ts.global_mean_dimensions[i] > 0) {
+                result.values.push_back(ts.global_mean_dimensions[i]);
+                if (ts.union_vertices[i] == vertex_id) {
+                    result.selected_vertex_value = ts.global_mean_dimensions[i];
+                }
+            }
+        }
+    } else {
+        // Branchial mode: collect from per_state analyses at this timestep
+        // Shows how this vertex's dimension varies across multiway states
+        result.is_distribution_mode = false;
+
+        if (!analysis.per_state.empty()) {
+            for (const auto& state : analysis.per_state) {
+                if (state.step != static_cast<uint32_t>(timestep)) continue;
+
+                // Find vertex in this state
+                for (size_t i = 0; i < state.vertices.size(); ++i) {
+                    if (state.vertices[i] == vertex_id) {
+                        if (i < state.vertex_dimensions.size()) {
+                            float dim_val = state.vertex_dimensions[i];
+                            if (dim_val > 0) {
+                                result.values.push_back(dim_val);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Fallback: use per-timestep averaged dimension (single value)
+            for (size_t i = 0; i < ts.union_vertices.size(); ++i) {
+                if (ts.union_vertices[i] == vertex_id) {
+                    if (i < ts.mean_dimensions.size() && ts.mean_dimensions[i] > 0) {
+                        result.values.push_back(ts.mean_dimensions[i]);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+// Compute histogram with fixed number of equally-spaced bins
+void compute_histogram(
+    const std::vector<float>& values,
+    std::vector<int>& bin_counts,
+    float& bin_min,
+    float& bin_max,
+    float& bin_width,
+    int& max_count,
+    int num_bins = 10
+) {
+    bin_counts.clear();
+    max_count = 0;
+    bin_min = 0.0f;
+    bin_max = 0.0f;
+    bin_width = 0.1f;
+
+    if (values.empty()) return;
+
+    // Find range
+    bin_min = *std::min_element(values.begin(), values.end());
+    bin_max = *std::max_element(values.begin(), values.end());
+    float range = bin_max - bin_min;
+
+    if (range < 0.001f) {
+        // All values essentially the same - single bin
+        bin_counts.push_back(static_cast<int>(values.size()));
+        bin_width = 0.1f;
+        max_count = bin_counts[0];
+        return;
+    }
+
+    // Use fixed number of equally-spaced bins
+    num_bins = std::max(1, num_bins);
+    bin_width = range / num_bins;
+    bin_counts.resize(num_bins, 0);
+
+    // Count values in each bin
+    for (float v : values) {
+        int bin = static_cast<int>((v - bin_min) / bin_width);
+        bin = std::clamp(bin, 0, num_bins - 1);
+        bin_counts[bin]++;
+        max_count = std::max(max_count, bin_counts[bin]);
+    }
+}
+
+// Update selection histogram data
+void update_selection_histogram(
+    VertexSelectionState& selection,
+    const BHAnalysisResult& analysis,
+    int current_step,
+    DimensionSource dim_source
+) {
+    // Collect dimension values
+    auto collection = collect_vertex_dimensions(
+        analysis, selection.selected_vertex, current_step, dim_source);
+
+    selection.dimension_values = std::move(collection.values);
+    selection.is_distribution_mode = collection.is_distribution_mode;
+    selection.selected_vertex_value = collection.selected_vertex_value;
+
+    if (!selection.dimension_values.empty()) {
+        // Compute statistics
+        float sum = 0.0f, sum_sq = 0.0f;
+        for (float v : selection.dimension_values) {
+            sum += v;
+            sum_sq += v * v;
+        }
+        size_t n = selection.dimension_values.size();
+        selection.mean_value = sum / n;
+        float variance = sum_sq / n - selection.mean_value * selection.mean_value;
+        selection.std_dev = std::sqrt(std::max(0.0f, variance));
+
+        // Compute histogram with user-specified bin count
+        compute_histogram(
+            selection.dimension_values,
+            selection.bin_counts,
+            selection.bin_min,
+            selection.bin_max,
+            selection.bin_width,
+            selection.max_bin_count,
+            selection.histogram_bin_count
+        );
+        selection.num_bins = static_cast<int>(selection.bin_counts.size());
+
+        // Find which bin the selected vertex falls into (for highlighting)
+        if (selection.is_distribution_mode && selection.selected_vertex_value > 0 &&
+            selection.bin_width > 0.0001f) {
+            int bin = static_cast<int>((selection.selected_vertex_value - selection.bin_min) / selection.bin_width);
+            selection.selected_vertex_bin = std::clamp(bin, 0, selection.num_bins - 1);
+        } else {
+            selection.selected_vertex_bin = -1;
+        }
+    } else {
+        selection.bin_counts.clear();
+        selection.num_bins = 0;
+        selection.mean_value = 0.0f;
+        selection.std_dev = 0.0f;
+        selection.selected_vertex_bin = -1;
+    }
+
+    selection.cached_dim_source = dim_source;
+    selection.cached_timestep = current_step;
+    selection.cached_bin_count = selection.histogram_bin_count;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -2593,6 +3014,7 @@ int main(int argc, char* argv[]) {
     bool uniform_random = false;   // Step-synchronized uniform random mode
     int matches_per_step = 1;      // Matches to apply per step in uniform mode
     bool fast_reservoir = false;   // Early termination when reservoir full
+    bool solid_grid = false;       // Use solid grid (no holes)
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -2666,6 +3088,8 @@ int main(int argc, char* argv[]) {
             no_canonicalize = true;
         } else if (arg == "--no-explore-dedup") {
             no_explore_dedup = true;
+        } else if (arg == "--solid-grid") {
+            solid_grid = true;
         }
     }
 
@@ -2769,6 +3193,8 @@ int main(int argc, char* argv[]) {
         BHInitialCondition initial;
         if (brill_vertices > 0) {
             initial = generate_brill_lindquist(brill_vertices, bh_config);
+        } else if (solid_grid) {
+            initial = generate_solid_grid(grid_width, grid_height, bh_config);
         } else {
             initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
         }
@@ -3024,6 +3450,8 @@ int main(int argc, char* argv[]) {
         BHInitialCondition initial;
         if (brill_vertices > 0) {
             initial = generate_brill_lindquist(brill_vertices, bh_config);
+        } else if (solid_grid) {
+            initial = generate_solid_grid(grid_width, grid_height, bh_config);
         } else {
             initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
         }
@@ -3159,6 +3587,14 @@ int main(int argc, char* argv[]) {
     auto cylinder_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cylinder.vert.spv");
     auto sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
 
+    // Picking shaders
+    auto picking_sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/picking_sphere.vert.spv");
+    auto picking_sphere_frag_spirv = load_spirv("../visualisation/shaders/spirv/picking_sphere.frag.spv");
+    bool picking_shaders_available = !picking_sphere_vert_spirv.empty() && !picking_sphere_frag_spirv.empty();
+    if (!picking_shaders_available) {
+        std::cerr << "Warning: Picking shaders not found - vertex selection disabled" << std::endl;
+    }
+
     if (vert_spirv.empty() || frag_spirv.empty()) {
         std::cerr << "Failed to load basic shaders" << std::endl;
         device.reset();
@@ -3196,6 +3632,23 @@ int main(int argc, char* argv[]) {
     sph_vert_desc.spirv_code = sphere_vert_spirv.data();
     sph_vert_desc.spirv_size = sphere_vert_spirv.size() * sizeof(uint32_t);
     auto sphere_vertex_shader = device->create_shader(sph_vert_desc);
+
+    // Picking shaders
+    std::unique_ptr<gal::Shader> picking_sphere_vert_shader;
+    std::unique_ptr<gal::Shader> picking_sphere_frag_shader;
+    if (picking_shaders_available) {
+        gal::ShaderDesc pick_vert_desc;
+        pick_vert_desc.stage = gal::ShaderStage::Vertex;
+        pick_vert_desc.spirv_code = picking_sphere_vert_spirv.data();
+        pick_vert_desc.spirv_size = picking_sphere_vert_spirv.size() * sizeof(uint32_t);
+        picking_sphere_vert_shader = device->create_shader(pick_vert_desc);
+
+        gal::ShaderDesc pick_frag_desc;
+        pick_frag_desc.stage = gal::ShaderStage::Fragment;
+        pick_frag_desc.spirv_code = picking_sphere_frag_spirv.data();
+        pick_frag_desc.spirv_size = picking_sphere_frag_spirv.size() * sizeof(uint32_t);
+        picking_sphere_frag_shader = device->create_shader(pick_frag_desc);
+    }
 
     // Create pipelines
     gal::VertexAttribute vertex_attribs[] = {
@@ -3330,6 +3783,43 @@ int main(int argc, char* argv[]) {
     cylinder_pipeline_desc.push_constant_size = sizeof(math::mat4);
     auto cylinder_pipeline = device->create_render_pipeline(cylinder_pipeline_desc);
 
+    // Picking pipeline (outputs vertex index to R32_UINT texture)
+    std::unique_ptr<gal::RenderPipeline> picking_sphere_pipeline;
+    if (picking_shaders_available) {
+        // Picking instance layout: center, radius, vertex_index
+        gal::VertexAttribute picking_inst_attribs[] = {
+            {2, gal::Format::RGB32_FLOAT, 0},                                      // center (x,y,z)
+            {3, gal::Format::R32_FLOAT, sizeof(float) * 3},                        // radius
+            {4, gal::Format::R32_UINT, sizeof(float) * 4},                         // vertex_index
+        };
+        gal::VertexBufferLayout picking_inst_layout;
+        picking_inst_layout.stride = sizeof(PickingSphereInstance);
+        picking_inst_layout.step_mode = gal::VertexStepMode::Instance;
+        picking_inst_layout.attributes = picking_inst_attribs;
+        picking_inst_layout.attribute_count = 3;
+
+        gal::VertexBufferLayout picking_layouts[] = {mesh_layout, picking_inst_layout};
+        gal::Format picking_color_format = gal::Format::R32_UINT;
+
+        gal::RenderPipelineDesc picking_pipeline_desc;
+        picking_pipeline_desc.vertex_shader = picking_sphere_vert_shader.get();
+        picking_pipeline_desc.fragment_shader = picking_sphere_frag_shader.get();
+        picking_pipeline_desc.vertex_layouts = picking_layouts;
+        picking_pipeline_desc.vertex_layout_count = 2;
+        picking_pipeline_desc.topology = gal::PrimitiveTopology::TriangleList;
+        picking_pipeline_desc.rasterizer.cull_mode = gal::CullMode::None;
+        picking_pipeline_desc.depth_stencil.depth_test_enable = true;
+        picking_pipeline_desc.depth_stencil.depth_write_enable = true;
+        picking_pipeline_desc.depth_stencil.depth_compare = gal::CompareFunc::Less;
+        // No blending for integer output
+        picking_pipeline_desc.blend_state_count = 0;
+        picking_pipeline_desc.color_formats = &picking_color_format;
+        picking_pipeline_desc.color_format_count = 1;
+        picking_pipeline_desc.depth_format = depth_format;
+        picking_pipeline_desc.push_constant_size = sizeof(math::mat4);
+        picking_sphere_pipeline = device->create_render_pipeline(picking_pipeline_desc);
+    }
+
     // Generate meshes
     Mesh cylinder_mesh = generate_cylinder_mesh(16);
     Mesh sphere_mesh = generate_sphere_mesh(16, 8);
@@ -3392,6 +3882,55 @@ int main(int argc, char* argv[]) {
 
     auto sphere_instance_buffer = device->create_buffer(instance_buffer_desc);
     auto cylinder_instance_buffer = device->create_buffer(instance_buffer_desc);
+
+    // Picking resources
+    std::unique_ptr<gal::Texture> picking_texture;
+    std::unique_ptr<gal::Texture> picking_depth_texture;
+    std::unique_ptr<gal::Buffer> picking_instance_buffer;
+    std::unique_ptr<gal::Buffer> picking_readback_buffer;
+
+    auto create_picking_resources = [&](uint32_t w, uint32_t h) {
+        if (!picking_shaders_available) return;
+
+        // Picking color texture (R32_UINT)
+        gal::TextureDesc pick_color_desc;
+        pick_color_desc.size = {w, h, 1};
+        pick_color_desc.format = gal::Format::R32_UINT;
+        pick_color_desc.usage = gal::TextureUsage::RenderTarget;
+        pick_color_desc.sample_count = 1;
+        picking_texture = device->create_texture(pick_color_desc);
+
+        // Picking depth texture
+        gal::TextureDesc pick_depth_desc;
+        pick_depth_desc.size = {w, h, 1};
+        pick_depth_desc.format = depth_format;
+        pick_depth_desc.usage = gal::TextureUsage::DepthStencil;
+        pick_depth_desc.sample_count = 1;
+        picking_depth_texture = device->create_texture(pick_depth_desc);
+
+        // Readback buffer (single pixel)
+        gal::BufferDesc readback_desc;
+        readback_desc.size = sizeof(uint32_t);
+        readback_desc.usage = gal::BufferUsage::TransferDst;
+        readback_desc.memory = gal::MemoryLocation::GPU_TO_CPU;
+        picking_readback_buffer = device->create_buffer(readback_desc);
+
+        // Instance buffer for picking (reuse same size as sphere instance buffer)
+        gal::BufferDesc pick_inst_desc;
+        pick_inst_desc.size = buffer_size;
+        pick_inst_desc.usage = gal::BufferUsage::Vertex;
+        pick_inst_desc.memory = gal::MemoryLocation::CPU_TO_GPU;
+        picking_instance_buffer = device->create_buffer(pick_inst_desc);
+    };
+
+    create_picking_resources(window->get_width(), window->get_height());
+
+    // Picking state
+    bool picking_pass_pending = false;
+    bool picking_readback_pending = false;  // True after picking pass submitted, waiting for GPU
+    int picking_click_x = 0, picking_click_y = 0;
+    VertexSelectionState vertex_selection;
+    std::vector<VertexId> picking_vertex_ids;  // Maps instance index to vertex ID
 
     // Camera - compute distance from bounding radius for good initial framing
     // Multiply by ~2.5 to fit the graph nicely in view with some margin
@@ -4409,6 +4948,15 @@ int main(int argc, char* argv[]) {
                 break;
 
             case platform::KeyCode::Minus:
+                // If histogram is showing, adjust bin count
+                if (vertex_selection.has_selection) {
+                    if (vertex_selection.histogram_bin_count > 2) {
+                        vertex_selection.histogram_bin_count--;
+                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                        std::cout << "Histogram bins: " << vertex_selection.histogram_bin_count << std::endl;
+                    }
+                    break;
+                }
                 // Timeslice width is not applicable for Global mode
                 if (dim_source == DimensionSource::Global) {
                     std::cout << "Timeslice width: N/A for Global mode" << std::endl;
@@ -4422,6 +4970,15 @@ int main(int argc, char* argv[]) {
                 break;
 
             case platform::KeyCode::Equal:
+                // If histogram is showing, adjust bin count
+                if (vertex_selection.has_selection) {
+                    if (vertex_selection.histogram_bin_count < 50) {
+                        vertex_selection.histogram_bin_count++;
+                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                        std::cout << "Histogram bins: " << vertex_selection.histogram_bin_count << std::endl;
+                    }
+                    break;
+                }
                 // Timeslice width is not applicable for Global mode
                 if (dim_source == DimensionSource::Global) {
                     std::cout << "Timeslice width: N/A for Global mode" << std::endl;
@@ -4556,11 +5113,27 @@ int main(int argc, char* argv[]) {
         }
     };
 
+    // Track click start position for picking
+    int click_start_x = 0, click_start_y = 0;
+    bool is_potential_click = false;
+
     callbacks.on_mouse_button = [&](platform::MouseButton button, bool pressed, int x, int y, platform::Modifiers mods) {
         if (button == platform::MouseButton::Left) {
             auto [ndc_x, ndc_y] = screen_to_ndc(x, y);
 
             if (pressed) {
+                // Check if clicking on histogram panel (dismiss or keep)
+                if (vertex_selection.has_selection) {
+                    bool in_panel = ndc_x >= vertex_selection.panel_left &&
+                                    ndc_x <= vertex_selection.panel_right &&
+                                    ndc_y >= vertex_selection.panel_top &&
+                                    ndc_y <= vertex_selection.panel_bottom;
+                    if (in_panel) {
+                        // Click inside panel - ignore (could add interactivity later)
+                        return;
+                    }
+                }
+
                 // Check if clicking on timeline UI
                 if (is_in_timeline(ndc_x, ndc_y)) {
                     // Check buttons first
@@ -4601,11 +5174,28 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Not on UI, enable camera movement
+                // Not on UI - track for potential click/pick or camera drag
+                click_start_x = x;
+                click_start_y = y;
+                is_potential_click = true;
                 left_mouse_down = true;
                 controller.set_mouse_captured(true);
             } else {
                 // Mouse released
+                if (is_potential_click && left_mouse_down) {
+                    // Check if this was a click (minimal movement) vs drag
+                    int dx = std::abs(x - click_start_x);
+                    int dy = std::abs(y - click_start_y);
+                    if (dx < 5 && dy < 5) {
+                        // This is a click - trigger picking
+                        picking_pass_pending = true;
+                        picking_click_x = x;
+                        picking_click_y = y;
+                        vertex_selection.click_screen_x = x;
+                        vertex_selection.click_screen_y = y;
+                    }
+                }
+                is_potential_click = false;
                 left_mouse_down = false;
                 scrubber_dragging = false;
                 controller.set_mouse_captured(false);
@@ -4838,6 +5428,42 @@ int main(int argc, char* argv[]) {
         fence->reset();
         in_flight_cmd.reset();
 
+        // Process picking readback if pending
+        if (picking_readback_pending && picking_readback_buffer) {
+            uint32_t picked_index = 0;
+            picking_readback_buffer->read(&picked_index, sizeof(uint32_t));
+
+            if (picked_index > 0) {
+                // Vertex was clicked (index is 1-based, 0 means background)
+                size_t vertex_idx = picked_index - 1;
+                if (vertex_idx < picking_vertex_ids.size()) {
+                    VertexId clicked_vid = picking_vertex_ids[vertex_idx];
+
+                    // Update selection
+                    vertex_selection.has_selection = true;
+                    vertex_selection.selected_vertex = clicked_vid;
+
+                    // Position panel near click (convert to NDC)
+                    auto [ndc_x, ndc_y] = screen_to_ndc(vertex_selection.click_screen_x,
+                                                        vertex_selection.click_screen_y);
+                    vertex_selection.panel_ndc_x = ndc_x;
+                    vertex_selection.panel_ndc_y = ndc_y;
+
+                    // Compute histogram data
+                    update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+
+                    std::cout << "Selected vertex " << clicked_vid
+                              << " (" << vertex_selection.dimension_values.size() << " dimension values)"
+                              << std::endl;
+                }
+            } else {
+                // Clicked on empty space - dismiss selection
+                vertex_selection.has_selection = false;
+            }
+
+            picking_readback_pending = false;
+        }
+
         // Rebuild geometry if needed
         if (geometry_dirty) {
             auto geom_t0 = std::chrono::high_resolution_clock::now();
@@ -4952,6 +5578,100 @@ int main(int argc, char* argv[]) {
         }
 
         auto encoder = device->create_command_encoder();
+
+        // Picking render pass (if click pending and in 3D mode with spheres)
+        bool picking_result_ready = false;
+        if (picking_pass_pending && picking_shaders_available && picking_sphere_pipeline &&
+            view_mode == ViewMode::View3D && !render_data.sphere_instances.empty()) {
+
+            // Build picking instance data from sphere instances
+            std::vector<PickingSphereInstance> picking_instances;
+            picking_instances.reserve(render_data.sphere_instances.size());
+
+            for (size_t i = 0; i < render_data.sphere_instances.size(); ++i) {
+                const auto& si = render_data.sphere_instances[i];
+                PickingSphereInstance pi;
+                pi.x = si.x;
+                pi.y = si.y;
+                pi.z = si.z;
+                pi.radius = si.radius * 1.5f;  // Slightly larger for easier picking
+                pi.vertex_index = static_cast<uint32_t>(i);
+                pi._pad[0] = 0;
+                pi._pad[1] = 0;
+                pi._pad[2] = 0;
+                picking_instances.push_back(pi);
+            }
+
+            // Upload picking instance data
+            size_t pick_inst_size = picking_instances.size() * sizeof(PickingSphereInstance);
+            picking_instance_buffer->write(picking_instances.data(), pick_inst_size);
+
+            // Picking render pass
+            gal::RenderPassColorAttachment pick_color_att;
+            pick_color_att.texture = picking_texture.get();
+            pick_color_att.load_op = gal::LoadOp::Clear;
+            pick_color_att.store_op = gal::StoreOp::Store;
+            pick_color_att.clear_color[0] = 0.0f;  // Clear to 0 (no vertex)
+
+            gal::RenderPassDepthAttachment pick_depth_att;
+            pick_depth_att.texture = picking_depth_texture.get();
+            pick_depth_att.depth_load_op = gal::LoadOp::Clear;
+            pick_depth_att.depth_store_op = gal::StoreOp::DontCare;
+            pick_depth_att.clear_depth = 1.0f;
+
+            gal::RenderPassBeginInfo pick_rp_info;
+            pick_rp_info.pipeline = picking_sphere_pipeline.get();
+            pick_rp_info.color_attachments = &pick_color_att;
+            pick_rp_info.color_attachment_count = 1;
+            pick_rp_info.depth_attachment = pick_depth_att;
+
+            auto pick_rp = encoder->begin_render_pass(pick_rp_info);
+            if (pick_rp) {
+                pick_rp->set_viewport(0, 0, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f);
+                pick_rp->set_scissor(0, 0, w, h);
+                pick_rp->set_pipeline(picking_sphere_pipeline.get());
+                pick_rp->push_constants(vp.m, sizeof(math::mat4));
+                pick_rp->set_vertex_buffer(0, sphere_vb.get());
+                pick_rp->set_vertex_buffer(1, picking_instance_buffer.get());
+                pick_rp->set_index_buffer(sphere_ib.get(), gal::IndexFormat::Uint16);
+                pick_rp->draw_indexed(
+                    static_cast<uint32_t>(sphere_mesh.indices.size()),
+                    static_cast<uint32_t>(picking_instances.size()),
+                    0, 0, 0
+                );
+                pick_rp->end();
+
+                // Copy the clicked pixel to readback buffer
+                // Note: We copy a single pixel at the click location
+                gal::BufferTextureCopy copy_region;
+                copy_region.buffer_offset = 0;
+                copy_region.buffer_row_length = 0;
+                copy_region.buffer_image_height = 0;
+                copy_region.texture_mip_level = 0;
+                copy_region.texture_array_layer = 0;
+                copy_region.texture_offset = {
+                    static_cast<uint32_t>(std::clamp(picking_click_x, 0, static_cast<int>(w) - 1)),
+                    static_cast<uint32_t>(std::clamp(picking_click_y, 0, static_cast<int>(h) - 1)),
+                    0
+                };
+                copy_region.copy_size = {1, 1, 1};
+                encoder->copy_texture_to_buffer(picking_texture.get(), picking_readback_buffer.get(), copy_region);
+            }
+
+            // Store vertex IDs for later lookup
+            // Sphere instances are built in same order as ts.union_vertices
+            if (current_step >= 0 && current_step < static_cast<int>(analysis.per_timestep.size())) {
+                picking_vertex_ids = analysis.per_timestep[current_step].union_vertices;
+            }
+
+            picking_result_ready = true;
+            picking_readback_pending = true;
+            picking_pass_pending = false;
+        } else if (picking_pass_pending) {
+            // 2D mode or no spheres - dismiss and deselect
+            vertex_selection.has_selection = false;
+            picking_pass_pending = false;
+        }
 
         // Select active pipelines based on MSAA state
         gal::RenderPipeline* active_triangle_pipeline = (msaa_enabled && msaa_triangle_pipeline)
@@ -5180,6 +5900,35 @@ int main(int argc, char* argv[]) {
                 all_overlay_verts.insert(all_overlay_verts.end(),
                     timeline_verts.begin(), timeline_verts.end());
 
+                // 1d. Add histogram panel (if vertex selected)
+                HistogramData histogram_data;
+                if (vertex_selection.has_selection) {
+                    // Check if we need to recompute histogram (timestep, mode, or bin count changed)
+                    if (vertex_selection.cached_timestep != current_step ||
+                        vertex_selection.cached_dim_source != dim_source ||
+                        vertex_selection.cached_bin_count != vertex_selection.histogram_bin_count) {
+                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                    }
+
+                    histogram_data = build_histogram_panel(
+                        vertex_selection,
+                        vertex_selection.panel_ndc_x, vertex_selection.panel_ndc_y,
+                        static_cast<float>(w) / static_cast<float>(h),
+                        w, h,
+                        current_palette, dim_source,
+                        legend_min, legend_max
+                    );
+
+                    // Update panel bounds for hit testing
+                    vertex_selection.panel_left = histogram_data.panel_left;
+                    vertex_selection.panel_right = histogram_data.panel_right;
+                    vertex_selection.panel_top = histogram_data.panel_top;
+                    vertex_selection.panel_bottom = histogram_data.panel_bottom;
+
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        histogram_data.verts.begin(), histogram_data.verts.end());
+                }
+
                 // --- STEP 2: Single draw call for ALL overlay geometry ---
                 if (!all_overlay_verts.empty()) {
                     overlay_buffer->write(all_overlay_verts.data(),
@@ -5281,6 +6030,46 @@ int main(int argc, char* argv[]) {
                     float min_x = ndc_to_pixel_x(legend.label_x) - min_ss.str().length() * text_char_w;
                     float min_y = ndc_to_pixel_y(legend.min_y) - text_char_h;
                     queue_text(min_x, min_y, min_ss.str(), TextColor::White, text_scale);
+                }
+
+                // 3c. Queue histogram text (if visible)
+                if (vertex_selection.has_selection && !histogram_data.verts.empty()) {
+                    auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * w; };
+                    auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * h; };
+
+                    // Title: "Vertex N (Mode)"
+                    std::string mode_str;
+                    switch (dim_source) {
+                        case DimensionSource::Branchial: mode_str = "Branchial"; break;
+                        case DimensionSource::Foliation: mode_str = "Foliation"; break;
+                        case DimensionSource::Global:    mode_str = "Global"; break;
+                    }
+                    std::string title = "Vertex " + std::to_string(vertex_selection.selected_vertex) +
+                                        " (" + mode_str + ")";
+                    float title_px_x = ndc_to_pixel_x(histogram_data.title_x);
+                    float title_px_y = ndc_to_pixel_y(histogram_data.title_y);
+                    queue_text(title_px_x, title_px_y, title, TextColor::Cyan, text_scale);
+
+                    // Stats: n=X, mean=Y, std=Z
+                    std::ostringstream stats_ss;
+                    stats_ss << "n=" << vertex_selection.dimension_values.size()
+                             << " mean=" << std::fixed << std::setprecision(2) << vertex_selection.mean_value
+                             << " std=" << std::fixed << std::setprecision(2) << vertex_selection.std_dev;
+                    float stats_px_x = ndc_to_pixel_x(histogram_data.stats_x);
+                    float stats_px_y = ndc_to_pixel_y(histogram_data.stats_y);
+                    queue_text(stats_px_x, stats_px_y, stats_ss.str(), TextColor::White, text_scale);
+
+                    // Axis min/max labels
+                    std::ostringstream min_ss, max_ss;
+                    min_ss << std::fixed << std::setprecision(2) << vertex_selection.bin_min;
+                    max_ss << std::fixed << std::setprecision(2) <<
+                           (vertex_selection.bin_min + vertex_selection.num_bins * vertex_selection.bin_width);
+                    float axis_min_px_x = ndc_to_pixel_x(histogram_data.axis_min_x);
+                    float axis_min_px_y = ndc_to_pixel_y(histogram_data.axis_min_y);
+                    float axis_max_px_x = ndc_to_pixel_x(histogram_data.axis_max_x);
+                    float axis_max_px_y = ndc_to_pixel_y(histogram_data.axis_max_y);
+                    queue_text(axis_min_px_x, axis_min_px_y, min_ss.str(), TextColor::White, text_scale);
+                    queue_text(axis_max_px_x, axis_max_px_y, max_ss.str(), TextColor::White, text_scale);
                 }
 
                 // --- STEP 4: Single draw call for ALL text ---

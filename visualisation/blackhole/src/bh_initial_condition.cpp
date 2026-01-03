@@ -232,4 +232,75 @@ BHInitialCondition generate_grid_with_holes(
     return result;
 }
 
+// =============================================================================
+// Solid Grid Generator (no holes)
+// =============================================================================
+
+BHInitialCondition generate_solid_grid(
+    int grid_width,
+    int grid_height,
+    const BHConfig& config
+) {
+    BHInitialCondition result;
+    result.config = config;
+
+    std::cout << "Generating solid grid initial condition..." << std::endl;
+    std::cout << "  Grid: " << grid_width << " x " << grid_height << std::endl;
+
+    // Compute grid spacing to fit the box
+    float width = config.box_x[1] - config.box_x[0];
+    float height = config.box_y[1] - config.box_y[0];
+    float dx = width / (grid_width - 1);
+    float dy = height / (grid_height - 1);
+
+    // Map from grid position to vertex index
+    std::vector<std::vector<int>> grid_to_vertex(grid_width, std::vector<int>(grid_height, -1));
+
+    // Create all vertices (no exclusion)
+    for (int i = 0; i < grid_width; ++i) {
+        for (int j = 0; j < grid_height; ++j) {
+            Vec2 pt{
+                config.box_x[0] + i * dx,
+                config.box_y[0] + j * dy
+            };
+            grid_to_vertex[i][j] = static_cast<int>(result.vertex_positions.size());
+            result.vertex_positions.push_back(pt);
+        }
+    }
+
+    // Random generator for edge direction flipping
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> flip_dist(0, 1);
+
+    // Create edges between adjacent vertices
+    auto add_edge = [&](int i1, int j1, int i2, int j2) {
+        if (i2 < 0 || i2 >= grid_width || j2 < 0 || j2 >= grid_height) return;
+
+        int v1 = grid_to_vertex[i1][j1];
+        int v2 = grid_to_vertex[i2][j2];
+
+        // Randomly flip edge direction for unbiased exploration
+        if (flip_dist(gen)) {
+            result.edges.push_back({static_cast<uint32_t>(v2), static_cast<uint32_t>(v1)});
+        } else {
+            result.edges.push_back({static_cast<uint32_t>(v1), static_cast<uint32_t>(v2)});
+        }
+    };
+
+    for (int i = 0; i < grid_width; ++i) {
+        for (int j = 0; j < grid_height; ++j) {
+            // Right neighbor
+            add_edge(i, j, i + 1, j);
+            // Up neighbor
+            add_edge(i, j, i, j + 1);
+        }
+    }
+
+    std::cout << "  Generated " << result.vertex_positions.size() << " vertices, "
+              << result.edges.size() << " edges" << std::endl;
+
+    return result;
+}
+
 } // namespace viz::blackhole

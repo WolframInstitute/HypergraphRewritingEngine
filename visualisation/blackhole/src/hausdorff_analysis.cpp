@@ -11,8 +11,48 @@
 #include <random>
 #include <execution>
 #include <thread>
+#include <chrono>
+#include <atomic>
 
 namespace viz::blackhole {
+
+// =============================================================================
+// Performance Timing Accumulators (thread-safe)
+// =============================================================================
+namespace {
+    std::atomic<uint64_t> g_geodesic_time_us{0};
+    std::atomic<uint64_t> g_dimension_time_us{0};
+    std::atomic<size_t> g_dimension_calls{0};
+    std::atomic<size_t> g_total_vertices_processed{0};
+
+    // Aggregation phase timing
+    std::atomic<uint64_t> g_union_build_time_us{0};
+    std::atomic<uint64_t> g_lcc_time_us{0};
+    std::atomic<uint64_t> g_bucketing_time_us{0};
+}
+
+void reset_analysis_timers() {
+    g_geodesic_time_us = 0;
+    g_dimension_time_us = 0;
+    g_dimension_calls = 0;
+    g_total_vertices_processed = 0;
+    g_union_build_time_us = 0;
+    g_lcc_time_us = 0;
+    g_bucketing_time_us = 0;
+}
+
+void print_analysis_timing() {
+    std::cout << "[TIMING] Geodesic coordinates: " << std::fixed << std::setprecision(1)
+              << (g_geodesic_time_us.load() / 1000.0) << " ms" << std::endl;
+    std::cout << "[TIMING] Dimension estimation: " << std::fixed << std::setprecision(1)
+              << (g_dimension_time_us.load() / 1000.0) << " ms"
+              << " (" << g_dimension_calls.load() << " calls, "
+              << g_total_vertices_processed.load() << " total vertices)" << std::endl;
+    std::cout << "[TIMING] Aggregation breakdown:" << std::endl;
+    std::cout << "  - Union graph building: " << (g_union_build_time_us.load() / 1000.0) << " ms" << std::endl;
+    std::cout << "  - LCC computation: " << (g_lcc_time_us.load() / 1000.0) << " ms" << std::endl;
+    std::cout << "  - Coordinate bucketing: " << (g_bucketing_time_us.load() / 1000.0) << " ms" << std::endl;
+}
 
 // =============================================================================
 // SimpleGraph Implementation
@@ -319,10 +359,63 @@ std::vector<VertexId> select_anchors(
 // Geodesic Coordinates
 // =============================================================================
 
+// Version that uses pre-computed distance matrix (O(V*A) lookups, no BFS)
+std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates_from_matrix(
+    const SimpleGraph& graph,
+    const std::vector<VertexId>& anchors,
+    const std::vector<std::vector<int>>& dist_matrix
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::unordered_map<VertexId, std::vector<int>> result;
+    const auto& verts = graph.vertices();
+
+    // Build anchor index lookup
+    std::vector<size_t> anchor_indices(anchors.size());
+    for (size_t a = 0; a < anchors.size(); ++a) {
+        // Find anchor's index in vertex list
+        for (size_t i = 0; i < verts.size(); ++i) {
+            if (verts[i] == anchors[a]) {
+                anchor_indices[a] = i;
+                break;
+            }
+        }
+    }
+
+    // Build coordinate vectors for each vertex using matrix lookups
+    for (size_t i = 0; i < verts.size(); ++i) {
+        VertexId v = verts[i];
+        std::vector<int> coords(anchors.size(), -1);
+        bool valid = true;
+
+        for (size_t a = 0; a < anchors.size(); ++a) {
+            int dist = dist_matrix[i][anchor_indices[a]];
+            if (dist >= 0) {
+                coords[a] = dist;
+            } else {
+                valid = false;
+                break;
+            }
+        }
+
+        if (valid) {
+            result[v] = std::move(coords);
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_geodesic_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+
+    return result;
+}
+
+// Original version that computes BFS per anchor (for backward compatibility)
 std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates(
     const SimpleGraph& graph,
     const std::vector<VertexId>& anchors
 ) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
     std::unordered_map<VertexId, std::vector<int>> result;
 
     // For each anchor, compute distances to all vertices
@@ -357,6 +450,9 @@ std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates(
             result[v] = std::move(coords);
         }
     }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_geodesic_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
 
     return result;
 }
@@ -431,20 +527,47 @@ float estimate_local_dimension(
     return slope;
 }
 
+// Version that uses pre-computed distance matrix (O(V * max_radius) scans, no BFS)
+std::vector<float> estimate_all_dimensions_from_matrix(
+    const SimpleGraph& graph,
+    const std::vector<std::vector<int>>& dist_matrix,
+    int max_radius
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> dimensions(graph.vertex_count());
+
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        dimensions[i] = estimate_local_dimension(dist_matrix[i], max_radius);
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
+
+    return dimensions;
+}
+
+// Original version that computes BFS per vertex (for backward compatibility)
 std::vector<float> estimate_all_dimensions(
     const SimpleGraph& graph,
     int max_radius
 ) {
-    // Compute dimensions one vertex at a time to avoid O(V²) memory usage
-    // Previously we stored all_pairs_distances() which is V vectors of V ints
-    // Now we compute distances_from() for each vertex and immediately discard
-    std::vector<float> dimensions(graph.vertex_count());
-    const auto& verts = graph.vertices();
+    auto start_time = std::chrono::high_resolution_clock::now();
 
+    // Compute distance matrix once - O(V * (V+E)) total
+    auto dist_matrix = graph.all_pairs_distances();
+
+    std::vector<float> dimensions(graph.vertex_count());
     for (size_t i = 0; i < graph.vertex_count(); ++i) {
-        auto dists = graph.distances_from(verts[i]);  // O(V) memory, reused each iteration
-        dimensions[i] = estimate_local_dimension(dists, max_radius);
+        dimensions[i] = estimate_local_dimension(dist_matrix[i], max_radius);
     }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
 
     return dimensions;
 }
@@ -461,11 +584,15 @@ LightweightAnalysis analyze_state_lightweight(
     LightweightAnalysis result;
     result.num_anchors = static_cast<int>(anchors.size());
 
-    // Compute geodesic coordinates
-    auto coords = compute_geodesic_coordinates(graph, anchors);
+    // Compute distance matrix ONCE - O(V * (V+E)) BFS traversals
+    // This is reused for both geodesic coordinates and dimension estimation
+    auto dist_matrix = graph.all_pairs_distances();
 
-    // Compute dimensions
-    auto dimensions = estimate_all_dimensions(graph, max_radius);
+    // Compute geodesic coordinates from matrix - O(V * A) lookups
+    auto coords = compute_geodesic_coordinates_from_matrix(graph, anchors, dist_matrix);
+
+    // Compute dimensions from matrix - O(V * max_radius) scans
+    auto dimensions = estimate_all_dimensions_from_matrix(graph, dist_matrix, max_radius);
 
     // Build vertex data arrays
     const auto& verts = graph.vertices();
@@ -515,11 +642,14 @@ StateAnalysis analyze_state(
         }
     }
 
-    // Compute geodesic coordinates
-    auto coords = compute_geodesic_coordinates(graph, anchors);
+    // Compute distance matrix ONCE - reused for both geodesic coords and dimensions
+    auto dist_matrix = graph.all_pairs_distances();
 
-    // Compute dimensions
-    auto dimensions = estimate_all_dimensions(graph, max_radius);
+    // Compute geodesic coordinates from matrix
+    auto coords = compute_geodesic_coordinates_from_matrix(graph, anchors, dist_matrix);
+
+    // Compute dimensions from matrix
+    auto dimensions = estimate_all_dimensions_from_matrix(graph, dist_matrix, max_radius);
 
     // Build vertex data arrays
     result.vertex_dimensions.resize(graph.vertex_count());
@@ -716,12 +846,15 @@ TimestepAggregation aggregate_timestep(
     SimpleGraph union_graph;
     union_graph.build(result.union_vertices, result.union_edges);
 
+    // Compute distance matrix for union graph
+    auto union_dist_matrix = union_graph.all_pairs_distances();
+
     // Select anchors from union graph (well-separated vertices)
     auto anchors = select_anchors(union_graph, result.union_vertices, 6, 3);
     int num_anchors = static_cast<int>(anchors.size());
 
-    // Compute geodesic coordinates on the UNION graph (always connected = always valid)
-    auto union_coords = compute_geodesic_coordinates(union_graph, anchors);
+    // Compute geodesic coordinates from pre-computed matrix
+    auto union_coords = compute_geodesic_coordinates_from_matrix(union_graph, anchors, union_dist_matrix);
 
     // Build vertex index map for union
     std::unordered_map<VertexId, size_t> union_vertex_idx;
@@ -819,6 +952,11 @@ TimestepAggregation aggregate_timestep_streaming(
     }
 #endif
 
+    // =========================================================================
+    // Phase 1: Union graph building
+    // =========================================================================
+    auto union_build_start = std::chrono::high_resolution_clock::now();
+
     // Union of all vertices and edges, plus count for intersection
     std::unordered_set<VertexId> union_vertex_set;
     std::unordered_map<uint64_t, int> edge_counts;  // Count how many states contain each edge
@@ -859,8 +997,23 @@ TimestepAggregation aggregate_timestep_streaming(
         all_edges.push_back({v1, v2});
     }
 
+    auto union_build_end = std::chrono::high_resolution_clock::now();
+    g_union_build_time_us += std::chrono::duration_cast<std::chrono::microseconds>(union_build_end - union_build_start).count();
+
+    // =========================================================================
+    // Phase 2: LCC computation
+    // =========================================================================
+    auto lcc_start = std::chrono::high_resolution_clock::now();
+
     // Filter to largest connected component
     auto lcc = find_largest_connected_component(all_vertices, all_edges);
+
+    auto lcc_end = std::chrono::high_resolution_clock::now();
+    g_lcc_time_us += std::chrono::duration_cast<std::chrono::microseconds>(lcc_end - lcc_start).count();
+
+    // =========================================================================
+    // Phase 3: Build result structures
+    // =========================================================================
 
     // Keep only vertices in LCC
     for (VertexId v : all_vertices) {
@@ -881,6 +1034,11 @@ TimestepAggregation aggregate_timestep_streaming(
     // Frequent = edges present in MORE than one state (excludes singletons)
     int num_states = static_cast<int>(graphs.size());
     size_t edges_in_all_states = 0;
+
+    // =========================================================================
+    // Phase 4: Bucketing (starts after basic edge processing)
+    // =========================================================================
+    auto bucketing_start = std::chrono::high_resolution_clock::now();
     size_t edges_excluded_by_lcc = 0;
     for (const auto& [key, count] : edge_counts) {
         VertexId v1 = static_cast<VertexId>(key >> 32);
@@ -955,6 +1113,9 @@ TimestepAggregation aggregate_timestep_streaming(
     SimpleGraph union_graph;
     union_graph.build(result.union_vertices, result.union_edges);
 
+    // Compute distance matrix ONCE for union graph - reused for coords and dimensions
+    auto union_dist_matrix = union_graph.all_pairs_distances();
+
     // Use global anchors (filtered to those present in this union graph)
     // This ensures consistent coordinate bucketing across all timesteps
     std::vector<VertexId> valid_anchors;
@@ -993,8 +1154,8 @@ TimestepAggregation aggregate_timestep_streaming(
               << (using_local_anchors ? " (LOCAL)" : " (GLOBAL)") << std::endl;
 #endif
 
-    // Compute geodesic coordinates on the UNION graph using global anchors
-    auto union_coords = compute_geodesic_coordinates(union_graph, valid_anchors);
+    // Compute geodesic coordinates from pre-computed matrix
+    auto union_coords = compute_geodesic_coordinates_from_matrix(union_graph, valid_anchors, union_dist_matrix);
 
     // Aggregate dimensions by VERTEX ID
     // For each vertex in the union, collect all dimension values from all states
@@ -1091,7 +1252,8 @@ TimestepAggregation aggregate_timestep_streaming(
     // 4. Assign bucket values back to vertices
 
     constexpr int global_max_radius = 5;
-    auto global_raw_dims = estimate_all_dimensions(union_graph, global_max_radius);
+    // Reuse the pre-computed distance matrix for union graph
+    auto global_raw_dims = estimate_all_dimensions_from_matrix(union_graph, union_dist_matrix, global_max_radius);
 
     // Bucket global dimensions by geodesic coordinate
     std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> global_coord_buckets;
@@ -1181,6 +1343,9 @@ TimestepAggregation aggregate_timestep_streaming(
         result.global_var_min = *std::min_element(all_global_vars.begin(), all_global_vars.end());
         result.global_var_max = *std::max_element(all_global_vars.begin(), all_global_vars.end());
     }
+
+    auto bucketing_end = std::chrono::high_resolution_clock::now();
+    g_bucketing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(bucketing_end - bucketing_start).count();
 
     return result;
 }
