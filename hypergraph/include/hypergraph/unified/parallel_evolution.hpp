@@ -954,12 +954,24 @@ public:
                             // (over ALL possible matches) for speed, but still provides a valid sample.
                             size_t match_limit = early_term ? max_matches_per_job : SIZE_MAX;
 
+                            // Early termination mechanism for fast-reservoir mode
+                            // The pattern matcher will stop when matches_found >= match_limit
+                            std::atomic<size_t> matches_found{0};
+                            std::atomic<bool> local_terminate{false};
+                            std::atomic<size_t>* mf_ptr = early_term ? &matches_found : nullptr;
+                            std::atomic<bool>* lt_ptr = early_term ? &local_terminate : nullptr;
+
                             find_matches(
                                 rules_[r], r, state, s.edges,
                                 hg_->signature_index(), hg_->inverted_index(),
                                 get_edge, get_signature,
                                 [&](uint16_t rule_index, const EdgeId* edges, uint8_t num_edges,
                                     const VariableBinding& binding, StateId /*src*/) {
+                                    // Check early termination before processing
+                                    if (early_term && local_terminate.load(std::memory_order_relaxed)) {
+                                        return;
+                                    }
+
                                     MatchRecord match;
                                     match.rule_index = rule_index;
                                     match.num_edges = num_edges;
@@ -991,7 +1003,7 @@ public:
                                     }
                                     match_count++;
                                 },
-                                nullptr, nullptr, match_limit, nullptr
+                                lt_ptr, mf_ptr, match_limit, nullptr
                             );
                         },
                         EvolutionJobType::MATCH

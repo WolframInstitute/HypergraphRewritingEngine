@@ -17,13 +17,17 @@ public:
     SimpleGraph() = default;
 
     // Build from edges (assumes vertices are 0..max_vertex_id)
+    // Stores both symmetric adjacency and directed (outgoing-only) adjacency
     void build_from_edges(const std::vector<Edge>& edges);
 
     // Build from explicit vertex list and edges
     void build(const std::vector<VertexId>& vertices, const std::vector<Edge>& edges);
 
-    // Get neighbors of a vertex
+    // Get neighbors of a vertex (symmetric/undirected)
     const std::vector<VertexId>& neighbors(VertexId v) const;
+
+    // Get outgoing neighbors only (directed)
+    const std::vector<VertexId>& out_neighbors(VertexId v) const;
 
     // Get all vertices
     const std::vector<VertexId>& vertices() const { return vertices_; }
@@ -41,12 +45,19 @@ public:
     // Compute all-pairs shortest paths (returns distance matrix indexed by vertex position)
     std::vector<std::vector<int>> all_pairs_distances() const;
 
+    // Compute all-pairs using only outgoing edges (directed)
+    std::vector<std::vector<int>> all_pairs_distances_directed() const;
+
     // Compute distances from one vertex to all others
     std::vector<int> distances_from(VertexId source) const;
 
+    // Truncated BFS - only explores up to max_radius (faster for local dimension)
+    std::vector<int> distances_from_truncated(VertexId source, int max_radius) const;
+
 private:
     std::vector<VertexId> vertices_;
-    std::unordered_map<VertexId, std::vector<VertexId>> adjacency_;
+    std::unordered_map<VertexId, std::vector<VertexId>> adjacency_;  // Symmetric (undirected)
+    std::unordered_map<VertexId, std::vector<VertexId>> out_adjacency_;  // Outgoing only (directed)
     std::unordered_map<VertexId, size_t> vertex_to_index_;
     size_t edge_count_ = 0;
     static const std::vector<VertexId> empty_neighbors_;
@@ -86,6 +97,50 @@ std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates(
     const std::vector<VertexId>& anchors
 );
 
+// Version using pre-computed distance matrix (faster for repeated calls)
+std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates_from_matrix(
+    const SimpleGraph& graph,
+    const std::vector<VertexId>& anchors,
+    const std::vector<std::vector<int>>& dist_matrix
+);
+
+// =============================================================================
+// Dimension Configuration
+// =============================================================================
+
+enum class DimensionFormula {
+    LinearRegression,    // log N = d * log r + c (default, more robust)
+    DiscreteDerivative   // (log N(r) - log N(r-1)) / (log(r+1) - log(r)) per radius
+};
+
+enum class AggregationMethod {
+    Mean,
+    Min,
+    Max
+};
+
+struct DimensionConfig {
+    DimensionFormula formula = DimensionFormula::LinearRegression;
+    float saturation_threshold = 0.5f;  // Skip radii where ball > threshold * total (1.0 = disabled)
+    int min_radius = 1;
+    int max_radius = 5;
+    bool directed = false;  // Use directed edges (VertexOutComponent) vs undirected
+    AggregationMethod aggregation = AggregationMethod::Mean;  // For discrete derivative
+};
+
+// Full statistics for a set of dimension values
+struct DimensionStats {
+    float mean = 0;
+    float min = 0;
+    float max = 0;
+    float variance = 0;
+    float stddev = 0;
+    size_t count = 0;
+};
+
+// Compute stats from a vector of values
+DimensionStats compute_dimension_stats(const std::vector<float>& values);
+
 // =============================================================================
 // Local Hausdorff Dimension
 // =============================================================================
@@ -98,11 +153,37 @@ float estimate_local_dimension(
     int max_radius = 5
 );
 
+// Version with full configuration
+float estimate_local_dimension(
+    const std::vector<int>& distances_from_vertex,
+    const DimensionConfig& config
+);
+
 // Estimate dimension for all vertices in a graph
 // Returns vector indexed same as graph.vertices()
 std::vector<float> estimate_all_dimensions(
     const SimpleGraph& graph,
     int max_radius = 5
+);
+
+// Version using pre-computed distance matrix (faster for repeated calls)
+std::vector<float> estimate_all_dimensions_from_matrix(
+    const SimpleGraph& graph,
+    const std::vector<std::vector<int>>& dist_matrix,
+    int max_radius = 5
+);
+
+// Version using truncated BFS - O(V * neighborhood) instead of O(V * V)
+// Much faster when max_radius << graph diameter
+std::vector<float> estimate_all_dimensions_truncated(
+    const SimpleGraph& graph,
+    int max_radius = 5
+);
+
+// Version with full configuration
+std::vector<float> estimate_all_dimensions(
+    const SimpleGraph& graph,
+    const DimensionConfig& config
 );
 
 // =============================================================================
@@ -149,7 +230,7 @@ TimestepAggregation aggregate_timestep_streaming(
 );
 
 // =============================================================================
-// Layout Computation
+// Layout Computation (only available when BLACKHOLE_WITH_LAYOUT is defined)
 // =============================================================================
 
 struct LayoutConfig {
@@ -167,6 +248,7 @@ struct LayoutConfig {
     int energy_window = 50;          // Window for energy averaging
 };
 
+#ifdef BLACKHOLE_WITH_LAYOUT
 // Compute layout for a single timestep
 // prev_positions: positions from previous timestep (or initial positions for step 0)
 // Returns new positions for all union_vertices
@@ -184,6 +266,7 @@ void compute_all_layouts(
     const std::vector<Vec2>& initial_positions,
     const LayoutConfig& config = {}
 );
+#endif  // BLACKHOLE_WITH_LAYOUT
 
 // =============================================================================
 // Full Pipeline

@@ -4,11 +4,19 @@ BeginPackage["HypergraphRewriting`"]
 
 PackageExport["HGEvolve"]
 PackageExport["HGEvolveV2"]
+PackageExport["HGHausdorffAnalysis"]
+PackageExport["HGStateDimensionPlot"]
+PackageExport["HGTimestepUnionPlot"]
+PackageExport["HGDimensionFilmstrip"]
 PackageExport["EdgeId"]
 
 (* Public symbols *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution."
 HGEvolveV2::usage = "HGEvolveV2[rules, initialEdges, steps, property] performs multiway rewriting using the V2 engine."
+HGHausdorffAnalysis::usage = "HGHausdorffAnalysis[edges, opts] computes local Hausdorff dimension for each vertex in a graph."
+HGStateDimensionPlot::usage = "HGStateDimensionPlot[edges, opts] plots a hypergraph with vertices colored by local dimension."
+HGTimestepUnionPlot::usage = "HGTimestepUnionPlot[evolutionResult, step, opts] plots the union graph at a timestep with dimension coloring."
+HGDimensionFilmstrip::usage = "HGDimensionFilmstrip[evolutionResult, opts] shows a grid of timestep union graphs with dimension coloring."
 EdgeId::usage = "EdgeId[id] wraps an edge identifier."
 
 Options[HGEvolveV2] = {
@@ -27,7 +35,17 @@ Options[HGEvolveV2] = {
   "IncludeStateContents" -> False,
   "IncludeEventContents" -> False,
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
-  "EdgeDeduplication" -> True  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
+  "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
+  (* Uniform Random Evolution (reservoir sampling like blackhole_viz) *)
+  "UniformRandom" -> False,  (* True: use uniform random match selection with reservoir sampling *)
+  "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
+  (* Dimension Analysis Options *)
+  "DimensionAnalysis" -> False,  (* True: compute Hausdorff dimensions for all states *)
+  "DimensionColorBy" -> "Mean",  (* "Mean", "Variance", "Min", "Max" *)
+  "DimensionPalette" -> "TemperatureMap",  (* ColorData palette name for dimension coloring *)
+  "DimensionRange" -> Automatic,  (* {min, max} or Automatic - color scale range *)
+  "DimensionFormula" -> "LinearRegression",  (* "LinearRegression" or "DiscreteDerivative" *)
+  "DimensionRadius" -> {1, 5}  (* {minR, maxR} for dimension computation *)
 };
 
 Begin["`Private`"]
@@ -50,6 +68,8 @@ If[$HypergraphLibrary === $Failed,
 
 If[$HypergraphLibrary =!= $Failed,
   performRewritingV2 = LibraryFunctionLoad[$HypergraphLibrary, "performRewritingV2",
+    {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+  performHausdorffAnalysis = LibraryFunctionLoad[$HypergraphLibrary, "performHausdorffAnalysis",
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
 ];
 
@@ -80,7 +100,9 @@ propertyRequirementsBase = <|
   "NumBranchialEdges" -> {"NumBranchialEdges"},
   (* Debug/All *)
   "Debug" -> {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
-  "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}
+  "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
+  (* Dimension analysis - computed WL-side from states *)
+  "DimensionData" -> {}
 |>;
 
 (* Compute union of required data for a list of properties *)
@@ -219,14 +241,57 @@ makeStyledEventVertexShapeFn[vertexData_] := Function[{pos, v, size},
   ]
 ];
 
+(* Compute dimension-based color for a state vertex *)
+getDimensionColor[stateId_, dimensionData_, palette_, colorBy_, dimRange_] := Module[
+  {perState, dimStats, value, t, color},
+
+  (* No dimension data -> use default *)
+  If[!AssociationQ[dimensionData] || !KeyExistsQ[dimensionData, "PerState"],
+    Return[Missing[]]];
+
+  perState = dimensionData["PerState"];
+  dimStats = Lookup[perState, stateId, Missing[]];
+  If[MissingQ[dimStats], Return[Missing[]]];
+
+  (* Get value based on colorBy mode *)
+  value = Switch[colorBy,
+    "Mean", Lookup[dimStats, "Mean", Missing[]],
+    "Variance", Lookup[dimStats, "Variance", Missing[]],
+    "Min", Lookup[dimStats, "Min", Missing[]],
+    "Max", Lookup[dimStats, "Max", Missing[]],
+    _, Lookup[dimStats, "Mean", Missing[]]
+  ];
+  If[MissingQ[value] || !NumericQ[value], Return[Missing[]]];
+
+  (* Normalize to [0, 1] *)
+  t = Clip[(value - dimRange[[1]]) / Max[dimRange[[2]] - dimRange[[1]], 0.001], {0, 1}];
+
+  (* Get color from palette *)
+  color = ColorData[palette][t];
+  color
+];
+
 (* Create graph from FFI GraphData - main entry point *)
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
 (* styled: True for full hypergraph rendering, False for structure only *)
-createGraphFromData[graphData_Association, aspectRatio_, styled_:False] := Module[
-  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeLabels},
+(* dimensionData: optional dimension data for coloring states *)
+createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}] := Module[
+  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeLabels, hasDimData, epilogLegend, g, addLegend},
 
   vertices = graphData["Vertices"];
   vertexData = graphData["VertexData"];
+  hasDimData = AssociationQ[dimensionData] && KeyExistsQ[dimensionData, "PerState"] && Length[dimensionData["PerState"]] > 0;
+
+  (* Helper to wrap graph with legend if dimension data exists *)
+  addLegend = If[hasDimData && dimColorBy =!= None,
+    Function[graph, Legended[graph,
+      BarLegend[{dimPalette, dimRange},
+        LegendLabel -> "Hausdorff Dimension",
+        LegendMarkerSize -> {15, 150}
+      ]
+    ]],
+    Identity
+  ];
 
   (* Build edges with appropriate constructors based on Type *)
   edgeList = Map[
@@ -238,13 +303,21 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False] := Modul
     graphData["Edges"]
   ];
 
-  (* Vertex labels (tooltips) - use appropriate formatter based on vertex data type *)
+  (* Vertex labels (tooltips) - include dimension info if available *)
   vertexLabels = Map[
     Function[v,
       With[{data = vertexData[v]},
         v -> Placed[
           If[AssociationQ[data],
-            If[isStateVertexData[data], formatStateTooltip[data], formatEventTooltip[data]],
+            If[isStateVertexData[data],
+              (* Add dimension info to state tooltip if available *)
+              If[hasDimData && KeyExistsQ[dimensionData["PerState"], data["Id"]],
+                Column[{formatStateTooltip[data],
+                  Row[{Style["Dimension: ", Bold], dimensionData["PerState"][data["Id"]]}]}],
+                formatStateTooltip[data]
+              ],
+              formatEventTooltip[data]
+            ],
             ToString[v]  (* Fallback for missing data *)
           ], Tooltip]
       ]
@@ -281,37 +354,75 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False] := Modul
       ], Tooltip]
   };
 
+  (* No legend in the graph itself - dimension is shown via vertex colors *)
+  epilogLegend = {};
+
   If[styled,
     (* Styled mode: use shape functions for hypergraph rendering *)
+    (* When dimension data available, color state backgrounds *)
     vertexShapes = Map[
       Function[v,
         With[{data = vertexData[v]},
           v -> If[AssociationQ[data] && isStateVertexData[data],
-            makeStyledStateVertexShapeFn[vertexData],
+            If[hasDimData,
+              makeStyledStateVertexWithDimensionFn[vertexData, dimensionData, dimPalette, dimColorBy, dimRange],
+              makeStyledStateVertexShapeFn[vertexData]
+            ],
             makeStyledEventVertexShapeFn[vertexData]
           ]
         ]
       ],
       vertices
     ];
-    Graph[vertices, edgeList,
+    addLegend[Graph[vertices, edgeList,
       VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio,
+      Epilog -> epilogLegend]]
     ,
-    (* Structure mode: simple styles *)
+    (* Structure mode: simple styles, with dimension coloring if available *)
     vertexStyles = Map[
       Function[v,
         With[{data = vertexData[v]},
-          v -> If[AssociationQ[data] && isStateVertexData[data], stateVertexStyle, eventVertexStyle]
+          If[AssociationQ[data] && isStateVertexData[data],
+            (* State vertex: use dimension color if available *)
+            With[{dimColor = getDimensionColor[data["Id"], dimensionData, dimPalette, dimColorBy, dimRange]},
+              v -> If[MissingQ[dimColor],
+                stateVertexStyle,
+                Directive[dimColor, EdgeForm[Darker[dimColor]]]
+              ]
+            ],
+            (* Event vertex: use default style *)
+            v -> eventVertexStyle
+          ]
         ]
       ],
       vertices
     ];
-    Graph[vertices, edgeList,
+    addLegend[Graph[vertices, edgeList,
       VertexLabels -> vertexLabels, VertexStyle -> vertexStyles,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio,
+      Epilog -> epilogLegend]]
+  ]
+];
+
+(* State vertex shape function with dimension coloring *)
+makeStyledStateVertexWithDimensionFn[vertexData_, dimensionData_, palette_, colorBy_, dimRange_] := Function[{pos, v, size},
+  With[{data = vertexData[v]},
+    If[AssociationQ[data] && KeyExistsQ[data, "Edges"],
+      With[{dimColor = getDimensionColor[data["Id"], dimensionData, palette, colorBy, dimRange]},
+        With[{bgColor = If[MissingQ[dimColor], LightBlue, Lighter[dimColor, 0.3]]},
+          Inset[Framed[
+            ResourceFunction["WolframModelPlot"][Rest /@ data["Edges"], ImageSize -> {32, 32}],
+            Background -> bgColor, RoundingRadius -> 3,
+            FrameStyle -> If[MissingQ[dimColor], Automatic, Darker[dimColor]]
+          ], pos, {0, 0}]
+        ]
+      ],
+      (* Fallback for missing data *)
+      Inset[Framed[v, Background -> LightBlue], pos, {0, 0}]
+    ]
   ]
 ];
 
@@ -341,10 +452,21 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
   canonicalizeStates = OptionValue["CanonicalizeStates"];
   canonicalizeEvents = OptionValue["CanonicalizeEvents"];
 
+  (* Dimension analysis requires states with edges *)
+  dimensionAnalysis = OptionValue["DimensionAnalysis"];
+  If[dimensionAnalysis,
+    includeStateContents = True  (* Force state contents for dimension computation *)
+  ];
+
   (* Compute required data components - fail explicitly on unknown properties *)
   (* Pass canonicalizeStates to conditionally add States when state canonicalization is needed *)
   requiredData = computeRequiredData[props, includeStateContents, includeEventContents, canonicalizeStates];
   If[requiredData === $Failed, Return[$Failed]];
+
+  (* Add States to required data if dimension analysis enabled *)
+  If[dimensionAnalysis && !MemberQ[requiredData, "States"],
+    requiredData = Append[requiredData, "States"]
+  ];
 
   (* Collect all graph properties for FFI *)
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"]&];
@@ -367,6 +489,9 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     All -> 0
   }];
 
+  (* Get dimension radius for config *)
+  dimensionRadius = OptionValue["DimensionRadius"];
+
   options = <|
     "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
@@ -381,7 +506,14 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
     "EdgeDeduplication" -> OptionValue["EdgeDeduplication"],
     "RequestedData" -> requiredData,
-    "GraphProperties" -> graphProperties  (* List of graph properties for FFI to generate *)
+    "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
+    (* Dimension analysis - compute in C++ instead of WL round-trips *)
+    "DimensionAnalysis" -> dimensionAnalysis,
+    "DimensionMinRadius" -> dimensionRadius[[1]],
+    "DimensionMaxRadius" -> dimensionRadius[[2]],
+    (* Uniform random evolution mode *)
+    "UniformRandom" -> OptionValue["UniformRandom"],
+    "MatchesPerStep" -> OptionValue["MatchesPerStep"]
   |>;
 
   (* Convert rules to Association *)
@@ -449,18 +581,31 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     Print["  BranchialEdges count: ", Length[branchialEdges]];
   ];
 
+  (* Dimension data is now computed in C++ by the FFI - no WL round-trips *)
+  (* FFI returns DimensionData with PerState stats and GlobalRange *)
+  dimensionData = If[dimensionAnalysis && KeyExistsQ[wxfData, "DimensionData"],
+    wxfData["DimensionData"],
+    <||>
+  ];
+
+  (* Dimension coloring options *)
+  dimPalette = OptionValue["DimensionPalette"];
+  dimColorBy = OptionValue["DimensionColorBy"];
+  dimRange = Replace[OptionValue["DimensionRange"], Automatic :>
+    If[KeyExistsQ[dimensionData, "GlobalRange"], dimensionData["GlobalRange"], {0, 3}]];
+
   (* Return requested properties *)
   If[Length[props] == 1,
     (* Single property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange],
     (* Multiple properties: return association *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange] & /@ props]
   ]
 ]
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -469,7 +614,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
-      Return[createGraphFromData[graphData, aspectRatio, isStyled]],
+      Return[createGraphFromData[graphData, aspectRatio, isStyled, dimensionData, dimPalette, dimColorBy, dimRange]],
       (* GraphData for this property not available *)
       Return[$Failed]
     ]
@@ -492,7 +637,11 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       "NumCausalEdges" -> wxfData["NumCausalEdges"],
       "NumBranchialEdges" -> wxfData["NumBranchialEdges"]
     |>,
-    "All", wxfData,
+    "All", If[Length[dimensionData] > 0,
+      Append[wxfData, "DimensionData" -> dimensionData],
+      wxfData
+    ],
+    "DimensionData", dimensionData,
     _, $Failed
   ]
 ]
@@ -503,8 +652,426 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
 
 Options[HGEvolve] = Options[HGEvolveV2];
 
-HGEvolve[rules_List, initialEdges_List, steps_Integer, property_String : "EvolutionCausalBranchialGraph", opts:OptionsPattern[]] :=
+HGEvolve[rules_List, initialEdges_List, steps_Integer,
+         property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
+         opts:OptionsPattern[]] :=
   HGEvolveV2[rules, initialEdges, steps, property, opts]
+
+(* ============================================================================ *)
+(* HGHausdorffAnalysis - Local dimension estimation via FFI *)
+(* ============================================================================ *)
+
+Options[HGHausdorffAnalysis] = {
+  "Formula" -> "LinearRegression",  (* or "DiscreteDerivative" *)
+  "SaturationThreshold" -> 0.5,
+  "MinRadius" -> 1,
+  "MaxRadius" -> 5,
+  "NumAnchors" -> 6,
+  "AnchorSeparation" -> 3,
+  "Aggregation" -> "Mean",  (* or "Min", "Max" - for discrete derivative *)
+  "Directed" -> False  (* True: use directed edges for BFS *)
+};
+
+HGHausdorffAnalysis::nolib = "HypergraphRewriting library not loaded.";
+
+HGHausdorffAnalysis[edges_List, opts:OptionsPattern[]] := Module[
+  {formula, satThreshold, minR, maxR, numAnchors, anchorSep, aggregation, directed,
+   edgesNormalized, inputAssoc, wxfInput, wxfOutput, result},
+
+  If[performHausdorffAnalysis === $Failed || !ValueQ[performHausdorffAnalysis],
+    Message[HGHausdorffAnalysis::nolib];
+    Return[$Failed]
+  ];
+
+  (* Get options *)
+  formula = OptionValue["Formula"];
+  satThreshold = OptionValue["SaturationThreshold"];
+  minR = OptionValue["MinRadius"];
+  maxR = OptionValue["MaxRadius"];
+  numAnchors = OptionValue["NumAnchors"];
+  anchorSep = OptionValue["AnchorSeparation"];
+  aggregation = OptionValue["Aggregation"];
+  directed = OptionValue["Directed"];
+
+  (* Normalize edges: accept both {v1, v2} and DirectedEdge[v1, v2] *)
+  edgesNormalized = Replace[edges, {
+    DirectedEdge[v1_, v2_] :> {v1, v2},
+    UndirectedEdge[v1_, v2_] :> {v1, v2},
+    Rule[v1_, v2_] :> {v1, v2}
+  }, {1}];
+
+  (* Build input association *)
+  inputAssoc = <|
+    "Edges" -> edgesNormalized,
+    "Options" -> <|
+      "Formula" -> formula,
+      "SaturationThreshold" -> N[satThreshold],
+      "MinRadius" -> minR,
+      "MaxRadius" -> maxR,
+      "NumAnchors" -> numAnchors,
+      "AnchorSeparation" -> anchorSep,
+      "Aggregation" -> aggregation,
+      "Directed" -> directed
+    |>
+  |>;
+
+  (* Convert to WXF and call FFI *)
+  wxfInput = BinarySerialize[inputAssoc];
+  wxfOutput = performHausdorffAnalysis[wxfInput];
+
+  If[wxfOutput === $Failed,
+    Return[$Failed]
+  ];
+
+  (* Parse result *)
+  result = BinaryDeserialize[wxfOutput];
+  result
+]
+
+(* ============================================================================ *)
+(* HGStateDimensionPlot - Single graph with dimension-colored vertices *)
+(* ============================================================================ *)
+
+Options[HGStateDimensionPlot] = {
+  "Palette" -> "TemperatureMap",
+  "DimensionRange" -> Automatic,
+  "Formula" -> "LinearRegression",
+  "MinRadius" -> 1,
+  "MaxRadius" -> 5,
+  "Directed" -> False,
+  ImageSize -> 400
+};
+
+HGStateDimensionPlot[edges_List, opts:OptionsPattern[]] := Module[
+  {palette, dimRange, formula, minR, maxR, directed, imgSize,
+   analysis, perVertex, vertices, dimMin, dimMax, colorFunc, vertexColors,
+   vertexCoords, graphOpts, g},
+
+  palette = OptionValue["Palette"];
+  dimRange = OptionValue["DimensionRange"];
+  formula = OptionValue["Formula"];
+  minR = OptionValue["MinRadius"];
+  maxR = OptionValue["MaxRadius"];
+  directed = OptionValue["Directed"];
+  imgSize = OptionValue[ImageSize];
+
+  (* Compute dimensions *)
+  analysis = HGHausdorffAnalysis[edges,
+    "Formula" -> formula, "MinRadius" -> minR, "MaxRadius" -> maxR,
+    "Directed" -> directed];
+
+  If[!AssociationQ[analysis] || !KeyExistsQ[analysis, "PerVertex"],
+    Return[$Failed]];
+
+  perVertex = analysis["PerVertex"];
+  vertices = Union[Flatten[edges, 1]];
+
+  (* Compute range *)
+  {dimMin, dimMax} = If[dimRange === Automatic,
+    {Min[Values[perVertex]], Max[Values[perVertex]]},
+    dimRange];
+
+  (* Color function *)
+  colorFunc = ColorData[palette];
+
+  (* Vertex colors - use Replace to handle list-based vertex IDs *)
+  vertexColors = Association[Table[
+    v -> With[{d = Replace[perVertex[v], _Missing -> -1]},
+      If[d > 0,
+        colorFunc[Clip[(d - dimMin)/(dimMax - dimMin + 0.001), {0, 1}]],
+        Gray
+      ]
+    ],
+    {v, vertices}
+  ]];
+
+  (* If vertices are 2D tuples {i,j}, use them as coordinates *)
+  vertexCoords = If[AllTrue[vertices, ListQ[#] && Length[#] == 2 &],
+    Table[v -> v, {v, vertices}],
+    {}
+  ];
+
+  (* Build graph options *)
+  graphOpts = {
+    VertexStyle -> Normal[vertexColors],
+    VertexSize -> Medium,
+    EdgeStyle -> Directive[Gray, Opacity[0.5]],
+    VertexLabels -> Table[v -> Placed[
+      Column[{v, Row[{"d=", Round[Replace[perVertex[v], _Missing -> -1], 0.01]}]}],
+      Tooltip], {v, vertices}],
+    ImageSize -> imgSize
+  };
+
+  (* Add coordinates or spring layout *)
+  If[Length[vertexCoords] > 0,
+    AppendTo[graphOpts, VertexCoordinates -> vertexCoords],
+    AppendTo[graphOpts, GraphLayout -> "SpringElectricalEmbedding"]
+  ];
+
+  g = Graph[vertices, DirectedEdge @@@ edges, Sequence @@ graphOpts];
+
+  Legended[g, BarLegend[{palette, {dimMin, dimMax}}, LegendLabel -> "Dimension"]]
+]
+
+(* ============================================================================ *)
+(* HGTimestepUnionPlot - Union graph at a timestep with dimension coloring *)
+(* ============================================================================ *)
+
+Options[HGTimestepUnionPlot] = {
+  "Palette" -> "TemperatureMap",
+  "DimensionRange" -> Automatic,
+  "Formula" -> "LinearRegression",
+  "MinRadius" -> 1,
+  "MaxRadius" -> 5,
+  "Directed" -> False,
+  "EdgeFilter" -> None,  (* None or {"MinStates" -> n} *)
+  "VertexCoordinates" -> None,  (* List of {x,y} positions indexed by vertex ID, or Association *)
+  "Layout" -> "MDS",  (* "MDS", "Spring", "TSNE", "Given" *)
+  "LayoutDimension" -> 2,  (* 2 or 3 for 3D plots *)
+  ImageSize -> 500
+};
+
+HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPattern[]] := Module[
+  {palette, dimRange, formula, minR, maxR, directed, edgeFilter, positionsOpt, layoutOpt, imgSize,
+   states, statesList, availableSteps, statesAtStep, allEdges, edgeTally, filteredTally, filteredEdges,
+   unionEdges, vertices, analysis, perVertex, validDims, meanDim, dimMin, dimMax, colorFunc, vertexColors,
+   edgeOpacity, gradientEdge, vertexCoords, graphOpts, g},
+
+  palette = OptionValue["Palette"];
+  dimRange = OptionValue["DimensionRange"];
+  formula = OptionValue["Formula"];
+  minR = OptionValue["MinRadius"];
+  maxR = OptionValue["MaxRadius"];
+  directed = OptionValue["Directed"];
+  edgeFilter = OptionValue["EdgeFilter"];
+  positionsOpt = OptionValue["VertexCoordinates"];
+  layoutOpt = OptionValue["Layout"];
+  imgSize = OptionValue[ImageSize];
+
+  (* Get states - handle both <|"States" -> ...|> and direct states association *)
+  states = If[KeyExistsQ[evolutionResult, "States"],
+    evolutionResult["States"],
+    (* Check if this IS the states directly (keys are integers = state ids) *)
+    If[AllTrue[Keys[evolutionResult], IntegerQ],
+      evolutionResult,
+      Return[Failure["NoStates", <|"Message" -> "No States key in input"|>]]]];
+
+  (* Convert to list if association *)
+  statesList = If[AssociationQ[states], Values[states], states];
+
+  (* Check format *)
+  If[Length[statesList] == 0,
+    Return[Failure["EmptyStates", <|"Message" -> "States list is empty"|>]]];
+
+  (* Get available steps *)
+  availableSteps = Union[#["Step"] & /@ statesList];
+
+  (* Filter to requested step *)
+  statesAtStep = Select[statesList, #["Step"] == step &];
+
+  If[Length[statesAtStep] == 0,
+    Return[Failure["NoStatesAtStep", <|
+      "Message" -> StringJoin["No states at step ", ToString[step]],
+      "AvailableSteps" -> availableSteps
+    |>]]];
+
+  (* Build union of edges and count occurrences *)
+  (* State edges have format {edgeId, v1, v2} - extract {v1, v2} *)
+  allEdges = Flatten[Table[
+    Table[
+      With[{rawEdge = If[Length[e] == 3, Rest[e], e]},
+        Sort[rawEdge]
+      ],
+      {e, s["Edges"]}
+    ],
+    {s, statesAtStep}
+  ], 1];
+
+  (* Tally edges: {{edge, count}, ...} *)
+  edgeTally = Tally[allEdges];
+
+  (* Filter edges if requested *)
+  filteredTally = If[AssociationQ[edgeFilter] && KeyExistsQ[edgeFilter, "MinStates"],
+    Select[edgeTally, #[[2]] >= edgeFilter["MinStates"] &],
+    edgeTally
+  ];
+
+  (* Extract just the edges *)
+  filteredEdges = filteredTally[[All, 1]];
+
+  unionEdges = filteredEdges;
+  vertices = Union[Flatten[unionEdges, 1]];
+
+  (* Compute dimensions on union graph *)
+  analysis = HGHausdorffAnalysis[unionEdges,
+    "Formula" -> formula, "MinRadius" -> minR, "MaxRadius" -> maxR,
+    "Directed" -> directed];
+
+  If[!AssociationQ[analysis] || !KeyExistsQ[analysis, "PerVertex"],
+    perVertex = <||>,
+    perVertex = analysis["PerVertex"]
+  ];
+
+  (* Compute range and mean for fallback *)
+  validDims = Select[Values[perVertex], # > 0 &];
+  meanDim = If[Length[validDims] > 0, Mean[validDims], 2.0];
+  {dimMin, dimMax} = If[dimRange === Automatic,
+    If[Length[validDims] > 0,
+      {Min[validDims], Max[validDims]},
+      {1, 3}],
+    dimRange];
+
+  colorFunc = ColorData[palette];
+
+  (* Use mean dimension as fallback for missing/invalid vertices *)
+  (* Use Replace instead of Lookup to handle list-based vertex IDs *)
+  vertexColors = Association[Table[
+    v -> With[{d = Replace[perVertex[v], _Missing -> meanDim]},
+      With[{dVal = If[d > 0, d, meanDim]},
+        colorFunc[Clip[(dVal - dimMin)/(dimMax - dimMin + 0.001), {0, 1}]]
+      ]
+    ],
+    {v, vertices}
+  ]];
+
+  (* Edge opacity by frequency - use string keys to avoid Lookup list issue *)
+  edgeOpacity = Association[Table[
+    With[{e = ec[[1]], count = ec[[2]], numStates = Length[statesAtStep]},
+      ToString[Sort[e]] -> N[0.3 + 0.7 * count/numStates]
+    ],
+    {ec, filteredTally}
+  ]];
+
+  (* Build graph - handle empty case *)
+  If[Length[vertices] == 0 || Length[unionEdges] == 0,
+    Return[Failure["EmptyGraph", <|"Message" -> "No vertices or edges"|>]]];
+
+  (* Custom edge shape function with gradient line and colored arrowhead *)
+  gradientEdge = Function[{pts, edge},
+    With[{c1 = vertexColors[edge[[1]]], c2 = vertexColors[edge[[2]]],
+          opKey = ToString[Sort[{edge[[1]], edge[[2]]}]]},
+      With[{op = Replace[edgeOpacity[opKey], _Missing -> 0.5]},
+        {Opacity[op], c2, Arrowheads[0.025],
+         Arrow[Line[pts, VertexColors -> {c1, c2}]]}
+      ]
+    ]
+  ];
+
+  (* Build graph options based on layout *)
+  graphOpts = {
+    VertexStyle -> Normal[vertexColors],
+    VertexSize -> 0.3,
+    EdgeShapeFunction -> gradientEdge,
+    ImageSize -> imgSize,
+    ImagePadding -> 20,
+    PlotLabel -> Row[{"Step ", step, " (", Length[statesAtStep], " states)"}]
+  };
+
+  (* Add layout option *)
+  Switch[layoutOpt,
+    "MDS",
+      AppendTo[graphOpts, GraphLayout -> "SpectralEmbedding"],
+    "Spring",
+      AppendTo[graphOpts, GraphLayout -> "SpringElectricalEmbedding"],
+    "Given",
+      (* Use provided coordinates - handle 0-based vs 1-based indexing *)
+      If[ListQ[positionsOpt] && Length[positionsOpt] > 0,
+        With[{minV = Min[vertices], maxV = Max[vertices]},
+          vertexCoords = If[minV == 0,
+            (* 0-based: vertex v -> positions[[v+1]] *)
+            Table[v -> positionsOpt[[v + 1]], {v, Select[vertices, # >= 0 && # < Length[positionsOpt] &]}],
+            (* 1-based: vertex v -> positions[[v]] *)
+            Table[v -> positionsOpt[[v]], {v, Select[vertices, # >= 1 && # <= Length[positionsOpt] &]}]
+          ];
+          If[Length[vertexCoords] > 0,
+            AppendTo[graphOpts, VertexCoordinates -> vertexCoords]
+          ]
+        ]
+      ],
+    _,
+      (* Default: spectral embedding *)
+      AppendTo[graphOpts, GraphLayout -> "SpectralEmbedding"]
+  ];
+
+  g = Graph[vertices, DirectedEdge @@@ unionEdges, Sequence @@ graphOpts];
+
+  Legended[g, BarLegend[{palette, {dimMin, dimMax}}, LegendLabel -> "Dimension"]]
+]
+
+(* ============================================================================ *)
+(* HGDimensionFilmstrip - Grid of timestep union graphs *)
+(* ============================================================================ *)
+
+Options[HGDimensionFilmstrip] = {
+  "Palette" -> "TemperatureMap",
+  "DimensionRange" -> Automatic,
+  "Formula" -> "LinearRegression",
+  "MinRadius" -> 1,
+  "MaxRadius" -> 5,
+  "Directed" -> False,
+  "Steps" -> All,
+  "EdgeFilter" -> None,
+  "VertexCoordinates" -> None,
+  "Layout" -> "MDS",
+  ImageSize -> 400
+};
+
+HGDimensionFilmstrip[evolutionResult_Association, opts:OptionsPattern[]] := Module[
+  {palette, dimRange, formula, minR, maxR, directed, stepsOpt, edgeFilter, positionsOpt, layoutOpt, imgSize,
+   states, statesList, allSteps, selectedSteps, plots},
+
+  palette = OptionValue["Palette"];
+  dimRange = OptionValue["DimensionRange"];
+  formula = OptionValue["Formula"];
+  minR = OptionValue["MinRadius"];
+  maxR = OptionValue["MaxRadius"];
+  directed = OptionValue["Directed"];
+  stepsOpt = OptionValue["Steps"];
+  edgeFilter = OptionValue["EdgeFilter"];
+  positionsOpt = OptionValue["VertexCoordinates"];
+  layoutOpt = OptionValue["Layout"];
+  imgSize = OptionValue[ImageSize];
+
+  (* Get states - handle both <|"States" -> ...|> and direct states association *)
+  states = If[KeyExistsQ[evolutionResult, "States"],
+    evolutionResult["States"],
+    If[AllTrue[Keys[evolutionResult], IntegerQ],
+      evolutionResult,
+      Return[$Failed]]];
+
+  statesList = If[AssociationQ[states], Values[states], states];
+  allSteps = Union[#["Step"] & /@ statesList];
+
+  selectedSteps = If[stepsOpt === All,
+    allSteps,
+    Intersection[Flatten[{stepsOpt}], allSteps]
+  ];
+
+  (* Generate plots for each step *)
+  plots = Table[
+    Quiet[HGTimestepUnionPlot[evolutionResult, step,
+      "Palette" -> palette,
+      "DimensionRange" -> dimRange,
+      "Formula" -> formula,
+      "MinRadius" -> minR,
+      "MaxRadius" -> maxR,
+      "Directed" -> directed,
+      "EdgeFilter" -> edgeFilter,
+      "VertexCoordinates" -> positionsOpt,
+      "Layout" -> layoutOpt,
+      ImageSize -> imgSize
+    ]],
+    {step, selectedSteps}
+  ];
+
+  (* Filter out failures *)
+  plots = Select[plots, !FailureQ[#] && # =!= $Failed &];
+
+  If[Length[plots] == 0, Return[$Failed]];
+
+  (* Arrange in column *)
+  Column[plots, Spacings -> 2]
+]
 
 End[]
 EndPackage[]

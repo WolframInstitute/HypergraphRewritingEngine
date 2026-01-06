@@ -15,6 +15,9 @@ endif()
 # Source files - relative to LibraryResources directory
 set(SOURCES
     hypergraph_ffi.cpp
+    # Blackhole analysis sources (compiled without layout dependency)
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/hausdorff_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/bh_initial_condition.cpp
 )
 
 # Create the library
@@ -34,6 +37,7 @@ target_include_directories(HypergraphRewriting PRIVATE
     ${CMAKE_SOURCE_DIR}/hypergraph/include
     ${CMAKE_SOURCE_DIR}/job_system/include
     ${CMAKE_SOURCE_DIR}/lockfree_deque/include
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 
 # WSTP SDK for progress reporting via proper WSTP protocol

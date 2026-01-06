@@ -28,6 +28,10 @@
 // Include comprehensive WXF library
 #include "wxf.hpp"
 
+// Include blackhole analysis (without layout dependency)
+#include "blackhole/hausdorff_analysis.hpp"
+#include "blackhole/bh_types.hpp"
+
 using namespace hypergraph;
 
 // =============================================================================
@@ -658,6 +662,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         double exploration_probability = 1.0;
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
         std::string hash_strategy = "iUT";  // Default: IncrementalUniquenessTree
+        bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
+        size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
+
+        // Dimension analysis options - compute Hausdorff dimension in C++ instead of WL round-trips
+        bool compute_dimensions = false;
+        int dim_min_radius = 1;
+        int dim_max_radius = 5;
 
         // Data selection flags - which components to include in output
         // By default all are included for backward compatibility
@@ -702,6 +713,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "MaxStatesPerStep") {
                             max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "MatchesPerStep") {
+                            matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "DimensionMinRadius") {
+                            dim_min_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "DimensionMaxRadius") {
+                            dim_max_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
@@ -804,6 +821,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                                 // Exploration deduplication: only explore from canonical states
                                 // Requires CanonicalizeStates -> Full to have any effect
                                 explore_from_canonical_states_only = value;
+                            } else if (option_key == "UniformRandom") {
+                                // Use uniform random evolution mode (reservoir sampling)
+                                uniform_random = value;
+                            } else if (option_key == "DimensionAnalysis") {
+                                // Compute Hausdorff dimension for all states in C++
+                                compute_dimensions = value;
                             }
                         }
                     } catch (...) {
@@ -974,7 +997,23 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // Run evolution with abort checking - allows user to cancel via Mathematica's Abort[]
         // Progress is reported from the abort callback (runs on main thread every ~50ms)
 #ifdef HAVE_WSTP
-        bool was_aborted = engine.evolve_with_abort(
+        bool was_aborted = false;
+
+        if (uniform_random) {
+            // Use uniform random mode (reservoir sampling) - same as blackhole_viz --uniform-random
+            if (show_progress) {
+                print_to_frontend(libData, "Using uniform random mode (reservoir sampling)");
+            }
+            if (!initial_states.empty()) {
+                engine.evolve_uniform_random(
+                    initial_states[0],  // Single initial state edges
+                    static_cast<size_t>(steps),
+                    matches_per_step
+                );
+            }
+        } else {
+            // Standard parallel evolution
+            was_aborted = engine.evolve_with_abort(
             initial_states,
             static_cast<size_t>(steps),
             [&]() {
@@ -1031,12 +1070,24 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 return should_abort;
             }
         );
+        }  // end else (standard evolution)
 #else
-        bool was_aborted = engine.evolve_with_abort(
-            initial_states,
-            static_cast<size_t>(steps),
-            [libData]() { return libData->AbortQ(); }
-        );
+        bool was_aborted = false;
+        if (uniform_random) {
+            if (!initial_states.empty()) {
+                engine.evolve_uniform_random(
+                    initial_states[0],
+                    static_cast<size_t>(steps),
+                    matches_per_step
+                );
+            }
+        } else {
+            was_aborted = engine.evolve_with_abort(
+                initial_states,
+                static_cast<size_t>(steps),
+                [libData]() { return libData->AbortQ(); }
+            );
+        }
 #endif
 
 #ifdef HAVE_WSTP
@@ -1072,6 +1123,70 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #else
         (void)was_aborted;  // Suppress unused variable warning when WSTP not available
 #endif
+
+        // =========================================================================
+        // Dimension Analysis (if requested)
+        // =========================================================================
+        // Compute Hausdorff dimension for all states in C++ - avoids O(N) FFI round-trips
+        namespace bh = viz::blackhole;
+
+        std::unordered_map<uint32_t, bh::DimensionStats> state_dimension_stats;
+        std::unordered_map<uint32_t, std::vector<float>> state_vertex_dimensions;
+        float global_dim_min = std::numeric_limits<float>::max();
+        float global_dim_max = std::numeric_limits<float>::lowest();
+
+        if (compute_dimensions) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing dimension analysis...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build edges for SimpleGraph (only binary edges)
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    bh::DimensionConfig config;
+                    config.min_radius = dim_min_radius;
+                    config.max_radius = dim_max_radius;
+
+                    auto per_vertex = bh::estimate_all_dimensions(graph, config);
+                    auto stats = bh::compute_dimension_stats(per_vertex);
+
+                    state_dimension_stats[sid] = stats;
+                    state_vertex_dimensions[sid] = std::move(per_vertex);
+
+                    // Track global range
+                    if (stats.count > 0) {
+                        global_dim_min = std::min(global_dim_min, stats.mean);
+                        global_dim_max = std::max(global_dim_max, stats.mean);
+                    }
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Dimension analysis complete. Analyzed "
+                    << state_dimension_stats.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
 
         // Build WXF output - only include requested data components
         wxf::Writer wxf_writer;
@@ -1859,6 +1974,37 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             full_result.push_back({wxf::Value("NumBranchialEdges"), wxf::Value(static_cast<int64_t>(hg.num_branchial_edges()))});
         }
 
+        // DimensionData -> Association["PerState" -> {...}, "GlobalRange" -> {min, max}]
+        if (compute_dimensions && !state_dimension_stats.empty()) {
+            wxf::ValueAssociation dim_data;
+
+            // Per-state stats: state_id -> {Mean, Min, Max, StdDev}
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, stats] : state_dimension_stats) {
+                wxf::ValueAssociation stats_assoc;
+                stats_assoc.push_back({wxf::Value("Mean"), wxf::Value(static_cast<double>(stats.mean))});
+                stats_assoc.push_back({wxf::Value("Min"), wxf::Value(static_cast<double>(stats.min))});
+                stats_assoc.push_back({wxf::Value("Max"), wxf::Value(static_cast<double>(stats.max))});
+                stats_assoc.push_back({wxf::Value("StdDev"), wxf::Value(static_cast<double>(stats.stddev))});
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(stats_assoc)});
+            }
+            dim_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            // Global range for color normalization
+            wxf::ValueList range;
+            if (global_dim_min <= global_dim_max) {
+                range.push_back(wxf::Value(static_cast<double>(global_dim_min)));
+                range.push_back(wxf::Value(static_cast<double>(global_dim_max)));
+            } else {
+                // No valid data - use defaults
+                range.push_back(wxf::Value(0.0));
+                range.push_back(wxf::Value(3.0));
+            }
+            dim_data.push_back({wxf::Value("GlobalRange"), wxf::Value(range)});
+
+            full_result.push_back({wxf::Value("DimensionData"), wxf::Value(dim_data)});
+        }
+
         // Write final association
         wxf_writer.write(wxf::Value(full_result));
         const auto& wxf_data = wxf_writer.data();
@@ -1893,6 +2039,243 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
     } catch (const std::exception& e) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Exception in V2: %.200s", e.what());
+        handle_error(libData, err_msg);
+        return LIBRARY_FUNCTION_ERROR;
+    }
+}
+
+/**
+ * Perform Hausdorff dimension analysis on a graph
+ * Input: WXF binary data containing:
+ *   Association[
+ *     "Edges" -> {{v1, v2}, ...},
+ *     "Options" -> Association[
+ *       "Formula" -> "LinearRegression" | "DiscreteDerivative",
+ *       "SaturationThreshold" -> 0.5,
+ *       "MinRadius" -> 1,
+ *       "MaxRadius" -> 5,
+ *       "NumAnchors" -> 6,
+ *       "AnchorSeparation" -> 3
+ *     ]
+ *   ]
+ *
+ * Output: WXF Association with per-vertex dimensions, stats, anchors, coords
+ */
+EXTERN_C DLLEXPORT int performHausdorffAnalysis(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+    // Use namespace alias to avoid conflicts with hypergraph namespace
+    namespace bh = viz::blackhole;
+
+    try {
+        if (argc != 1) {
+            handle_error(libData, "performHausdorffAnalysis expects 1 argument: WXF ByteArray data");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        // Get WXF data as ByteArray (MNumericArray)
+        MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
+
+        mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
+        if (rank != 1) {
+            handle_error(libData, "WXF ByteArray must be 1-dimensional");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
+        mint wxf_size = dims[0];
+
+        void* wxf_raw_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(wxf_array);
+        const uint8_t* wxf_byte_data = static_cast<const uint8_t*>(wxf_raw_data);
+
+        // Convert to vector
+        std::vector<uint8_t> wxf_bytes(wxf_byte_data, wxf_byte_data + wxf_size);
+
+        // Parse WXF input
+        wxf::Parser parser(wxf_bytes);
+        parser.skip_header();
+
+        // Parse options
+        std::vector<std::vector<int64_t>> edges_raw;
+        bh::DimensionFormula formula = bh::DimensionFormula::LinearRegression;
+        float saturation_threshold = 0.5f;
+        int min_radius = 1;
+        int max_radius = 5;
+        int num_anchors = 6;
+        int anchor_separation = 3;
+        bh::AggregationMethod aggregation = bh::AggregationMethod::Mean;
+        bool directed = false;
+
+        parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
+            if (key == "Edges") {
+                // Read edges as list of pairs: {{v1, v2}, {v3, v4}, ...}
+                edges_raw = value_parser.read<std::vector<std::vector<int64_t>>>();
+            }
+            else if (key == "Options") {
+                value_parser.read_association([&](const std::string& opt_key, wxf::Parser& opt_parser) {
+                    if (opt_key == "Formula") {
+                        std::string formula_str = opt_parser.read<std::string>();
+                        if (formula_str == "DiscreteDerivative") {
+                            formula = bh::DimensionFormula::DiscreteDerivative;
+                        }
+                    }
+                    else if (opt_key == "SaturationThreshold") {
+                        saturation_threshold = static_cast<float>(opt_parser.read<double>());
+                    }
+                    else if (opt_key == "MinRadius") {
+                        min_radius = static_cast<int>(opt_parser.read<int64_t>());
+                    }
+                    else if (opt_key == "MaxRadius") {
+                        max_radius = static_cast<int>(opt_parser.read<int64_t>());
+                    }
+                    else if (opt_key == "NumAnchors") {
+                        num_anchors = static_cast<int>(opt_parser.read<int64_t>());
+                    }
+                    else if (opt_key == "AnchorSeparation") {
+                        anchor_separation = static_cast<int>(opt_parser.read<int64_t>());
+                    }
+                    else if (opt_key == "Aggregation") {
+                        std::string agg_str = opt_parser.read<std::string>();
+                        if (agg_str == "Min") aggregation = bh::AggregationMethod::Min;
+                        else if (agg_str == "Max") aggregation = bh::AggregationMethod::Max;
+                    }
+                    else if (opt_key == "Directed") {
+                        // Read boolean as WXF symbol "True" or "False"
+                        std::string bool_str = opt_parser.read<std::string>();
+                        directed = (bool_str == "True");
+                    }
+                    else {
+                        opt_parser.skip_value();
+                    }
+                });
+            }
+            else {
+                value_parser.skip_value();
+            }
+        });
+
+        if (edges_raw.empty()) {
+            handle_error(libData, "No edges provided");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+
+        // Build SimpleGraph from edges
+        std::vector<bh::Edge> edge_list;
+        edge_list.reserve(edges_raw.size());
+        for (const auto& edge : edges_raw) {
+            if (edge.size() >= 2) {
+                edge_list.push_back(bh::Edge(
+                    static_cast<bh::VertexId>(edge[0]),
+                    static_cast<bh::VertexId>(edge[1])
+                ));
+            }
+        }
+
+        bh::SimpleGraph graph;
+        graph.build_from_edges(edge_list);
+
+        // Select anchors
+        std::vector<bh::VertexId> candidates = graph.vertices();
+        std::vector<bh::VertexId> anchors = bh::select_anchors(graph, candidates, num_anchors, anchor_separation);
+
+        // Compute geodesic coordinates
+        auto geodesic_coords = bh::compute_geodesic_coordinates(graph, anchors);
+
+        // Configure dimension estimation
+        bh::DimensionConfig config;
+        config.formula = formula;
+        config.saturation_threshold = saturation_threshold;
+        config.min_radius = min_radius;
+        config.max_radius = max_radius;
+        config.aggregation = aggregation;
+        config.directed = directed;
+
+        // Compute dimensions for all vertices
+        std::vector<float> dimensions = bh::estimate_all_dimensions(graph, config);
+
+        // Compute stats
+        bh::DimensionStats stats = bh::compute_dimension_stats(dimensions);
+
+        // Build WXF output
+        wxf::Writer wxf_writer;
+        wxf_writer.write_header();
+
+        wxf::ValueAssociation result;
+
+        // PerVertex -> Association[vertex_id -> dimension]
+        wxf::ValueAssociation per_vertex_assoc;
+        const auto& vertices = graph.vertices();
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            if (dimensions[i] > 0) {
+                per_vertex_assoc.push_back({wxf::Value(static_cast<int64_t>(vertices[i])),
+                                            wxf::Value(static_cast<double>(dimensions[i]))});
+            }
+        }
+        result.push_back({wxf::Value("PerVertex"), wxf::Value(per_vertex_assoc)});
+
+        // GeodesicCoords -> Association[vertex_id -> {d1, d2, ...}]
+        wxf::ValueAssociation coords_assoc;
+        for (const auto& [vid, coords] : geodesic_coords) {
+            wxf::ValueList coord_list;
+            for (int d : coords) {
+                coord_list.push_back(wxf::Value(static_cast<int64_t>(d)));
+            }
+            coords_assoc.push_back({wxf::Value(static_cast<int64_t>(vid)), wxf::Value(coord_list)});
+        }
+        result.push_back({wxf::Value("GeodesicCoords"), wxf::Value(coords_assoc)});
+
+        // Anchors -> {anchor1, anchor2, ...}
+        wxf::ValueList anchors_list;
+        for (bh::VertexId a : anchors) {
+            anchors_list.push_back(wxf::Value(static_cast<int64_t>(a)));
+        }
+        result.push_back({wxf::Value("Anchors"), wxf::Value(anchors_list)});
+
+        // Stats -> Association
+        wxf::ValueAssociation stats_assoc;
+        stats_assoc.push_back({wxf::Value("Mean"), wxf::Value(static_cast<double>(stats.mean))});
+        stats_assoc.push_back({wxf::Value("Min"), wxf::Value(static_cast<double>(stats.min))});
+        stats_assoc.push_back({wxf::Value("Max"), wxf::Value(static_cast<double>(stats.max))});
+        stats_assoc.push_back({wxf::Value("Variance"), wxf::Value(static_cast<double>(stats.variance))});
+        stats_assoc.push_back({wxf::Value("StdDev"), wxf::Value(static_cast<double>(stats.stddev))});
+        stats_assoc.push_back({wxf::Value("Count"), wxf::Value(static_cast<int64_t>(stats.count))});
+        result.push_back({wxf::Value("Stats"), wxf::Value(stats_assoc)});
+
+        // Config -> Association (echo back the config used)
+        wxf::ValueAssociation config_assoc;
+        config_assoc.push_back({wxf::Value("Formula"),
+            wxf::Value(formula == bh::DimensionFormula::LinearRegression ? "LinearRegression" : "DiscreteDerivative")});
+        config_assoc.push_back({wxf::Value("SaturationThreshold"), wxf::Value(static_cast<double>(saturation_threshold))});
+        config_assoc.push_back({wxf::Value("MinRadius"), wxf::Value(static_cast<int64_t>(min_radius))});
+        config_assoc.push_back({wxf::Value("MaxRadius"), wxf::Value(static_cast<int64_t>(max_radius))});
+        config_assoc.push_back({wxf::Value("NumAnchors"), wxf::Value(static_cast<int64_t>(num_anchors))});
+        config_assoc.push_back({wxf::Value("AnchorSeparation"), wxf::Value(static_cast<int64_t>(anchor_separation))});
+        result.push_back({wxf::Value("Config"), wxf::Value(config_assoc)});
+
+        // Write output
+        wxf_writer.write(wxf::Value(result));
+        const auto& wxf_data = wxf_writer.data();
+
+        // Create output ByteArray
+        mint wxf_dims[1] = {static_cast<mint>(wxf_data.size())};
+        MNumericArray result_array;
+        int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, wxf_dims, &result_array);
+        if (err != LIBRARY_NO_ERROR) {
+            return err;
+        }
+
+        void* result_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array);
+        std::memcpy(result_data, wxf_data.data(), wxf_data.size());
+
+        MArgument_setMNumericArray(res, result_array);
+        return LIBRARY_NO_ERROR;
+
+    } catch (const wxf::TypeError& e) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "WXF TypeError in HausdorffAnalysis: %.200s", e.what());
+        handle_error(libData, err_msg);
+        return LIBRARY_FUNCTION_ERROR;
+    } catch (const std::exception& e) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "Exception in HausdorffAnalysis: %.200s", e.what());
         handle_error(libData, err_msg);
         return LIBRARY_FUNCTION_ERROR;
     }

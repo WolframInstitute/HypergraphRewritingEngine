@@ -74,14 +74,20 @@ void init_layout_from_timestep(
     const LayoutGraph* prev_graph = nullptr,
     const std::vector<VertexId>* prev_vertices = nullptr
 ) {
-    // Build map from previous vertex IDs to their positions
+    // Build map from previous vertex IDs to their positions (including Z for 3D layout)
     std::unordered_map<VertexId, std::pair<float, float>> prev_positions;
+    std::unordered_map<VertexId, float> prev_positions_z;  // Separate Z map for 3D
     if (prev_graph && prev_vertices && prev_graph->vertex_count() == prev_vertices->size()) {
         for (size_t i = 0; i < prev_vertices->size(); ++i) {
-            prev_positions[(*prev_vertices)[i]] = {
+            VertexId vid = (*prev_vertices)[i];
+            prev_positions[vid] = {
                 prev_graph->positions_x[i],
                 prev_graph->positions_y[i]
             };
+            // Also store Z if available (for 3D layout continuity)
+            if (i < prev_graph->positions_z.size()) {
+                prev_positions_z[vid] = prev_graph->positions_z[i];
+            }
         }
     }
 
@@ -183,6 +189,7 @@ void init_layout_from_timestep(
     std::vector<bool> has_good_position(vertices_to_use.size(), false);
     std::vector<float> pos_x(vertices_to_use.size(), 0.0f);
     std::vector<float> pos_y(vertices_to_use.size(), 0.0f);
+    std::vector<float> pos_z(vertices_to_use.size(), 0.0f);  // Z for 3D embedding
 
     // Are we seeding from a live layout? (prev_positions is non-empty)
     // If so, we MUST NOT fall back to initial/stored positions - they're at a different scale!
@@ -192,6 +199,7 @@ void init_layout_from_timestep(
     // Priority: 1) prev_positions (current frame), 2) global_cache (persistent), 3) initial/stored
     for (size_t i = 0; i < vertices_to_use.size(); ++i) {
         VertexId vid = vertices_to_use[i];
+        bool has_z_from_layout = false;
 
         // Check previous layout first (live positions have highest priority)
         auto prev_it = prev_positions.find(vid);
@@ -199,21 +207,28 @@ void init_layout_from_timestep(
             pos_x[i] = prev_it->second.first;
             pos_y[i] = prev_it->second.second;
             has_good_position[i] = true;
-            continue;
+            // Also get Z from previous layout if available (for 3D layout continuity)
+            auto prev_z_it = prev_positions_z.find(vid);
+            if (prev_z_it != prev_positions_z.end()) {
+                pos_z[i] = prev_z_it->second;
+                has_z_from_layout = true;
+            }
         }
 
         // Check global cache (persistent positions from previous timesteps)
-        auto cache_it = global_cache.find(vid);
-        if (cache_it != global_cache.end()) {
-            pos_x[i] = cache_it->second.first;
-            pos_y[i] = cache_it->second.second;
-            has_good_position[i] = true;
-            continue;
+        if (!has_good_position[i]) {
+            auto cache_it = global_cache.find(vid);
+            if (cache_it != global_cache.end()) {
+                pos_x[i] = cache_it->second.first;
+                pos_y[i] = cache_it->second.second;
+                has_good_position[i] = true;
+                // Global cache is 2D only, Z will come from initial below
+            }
         }
 
         // ONLY use initial/stored positions if we DON'T have a live layout running
         // If we have a live layout, new vertices must be placed via neighbor-based placement
-        if (!have_live_layout) {
+        if (!has_good_position[i] && !have_live_layout) {
             // Check stored LAYOUT positions first (pre-computed, scaled to match geodesic)
             // Find the index in union_vertices
             for (size_t j = 0; j < ts.union_vertices.size(); ++j) {
@@ -248,6 +263,12 @@ void init_layout_from_timestep(
                 has_good_position[i] = true;
             }
         }
+
+        // Set Z from initial 3D embedding ONLY if we didn't get it from live layout
+        // This preserves 3D layout motion while still seeding new vertices with embedding Z
+        if (!has_z_from_layout && initial.has_3d() && vid < initial.vertex_z.size()) {
+            pos_z[i] = initial.vertex_z[vid];
+        }
         // If have_live_layout and vertex not in prev_positions or global_cache, it's NEW
         // It will be placed via neighbor-based placement in the next pass
     }
@@ -259,13 +280,14 @@ void init_layout_from_timestep(
         for (size_t i = 0; i < vertices_to_use.size(); ++i) {
             if (has_good_position[i]) continue;
 
-            float sum_x = 0, sum_y = 0;
+            float sum_x = 0, sum_y = 0, sum_z = 0;
             int count = 0;
 
             for (uint32_t neighbor_idx : adjacency[i]) {
                 if (has_good_position[neighbor_idx]) {
                     sum_x += pos_x[neighbor_idx];
                     sum_y += pos_y[neighbor_idx];
+                    sum_z += pos_z[neighbor_idx];
                     count++;
                 }
             }
@@ -273,6 +295,7 @@ void init_layout_from_timestep(
             if (count > 0) {
                 pos_x[i] = sum_x / count;
                 pos_y[i] = sum_y / count;
+                pos_z[i] = sum_z / count;
                 has_good_position[i] = true;
                 any_placed = true;
             }
@@ -281,18 +304,20 @@ void init_layout_from_timestep(
     }
 
     // Third pass: any remaining vertices get placed at graph centroid
-    float centroid_x = 0, centroid_y = 0;
+    float centroid_x = 0, centroid_y = 0, centroid_z = 0;
     int positioned_count = 0;
     for (size_t i = 0; i < vertices_to_use.size(); ++i) {
         if (has_good_position[i]) {
             centroid_x += pos_x[i];
             centroid_y += pos_y[i];
+            centroid_z += pos_z[i];
             positioned_count++;
         }
     }
     if (positioned_count > 0) {
         centroid_x /= positioned_count;
         centroid_y /= positioned_count;
+        centroid_z /= positioned_count;
     }
 
     for (size_t i = 0; i < vertices_to_use.size(); ++i) {
@@ -306,12 +331,13 @@ void init_layout_from_timestep(
             float radius = 0.1f + 0.01f * std::sqrt(static_cast<float>(vid % 1000));
             pos_x[i] = centroid_x + radius * std::cos(angle);
             pos_y[i] = centroid_y + radius * std::sin(angle);
+            pos_z[i] = centroid_z;  // Keep Z at centroid level
         }
     }
 
-    // Add vertices to layout graph
+    // Add vertices to layout graph (with Z coordinate for 3D embedding)
     for (size_t i = 0; i < vertices_to_use.size(); ++i) {
-        graph.add_vertex(pos_x[i], pos_y[i], 0.0f, 1.0f, false);
+        graph.add_vertex(pos_x[i], pos_y[i], pos_z[i], 1.0f, false);
     }
 
     // Add edges with fixed target rest_length
@@ -1313,12 +1339,16 @@ RenderData build_render_data(
         vertex_to_idx[vid] = i;
 
         // Use live layout positions if provided and this vertex is in the layout
-        float px, py;
+        float px, py, pz = 0;
         auto layout_it = vid_to_layout_idx.find(vid);
         if (live_layout && layout_it != vid_to_layout_idx.end()) {
             size_t layout_idx = layout_it->second;
             px = live_layout->positions_x[layout_idx];
             py = live_layout->positions_y[layout_idx];
+            // Get Z from layout (for 3D embedding/layout)
+            if (layout_idx < live_layout->positions_z.size()) {
+                pz = live_layout->positions_z[layout_idx];
+            }
         } else {
             // Use aggregated positions (from center timestep) or fall back
             auto pos_it = agg_positions.find(vid);
@@ -1348,9 +1378,16 @@ RenderData build_render_data(
                 px = 0;
                 py = 0;
             }
+            // Try to get Z from initial condition (for 3D embedding)
+            if (vid < analysis.initial.vertex_z.size()) {
+                pz = analysis.initial.vertex_z[vid];
+            }
         }
         vertex_x.push_back(px);
         vertex_y.push_back(py);
+
+        // Store base Z from layout/embedding (will be used or augmented below)
+        float base_z = pz;
 
         // Get value based on dimension source and heatmap mode
         float value = -1.0f;
@@ -1402,20 +1439,20 @@ RenderData build_render_data(
         Vec4 color = dimension_to_color(value, value_min, value_max, palette, missing_mode);
         vertex_colors.push_back(color);
 
-        // 3D position: map value to height (clamped to reasonable range)
-        // Only elevate if z_mapping_enabled is true
-        float z = 0;
+        // 3D position: start with base_z from layout/embedding
+        // Optionally add dimension-to-height mapping on top
+        float z = base_z;
         if (z_mapping_enabled && view_mode == ViewMode::View3D && value >= 0 && std::isfinite(value)) {
-            // Use same normalization logic as dimension_to_color
+            // Add dimension-based height offset to base Z
             float vmin = value_min, vmax = value_max;
             if (std::isfinite(vmin) && std::isfinite(vmax)) {
                 if (vmin > vmax) std::swap(vmin, vmax);
                 float range = vmax - vmin;
                 if (range >= 0.001f) {
                     float t = std::clamp((value - vmin) / range, 0.0f, 1.0f);
-                    z = t * z_scale;  // Use z_scale parameter
+                    z = base_z + t * z_scale;  // Add dimension height to base Z
                 } else {
-                    z = z_scale * 0.5f;  // Middle height when all values are same
+                    z = base_z + z_scale * 0.5f;  // Middle height when all values are same
                 }
             }
         }
@@ -2730,6 +2767,18 @@ void print_usage() {
     std::cout << "  --no-canonicalize Disable state canonicalization (all states unique)" << std::endl;
     std::cout << "  --no-explore-dedup Disable explore-from-canonical-only (explore all states)" << std::endl;
     std::cout << std::endl;
+    std::cout << "TOPOLOGY OPTIONS (alternative to --grid/--brill):" << std::endl;
+    std::cout << "  --topology TYPE   Topology: flat, cylinder, torus, sphere, klein, mobius" << std::endl;
+    std::cout << "  --sampling METHOD Sampling: uniform, poisson, grid, density" << std::endl;
+    std::cout << "  --defects N       Number of topological defects (default: 2)" << std::endl;
+    std::cout << "  --defect-mass F   Mass/strength of each defect (default: 3.0)" << std::endl;
+    std::cout << "  --defect-exclusion F  Exclusion radius around defects (default: 1.5)" << std::endl;
+    std::cout << "  --major-radius F  Major radius for curved topologies (default: 10.0)" << std::endl;
+    std::cout << "  --minor-radius F  Minor radius for torus (default: 3.0)" << std::endl;
+    std::cout << "  --poisson-distance F  Minimum distance for Poisson sampling (default: 1.0)" << std::endl;
+    std::cout << "  --embed-3d        Use 3D topological embedding (torus/sphere/cylinder in 3D)" << std::endl;
+    std::cout << "  --layout-3d       Use 3D force-directed layout (vs 2D)" << std::endl;
+    std::cout << std::endl;
     std::cout << "ANALYSIS OPTIONS (for run, generate, analyze):" << std::endl;
     std::cout << "  --max-radius N    Max radius for ball counting (default: 8)" << std::endl;
     std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
@@ -3016,6 +3065,19 @@ int main(int argc, char* argv[]) {
     bool fast_reservoir = false;   // Early termination when reservoir full
     bool solid_grid = false;       // Use solid grid (no holes)
 
+    // New topology options
+    TopologyType topology = TopologyType::Flat;
+    SamplingMethod sampling = SamplingMethod::PoissonDisk;
+    int defect_count = 2;          // Default: 2 defects (like current BH behavior)
+    float defect_mass = 3.0f;      // Default mass for defects
+    float defect_exclusion = 1.5f; // Default exclusion radius
+    float major_radius = 10.0f;    // Topology major radius
+    float minor_radius = 3.0f;     // Topology minor radius (for torus)
+    float poisson_distance = 1.0f; // Poisson disk minimum distance
+    bool use_new_topology = false; // Flag to use new topology system
+    bool embed_3d = false;         // Use 3D topological embedding for initial positions
+    bool layout_3d = false;        // Use 3D force-directed layout
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "view") {
@@ -3091,6 +3153,57 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--solid-grid") {
             solid_grid = true;
         }
+        // New topology options
+        else if (arg == "--topology" && i + 1 < argc) {
+            use_new_topology = true;
+            std::string t = argv[++i];
+            if (t == "flat") topology = TopologyType::Flat;
+            else if (t == "cylinder") topology = TopologyType::Cylinder;
+            else if (t == "torus") topology = TopologyType::Torus;
+            else if (t == "sphere") topology = TopologyType::Sphere;
+            else if (t == "klein") topology = TopologyType::KleinBottle;
+            else if (t == "mobius") topology = TopologyType::MobiusStrip;
+            else {
+                std::cerr << "Unknown topology: " << t << std::endl;
+                std::cerr << "Valid options: flat, cylinder, torus, sphere, klein, mobius" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--sampling" && i + 1 < argc) {
+            use_new_topology = true;
+            std::string s = argv[++i];
+            if (s == "uniform") sampling = SamplingMethod::Uniform;
+            else if (s == "poisson") sampling = SamplingMethod::PoissonDisk;
+            else if (s == "grid") sampling = SamplingMethod::Grid;
+            else if (s == "density") sampling = SamplingMethod::DensityWeighted;
+            else {
+                std::cerr << "Unknown sampling method: " << s << std::endl;
+                std::cerr << "Valid options: uniform, poisson, grid, density" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--defects" && i + 1 < argc) {
+            defect_count = std::stoi(argv[++i]);
+        } else if (arg == "--defect-mass" && i + 1 < argc) {
+            defect_mass = std::stof(argv[++i]);
+        } else if (arg == "--defect-exclusion" && i + 1 < argc) {
+            defect_exclusion = std::stof(argv[++i]);
+        } else if (arg == "--major-radius" && i + 1 < argc) {
+            major_radius = std::stof(argv[++i]);
+        } else if (arg == "--minor-radius" && i + 1 < argc) {
+            minor_radius = std::stof(argv[++i]);
+        } else if (arg == "--poisson-distance" && i + 1 < argc) {
+            poisson_distance = std::stof(argv[++i]);
+        } else if (arg == "--embed-3d") {
+            embed_3d = true;
+        } else if (arg == "--layout-3d") {
+            layout_3d = true;
+        }
+    }
+
+    // Auto-enable 3D embedding for curved topologies when using 3D layout
+    // Without embed_3d, there are no Z coordinates to work with in layout_3d mode
+    if (layout_3d && !embed_3d && topology != TopologyType::Flat) {
+        embed_3d = true;
+        std::cout << "Auto-enabling --embed-3d for curved topology with --layout-3d" << std::endl;
     }
 
     // Set default input file based on mode
@@ -3178,29 +3291,105 @@ int main(int argc, char* argv[]) {
         // Evolution only - no analysis
         std::cout << "Running evolution only (no analysis)..." << std::endl;
 
-        BHConfig bh_config;
-        bh_config.mass1 = 1.0f;
-        bh_config.mass2 = 0.8f;
-        bh_config.separation = 3.0f;
-        if (edge_threshold > 0) {
-            bh_config.edge_threshold = edge_threshold;
-        } else {
-            bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
-        }
-        bh_config.box_x = {-5.0f, 5.0f};
-        bh_config.box_y = {-4.0f, 4.0f};
-
         BHInitialCondition initial;
-        if (brill_vertices > 0) {
-            initial = generate_brill_lindquist(brill_vertices, bh_config);
-        } else if (solid_grid) {
-            initial = generate_solid_grid(grid_width, grid_height, bh_config);
+
+        if (use_new_topology) {
+            // Use new topology-aware generation
+            TopologyConfig topo_config;
+            topo_config.type = topology;
+            topo_config.sampling = sampling;
+            topo_config.major_radius = major_radius;
+            topo_config.minor_radius = minor_radius;
+            topo_config.grid_resolution = grid_width;
+            topo_config.poisson_min_distance = poisson_distance;
+            topo_config.edge_threshold = (edge_threshold > 0) ? edge_threshold : 0.0f;  // 0 = auto-compute
+
+            // Set domain based on topology
+            if (topology == TopologyType::Flat) {
+                topo_config.domain_x = {-5.0f, 5.0f};
+                topo_config.domain_y = {-4.0f, 4.0f};
+            } else {
+                // For curved topologies, domain is in internal coords
+                topo_config.domain_y = {-4.0f, 4.0f};  // z range for cylinder/klein/mobius
+            }
+
+            // Configure defects
+            topo_config.defects.count = defect_count;
+            topo_config.defects.exclusion_radius = defect_exclusion;
+            if (defect_count > 0) {
+                // Place defects at default positions based on topology
+                if (topology == TopologyType::Flat) {
+                    // Two defects on x-axis like current BH setup
+                    float sep = 3.0f;
+                    topo_config.defects.positions.push_back({sep / 2, 0});
+                    topo_config.defects.positions.push_back({-sep / 2, 0});
+                } else if (topology == TopologyType::Sphere) {
+                    // Defects at poles
+                    topo_config.defects.positions.push_back({0.1f, 0});         // Near north pole
+                    if (defect_count > 1)
+                        topo_config.defects.positions.push_back({3.04f, 0});    // Near south pole
+                } else {
+                    // For cylinder/torus etc, spread evenly around θ
+                    for (int d = 0; d < defect_count; ++d) {
+                        float theta = 6.283f * d / defect_count;
+                        topo_config.defects.positions.push_back({theta, 0});
+                    }
+                }
+                for (int d = 0; d < defect_count; ++d) {
+                    topo_config.defects.masses.push_back(defect_mass);
+                }
+            }
+
+            int n_verts = (brill_vertices > 0) ? brill_vertices : (grid_width * grid_height);
+            initial = generate_initial_condition(n_verts, topo_config);
+
+            // Convert internal coords to display coords for visualization
+            // Store original positions before conversion for 3D embedding
+            std::vector<Vec2> internal_positions = initial.vertex_positions;
+
+            if (embed_3d) {
+                // Use 3D topological embedding
+                initial.vertex_z.resize(initial.vertex_positions.size());
+                for (size_t i = 0; i < initial.vertex_positions.size(); ++i) {
+                    Vec3 pos3d = topology_to_display_3d(internal_positions[i], topo_config);
+                    initial.vertex_positions[i] = {pos3d.x, pos3d.y};
+                    initial.vertex_z[i] = pos3d.z;
+                }
+                std::cout << "Using 3D topological embedding" << std::endl;
+            } else {
+                // Use 2D flattened display
+                for (auto& pos : initial.vertex_positions) {
+                    pos = topology_to_display(pos, topo_config);
+                }
+            }
         } else {
-            initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+            // Legacy generation
+            BHConfig bh_config;
+            bh_config.mass1 = 1.0f;
+            bh_config.mass2 = 0.8f;
+            bh_config.separation = 3.0f;
+            if (edge_threshold > 0) {
+                bh_config.edge_threshold = edge_threshold;
+            } else {
+                bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
+            }
+            bh_config.box_x = {-5.0f, 5.0f};
+            bh_config.box_y = {-4.0f, 4.0f};
+
+            if (brill_vertices > 0) {
+                initial = generate_brill_lindquist(brill_vertices, bh_config);
+            } else if (solid_grid) {
+                initial = generate_solid_grid(grid_width, grid_height, bh_config);
+            } else {
+                initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+            }
         }
 
         std::cout << "Initial condition: " << initial.vertex_positions.size() << " vertices, "
                   << initial.edges.size() << " edges" << std::endl;
+        if (initial.has_3d()) {
+            std::cout << "  (3D embedded)" << std::endl;
+        }
 
         // Shuffle initial edges if requested (helps avoid systematic bias)
         if (shuffle_edges && !initial.edges.empty()) {
@@ -3435,25 +3624,98 @@ int main(int argc, char* argv[]) {
         // Full pipeline: generate + evolve + analyze
         std::cout << "Generating black hole analysis..." << std::endl;
 
-        BHConfig bh_config;
-        bh_config.mass1 = 1.0f;
-        bh_config.mass2 = 0.8f;
-        bh_config.separation = 3.0f;
-        if (edge_threshold > 0) {
-            bh_config.edge_threshold = edge_threshold;
-        } else {
-            bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
-        }
-        bh_config.box_x = {-5.0f, 5.0f};
-        bh_config.box_y = {-4.0f, 4.0f};
-
         BHInitialCondition initial;
-        if (brill_vertices > 0) {
-            initial = generate_brill_lindquist(brill_vertices, bh_config);
-        } else if (solid_grid) {
-            initial = generate_solid_grid(grid_width, grid_height, bh_config);
+
+        if (use_new_topology) {
+            // Use new topology-aware generation
+            TopologyConfig topo_config;
+            topo_config.type = topology;
+            topo_config.sampling = sampling;
+            topo_config.major_radius = major_radius;
+            topo_config.minor_radius = minor_radius;
+            topo_config.grid_resolution = grid_width;
+            topo_config.poisson_min_distance = poisson_distance;
+            topo_config.edge_threshold = (edge_threshold > 0) ? edge_threshold : 0.0f;  // 0 = auto-compute
+
+            // Set domain based on topology
+            if (topology == TopologyType::Flat) {
+                topo_config.domain_x = {-5.0f, 5.0f};
+                topo_config.domain_y = {-4.0f, 4.0f};
+            } else {
+                // For curved topologies, domain is in internal coords
+                topo_config.domain_y = {-4.0f, 4.0f};  // z range for cylinder/klein/mobius
+            }
+
+            // Configure defects
+            topo_config.defects.count = defect_count;
+            topo_config.defects.exclusion_radius = defect_exclusion;
+            if (defect_count > 0) {
+                // Place defects at default positions based on topology
+                if (topology == TopologyType::Flat) {
+                    // Two defects on x-axis like current BH setup
+                    float sep = 3.0f;
+                    topo_config.defects.positions.push_back({sep / 2, 0});
+                    topo_config.defects.positions.push_back({-sep / 2, 0});
+                } else if (topology == TopologyType::Sphere) {
+                    // Defects at poles
+                    topo_config.defects.positions.push_back({0.1f, 0});         // Near north pole
+                    if (defect_count > 1)
+                        topo_config.defects.positions.push_back({3.04f, 0});    // Near south pole
+                } else {
+                    // For cylinder/torus etc, spread evenly around θ
+                    for (int d = 0; d < defect_count; ++d) {
+                        float theta = 6.283f * d / defect_count;
+                        topo_config.defects.positions.push_back({theta, 0});
+                    }
+                }
+                for (int d = 0; d < defect_count; ++d) {
+                    topo_config.defects.masses.push_back(defect_mass);
+                }
+            }
+
+            int n_verts = (brill_vertices > 0) ? brill_vertices : (grid_width * grid_height);
+            initial = generate_initial_condition(n_verts, topo_config);
+
+            // Convert internal coords to display coords for visualization
+            // Store original positions before conversion for 3D embedding
+            std::vector<Vec2> internal_positions_run = initial.vertex_positions;
+
+            if (embed_3d) {
+                // Use 3D topological embedding
+                initial.vertex_z.resize(initial.vertex_positions.size());
+                for (size_t i = 0; i < initial.vertex_positions.size(); ++i) {
+                    Vec3 pos3d = topology_to_display_3d(internal_positions_run[i], topo_config);
+                    initial.vertex_positions[i] = {pos3d.x, pos3d.y};
+                    initial.vertex_z[i] = pos3d.z;
+                }
+                std::cout << "Using 3D topological embedding" << std::endl;
+            } else {
+                // Use 2D flattened display
+                for (auto& pos : initial.vertex_positions) {
+                    pos = topology_to_display(pos, topo_config);
+                }
+            }
         } else {
-            initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+            // Legacy generation
+            BHConfig bh_config;
+            bh_config.mass1 = 1.0f;
+            bh_config.mass2 = 0.8f;
+            bh_config.separation = 3.0f;
+            if (edge_threshold > 0) {
+                bh_config.edge_threshold = edge_threshold;
+            } else {
+                bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
+            }
+            bh_config.box_x = {-5.0f, 5.0f};
+            bh_config.box_y = {-4.0f, 4.0f};
+
+            if (brill_vertices > 0) {
+                initial = generate_brill_lindquist(brill_vertices, bh_config);
+            } else if (solid_grid) {
+                initial = generate_solid_grid(grid_width, grid_height, bh_config);
+            } else {
+                initial = generate_grid_with_holes(grid_width, grid_height, bh_config);
+            }
         }
 
         // Shuffle initial edges if requested (helps avoid systematic bias)
@@ -4457,7 +4719,24 @@ int main(int argc, char* argv[]) {
     LayoutGraph layout_graph;
     LayoutParams layout_params;
     layout_params.algorithm = LayoutAlgorithm::Direct;
-    layout_params.dimension = LayoutDimension::Layout2D;
+    layout_params.dimension = layout_3d ? LayoutDimension::Layout3D : LayoutDimension::Layout2D;
+    if (layout_3d) {
+        std::cout << "Using 3D force-directed layout" << std::endl;
+    }
+    if (embed_3d && analysis.initial.has_3d()) {
+        std::cout << "Using 3D topological embedding (" << analysis.initial.vertex_z.size() << " Z coords)" << std::endl;
+        // Debug: print some Z values
+        if (analysis.initial.vertex_z.size() > 0) {
+            float min_z = analysis.initial.vertex_z[0], max_z = analysis.initial.vertex_z[0];
+            for (float z : analysis.initial.vertex_z) {
+                min_z = std::min(min_z, z);
+                max_z = std::max(max_z, z);
+            }
+            std::cout << "  Z range: [" << min_z << ", " << max_z << "]" << std::endl;
+        }
+    } else if (embed_3d) {
+        std::cout << "WARNING: --embed-3d specified but initial.vertex_z is empty!" << std::endl;
+    }
     layout_params.spring_constant = 0.5f;    // Strong springs to maintain edge lengths
     layout_params.repulsion_constant = 0.25f; // Weak repulsion to prevent expansion
     layout_params.damping = 0.1f;            // High damping for stability

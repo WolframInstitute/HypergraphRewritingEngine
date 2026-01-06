@@ -609,12 +609,13 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     auto aggregate_start = std::chrono::high_resolution_clock::now();
 
-    // Aggregate each timestep in parallel
+    // Aggregate each timestep in parallel with progress tracking
     result.per_timestep.resize(num_steps);
+    std::atomic<uint32_t> steps_completed{0};
 
     for (uint32_t step = 0; step < num_steps; ++step) {
         analysis_job_system_->submit_function(
-            [this, &result, &evolution_result, &analyses_by_step, &initial, step]() {
+            [this, &result, &evolution_result, &analyses_by_step, &initial, step, &steps_completed]() {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
                 const auto& step_graphs = evolution_result.states_by_step[step];
@@ -623,24 +624,36 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
                 if (step_graphs.empty()) {
                     result.per_timestep[step].step = step;
                     result.per_timestep[step].num_states = 0;
-                    return;
+                } else {
+                    // Streaming aggregation: uses original graphs, no StateAnalysis copy
+                    // Pass global anchors for consistent coordinate bucketing across timesteps
+                    result.per_timestep[step] = aggregate_timestep_streaming(
+                        step,
+                        step_graphs,
+                        step_analyses,
+                        initial.vertex_positions,
+                        result.anchor_vertices
+                    );
                 }
 
-                // Streaming aggregation: uses original graphs, no StateAnalysis copy
-                // Pass global anchors for consistent coordinate bucketing across timesteps
-                result.per_timestep[step] = aggregate_timestep_streaming(
-                    step,
-                    step_graphs,
-                    step_analyses,
-                    initial.vertex_positions,
-                    result.anchor_vertices
-                );
+                steps_completed.fetch_add(1, std::memory_order_relaxed);
             },
             AnalysisJobType::TIMESTEP_AGGREGATE
         );
     }
 
-    // Wait for all aggregation jobs to complete
+    // Wait for aggregation with progress reporting
+    while (steps_completed.load(std::memory_order_relaxed) < num_steps) {
+        if (should_stop_.load(std::memory_order_relaxed)) break;
+
+        uint32_t done = steps_completed.load(std::memory_order_relaxed);
+        float progress = 0.85f + 0.07f * (static_cast<float>(done) / num_steps);
+        report_progress("Aggregating timesteps", progress);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Final wait to ensure all jobs complete
     analysis_job_system_->wait_for_completion();
 
     auto aggregate_end = std::chrono::high_resolution_clock::now();

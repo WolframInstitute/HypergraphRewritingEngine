@@ -92,14 +92,91 @@ struct BHConfig {
     std::array<float, 2> box_y = {-10.0f, 10.0f};
 };
 
+// =============================================================================
+// Topology Configuration (Extended Initial Conditions)
+// =============================================================================
+
+enum class TopologyType {
+    Flat,           // Current: rectangular 2D domain, no wrapping
+    Cylinder,       // Wraps horizontally (left↔right), open vertically
+    Torus,          // Wraps both horizontally and vertically
+    Sphere,         // S² topology via icosahedral or UV sampling
+    KleinBottle,    // Wraps horizontally with twist
+    MobiusStrip     // Wraps horizontally with twist, open vertically
+};
+
+inline const char* topology_name(TopologyType t) {
+    switch (t) {
+        case TopologyType::Flat: return "Flat";
+        case TopologyType::Cylinder: return "Cylinder";
+        case TopologyType::Torus: return "Torus";
+        case TopologyType::Sphere: return "Sphere";
+        case TopologyType::KleinBottle: return "Klein Bottle";
+        case TopologyType::MobiusStrip: return "Möbius Strip";
+        default: return "Unknown";
+    }
+}
+
+enum class SamplingMethod {
+    Uniform,        // Equal probability everywhere
+    PoissonDisk,    // Blue noise with minimum separation (current default)
+    Grid,           // Regular lattice respecting topology
+    DensityWeighted // Higher density near defects (generalized Brill-Lindquist)
+};
+
+inline const char* sampling_name(SamplingMethod s) {
+    switch (s) {
+        case SamplingMethod::Uniform: return "Uniform";
+        case SamplingMethod::PoissonDisk: return "Poisson Disk";
+        case SamplingMethod::Grid: return "Grid";
+        case SamplingMethod::DensityWeighted: return "Density Weighted";
+        default: return "Unknown";
+    }
+}
+
+struct DefectConfig {
+    int count = 0;                        // Number of defects (0 = none)
+    std::vector<Vec2> positions;          // Defect positions (in topology coords)
+    std::vector<float> masses;            // Mass/strength of each defect
+    float exclusion_radius = 0.5f;        // Remove vertices within this radius
+    bool use_conformal_weighting = true;  // Density ∝ ψ⁴ near defects
+};
+
+struct TopologyConfig {
+    TopologyType type = TopologyType::Flat;
+    SamplingMethod sampling = SamplingMethod::PoissonDisk;
+    DefectConfig defects;
+
+    // Domain parameters (interpretation depends on topology)
+    // Flat: box_x, box_y define rectangular domain
+    // Cylinder: theta ∈ [0, 2π), z ∈ [z_min, z_max]
+    // Torus: theta ∈ [0, 2π), phi ∈ [0, 2π)
+    // Sphere: theta ∈ [0, π], phi ∈ [0, 2π)
+    std::array<float, 2> domain_x = {0.0f, 6.28318530718f};  // Default: [0, 2π)
+    std::array<float, 2> domain_y = {-10.0f, 10.0f};         // Default: [-10, 10]
+
+    // Topology-specific params
+    float major_radius = 10.0f;       // R for torus (major), or radius for cylinder/sphere
+    float minor_radius = 3.0f;        // r for torus (minor), or width for Möbius
+
+    // Sampling params
+    int grid_resolution = 20;         // For grid sampling
+    float poisson_min_distance = 1.0f; // For Poisson disk
+
+    // Edge generation
+    float edge_threshold = 0.0f;      // Max distance for edge creation (0 = auto-compute)
+};
+
 struct BHInitialCondition {
     BHConfig config;
     std::vector<Vec2> vertex_positions;
+    std::vector<float> vertex_z;  // Z coordinates for 3D embedding (empty if 2D)
     std::vector<Edge> edges;
 
     // Derived
     size_t vertex_count() const { return vertex_positions.size(); }
     size_t edge_count() const { return edges.size(); }
+    bool has_3d() const { return !vertex_z.empty(); }
 
     // Convert to hypergraph edge format for evolution: {{v1, v2}, {v2, v3}, ...}
     std::string to_hge_format() const;
@@ -242,15 +319,19 @@ struct TimestepAggregation {
     // Variance of dimension per vertex (after coordinate bucketing)
     std::vector<float> variance_dimensions;
 
+    // Min/max dimension per vertex across states (for complete branchial stats)
+    std::vector<float> min_dimensions;
+    std::vector<float> max_dimensions;
+
     // Global dimension per vertex (computed on union/timeslice graph, bucketed by coordinate)
     std::vector<float> global_mean_dimensions;
     std::vector<float> global_variance_dimensions;
 
-    // Coordinate to mean dimension map (for lookup)
-    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_dim;
-
-    // Coordinate to variance dimension map (for lookup)
-    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_var;
+    // Coordinate to dimension maps (for lookup)
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_dim;      // mean
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_var;      // variance
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_min_dim;  // min
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_max_dim;  // max
 
     // Stats for mean (local/bucketed)
     float pooled_mean = 0;

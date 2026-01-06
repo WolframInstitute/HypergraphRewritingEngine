@@ -1,5 +1,7 @@
 #include <blackhole/hausdorff_analysis.hpp>
+#ifdef BLACKHOLE_WITH_LAYOUT
 #include <layout/layout_engine.hpp>
+#endif
 #include <queue>
 #include <algorithm>
 #include <set>
@@ -62,9 +64,10 @@ const std::vector<VertexId> SimpleGraph::empty_neighbors_{};
 
 void SimpleGraph::build_from_edges(const std::vector<Edge>& edges) {
     adjacency_.clear();
+    out_adjacency_.clear();
     vertex_to_index_.clear();
 
-    // Deduplicate edges first using canonical ordering
+    // Deduplicate edges first using canonical ordering (for undirected)
     std::set<std::pair<VertexId, VertexId>> unique_edges;
     std::unordered_set<VertexId> vertex_set;
     for (const auto& e : edges) {
@@ -83,26 +86,39 @@ void SimpleGraph::build_from_edges(const std::vector<Edge>& edges) {
     for (size_t i = 0; i < vertices_.size(); ++i) {
         vertex_to_index_[vertices_[i]] = i;
         adjacency_[vertices_[i]] = {};  // Initialize empty adjacency
+        out_adjacency_[vertices_[i]] = {};  // Initialize empty outgoing adjacency
     }
 
-    // Build adjacency from deduplicated edges
+    // Build symmetric adjacency from deduplicated edges
     for (const auto& [v1, v2] : unique_edges) {
         adjacency_[v1].push_back(v2);
         adjacency_[v2].push_back(v1);
+    }
+
+    // Build directed (outgoing) adjacency from original edges
+    // Deduplicate directed edges
+    std::set<std::pair<VertexId, VertexId>> directed_edges;
+    for (const auto& e : edges) {
+        directed_edges.insert({e.v1, e.v2});
+    }
+    for (const auto& [v1, v2] : directed_edges) {
+        out_adjacency_[v1].push_back(v2);
     }
 }
 
 void SimpleGraph::build(const std::vector<VertexId>& vertices, const std::vector<Edge>& edges) {
     vertices_ = vertices;
     adjacency_.clear();
+    out_adjacency_.clear();
     vertex_to_index_.clear();
 
     for (size_t i = 0; i < vertices_.size(); ++i) {
         vertex_to_index_[vertices_[i]] = i;
         adjacency_[vertices_[i]] = {};  // Initialize empty adjacency
+        out_adjacency_[vertices_[i]] = {};  // Initialize empty outgoing adjacency
     }
 
-    // Use set to deduplicate edges, then build adjacency
+    // Use set to deduplicate edges, then build symmetric adjacency
     std::set<std::pair<VertexId, VertexId>> unique_edges;
     for (const auto& e : edges) {
         if (vertex_to_index_.count(e.v1) && vertex_to_index_.count(e.v2)) {
@@ -117,11 +133,30 @@ void SimpleGraph::build(const std::vector<VertexId>& vertices, const std::vector
         adjacency_[v1].push_back(v2);
         adjacency_[v2].push_back(v1);
     }
+
+    // Build directed (outgoing) adjacency from original edges
+    std::set<std::pair<VertexId, VertexId>> directed_edges;
+    for (const auto& e : edges) {
+        if (vertex_to_index_.count(e.v1) && vertex_to_index_.count(e.v2)) {
+            directed_edges.insert({e.v1, e.v2});
+        }
+    }
+    for (const auto& [v1, v2] : directed_edges) {
+        out_adjacency_[v1].push_back(v2);
+    }
 }
 
 const std::vector<VertexId>& SimpleGraph::neighbors(VertexId v) const {
     auto it = adjacency_.find(v);
     if (it != adjacency_.end()) {
+        return it->second;
+    }
+    return empty_neighbors_;
+}
+
+const std::vector<VertexId>& SimpleGraph::out_neighbors(VertexId v) const {
+    auto it = out_adjacency_.find(v);
+    if (it != out_adjacency_.end()) {
         return it->second;
     }
     return empty_neighbors_;
@@ -191,11 +226,88 @@ std::vector<int> SimpleGraph::distances_from(VertexId source) const {
     return result;
 }
 
+// Truncated BFS - only explores up to max_radius, much faster for local dimension computation
+std::vector<int> SimpleGraph::distances_from_truncated(VertexId source, int max_radius) const {
+    std::vector<int> result(vertices_.size(), -1);
+
+    if (!has_vertex(source)) return result;
+
+    std::unordered_map<VertexId, int> dist;
+    std::queue<VertexId> q;
+
+    dist[source] = 0;
+    q.push(source);
+
+    while (!q.empty()) {
+        VertexId curr = q.front();
+        q.pop();
+
+        int curr_dist = dist[curr];
+        if (curr_dist >= max_radius) continue;  // Don't explore beyond max_radius
+
+        for (VertexId next : neighbors(curr)) {
+            if (dist.find(next) == dist.end()) {
+                dist[next] = curr_dist + 1;
+                q.push(next);
+            }
+        }
+    }
+
+    // Map to result vector
+    for (const auto& [v, d] : dist) {
+        auto it = vertex_to_index_.find(v);
+        if (it != vertex_to_index_.end()) {
+            result[it->second] = d;
+        }
+    }
+
+    return result;
+}
+
 std::vector<std::vector<int>> SimpleGraph::all_pairs_distances() const {
     std::vector<std::vector<int>> result(vertices_.size());
 
     for (size_t i = 0; i < vertices_.size(); ++i) {
         result[i] = distances_from(vertices_[i]);
+    }
+
+    return result;
+}
+
+std::vector<std::vector<int>> SimpleGraph::all_pairs_distances_directed() const {
+    std::vector<std::vector<int>> result(vertices_.size());
+
+    // BFS from each vertex using only outgoing edges
+    for (size_t src_idx = 0; src_idx < vertices_.size(); ++src_idx) {
+        VertexId source = vertices_[src_idx];
+        result[src_idx].assign(vertices_.size(), -1);
+
+        std::unordered_map<VertexId, int> dist;
+        std::queue<VertexId> q;
+
+        dist[source] = 0;
+        q.push(source);
+
+        while (!q.empty()) {
+            VertexId curr = q.front();
+            q.pop();
+
+            // Use outgoing neighbors only
+            for (VertexId next : out_neighbors(curr)) {
+                if (dist.find(next) == dist.end()) {
+                    dist[next] = dist[curr] + 1;
+                    q.push(next);
+                }
+            }
+        }
+
+        // Map to result vector
+        for (const auto& [v, d] : dist) {
+            auto it = vertex_to_index_.find(v);
+            if (it != vertex_to_index_.end()) {
+                result[src_idx][it->second] = d;
+            }
+        }
     }
 
     return result;
@@ -544,6 +656,29 @@ std::vector<float> estimate_all_dimensions_from_matrix(
     auto end_time = std::chrono::high_resolution_clock::now();
     g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
     g_dimension_calls++;
+
+    return dimensions;
+}
+
+// Version that uses truncated BFS per vertex - O(V * neighborhood) instead of O(V * V)
+// Much faster when max_radius << graph diameter
+std::vector<float> estimate_all_dimensions_truncated(
+    const SimpleGraph& graph,
+    int max_radius
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> dimensions(graph.vertex_count());
+    const auto& vertices = graph.vertices();
+
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        auto truncated_dists = graph.distances_from_truncated(vertices[i], max_radius);
+        dimensions[i] = estimate_local_dimension(truncated_dists, max_radius);
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
     g_total_vertices_processed += graph.vertex_count();
 
     return dimensions;
@@ -562,6 +697,193 @@ std::vector<float> estimate_all_dimensions(
     std::vector<float> dimensions(graph.vertex_count());
     for (size_t i = 0; i < graph.vertex_count(); ++i) {
         dimensions[i] = estimate_local_dimension(dist_matrix[i], max_radius);
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
+
+    return dimensions;
+}
+
+// Compute statistics from a vector of dimension values
+DimensionStats compute_dimension_stats(const std::vector<float>& values) {
+    DimensionStats stats;
+    if (values.empty()) return stats;
+
+    // Filter valid values
+    std::vector<float> valid;
+    valid.reserve(values.size());
+    for (float v : values) {
+        if (v > 0 && std::isfinite(v)) {
+            valid.push_back(v);
+        }
+    }
+
+    if (valid.empty()) return stats;
+
+    stats.count = valid.size();
+    stats.min = *std::min_element(valid.begin(), valid.end());
+    stats.max = *std::max_element(valid.begin(), valid.end());
+
+    // Mean
+    float sum = 0;
+    for (float v : valid) sum += v;
+    stats.mean = sum / static_cast<float>(valid.size());
+
+    // Variance and stddev
+    float sum_sq = 0;
+    for (float v : valid) {
+        float diff = v - stats.mean;
+        sum_sq += diff * diff;
+    }
+    stats.variance = sum_sq / static_cast<float>(valid.size());
+    stats.stddev = std::sqrt(stats.variance);
+
+    return stats;
+}
+
+// Estimate local dimension using discrete derivative formula
+// (log N(r) - log N(r-1)) / (log(r+1) - log(r))
+static float estimate_local_dimension_discrete_derivative(
+    const std::vector<int>& distances_from_vertex,
+    const DimensionConfig& config
+) {
+    // Count total reachable vertices
+    int total_reachable = 0;
+    for (int d : distances_from_vertex) {
+        if (d >= 0) total_reachable++;
+    }
+
+    // Count vertices at each distance (cumulative ball size)
+    int actual_max_radius = std::min(config.max_radius, static_cast<int>(distances_from_vertex.size()));
+    std::vector<int> counts(actual_max_radius + 1, 0);
+    for (int d : distances_from_vertex) {
+        if (d >= 0 && d <= actual_max_radius) {
+            for (int r = d; r <= actual_max_radius; ++r) {
+                counts[r]++;
+            }
+        }
+    }
+
+    // Compute dimension at each radius using discrete derivative
+    float saturation_threshold = config.saturation_threshold * total_reachable;
+    std::vector<float> per_radius_dims;
+
+    for (int r = config.min_radius; r <= actual_max_radius; ++r) {
+        // Skip if saturated
+        if (counts[r] >= saturation_threshold) continue;
+
+        // Need N(r) and N(r-1) both > 0
+        if (counts[r] <= 0 || counts[r-1] <= 0) continue;
+
+        // Discrete derivative: (log N(r) - log N(r-1)) / (log(r+1) - log(r))
+        float log_N_r = std::log(static_cast<float>(counts[r]));
+        float log_N_r1 = std::log(static_cast<float>(counts[r-1]));
+        float log_r_plus_1 = std::log(static_cast<float>(r + 1));
+        float log_r = std::log(static_cast<float>(r));
+
+        float denom = log_r_plus_1 - log_r;
+        if (std::abs(denom) < 1e-10f) continue;
+
+        float dim = (log_N_r - log_N_r1) / denom;
+        if (std::isfinite(dim) && dim > 0) {
+            per_radius_dims.push_back(dim);
+        }
+    }
+
+    if (per_radius_dims.empty()) return -1.0f;
+
+    // Aggregate based on method
+    switch (config.aggregation) {
+        case AggregationMethod::Min:
+            return *std::min_element(per_radius_dims.begin(), per_radius_dims.end());
+        case AggregationMethod::Max:
+            return *std::max_element(per_radius_dims.begin(), per_radius_dims.end());
+        case AggregationMethod::Mean:
+        default: {
+            float sum = 0;
+            for (float d : per_radius_dims) sum += d;
+            return sum / static_cast<float>(per_radius_dims.size());
+        }
+    }
+}
+
+// Estimate local dimension with full configuration
+float estimate_local_dimension(
+    const std::vector<int>& distances_from_vertex,
+    const DimensionConfig& config
+) {
+    if (config.formula == DimensionFormula::DiscreteDerivative) {
+        return estimate_local_dimension_discrete_derivative(distances_from_vertex, config);
+    }
+
+    // Linear regression (default) - same as original but with configurable saturation
+    int total_reachable = 0;
+    for (int d : distances_from_vertex) {
+        if (d >= 0) total_reachable++;
+    }
+
+    int actual_max_radius = std::min(config.max_radius, static_cast<int>(distances_from_vertex.size()));
+    std::vector<int> counts(actual_max_radius + 1, 0);
+    for (int d : distances_from_vertex) {
+        if (d >= 0 && d <= actual_max_radius) {
+            for (int r = d; r <= actual_max_radius; ++r) {
+                counts[r]++;
+            }
+        }
+    }
+
+    // Build (log r, log N) pairs for regression
+    float saturation_threshold = config.saturation_threshold * total_reachable;
+    std::vector<std::pair<float, float>> valid_pairs;
+    for (int r = config.min_radius; r <= actual_max_radius; ++r) {
+        if (counts[r] > 1 && counts[r] < saturation_threshold) {
+            valid_pairs.emplace_back(std::log(static_cast<float>(r)),
+                                     std::log(static_cast<float>(counts[r])));
+        }
+    }
+
+    if (valid_pairs.size() < 2) {
+        return -1.0f;
+    }
+
+    // Linear regression
+    float n = static_cast<float>(valid_pairs.size());
+    float sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
+
+    for (const auto& [x, y] : valid_pairs) {
+        sum_x += x;
+        sum_y += y;
+        sum_xx += x * x;
+        sum_xy += x * y;
+    }
+
+    float denom = n * sum_xx - sum_x * sum_x;
+    if (std::abs(denom) < 1e-10f) {
+        return -1.0f;
+    }
+
+    float slope = (n * sum_xy - sum_x * sum_y) / denom;
+    return std::isfinite(slope) ? slope : -1.0f;
+}
+
+// Estimate all dimensions with full configuration
+std::vector<float> estimate_all_dimensions(
+    const SimpleGraph& graph,
+    const DimensionConfig& config
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // Use directed or undirected distances based on config
+    auto dist_matrix = config.directed
+        ? graph.all_pairs_distances_directed()
+        : graph.all_pairs_distances();
+
+    std::vector<float> dimensions(graph.vertex_count());
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        dimensions[i] = estimate_local_dimension(dist_matrix[i], config);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -1060,7 +1382,8 @@ TimestepAggregation aggregate_timestep_streaming(
         }
     }
 
-    // Additional debug: count how many connected components exist
+#ifdef BH_DEBUG_AGGREGATION
+    // Debug only: count how many connected components exist (expensive BFS)
     size_t num_components = 0;
     {
         std::unordered_set<VertexId> remaining(all_vertices.begin(), all_vertices.end());
@@ -1086,8 +1409,6 @@ TimestepAggregation aggregate_timestep_streaming(
             }
         }
     }
-
-#ifdef BH_DEBUG_AGGREGATION
     std::cout << "[DEBUG step " << step << "] total_unique_edges=" << edge_counts.size()
               << ", LCC_size=" << lcc.size()
               << ", all_vertices=" << all_vertices.size()
@@ -1113,8 +1434,9 @@ TimestepAggregation aggregate_timestep_streaming(
     SimpleGraph union_graph;
     union_graph.build(result.union_vertices, result.union_edges);
 
-    // Compute distance matrix ONCE for union graph - reused for coords and dimensions
-    auto union_dist_matrix = union_graph.all_pairs_distances();
+    // NOTE: We no longer compute all_pairs_distances() here!
+    // - Geodesic coords: use compute_geodesic_coordinates() - O(A × (V+E)) where A=6 anchors
+    // - Global dims: use estimate_all_dimensions_truncated() - O(V × neighborhood) for radius=5
 
     // Use global anchors (filtered to those present in this union graph)
     // This ensures consistent coordinate bucketing across all timesteps
@@ -1154,13 +1476,14 @@ TimestepAggregation aggregate_timestep_streaming(
               << (using_local_anchors ? " (LOCAL)" : " (GLOBAL)") << std::endl;
 #endif
 
-    // Compute geodesic coordinates from pre-computed matrix
-    auto union_coords = compute_geodesic_coordinates_from_matrix(union_graph, valid_anchors, union_dist_matrix);
+    // Compute geodesic coordinates directly - O(A × (V+E)) where A = num_anchors (typically 6)
+    auto union_coords = compute_geodesic_coordinates(union_graph, valid_anchors);
 
-    // Aggregate dimensions by VERTEX ID
-    // For each vertex in the union, collect all dimension values from all states
-    // where that vertex appears, then compute mean and variance.
-    std::unordered_map<VertexId, std::vector<float>> vertex_dims;
+    // ==========================================================================
+    // Aggregate dimensions by GEODESIC COORDINATE (not vertex ID!)
+    // Multiple vertices with the same coordinate bucket together
+    // ==========================================================================
+    std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> coord_dims;
 
     for (size_t g_idx = 0; g_idx < graphs.size(); ++g_idx) {
         const auto& graph = graphs[g_idx];
@@ -1174,27 +1497,33 @@ TimestepAggregation aggregate_timestep_streaming(
             if (i >= analysis.vertex_dimensions.size()) continue;
             if (analysis.vertex_dimensions[i] <= 0) continue;
 
-            vertex_dims[v].push_back(analysis.vertex_dimensions[i]);
+            // Get coordinate from union graph
+            auto coord_it = union_coords.find(v);
+            if (coord_it == union_coords.end()) continue;
+
+            CoordKey key;
+            key.num_anchors = num_anchors;
+            for (size_t a = 0; a < coord_it->second.size() && a < MAX_ANCHORS; ++a) {
+                key.coords[a] = coord_it->second[a];
+            }
+
+            // Bucket by coordinate, not vertex ID!
+            coord_dims[key].push_back(analysis.vertex_dimensions[i]);
         }
     }
 
-    // Assign mean and variance dimensions to union vertices
-    result.mean_dimensions.resize(result.union_vertices.size(), -1);
-    result.variance_dimensions.resize(result.union_vertices.size(), -1);
+    // Compute mean, variance, min, max per coordinate bucket
+    for (auto& [key, dims] : coord_dims) {
+        if (dims.empty()) continue;
 
-    for (size_t i = 0; i < result.union_vertices.size(); ++i) {
-        VertexId v = result.union_vertices[i];
-
-        auto it = vertex_dims.find(v);
-        if (it == vertex_dims.end() || it->second.empty()) continue;
-
-        const auto& dims = it->second;
-
-        // Compute mean
         float mean = std::accumulate(dims.begin(), dims.end(), 0.0f) / dims.size();
-        result.mean_dimensions[i] = mean;
+        result.coord_to_dim[key] = mean;
 
-        // Compute variance: E[(X - mean)^2]
+        float min_val = *std::min_element(dims.begin(), dims.end());
+        float max_val = *std::max_element(dims.begin(), dims.end());
+        result.coord_to_min_dim[key] = min_val;
+        result.coord_to_max_dim[key] = max_val;
+
         float variance = 0.0f;
         if (dims.size() > 1) {
             for (float d : dims) {
@@ -1203,26 +1532,49 @@ TimestepAggregation aggregate_timestep_streaming(
             }
             variance /= dims.size();
         }
-        result.variance_dimensions[i] = variance;
+        result.coord_to_var[key] = variance;
+    }
 
-        // Also store in coord_to_dim/coord_to_var maps using union coordinates
-        // (for potential future use, but main assignment is done above)
+    // Assign bucketed dimensions to union vertices via coordinate lookup
+    result.mean_dimensions.resize(result.union_vertices.size(), -1);
+    result.variance_dimensions.resize(result.union_vertices.size(), -1);
+    result.min_dimensions.resize(result.union_vertices.size(), -1);
+    result.max_dimensions.resize(result.union_vertices.size(), -1);
+
+    for (size_t i = 0; i < result.union_vertices.size(); ++i) {
+        VertexId v = result.union_vertices[i];
+
         auto coord_it = union_coords.find(v);
-        if (coord_it != union_coords.end()) {
-            CoordKey key;
-            key.num_anchors = num_anchors;
-            for (size_t a = 0; a < coord_it->second.size() && a < MAX_ANCHORS; ++a) {
-                key.coords[a] = coord_it->second[a];
-            }
-            result.coord_to_dim[key] = mean;
-            result.coord_to_var[key] = variance;
+        if (coord_it == union_coords.end()) continue;
+
+        CoordKey key;
+        key.num_anchors = num_anchors;
+        for (size_t a = 0; a < coord_it->second.size() && a < MAX_ANCHORS; ++a) {
+            key.coords[a] = coord_it->second[a];
+        }
+
+        auto dim_it = result.coord_to_dim.find(key);
+        if (dim_it != result.coord_to_dim.end()) {
+            result.mean_dimensions[i] = dim_it->second;
+        }
+        auto var_it = result.coord_to_var.find(key);
+        if (var_it != result.coord_to_var.end()) {
+            result.variance_dimensions[i] = var_it->second;
+        }
+        auto min_it = result.coord_to_min_dim.find(key);
+        if (min_it != result.coord_to_min_dim.end()) {
+            result.min_dimensions[i] = min_it->second;
+        }
+        auto max_it = result.coord_to_max_dim.find(key);
+        if (max_it != result.coord_to_max_dim.end()) {
+            result.max_dimensions[i] = max_it->second;
         }
     }
 
-    // Compute pooled stats for mean (using the actual mean_dimensions vector)
+    // Compute pooled stats from coordinate buckets (not from vertex array)
     std::vector<float> all_dims;
-    for (float d : result.mean_dimensions) {
-        if (d >= 0) all_dims.push_back(d);
+    for (const auto& [_, mean] : result.coord_to_dim) {
+        all_dims.push_back(mean);
     }
 
     if (!all_dims.empty()) {
@@ -1231,10 +1583,10 @@ TimestepAggregation aggregate_timestep_streaming(
         result.pooled_max = *std::max_element(all_dims.begin(), all_dims.end());
     }
 
-    // Compute pooled stats for variance (using the actual variance_dimensions vector)
+    // Compute pooled stats for variance from coordinate buckets
     std::vector<float> all_vars;
-    for (float v : result.variance_dimensions) {
-        if (v >= 0) all_vars.push_back(v);
+    for (const auto& [_, var] : result.coord_to_var) {
+        all_vars.push_back(var);
     }
 
     if (!all_vars.empty()) {
@@ -1252,8 +1604,8 @@ TimestepAggregation aggregate_timestep_streaming(
     // 4. Assign bucket values back to vertices
 
     constexpr int global_max_radius = 5;
-    // Reuse the pre-computed distance matrix for union graph
-    auto global_raw_dims = estimate_all_dimensions_from_matrix(union_graph, union_dist_matrix, global_max_radius);
+    // Use truncated BFS - O(V × neighborhood) instead of O(V × V)
+    auto global_raw_dims = estimate_all_dimensions_truncated(union_graph, global_max_radius);
 
     // Bucket global dimensions by geodesic coordinate
     std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> global_coord_buckets;
@@ -1464,8 +1816,10 @@ BHAnalysisResult run_analysis(
         }
     }
 
+#ifdef BLACKHOLE_WITH_LAYOUT
     // Compute layouts for all timesteps
     compute_all_layouts(result.per_timestep, initial.vertex_positions, analysis_config.layout);
+#endif
 
     // Compute prefix sums for efficient timeslice aggregation
     std::cout << "  Computing prefix sums for timeslice aggregation..." << std::endl;
@@ -1650,6 +2004,7 @@ BHAnalysisResult run_analysis(
     return result;
 }
 
+#ifdef BLACKHOLE_WITH_LAYOUT
 // =============================================================================
 // Layout Computation
 // =============================================================================
@@ -1954,5 +2309,6 @@ void compute_all_layouts(
     std::cout << "    Layout complete. Bounding radius: " << final_radius
               << " (" << ts0.layout_positions.size() << " vertices)" << std::endl;
 }
+#endif  // BLACKHOLE_WITH_LAYOUT
 
 } // namespace viz::blackhole

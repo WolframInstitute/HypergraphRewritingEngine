@@ -221,6 +221,7 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
         target_include_directories(viz_blackhole PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include
         )
+        target_compile_definitions(viz_blackhole PUBLIC BLACKHOLE_WITH_LAYOUT=1)
         target_link_libraries(viz_blackhole PUBLIC
             hypergraph
             job_system
