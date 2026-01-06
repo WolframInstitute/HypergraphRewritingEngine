@@ -470,6 +470,74 @@ struct BHAnalysisResult {
     float mega_dim_min = 0;
     float mega_dim_max = 0;
 
+    // =========================================================================
+    // Geodesic Analysis Results (test particle tracing)
+    // =========================================================================
+    // Populated when AnalysisConfig::compute_geodesics = true
+
+    bool has_geodesic_analysis = false;
+
+    // Geodesic sources used (either from config or auto-selected)
+    std::vector<VertexId> geodesic_sources;
+
+    // Per-timestep geodesic paths: geodesic_paths[step] = paths traced at that step
+    // Each path is a sequence of vertex IDs representing the geodesic
+    std::vector<std::vector<std::vector<VertexId>>> geodesic_paths;
+
+    // Per-timestep geodesic proper times: geodesic_proper_times[step][path_idx] = times
+    // Cumulative graph distance at each vertex along the path
+    std::vector<std::vector<std::vector<float>>> geodesic_proper_times;
+
+    // Per-timestep geodesic dimensions: geodesic_dimensions[step][path_idx] = dims
+    // Local dimension at each vertex along the path
+    std::vector<std::vector<std::vector<float>>> geodesic_dimensions;
+
+    // Geodesic bundle spread per timestep (how much nearby geodesics diverge)
+    std::vector<float> geodesic_bundle_spread;
+
+    // Statistics
+    float mean_geodesic_length = 0;
+    float max_geodesic_length = 0;
+    float mean_bundle_spread = 0;
+
+    // =========================================================================
+    // Particle Detection Results (topological defects)
+    // =========================================================================
+    // Populated when AnalysisConfig::detect_particles = true
+
+    bool has_particle_analysis = false;
+
+    // Detected defects per timestep: defects[step] = defects at that step
+    // Using simple representation (avoid including full headers here)
+    struct DetectedDefect {
+        int type;                          // 0=None, 1=K5, 2=K33, 3=HighDegree, 4=DimSpike
+        std::vector<VertexId> core_vertices;
+        float charge;
+        float centroid_x, centroid_y;
+        float radius;
+        float local_dimension;
+        int confidence;
+    };
+    std::vector<std::vector<DetectedDefect>> detected_defects;
+
+    // Per-vertex topological charge per timestep: charges[step] = map vertex->charge
+    std::vector<std::unordered_map<VertexId, float>> vertex_charges;
+
+    // Aggregate charge statistics
+    float total_charge = 0;
+    float mean_charge = 0;
+    float max_charge = 0;
+
+    // Defect counts
+    int num_k5_defects = 0;
+    int num_k33_defects = 0;
+    int num_dimension_spike_defects = 0;
+    int num_high_degree_defects = 0;
+
+    // Charge range for visualization
+    float charge_min = 0;
+    float charge_max = 1;
+
     // Helpers
     const TimestepAggregation* get_timestep(int step) const {
         for (const auto& ts : per_timestep) {
@@ -777,6 +845,79 @@ inline Vec4 dimension_to_color(float dim, float dim_min, float dim_max,
 // Legacy overload for backward compatibility
 inline Vec4 dimension_to_color(float dim, float dim_min, float dim_max) {
     return dimension_to_color(dim, dim_min, dim_max, ColorPalette::Temperature, MissingDataMode::Show);
+}
+
+// =============================================================================
+// Quantum Analysis Overlay Configuration
+// =============================================================================
+// Configuration for overlaying geodesic paths and topological defects on the
+// dimension heatmap. Based on Gorard's "Some Quantum Mechanical Properties of
+// the Wolfram Model" paper.
+
+struct GeodesicOverlayConfig {
+    bool show_geodesics = false;           // Overlay geodesic paths
+    bool show_sources = true;              // Highlight geodesic source vertices
+    bool show_proper_time = true;          // Color geodesics by proper time
+
+    // Visual style
+    Vec4 geodesic_color = {1.0f, 1.0f, 0.0f, 0.8f};      // Yellow (default)
+    Vec4 source_color = {0.0f, 1.0f, 0.0f, 1.0f};        // Green for sources
+    float geodesic_width = 2.0f;                          // Line width in pixels
+    float source_radius_scale = 1.5f;                     // Multiplier for source vertex size
+
+    // Animation (for step-by-step geodesic rendering)
+    bool animate_geodesics = false;
+    float animation_speed = 1.0f;          // Steps per second
+};
+
+struct ParticleOverlayConfig {
+    bool show_defects = false;             // Overlay detected topological defects
+    bool show_charge_map = false;          // Color vertices by topological charge
+    bool show_defect_regions = true;       // Draw circles around defect cores
+
+    // Visual style
+    Vec4 k5_color = {1.0f, 0.0f, 0.0f, 0.9f};            // Red for K5 minors
+    Vec4 k33_color = {1.0f, 0.5f, 0.0f, 0.9f};           // Orange for K3,3 minors
+    Vec4 high_degree_color = {1.0f, 1.0f, 0.0f, 0.9f};   // Yellow for high-degree
+    Vec4 dimension_spike_color = {1.0f, 0.0f, 1.0f, 0.9f}; // Magenta for dim spikes
+    float defect_marker_scale = 2.0f;                     // Multiplier for defect vertex size
+    float region_alpha = 0.3f;                            // Transparency for defect regions
+
+    // Charge visualization (when show_charge_map = true)
+    ColorPalette charge_palette = ColorPalette::Plasma;   // Palette for charge coloring
+    float charge_min = 0.0f;                              // Min charge for color scale
+    float charge_max = 1.0f;                              // Max charge for color scale
+};
+
+struct QuantumOverlayConfig {
+    GeodesicOverlayConfig geodesics;
+    ParticleOverlayConfig particles;
+
+    // Combined overlay settings
+    bool overlay_mode = false;              // Enable overlay rendering at all
+    float overlay_blend = 0.7f;             // Blend factor: 0 = base only, 1 = overlay only
+};
+
+// =============================================================================
+// Topological Charge Color Helper
+// =============================================================================
+
+// Map topological charge to color using specified palette
+inline Vec4 charge_to_color(float charge, float charge_min, float charge_max,
+                            ColorPalette palette = ColorPalette::Plasma) {
+    if (!std::isfinite(charge)) {
+        return Vec4(0.3f, 0.3f, 0.3f, 1.0f);  // Gray for invalid
+    }
+
+    float range = charge_max - charge_min;
+    if (range < 0.001f) {
+        Vec3 c = apply_palette(0.5f, palette);
+        return Vec4(c, 1.0f);
+    }
+
+    float t = std::clamp((charge - charge_min) / range, 0.0f, 1.0f);
+    Vec3 c = apply_palette(t, palette);
+    return Vec4(c, 1.0f);
 }
 
 } // namespace viz::blackhole

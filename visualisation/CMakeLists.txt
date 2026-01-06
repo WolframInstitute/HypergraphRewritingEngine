@@ -217,6 +217,8 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             blackhole/src/bh_serialization.cpp
             blackhole/src/hausdorff_analysis.cpp
             blackhole/src/bh_evolution.cpp
+            blackhole/src/geodesic_analysis.cpp
+            blackhole/src/particle_detection.cpp
         )
         target_include_directories(viz_blackhole PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include

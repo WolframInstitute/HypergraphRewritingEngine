@@ -272,13 +272,41 @@ void compute_all_layouts(
 // Full Pipeline
 // =============================================================================
 
+// Forward declarations for analysis configs
+struct GeodesicConfig;
+struct ParticleDetectionConfig;
+
 struct AnalysisConfig {
+    // Core dimension analysis settings
     int num_anchors = 6;
     int anchor_min_separation = 3;
     int max_radius = 5;
     float quantile_low = 0.05f;
     float quantile_high = 0.95f;
     LayoutConfig layout;  // Layout parameters
+
+    // Geodesic analysis (test particle tracing)
+    // When enabled, traces geodesics from selected sources through the graph
+    bool compute_geodesics = false;
+    std::vector<VertexId> geodesic_sources;    // Empty = auto-select from high-dimension regions
+    int geodesic_max_steps = 50;               // Max path length
+    int geodesic_bundle_width = 5;             // Number of paths in each bundle
+    bool geodesic_follow_gradient = false;     // Follow dimension gradient vs random walk
+    float geodesic_dimension_percentile = 0.9f; // For auto-selecting sources near high-dim regions
+
+    // Particle detection (topological defects via Robertson-Seymour)
+    // When enabled, detects non-planar regions (K5/K3,3 minors) indicating particle-like excitations
+    bool detect_particles = false;
+    bool detect_k5_minors = true;              // Look for K5 graph minors
+    bool detect_k33_minors = true;             // Look for K3,3 bipartite minors
+    bool detect_dimension_spikes = true;       // Detect via dimension anomalies
+    bool detect_high_degree = true;            // Detect high-degree vertices
+    float dimension_spike_threshold = 1.5f;    // Multiplier above mean to flag as spike
+    float degree_percentile = 0.95f;           // Top 5% by degree
+
+    // Topological charge computation
+    bool compute_topological_charge = false;   // Compute per-vertex charge
+    float charge_radius = 3.0f;                // Radius for local charge computation
 };
 
 // Run full analysis on evolution result

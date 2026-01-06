@@ -1,4 +1,6 @@
 #include <blackhole/bh_evolution.hpp>
+#include <blackhole/geodesic_analysis.hpp>
+#include <blackhole/particle_detection.hpp>
 #include <sstream>
 #include <iostream>
 #include <iomanip>
@@ -932,6 +934,209 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         std::cout << "    Mega-union dimension range: [" << result.mega_dim_min
                   << ", " << result.mega_dim_max << "] for "
                   << result.mega_dimension.size() << " vertices" << std::endl;
+    }
+
+    // ==========================================================================
+    // Geodesic Analysis (test particle tracing)
+    // ==========================================================================
+    if (analysis_config.compute_geodesics) {
+        std::cout << "  Computing geodesic analysis..." << std::endl;
+        auto geodesic_start = std::chrono::high_resolution_clock::now();
+
+        result.has_geodesic_analysis = true;
+
+        // Configure geodesic tracing
+        GeodesicConfig geo_config;
+        geo_config.max_steps = analysis_config.geodesic_max_steps;
+        geo_config.bundle_width = analysis_config.geodesic_bundle_width;
+        geo_config.follow_dimension_ascent = analysis_config.geodesic_follow_gradient;
+        geo_config.direction = analysis_config.geodesic_follow_gradient
+            ? GeodesicDirection::DimensionGradient
+            : GeodesicDirection::Random;
+
+        // Pre-size result vectors
+        result.geodesic_paths.resize(num_steps);
+        result.geodesic_proper_times.resize(num_steps);
+        result.geodesic_dimensions.resize(num_steps);
+        result.geodesic_bundle_spread.resize(num_steps, 0.0f);
+
+        float total_length = 0.0f;
+        float max_length = 0.0f;
+        float total_spread = 0.0f;
+        int geodesic_count = 0;
+
+        // Process each timestep
+        for (uint32_t step = 0; step < num_steps; ++step) {
+            const auto& ts = result.per_timestep[step];
+            if (ts.union_vertices.empty()) continue;
+
+            // Build union graph for this timestep
+            SimpleGraph union_graph;
+            union_graph.build(ts.union_vertices, ts.union_edges);
+
+            // Auto-select sources if not provided
+            std::vector<VertexId> sources = analysis_config.geodesic_sources;
+            if (sources.empty() && !ts.mean_dimensions.empty()) {
+                // Select sources near high-dimension regions
+                sources = auto_select_geodesic_sources(
+                    union_graph,
+                    ts.mean_dimensions,
+                    5,  // num_sources
+                    analysis_config.geodesic_dimension_percentile
+                );
+            } else if (sources.empty()) {
+                // Fallback: use distributed sources
+                sources = select_distributed_sources(union_graph, 5, 3);
+            }
+
+            // Store sources (only once, from first step)
+            if (step == 0) {
+                result.geodesic_sources = sources;
+            }
+
+            // Trace geodesics from each source
+            auto geo_result = analyze_geodesics(
+                union_graph,
+                sources,
+                geo_config,
+                ts.mean_dimensions.empty() ? nullptr : &ts.mean_dimensions
+            );
+
+            // Convert paths to storage format
+            for (const auto& path : geo_result.paths) {
+                result.geodesic_paths[step].push_back(path.vertices);
+                result.geodesic_proper_times[step].push_back(path.proper_time);
+                result.geodesic_dimensions[step].push_back(path.local_dimension);
+
+                total_length += path.length;
+                max_length = std::max(max_length, static_cast<float>(path.length));
+                geodesic_count++;
+            }
+
+            result.geodesic_bundle_spread[step] = geo_result.mean_spread;
+            total_spread += geo_result.mean_spread;
+        }
+
+        // Compute statistics
+        if (geodesic_count > 0) {
+            result.mean_geodesic_length = total_length / geodesic_count;
+            result.max_geodesic_length = max_length;
+            result.mean_bundle_spread = total_spread / num_steps;
+        }
+
+        auto geodesic_end = std::chrono::high_resolution_clock::now();
+        auto geodesic_ms = std::chrono::duration<double, std::milli>(geodesic_end - geodesic_start).count();
+        std::cout << "[TIMING] Geodesic analysis: " << std::fixed << std::setprecision(1)
+                  << geodesic_ms << " ms (" << geodesic_count << " paths, mean length "
+                  << result.mean_geodesic_length << ")" << std::endl;
+    }
+
+    // ==========================================================================
+    // Particle Detection (topological defects via Robertson-Seymour)
+    // ==========================================================================
+    if (analysis_config.detect_particles) {
+        std::cout << "  Computing particle detection..." << std::endl;
+        auto particle_start = std::chrono::high_resolution_clock::now();
+
+        result.has_particle_analysis = true;
+
+        // Configure particle detection
+        ParticleDetectionConfig particle_config;
+        particle_config.detect_k5 = analysis_config.detect_k5_minors;
+        particle_config.detect_k33 = analysis_config.detect_k33_minors;
+        particle_config.use_dimension_spikes = analysis_config.detect_dimension_spikes;
+        particle_config.dimension_spike_threshold = analysis_config.dimension_spike_threshold;
+        particle_config.use_high_degree = analysis_config.detect_high_degree;
+        particle_config.degree_threshold_percentile = analysis_config.degree_percentile;
+        particle_config.compute_charges = analysis_config.compute_topological_charge;
+        particle_config.charge_radius = analysis_config.charge_radius;
+
+        // Pre-size result vectors
+        result.detected_defects.resize(num_steps);
+        result.vertex_charges.resize(num_steps);
+
+        float total_charge = 0.0f;
+        float max_charge = 0.0f;
+        int defect_count = 0;
+
+        // Process each timestep
+        for (uint32_t step = 0; step < num_steps; ++step) {
+            const auto& ts = result.per_timestep[step];
+            if (ts.union_vertices.empty()) continue;
+
+            // Build union graph for this timestep
+            SimpleGraph union_graph;
+            union_graph.build(ts.union_vertices, ts.union_edges);
+
+            // Run particle analysis
+            auto particle_result = analyze_particles(
+                union_graph,
+                particle_config,
+                ts.mean_dimensions.empty() ? nullptr : &ts.mean_dimensions,
+                ts.layout_positions.empty() ? nullptr : &ts.layout_positions
+            );
+
+            // Convert defects to storage format
+            for (const auto& defect : particle_result.defects) {
+                BHAnalysisResult::DetectedDefect dd;
+                dd.type = static_cast<int>(defect.type);
+                dd.core_vertices = defect.core_vertices;
+                dd.charge = defect.charge;
+                dd.centroid_x = defect.centroid.x;
+                dd.centroid_y = defect.centroid.y;
+                dd.radius = defect.radius;
+                dd.local_dimension = defect.local_dimension;
+                dd.confidence = defect.detection_confidence;
+                result.detected_defects[step].push_back(dd);
+
+                // Count by type
+                switch (defect.type) {
+                    case TopologicalDefectType::K5Minor:
+                        result.num_k5_defects++;
+                        break;
+                    case TopologicalDefectType::K33Minor:
+                        result.num_k33_defects++;
+                        break;
+                    case TopologicalDefectType::DimensionSpike:
+                        result.num_dimension_spike_defects++;
+                        break;
+                    case TopologicalDefectType::HighDegree:
+                        result.num_high_degree_defects++;
+                        break;
+                    default:
+                        break;
+                }
+
+                defect_count++;
+            }
+
+            // Store vertex charges
+            result.vertex_charges[step] = particle_result.charge_map;
+
+            // Accumulate statistics
+            total_charge += particle_result.total_charge;
+            max_charge = std::max(max_charge, particle_result.max_charge);
+        }
+
+        // Compute statistics
+        result.total_charge = total_charge;
+        if (defect_count > 0) {
+            result.mean_charge = total_charge / defect_count;
+        }
+        result.max_charge = max_charge;
+
+        // Compute charge range for visualization
+        result.charge_min = 0.0f;
+        result.charge_max = max_charge > 0 ? max_charge : 1.0f;
+
+        auto particle_end = std::chrono::high_resolution_clock::now();
+        auto particle_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
+        std::cout << "[TIMING] Particle detection: " << std::fixed << std::setprecision(1)
+                  << particle_ms << " ms (" << defect_count << " defects: "
+                  << result.num_k5_defects << " K5, "
+                  << result.num_k33_defects << " K3,3, "
+                  << result.num_dimension_spike_defects << " dim-spikes, "
+                  << result.num_high_degree_defects << " high-degree)" << std::endl;
     }
 
     // MEMORY OPTIMIZATION: Clear evolution data no longer needed

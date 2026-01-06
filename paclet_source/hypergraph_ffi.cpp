@@ -31,6 +31,8 @@
 // Include blackhole analysis (without layout dependency)
 #include "blackhole/hausdorff_analysis.hpp"
 #include "blackhole/bh_types.hpp"
+#include "blackhole/geodesic_analysis.hpp"
+#include "blackhole/particle_detection.hpp"
 
 using namespace hypergraph;
 
@@ -670,6 +672,25 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         int dim_min_radius = 1;
         int dim_max_radius = 5;
 
+        // Geodesic analysis options - trace test particles through the graph
+        bool compute_geodesics = false;
+        std::vector<int64_t> geodesic_sources;  // Empty = auto-select
+        int geodesic_max_steps = 50;
+        int geodesic_bundle_width = 5;
+        bool geodesic_follow_gradient = false;
+        float geodesic_dimension_percentile = 0.9f;
+
+        // Particle detection options - detect topological defects (Robertson-Seymour)
+        bool detect_particles = false;
+        bool detect_k5_minors = true;
+        bool detect_k33_minors = true;
+        bool detect_dimension_spikes = true;
+        bool detect_high_degree = true;
+        float dimension_spike_threshold = 1.5f;
+        float degree_percentile = 0.95f;
+        bool compute_topological_charge = false;
+        float charge_radius = 3.0f;
+
         // Data selection flags - which components to include in output
         // By default all are included for backward compatibility
         bool include_states = true;
@@ -719,6 +740,21 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             dim_min_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "DimensionMaxRadius") {
                             dim_max_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "GeodesicSources") {
+                            // List of vertex IDs for geodesic tracing (empty = auto-select)
+                            geodesic_sources = option_parser.read<std::vector<int64_t>>();
+                        } else if (option_key == "GeodesicMaxSteps") {
+                            geodesic_max_steps = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "GeodesicBundleWidth") {
+                            geodesic_bundle_width = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "GeodesicDimensionPercentile") {
+                            geodesic_dimension_percentile = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "DimensionSpikeThreshold") {
+                            dimension_spike_threshold = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "DegreePercentile") {
+                            degree_percentile = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "ChargeRadius") {
+                            charge_radius = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
@@ -827,12 +863,34 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             } else if (option_key == "DimensionAnalysis") {
                                 // Compute Hausdorff dimension for all states in C++
                                 compute_dimensions = value;
+                            } else if (option_key == "GeodesicAnalysis") {
+                                // Trace geodesic paths through the graph
+                                compute_geodesics = value;
+                            } else if (option_key == "TopologicalAnalysis") {
+                                // Detect topological defects (Robertson-Seymour)
+                                detect_particles = value;
+                            } else if (option_key == "TopologicalCharge") {
+                                // Compute per-vertex topological charge
+                                compute_topological_charge = value;
+                            } else if (option_key == "DetectK5Minors") {
+                                detect_k5_minors = value;
+                            } else if (option_key == "DetectK33Minors") {
+                                detect_k33_minors = value;
+                            } else if (option_key == "DetectDimensionSpikes") {
+                                detect_dimension_spikes = value;
+                            } else if (option_key == "DetectHighDegree") {
+                                detect_high_degree = value;
+                            } else if (option_key == "GeodesicFollowGradient") {
+                                geodesic_follow_gradient = value;
                             }
                         }
                     } catch (...) {
                         option_parser.skip_value();
                     }
                 });
+
+                // Handle numeric options that may have been parsed as integers
+                // (these need special handling since they come after the bool options)
             }
             else {
                 value_parser.skip_value();
@@ -1183,6 +1241,176 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 std::ostringstream oss;
                 oss << "HGEvolveV2: Dimension analysis complete. Analyzed "
                     << state_dimension_stats.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Geodesic Analysis - trace test particles through graph
+        // ==========================================================================
+        // Per-state geodesic results: state_id -> vector of paths (each path is vector of vertex IDs)
+        std::unordered_map<uint32_t, std::vector<std::vector<bh::VertexId>>> state_geodesic_paths;
+        std::unordered_map<uint32_t, std::vector<std::vector<float>>> state_geodesic_proper_times;
+        std::unordered_map<uint32_t, float> state_geodesic_bundle_spread;
+
+        if (compute_geodesics) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing geodesic analysis...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build SimpleGraph
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    // Configure geodesic tracing
+                    bh::GeodesicConfig geo_config;
+                    geo_config.max_steps = geodesic_max_steps;
+                    geo_config.bundle_width = geodesic_bundle_width;
+                    geo_config.follow_dimension_ascent = geodesic_follow_gradient;
+                    geo_config.direction = geodesic_follow_gradient
+                        ? bh::GeodesicDirection::DimensionGradient
+                        : bh::GeodesicDirection::Random;
+
+                    // Get geodesic sources
+                    std::vector<bh::VertexId> sources;
+                    for (int64_t src : geodesic_sources) {
+                        sources.push_back(static_cast<bh::VertexId>(src));
+                    }
+
+                    // Use dimension data if available for auto-selection and gradient following
+                    const std::vector<float>* dims = nullptr;
+                    auto it = state_vertex_dimensions.find(sid);
+                    if (it != state_vertex_dimensions.end()) {
+                        dims = &it->second;
+                    }
+
+                    // Run geodesic analysis
+                    auto geo_result = bh::analyze_geodesics(graph, sources, geo_config, dims);
+
+                    // Store results
+                    std::vector<std::vector<bh::VertexId>> paths;
+                    std::vector<std::vector<float>> proper_times;
+                    for (const auto& path : geo_result.paths) {
+                        paths.push_back(path.vertices);
+                        proper_times.push_back(path.proper_time);
+                    }
+                    state_geodesic_paths[sid] = std::move(paths);
+                    state_geodesic_proper_times[sid] = std::move(proper_times);
+                    state_geodesic_bundle_spread[sid] = geo_result.mean_spread;
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Geodesic analysis complete. Analyzed "
+                    << state_geodesic_paths.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Particle Detection - detect topological defects (Robertson-Seymour)
+        // ==========================================================================
+        // Per-state defect results
+        struct FFIDetectedDefect {
+            int type;  // 0=None, 1=K5, 2=K33, 3=HighDegree, 4=DimSpike
+            std::vector<bh::VertexId> core_vertices;
+            float charge;
+            float centroid_x, centroid_y;
+            float local_dimension;
+            int confidence;
+        };
+        std::unordered_map<uint32_t, std::vector<FFIDetectedDefect>> state_defects;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_charges;
+
+        if (detect_particles) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Detecting topological defects...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build SimpleGraph
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    // Configure particle detection
+                    bh::ParticleDetectionConfig particle_config;
+                    particle_config.detect_k5 = detect_k5_minors;
+                    particle_config.detect_k33 = detect_k33_minors;
+                    particle_config.use_dimension_spikes = detect_dimension_spikes;
+                    particle_config.dimension_spike_threshold = dimension_spike_threshold;
+                    particle_config.use_high_degree = detect_high_degree;
+                    particle_config.degree_threshold_percentile = degree_percentile;
+                    particle_config.compute_charges = compute_topological_charge;
+                    particle_config.charge_radius = charge_radius;
+
+                    // Get dimension data if available
+                    const std::vector<float>* dims = nullptr;
+                    auto it = state_vertex_dimensions.find(sid);
+                    if (it != state_vertex_dimensions.end()) {
+                        dims = &it->second;
+                    }
+
+                    // Run particle analysis
+                    auto particle_result = bh::analyze_particles(graph, particle_config, dims, nullptr);
+
+                    // Convert defects
+                    std::vector<FFIDetectedDefect> defects;
+                    for (const auto& defect : particle_result.defects) {
+                        FFIDetectedDefect fd;
+                        fd.type = static_cast<int>(defect.type);
+                        fd.core_vertices = defect.core_vertices;
+                        fd.charge = defect.charge;
+                        fd.centroid_x = defect.centroid.x;
+                        fd.centroid_y = defect.centroid.y;
+                        fd.local_dimension = defect.local_dimension;
+                        fd.confidence = defect.detection_confidence;
+                        defects.push_back(std::move(fd));
+                    }
+                    state_defects[sid] = std::move(defects);
+                    state_charges[sid] = particle_result.charge_map;
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Particle detection complete. Analyzed "
+                    << state_defects.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
 #endif
@@ -2003,6 +2231,110 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             dim_data.push_back({wxf::Value("GlobalRange"), wxf::Value(range)});
 
             full_result.push_back({wxf::Value("DimensionData"), wxf::Value(dim_data)});
+        }
+
+        // GeodesicData -> Association["PerState" -> {...}]
+        // Each state: state_id -> {"Paths" -> {...}, "ProperTimes" -> {...}, "BundleSpread" -> float}
+        if (compute_geodesics && !state_geodesic_paths.empty()) {
+            wxf::ValueAssociation geodesic_data;
+
+            // Per-state paths
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, paths] : state_geodesic_paths) {
+                wxf::ValueAssociation state_data;
+
+                // Paths: list of lists of vertex IDs
+                wxf::ValueList path_list;
+                for (const auto& path : paths) {
+                    wxf::ValueList vertices;
+                    for (bh::VertexId v : path) {
+                        vertices.push_back(wxf::Value(static_cast<int64_t>(v)));
+                    }
+                    path_list.push_back(wxf::Value(vertices));
+                }
+                state_data.push_back({wxf::Value("Paths"), wxf::Value(path_list)});
+
+                // Proper times
+                auto pt_it = state_geodesic_proper_times.find(sid);
+                if (pt_it != state_geodesic_proper_times.end()) {
+                    wxf::ValueList pt_list;
+                    for (const auto& times : pt_it->second) {
+                        wxf::ValueList time_vals;
+                        for (float t : times) {
+                            time_vals.push_back(wxf::Value(static_cast<double>(t)));
+                        }
+                        pt_list.push_back(wxf::Value(time_vals));
+                    }
+                    state_data.push_back({wxf::Value("ProperTimes"), wxf::Value(pt_list)});
+                }
+
+                // Bundle spread
+                auto spread_it = state_geodesic_bundle_spread.find(sid);
+                if (spread_it != state_geodesic_bundle_spread.end()) {
+                    state_data.push_back({wxf::Value("BundleSpread"),
+                                         wxf::Value(static_cast<double>(spread_it->second))});
+                }
+
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+            }
+            geodesic_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            full_result.push_back({wxf::Value("GeodesicData"), wxf::Value(geodesic_data)});
+        }
+
+        // TopologicalData -> Association["PerState" -> {...}]
+        // Each state: state_id -> {"Defects" -> [...], "Charges" -> <|vertex -> charge|>}
+        if (detect_particles && !state_defects.empty()) {
+            wxf::ValueAssociation topo_data;
+
+            // Per-state defects
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, defects] : state_defects) {
+                wxf::ValueAssociation state_data;
+
+                // Defects list
+                wxf::ValueList defect_list;
+                for (const auto& defect : defects) {
+                    wxf::ValueAssociation def_assoc;
+
+                    // Type as string
+                    const char* type_names[] = {"None", "K5", "K33", "HighDegree", "DimensionSpike", "Unknown"};
+                    int type_idx = defect.type >= 0 && defect.type <= 5 ? defect.type : 5;
+                    def_assoc.push_back({wxf::Value("Type"), wxf::Value(type_names[type_idx])});
+
+                    // Core vertices
+                    wxf::ValueList core_verts;
+                    for (bh::VertexId v : defect.core_vertices) {
+                        core_verts.push_back(wxf::Value(static_cast<int64_t>(v)));
+                    }
+                    def_assoc.push_back({wxf::Value("CoreVertices"), wxf::Value(core_verts)});
+
+                    def_assoc.push_back({wxf::Value("Charge"), wxf::Value(static_cast<double>(defect.charge))});
+                    def_assoc.push_back({wxf::Value("CentroidX"), wxf::Value(static_cast<double>(defect.centroid_x))});
+                    def_assoc.push_back({wxf::Value("CentroidY"), wxf::Value(static_cast<double>(defect.centroid_y))});
+                    def_assoc.push_back({wxf::Value("LocalDimension"), wxf::Value(static_cast<double>(defect.local_dimension))});
+                    def_assoc.push_back({wxf::Value("Confidence"), wxf::Value(static_cast<int64_t>(defect.confidence))});
+
+                    defect_list.push_back(wxf::Value(def_assoc));
+                }
+                state_data.push_back({wxf::Value("Defects"), wxf::Value(defect_list)});
+
+                // Vertex charges (if computed)
+                auto charge_it = state_charges.find(sid);
+                if (charge_it != state_charges.end() && !charge_it->second.empty()) {
+                    wxf::ValueAssociation charges_assoc;
+                    for (const auto& [v, charge] : charge_it->second) {
+                        charges_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                                wxf::Value(static_cast<double>(charge))});
+                    }
+                    state_data.push_back({wxf::Value("Charges"), wxf::Value(charges_assoc)});
+                }
+
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+            }
+            topo_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            full_result.push_back({wxf::Value("TopologicalData"), wxf::Value(topo_data)});
         }
 
         // Write final association

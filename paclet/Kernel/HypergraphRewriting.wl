@@ -45,7 +45,24 @@ Options[HGEvolveV2] = {
   "DimensionPalette" -> "TemperatureMap",  (* ColorData palette name for dimension coloring *)
   "DimensionRange" -> Automatic,  (* {min, max} or Automatic - color scale range *)
   "DimensionFormula" -> "LinearRegression",  (* "LinearRegression" or "DiscreteDerivative" *)
-  "DimensionRadius" -> {1, 5}  (* {minR, maxR} for dimension computation *)
+  "DimensionRadius" -> {1, 5},  (* {minR, maxR} for dimension computation *)
+  (* Geodesic Analysis Options - trace test particles through graph *)
+  "GeodesicAnalysis" -> False,  (* True: trace geodesic paths through the graph *)
+  "GeodesicSources" -> Automatic,  (* List of vertex IDs or Automatic (auto-select near high-dim regions) *)
+  "GeodesicMaxSteps" -> 50,  (* Maximum path length *)
+  "GeodesicBundleWidth" -> 5,  (* Number of paths in each bundle *)
+  "GeodesicFollowGradient" -> False,  (* Follow dimension gradient vs random walk *)
+  "GeodesicDimensionPercentile" -> 0.9,  (* For auto-selecting sources near high-dim regions *)
+  (* Topological/Particle Analysis Options - Robertson-Seymour defect detection *)
+  "TopologicalAnalysis" -> False,  (* True: detect topological defects (K5/K3,3 minors) *)
+  "TopologicalCharge" -> False,  (* True: compute per-vertex topological charge *)
+  "DetectK5Minors" -> True,  (* Look for K5 graph minors (non-planarity) *)
+  "DetectK33Minors" -> True,  (* Look for K3,3 bipartite minors (non-planarity) *)
+  "DetectDimensionSpikes" -> True,  (* Detect via dimension anomalies *)
+  "DetectHighDegree" -> True,  (* Detect high-degree vertices *)
+  "DimensionSpikeThreshold" -> 1.5,  (* Multiplier above mean to flag as spike *)
+  "DegreePercentile" -> 0.95,  (* Top 5% by degree *)
+  "ChargeRadius" -> 3.0  (* Radius for local charge computation *)
 };
 
 Begin["`Private`"]
@@ -511,6 +528,23 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     "DimensionAnalysis" -> dimensionAnalysis,
     "DimensionMinRadius" -> dimensionRadius[[1]],
     "DimensionMaxRadius" -> dimensionRadius[[2]],
+    (* Geodesic analysis - trace test particles through graph *)
+    "GeodesicAnalysis" -> OptionValue["GeodesicAnalysis"],
+    "GeodesicSources" -> Replace[OptionValue["GeodesicSources"], Automatic -> {}],
+    "GeodesicMaxSteps" -> OptionValue["GeodesicMaxSteps"],
+    "GeodesicBundleWidth" -> OptionValue["GeodesicBundleWidth"],
+    "GeodesicFollowGradient" -> OptionValue["GeodesicFollowGradient"],
+    "GeodesicDimensionPercentile" -> OptionValue["GeodesicDimensionPercentile"],
+    (* Topological/Particle analysis - Robertson-Seymour defect detection *)
+    "TopologicalAnalysis" -> OptionValue["TopologicalAnalysis"],
+    "TopologicalCharge" -> OptionValue["TopologicalCharge"],
+    "DetectK5Minors" -> OptionValue["DetectK5Minors"],
+    "DetectK33Minors" -> OptionValue["DetectK33Minors"],
+    "DetectDimensionSpikes" -> OptionValue["DetectDimensionSpikes"],
+    "DetectHighDegree" -> OptionValue["DetectHighDegree"],
+    "DimensionSpikeThreshold" -> OptionValue["DimensionSpikeThreshold"],
+    "DegreePercentile" -> OptionValue["DegreePercentile"],
+    "ChargeRadius" -> OptionValue["ChargeRadius"],
     (* Uniform random evolution mode *)
     "UniformRandom" -> OptionValue["UniformRandom"],
     "MatchesPerStep" -> OptionValue["MatchesPerStep"]
@@ -588,6 +622,18 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     <||>
   ];
 
+  (* Geodesic data - test particle paths through graph *)
+  geodesicData = If[OptionValue["GeodesicAnalysis"] && KeyExistsQ[wxfData, "GeodesicData"],
+    wxfData["GeodesicData"],
+    <||>
+  ];
+
+  (* Topological data - particle detection via Robertson-Seymour *)
+  topologicalData = If[OptionValue["TopologicalAnalysis"] && KeyExistsQ[wxfData, "TopologicalData"],
+    wxfData["TopologicalData"],
+    <||>
+  ];
+
   (* Dimension coloring options *)
   dimPalette = OptionValue["DimensionPalette"];
   dimColorBy = OptionValue["DimensionColorBy"];
@@ -597,15 +643,15 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
   (* Return requested properties *)
   If[Length[props] == 1,
     (* Single property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData],
     (* Multiple properties: return association *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData] & /@ props]
   ]
 ]
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -637,11 +683,15 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       "NumCausalEdges" -> wxfData["NumCausalEdges"],
       "NumBranchialEdges" -> wxfData["NumBranchialEdges"]
     |>,
-    "All", If[Length[dimensionData] > 0,
-      Append[wxfData, "DimensionData" -> dimensionData],
-      wxfData
+    "All", Module[{result = wxfData},
+      If[Length[dimensionData] > 0, result = Append[result, "DimensionData" -> dimensionData]];
+      If[Length[geodesicData] > 0, result = Append[result, "GeodesicData" -> geodesicData]];
+      If[Length[topologicalData] > 0, result = Append[result, "TopologicalData" -> topologicalData]];
+      result
     ],
     "DimensionData", dimensionData,
+    "GeodesicData", geodesicData,
+    "TopologicalData", topologicalData,
     _, $Failed
   ]
 ]

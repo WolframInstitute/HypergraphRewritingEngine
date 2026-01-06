@@ -560,8 +560,9 @@ enum class ViewMode {
 
 // Heatmap mode (what to color by)
 enum class HeatmapMode {
-    Mean,     // Mean dimension (default)
-    Variance  // Variance of dimension across states
+    Mean,              // Mean dimension (default)
+    Variance,          // Variance of dimension across states
+    TopologicalCharge  // Per-vertex topological charge (requires particle analysis)
 };
 
 // Dimension source mode (where dimension values come from)
@@ -2782,6 +2783,8 @@ void print_usage() {
     std::cout << "ANALYSIS OPTIONS (for run, generate, analyze):" << std::endl;
     std::cout << "  --max-radius N    Max radius for ball counting (default: 8)" << std::endl;
     std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
+    std::cout << "  --geodesics       Enable geodesic analysis (test particle tracing)" << std::endl;
+    std::cout << "  --particles       Enable particle detection (Robertson-Seymour defects)" << std::endl;
     std::cout << std::endl;
     std::cout << "OUTPUT OPTIONS:" << std::endl;
     std::cout << "  --output FILE     Output file path (auto-selects extension based on command)" << std::endl;
@@ -2799,6 +2802,8 @@ void print_usage() {
     std::cout << "  T            Toggle timeslice view" << std::endl;
     std::cout << "  - / =        Decrease/increase timeslice width" << std::endl;
     std::cout << "  H            Toggle horizon circles" << std::endl;
+    std::cout << "  J            Toggle geodesic path overlay (requires --geodesics)" << std::endl;
+    std::cout << "  K            Toggle defect markers (requires --particles)" << std::endl;
     std::cout << "  I            Toggle edge display (union/intersection)" << std::endl;
     std::cout << "  V            Toggle heatmap (mean dimension / variance)" << std::endl;
     std::cout << "  L            Toggle dynamic layout" << std::endl;
@@ -3077,6 +3082,8 @@ int main(int argc, char* argv[]) {
     bool use_new_topology = false; // Flag to use new topology system
     bool embed_3d = false;         // Use 3D topological embedding for initial positions
     bool layout_3d = false;        // Use 3D force-directed layout
+    bool enable_geodesics = false; // Enable geodesic analysis (test particles)
+    bool enable_particles = false; // Enable particle detection (Robertson-Seymour)
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -3196,6 +3203,12 @@ int main(int argc, char* argv[]) {
             embed_3d = true;
         } else if (arg == "--layout-3d") {
             layout_3d = true;
+        } else if (arg == "--geodesics") {
+            // Enable geodesic analysis (test particle tracing)
+            enable_geodesics = true;
+        } else if (arg == "--particles") {
+            // Enable particle detection (Robertson-Seymour topological defects)
+            enable_particles = true;
         }
     }
 
@@ -3528,6 +3541,9 @@ int main(int argc, char* argv[]) {
         ana_config.num_anchors = num_anchors;
         ana_config.anchor_min_separation = 3;
         ana_config.max_radius = max_radius;
+        ana_config.compute_geodesics = enable_geodesics;
+        ana_config.detect_particles = enable_particles;
+        ana_config.compute_topological_charge = enable_particles;  // Charge if particles enabled
 
         // Reuse the runner for analysis
         analysis = runner.run_analysis(
@@ -3582,6 +3598,9 @@ int main(int argc, char* argv[]) {
         ana_config.num_anchors = num_anchors;
         ana_config.anchor_min_separation = 3;
         ana_config.max_radius = max_radius;
+        ana_config.compute_geodesics = enable_geodesics;
+        ana_config.detect_particles = enable_particles;
+        ana_config.compute_topological_charge = enable_particles;
 
         EvolutionRunner runner;
         runner.set_progress_callback([](const std::string& stage, float progress) {
@@ -3743,6 +3762,9 @@ int main(int argc, char* argv[]) {
         ana_config.num_anchors = num_anchors;
         ana_config.anchor_min_separation = 3;
         ana_config.max_radius = max_radius;
+        ana_config.compute_geodesics = enable_geodesics;
+        ana_config.detect_particles = enable_particles;
+        ana_config.compute_topological_charge = enable_particles;
 
         EvolutionRunner runner;
         runner.set_progress_callback([](const std::string& stage, float progress) {
@@ -4604,6 +4626,8 @@ int main(int argc, char* argv[]) {
     DimensionSource dim_source = DimensionSource::Branchial;  // Branchial, Foliation, or Global
     bool per_frame_normalization = true;  // Per-frame (local) vs global color normalization
     bool show_horizons = false;  // Horizon rings off by default
+    bool show_geodesics = false;  // Geodesic path overlay (requires geodesic analysis)
+    bool show_defects = false;    // Topological defect markers (requires particle analysis)
     bool timeslice_enabled = false;  // Timeslice view (shows range of timesteps)
     int timeslice_width = 5;         // Number of timesteps in the slice
     bool z_mapping_enabled = true;   // Map bucket dimension values to Z/height
@@ -4680,6 +4704,8 @@ int main(int argc, char* argv[]) {
             {"O", "Edge coloring", [&]{ return edge_color_mode == EdgeColorMode::Vertex ? "Vertex" : "Frequency"; }},
             {"PgUp/PgDn", "Cycle states", [&]{ return std::to_string(selected_state_index); }},
             {"H", "Horizon rings", [&]{ return show_horizons ? "ON" : "OFF"; }},
+            {"J", "Geodesic paths", [&]{ return show_geodesics ? "ON" : "OFF"; }},
+            {"K", "Defect markers", [&]{ return show_defects ? "ON" : "OFF"; }},
             {"T", "Timeslice view", [&]{
                 // Timeslice not applicable for Global mode
                 if (dim_source == DimensionSource::Global) return std::string("(N/A)");
@@ -4894,6 +4920,28 @@ int main(int argc, char* argv[]) {
             case platform::KeyCode::H:
                 show_horizons = !show_horizons;
                 std::cout << "Horizons: " << (show_horizons ? "ON" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::J:
+                // Toggle geodesic path overlay
+                if (analysis.has_geodesic_analysis) {
+                    show_geodesics = !show_geodesics;
+                    geometry_dirty = true;
+                    std::cout << "Geodesic paths: " << (show_geodesics ? "ON" : "OFF") << std::endl;
+                } else {
+                    std::cout << "Geodesic paths: N/A (run with --geodesics to enable)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::K:
+                // Toggle topological defect markers
+                if (analysis.has_particle_analysis) {
+                    show_defects = !show_defects;
+                    geometry_dirty = true;
+                    std::cout << "Defect markers: " << (show_defects ? "ON" : "OFF") << std::endl;
+                } else {
+                    std::cout << "Defect markers: N/A (run with --particles to enable)" << std::endl;
+                }
                 break;
 
             case platform::KeyCode::I:
