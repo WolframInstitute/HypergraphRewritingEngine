@@ -13,6 +13,10 @@
 #include <blackhole/bh_initial_condition.hpp>
 #include <blackhole/bh_evolution.hpp>
 #include <blackhole/hausdorff_analysis.hpp>
+#include <blackhole/curvature_analysis.hpp>
+#include <blackhole/entropy_analysis.hpp>
+#include <blackhole/rotation_analysis.hpp>
+#include <blackhole/branchial_analysis.hpp>
 #include <layout/layout_engine.hpp>
 
 #include <iostream>
@@ -948,7 +952,9 @@ RenderData build_render_data(
     float z_scale = 3.0f,  // Z height scale factor
     bool timeslice_enabled = false,  // Aggregate across multiple timesteps
     int timeslice_width = 5,  // Number of timesteps to aggregate
-    const std::vector<std::vector<int>>* all_selected_states = nullptr  // Per-timestep selected state indices (for path selection)
+    const std::vector<std::vector<int>>* all_selected_states = nullptr,  // Per-timestep selected state indices (for path selection)
+    bool show_geodesics = false,  // Overlay geodesic paths
+    bool show_defects = false  // Overlay topological defect markers
 ) {
     RenderData data;
 
@@ -1812,6 +1818,125 @@ RenderData build_render_data(
         data.has_freq_data = true;
     }
 
+    // Render geodesic paths as bright colored lines
+    if (show_geodesics && analysis.has_geodesic_analysis &&
+        timestep < static_cast<int>(analysis.geodesic_paths.size())) {
+        const auto& paths = analysis.geodesic_paths[timestep];
+
+        // Bright cyan for geodesic paths (highly visible against dimension heatmap)
+        const Vec4 geodesic_color(0.0f, 1.0f, 1.0f, 1.0f);  // Cyan
+        const float geodesic_radius = edge_radius * 2.0f;  // Thicker than regular edges
+
+        for (size_t path_idx = 0; path_idx < paths.size(); ++path_idx) {
+            const auto& path = paths[path_idx];
+            if (path.size() < 2) continue;
+
+            // Vary color slightly by path index for bundle visualization
+            float hue_shift = static_cast<float>(path_idx) / std::max(1.0f, static_cast<float>(paths.size()));
+            Vec4 path_color = geodesic_color;
+            // Shift from cyan towards magenta based on path index
+            path_color.x = hue_shift * 0.8f;  // Add red component
+
+            for (size_t i = 0; i + 1 < path.size(); ++i) {
+                VertexId v1 = path[i];
+                VertexId v2 = path[i + 1];
+
+                auto it1 = vertex_to_idx.find(v1);
+                auto it2 = vertex_to_idx.find(v2);
+                if (it1 == vertex_to_idx.end() || it2 == vertex_to_idx.end()) continue;
+
+                size_t idx1 = it1->second;
+                size_t idx2 = it2->second;
+
+                // Progress along path for color gradient
+                float progress = static_cast<float>(i) / static_cast<float>(path.size() - 1);
+
+                // 3D cylinder instance
+                CylinderInstance inst;
+                inst.start_x = vertex_x[idx1];
+                inst.start_y = vertex_y[idx1];
+                inst.start_z = vertex_z[idx1] + 0.01f;  // Slightly above graph edges
+                inst.end_x = vertex_x[idx2];
+                inst.end_y = vertex_y[idx2];
+                inst.end_z = vertex_z[idx2] + 0.01f;
+                inst.radius = geodesic_radius;
+                inst.r1 = path_color.x;
+                inst.g1 = path_color.y * (1.0f - progress * 0.3f);  // Fade slightly along path
+                inst.b1 = path_color.z;
+                inst.a1 = 1.0f;
+                inst.r2 = path_color.x;
+                inst.g2 = path_color.y * (1.0f - (progress + 0.1f) * 0.3f);
+                inst.b2 = path_color.z;
+                inst.a2 = 1.0f;
+                data.cylinder_instances.push_back(inst);
+
+                // 2D line data
+                if (view_mode == ViewMode::View2D) {
+                    data.edge_data.push_back({vertex_x[idx1], vertex_y[idx1], 0.1f,
+                                              path_color.x, path_color.y, path_color.z, 1.0f});
+                    data.edge_data.push_back({vertex_x[idx2], vertex_y[idx2], 0.1f,
+                                              path_color.x, path_color.y, path_color.z, 1.0f});
+                }
+            }
+        }
+
+        // Update edge count for 2D mode
+        if (view_mode == ViewMode::View2D) {
+            data.edge_count = data.edge_data.size();
+        }
+    }
+
+    // Render topological defect markers (enlarged, colored vertices at defect locations)
+    // Defect types: 0=None, 1=K5, 2=K33, 3=HighDegree, 4=DimSpike
+    if (show_defects && analysis.has_particle_analysis &&
+        timestep < static_cast<int>(analysis.detected_defects.size())) {
+        const auto& defects = analysis.detected_defects[timestep];
+
+        const float defect_radius = vertex_radius * 2.5f;  // Much larger than regular vertices
+
+        for (const auto& defect : defects) {
+            // Color by defect type (0=None, 1=K5, 2=K33, 3=HighDegree, 4=DimSpike)
+            Vec4 defect_color;
+            switch (defect.type) {
+                case 1:  // K5
+                    defect_color = Vec4(1.0f, 0.2f, 0.2f, 1.0f);  // Red for K5
+                    break;
+                case 2:  // K33
+                    defect_color = Vec4(0.2f, 0.2f, 1.0f, 1.0f);  // Blue for K3,3
+                    break;
+                case 3:  // HighDegree
+                    defect_color = Vec4(1.0f, 0.5f, 0.0f, 1.0f);  // Orange for high degree
+                    break;
+                case 4:  // DimensionSpike
+                    defect_color = Vec4(1.0f, 1.0f, 0.2f, 1.0f);  // Yellow for dimension spike
+                    break;
+                default:
+                    defect_color = Vec4(1.0f, 0.0f, 1.0f, 1.0f);  // Magenta for unknown
+                    break;
+            }
+
+            // Mark all core vertices of this defect
+            for (VertexId v : defect.core_vertices) {
+                auto it = vertex_to_idx.find(v);
+                if (it == vertex_to_idx.end()) continue;
+
+                size_t idx = it->second;
+
+                // 3D sphere (add as additional sphere with larger radius)
+                SphereInstance inst;
+                inst.x = vertex_x[idx];
+                inst.y = vertex_y[idx];
+                inst.z = vertex_z[idx] + 0.02f;  // Slightly above
+                inst.radius = defect_radius;
+                inst.r = defect_color.x;
+                inst.g = defect_color.y;
+                inst.b = defect_color.z;
+                inst.a = 0.9f;
+                data.sphere_instances.push_back(inst);
+            }
+        }
+    }
+
     return data;
 }
 
@@ -2386,6 +2511,308 @@ HistogramData build_histogram_panel(
     return data;
 }
 
+// Build rotation curve plot panel
+struct RotationPlotData {
+    std::vector<Vertex> verts;  // Background + lines
+    // Text positions (pixel coords)
+    float title_x, title_y;
+    float xlabel_x, xlabel_y;
+    float ylabel_x, ylabel_y;
+    float stats_x, stats_y;
+    // Data for text labels
+    std::string title;
+    std::string xlabel;
+    std::string ylabel;
+    std::string stats_line1;
+    std::string stats_line2;
+    // Axis labels
+    float x_min_val, x_max_val;
+    float y_min_val, y_max_val;
+    float axis_x_min_x, axis_x_min_y;
+    float axis_x_max_x, axis_x_max_y;
+    float axis_y_min_x, axis_y_min_y;
+    float axis_y_max_x, axis_y_max_y;
+};
+
+RotationPlotData build_rotation_plot_panel(
+    const RotationCurveResult& result,
+    int screen_width, int screen_height
+) {
+    RotationPlotData data;
+
+    if (result.curve.empty()) {
+        return data;
+    }
+
+    // Panel position (bottom-right corner)
+    float panel_w = 0.45f;
+    float panel_h = 0.35f;
+    float margin = 0.02f;
+
+    float panel_right = 0.98f;
+    float panel_left = panel_right - panel_w;
+    float panel_bottom = 0.98f;
+    float panel_top = panel_bottom - panel_h;
+
+    // Background (dark semi-transparent)
+    Vec4 bg_color{0.08f, 0.08f, 0.12f, 0.92f};
+    float corner_radius = 0.012f;
+    add_rounded_rect(data.verts, panel_left, panel_top, panel_right, panel_bottom,
+                     corner_radius, 0.002f, bg_color);
+
+    // Layout inside panel
+    float padding = 0.025f;
+    float inner_left = panel_left + padding;
+    float inner_right = panel_right - padding;
+    float inner_top = panel_top + padding;
+    float inner_bottom = panel_bottom - padding;
+
+    // Chart area (leave room for title at top and labels at bottom/left)
+    float title_height = 0.04f;
+    float axis_label_margin = 0.05f;
+    float chart_left = inner_left + axis_label_margin;
+    float chart_right = inner_right - 0.01f;
+    float chart_top = inner_top + title_height;
+    float chart_bottom = inner_bottom - axis_label_margin;
+    float chart_width = chart_right - chart_left;
+    float chart_height = chart_bottom - chart_top;
+
+    // Text positions (convert NDC to pixels)
+    auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_width; };
+    auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_height; };
+
+    data.title = "Rotation Curve v(r)";
+    data.title_x = ndc_to_pixel_x(inner_left);
+    data.title_y = ndc_to_pixel_y(inner_top + 0.01f);
+
+    // Find data range
+    float x_min = result.curve.front().radius;
+    float x_max = result.curve.back().radius;
+    float y_min = 0.0f, y_max = 0.0f;
+    for (const auto& pt : result.curve) {
+        y_max = std::max(y_max, std::max(pt.orbital_velocity, pt.expected_velocity));
+    }
+    y_max *= 1.1f;  // Add 10% margin
+
+    data.x_min_val = x_min;
+    data.x_max_val = x_max;
+    data.y_min_val = y_min;
+    data.y_max_val = y_max;
+
+    // Draw chart background (slightly lighter)
+    Vec4 chart_bg{0.12f, 0.12f, 0.16f, 1.0f};
+    add_quad(data.verts, chart_left, chart_top, chart_right, chart_bottom, 0.0015f, chart_bg);
+
+    // Draw grid lines
+    Vec4 grid_color{0.25f, 0.25f, 0.30f, 0.6f};
+    float grid_z = 0.001f;
+    float line_thickness = 0.002f;
+
+    // Horizontal grid lines (5 divisions)
+    for (int i = 0; i <= 5; ++i) {
+        float y = chart_top + (chart_height * i / 5.0f);
+        add_quad(data.verts, chart_left, y - line_thickness/2, chart_right, y + line_thickness/2, grid_z, grid_color);
+    }
+
+    // Vertical grid lines (5 divisions)
+    for (int i = 0; i <= 5; ++i) {
+        float x = chart_left + (chart_width * i / 5.0f);
+        add_quad(data.verts, x - line_thickness/2, chart_top, x + line_thickness/2, chart_bottom, grid_z, grid_color);
+    }
+
+    // Helper to convert data to chart coordinates
+    auto data_to_chart_x = [&](float r) {
+        return chart_left + (r - x_min) / (x_max - x_min) * chart_width;
+    };
+    auto data_to_chart_y = [&](float v) {
+        return chart_bottom - (v - y_min) / (y_max - y_min) * chart_height;
+    };
+
+    // Draw expected curve (GR prediction) - lighter blue
+    float exp_r = 0.3f, exp_g = 0.5f, exp_b = 0.9f, exp_a = 0.7f;
+    float curve_z = 0.0005f;
+    float curve_thickness = 0.004f;
+    for (size_t i = 1; i < result.curve.size(); ++i) {
+        float x1 = data_to_chart_x(result.curve[i-1].radius);
+        float y1 = data_to_chart_y(result.curve[i-1].expected_velocity);
+        float x2 = data_to_chart_x(result.curve[i].radius);
+        float y2 = data_to_chart_y(result.curve[i].expected_velocity);
+        // Draw thick line as quad
+        float dx = x2 - x1, dy = y2 - y1;
+        float len = std::sqrt(dx*dx + dy*dy);
+        if (len > 0.001f) {
+            float nx = -dy / len * curve_thickness / 2;
+            float ny = dx / len * curve_thickness / 2;
+            // Two triangles forming a quad
+            data.verts.push_back({x1 + nx, y1 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+            data.verts.push_back({x1 - nx, y1 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+            data.verts.push_back({x2 + nx, y2 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+            data.verts.push_back({x2 + nx, y2 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+            data.verts.push_back({x1 - nx, y1 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+            data.verts.push_back({x2 - nx, y2 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
+        }
+    }
+
+    // Draw actual curve - bright green
+    float act_r = 0.2f, act_g = 0.9f, act_b = 0.3f, act_a = 1.0f;
+    curve_thickness = 0.005f;
+    for (size_t i = 1; i < result.curve.size(); ++i) {
+        float x1 = data_to_chart_x(result.curve[i-1].radius);
+        float y1 = data_to_chart_y(result.curve[i-1].orbital_velocity);
+        float x2 = data_to_chart_x(result.curve[i].radius);
+        float y2 = data_to_chart_y(result.curve[i].orbital_velocity);
+        float dx = x2 - x1, dy = y2 - y1;
+        float len = std::sqrt(dx*dx + dy*dy);
+        if (len > 0.001f) {
+            float nx = -dy / len * curve_thickness / 2;
+            float ny = dx / len * curve_thickness / 2;
+            data.verts.push_back({x1 + nx, y1 + ny, curve_z, act_r, act_g, act_b, act_a});
+            data.verts.push_back({x1 - nx, y1 - ny, curve_z, act_r, act_g, act_b, act_a});
+            data.verts.push_back({x2 + nx, y2 + ny, curve_z, act_r, act_g, act_b, act_a});
+            data.verts.push_back({x2 + nx, y2 + ny, curve_z, act_r, act_g, act_b, act_a});
+            data.verts.push_back({x1 - nx, y1 - ny, curve_z, act_r, act_g, act_b, act_a});
+            data.verts.push_back({x2 - nx, y2 - ny, curve_z, act_r, act_g, act_b, act_a});
+        }
+    }
+
+    // Draw data points as small circles
+    float pt_r = 1.0f, pt_g = 1.0f, pt_b = 0.3f, pt_a = 1.0f;
+    float point_radius = 0.008f;
+    for (const auto& pt : result.curve) {
+        float cx = data_to_chart_x(pt.radius);
+        float cy = data_to_chart_y(pt.orbital_velocity);
+        // Approximate circle with triangles (6 segments)
+        for (int s = 0; s < 6; ++s) {
+            float a1 = s * 3.14159f * 2 / 6;
+            float a2 = (s+1) * 3.14159f * 2 / 6;
+            data.verts.push_back({cx, cy, 0.0003f, pt_r, pt_g, pt_b, pt_a});
+            data.verts.push_back({cx + point_radius * std::cos(a1), cy + point_radius * std::sin(a1), 0.0003f, pt_r, pt_g, pt_b, pt_a});
+            data.verts.push_back({cx + point_radius * std::cos(a2), cy + point_radius * std::sin(a2), 0.0003f, pt_r, pt_g, pt_b, pt_a});
+        }
+    }
+
+    // Chart border
+    Vec4 border_color{0.5f, 0.5f, 0.6f, 0.9f};
+    float border_w = 0.003f;
+    add_quad(data.verts, chart_left, chart_top, chart_right, chart_top + border_w, 0.0004f, border_color);
+    add_quad(data.verts, chart_left, chart_bottom - border_w, chart_right, chart_bottom, 0.0004f, border_color);
+    add_quad(data.verts, chart_left, chart_top, chart_left + border_w, chart_bottom, 0.0004f, border_color);
+    add_quad(data.verts, chart_right - border_w, chart_top, chart_right, chart_bottom, 0.0004f, border_color);
+
+    // Stats text
+    std::ostringstream oss1, oss2;
+    oss1 << "Power law: v ~ r^" << std::fixed << std::setprecision(2) << result.power_law_exponent;
+    oss2 << "Flat rotation: " << (result.has_flat_rotation ? "YES" : "NO");
+    data.stats_line1 = oss1.str();
+    data.stats_line2 = oss2.str();
+    data.stats_x = ndc_to_pixel_x(inner_left);
+    data.stats_y = ndc_to_pixel_y(chart_bottom + 0.015f);
+
+    // Axis labels
+    data.xlabel = "Radius";
+    data.ylabel = "Velocity";
+    data.xlabel_x = ndc_to_pixel_x((chart_left + chart_right) / 2 - 0.03f);
+    data.xlabel_y = ndc_to_pixel_y(chart_bottom + 0.035f);
+    data.ylabel_x = ndc_to_pixel_x(inner_left - 0.01f);
+    data.ylabel_y = ndc_to_pixel_y((chart_top + chart_bottom) / 2);
+
+    // Axis value labels
+    data.axis_x_min_x = ndc_to_pixel_x(chart_left);
+    data.axis_x_min_y = ndc_to_pixel_y(chart_bottom + 0.015f);
+    data.axis_x_max_x = ndc_to_pixel_x(chart_right - 0.03f);
+    data.axis_x_max_y = ndc_to_pixel_y(chart_bottom + 0.015f);
+    data.axis_y_min_x = ndc_to_pixel_x(chart_left - 0.04f);
+    data.axis_y_min_y = ndc_to_pixel_y(chart_bottom - 0.01f);
+    data.axis_y_max_x = ndc_to_pixel_x(chart_left - 0.04f);
+    data.axis_y_max_y = ndc_to_pixel_y(chart_top);
+
+    return data;
+}
+
+// Build Hilbert space stats panel
+struct HilbertPanelData {
+    std::vector<Vertex> verts;  // Background
+    // Text positions (pixel coords)
+    float title_x, title_y;
+    std::vector<std::pair<float, float>> stat_positions;  // (x, y) for each stat line
+    std::vector<std::string> stat_labels;
+    std::vector<std::string> stat_values;
+};
+
+HilbertPanelData build_hilbert_panel(
+    const HilbertSpaceAnalysis& result,
+    const BranchialAnalysisResult& branchial,
+    int screen_width, int screen_height
+) {
+    HilbertPanelData data;
+
+    if (result.num_states == 0) {
+        return data;
+    }
+
+    // Panel position (top-right corner, below rotation plot if visible)
+    float panel_w = 0.35f;
+    float panel_h = 0.28f;
+
+    float panel_right = 0.98f;
+    float panel_left = panel_right - panel_w;
+    float panel_top = -0.98f;  // Top of screen
+    float panel_bottom = panel_top + panel_h;
+
+    // Background (dark semi-transparent)
+    Vec4 bg_color{0.08f, 0.08f, 0.15f, 0.92f};
+    float corner_radius = 0.012f;
+    add_rounded_rect(data.verts, panel_left, panel_top, panel_right, panel_bottom,
+                     corner_radius, 0.002f, bg_color);
+
+    // Text positions (convert NDC to pixels)
+    auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_width; };
+    auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_height; };
+
+    float padding = 0.02f;
+    float inner_left = panel_left + padding;
+    float inner_top = panel_top + padding;
+
+    data.title_x = ndc_to_pixel_x(inner_left);
+    data.title_y = ndc_to_pixel_y(inner_top);
+
+    // Stats to display
+    float line_h = 0.028f;
+    float y = inner_top + 0.04f;
+
+    auto add_stat = [&](const std::string& label, const std::string& value) {
+        data.stat_positions.push_back({ndc_to_pixel_x(inner_left), ndc_to_pixel_y(y)});
+        data.stat_labels.push_back(label);
+        data.stat_values.push_back(value);
+        y += line_h;
+    };
+
+    std::ostringstream oss;
+
+    oss.str(""); oss << result.num_states;
+    add_stat("States:", oss.str());
+
+    oss.str(""); oss << result.num_vertices;
+    add_stat("Vertices:", oss.str());
+
+    oss.str(""); oss << std::fixed << std::setprecision(3) << result.mean_inner_product;
+    add_stat("Mean <psi|phi>:", oss.str());
+
+    oss.str(""); oss << std::fixed << std::setprecision(3) << result.max_inner_product;
+    add_stat("Max <psi|phi>:", oss.str());
+
+    oss.str(""); oss << std::fixed << std::setprecision(3) << result.mean_vertex_probability;
+    add_stat("Mean P(v):", oss.str());
+
+    oss.str(""); oss << std::fixed << std::setprecision(3) << result.vertex_probability_entropy;
+    add_stat("Prob entropy:", oss.str());
+
+    oss.str(""); oss << std::fixed << std::setprecision(3) << branchial.mean_sharpness;
+    add_stat("Mean sharpness:", oss.str());
+
+    return data;
+}
+
 // Build multiway states graph (left panel showing states at each timestep)
 struct StatesGraphData {
     std::vector<Vertex> verts;       // Triangles for background, states, highlights
@@ -2785,6 +3212,9 @@ void print_usage() {
     std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
     std::cout << "  --geodesics       Enable geodesic analysis (test particle tracing)" << std::endl;
     std::cout << "  --particles       Enable particle detection (Robertson-Seymour defects)" << std::endl;
+    std::cout << "  --curvature       Enable curvature analysis (Ollivier-Ricci / dimension gradient)" << std::endl;
+    std::cout << "  --entropy         Enable entropy analysis (local entropy, Fisher info)" << std::endl;
+    std::cout << "  --rotation        Enable rotation curve analysis (test inverse-square law)" << std::endl;
     std::cout << std::endl;
     std::cout << "OUTPUT OPTIONS:" << std::endl;
     std::cout << "  --output FILE     Output file path (auto-selects extension based on command)" << std::endl;
@@ -2804,6 +3234,9 @@ void print_usage() {
     std::cout << "  H            Toggle horizon circles" << std::endl;
     std::cout << "  J            Toggle geodesic path overlay (requires --geodesics)" << std::endl;
     std::cout << "  K            Toggle defect markers (requires --particles)" << std::endl;
+    std::cout << "  D            Cycle curvature mode: OFF/Ollivier-Ricci/Dim Gradient (requires --curvature)" << std::endl;
+    std::cout << "  E            Toggle entropy heatmap (requires --entropy)" << std::endl;
+    std::cout << "  F            Toggle rotation curve overlay (requires --rotation)" << std::endl;
     std::cout << "  I            Toggle edge display (union/intersection)" << std::endl;
     std::cout << "  V            Toggle heatmap (mean dimension / variance)" << std::endl;
     std::cout << "  L            Toggle dynamic layout" << std::endl;
@@ -3084,6 +3517,9 @@ int main(int argc, char* argv[]) {
     bool layout_3d = false;        // Use 3D force-directed layout
     bool enable_geodesics = false; // Enable geodesic analysis (test particles)
     bool enable_particles = false; // Enable particle detection (Robertson-Seymour)
+    bool enable_curvature = false; // Enable curvature analysis (Ollivier-Ricci / dimension gradient)
+    bool enable_entropy = false;   // Enable entropy analysis
+    bool enable_rotation = false;  // Enable rotation curve analysis
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -3209,6 +3645,15 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--particles") {
             // Enable particle detection (Robertson-Seymour topological defects)
             enable_particles = true;
+        } else if (arg == "--curvature") {
+            // Enable curvature analysis (Ollivier-Ricci / dimension gradient)
+            enable_curvature = true;
+        } else if (arg == "--entropy") {
+            // Enable entropy analysis
+            enable_entropy = true;
+        } else if (arg == "--rotation") {
+            // Enable rotation curve analysis
+            enable_rotation = true;
         }
     }
 
@@ -3801,6 +4246,133 @@ int main(int argc, char* argv[]) {
         std::cerr << "Unknown command: " << mode << std::endl;
         print_usage();
         return 1;
+    }
+
+    // ==========================================================================
+    // Additional Analysis (curvature, entropy, rotation)
+    // ==========================================================================
+    // These analyses are computed on-demand from the existing dimension data
+
+    CurvatureAnalysisResult curvature_result;
+    EntropyAnalysisResult entropy_result;
+    RotationCurveResult rotation_result;
+    HilbertSpaceAnalysis hilbert_result;
+    BranchialAnalysisResult branchial_result;
+    bool has_curvature_analysis = false;
+    bool has_entropy_analysis = false;
+    bool has_rotation_analysis = false;
+    bool has_hilbert_analysis = false;
+
+    // Build SimpleGraph from analysis data
+    SimpleGraph analysis_graph;
+    std::vector<float> vertex_dimensions_vec;
+    if (!analysis.all_edges.empty() && !analysis.mega_dimension.empty()) {
+        analysis_graph.build_from_edges(analysis.all_edges);
+        // Build dimension vector indexed by vertex position
+        vertex_dimensions_vec.resize(analysis_graph.vertex_count(), 0.0f);
+        for (size_t i = 0; i < analysis_graph.vertices().size(); ++i) {
+            VertexId vid = analysis_graph.vertices()[i];
+            auto it = analysis.mega_dimension.find(vid);
+            if (it != analysis.mega_dimension.end()) {
+                vertex_dimensions_vec[i] = it->second;
+            }
+        }
+    }
+
+    // Compute curvature analysis if enabled
+    if (enable_curvature && analysis_graph.vertex_count() > 0) {
+        std::cout << "Computing curvature analysis..." << std::endl;
+
+        CurvatureConfig curv_config;
+        curv_config.compute_ollivier_ricci = true;
+        curv_config.compute_dimension_gradient = true;
+
+        curvature_result = analyze_curvature(analysis_graph, curv_config, &vertex_dimensions_vec);
+        has_curvature_analysis = true;
+
+        std::cout << "  Ollivier-Ricci: mean=" << curvature_result.mean_ollivier_ricci
+                  << ", min=" << curvature_result.min_ollivier_ricci
+                  << ", max=" << curvature_result.max_ollivier_ricci << std::endl;
+        std::cout << "  Dimension gradient: mean=" << curvature_result.mean_dimension_gradient
+                  << ", min=" << curvature_result.min_dimension_gradient
+                  << ", max=" << curvature_result.max_dimension_gradient << std::endl;
+    }
+
+    // Compute entropy analysis if enabled
+    if (enable_entropy && analysis_graph.vertex_count() > 0) {
+        std::cout << "Computing entropy analysis..." << std::endl;
+
+        EntropyConfig ent_config;
+        ent_config.compute_local_entropy = true;
+        ent_config.compute_mutual_info = true;
+        ent_config.compute_fisher_info = true;
+
+        entropy_result = analyze_entropy(analysis_graph, ent_config, &vertex_dimensions_vec);
+        has_entropy_analysis = true;
+
+        std::cout << "  Graph entropy: " << entropy_result.graph_entropy << std::endl;
+        std::cout << "  Degree entropy: " << entropy_result.degree_entropy << std::endl;
+        std::cout << "  Total mutual info: " << entropy_result.total_mutual_info << std::endl;
+        std::cout << "  Total Fisher info: " << entropy_result.total_fisher_info << std::endl;
+    }
+
+    // Compute rotation curve analysis if enabled
+    if (enable_rotation && analysis_graph.vertex_count() > 0) {
+        std::cout << "Computing rotation curve analysis..." << std::endl;
+
+        RotationConfig rot_config;
+        rot_config.max_radius = 20;
+        rot_config.orbits_per_radius = 8;
+
+        rotation_result = analyze_rotation_curve(analysis_graph, rot_config, &vertex_dimensions_vec);
+        has_rotation_analysis = true;
+
+        std::cout << "  Center vertex: " << rotation_result.center << std::endl;
+        std::cout << "  Power law exponent: " << rotation_result.power_law_exponent
+                  << " (Newtonian: -0.5)" << std::endl;
+        std::cout << "  Flat rotation curve: " << (rotation_result.has_flat_rotation ? "YES" : "NO") << std::endl;
+    }
+
+    // Compute Hilbert space analysis (always compute if we have states)
+    if (analysis.states_per_step.size() > 1) {
+        std::cout << "Computing Hilbert space analysis..." << std::endl;
+
+        // Build BranchState structures from analysis data
+        std::vector<BranchState> branch_states;
+        uint32_t state_id = 0;
+        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+            for (size_t branch = 0; branch < analysis.states_per_step[step].size(); ++branch) {
+                BranchState bs;
+                bs.state_id = state_id++;
+                bs.branch_id = static_cast<uint32_t>(branch);
+                bs.step = static_cast<uint32_t>(step);
+
+                // Get vertices and edges directly from this state's data
+                const auto& state_data = analysis.states_per_step[step][branch];
+                bs.vertices = state_data.vertices;
+                bs.edges = state_data.edges;
+
+                branch_states.push_back(std::move(bs));
+            }
+        }
+
+        if (!branch_states.empty()) {
+            BranchialConfig config;
+            config.compute_sharpness = true;
+            config.compute_entropy = true;
+            branchial_result = analyze_branchial(branch_states, config);
+
+            auto branchial_graph = build_branchial_graph(branch_states, config);
+            hilbert_result = analyze_hilbert_space_full(branchial_graph);
+            has_hilbert_analysis = (hilbert_result.num_states > 0);
+
+            std::cout << "  States analyzed: " << hilbert_result.num_states << std::endl;
+            std::cout << "  Unique vertices: " << hilbert_result.num_vertices << std::endl;
+            std::cout << "  Mean inner product: " << hilbert_result.mean_inner_product << std::endl;
+            std::cout << "  Max inner product: " << hilbert_result.max_inner_product << std::endl;
+            std::cout << "  Mean vertex probability: " << hilbert_result.mean_vertex_probability << std::endl;
+            std::cout << "  Vertex probability entropy: " << hilbert_result.vertex_probability_entropy << std::endl;
+        }
     }
 
     // Create window
@@ -4628,6 +5200,10 @@ int main(int argc, char* argv[]) {
     bool show_horizons = false;  // Horizon rings off by default
     bool show_geodesics = false;  // Geodesic path overlay (requires geodesic analysis)
     bool show_defects = false;    // Topological defect markers (requires particle analysis)
+    int curvature_display_mode = 0;  // 0=OFF, 1=Ollivier-Ricci, 2=Dimension Gradient
+    bool show_entropy = false;       // Entropy heatmap overlay (requires --entropy)
+    bool show_rotation = false;      // Rotation curve overlay (requires --rotation)
+    bool show_hilbert = false;       // Hilbert space stats overlay
     bool timeslice_enabled = false;  // Timeslice view (shows range of timesteps)
     int timeslice_width = 5;         // Number of timesteps in the slice
     bool z_mapping_enabled = true;   // Map bucket dimension values to Z/height
@@ -4706,6 +5282,18 @@ int main(int argc, char* argv[]) {
             {"H", "Horizon rings", [&]{ return show_horizons ? "ON" : "OFF"; }},
             {"J", "Geodesic paths", [&]{ return show_geodesics ? "ON" : "OFF"; }},
             {"K", "Defect markers", [&]{ return show_defects ? "ON" : "OFF"; }},
+            {"D", "Curvature mode", [&]{
+                if (!has_curvature_analysis) return std::string("(N/A)");
+                switch (curvature_display_mode) {
+                    case 0: return std::string("OFF");
+                    case 1: return std::string("Ollivier-Ricci");
+                    case 2: return std::string("Dim Gradient");
+                    default: return std::string("?");
+                }
+            }},
+            {"E", "Entropy heatmap", [&]{ return !has_entropy_analysis ? "(N/A)" : (show_entropy ? "ON" : "OFF"); }},
+            {"F", "Rotation curve", [&]{ return !has_rotation_analysis ? "(N/A)" : (show_rotation ? "ON" : "OFF"); }},
+            {"Q", "Hilbert space", [&]{ return !has_hilbert_analysis ? "(N/A)" : (show_hilbert ? "ON" : "OFF"); }},
             {"T", "Timeslice view", [&]{
                 // Timeslice not applicable for Global mode
                 if (dim_source == DimensionSource::Global) return std::string("(N/A)");
@@ -4941,6 +5529,49 @@ int main(int argc, char* argv[]) {
                     std::cout << "Defect markers: " << (show_defects ? "ON" : "OFF") << std::endl;
                 } else {
                     std::cout << "Defect markers: N/A (run with --particles to enable)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::D:
+                // Cycle curvature display mode: OFF -> Ollivier-Ricci -> Dimension Gradient -> OFF
+                if (has_curvature_analysis) {
+                    curvature_display_mode = (curvature_display_mode + 1) % 3;
+                    geometry_dirty = true;
+                    const char* mode_names[] = {"OFF", "Ollivier-Ricci", "Dimension Gradient"};
+                    std::cout << "Curvature: " << mode_names[curvature_display_mode] << std::endl;
+                } else {
+                    std::cout << "Curvature: N/A (run with --curvature to enable)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::E:
+                // Toggle entropy heatmap
+                if (has_entropy_analysis) {
+                    show_entropy = !show_entropy;
+                    geometry_dirty = true;
+                    std::cout << "Entropy heatmap: " << (show_entropy ? "ON" : "OFF") << std::endl;
+                } else {
+                    std::cout << "Entropy heatmap: N/A (run with --entropy to enable)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::F:
+                // Toggle rotation curve overlay
+                if (has_rotation_analysis) {
+                    show_rotation = !show_rotation;
+                    std::cout << "Rotation curve: " << (show_rotation ? "ON" : "OFF") << std::endl;
+                } else {
+                    std::cout << "Rotation curve: N/A (run with --rotation to enable)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Q:
+                // Toggle Hilbert space overlay
+                if (has_hilbert_analysis) {
+                    show_hilbert = !show_hilbert;
+                    std::cout << "Hilbert space: " << (show_hilbert ? "ON" : "OFF") << std::endl;
+                } else {
+                    std::cout << "Hilbert space: N/A (need multiple states)" << std::endl;
                 }
                 break;
 
@@ -5811,7 +6442,7 @@ int main(int argc, char* argv[]) {
                                             selected_state_index, heatmap_mode, dim_source, per_frame_normalization,
                                             z_mapping_enabled, missing_mode, current_palette, edge_color_mode,
                                             live_layout, layout_verts, pos_cache, 0.04f, 0.015f, z_scale, timeslice_enabled,
-                                            timeslice_width, path_selection_ptr);
+                                            timeslice_width, path_selection_ptr, show_geodesics, show_defects);
 
             auto geom_t1 = std::chrono::high_resolution_clock::now();
             // Print geometry timing every 60 frames (uncomment for GPU layout debugging)
@@ -6256,6 +6887,22 @@ int main(int argc, char* argv[]) {
                         histogram_data.verts.begin(), histogram_data.verts.end());
                 }
 
+                // 1e. Add rotation curve plot (if enabled and data available)
+                RotationPlotData rotation_plot_data;
+                if (show_rotation && has_rotation_analysis && !rotation_result.curve.empty()) {
+                    rotation_plot_data = build_rotation_plot_panel(rotation_result, w, h);
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        rotation_plot_data.verts.begin(), rotation_plot_data.verts.end());
+                }
+
+                // 1f. Add Hilbert space panel (if enabled and data available)
+                HilbertPanelData hilbert_panel_data;
+                if (show_hilbert && has_hilbert_analysis) {
+                    hilbert_panel_data = build_hilbert_panel(hilbert_result, branchial_result, w, h);
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        hilbert_panel_data.verts.begin(), hilbert_panel_data.verts.end());
+                }
+
                 // --- STEP 2: Single draw call for ALL overlay geometry ---
                 if (!all_overlay_verts.empty()) {
                     overlay_buffer->write(all_overlay_verts.data(),
@@ -6397,6 +7044,55 @@ int main(int argc, char* argv[]) {
                     float axis_max_px_y = ndc_to_pixel_y(histogram_data.axis_max_y);
                     queue_text(axis_min_px_x, axis_min_px_y, min_ss.str(), TextColor::White, text_scale);
                     queue_text(axis_max_px_x, axis_max_px_y, max_ss.str(), TextColor::White, text_scale);
+                }
+
+                // 3d. Queue rotation plot text (if visible)
+                if (show_rotation && has_rotation_analysis && !rotation_plot_data.verts.empty()) {
+                    // Title
+                    queue_text(rotation_plot_data.title_x, rotation_plot_data.title_y,
+                               rotation_plot_data.title, TextColor::Cyan, text_scale);
+
+                    // Stats lines
+                    queue_text(rotation_plot_data.stats_x, rotation_plot_data.stats_y,
+                               rotation_plot_data.stats_line1, TextColor::Green, text_scale);
+                    queue_text(rotation_plot_data.stats_x, rotation_plot_data.stats_y + text_char_h + 2,
+                               rotation_plot_data.stats_line2, TextColor::White, text_scale);
+
+                    // Axis value labels
+                    std::ostringstream x_min_ss, x_max_ss, y_min_ss, y_max_ss;
+                    x_min_ss << std::fixed << std::setprecision(0) << rotation_plot_data.x_min_val;
+                    x_max_ss << std::fixed << std::setprecision(0) << rotation_plot_data.x_max_val;
+                    y_min_ss << std::fixed << std::setprecision(2) << rotation_plot_data.y_min_val;
+                    y_max_ss << std::fixed << std::setprecision(2) << rotation_plot_data.y_max_val;
+
+                    queue_text(rotation_plot_data.axis_x_min_x, rotation_plot_data.axis_x_min_y,
+                               x_min_ss.str(), TextColor::White, text_scale);
+                    queue_text(rotation_plot_data.axis_x_max_x, rotation_plot_data.axis_x_max_y,
+                               x_max_ss.str(), TextColor::White, text_scale);
+                    queue_text(rotation_plot_data.axis_y_min_x, rotation_plot_data.axis_y_min_y,
+                               y_min_ss.str(), TextColor::White, text_scale);
+                    queue_text(rotation_plot_data.axis_y_max_x, rotation_plot_data.axis_y_max_y,
+                               y_max_ss.str(), TextColor::White, text_scale);
+
+                    // Legend
+                    float legend_y = rotation_plot_data.title_y + text_char_h + 4;
+                    queue_text(rotation_plot_data.title_x, legend_y, "-- Actual", TextColor::Green, text_scale);
+                    queue_text(rotation_plot_data.title_x + 12 * text_char_w, legend_y, "-- Expected", TextColor::Cyan, text_scale);
+                }
+
+                // 3e. Queue Hilbert space panel text (if visible)
+                if (show_hilbert && has_hilbert_analysis && !hilbert_panel_data.verts.empty()) {
+                    // Title
+                    queue_text(hilbert_panel_data.title_x, hilbert_panel_data.title_y,
+                               "Hilbert Space Analysis", TextColor::Cyan, text_scale);
+
+                    // Stat lines
+                    for (size_t i = 0; i < hilbert_panel_data.stat_labels.size(); ++i) {
+                        auto [sx, sy] = hilbert_panel_data.stat_positions[i];
+                        queue_text(sx, sy, hilbert_panel_data.stat_labels[i], TextColor::White, text_scale);
+                        queue_text(sx + 18 * text_char_w, sy, hilbert_panel_data.stat_values[i],
+                                   TextColor::Green, text_scale);
+                    }
                 }
 
                 // --- STEP 4: Single draw call for ALL text ---

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <climits>
 
 namespace viz::blackhole {
 
@@ -636,6 +637,44 @@ GeodesicAnalysisResult analyze_geodesics(
         if (count > 0) {
             result.mean_dimension_variance = total_var / count;
         }
+
+        // Compute lensing metrics
+        // Find center (highest dimension vertex)
+        const auto& verts = graph.vertices();
+        float max_dim = -1.0f;
+        VertexId center = verts.empty() ? 0 : verts[0];
+
+        for (size_t i = 0; i < verts.size() && i < vertex_dimensions->size(); ++i) {
+            if ((*vertex_dimensions)[i] > max_dim) {
+                max_dim = (*vertex_dimensions)[i];
+                center = verts[i];
+            }
+        }
+
+        result.lensing_center = center;
+
+        // Compute lensing metrics for each path
+        result.lensing.reserve(result.paths.size());
+        float total_deflection = 0.0f;
+        float total_ratio = 0.0f;
+        int lensing_count = 0;
+
+        for (const auto& path : result.paths) {
+            LensingMetrics metrics = compute_lensing_metrics(
+                path, graph, *vertex_dimensions, center, max_dim);
+            result.lensing.push_back(metrics);
+
+            if (metrics.passes_near_center && metrics.deflection_angle > 0) {
+                total_deflection += metrics.deflection_angle;
+                total_ratio += metrics.deflection_ratio;
+                lensing_count++;
+            }
+        }
+
+        if (lensing_count > 0) {
+            result.mean_deflection = total_deflection / lensing_count;
+            result.mean_deflection_ratio = total_ratio / lensing_count;
+        }
     }
 
     return result;
@@ -652,6 +691,156 @@ GeodesicAnalysisResult analyze_geodesics_timestep(
 
     // Use mean dimensions from timestep
     return analyze_geodesics(graph, sources, config, &timestep.mean_dimensions);
+}
+
+// =============================================================================
+// Gravitational Lensing Functions
+// =============================================================================
+
+std::pair<float, VertexId> compute_impact_parameter(
+    const GeodesicPath& path,
+    const SimpleGraph& graph,
+    VertexId center
+) {
+    if (path.vertices.empty()) {
+        return {-1.0f, 0};
+    }
+
+    // Find closest vertex to center along the path
+    float min_dist = std::numeric_limits<float>::max();
+    VertexId closest = path.vertices[0];
+
+    for (VertexId v : path.vertices) {
+        int dist = graph.distance(v, center);
+        if (dist >= 0 && dist < min_dist) {
+            min_dist = static_cast<float>(dist);
+            closest = v;
+        }
+    }
+
+    return {min_dist, closest};
+}
+
+float compute_deflection_angle(
+    const GeodesicPath& path,
+    const SimpleGraph& graph
+) {
+    if (path.vertices.size() < 3) {
+        return 0.0f;
+    }
+
+    // Compute deflection as deviation from straight-line path
+    // Using discrete curvature approximation
+
+    // Incoming direction: from start to middle
+    // Outgoing direction: from middle to end
+    size_t mid_idx = path.vertices.size() / 2;
+
+    // Compute graph distances to estimate "direction" change
+    // This is an approximation - we measure how much the path deviates
+    // from the shortest path from start to end
+
+    VertexId start = path.vertices.front();
+    VertexId end = path.vertices.back();
+    VertexId mid = path.vertices[mid_idx];
+
+    int d_start_mid = graph.distance(start, mid);
+    int d_mid_end = graph.distance(mid, end);
+    int d_start_end = graph.distance(start, end);
+
+    if (d_start_mid < 0 || d_mid_end < 0 || d_start_end <= 0) {
+        return 0.0f;
+    }
+
+    // Deflection measure: how much longer is the path through mid
+    // compared to the direct path?
+    // δ ≈ (d(start,mid) + d(mid,end) - d(start,end)) / d(start,end)
+    float direct_dist = static_cast<float>(d_start_end);
+    float path_dist = static_cast<float>(d_start_mid + d_mid_end);
+
+    // Convert to angle-like quantity (small angle approximation)
+    // Deflection proportional to path deviation
+    float deflection = (path_dist - direct_dist) / direct_dist;
+
+    // Also consider how much the actual path length deviates from BFS shortest
+    if (path.length > d_start_end) {
+        float length_deviation = static_cast<float>(path.length - d_start_end) / d_start_end;
+        deflection = std::max(deflection, length_deviation);
+    }
+
+    return deflection;
+}
+
+float expected_gr_deflection(
+    float center_dimension,
+    float impact_parameter
+) {
+    // GR prediction: δ = 4GM/c²b ∝ mass/impact_parameter
+    // We use center_dimension as proxy for mass
+    // Normalize so that δ = center_dimension / (impact_parameter + 1)
+    // The +1 avoids division by zero for very close approaches
+
+    if (impact_parameter < 0 || center_dimension <= 0) {
+        return 0.0f;
+    }
+
+    return center_dimension / (impact_parameter + 1.0f);
+}
+
+LensingMetrics compute_lensing_metrics(
+    const GeodesicPath& path,
+    const SimpleGraph& graph,
+    const std::vector<float>& vertex_dimensions,
+    VertexId center,
+    float center_dimension
+) {
+    LensingMetrics metrics;
+
+    if (!path.is_valid() || path.vertices.size() < 2) {
+        return metrics;
+    }
+
+    // Compute impact parameter (closest approach to center)
+    auto [impact, closest] = compute_impact_parameter(path, graph, center);
+    metrics.impact_parameter = impact;
+    metrics.closest_vertex = closest;
+
+    // Get dimension at closest approach
+    const auto& verts = graph.vertices();
+    auto it = std::find(verts.begin(), verts.end(), closest);
+    if (it != verts.end()) {
+        size_t idx = std::distance(verts.begin(), it);
+        if (idx < vertex_dimensions.size()) {
+            metrics.closest_dimension = vertex_dimensions[idx];
+        }
+    }
+
+    // Check if passes near center (within some threshold)
+    // Threshold: within 20% of graph diameter
+    int diameter = 0;
+    for (size_t i = 0; i < verts.size() && i < 10; ++i) {
+        auto dists = graph.distances_from(verts[i]);
+        for (int d : dists) {
+            if (d > diameter) diameter = d;
+        }
+    }
+    float threshold = std::max(2.0f, diameter * 0.2f);
+    metrics.passes_near_center = (impact >= 0 && impact < threshold);
+
+    // Compute actual deflection angle
+    metrics.deflection_angle = compute_deflection_angle(path, graph);
+
+    // Compute expected GR deflection
+    metrics.expected_deflection = expected_gr_deflection(center_dimension, impact);
+
+    // Compute deflection ratio (actual / expected)
+    if (metrics.expected_deflection > 0.001f) {
+        metrics.deflection_ratio = metrics.deflection_angle / metrics.expected_deflection;
+    } else {
+        metrics.deflection_ratio = 0.0f;
+    }
+
+    return metrics;
 }
 
 }  // namespace viz::blackhole

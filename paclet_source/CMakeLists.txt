@@ -18,6 +18,8 @@ set(SOURCES
     # Blackhole analysis sources (compiled without layout dependency)
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/hausdorff_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/bh_initial_condition.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/geodesic_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/particle_detection.cpp
 )
 
 # Create the library

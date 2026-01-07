@@ -145,6 +145,52 @@ std::vector<VertexId> select_distributed_sources(
 );
 
 // =============================================================================
+// Gravitational Lensing Analysis
+// =============================================================================
+// Compute deflection angles for geodesics passing near high-dimension regions
+// Compare to GR prediction: δ = 4GM/c²b where b is impact parameter
+
+struct LensingMetrics {
+    float deflection_angle = 0.0f;       // Total angular deflection (radians)
+    float impact_parameter = 0.0f;       // Closest approach distance to high-dim center
+    float expected_deflection = 0.0f;    // GR prediction: 4GM/c²b (normalized)
+    float deflection_ratio = 0.0f;       // actual / expected (1.0 = matches GR)
+    VertexId closest_vertex = 0;         // Vertex of closest approach
+    float closest_dimension = 0.0f;      // Dimension at closest approach
+    bool passes_near_center = false;     // True if passes within threshold of high-dim
+};
+
+// Compute lensing metrics for a single geodesic path
+LensingMetrics compute_lensing_metrics(
+    const GeodesicPath& path,
+    const SimpleGraph& graph,
+    const std::vector<float>& vertex_dimensions,
+    VertexId center,                     // High-dimension center vertex
+    float center_dimension               // Dimension at center (proxy for mass)
+);
+
+// Compute deflection angle from path geometry
+// Uses discrete curvature: angle between incoming and outgoing tangent vectors
+float compute_deflection_angle(
+    const GeodesicPath& path,
+    const SimpleGraph& graph
+);
+
+// Compute impact parameter (closest approach distance to center)
+std::pair<float, VertexId> compute_impact_parameter(
+    const GeodesicPath& path,
+    const SimpleGraph& graph,
+    VertexId center
+);
+
+// Expected GR deflection angle: δ = 4GM/c²b ∝ mass/impact_parameter
+// Normalized so that δ = center_dimension / impact_parameter
+float expected_gr_deflection(
+    float center_dimension,
+    float impact_parameter
+);
+
+// =============================================================================
 // Geodesic Result Aggregation
 // =============================================================================
 
@@ -158,6 +204,12 @@ struct GeodesicAnalysisResult {
     float max_path_length = 0;
     float mean_spread = 0;
     float mean_dimension_variance = 0;  // How much dimension changes along paths
+
+    // Lensing results (per-path)
+    std::vector<LensingMetrics> lensing;
+    float mean_deflection = 0.0f;
+    float mean_deflection_ratio = 0.0f;  // How well deflections match GR (1.0 = perfect)
+    VertexId lensing_center = 0;         // Center vertex used for lensing analysis
 
     // For visualization
     std::vector<std::pair<VertexId, VertexId>> path_edges;  // All edges in all paths

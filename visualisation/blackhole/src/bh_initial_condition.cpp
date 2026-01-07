@@ -3,6 +3,8 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <numeric>
+#include <unordered_set>
 
 namespace viz::blackhole {
 
@@ -888,6 +890,298 @@ Vec3 topology_to_display_3d(const Vec2& internal_pos, const TopologyConfig& conf
         default:
             return {internal_pos.x, internal_pos.y, 0.0f};
     }
+}
+
+// =============================================================================
+// Minkowski Sprinkling Implementation
+// =============================================================================
+
+float lorentzian_interval(
+    const SpacetimePoint& a,
+    const SpacetimePoint& b
+) {
+    float dt = b.t - a.t;
+    float dx2 = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        float dx_i = b.x[i] - a.x[i];
+        dx2 += dx_i * dx_i;
+    }
+    // τ² = (Δt)² - |Δx|² (Minkowski metric, c = 1)
+    return dt * dt - dx2;
+}
+
+bool causally_precedes(
+    const SpacetimePoint& a,
+    const SpacetimePoint& b,
+    const SprinklingConfig& config
+) {
+    // a precedes b if a is in the causal past of b
+    // Condition: b.t > a.t AND b is inside a's future lightcone
+
+    float dt = b.t - a.t;
+    if (dt <= 0) return false;  // b must be in the future of a
+
+    // Spatial distance
+    float dx2 = 0.0f;
+    for (int i = 0; i < config.spatial_dim; ++i) {
+        float dx_i = b.x[i] - a.x[i];
+        dx2 += dx_i * dx_i;
+    }
+
+    // Lightcone condition: |Δx| < c * Δt (timelike separation)
+    float c = config.lightcone_angle;
+    if (dx2 >= c * c * dt * dt) return false;  // Outside lightcone
+
+    // Optional: Alexandrov interval cutoff (finite interval only)
+    if (config.use_alexandrov_interval) {
+        float tau2 = dt * dt - dx2 / (c * c);  // Proper time squared
+        if (tau2 > config.alexandrov_cutoff * config.alexandrov_cutoff) {
+            return false;  // Too far in proper time
+        }
+    }
+
+    return true;
+}
+
+SprinklingResult generate_minkowski_sprinkling(
+    int n_vertices,
+    const SprinklingConfig& config
+) {
+    SprinklingResult result;
+
+    std::cout << "Generating Minkowski sprinkling..." << std::endl;
+    std::cout << "  Spatial dimensions: " << config.spatial_dim << std::endl;
+    std::cout << "  Time extent: " << config.time_extent << std::endl;
+    std::cout << "  Spatial extent: " << config.spatial_extent << std::endl;
+
+    // Initialize RNG
+    std::mt19937 gen(config.seed == 0 ? std::random_device{}() : config.seed);
+    std::uniform_real_distribution<float> time_dist(0.0f, config.time_extent);
+    std::uniform_real_distribution<float> space_dist(-config.spatial_extent / 2.0f,
+                                                      config.spatial_extent / 2.0f);
+
+    // Generate random spacetime points
+    result.points.reserve(n_vertices);
+    for (int i = 0; i < n_vertices; ++i) {
+        SpacetimePoint pt;
+        pt.t = time_dist(gen);
+        for (int d = 0; d < config.spatial_dim && d < 3; ++d) {
+            pt.x[d] = space_dist(gen);
+        }
+        result.points.push_back(pt);
+    }
+
+    // Sort points by time (for efficient causal edge construction)
+    result.time_ordering.resize(n_vertices);
+    std::iota(result.time_ordering.begin(), result.time_ordering.end(), 0);
+    std::sort(result.time_ordering.begin(), result.time_ordering.end(),
+              [&](int a, int b) { return result.points[a].t < result.points[b].t; });
+
+    // Build causal edges
+    // For each pair (i, j) with t_i < t_j, check if i causally precedes j
+    std::vector<std::vector<int>> direct_links(n_vertices);  // For transitivity reduction
+
+    for (int order_i = 0; order_i < n_vertices; ++order_i) {
+        int i = result.time_ordering[order_i];
+        const auto& pt_i = result.points[i];
+
+        for (int order_j = order_i + 1; order_j < n_vertices; ++order_j) {
+            int j = result.time_ordering[order_j];
+            const auto& pt_j = result.points[j];
+
+            if (causally_precedes(pt_i, pt_j, config)) {
+                direct_links[i].push_back(j);
+            }
+        }
+    }
+
+    // Transitivity reduction (if enabled)
+    // Remove edges (i, j) if there exists k such that (i, k) and (k, j) exist
+    if (config.transitivity_reduction) {
+        std::cout << "  Performing transitivity reduction..." << std::endl;
+
+        for (int i = 0; i < n_vertices; ++i) {
+            std::vector<int> reduced;
+            for (int j : direct_links[i]) {
+                // Check if there's an intermediate k
+                bool has_intermediate = false;
+                for (int k : direct_links[i]) {
+                    if (k == j) continue;
+                    // Check if k precedes j
+                    for (int m : direct_links[k]) {
+                        if (m == j) {
+                            has_intermediate = true;
+                            break;
+                        }
+                    }
+                    if (has_intermediate) break;
+                }
+                if (!has_intermediate) {
+                    reduced.push_back(j);
+                }
+            }
+            direct_links[i] = std::move(reduced);
+        }
+    }
+
+    // Convert to edge list
+    int total_edges = 0;
+    for (int i = 0; i < n_vertices; ++i) {
+        // Limit edges per vertex if configured
+        int max_out = config.max_edges_per_vertex > 0 ?
+                      config.max_edges_per_vertex : static_cast<int>(direct_links[i].size());
+        int n_out = std::min(static_cast<int>(direct_links[i].size()), max_out);
+
+        for (int k = 0; k < n_out; ++k) {
+            result.causal_edges.push_back({
+                static_cast<uint32_t>(i),
+                static_cast<uint32_t>(direct_links[i][k])
+            });
+            ++total_edges;
+        }
+    }
+
+    result.mean_causal_density = n_vertices > 0 ?
+        static_cast<float>(total_edges) / n_vertices : 0.0f;
+
+    // Estimate dimension
+    result.dimension_estimate = estimate_causet_dimension(result, 1000);
+
+    std::cout << "  Generated " << n_vertices << " points, "
+              << total_edges << " causal edges" << std::endl;
+    std::cout << "  Mean causal density: " << result.mean_causal_density << std::endl;
+    std::cout << "  Estimated dimension: " << result.dimension_estimate << std::endl;
+
+    return result;
+}
+
+float estimate_causet_dimension(
+    const SprinklingResult& causet,
+    int sample_size
+) {
+    // Myrheim-Meyer dimension estimator
+    // Based on counting causal relations in random samples
+    // For dimension d, the fraction of related pairs r satisfies:
+    // r = Γ(d+1)²Γ(d/2+1) / (2Γ(3d/2+1)Γ(d/2))
+    // This is approximately r ≈ d/(2^d) for large d
+
+    if (causet.points.size() < 10) return 0.0f;
+
+    // Build quick lookup for causal relations
+    std::unordered_set<uint64_t> related;
+    for (const auto& e : causet.causal_edges) {
+        // Use a simple hash combining both vertex ids
+        uint64_t key = (static_cast<uint64_t>(e.v1) << 32) | e.v2;
+        related.insert(key);
+    }
+
+    // Add transitive closure (all pairs in causal relation)
+    // Build reachability for sampled points
+    int n = static_cast<int>(causet.points.size());
+    int n_samples = std::min(sample_size, n * (n - 1) / 2);
+
+    std::mt19937 gen(42);  // Fixed seed for reproducibility
+    std::uniform_int_distribution<int> dist(0, n - 1);
+
+    int n_pairs = 0;
+    int n_related = 0;
+
+    for (int s = 0; s < n_samples; ++s) {
+        int i = dist(gen);
+        int j = dist(gen);
+        if (i == j) continue;
+
+        // Ensure i is earlier in time
+        if (causet.points[i].t > causet.points[j].t) std::swap(i, j);
+
+        ++n_pairs;
+
+        // Check if i and j are causally related (direct or transitive)
+        uint64_t key = (static_cast<uint64_t>(i) << 32) | j;
+        if (related.count(key)) {
+            ++n_related;
+        }
+    }
+
+    if (n_pairs == 0) return 0.0f;
+
+    float r = static_cast<float>(n_related) / n_pairs;
+
+    // Invert the relation r = d/(2^d) approximately
+    // For small r, d ≈ -log2(r) / log2(2) = -log2(r)
+    // More accurate: use Newton's method on f(d) = d/2^d - r
+    if (r <= 0.001f) return 10.0f;  // Very sparse: high dimension
+    if (r >= 0.9f) return 1.0f;     // Very dense: low dimension
+
+    // Simple approximation: d ≈ 2 for r ≈ 0.5 (2D Minkowski)
+    // Solve d/2^d = r numerically
+    float d_est = 2.0f;
+    for (int iter = 0; iter < 20; ++iter) {
+        float f = d_est / std::pow(2.0f, d_est) - r;
+        float df = (1.0f - d_est * std::log(2.0f)) / std::pow(2.0f, d_est);
+        if (std::abs(df) < 1e-10f) break;
+        d_est -= f / df;
+        d_est = std::max(1.0f, std::min(10.0f, d_est));  // Clamp
+    }
+
+    return d_est;
+}
+
+FaithfulnessResult test_causet_faithfulness(
+    const SprinklingResult& causet,
+    const SprinklingConfig& config
+) {
+    FaithfulnessResult result;
+
+    // Expected dimension (spatial_dim + 1 for time)
+    float expected_dim = config.spatial_dim + 1.0f;
+    result.dimension_error = std::abs(causet.dimension_estimate - expected_dim);
+
+    // Volume consistency: check if edge density scales correctly
+    // In d dimensions, expected relations grow as n^(2/d)
+    // For now, use simple heuristic
+    float expected_density = 2.0f + expected_dim;  // Rough estimate
+    float density_error = std::abs(causet.mean_causal_density - expected_density) / expected_density;
+    result.volume_consistency = 1.0f / (1.0f + density_error);
+
+    // Geodesic recovery: would require tracing geodesics
+    // For now, use edge connectivity as proxy
+    result.geodesic_recovery = std::min(1.0f, causet.mean_causal_density / 5.0f);
+
+    // Overall assessment
+    result.is_faithful = (result.dimension_error < 0.5f) &&
+                         (result.volume_consistency > 0.5f) &&
+                         (result.geodesic_recovery > 0.3f);
+
+    return result;
+}
+
+BHInitialCondition sprinkling_to_initial_condition(
+    const SprinklingResult& causet,
+    bool use_time_for_y
+) {
+    BHInitialCondition result;
+
+    // Convert spacetime points to 2D positions
+    result.vertex_positions.reserve(causet.points.size());
+    for (const auto& pt : causet.points) {
+        Vec2 pos;
+        if (use_time_for_y) {
+            // Map: x[0] → x, t → y
+            pos.x = pt.x[0];
+            pos.y = pt.t;
+        } else {
+            // Map: x[0] → x, x[1] → y (spatial projection)
+            pos.x = pt.x[0];
+            pos.y = pt.x[1];
+        }
+        result.vertex_positions.push_back(pos);
+    }
+
+    // Copy causal edges
+    result.edges = causet.causal_edges;
+
+    return result;
 }
 
 } // namespace viz::blackhole

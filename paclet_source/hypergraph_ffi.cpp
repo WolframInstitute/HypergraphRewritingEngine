@@ -33,6 +33,10 @@
 #include "blackhole/bh_types.hpp"
 #include "blackhole/geodesic_analysis.hpp"
 #include "blackhole/particle_detection.hpp"
+#include "blackhole/curvature_analysis.hpp"
+#include "blackhole/entropy_analysis.hpp"
+#include "blackhole/rotation_analysis.hpp"
+#include "blackhole/branchial_analysis.hpp"
 
 using namespace hypergraph;
 
@@ -115,6 +119,9 @@ LockFreeDebugQueue g_debug_queue;
 namespace ffi_helpers {
     // Parse rules association using wxf library
     // Returns vector of pairs to preserve rule order (unordered_map doesn't preserve order!)
+    // IMPORTANT: Rules must use numeric vertex IDs, not symbolic patterns!
+    // Valid:   {{0, 1}, {1, 2}} -> {{0, 1}, {1, 2}, {2, 3}}
+    // Invalid: {{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, w}}
     std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>>
     read_rules_association(wxf::Parser& parser) {
         std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> rules;
@@ -129,10 +136,18 @@ namespace ffi_helpers {
                 }
 
                 // Read LHS and RHS using recursive templates
-                auto lhs = args_parser.read<std::vector<std::vector<int64_t>>>();
-                auto rhs = args_parser.read<std::vector<std::vector<int64_t>>>();
-
-                rule_parts = {lhs, rhs};
+                // Catch type errors and provide helpful message about symbolic vs numeric rules
+                try {
+                    auto lhs = args_parser.read<std::vector<std::vector<int64_t>>>();
+                    auto rhs = args_parser.read<std::vector<std::vector<int64_t>>>();
+                    rule_parts = {lhs, rhs};
+                } catch (const wxf::TypeError& e) {
+                    throw std::runtime_error(
+                        "Rules must use numeric vertex IDs, not symbolic patterns. "
+                        "Use {{0, 1}, {1, 2}} -> {{0, 1}, {1, 2}, {2, 3}} instead of "
+                        "{{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, w}}. "
+                        "Original error: " + std::string(e.what()));
+                }
             });
 
             rules.push_back({rule_name, rule_parts});
@@ -691,6 +706,33 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         bool compute_topological_charge = false;
         float charge_radius = 3.0f;
 
+        // Curvature analysis options - Ollivier-Ricci and dimension gradient curvature
+        bool compute_curvature = false;
+        bool curvature_ollivier_ricci = true;
+        bool curvature_dimension_gradient = true;
+        float curvature_ricci_alpha = 0.5f;  // Laziness parameter for Ollivier-Ricci
+        int curvature_gradient_radius = 2;
+
+        // Entropy analysis options - graph entropy and information measures
+        bool compute_entropy = false;
+        bool entropy_local = true;
+        bool entropy_mutual_info = true;
+        bool entropy_fisher_info = true;
+        int entropy_neighborhood_radius = 2;
+
+        // Rotation curve analysis options - orbital velocity vs radius
+        bool compute_rotation_curve = false;
+        int rotation_min_radius = 2;
+        int rotation_max_radius = 20;
+        int rotation_orbits_per_radius = 4;
+
+        // Hilbert space analysis options - state bitvector inner products
+        bool compute_hilbert_space = false;
+        int hilbert_step = -1;  // Which step to analyze (-1 = all steps)
+
+        // Topology configuration (for initial condition generation)
+        std::string topology_type = "Flat";
+
         // Data selection flags - which components to include in output
         // By default all are included for backward compatibility
         bool include_states = true;
@@ -741,8 +783,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                         } else if (option_key == "DimensionMaxRadius") {
                             dim_max_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "GeodesicSources") {
-                            // List of vertex IDs for geodesic tracing (empty = auto-select)
-                            geodesic_sources = option_parser.read<std::vector<int64_t>>();
+                            // List of vertex IDs for geodesic tracing ({-1} = auto-select)
+                            auto sources = option_parser.read<std::vector<int64_t>>();
+                            // Filter out -1 sentinel (means auto-select)
+                            for (int64_t s : sources) {
+                                if (s >= 0) geodesic_sources.push_back(s);
+                            }
                         } else if (option_key == "GeodesicMaxSteps") {
                             geodesic_max_steps = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "GeodesicBundleWidth") {
@@ -755,6 +801,23 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             degree_percentile = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "ChargeRadius") {
                             charge_radius = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "CurvatureRicciAlpha") {
+                            curvature_ricci_alpha = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "CurvatureGradientRadius") {
+                            curvature_gradient_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "EntropyNeighborhoodRadius") {
+                            entropy_neighborhood_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "RotationMinRadius") {
+                            rotation_min_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "RotationMaxRadius") {
+                            rotation_max_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "RotationOrbitsPerRadius") {
+                            rotation_orbits_per_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "HilbertStep") {
+                            // Which step to analyze for Hilbert space (-1 = all steps)
+                            hilbert_step = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "Topology") {
+                            topology_type = option_parser.read<std::string>();
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
@@ -882,6 +945,28 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                                 detect_high_degree = value;
                             } else if (option_key == "GeodesicFollowGradient") {
                                 geodesic_follow_gradient = value;
+                            } else if (option_key == "CurvatureAnalysis") {
+                                // Compute Ollivier-Ricci and dimension gradient curvature
+                                compute_curvature = value;
+                            } else if (option_key == "CurvatureOllivierRicci") {
+                                curvature_ollivier_ricci = value;
+                            } else if (option_key == "CurvatureDimensionGradient") {
+                                curvature_dimension_gradient = value;
+                            } else if (option_key == "EntropyAnalysis") {
+                                // Compute graph entropy and information measures
+                                compute_entropy = value;
+                            } else if (option_key == "EntropyLocal") {
+                                entropy_local = value;
+                            } else if (option_key == "EntropyMutualInfo") {
+                                entropy_mutual_info = value;
+                            } else if (option_key == "EntropyFisherInfo") {
+                                entropy_fisher_info = value;
+                            } else if (option_key == "RotationCurveAnalysis") {
+                                // Compute rotation curve (orbital velocity vs radius)
+                                compute_rotation_curve = value;
+                            } else if (option_key == "HilbertSpaceAnalysis") {
+                                // Compute Hilbert space analysis (state bitvector inner products)
+                                compute_hilbert_space = value;
                             }
                         }
                     } catch (...) {
@@ -1411,6 +1496,284 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 std::ostringstream oss;
                 oss << "HGEvolveV2: Particle detection complete. Analyzed "
                     << state_defects.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Curvature Analysis - Ollivier-Ricci and dimension gradient curvature
+        // ==========================================================================
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_ollivier_ricci;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_dimension_gradient;
+        std::unordered_map<uint32_t, float> state_mean_curvature;
+
+        if (compute_curvature) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing curvature analysis...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build SimpleGraph
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    // Configure curvature analysis
+                    bh::CurvatureConfig curv_config;
+                    curv_config.compute_ollivier_ricci = curvature_ollivier_ricci;
+                    curv_config.compute_dimension_gradient = curvature_dimension_gradient;
+                    curv_config.ricci_alpha = curvature_ricci_alpha;
+                    curv_config.gradient_radius = curvature_gradient_radius;
+
+                    // Get dimension data if available
+                    const std::vector<float>* dims = nullptr;
+                    auto it = state_vertex_dimensions.find(sid);
+                    if (it != state_vertex_dimensions.end()) {
+                        dims = &it->second;
+                    }
+
+                    // Run curvature analysis
+                    auto curv_result = bh::analyze_curvature(graph, curv_config, dims);
+
+                    // Store results
+                    if (curvature_ollivier_ricci) {
+                        state_ollivier_ricci[sid] = curv_result.ollivier_ricci_map;
+                    }
+                    if (curvature_dimension_gradient) {
+                        state_dimension_gradient[sid] = curv_result.dimension_gradient_map;
+                    }
+                    state_mean_curvature[sid] = curv_result.mean_ollivier_ricci;
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Curvature analysis complete. Analyzed "
+                    << state_ollivier_ricci.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Entropy Analysis - graph entropy and information measures
+        // ==========================================================================
+        std::unordered_map<uint32_t, float> state_degree_entropy;
+        std::unordered_map<uint32_t, float> state_graph_entropy;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_local_entropy;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_mutual_info;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_fisher_info;
+
+        if (compute_entropy) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing entropy analysis...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build SimpleGraph
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    // Configure entropy analysis
+                    bh::EntropyConfig ent_config;
+                    ent_config.compute_local_entropy = entropy_local;
+                    ent_config.compute_mutual_info = entropy_mutual_info;
+                    ent_config.compute_fisher_info = entropy_fisher_info;
+                    ent_config.neighborhood_radius = entropy_neighborhood_radius;
+
+                    // Get dimension data if available (for Fisher info)
+                    const std::vector<float>* dims = nullptr;
+                    auto it = state_vertex_dimensions.find(sid);
+                    if (it != state_vertex_dimensions.end()) {
+                        dims = &it->second;
+                    }
+
+                    // Run entropy analysis
+                    auto ent_result = bh::analyze_entropy(graph, ent_config, dims);
+
+                    // Store results
+                    state_degree_entropy[sid] = ent_result.degree_entropy;
+                    state_graph_entropy[sid] = ent_result.graph_entropy;
+                    if (entropy_local) {
+                        state_local_entropy[sid] = ent_result.local_entropy_map;
+                    }
+                    if (entropy_mutual_info) {
+                        state_mutual_info[sid] = ent_result.mutual_info_map;
+                    }
+                    if (entropy_fisher_info) {
+                        state_fisher_info[sid] = ent_result.fisher_info_map;
+                    }
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Entropy analysis complete. Analyzed "
+                    << state_degree_entropy.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Rotation Curve Analysis - orbital velocity vs radius
+        // ==========================================================================
+        std::unordered_map<uint32_t, bh::RotationCurveResult> state_rotation_curves;
+
+        if (compute_rotation_curve) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing rotation curve analysis...");
+            }
+#endif
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Build SimpleGraph
+                std::vector<bh::Edge> edges;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                if (edges.size() >= 2) {
+                    bh::SimpleGraph graph;
+                    graph.build_from_edges(edges);
+
+                    // Configure rotation analysis
+                    bh::RotationConfig rot_config;
+                    rot_config.min_radius = rotation_min_radius;
+                    rot_config.max_radius = rotation_max_radius;
+                    rot_config.orbits_per_radius = rotation_orbits_per_radius;
+                    rot_config.compute_power_law_fit = true;
+                    rot_config.detect_flat_rotation = true;
+
+                    // Get dimension data if available
+                    const std::vector<float>* dims = nullptr;
+                    auto it = state_vertex_dimensions.find(sid);
+                    if (it != state_vertex_dimensions.end()) {
+                        dims = &it->second;
+                    }
+
+                    // Run rotation curve analysis
+                    auto rot_result = bh::analyze_rotation_curve(graph, rot_config, dims);
+                    state_rotation_curves[sid] = std::move(rot_result);
+                }
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Rotation curve analysis complete. Analyzed "
+                    << state_rotation_curves.size() << " states";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // ==========================================================================
+        // Hilbert Space Analysis - state bitvector inner products
+        // ==========================================================================
+        bh::HilbertSpaceAnalysis hilbert_result;
+        bool has_hilbert_data = false;
+
+        if (compute_hilbert_space) {
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                print_to_frontend(libData, "HGEvolveV2: Computing Hilbert space analysis...");
+            }
+#endif
+            // Build BranchState structures from the unified hypergraph
+            std::vector<bh::BranchState> branch_states;
+            uint32_t num_states = hg.num_states();
+
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                bh::BranchState bs;
+                bs.state_id = sid;
+                bs.branch_id = 0;  // TODO: Get actual branch ID from multiway structure
+                bs.step = state.step;
+
+                // Collect all unique vertices in this state
+                std::unordered_set<bh::VertexId> vertex_set;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    for (size_t i = 0; i < edge.arity; ++i) {
+                        vertex_set.insert(edge.vertices[i]);
+                    }
+                });
+                bs.vertices.assign(vertex_set.begin(), vertex_set.end());
+
+                // Collect edges
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    const unified::Edge& edge = hg.get_edge(eid);
+                    if (edge.arity == 2) {
+                        bs.edges.push_back({edge.vertices[0], edge.vertices[1]});
+                    }
+                });
+
+                branch_states.push_back(std::move(bs));
+            }
+
+            if (!branch_states.empty()) {
+                // Build branchial graph and analyze
+                bh::BranchialConfig config;
+                auto branchial_graph = bh::build_branchial_graph(branch_states, config);
+
+                // Compute Hilbert space analysis
+                if (hilbert_step >= 0) {
+                    hilbert_result = bh::analyze_hilbert_space(branchial_graph, static_cast<uint32_t>(hilbert_step));
+                } else {
+                    hilbert_result = bh::analyze_hilbert_space_full(branchial_graph);
+                }
+                has_hilbert_data = (hilbert_result.num_states > 0);
+            }
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Hilbert space analysis complete. Analyzed "
+                    << hilbert_result.num_states << " states, "
+                    << hilbert_result.num_vertices << " vertices";
                 print_to_frontend(libData, oss.str());
             }
 #endif
@@ -2335,6 +2698,211 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             topo_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
 
             full_result.push_back({wxf::Value("TopologicalData"), wxf::Value(topo_data)});
+        }
+
+        // CurvatureData -> Association["PerState" -> {...}]
+        // Each state: state_id -> {"OllivierRicci" -> {...}, "DimensionGradient" -> {...}, "MeanCurvature" -> float}
+        if (compute_curvature && (!state_ollivier_ricci.empty() || !state_dimension_gradient.empty())) {
+            wxf::ValueAssociation curv_data;
+
+            // Per-state curvatures
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, curv_map] : state_mean_curvature) {
+                wxf::ValueAssociation state_data;
+
+                // Ollivier-Ricci per-vertex
+                auto or_it = state_ollivier_ricci.find(sid);
+                if (or_it != state_ollivier_ricci.end() && !or_it->second.empty()) {
+                    wxf::ValueAssociation or_assoc;
+                    for (const auto& [v, curv] : or_it->second) {
+                        or_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                           wxf::Value(static_cast<double>(curv))});
+                    }
+                    state_data.push_back({wxf::Value("OllivierRicci"), wxf::Value(or_assoc)});
+                }
+
+                // Dimension gradient per-vertex
+                auto dg_it = state_dimension_gradient.find(sid);
+                if (dg_it != state_dimension_gradient.end() && !dg_it->second.empty()) {
+                    wxf::ValueAssociation dg_assoc;
+                    for (const auto& [v, curv] : dg_it->second) {
+                        dg_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                           wxf::Value(static_cast<double>(curv))});
+                    }
+                    state_data.push_back({wxf::Value("DimensionGradient"), wxf::Value(dg_assoc)});
+                }
+
+                // Mean curvature
+                state_data.push_back({wxf::Value("MeanCurvature"),
+                                     wxf::Value(static_cast<double>(curv_map))});
+
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+            }
+            curv_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            full_result.push_back({wxf::Value("CurvatureData"), wxf::Value(curv_data)});
+        }
+
+        // EntropyData -> Association["PerState" -> {...}]
+        // Each state: state_id -> {"DegreeEntropy" -> float, "GraphEntropy" -> float, ...}
+        if (compute_entropy && !state_degree_entropy.empty()) {
+            wxf::ValueAssociation ent_data;
+
+            // Per-state entropy
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, deg_ent] : state_degree_entropy) {
+                wxf::ValueAssociation state_data;
+
+                state_data.push_back({wxf::Value("DegreeEntropy"),
+                                     wxf::Value(static_cast<double>(deg_ent))});
+
+                auto ge_it = state_graph_entropy.find(sid);
+                if (ge_it != state_graph_entropy.end()) {
+                    state_data.push_back({wxf::Value("GraphEntropy"),
+                                         wxf::Value(static_cast<double>(ge_it->second))});
+                }
+
+                // Local entropy per-vertex
+                auto le_it = state_local_entropy.find(sid);
+                if (le_it != state_local_entropy.end() && !le_it->second.empty()) {
+                    wxf::ValueAssociation le_assoc;
+                    for (const auto& [v, ent] : le_it->second) {
+                        le_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                           wxf::Value(static_cast<double>(ent))});
+                    }
+                    state_data.push_back({wxf::Value("LocalEntropy"), wxf::Value(le_assoc)});
+                }
+
+                // Mutual info per-vertex
+                auto mi_it = state_mutual_info.find(sid);
+                if (mi_it != state_mutual_info.end() && !mi_it->second.empty()) {
+                    wxf::ValueAssociation mi_assoc;
+                    for (const auto& [v, mi] : mi_it->second) {
+                        mi_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                           wxf::Value(static_cast<double>(mi))});
+                    }
+                    state_data.push_back({wxf::Value("MutualInfo"), wxf::Value(mi_assoc)});
+                }
+
+                // Fisher info per-vertex
+                auto fi_it = state_fisher_info.find(sid);
+                if (fi_it != state_fisher_info.end() && !fi_it->second.empty()) {
+                    wxf::ValueAssociation fi_assoc;
+                    for (const auto& [v, fi] : fi_it->second) {
+                        fi_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
+                                           wxf::Value(static_cast<double>(fi))});
+                    }
+                    state_data.push_back({wxf::Value("FisherInfo"), wxf::Value(fi_assoc)});
+                }
+
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+            }
+            ent_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            full_result.push_back({wxf::Value("EntropyData"), wxf::Value(ent_data)});
+        }
+
+        // RotationData -> Association["PerState" -> {...}]
+        // Each state: state_id -> {"Curve" -> [...], "PowerLawExponent" -> float, ...}
+        if (compute_rotation_curve && !state_rotation_curves.empty()) {
+            wxf::ValueAssociation rot_data;
+
+            // Per-state rotation curves
+            wxf::ValueAssociation per_state;
+            for (const auto& [sid, rot_result] : state_rotation_curves) {
+                wxf::ValueAssociation state_data;
+
+                // Center vertex
+                state_data.push_back({wxf::Value("Center"),
+                                     wxf::Value(static_cast<int64_t>(rot_result.center))});
+
+                // Power law fit parameters
+                state_data.push_back({wxf::Value("PowerLawExponent"),
+                                     wxf::Value(static_cast<double>(rot_result.power_law_exponent))});
+                state_data.push_back({wxf::Value("FitResidual"),
+                                     wxf::Value(static_cast<double>(rot_result.fit_residual))});
+
+                // Flat rotation detection
+                state_data.push_back({wxf::Value("HasFlatRotation"),
+                                     wxf::Value(rot_result.has_flat_rotation)});
+                state_data.push_back({wxf::Value("FlatRegionStart"),
+                                     wxf::Value(static_cast<double>(rot_result.flat_region_start))});
+                state_data.push_back({wxf::Value("FlatnessScore"),
+                                     wxf::Value(static_cast<double>(rot_result.flatness_score))});
+
+                // Curve data points
+                wxf::ValueList curve_list;
+                for (const auto& pt : rot_result.curve) {
+                    wxf::ValueAssociation pt_assoc;
+                    pt_assoc.push_back({wxf::Value("Radius"),
+                                       wxf::Value(static_cast<int64_t>(pt.radius))});
+                    pt_assoc.push_back({wxf::Value("OrbitalVelocity"),
+                                       wxf::Value(static_cast<double>(pt.orbital_velocity))});
+                    pt_assoc.push_back({wxf::Value("ExpectedVelocity"),
+                                       wxf::Value(static_cast<double>(pt.expected_velocity))});
+                    pt_assoc.push_back({wxf::Value("Deviation"),
+                                       wxf::Value(static_cast<double>(pt.deviation))});
+                    curve_list.push_back(wxf::Value(pt_assoc));
+                }
+                state_data.push_back({wxf::Value("Curve"), wxf::Value(curve_list)});
+
+                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+            }
+            rot_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+
+            full_result.push_back({wxf::Value("RotationData"), wxf::Value(rot_data)});
+        }
+
+        // HilbertSpaceData -> Association with inner products and vertex probabilities
+        if (has_hilbert_data) {
+            wxf::ValueAssociation hilbert_data;
+
+            // Statistics
+            hilbert_data.push_back({wxf::Value("NumStates"),
+                                   wxf::Value(static_cast<int64_t>(hilbert_result.num_states))});
+            hilbert_data.push_back({wxf::Value("NumVertices"),
+                                   wxf::Value(static_cast<int64_t>(hilbert_result.num_vertices))});
+            hilbert_data.push_back({wxf::Value("MeanInnerProduct"),
+                                   wxf::Value(static_cast<double>(hilbert_result.mean_inner_product))});
+            hilbert_data.push_back({wxf::Value("MaxInnerProduct"),
+                                   wxf::Value(static_cast<double>(hilbert_result.max_inner_product))});
+            hilbert_data.push_back({wxf::Value("MeanVertexProbability"),
+                                   wxf::Value(static_cast<double>(hilbert_result.mean_vertex_probability))});
+            hilbert_data.push_back({wxf::Value("VertexProbabilityEntropy"),
+                                   wxf::Value(static_cast<double>(hilbert_result.vertex_probability_entropy))});
+
+            // Vertex probabilities: vertex_id -> probability
+            wxf::ValueAssociation vertex_probs;
+            for (const auto& [vid, prob] : hilbert_result.vertex_probabilities) {
+                vertex_probs.push_back({wxf::Value(static_cast<int64_t>(vid)),
+                                       wxf::Value(static_cast<double>(prob))});
+            }
+            hilbert_data.push_back({wxf::Value("VertexProbabilities"), wxf::Value(vertex_probs)});
+
+            // Inner product matrix (as list of lists for efficient transfer)
+            wxf::ValueList ip_matrix;
+            for (const auto& row : hilbert_result.inner_product_matrix) {
+                wxf::ValueList row_list;
+                for (float val : row) {
+                    row_list.push_back(wxf::Value(static_cast<double>(val)));
+                }
+                ip_matrix.push_back(wxf::Value(row_list));
+            }
+            hilbert_data.push_back({wxf::Value("InnerProductMatrix"), wxf::Value(ip_matrix)});
+
+            // State indices (for mapping matrix rows/columns to state IDs)
+            wxf::ValueList state_ids;
+            for (uint32_t sid : hilbert_result.state_indices) {
+                state_ids.push_back(wxf::Value(static_cast<int64_t>(sid)));
+            }
+            hilbert_data.push_back({wxf::Value("StateIndices"), wxf::Value(state_ids)});
+
+            full_result.push_back({wxf::Value("HilbertSpaceData"), wxf::Value(hilbert_data)});
+        }
+
+        // Topology -> String (for metadata)
+        if (!topology_type.empty() && topology_type != "Flat") {
+            full_result.push_back({wxf::Value("Topology"), wxf::Value(topology_type)});
         }
 
         // Write final association
