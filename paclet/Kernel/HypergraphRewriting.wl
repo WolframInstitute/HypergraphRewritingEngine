@@ -74,7 +74,16 @@ Options[HGEvolveV2] = {
   "RotationSamplesPerRadius" -> 20,  (* Geodesics per radius *)
   (* Hilbert Space Analysis Options - state bitvector inner products *)
   "HilbertSpaceAnalysis" -> False,  (* True: compute Hilbert space analysis *)
-  "HilbertStep" -> -1  (* Step to analyze: -1 = final, or specific step *)
+  "HilbertStep" -> -1,  (* Step to analyze: -1 = final, or specific step *)
+  (* Branchial Analysis Options - distribution sharpness and branch entropy *)
+  "BranchialAnalysis" -> False,  (* True: compute branchial analysis *)
+  (* Multispace Analysis Options - vertex/edge probabilities across branches *)
+  "MultispaceAnalysis" -> False,  (* True: compute multispace analysis *)
+  (* Initial Condition Options - alternative to InitialEdges *)
+  "InitialCondition" -> "Edges",  (* "Edges" (use provided), "Sprinkling" (Minkowski causal set) *)
+  "SprinklingDensity" -> 500,  (* Number of spacetime points for sprinkling *)
+  "SprinklingTimeExtent" -> 10.0,  (* Time dimension extent *)
+  "SprinklingSpatialExtent" -> 10.0  (* Spatial dimension extent *)
 };
 
 Begin["`Private`"]
@@ -137,7 +146,9 @@ propertyRequirementsBase = <|
   "CurvatureData" -> {},
   "EntropyData" -> {},
   "RotationData" -> {},
-  "HilbertSpaceData" -> {}
+  "HilbertSpaceData" -> {},
+  "BranchialData" -> {},
+  "MultispaceData" -> {}
 |>;
 
 (* Compute union of required data for a list of properties *)
@@ -158,7 +169,7 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
 computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
   computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
 
-HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, All.";
+HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, All.";
 HGEvolveV2::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 
 (* ============================================================================ *)
@@ -577,7 +588,16 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     "RotationSamplesPerRadius" -> OptionValue["RotationSamplesPerRadius"],
     (* Hilbert space analysis *)
     "HilbertSpaceAnalysis" -> OptionValue["HilbertSpaceAnalysis"],
-    "HilbertStep" -> OptionValue["HilbertStep"]
+    "HilbertStep" -> OptionValue["HilbertStep"],
+    (* Branchial analysis *)
+    "BranchialAnalysis" -> OptionValue["BranchialAnalysis"],
+    (* Multispace analysis *)
+    "MultispaceAnalysis" -> OptionValue["MultispaceAnalysis"],
+    (* Initial condition (sprinkling) *)
+    "InitialCondition" -> OptionValue["InitialCondition"],
+    "SprinklingDensity" -> OptionValue["SprinklingDensity"],
+    "SprinklingTimeExtent" -> OptionValue["SprinklingTimeExtent"],
+    "SprinklingSpatialExtent" -> OptionValue["SprinklingSpatialExtent"]
   |>;
 
   (* Convert rules to Association *)
@@ -688,6 +708,18 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
     <||>
   ];
 
+  (* Branchial data - distribution sharpness and branch entropy *)
+  branchialData = If[OptionValue["BranchialAnalysis"] && KeyExistsQ[wxfData, "BranchialData"],
+    wxfData["BranchialData"],
+    <||>
+  ];
+
+  (* Multispace data - vertex/edge probabilities across branches *)
+  multispaceData = If[OptionValue["MultispaceAnalysis"] && KeyExistsQ[wxfData, "MultispaceData"],
+    wxfData["MultispaceData"],
+    <||>
+  ];
+
   (* Dimension coloring options *)
   dimPalette = OptionValue["DimensionPalette"];
   dimColorBy = OptionValue["DimensionColorBy"];
@@ -697,15 +729,15 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
   (* Return requested properties *)
   If[Length[props] == 1,
     (* Single property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData],
     (* Multiple properties: return association *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData] & /@ props]
   ]
 ]
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, rotationData_:<||>, hilbertData_:<||>] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, rotationData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -745,6 +777,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       If[Length[entropyData] > 0, result = Append[result, "EntropyData" -> entropyData]];
       If[Length[rotationData] > 0, result = Append[result, "RotationData" -> rotationData]];
       If[Length[hilbertData] > 0, result = Append[result, "HilbertSpaceData" -> hilbertData]];
+      If[Length[branchialData] > 0, result = Append[result, "BranchialData" -> branchialData]];
+      If[Length[multispaceData] > 0, result = Append[result, "MultispaceData" -> multispaceData]];
       result
     ],
     "DimensionData", dimensionData,
@@ -754,6 +788,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     "EntropyData", entropyData,
     "RotationData", rotationData,
     "HilbertSpaceData", hilbertData,
+    "BranchialData", branchialData,
+    "MultispaceData", multispaceData,
     _, $Failed
   ]
 ]

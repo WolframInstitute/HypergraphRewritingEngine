@@ -31,6 +31,7 @@ add_library(HypergraphRewriting SHARED ${SOURCES})
 target_link_libraries(HypergraphRewriting
     hypergraph
     wxf
+    viz_blackhole
 )
 
 # Include directories

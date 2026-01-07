@@ -3207,6 +3207,11 @@ void print_usage() {
     std::cout << "  --embed-3d        Use 3D topological embedding (torus/sphere/cylinder in 3D)" << std::endl;
     std::cout << "  --layout-3d       Use 3D force-directed layout (vs 2D)" << std::endl;
     std::cout << std::endl;
+    std::cout << "MINKOWSKI SPRINKLING OPTIONS:" << std::endl;
+    std::cout << "  --sprinkling N    Generate N-point Minkowski sprinkling (causal set)" << std::endl;
+    std::cout << "  --sprinkling-time T   Time extent (default: 10.0)" << std::endl;
+    std::cout << "  --sprinkling-space S  Spatial extent (default: 10.0)" << std::endl;
+    std::cout << std::endl;
     std::cout << "ANALYSIS OPTIONS (for run, generate, analyze):" << std::endl;
     std::cout << "  --max-radius N    Max radius for ball counting (default: 8)" << std::endl;
     std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
@@ -3521,6 +3526,12 @@ int main(int argc, char* argv[]) {
     bool enable_entropy = false;   // Enable entropy analysis
     bool enable_rotation = false;  // Enable rotation curve analysis
 
+    // Minkowski sprinkling options
+    bool use_sprinkling = false;      // Use sprinkling instead of grid/brill
+    int sprinkling_n = 500;           // Number of spacetime points
+    float sprinkling_time = 10.0f;    // Time extent
+    float sprinkling_space = 10.0f;   // Spatial extent
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "view") {
@@ -3655,6 +3666,15 @@ int main(int argc, char* argv[]) {
             // Enable rotation curve analysis
             enable_rotation = true;
         }
+        // Minkowski sprinkling options
+        else if (arg == "--sprinkling" && i + 1 < argc) {
+            use_sprinkling = true;
+            sprinkling_n = std::stoi(argv[++i]);
+        } else if (arg == "--sprinkling-time" && i + 1 < argc) {
+            sprinkling_time = std::stof(argv[++i]);
+        } else if (arg == "--sprinkling-space" && i + 1 < argc) {
+            sprinkling_space = std::stof(argv[++i]);
+        }
     }
 
     // Auto-enable 3D embedding for curved topologies when using 3D layout
@@ -3751,7 +3771,23 @@ int main(int argc, char* argv[]) {
 
         BHInitialCondition initial;
 
-        if (use_new_topology) {
+        if (use_sprinkling) {
+            // Minkowski sprinkling (causal set approximation to flat spacetime)
+            std::cout << "Generating Minkowski sprinkling..." << std::endl;
+            SprinklingConfig sconfig;
+            sconfig.spatial_dim = 2;
+            sconfig.time_extent = sprinkling_time;
+            sconfig.spatial_extent = sprinkling_space;
+            sconfig.transitivity_reduction = true;
+            sconfig.seed = 0;  // Random seed
+
+            auto sprinkling = generate_minkowski_sprinkling(sprinkling_n, sconfig);
+            initial = sprinkling_to_initial_condition(sprinkling);
+
+            std::cout << "  Sprinkling: " << sprinkling_n << " points, "
+                      << sprinkling.causal_edges.size() << " causal edges" << std::endl;
+            std::cout << "  Dimension estimate: " << sprinkling.dimension_estimate << std::endl;
+        } else if (use_new_topology) {
             // Use new topology-aware generation
             TopologyConfig topo_config;
             topo_config.type = topology;
@@ -4090,7 +4126,23 @@ int main(int argc, char* argv[]) {
 
         BHInitialCondition initial;
 
-        if (use_new_topology) {
+        if (use_sprinkling) {
+            // Minkowski sprinkling (causal set approximation to flat spacetime)
+            std::cout << "Generating Minkowski sprinkling..." << std::endl;
+            SprinklingConfig sconfig;
+            sconfig.spatial_dim = 2;
+            sconfig.time_extent = sprinkling_time;
+            sconfig.spatial_extent = sprinkling_space;
+            sconfig.transitivity_reduction = true;
+            sconfig.seed = 0;  // Random seed
+
+            auto sprinkling = generate_minkowski_sprinkling(sprinkling_n, sconfig);
+            initial = sprinkling_to_initial_condition(sprinkling);
+
+            std::cout << "  Sprinkling: " << sprinkling_n << " points, "
+                      << sprinkling.causal_edges.size() << " causal edges" << std::endl;
+            std::cout << "  Dimension estimate: " << sprinkling.dimension_estimate << std::endl;
+        } else if (use_new_topology) {
             // Use new topology-aware generation
             TopologyConfig topo_config;
             topo_config.type = topology;
@@ -5211,6 +5263,7 @@ int main(int argc, char* argv[]) {
     ColorPalette current_palette = ColorPalette::Temperature;  // Color palette for heatmap
     EdgeColorMode edge_color_mode = EdgeColorMode::Vertex;  // How to color edges
     bool show_states_graph = false;  // Show multiway states graph panel (toggle with B)
+    bool show_multispace = false;     // Show multispace probability overlay (toggle with X)
     bool path_selection_enabled = false;  // Filter to N random paths/states (toggle with A)
     int path_selection_count = 1;         // Number of paths/states to select
     std::vector<std::vector<int>> selected_state_indices;  // Per-timestep selected state indices
@@ -5311,6 +5364,7 @@ int main(int argc, char* argv[]) {
             {"M", "MSAA level", [&]{ return msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF"; }},
             {"R", "Reset camera", nullptr},
             {"B", "States graph", [&]{ return show_states_graph ? "ON" : "OFF"; }},
+            {"X", "Multispace overlay", [&]{ return show_multispace ? "ON" : "OFF"; }},
             {"A", "Path selection", [&]{
                 // Path selection only applicable for Branchial mode
                 if (dim_source != DimensionSource::Branchial) return std::string("(N/A)");
@@ -5903,6 +5957,16 @@ int main(int argc, char* argv[]) {
             case platform::KeyCode::Slash:  // / or ? - Toggle help overlay
                 show_overlay = !show_overlay;
                 std::cout << "Help overlay: " << (show_overlay ? "ON" : "OFF") << std::endl;
+                break;
+
+            case platform::KeyCode::X:  // Toggle multispace probability overlay
+                show_multispace = !show_multispace;
+                std::cout << "Multispace overlay: " << (show_multispace ? "ON" : "OFF");
+                if (show_multispace && analysis.states_per_step.empty()) {
+                    std::cout << " [Requires Branchial mode data]";
+                }
+                std::cout << std::endl;
+                geometry_dirty = true;
                 break;
 
             case platform::KeyCode::Minus:

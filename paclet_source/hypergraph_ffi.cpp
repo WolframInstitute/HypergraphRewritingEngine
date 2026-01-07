@@ -37,6 +37,7 @@
 #include "blackhole/entropy_analysis.hpp"
 #include "blackhole/rotation_analysis.hpp"
 #include "blackhole/branchial_analysis.hpp"
+#include "blackhole/bh_initial_condition.hpp"
 
 using namespace hypergraph;
 
@@ -730,8 +731,20 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         bool compute_hilbert_space = false;
         int hilbert_step = -1;  // Which step to analyze (-1 = all steps)
 
+        // Branchial analysis options - distribution sharpness and branch entropy
+        bool compute_branchial = false;
+
+        // Multispace analysis options - vertex/edge probabilities across branches
+        bool compute_multispace = false;
+
         // Topology configuration (for initial condition generation)
         std::string topology_type = "Flat";
+
+        // Sprinkling configuration (for Minkowski causal set initial conditions)
+        std::string initial_condition_type = "Edges";  // "Edges" (from InitialEdges) or "Sprinkling"
+        int sprinkling_density = 500;        // Number of spacetime points
+        float sprinkling_time_extent = 10.0f;    // Time dimension extent
+        float sprinkling_spatial_extent = 10.0f; // Spatial dimension extent
 
         // Data selection flags - which components to include in output
         // By default all are included for backward compatibility
@@ -818,6 +831,14 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             hilbert_step = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "Topology") {
                             topology_type = option_parser.read<std::string>();
+                        } else if (option_key == "InitialCondition") {
+                            initial_condition_type = option_parser.read<std::string>();
+                        } else if (option_key == "SprinklingDensity") {
+                            sprinkling_density = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "SprinklingTimeExtent") {
+                            sprinkling_time_extent = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "SprinklingSpatialExtent") {
+                            sprinkling_spatial_extent = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
@@ -967,6 +988,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             } else if (option_key == "HilbertSpaceAnalysis") {
                                 // Compute Hilbert space analysis (state bitvector inner products)
                                 compute_hilbert_space = value;
+                            } else if (option_key == "BranchialAnalysis") {
+                                // Compute branchial analysis (distribution sharpness, branch entropy)
+                                compute_branchial = value;
+                            } else if (option_key == "MultispaceAnalysis") {
+                                // Compute multispace analysis (vertex/edge probabilities)
+                                compute_multispace = value;
                             }
                         }
                     } catch (...) {
@@ -981,6 +1008,46 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 value_parser.skip_value();
             }
         });
+
+        // Generate sprinkling initial condition if requested
+        if (initial_condition_type == "Sprinkling") {
+            namespace bh = viz::blackhole;
+
+            // Generate Minkowski sprinkling
+            bh::SprinklingConfig sconfig;
+            sconfig.spatial_dim = 2;
+            sconfig.time_extent = sprinkling_time_extent;
+            sconfig.spatial_extent = sprinkling_spatial_extent;
+            sconfig.transitivity_reduction = true;
+            sconfig.seed = 0;  // Could add option for this
+
+            auto sprinkling = bh::generate_minkowski_sprinkling(
+                static_cast<uint32_t>(sprinkling_density), sconfig);
+
+            // Convert sprinkling edges to initial_states_raw format
+            // Each causal edge becomes a hyperedge {from, to}
+            std::vector<std::vector<int64_t>> sprinkling_edges;
+            for (const auto& edge : sprinkling.causal_edges) {
+                std::vector<int64_t> edge_vec;
+                edge_vec.push_back(static_cast<int64_t>(edge.v1));
+                edge_vec.push_back(static_cast<int64_t>(edge.v2));
+                sprinkling_edges.push_back(edge_vec);
+            }
+
+            // Replace any provided initial states with sprinkling
+            initial_states_raw.clear();
+            initial_states_raw.push_back(sprinkling_edges);
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolveV2: Generated Minkowski sprinkling with "
+                    << sprinkling.points.size() << " points, "
+                    << sprinkling_edges.size() << " edges";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
 
         if (initial_states_raw.empty()) {
             handle_error(libData, "No initial states provided");
@@ -1709,15 +1776,26 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         }
 
         // ==========================================================================
-        // Hilbert Space Analysis - state bitvector inner products
+        // Branchial-based Analyses (Hilbert, Branchial, Multispace)
+        // Build shared BranchState structures once if any of these are needed
         // ==========================================================================
         bh::HilbertSpaceAnalysis hilbert_result;
+        bh::BranchialAnalysisResult branchial_result;
         bool has_hilbert_data = false;
+        bool has_branchial_data = false;
+        bool has_multispace_data = false;
 
-        if (compute_hilbert_space) {
+        // Shared vertex/edge probability data for multispace
+        std::unordered_map<bh::VertexId, float> multispace_vertex_probs;
+        std::map<std::pair<uint32_t, uint32_t>, float> multispace_edge_probs;
+        float multispace_mean_vertex_prob = 0.0f;
+        float multispace_mean_edge_prob = 0.0f;
+        float multispace_total_entropy = 0.0f;
+
+        if (compute_hilbert_space || compute_branchial || compute_multispace) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing Hilbert space analysis...");
+                print_to_frontend(libData, "HGEvolveV2: Building branchial structures...");
             }
 #endif
             // Build BranchState structures from the unified hypergraph
@@ -1755,25 +1833,100 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             }
 
             if (!branch_states.empty()) {
-                // Build branchial graph and analyze
+                // Build branchial graph
                 bh::BranchialConfig config;
                 auto branchial_graph = bh::build_branchial_graph(branch_states, config);
 
-                // Compute Hilbert space analysis
-                if (hilbert_step >= 0) {
-                    hilbert_result = bh::analyze_hilbert_space(branchial_graph, static_cast<uint32_t>(hilbert_step));
-                } else {
-                    hilbert_result = bh::analyze_hilbert_space_full(branchial_graph);
+                // Hilbert Space Analysis
+                if (compute_hilbert_space) {
+#ifdef HAVE_WSTP
+                    if (show_progress) {
+                        print_to_frontend(libData, "HGEvolveV2: Computing Hilbert space analysis...");
+                    }
+#endif
+                    if (hilbert_step >= 0) {
+                        hilbert_result = bh::analyze_hilbert_space(branchial_graph, static_cast<uint32_t>(hilbert_step));
+                    } else {
+                        hilbert_result = bh::analyze_hilbert_space_full(branchial_graph);
+                    }
+                    has_hilbert_data = (hilbert_result.num_states > 0);
                 }
-                has_hilbert_data = (hilbert_result.num_states > 0);
+
+                // Branchial Analysis (distribution sharpness, branch entropy)
+                if (compute_branchial) {
+#ifdef HAVE_WSTP
+                    if (show_progress) {
+                        print_to_frontend(libData, "HGEvolveV2: Computing branchial analysis...");
+                    }
+#endif
+                    branchial_result = bh::analyze_branchial(branch_states);
+                    has_branchial_data = (branchial_result.num_unique_vertices > 0);
+                }
+
+                // Multispace Analysis (vertex/edge probabilities across branches)
+                if (compute_multispace) {
+#ifdef HAVE_WSTP
+                    if (show_progress) {
+                        print_to_frontend(libData, "HGEvolveV2: Computing multispace analysis...");
+                    }
+#endif
+                    // Compute vertex probabilities (how often each vertex appears across branches)
+                    std::unordered_map<bh::VertexId, int> vertex_counts;
+                    std::map<std::pair<uint32_t, uint32_t>, int> edge_counts;
+                    int total_branches = static_cast<int>(branch_states.size());
+
+                    for (const auto& bs : branch_states) {
+                        for (bh::VertexId v : bs.vertices) {
+                            vertex_counts[v]++;
+                        }
+                        for (const auto& e : bs.edges) {
+                            auto key = std::make_pair(std::min(e.v1, e.v2), std::max(e.v1, e.v2));
+                            edge_counts[key]++;
+                        }
+                    }
+
+                    // Convert counts to probabilities
+                    float vertex_entropy_sum = 0.0f;
+                    for (const auto& [v, count] : vertex_counts) {
+                        float prob = static_cast<float>(count) / total_branches;
+                        multispace_vertex_probs[v] = prob;
+                        multispace_mean_vertex_prob += prob;
+                        // Entropy contribution: -p * log(p)
+                        if (prob > 0 && prob < 1) {
+                            vertex_entropy_sum -= prob * std::log2(prob);
+                        }
+                    }
+                    if (!vertex_counts.empty()) {
+                        multispace_mean_vertex_prob /= vertex_counts.size();
+                    }
+
+                    for (const auto& [e, count] : edge_counts) {
+                        float prob = static_cast<float>(count) / total_branches;
+                        multispace_edge_probs[e] = prob;
+                        multispace_mean_edge_prob += prob;
+                    }
+                    if (!edge_counts.empty()) {
+                        multispace_mean_edge_prob /= edge_counts.size();
+                    }
+
+                    multispace_total_entropy = vertex_entropy_sum;
+                    has_multispace_data = !multispace_vertex_probs.empty();
+                }
             }
 
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Hilbert space analysis complete. Analyzed "
-                    << hilbert_result.num_states << " states, "
-                    << hilbert_result.num_vertices << " vertices";
+                oss << "HGEvolveV2: Branchial analyses complete.";
+                if (has_hilbert_data) {
+                    oss << " Hilbert: " << hilbert_result.num_states << " states.";
+                }
+                if (has_branchial_data) {
+                    oss << " Branchial: " << branchial_result.num_unique_vertices << " vertices.";
+                }
+                if (has_multispace_data) {
+                    oss << " Multispace: " << multispace_vertex_probs.size() << " vertices.";
+                }
                 print_to_frontend(libData, oss.str());
             }
 #endif
@@ -2898,6 +3051,80 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             hilbert_data.push_back({wxf::Value("StateIndices"), wxf::Value(state_ids)});
 
             full_result.push_back({wxf::Value("HilbertSpaceData"), wxf::Value(hilbert_data)});
+        }
+
+        // BranchialData -> Association with distribution sharpness and branch entropy
+        if (has_branchial_data) {
+            wxf::ValueAssociation branchial_data;
+
+            // Statistics
+            branchial_data.push_back(std::make_pair(wxf::Value("NumUniqueVertices"),
+                                     wxf::Value(static_cast<int64_t>(branchial_result.num_unique_vertices))));
+            branchial_data.push_back(std::make_pair(wxf::Value("MeanSharpness"),
+                                     wxf::Value(static_cast<double>(branchial_result.mean_sharpness))));
+            branchial_data.push_back(std::make_pair(wxf::Value("MeanBranchEntropy"),
+                                     wxf::Value(static_cast<double>(branchial_result.mean_branch_entropy))));
+            branchial_data.push_back(std::make_pair(wxf::Value("MaxBranchesPerVertex"),
+                                     wxf::Value(static_cast<int64_t>(branchial_result.max_branches_per_vertex))));
+
+            // Per-vertex sharpness
+            wxf::ValueAssociation vertex_sharpness;
+            for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
+                vertex_sharpness.push_back(std::make_pair(wxf::Value(static_cast<int64_t>(vid)),
+                                           wxf::Value(static_cast<double>(sharpness))));
+            }
+            branchial_data.push_back(std::make_pair(wxf::Value("VertexSharpness"), wxf::Value(vertex_sharpness)));
+
+            // Delocalized vertices (vertices with sharpness < 1.0, appearing in multiple branches)
+            wxf::ValueList delocalized;
+            for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
+                if (sharpness < 1.0f) {
+                    delocalized.push_back(wxf::Value(static_cast<int64_t>(vid)));
+                }
+            }
+            branchial_data.push_back(std::make_pair(wxf::Value("DelocalizedVertices"), wxf::Value(delocalized)));
+
+            full_result.push_back(std::make_pair(wxf::Value("BranchialData"), wxf::Value(branchial_data)));
+        }
+
+        // MultispaceData -> Association with vertex/edge probabilities across branches
+        if (has_multispace_data) {
+            wxf::ValueAssociation multispace_data;
+
+            // Statistics
+            multispace_data.push_back(std::make_pair(wxf::Value("NumVertices"),
+                                      wxf::Value(static_cast<int64_t>(multispace_vertex_probs.size()))));
+            multispace_data.push_back(std::make_pair(wxf::Value("NumEdges"),
+                                      wxf::Value(static_cast<int64_t>(multispace_edge_probs.size()))));
+            multispace_data.push_back(std::make_pair(wxf::Value("MeanVertexProbability"),
+                                      wxf::Value(static_cast<double>(multispace_mean_vertex_prob))));
+            multispace_data.push_back(std::make_pair(wxf::Value("MeanEdgeProbability"),
+                                      wxf::Value(static_cast<double>(multispace_mean_edge_prob))));
+            multispace_data.push_back(std::make_pair(wxf::Value("TotalEntropy"),
+                                      wxf::Value(static_cast<double>(multispace_total_entropy))));
+
+            // Per-vertex probabilities
+            wxf::ValueAssociation vertex_probs_assoc;
+            for (const auto& [vid, prob] : multispace_vertex_probs) {
+                vertex_probs_assoc.push_back(std::make_pair(wxf::Value(static_cast<int64_t>(vid)),
+                                             wxf::Value(static_cast<double>(prob))));
+            }
+            multispace_data.push_back(std::make_pair(wxf::Value("VertexProbabilities"), wxf::Value(vertex_probs_assoc)));
+
+            // Per-edge probabilities (as list of {{v1, v2}, prob})
+            wxf::ValueList edge_probs_list;
+            for (const auto& [e, prob] : multispace_edge_probs) {
+                wxf::ValueList edge_entry;
+                wxf::ValueList edge_pair;
+                edge_pair.push_back(wxf::Value(static_cast<int64_t>(e.first)));
+                edge_pair.push_back(wxf::Value(static_cast<int64_t>(e.second)));
+                edge_entry.push_back(wxf::Value(edge_pair));
+                edge_entry.push_back(wxf::Value(static_cast<double>(prob)));
+                edge_probs_list.push_back(wxf::Value(edge_entry));
+            }
+            multispace_data.push_back(std::make_pair(wxf::Value("EdgeProbabilities"), wxf::Value(edge_probs_list)));
+
+            full_result.push_back(std::make_pair(wxf::Value("MultispaceData"), wxf::Value(multispace_data)));
         }
 
         // Topology -> String (for metadata)
