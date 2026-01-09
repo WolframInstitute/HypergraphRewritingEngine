@@ -1,16 +1,9 @@
 cmake_minimum_required(VERSION 3.14)
 
-# Create hypergraph library with canonicalization, pattern matching, rewriting, parallel rewriting and Wolfram Physics
+# Create hypergraph library
+# The unified architecture is header-only; only canonicalization needs compilation
 add_library(hypergraph
     src/canonicalization.cpp
-    src/pattern_matching.cpp
-    src/pattern_matching_tasks.cpp
-    src/rewriting.cpp
-    src/wolfram_evolution.cpp
-    src/wolfram_states.cpp
-    src/thread_local_pool.cpp
-    src/uniqueness_tree.cpp
-    # unified architecture is header-only (no .cpp files needed)
 )
 
 # Include directories
