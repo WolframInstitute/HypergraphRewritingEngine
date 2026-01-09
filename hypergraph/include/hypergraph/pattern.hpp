@@ -206,7 +206,7 @@ public:
         rule_.index = index;
     }
 
-    // Add LHS edge
+    // Add LHS edge (initializer list)
     RuleBuilder& lhs(std::initializer_list<uint8_t> vars) {
         if (rule_.num_lhs_edges < MAX_PATTERN_EDGES) {
             rule_.lhs[rule_.num_lhs_edges++] = PatternEdge(vars);
@@ -214,10 +214,38 @@ public:
         return *this;
     }
 
-    // Add RHS edge
+    // Add LHS edge (vector - for dynamic construction)
+    template<typename T>
+    RuleBuilder& lhs(const std::vector<T>& vars) {
+        if (rule_.num_lhs_edges < MAX_PATTERN_EDGES) {
+            PatternEdge edge;
+            edge.arity = static_cast<uint8_t>(std::min(vars.size(), size_t(MAX_ARITY)));
+            for (uint8_t i = 0; i < edge.arity; ++i) {
+                edge.vars[i] = static_cast<uint8_t>(vars[i]);
+            }
+            rule_.lhs[rule_.num_lhs_edges++] = edge;
+        }
+        return *this;
+    }
+
+    // Add RHS edge (initializer list)
     RuleBuilder& rhs(std::initializer_list<uint8_t> vars) {
         if (rule_.num_rhs_edges < MAX_PATTERN_EDGES) {
             rule_.rhs[rule_.num_rhs_edges++] = PatternEdge(vars);
+        }
+        return *this;
+    }
+
+    // Add RHS edge (vector - for dynamic construction)
+    template<typename T>
+    RuleBuilder& rhs(const std::vector<T>& vars) {
+        if (rule_.num_rhs_edges < MAX_PATTERN_EDGES) {
+            PatternEdge edge;
+            edge.arity = static_cast<uint8_t>(std::min(vars.size(), size_t(MAX_ARITY)));
+            for (uint8_t i = 0; i < edge.arity; ++i) {
+                edge.vars[i] = static_cast<uint8_t>(vars[i]);
+            }
+            rule_.rhs[rule_.num_rhs_edges++] = edge;
         }
         return *this;
     }

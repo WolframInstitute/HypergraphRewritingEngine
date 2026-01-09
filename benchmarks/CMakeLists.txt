@@ -83,7 +83,6 @@ add_executable(benchmark_suite
     job_system_benchmarks.cpp
     wxf_benchmarks.cpp
     wolfram_integration_benchmark.cpp
-    v1_v2_3_comparison_benchmarks.cpp
 )
 
 target_link_libraries(benchmark_suite PRIVATE benchmark_framework wxf)
