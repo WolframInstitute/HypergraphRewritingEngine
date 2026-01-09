@@ -20,7 +20,7 @@ protected:
 // === BASIC FUNCTIONALITY TESTS ===
 
 TEST_F(UnifiedMultipleInitialStatesTest, TwoInitialStates) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
 
@@ -37,7 +37,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, TwoInitialStates) {
 }
 
 TEST_F(UnifiedMultipleInitialStatesTest, ThreeInitialStates) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
 
@@ -55,7 +55,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, ThreeInitialStates) {
 }
 
 TEST_F(UnifiedMultipleInitialStatesTest, SingleStateViaMultiStateAPI) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
 
@@ -73,7 +73,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, SingleStateViaMultiStateAPI) {
 // === EDGE CASE TESTS ===
 
 TEST_F(UnifiedMultipleInitialStatesTest, EmptyStatesList) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
 
@@ -87,7 +87,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, EmptyStatesList) {
 }
 
 TEST_F(UnifiedMultipleInitialStatesTest, StateWithNoMatches) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());  // Rule matches binary edges
 
@@ -106,7 +106,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, StateWithNoMatches) {
 // === EVOLUTION BEHAVIOR TESTS ===
 
 TEST_F(UnifiedMultipleInitialStatesTest, MultiStepEvolution) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_test_rule());
 
@@ -136,7 +136,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, DeterministicBehavior) {
     std::set<size_t> state_counts, event_counts;
 
     for (int run = 0; run < 3; ++run) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
         engine.add_rule(create_test_rule());
         engine.evolve(initial_states, 2);
@@ -168,7 +168,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, MultiEdgeRuleWithMultipleInitialStates)
 
     // Test 2 steps
     {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
         engine.add_rule(rule);
         engine.evolve(initial_states, 2);
@@ -182,7 +182,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, MultiEdgeRuleWithMultipleInitialStates)
 
     // Test 3 steps
     {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
         engine.add_rule(rule);
         engine.evolve(initial_states, 3);

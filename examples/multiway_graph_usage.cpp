@@ -1,14 +1,14 @@
 /**
  * Multiway Graph Usage Example
  *
- * Demonstrates multiway system evolution using the unified API:
+ * Demonstrates multiway system evolution using the API:
  * - Multiple rules creating branching evolution
  * - Exploring the causal graph structure
  * - Analyzing states and events
  */
 
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <iostream>
 #include <thread>
 
@@ -24,7 +24,7 @@ int main() {
     std::cout << "Creating evolution system (" << nSteps << " steps, "
               << nThreads << " threads)...\n\n";
 
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, nThreads);
 
     // Rule 1: {{x,y,z}} -> {{x,y},{x,z},{x,w}}

@@ -2,7 +2,7 @@
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
 #include "hypergraph/bitset.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/causal_graph.hpp"
 #include <vector>
@@ -157,7 +157,7 @@ TEST(Unified_CausalGraph, BranchialEdgeManual) {
 // =============================================================================
 
 TEST(Unified_Rewriter, SingleRewrite_CausalTracking) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state with edge {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -195,7 +195,7 @@ TEST(Unified_Rewriter, SingleRewrite_CausalTracking) {
 }
 
 TEST(Unified_Rewriter, ChainedRewrites_CausalChain) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial edge {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -249,7 +249,7 @@ TEST(Unified_Rewriter, ChainedRewrites_CausalChain) {
 }
 
 TEST(Unified_Rewriter, ParallelRewrites_BranchialEdges) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state with two edges: {0, 1}, {1, 2}
     VertexId v0 = hg.alloc_vertex();
@@ -289,7 +289,7 @@ TEST(Unified_Rewriter, ParallelRewrites_BranchialEdges) {
 }
 
 TEST(Unified_Rewriter, OverlappingRewrites_BranchialEdges) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state with one edge: {0, 1}
     VertexId v0 = hg.alloc_vertex();
@@ -337,7 +337,7 @@ TEST(Unified_Rewriter, OverlappingRewrites_BranchialEdges) {
 }
 
 TEST(Unified_Rewriter, TwoEdgeRule_CausalTracking) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state with edges forming a path: {0, 1}, {1, 2}
     VertexId v0 = hg.alloc_vertex();
@@ -425,7 +425,7 @@ TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
 // =============================================================================
 
 TEST(Unified_UniquenessTree, CanonicalHash_EmptyState) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     SparseBitset empty_edges;
 
     uint64_t hash = hg.compute_canonical_hash(empty_edges);
@@ -433,7 +433,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_EmptyState) {
 }
 
 TEST(Unified_UniquenessTree, CanonicalHash_SingleEdge) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     VertexId v0 = hg.alloc_vertex();
     VertexId v1 = hg.alloc_vertex();
@@ -447,7 +447,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_SingleEdge) {
 }
 
 TEST(Unified_UniquenessTree, CanonicalHash_IsomorphicStates) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
     VertexId v0 = hg.alloc_vertex();
@@ -486,7 +486,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_IsomorphicStates) {
 }
 
 TEST(Unified_UniquenessTree, CanonicalHash_NonIsomorphicStates) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
     VertexId v0 = hg.alloc_vertex();
@@ -526,7 +526,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_NonIsomorphicStates) {
 }
 
 TEST(Unified_UniquenessTree, CanonicalHash_SelfLoop) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // State 1: Self-loop at vertex 0
     VertexId v0 = hg.alloc_vertex();
@@ -550,7 +550,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_SelfLoop) {
 }
 
 TEST(Unified_UniquenessTree, CanonicalInfo_VertexClasses) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create a star graph: center vertex 0 connected to 1, 2, 3
     VertexId v0 = hg.alloc_vertex();  // Center
@@ -601,7 +601,7 @@ TEST(Unified_UniquenessTree, CanonicalInfo_VertexClasses) {
 TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     // Test that events from isomorphic states consuming corresponding edges
     // are identified as the same canonical event.
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);  // Enable state canonicalization
     hg.set_event_signature_keys(EVENT_SIG_FULL);  // Enable full event canonicalization
 
@@ -680,7 +680,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
 
 TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
     // Test that events consuming non-corresponding edges have different canonical events.
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     hg.set_event_signature_keys(EVENT_SIG_FULL);
 
     // Create state with two edges
@@ -733,7 +733,7 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
 
 TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
     // Test that events with different rules have different canonical events.
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     // Include Rule in signature so different rules produce different canonical events
     hg.set_event_signature_keys(EVENT_SIG_FULL | EventKey_Rule);
 
@@ -770,7 +770,7 @@ TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
 
 TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
     // Test that with EVENT_SIG_NONE, all events are canonical.
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     hg.set_event_signature_keys(EVENT_SIG_NONE);  // No canonicalization
 
     VertexId v0 = hg.alloc_vertex();

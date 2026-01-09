@@ -2,7 +2,7 @@
 
 #include "benchmark_framework.hpp"
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <thread>
 
 using namespace hypergraph;
@@ -19,7 +19,7 @@ BENCHMARK(evolution_multi_rule_by_rule_count, "Tests evolution performance with 
         BENCHMARK_PARAM("num_rules", num_rules);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Rule 1: {x,y} -> {x,z},{z,y}
@@ -73,7 +73,7 @@ BENCHMARK(evolution_thread_scaling, "Evaluates parallel speedup from 1 thread up
         BENCHMARK_PARAM("num_threads", static_cast<int>(num_threads));
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Rule: {x,y} -> {x,y},{y,z}
@@ -106,7 +106,7 @@ BENCHMARK(evolution_2d_sweep_threads_steps, "2D sweep: evolution with rule {{x,y
             BENCHMARK_PARAM("steps", steps);
 
             BENCHMARK_CODE([&]() {
-                UnifiedHypergraph hg;
+                Hypergraph hg;
                 ParallelEvolutionEngine engine(&hg, num_threads);
 
                 // Rule: {{x,y},{y,z}} -> {{z,y},{y,x},{x,w}}
@@ -136,7 +136,7 @@ BENCHMARK(evolution_with_self_loops, "Tests evolution performance on hypergraphs
         std::vector<std::vector<VertexId>> initial = {{1, 1, 1}, {1, 1}};
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Rule: {x,x,x} -> {x,x},{x,y}

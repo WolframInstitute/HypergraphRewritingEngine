@@ -3,7 +3,7 @@
 #include "benchmark_framework.hpp"
 #include "random_hypergraph_generator.hpp"
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <thread>
 
 using namespace hypergraph;
@@ -26,7 +26,7 @@ BENCHMARK(pattern_matching_by_lhs_size, "Tests evolution performance with increa
         }
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Build rule with lhs_edges edges in LHS
@@ -66,7 +66,7 @@ BENCHMARK(pattern_matching_by_graph_size, "Evaluates pattern matching scalabilit
         }
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Simple 2-edge pattern
@@ -104,7 +104,7 @@ BENCHMARK(pattern_matching_2d_sweep_threads_size, "2D parameter sweep of evoluti
             }
 
             BENCHMARK_CODE([&]() {
-                UnifiedHypergraph hg;
+                Hypergraph hg;
                 ParallelEvolutionEngine engine(&hg, num_threads);
 
                 auto rule = make_rule(0)
@@ -148,7 +148,7 @@ BENCHMARK(pattern_matching_by_arity, "Tests pattern matching with different edge
         }
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, num_threads);
 
             // Build LHS pattern with specified arity

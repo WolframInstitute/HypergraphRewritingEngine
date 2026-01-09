@@ -2,7 +2,7 @@
 
 #include "benchmark_framework.hpp"
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 
 using namespace hypergraph;
 using namespace benchmark;
@@ -18,7 +18,7 @@ BENCHMARK(causal_edges_by_steps, "Measures causal edge count growth as evolution
         BENCHMARK_PARAM("steps", steps);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, 4);
 
             // Rule: {x,y} -> {x,y},{y,z}
@@ -44,7 +44,7 @@ BENCHMARK(branchial_edges_by_steps, "Measures branchial edge count growth as evo
         BENCHMARK_PARAM("steps", steps);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, 4);
 
             auto rule = make_rule(0)
@@ -69,7 +69,7 @@ BENCHMARK(causal_graph_retrieval, "Measures causal graph edge retrieval performa
         BENCHMARK_PARAM("steps", steps);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, 4);
 
             auto rule = make_rule(0)
@@ -98,7 +98,7 @@ BENCHMARK(event_signature_modes, "Compares event signature computation modes") {
         BENCHMARK_PARAM("mode", mode_name);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_event_signature_keys(mode);
             ParallelEvolutionEngine engine(&hg, 1);
 

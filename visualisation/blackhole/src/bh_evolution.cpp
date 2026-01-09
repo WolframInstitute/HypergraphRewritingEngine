@@ -293,7 +293,7 @@ EvolutionResult EvolutionRunner::run_evolution(
     report_progress("Initializing", 0.0f);
 
     // Create fresh hypergraph and engine
-    hypergraph_ = std::make_unique<hypergraph::UnifiedHypergraph>();
+    hypergraph_ = std::make_unique<hypergraph::Hypergraph>();
     engine_ = std::make_unique<hypergraph::ParallelEvolutionEngine>(
         hypergraph_.get(), num_threads_
     );
@@ -1171,7 +1171,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 // =============================================================================
 
 SimpleGraph state_to_simple_graph(
-    const hypergraph::UnifiedHypergraph& hg,
+    const hypergraph::Hypergraph& hg,
     hypergraph::StateId state_id
 ) {
     const auto& state = hg.get_state(state_id);

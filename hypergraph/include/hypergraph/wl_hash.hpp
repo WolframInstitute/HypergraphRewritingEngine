@@ -21,7 +21,7 @@ namespace hypergraph {
 // =============================================================================
 //
 // This implements WL (color refinement) style hashing, NOT uniqueness trees.
-// For true Gorard-style uniqueness trees, see unified_uniqueness_tree.hpp.
+// For true Gorard-style uniqueness trees, see uniqueness_tree.hpp.
 //
 // WL hashing works by:
 // 1. Assigning initial colors based on vertex degree/position structure
@@ -42,7 +42,7 @@ namespace hypergraph {
 // EventSignature, FNV constants) are defined in types.hpp
 
 // Forward declarations
-class UnifiedHypergraph;
+class Hypergraph;
 
 // =============================================================================
 // WLHash: Main class

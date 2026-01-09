@@ -16,7 +16,7 @@
 namespace hypergraph {
 
 // =============================================================================
-// UnifiedUniquenessTree: Gorard-style Uniqueness Trees for Unified Hypergraph
+// UniquenessTree: Gorard-style Uniqueness Trees for hypergraph
 // =============================================================================
 //
 // Based on Gorard (2016) "Uniqueness Trees: A Possible Polynomial Approach to
@@ -40,14 +40,14 @@ namespace hypergraph {
 // EventSignature, FNV constants) are defined in types.hpp
 
 // =============================================================================
-// UnifiedUniquenessTree: The main class
+// UniquenessTree: The main class
 // =============================================================================
 
-class UnifiedUniquenessTree {
+class UniquenessTree {
 public:
     static constexpr uint32_t MAX_TREE_DEPTH = 100;
 
-    explicit UnifiedUniquenessTree(ConcurrentHeterogeneousArena* arena)
+    explicit UniquenessTree(ConcurrentHeterogeneousArena* arena)
         : arena_(arena) {}
 
     // Abort flag for early termination of long-running hash computations
@@ -57,7 +57,7 @@ public:
     }
 
     // =========================================================================
-    // Edge Registration (called when edges are added to unified hypergraph)
+    // Edge Registration (called when edges are added to hypergraph)
     // =========================================================================
 
     void register_edge(EdgeId edge_id, const VertexId* vertices, uint8_t arity) {

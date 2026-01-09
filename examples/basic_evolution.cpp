@@ -1,14 +1,14 @@
 /**
  * Basic Evolution Example
  *
- * Demonstrates simple hypergraph evolution using the unified API:
+ * Demonstrates simple hypergraph evolution using the API:
  * - Creating evolution rules with make_rule()
  * - Running evolution steps
  * - Analyzing results (states, events)
  */
 
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <iostream>
 
 using namespace hypergraph;
@@ -21,7 +21,7 @@ int main() {
     std::cout << "  Threads: 4\n";
     std::cout << "  Steps: 4\n\n";
 
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
 
     // Create rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}

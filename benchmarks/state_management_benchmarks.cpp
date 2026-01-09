@@ -2,7 +2,7 @@
 
 #include "benchmark_framework.hpp"
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 
 using namespace hypergraph;
 using namespace benchmark;
@@ -18,7 +18,7 @@ BENCHMARK(state_storage_by_steps, "Measures state storage and retrieval overhead
         std::vector<std::vector<VertexId>> initial = {{1, 2}};
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, 1);
 
             // Rule: {x,y} -> {x,y},{y,z}
@@ -45,7 +45,7 @@ BENCHMARK(state_canonicalization_modes, "Compares evolution performance with dif
         BENCHMARK_PARAM("mode", mode_name);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(mode);
             ParallelEvolutionEngine engine(&hg, 1);
 
@@ -70,7 +70,7 @@ BENCHMARK(state_count_by_steps, "Tracks how state count grows with evolution ste
         std::vector<std::vector<VertexId>> initial = {{1, 2}, {2, 3}};
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             ParallelEvolutionEngine engine(&hg, 4);
 
             auto rule = make_rule(0)

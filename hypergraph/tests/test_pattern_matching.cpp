@@ -6,7 +6,7 @@
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/index.hpp"
 #include "hypergraph/pattern_matcher.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include <vector>
 #include <set>
@@ -492,11 +492,11 @@ TEST(Unified_Index, InvertedIndex_MultipleVertices) {
 }
 
 // =============================================================================
-// UnifiedHypergraph Tests
+// Hypergraph Tests
 // =============================================================================
 
 TEST(Unified_Hypergraph, CreateEdgesAndState) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create edges
     EdgeId e0 = hg.create_edge({0, 1});
@@ -529,7 +529,7 @@ TEST(Unified_Hypergraph, CreateEdgesAndState) {
 }
 
 TEST(Unified_Hypergraph, VertexAllocation) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Allocate vertices
     VertexId v0 = hg.alloc_vertex();
@@ -547,7 +547,7 @@ TEST(Unified_Hypergraph, VertexAllocation) {
 }
 
 TEST(Unified_Hypergraph, PatternMatchingOnHypergraph) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create triangle: {0,1}, {1,2}, {2,0}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -584,7 +584,7 @@ TEST(Unified_Hypergraph, PatternMatchingOnHypergraph) {
 // =============================================================================
 
 TEST(Unified_Rewriter, SimpleRewrite) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state: {0, 1}, {1, 2}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -629,7 +629,7 @@ TEST(Unified_Rewriter, SimpleRewrite) {
 }
 
 TEST(Unified_Rewriter, RewriteWithFreshVertex) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Reserve vertices 0, 1, 2
     hg.reserve_vertices(2);
@@ -672,7 +672,7 @@ TEST(Unified_Rewriter, RewriteWithFreshVertex) {
 }
 
 TEST(Unified_Rewriter, EventCreation) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Create initial state
     EdgeId e0 = hg.create_edge({0, 1});
@@ -711,7 +711,7 @@ TEST(Unified_Rewriter, EventCreation) {
 // =============================================================================
 
 TEST(Unified_Integration, SingleStepEvolution) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     // Enable canonicalization for this test
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_event_signature_keys(EVENT_SIG_FULL);
@@ -789,7 +789,7 @@ TEST(Unified_Integration, SingleStepEvolution) {
 }
 
 TEST(Unified_Integration, MultiStepEvolution) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Initial state: single edge {0, 1}
     EdgeId e0 = hg.create_edge({0, 1});
@@ -859,7 +859,7 @@ TEST(Unified_Integration, MultiStepEvolution) {
 }
 
 TEST(Unified_Integration, SelfLoopEvolution) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
 
     // Initial state with self-loop and regular edge: {0,0}, {0,1}
     EdgeId e0 = hg.create_edge({0, 0});  // Self-loop

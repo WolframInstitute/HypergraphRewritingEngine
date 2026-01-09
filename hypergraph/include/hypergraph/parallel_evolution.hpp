@@ -16,7 +16,7 @@
 #include "types.hpp"
 #include "arena.hpp"
 #include "bitset.hpp"
-#include "unified_hypergraph.hpp"
+#include "hypergraph.hpp"
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
 #include "rewriter.hpp"
@@ -333,13 +333,13 @@ struct ParentInfo {
 // - NEW matches must involve at least one newly produced edge
 //
 // Thread safety model (LOCK-FREE):
-// - UnifiedHypergraph uses lock-free data structures
+// - Hypergraph uses lock-free data structures
 // - ConcurrentHeterogeneousArena for thread-safe allocation
 // - Match deduplication uses ConcurrentMap (lock-free)
 // - State tracking uses ConcurrentMap (lock-free)
 
 class ParallelEvolutionEngine {
-    UnifiedHypergraph* hg_;
+    Hypergraph* hg_;
     Rewriter rewriter_;
 
     // Rules
@@ -481,7 +481,7 @@ public:
         , rewriter_(nullptr)
     {}
 
-    explicit ParallelEvolutionEngine(UnifiedHypergraph* hg, size_t num_threads = 0)
+    explicit ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads = 0)
         : hg_(hg)
         , rewriter_(hg)
         , num_threads_(num_threads > 0 ? num_threads : std::thread::hardware_concurrency())

@@ -8,7 +8,7 @@
 #include "types.hpp"
 #include "signature.hpp"
 #include "pattern.hpp"
-#include "unified_hypergraph.hpp"
+#include "hypergraph.hpp"
 #include "hypergraph/debug_log.hpp"
 
 namespace hypergraph {
@@ -58,10 +58,10 @@ struct RewriteResult {
 // Thread safety: Fully thread-safe. Multiple rewrites can execute concurrently.
 
 class Rewriter {
-    UnifiedHypergraph* hg_;
+    Hypergraph* hg_;
 
 public:
-    explicit Rewriter(UnifiedHypergraph* hg) : hg_(hg) {}
+    explicit Rewriter(Hypergraph* hg) : hg_(hg) {}
 
     // Apply a match to create a new state
     RewriteResult apply(
@@ -283,7 +283,7 @@ public:
 
 // Apply a rewrite rule directly to a state with given matched edges
 inline RewriteResult apply_rewrite(
-    UnifiedHypergraph& hg,
+    Hypergraph& hg,
     const RewriteRule& rule,
     StateId input_state,
     const EdgeId* matched_edges,

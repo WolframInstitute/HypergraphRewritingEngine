@@ -146,22 +146,22 @@ create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
     # Core tests
-    test_unified_simple.cpp
+    test_simple.cpp
     test_canonicalization.cpp
     test_wxf.cpp
     test_paclet.cpp
     test_grid_performance.cpp
     test_repeated_invocation.cpp
     # Evolution and pattern matching
-    ../hypergraph/tests/test_unified_pattern_matching.cpp
-    ../hypergraph/tests/test_unified_parallel_evolution.cpp
-    ../hypergraph/tests/test_unified_multiple_initial_states.cpp
-    ../hypergraph/tests/test_unified_evolution_limits.cpp
+    ../hypergraph/tests/test_pattern_matching.cpp
+    ../hypergraph/tests/test_parallel_evolution.cpp
+    ../hypergraph/tests/test_multiple_initial_states.cpp
+    ../hypergraph/tests/test_evolution_limits.cpp
     # Causal/branchial graph tests
-    ../hypergraph/tests/test_unified_causal_branchial.cpp
-    ../hypergraph/tests/test_unified_event_canonicalization.cpp
+    ../hypergraph/tests/test_causal_branchial.cpp
+    ../hypergraph/tests/test_event_canonicalization.cpp
     # Determinism and stress tests
-    ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
 )
@@ -172,7 +172,7 @@ create_test_executable(all_tests
 create_test_executable(core_tests
     main.cpp
     test_helpers.hpp
-    test_unified_simple.cpp
+    test_simple.cpp
     test_canonicalization.cpp
     test_wxf.cpp
 )
@@ -183,10 +183,10 @@ create_test_executable(core_tests
 create_test_executable(evolution_tests
     main.cpp
     test_helpers.hpp
-    ../hypergraph/tests/test_unified_pattern_matching.cpp
-    ../hypergraph/tests/test_unified_parallel_evolution.cpp
-    ../hypergraph/tests/test_unified_multiple_initial_states.cpp
-    ../hypergraph/tests/test_unified_evolution_limits.cpp
+    ../hypergraph/tests/test_pattern_matching.cpp
+    ../hypergraph/tests/test_parallel_evolution.cpp
+    ../hypergraph/tests/test_multiple_initial_states.cpp
+    ../hypergraph/tests/test_evolution_limits.cpp
 )
 
 # =============================================================================
@@ -195,8 +195,8 @@ create_test_executable(evolution_tests
 create_test_executable(causal_tests
     main.cpp
     test_helpers.hpp
-    ../hypergraph/tests/test_unified_causal_branchial.cpp
-    ../hypergraph/tests/test_unified_event_canonicalization.cpp
+    ../hypergraph/tests/test_causal_branchial.cpp
+    ../hypergraph/tests/test_event_canonicalization.cpp
 )
 
 # =============================================================================
@@ -205,7 +205,7 @@ create_test_executable(causal_tests
 create_test_executable(stress_tests
     main.cpp
     test_helpers.hpp
-    ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     test_grid_performance.cpp
     test_repeated_invocation.cpp

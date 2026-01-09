@@ -11,7 +11,7 @@
 #include <thread>
 
 // CPU unified includes (C++20)
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <hypergraph/parallel_evolution.hpp>
 #include <hypergraph/pattern.hpp>
 #include <job_system/job_system.hpp>
@@ -86,7 +86,7 @@ BenchmarkResult run_cpu_evolution(
         num_threads = std::thread::hardware_concurrency();
     }
 
-    v2::UnifiedHypergraph hg;
+    v2::Hypergraph hg;
     v2::ParallelEvolutionEngine engine(&hg, num_threads);
 
     auto rule = build_cpu_rule(lhs, rhs);
@@ -120,7 +120,7 @@ BenchmarkResult run_cpu_evolution_multi(
         num_threads = std::thread::hardware_concurrency();
     }
 
-    v2::UnifiedHypergraph hg;
+    v2::Hypergraph hg;
     v2::ParallelEvolutionEngine engine(&hg, num_threads);
 
     for (const auto& [lhs, rhs] : rules) {

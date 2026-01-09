@@ -20,7 +20,7 @@
 // Engine headers (only included when HYPERGRAPH_ENABLE_VISUALIZATION is defined)
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #endif
 
 #include <iostream>
@@ -164,7 +164,7 @@ private:
         std::cout << "[Evolution] VizEventSink active: " << (viz::VizEventSink::is_active() ? "YES" : "NO") << std::endl;
 
         // Create hypergraph and engine
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         // Enable state canonicalization for equivalencing (isomorphic states merge)
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         ParallelEvolutionEngine engine(&hg);  // 4 worker threads

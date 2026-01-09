@@ -22,7 +22,7 @@ namespace hypergraph {
 // - add_edge: Called by rewrite tasks when creating new edges
 // - get_candidates: Called by match tasks during candidate generation
 //
-// The index stores all edges from the unified hypergraph. Queries filter
+// The index stores all edges from the hypergraph. Queries filter
 // by state (SparseBitset) to get edges present in a specific state.
 
 class SignatureIndex {
@@ -37,7 +37,7 @@ public:
     SignatureIndex& operator=(const SignatureIndex&) = delete;
 
     // Add edge to the index
-    // Called when edge is created in unified hypergraph
+    // Called when edge is created in hypergraph
     void add_edge(EdgeId eid, const EdgeSignature& sig, ConcurrentHeterogeneousArena& arena) {
         uint64_t hash = sig.hash();
 
@@ -194,7 +194,7 @@ public:
     InvertedVertexIndex& operator=(const InvertedVertexIndex&) = delete;
 
     // Add edge to the index
-    // Called when edge is created in unified hypergraph
+    // Called when edge is created in hypergraph
     void add_edge(
         EdgeId eid,
         const VertexId* vertices,

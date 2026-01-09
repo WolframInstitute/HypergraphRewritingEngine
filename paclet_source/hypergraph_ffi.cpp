@@ -15,7 +15,7 @@
 #include <mutex>
 
 // Include unified engine headers
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/debug_log.hpp"
@@ -633,8 +633,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             return LIBRARY_FUNCTION_ERROR;
         }
 
-        // Create unified hypergraph
-        hypergraph::UnifiedHypergraph hg;
+        // Create hypergraph
+        hypergraph::Hypergraph hg;
 
         // Set hash strategy
         if (hash_strategy == "WL") {
@@ -1372,7 +1372,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 print_to_frontend(libData, "HGEvolveV2: Building branchial structures...");
             }
 #endif
-            // Build BranchState structures from the unified hypergraph
+            // Build BranchState structures from the hypergraph
             std::vector<bh::BranchState> branch_states;
             uint32_t num_states = hg.num_states();
 

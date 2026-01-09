@@ -81,7 +81,7 @@ struct VariableBinding {
 // =============================================================================
 // Edge
 // =============================================================================
-// Represents a hyperedge in the unified hypergraph.
+// Represents a hyperedge in the hypergraph.
 // Immutable after creation except for equiv_class (atomic update for Level 2).
 // Allocated from arena.
 
@@ -204,7 +204,7 @@ struct Event {
 // =============================================================================
 // State
 // =============================================================================
-// Represents a state in the multiway system - a view into the unified hypergraph.
+// Represents a state in the multiway system - a view into the hypergraph.
 // The SparseBitset tracks which edges are present in this state.
 // Immutable after creation.
 // Allocated from arena.
@@ -386,14 +386,14 @@ struct StateBranchialInfo {
 // =============================================================================
 // There are THREE orthogonal modes that control multiway evolution behavior:
 //
-// 1. StateCanonicalizationMode (UnifiedHypergraph):
+// 1. StateCanonicalizationMode (Hypergraph):
 //    - Controls state BOOKKEEPING - which states are considered equivalent
 //    - None: Pure tree mode, each state is unique (no equivalence checking)
 //    - Automatic: Content hash (fast, not isomorphism-invariant)
 //    - Full: Isomorphism-invariant hash (WL/UT)
 //    - Affects: num_canonical_states(), get_canonical_state(), was_new_state
 //
-// 2. EventSignatureKeys (UnifiedHypergraph):
+// 2. EventSignatureKeys (Hypergraph):
 //    - Controls event BOOKKEEPING - which events are considered equivalent
 //    - Affects: canonical_event_id, event multiplicity counting
 //    - Independent of state mode (always uses isomorphism hashes internally)

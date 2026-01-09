@@ -8,7 +8,7 @@
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
 #include "hypergraph/bitset.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -47,7 +47,7 @@ protected:
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps
     ) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         hg->set_event_signature_keys(v2::EVENT_SIG_AUTOMATIC);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);  // single thread for determinism
 
@@ -380,7 +380,7 @@ protected:
     ) {
         auto start = std::chrono::high_resolution_clock::now();
 
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         hg->set_hash_strategy(strategy);
         hg->set_event_signature_keys(mode);
         v2::ParallelEvolutionEngine engine(hg.get(), 1);
@@ -501,7 +501,7 @@ protected:
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps
     ) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         hg->set_hash_strategy(v2::HashStrategy::IncrementalUniquenessTree);
         hg->set_event_signature_keys(v2::EVENT_SIG_FULL);
         hg->reset_incremental_tree_stats();

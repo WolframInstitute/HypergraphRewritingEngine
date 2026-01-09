@@ -14,7 +14,7 @@ namespace benchmark {
  * Seed is computed from input parameters for reproducibility
  *
  * Generates hypergraph edges as vector<vector<VertexId>> for use with
- * the unified API (canonicalize_edges, evolve, etc.)
+ * the API (canonicalize_edges, evolve, etc.)
  */
 class RandomHypergraphGenerator {
 public:

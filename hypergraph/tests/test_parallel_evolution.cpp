@@ -40,7 +40,7 @@ static RewriteRule par_branching_rule() {
 // =============================================================================
 
 TEST(Unified_ParallelEvolution, BasicConstruction) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);  // 2 threads
 
     EXPECT_EQ(engine.num_threads(), 2);
@@ -49,7 +49,7 @@ TEST(Unified_ParallelEvolution, BasicConstruction) {
 }
 
 TEST(Unified_ParallelEvolution, SimpleRule_OneStep) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
 
     engine.add_rule(par_simple_rule());
@@ -66,7 +66,7 @@ TEST(Unified_ParallelEvolution, SimpleRule_OneStep) {
 }
 
 TEST(Unified_ParallelEvolution, SimpleRule_TwoSteps) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
 
     engine.add_rule(par_simple_rule());
@@ -89,7 +89,7 @@ TEST(Unified_ParallelEvolution, Determinism_SimpleRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
 
         engine.add_rule(par_simple_rule());
@@ -111,7 +111,7 @@ TEST(Unified_ParallelEvolution, Determinism_TwoEdgeRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
 
         engine.add_rule(par_two_edge_rule());
@@ -133,7 +133,7 @@ TEST(Unified_ParallelEvolution, Determinism_BranchingRule) {
     std::set<size_t> event_counts;
 
     for (int run = 0; run < 10; ++run) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 4);
 
         engine.add_rule(par_branching_rule());
@@ -160,7 +160,7 @@ TEST(Unified_ParallelEvolution, DifferentThreadCounts) {
     size_t reference_events = 0;
 
     for (size_t threads : {1, 2, 4, 8}) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, threads);
         engine.add_rule(par_simple_rule());
         engine.evolve(initial, 3);

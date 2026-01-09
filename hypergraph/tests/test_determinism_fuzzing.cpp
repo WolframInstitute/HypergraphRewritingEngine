@@ -7,7 +7,7 @@
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
 #include "hypergraph/bitset.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -73,7 +73,7 @@ protected:
         size_t steps,
         size_t num_threads = 0  // 0 = use hardware_concurrency
     ) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
 
         // Test with multiple threads (or default to hardware_concurrency)
         v2::ParallelEvolutionEngine engine(hg.get(), num_threads);
@@ -501,7 +501,7 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
     std::set<size_t> unique_invalidated;
 
     for (int i = 0; i < 20; ++i) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         v2::ParallelEvolutionEngine engine(hg.get(), 4);
         engine.add_rule(rule);
         engine.evolve(initial, 3);

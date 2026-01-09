@@ -8,7 +8,7 @@
 
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -71,7 +71,7 @@ protected:
         v2::HashStrategy hash_strategy,
         v2::EventSignatureKeys event_keys
     ) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         hg->set_hash_strategy(hash_strategy);
         hg->set_event_signature_keys(event_keys);
         hg->reset_incremental_tree_stats();

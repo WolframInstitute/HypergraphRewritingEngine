@@ -16,10 +16,10 @@
 namespace hypergraph {
 
 // =============================================================================
-// IncrementalUnifiedUniquenessTree: Incremental Gorard-style Uniqueness Trees
+// IncrementalUniquenessTree: Incremental Gorard-style Uniqueness Trees
 // =============================================================================
 //
-// This is an INCREMENTAL version of UnifiedUniquenessTree that caches:
+// This is an INCREMENTAL version of UniquenessTree that caches:
 // 1. Persistent adjacency index (updated incrementally on edge add/remove)
 // 2. Per-vertex subtree hashes (invalidated only when local neighborhood changes)
 // 3. Dirty vertex tracking (only recompute affected vertices)
@@ -31,9 +31,9 @@ namespace hypergraph {
 // within MAX_TREE_DEPTH hops of those edges need their subtree hashes recomputed.
 //
 
-class IncrementalUnifiedUniquenessTree {
+class IncrementalUniquenessTree {
 public:
-    // Must match UnifiedUniquenessTree::MAX_TREE_DEPTH for correct hash values!
+    // Must match UniquenessTree::MAX_TREE_DEPTH for correct hash values!
     // The incremental benefit comes from sparse graphs with disconnected components,
     // not from reduced depth.
     static constexpr uint32_t MAX_TREE_DEPTH = 100;
@@ -49,7 +49,7 @@ public:
     //
     // This gives O(affected_subtree_size) work instead of O(entire_graph).
 
-    explicit IncrementalUnifiedUniquenessTree(ConcurrentHeterogeneousArena* arena)
+    explicit IncrementalUniquenessTree(ConcurrentHeterogeneousArena* arena)
         : arena_(arena) {}
 
     // Abort flag for early termination of long-running hash computations
@@ -59,7 +59,7 @@ public:
     }
 
     // =========================================================================
-    // Edge Registration (called when edges are added to unified hypergraph)
+    // Edge Registration (called when edges are added to hypergraph)
     // =========================================================================
 
     void register_edge(EdgeId edge_id, const VertexId* vertices, uint8_t arity) {
@@ -369,7 +369,7 @@ public:
     // =========================================================================
     // Incremental computation with external adjacency provider (PREFERRED)
     // =========================================================================
-    // This version uses an external adjacency provider (e.g., UnifiedHypergraph's
+    // This version uses an external adjacency provider (e.g., Hypergraph's
     // global vertex_adjacency_ index) instead of the internal vertex_occurrences_.
     // This enables true global adjacency without per-strategy duplication.
     //
@@ -1620,7 +1620,7 @@ private:
     // =========================================================================
     // Tree Hash Computation - EXTERNAL ADJACENCY PROVIDER VERSION
     // =========================================================================
-    // Uses an external adjacency provider (e.g., UnifiedHypergraph::vertex_adjacency_)
+    // Uses an external adjacency provider (e.g., Hypergraph::vertex_adjacency_)
     // instead of the internal vertex_occurrences_. Provider must support:
     //   provider.for_each_occurrence(vertex, [](const EdgeOccurrence& occ) { ... });
 
@@ -2097,7 +2097,7 @@ private:
     // Tree Hash Computation - ITERATIVE VERSION
     // =========================================================================
     // Uses explicit stack instead of recursion to avoid per-call allocations.
-    // Matches UnifiedUniquenessTree::compute_tree_hash exactly.
+    // Matches UniquenessTree::compute_tree_hash exactly.
 
     // Stack frame for iterative DFS
     struct DFSFrame {

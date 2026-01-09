@@ -1,13 +1,13 @@
 /**
  * Basic Hypergraph Usage Example
  *
- * Demonstrates fundamental hypergraph operations using the unified API:
+ * Demonstrates fundamental hypergraph operations using the API:
  * - Creating states with edges
  * - Querying graph structure
  * - Iterating over edges and vertices
  */
 
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <iostream>
 #include <set>
 
@@ -17,11 +17,11 @@ int main() {
     std::cout << "=== Basic Hypergraph Usage Example ===\n\n";
 
     // Create a hypergraph
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     std::cout << "Created empty hypergraph\n";
     std::cout << "Initial states: " << hg.num_states() << ", edges: " << hg.num_edges() << "\n\n";
 
-    // In the unified API, edges belong to states. Let's create a state with some edges.
+    // In the API, edges belong to states. Let's create a state with some edges.
     std::cout << "Creating initial state with edges:\n";
 
     // Create edges directly using internal methods

@@ -1,14 +1,14 @@
 /**
  * Pattern Matching Example
  *
- * Demonstrates hypergraph pattern matching using the unified API:
+ * Demonstrates hypergraph pattern matching using the API:
  * - Creating patterns (rules) with variables
  * - Using the evolution engine to find and apply matches
  * - Understanding rule syntax with make_rule()
  */
 
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <hypergraph/pattern_matcher.hpp>
 #include <iostream>
 
@@ -18,7 +18,7 @@ int main() {
     std::cout << "=== Pattern Matching Example ===\n\n";
 
     // Create hypergraph
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 1);  // Single thread for determinism
 
     // Target hypergraph: triangle {1,2}, {2,3}, {3,1} + extra edge {4,5}
@@ -29,7 +29,7 @@ int main() {
     std::vector<std::vector<VertexId>> initial_edges = {{1, 2}, {2, 3}, {3, 1}, {4, 5}};
 
     // Create pattern: two connected edges {x, y}, {y, z}
-    // In unified API, patterns are defined as rules
+    // In API, patterns are defined as rules
     std::cout << "Creating pattern: {x, y}, {y, z} where x=0, y=1, z=2 are variables\n";
     std::cout << "This pattern matches two edges sharing a common vertex.\n\n";
 
@@ -65,7 +65,7 @@ int main() {
     std::cout << "Now demonstrating pattern matching with transformation:\n";
     std::cout << "Rule: {x,y},{y,z} -> {x,y},{y,z},{z,x} (close the triangle)\n\n";
 
-    UnifiedHypergraph hg2;
+    Hypergraph hg2;
     ParallelEvolutionEngine engine2(&hg2, 1);
 
     auto close_triangle_rule = make_rule(0)

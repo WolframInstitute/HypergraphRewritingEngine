@@ -16,8 +16,8 @@
 #include "segmented_array.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
-#include "unified_uniqueness_tree.hpp"
-#include "incremental_unified_uniqueness_tree.hpp"
+#include "uniqueness_tree.hpp"
+#include "incremental_uniqueness_tree.hpp"
 #include "wl_hash.hpp"
 #include "concurrent_map.hpp"
 
@@ -99,12 +99,12 @@ private:
 };
 
 // =============================================================================
-// UnifiedHypergraph
+// Hypergraph
 // =============================================================================
 // Central storage for all hypergraph data in the multiway system.
 //
 // Key design principles:
-// - All edges are stored once (unified storage)
+// - All edges are stored once (shared storage)
 // - States are SparseBitset views over the edge pool
 // - Thread-safe allocation via atomic counters
 // - Arena allocation for cache-friendly memory layout
@@ -115,7 +115,7 @@ private:
 // - Index updates: Lock-free via ConcurrentMap and LockFreeList
 // - Reading: Always safe (immutable after creation)
 
-class UnifiedHypergraph {
+class Hypergraph {
     // Global ID counters (thread-safe)
     GlobalCounters counters_;
 
@@ -181,7 +181,7 @@ class UnifiedHypergraph {
     // Global Vertex Adjacency Index
     // ==========================================================================
     // Maps each vertex to the list of edges it appears in, with position info.
-    // This is THE canonical adjacency structure for the entire unified hypergraph.
+    // This is THE canonical adjacency structure for the entire hypergraph.
     //
     // Thread safety: Append-only via LockFreeList. Edges are immutable after
     // creation, so once registered here, entries never change or get removed.
@@ -191,8 +191,8 @@ class UnifiedHypergraph {
     SegmentedArray<LockFreeList<EdgeOccurrence>> vertex_adjacency_;
 
     // Hash strategy implementations
-    std::unique_ptr<UnifiedUniquenessTree> unified_tree_;                 // Gorard-style uniqueness trees
-    std::unique_ptr<IncrementalUnifiedUniquenessTree> incremental_tree_;  // Incremental version
+    std::unique_ptr<UniquenessTree> unified_tree_;                 // Gorard-style uniqueness trees
+    std::unique_ptr<IncrementalUniquenessTree> incremental_tree_;  // Incremental version
     std::unique_ptr<WLHash> wl_hash_;                                     // Weisfeiler-Lehman hashing
     HashStrategy hash_strategy_{HashStrategy::WL}; // UT-Inc with cached adjacency
 
@@ -220,17 +220,17 @@ class UnifiedHypergraph {
     std::mutex genesis_state_mutex_;
 
 public:
-    UnifiedHypergraph()
-        : unified_tree_(std::make_unique<UnifiedUniquenessTree>(&arena_))
-        , incremental_tree_(std::make_unique<IncrementalUnifiedUniquenessTree>(&arena_))
+    Hypergraph()
+        : unified_tree_(std::make_unique<UniquenessTree>(&arena_))
+        , incremental_tree_(std::make_unique<IncrementalUniquenessTree>(&arena_))
         , wl_hash_(std::make_unique<WLHash>(&arena_))
     {
         causal_graph_.set_arena(&arena_);
     }
 
     // Non-copyable
-    UnifiedHypergraph(const UnifiedHypergraph&) = delete;
-    UnifiedHypergraph& operator=(const UnifiedHypergraph&) = delete;
+    Hypergraph(const Hypergraph&) = delete;
+    Hypergraph& operator=(const Hypergraph&) = delete;
 
     // =========================================================================
     // Vertex Management
@@ -375,9 +375,9 @@ public:
 
     // Helper class to provide indexed access to edge vertices
     class EdgeVertexAccessor {
-        const UnifiedHypergraph* hg_;
+        const Hypergraph* hg_;
     public:
-        explicit EdgeVertexAccessor(const UnifiedHypergraph* hg) : hg_(hg) {}
+        explicit EdgeVertexAccessor(const Hypergraph* hg) : hg_(hg) {}
         const VertexId* operator[](EdgeId eid) const {
             return hg_->edge_vertices(eid);
         }
@@ -385,9 +385,9 @@ public:
 
     // Helper class to provide indexed access to edge arities
     class EdgeArityAccessor {
-        const UnifiedHypergraph* hg_;
+        const Hypergraph* hg_;
     public:
-        explicit EdgeArityAccessor(const UnifiedHypergraph* hg) : hg_(hg) {}
+        explicit EdgeArityAccessor(const Hypergraph* hg) : hg_(hg) {}
         uint8_t operator[](EdgeId eid) const {
             return hg_->edge_arity(eid);
         }
@@ -405,9 +405,9 @@ public:
     // This creates a temporary vector of vertex pointers for UniquenessTree
     // Optimized accessor: direct access without caching overhead
     class EdgeVertexAccessorRaw {
-        const UnifiedHypergraph* hg_;
+        const Hypergraph* hg_;
     public:
-        explicit EdgeVertexAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {}
+        explicit EdgeVertexAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
 
         const VertexId* operator[](EdgeId eid) const {
             return hg_->edges_[eid].vertices;  // Direct access
@@ -417,9 +417,9 @@ public:
     // Optimized accessor: direct access without caching overhead
     // edge_arity() is already O(1), caching added more overhead than it saved
     class EdgeArityAccessorRaw {
-        const UnifiedHypergraph* hg_;
+        const Hypergraph* hg_;
     public:
-        explicit EdgeArityAccessorRaw(const UnifiedHypergraph* hg) : hg_(hg) {}
+        explicit EdgeArityAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
 
         uint8_t operator[](EdgeId eid) const {
             return hg_->edges_[eid].arity;  // Direct access, no function call
@@ -476,11 +476,11 @@ public:
 
     // Adjacency provider wrapper for use with hash strategies
     // This wraps the global adjacency index into an object that can be passed
-    // to IncrementalUnifiedUniquenessTree's external adjacency methods
+    // to IncrementalUniquenessTree's external adjacency methods
     class GlobalAdjacencyProvider {
-        const UnifiedHypergraph* hg_;
+        const Hypergraph* hg_;
     public:
-        explicit GlobalAdjacencyProvider(const UnifiedHypergraph* hg) : hg_(hg) {}
+        explicit GlobalAdjacencyProvider(const Hypergraph* hg) : hg_(hg) {}
 
         template<typename F>
         void for_each_occurrence(VertexId v, F&& f) const {
@@ -885,7 +885,7 @@ public:
             return state.canonical_hash;
         }
 
-        // Compute hash on-demand using unified dispatch
+        // Compute hash on-demand using hash dispatch
         auto [hash, cache] = compute_hash_with_cache_dispatch(state.edges);
 
         // Cache the hash for future use (not thread-safe, but hash is idempotent)
@@ -1025,7 +1025,7 @@ public:
                 const State& out_state = get_state(output_state);
                 const State& canonical_in_state = get_state(canonical_input);
 
-                // Compute edge correspondence using unified dispatch
+                // Compute edge correspondence using hash dispatch
                 EdgeCorrespondence input_correspondence = find_edge_correspondence_dispatch(
                     in_state.edges, canonical_in_state.edges);
                 EdgeCorrespondence output_correspondence = find_edge_correspondence_dispatch(
@@ -1587,12 +1587,12 @@ public:
         // Pairs with release fence in create_edge after edge construction.
         std::atomic_thread_fence(std::memory_order_acquire);
 
-        // Use unified dispatch
+        // Use hash dispatch
         auto [hash, cache] = compute_hash_with_cache_dispatch(edges);
         return hash;
     }
 
-    // Compute canonical hash using UnifiedUniquenessTree (polynomial-time, approximate)
+    // Compute canonical hash using UniquenessTree (polynomial-time, approximate)
     // This is faster but may have rare false positives/negatives
     uint64_t compute_canonical_hash_wl(const SparseBitset& edges) {
         // Delegate to compute_canonical_hash_shared

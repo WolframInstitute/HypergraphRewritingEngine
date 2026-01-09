@@ -18,7 +18,7 @@ static RewriteRule create_growth_rule() {
 
 // Test 1: Max Successors Per Parent - Hard Limit
 TEST(UnifiedEvolutionLimits, MaxSuccessorsPerParentHardLimit) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(1);  // HARD LIMIT
@@ -35,7 +35,7 @@ TEST(UnifiedEvolutionLimits, MaxSuccessorsPerParentHardLimit) {
 
 // Test 2: Max States Per Step - Hard Limit
 TEST(UnifiedEvolutionLimits, MaxStatesPerStepHardLimit) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
     engine.set_max_states_per_step(3);  // HARD LIMIT: max 3 states at any step
@@ -57,7 +57,7 @@ TEST(UnifiedEvolutionLimits, RandomExplorationProbability) {
     // Run with p=0.5 for 2+ steps - the effect is seen in subsequent steps
     std::vector<size_t> event_counts;
     for (int trial = 0; trial < 20; ++trial) {
-        UnifiedHypergraph hg;
+        Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, 1);  // Single thread for determinism
         engine.add_rule(create_growth_rule());
         engine.set_exploration_probability(0.5);  // 50% chance
@@ -77,7 +77,7 @@ TEST(UnifiedEvolutionLimits, RandomExplorationProbability) {
 
 // Test 4: Combined Limits
 TEST(UnifiedEvolutionLimits, CombinedLimitsInteraction) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(2);  // Max 2 successors per parent
@@ -93,7 +93,7 @@ TEST(UnifiedEvolutionLimits, CombinedLimitsInteraction) {
 
 // Test 5: Edge Cases - Unlimited (defaults)
 TEST(UnifiedEvolutionLimits, UnlimitedDefaults) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
     // Default values: 0 = unlimited, 1.0 = always explore
@@ -108,7 +108,7 @@ TEST(UnifiedEvolutionLimits, UnlimitedDefaults) {
 // Note: With p=0, step 1 events ARE created (initial state is always explored),
 // but the resulting states won't be explored further (step 2+ skipped)
 TEST(UnifiedEvolutionLimits, ExplorationProbabilityZero) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 1);
     engine.add_rule(create_growth_rule());
     engine.set_exploration_probability(0.0);  // Reject all exploration
@@ -120,7 +120,7 @@ TEST(UnifiedEvolutionLimits, ExplorationProbabilityZero) {
     size_t events_step1 = hg.num_events();
 
     // Now compare with p=1.0 to verify the difference
-    UnifiedHypergraph hg2;
+    Hypergraph hg2;
     ParallelEvolutionEngine engine2(&hg2, 1);
     engine2.add_rule(create_growth_rule());
     engine2.set_exploration_probability(1.0);  // Always explore
@@ -134,7 +134,7 @@ TEST(UnifiedEvolutionLimits, ExplorationProbabilityZero) {
 
 // Test 7: Limit = 1 (degenerate case)
 TEST(UnifiedEvolutionLimits, LimitOfOne) {
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_growth_rule());
     engine.set_max_successor_states_per_parent(1);  // Only 1 successor allowed
@@ -155,7 +155,7 @@ TEST(UnifiedEvolutionLimits, EarlyTerminationWithLimits) {
         .rhs({1, 0})
         .build();
 
-    UnifiedHypergraph hg;
+    Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(rule);
     engine.set_max_successor_states_per_parent(2);

@@ -5,7 +5,7 @@
 #include "hausdorff_analysis.hpp"
 
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 #include <job_system/job_system.hpp>
 
 #include <vector>
@@ -140,7 +140,7 @@ private:
     void report_progress(const std::string& stage, float progress);
 
     // Hypergraph and engine (owned)
-    std::unique_ptr<hypergraph::UnifiedHypergraph> hypergraph_;
+    std::unique_ptr<hypergraph::Hypergraph> hypergraph_;
     std::unique_ptr<hypergraph::ParallelEvolutionEngine> engine_;
 
     // Separate job system for analysis (separate from evolution job system)
@@ -156,7 +156,7 @@ private:
 // =============================================================================
 
 SimpleGraph state_to_simple_graph(
-    const hypergraph::UnifiedHypergraph& hg,
+    const hypergraph::Hypergraph& hg,
     hypergraph::StateId state_id
 );
 

@@ -7,7 +7,7 @@
 
 #include "hypergraph/arena.hpp"
 #include "hypergraph/types.hpp"
-#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/hypergraph.hpp"
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -38,7 +38,7 @@ protected:
         size_t steps,
         size_t num_threads = 0
     ) {
-        auto hg = std::make_unique<v2::UnifiedHypergraph>();
+        auto hg = std::make_unique<v2::Hypergraph>();
         hg->set_hash_strategy(strategy);
         hg->reset_incremental_tree_stats();
 

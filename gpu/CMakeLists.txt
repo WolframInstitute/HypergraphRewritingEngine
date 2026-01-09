@@ -119,16 +119,16 @@ if(GPU_SOURCES_EXIST AND GPU_TESTS_EXIST)
 endif()
 
 # =============================================================================
-# GPU vs CPU Unified Comparison Test (C++20, uses host interface)
+# GPU vs CPU Comparison Test (C++20, uses host interface)
 # =============================================================================
 
-if(GPU_SOURCES_EXIST AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_cpu_unified.cpp")
-    add_executable(gpu_cpu_comparison_tests tests/test_gpu_cpu_unified.cpp)
+if(GPU_SOURCES_EXIST AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_cpu.cpp")
+    add_executable(gpu_cpu_comparison_tests tests/test_gpu_cpu.cpp)
 
-    # Use C++20 for unified headers
+    # Use C++20 for headers
     target_compile_features(gpu_cpu_comparison_tests PUBLIC cxx_std_20)
 
-    # Link against GPU (via host interface), hypergraph (unified), and gtest
+    # Link against GPU (via host interface), hypergraph, and gtest
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(gpu_cpu_comparison_tests
         gpu_hypergraph

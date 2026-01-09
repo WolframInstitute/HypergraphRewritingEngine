@@ -3,7 +3,7 @@
 #include "benchmark_framework.hpp"
 #include "random_hypergraph_generator.hpp"
 #include <hypergraph/parallel_evolution.hpp>
-#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/hypergraph.hpp>
 
 using namespace hypergraph;
 using namespace benchmark;
@@ -12,7 +12,7 @@ using namespace benchmark;
 // Category: Uniqueness Tree / State Hashing Benchmarks (Single-threaded)
 // =============================================================================
 // These benchmarks measure the performance of state canonicalization (WL hashing)
-// which is the unified API equivalent of uniqueness tree operations.
+// which is the API equivalent of uniqueness tree operations.
 
 BENCHMARK(state_hashing_by_edge_count, "Measures state hashing performance as graph size increases (arity=2)") {
     for (int edges : {2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30, 40, 50, 75, 100}) {
@@ -24,7 +24,7 @@ BENCHMARK(state_hashing_by_edge_count, "Measures state hashing performance as gr
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 2, seed);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine engine(&hg, 1);
 
@@ -50,7 +50,7 @@ BENCHMARK(state_hashing_by_edge_count_arity3, "Measures state hashing performanc
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 3, seed);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine engine(&hg, 1);
 
@@ -74,7 +74,7 @@ BENCHMARK(state_hashing_by_symmetry, "Shows how graph symmetry affects state has
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(num_edges, symmetry_groups, 2, seed);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine engine(&hg, 1);
 
@@ -103,7 +103,7 @@ BENCHMARK(state_hashing_2d_sweep, "2D parameter sweep: edges vs symmetry_groups 
             auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 2, seed);
 
             BENCHMARK_CODE([&]() {
-                UnifiedHypergraph hg;
+                Hypergraph hg;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
                 ParallelEvolutionEngine engine(&hg, 1);
 
@@ -128,7 +128,7 @@ BENCHMARK(state_hashing_by_arity, "Tests impact of hyperedge arity on state hash
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(num_edges, 4, arity, seed);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine engine(&hg, 1);
 
@@ -161,7 +161,7 @@ BENCHMARK(state_hashing_modes_comparison, "Compares different state canonicaliza
         BENCHMARK_PARAM("mode", mode_name);
 
         BENCHMARK_CODE([&]() {
-            UnifiedHypergraph hg;
+            Hypergraph hg;
             hg.set_state_canonicalization_mode(mode);
             ParallelEvolutionEngine engine(&hg, 1);
 
