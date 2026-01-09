@@ -761,6 +761,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         bool include_num_events = true;
         bool include_num_causal_edges = true;
         bool include_num_branchial_edges = true;
+        bool include_global_edges = false;      // All edges created during evolution
+        bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
 
         // GraphProperties option for graph-ready data output (list of properties)
         std::vector<std::string> graph_properties;  // e.g., {"StatesGraph", "CausalGraphStructure"}
@@ -878,6 +880,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                                 else if (comp == "NumEvents") include_num_events = true;
                                 else if (comp == "NumCausalEdges") include_num_causal_edges = true;
                                 else if (comp == "NumBranchialEdges") include_num_branchial_edges = true;
+                                else if (comp == "GlobalEdges") include_global_edges = true;
+                                else if (comp == "StateBitvectors") include_state_bitvectors = true;
                             }
                         } else if (option_key == "CanonicalizeEvents") {
                             // Can be: None, Full, Automatic (symbols), or {"InputState", "OutputState", ...} (list)
@@ -2716,6 +2720,48 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         }
         if (include_num_branchial_edges) {
             full_result.push_back({wxf::Value("NumBranchialEdges"), wxf::Value(static_cast<int64_t>(hg.num_branchial_edges()))});
+        }
+
+        // GlobalEdges -> List of all edges created during evolution
+        // Each edge is {edge_id, v1, v2, ...}
+        if (include_global_edges) {
+            wxf::ValueList global_edges;
+            uint32_t num_edges = hg.num_edges();
+            for (uint32_t eid = 0; eid < num_edges; ++eid) {
+                const unified::Edge& edge = hg.get_edge(eid);
+                if (edge.id == unified::INVALID_ID) continue;
+
+                wxf::ValueList edge_data;
+                edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                for (uint8_t i = 0; i < edge.arity; ++i) {
+                    edge_data.push_back(wxf::Value(static_cast<int64_t>(edge.vertices[i])));
+                }
+                global_edges.push_back(wxf::Value(edge_data));
+            }
+            full_result.push_back(std::make_pair(wxf::Value("GlobalEdges"), wxf::Value(global_edges)));
+        }
+
+        // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]
+        // Represents each state's edge set (the bitvector) as a list of edge indices
+        if (include_state_bitvectors) {
+            wxf::ValueAssociation state_bitvectors;
+            uint32_t num_states = hg.num_states();
+            for (uint32_t sid = 0; sid < num_states; ++sid) {
+                const unified::State& state = hg.get_state(sid);
+                if (state.id == unified::INVALID_ID) continue;
+
+                // Convert SparseBitset to list of edge IDs
+                wxf::ValueList edge_ids;
+                state.edges.for_each([&](unified::EdgeId eid) {
+                    edge_ids.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                });
+
+                state_bitvectors.push_back(std::make_pair(
+                    wxf::Value(static_cast<int64_t>(sid)),
+                    wxf::Value(edge_ids)
+                ));
+            }
+            full_result.push_back(std::make_pair(wxf::Value("StateBitvectors"), wxf::Value(state_bitvectors)));
         }
 
         // DimensionData -> Association["PerState" -> {...}, "GlobalRange" -> {min, max}]

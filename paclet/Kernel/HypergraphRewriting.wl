@@ -136,6 +136,9 @@ propertyRequirementsBase = <|
   "NumEvents" -> {"NumEvents"},
   "NumCausalEdges" -> {"NumCausalEdges"},
   "NumBranchialEdges" -> {"NumBranchialEdges"},
+  (* Global edge list and state bitvectors *)
+  "GlobalEdges" -> {"GlobalEdges"},
+  "StateBitvectors" -> {"StateBitvectors"},
   (* Debug/All *)
   "Debug" -> {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
   "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
@@ -169,7 +172,7 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
 computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
   computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
 
-HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, All.";
+HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
 HGEvolveV2::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 
 (* ============================================================================ *)
@@ -763,6 +766,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     "NumEvents", wxfData["NumEvents"],
     "NumCausalEdges", wxfData["NumCausalEdges"],
     "NumBranchialEdges", wxfData["NumBranchialEdges"],
+    "GlobalEdges", wxfData["GlobalEdges"],
+    "StateBitvectors", wxfData["StateBitvectors"],
     "Debug", <|
       "NumStates" -> wxfData["NumStates"],
       "NumEvents" -> wxfData["NumEvents"],
