@@ -1,90 +1,98 @@
 /**
  * Basic Hypergraph Usage Example
- * 
- * Demonstrates fundamental hypergraph operations:
- * - Creating vertices and edges
+ *
+ * Demonstrates fundamental hypergraph operations using the unified API:
+ * - Creating states with edges
  * - Querying graph structure
- * - Basic traversal operations
+ * - Iterating over edges and vertices
  */
 
-#include <hypergraph/hypergraph.hpp>
+#include <hypergraph/unified_hypergraph.hpp>
 #include <iostream>
+#include <set>
 
 using namespace hypergraph;
 
 int main() {
     std::cout << "=== Basic Hypergraph Usage Example ===\n\n";
-    
-    // Create an empty hypergraph
-    Hypergraph graph;
+
+    // Create a hypergraph
+    UnifiedHypergraph hg;
     std::cout << "Created empty hypergraph\n";
-    std::cout << "Initial vertices: " << graph.num_vertices() << ", edges: " << graph.num_edges() << "\n\n";
-    
-    // Add edges (vertices are created automatically)
-    std::cout << "Adding edges:\n";
-    EdgeId edge1 = graph.add_edge({1, 2});
-    std::cout << "  Added edge {1, 2} with ID: " << edge1 << "\n";
-    
-    EdgeId edge2 = graph.add_edge({2, 3});
-    std::cout << "  Added edge {2, 3} with ID: " << edge2 << "\n";
-    
-    EdgeId edge3 = graph.add_edge({3, 1});
-    std::cout << "  Added edge {3, 1} with ID: " << edge3 << "\n";
-    
-    // Add a hyperedge (more than 2 vertices)
-    EdgeId hyperedge = graph.add_edge({1, 2, 3, 4});
-    std::cout << "  Added hyperedge {1, 2, 3, 4} with ID: " << hyperedge << "\n\n";
-    
-    // Query graph structure
+    std::cout << "Initial states: " << hg.num_states() << ", edges: " << hg.num_edges() << "\n\n";
+
+    // In the unified API, edges belong to states. Let's create a state with some edges.
+    std::cout << "Creating initial state with edges:\n";
+
+    // Create edges directly using internal methods
+    EdgeId edge1 = hg.create_edge({1, 2});
+    std::cout << "  Created edge {1, 2} with ID: " << edge1 << "\n";
+
+    EdgeId edge2 = hg.create_edge({2, 3});
+    std::cout << "  Created edge {2, 3} with ID: " << edge2 << "\n";
+
+    EdgeId edge3 = hg.create_edge({3, 1});
+    std::cout << "  Created edge {3, 1} with ID: " << edge3 << "\n";
+
+    // Create a hyperedge (more than 2 vertices)
+    EdgeId hyperedge = hg.create_edge({1, 2, 3, 4});
+    std::cout << "  Created hyperedge {1, 2, 3, 4} with ID: " << hyperedge << "\n\n";
+
+    // Create a state from these edges
+    std::vector<EdgeId> edge_ids = {edge1, edge2, edge3, hyperedge};
+    StateId state = hg.create_state(edge_ids.data(), static_cast<uint32_t>(edge_ids.size()));
+    std::cout << "Created state " << state << " with " << edge_ids.size() << " edges\n\n";
+
+    // Query edge structure
+    std::cout << "Edge details:\n";
+    for (EdgeId eid : edge_ids) {
+        const auto& edge = hg.get_edge(eid);
+        std::cout << "  Edge " << eid << ": {";
+        for (uint8_t i = 0; i < edge.arity; ++i) {
+            std::cout << edge.vertices[i];
+            if (i < edge.arity - 1) std::cout << ", ";
+        }
+        std::cout << "} (arity=" << (int)edge.arity << ")\n";
+    }
+    std::cout << "\n";
+
+    // Count unique vertices
+    std::set<VertexId> unique_vertices;
+    for (EdgeId eid : edge_ids) {
+        const auto& edge = hg.get_edge(eid);
+        for (uint8_t i = 0; i < edge.arity; ++i) {
+            unique_vertices.insert(edge.vertices[i]);
+        }
+    }
+
     std::cout << "Graph structure:\n";
-    std::cout << "  Vertices: " << graph.num_vertices() << "\n";
-    std::cout << "  Edges: " << graph.num_edges() << "\n\n";
-    
-    // Find edges containing specific vertices
-    std::cout << "Edges containing vertex 1:\n";
-    auto edges_with_1 = graph.edges_containing(1);
-    for (EdgeId edge_id : edges_with_1) {
-        const auto* edge = graph.get_edge(edge_id);
-        if (edge) {
-            std::cout << "  Edge " << edge_id << ": {";
-            for (std::size_t i = 0; i < edge->arity(); ++i) {
-                std::cout << edge->vertex(i);
-                if (i < edge->arity() - 1) std::cout << ", ";
-            }
-            std::cout << "}\n";
+    std::cout << "  Unique vertices: " << unique_vertices.size() << "\n";
+    std::cout << "  Total edges: " << hg.num_edges() << "\n";
+    std::cout << "  Total states: " << hg.num_states() << "\n\n";
+
+    // Print vertices in the state
+    std::cout << "Vertices in state: {";
+    bool first = true;
+    for (VertexId v : unique_vertices) {
+        if (!first) std::cout << ", ";
+        std::cout << v;
+        first = false;
+    }
+    std::cout << "}\n\n";
+
+    // Demonstrate state iteration
+    const auto& state_data = hg.get_state(state);
+    std::cout << "Edges in state " << state << ":\n";
+    state_data.edges.for_each([&](EdgeId eid) {
+        const auto& edge = hg.get_edge(eid);
+        std::cout << "  Edge " << eid << ": {";
+        for (uint8_t i = 0; i < edge.arity; ++i) {
+            std::cout << edge.vertices[i];
+            if (i < edge.arity - 1) std::cout << ", ";
         }
-    }
-    std::cout << "\n";
-    
-    // Find edges within radius
-    std::cout << "Edges within radius 1 of vertex 2:\n";
-    auto nearby_edges = graph.edges_within_radius(2, 1);
-    for (EdgeId edge_id : nearby_edges) {
-        const auto* edge = graph.get_edge(edge_id);
-        if (edge) {
-            std::cout << "  Edge " << edge_id << ": {";
-            for (std::size_t i = 0; i < edge->arity(); ++i) {
-                std::cout << edge->vertex(i);
-                if (i < edge->arity() - 1) std::cout << ", ";
-            }
-            std::cout << "}\n";
-        }
-    }
-    std::cout << "\n";
-    
-    // Vertex degree (number of edges containing each vertex)
-    std::cout << "Vertex degrees:\n";
-    for (VertexId vertex : graph.vertices()) {
-        auto incident_edges = graph.edges_containing(vertex);
-        std::cout << "  Vertex " << vertex << ": degree " << incident_edges.size() << "\n";
-    }
-    std::cout << "\n";
-    
-    // Remove an edge
-    std::cout << "Removing edge " << edge2 << "\n";
-    graph.remove_edge(edge2);
-    std::cout << "After removal: " << graph.num_vertices() << " vertices, " << graph.num_edges() << " edges\n";
-    
+        std::cout << "}\n";
+    });
+
     std::cout << "\n=== Example completed successfully ===\n";
     return 0;
 }
