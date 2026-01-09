@@ -10,7 +10,7 @@
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // State Child Tracking
@@ -316,4 +316,4 @@ void setup_state_matches(
     });
 }
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

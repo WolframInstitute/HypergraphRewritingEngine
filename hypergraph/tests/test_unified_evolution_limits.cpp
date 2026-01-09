@@ -5,7 +5,7 @@
 #include <set>
 #include <numeric>
 
-using namespace hypergraph::unified;
+using namespace hypergraph;
 
 // Helper to create a simple rule: {{x,y}} -> {{x,z},{y,z}}
 static RewriteRule create_growth_rule() {

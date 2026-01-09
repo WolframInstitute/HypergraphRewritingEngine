@@ -7,7 +7,7 @@
 
 #include "bitset.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Identifiers
@@ -650,4 +650,4 @@ struct StateIncrementalCache {
     StateIncrementalCache() = default;
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

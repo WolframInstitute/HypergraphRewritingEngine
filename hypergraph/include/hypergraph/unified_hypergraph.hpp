@@ -24,7 +24,7 @@
 // Include v1 canonicalizer for exact isomorphism checking
 #include "canonicalization.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // HashStrategy: Controls which hashing algorithm to use
@@ -2116,4 +2116,4 @@ public:
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

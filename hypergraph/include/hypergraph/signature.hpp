@@ -5,7 +5,7 @@
 
 #include "types.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Constants
@@ -361,4 +361,4 @@ struct CompatibleSignatureCache {
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

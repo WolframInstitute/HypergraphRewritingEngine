@@ -9,7 +9,7 @@
 #include <set>
 #include <algorithm>
 
-using namespace hypergraph::unified;
+using namespace hypergraph;
 
 // =============================================================================
 // Test Helpers

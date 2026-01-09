@@ -8,7 +8,7 @@
 #include <new>
 #include <type_traits>
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // SegmentedArray<T>: Append-only array with O(1) random access
@@ -431,4 +431,4 @@ private:
     T* segments_[MAX_SEGMENTS];
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

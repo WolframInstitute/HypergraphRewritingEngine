@@ -13,7 +13,7 @@
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 
-namespace v2 = hypergraph::unified;
+namespace v2 = hypergraph;
 
 // =============================================================================
 // Event Canonicalization Tests (ByStateAndEdges mode)

@@ -7,7 +7,7 @@
 #include <cstring>
 #include <algorithm>
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // SparseBitset: Sparse chunked bitset for edge membership tracking
@@ -349,4 +349,4 @@ private:
     mutable bool count_valid_;
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

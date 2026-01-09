@@ -8,11 +8,13 @@
 #include <limits>
 #include <cstdint>
 
+#include "types.hpp"
+
 namespace hypergraph {
 
-// Self-contained type definitions for canonicalization
-using VertexId = std::size_t;
-constexpr VertexId INVALID_VERTEX = std::numeric_limits<VertexId>::max();
+// Use VertexId from types.hpp (uint32_t)
+// Use INVALID_ID from types.hpp for invalid vertex marker
+constexpr VertexId INVALID_VERTEX = INVALID_ID;
 
 /**
  * Canonical representation of a hypergraph.

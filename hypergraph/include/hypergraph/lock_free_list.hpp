@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cstddef>
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // LockFreeList<T>: Append-only lock-free linked list
@@ -261,4 +261,4 @@ private:
     Node* head_;
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

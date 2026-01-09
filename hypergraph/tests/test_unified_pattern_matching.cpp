@@ -11,7 +11,7 @@
 #include <vector>
 #include <set>
 
-using namespace hypergraph::unified;
+using namespace hypergraph;
 
 // =============================================================================
 // Test Helpers

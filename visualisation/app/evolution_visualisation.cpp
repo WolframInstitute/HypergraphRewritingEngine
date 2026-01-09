@@ -157,7 +157,7 @@ public:
 
 private:
     void run_evolution(size_t steps, RuleConfig config) {
-        using namespace hypergraph::unified;
+        using namespace hypergraph;
 
         std::cout << "[Evolution] Starting evolution with " << steps << " steps" << std::endl;
         std::cout << "[Evolution] Rule: " << rule_config_name(config) << std::endl;
@@ -297,7 +297,7 @@ private:
 
     // Protected access to engine for stop requests
     std::mutex engine_mutex_;
-    hypergraph::unified::ParallelEvolutionEngine* engine_ = nullptr;
+    hypergraph::ParallelEvolutionEngine* engine_ = nullptr;
 };
 #endif
 

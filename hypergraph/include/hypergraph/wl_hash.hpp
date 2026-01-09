@@ -14,7 +14,7 @@
 #include "concurrent_map.hpp"
 #include "lock_free_list.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // WLHash: Weisfeiler-Lehman style hashing for hypergraph isomorphism
@@ -1344,4 +1344,4 @@ private:
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

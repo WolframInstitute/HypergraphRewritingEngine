@@ -119,7 +119,7 @@ private:
     bool parse_rule(const std::string& rule_string);
 
     // Convert BHInitialCondition edges to hypergraph format
-    std::vector<std::vector<hypergraph::unified::VertexId>> convert_edges(
+    std::vector<std::vector<hypergraph::VertexId>> convert_edges(
         const BHInitialCondition& initial
     );
 
@@ -140,8 +140,8 @@ private:
     void report_progress(const std::string& stage, float progress);
 
     // Hypergraph and engine (owned)
-    std::unique_ptr<hypergraph::unified::UnifiedHypergraph> hypergraph_;
-    std::unique_ptr<hypergraph::unified::ParallelEvolutionEngine> engine_;
+    std::unique_ptr<hypergraph::UnifiedHypergraph> hypergraph_;
+    std::unique_ptr<hypergraph::ParallelEvolutionEngine> engine_;
 
     // Separate job system for analysis (separate from evolution job system)
     std::unique_ptr<job_system::JobSystem<AnalysisJobType>> analysis_job_system_;
@@ -156,8 +156,8 @@ private:
 // =============================================================================
 
 SimpleGraph state_to_simple_graph(
-    const hypergraph::unified::UnifiedHypergraph& hg,
-    hypergraph::unified::StateId state_id
+    const hypergraph::UnifiedHypergraph& hg,
+    hypergraph::StateId state_id
 );
 
 } // namespace viz::blackhole

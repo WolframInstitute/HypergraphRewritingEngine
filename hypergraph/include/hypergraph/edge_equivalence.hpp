@@ -10,7 +10,7 @@
 #include "segmented_array.hpp"
 #include "arena.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Lock-Free Union-Find for Edge Equivalence Classes
@@ -497,4 +497,4 @@ public:
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

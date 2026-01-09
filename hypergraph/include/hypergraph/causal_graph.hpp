@@ -16,7 +16,7 @@
 #include <events/viz_event_sink.hpp>
 #endif
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // CausalGraph
@@ -629,4 +629,4 @@ private:
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

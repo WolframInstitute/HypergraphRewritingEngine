@@ -240,8 +240,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         int steps = 1;
 
         // Option values
-        unified::StateCanonicalizationMode state_canon_mode = unified::StateCanonicalizationMode::None;  // Default: tree mode
-        unified::EventSignatureKeys event_signature_keys = unified::EVENT_SIG_NONE;  // Default: no event canonicalization
+        hypergraph::StateCanonicalizationMode state_canon_mode = hypergraph::StateCanonicalizationMode::None;  // Default: tree mode
+        hypergraph::EventSignatureKeys event_signature_keys = hypergraph::EVENT_SIG_NONE;  // Default: no event canonicalization
         bool show_genesis_events = false;
         bool show_progress = false;
         bool causal_transitive_reduction = true;
@@ -458,24 +458,24 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             try {
                                 // Try to read as list first
                                 auto keys = option_parser.read<std::vector<std::string>>();
-                                event_signature_keys = unified::EVENT_SIG_NONE;
+                                event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 for (const auto& key : keys) {
-                                    if (key == "InputState") event_signature_keys |= unified::EventKey_InputState;
-                                    else if (key == "OutputState") event_signature_keys |= unified::EventKey_OutputState;
-                                    else if (key == "Step") event_signature_keys |= unified::EventKey_Step;
-                                    else if (key == "Rule") event_signature_keys |= unified::EventKey_Rule;
-                                    else if (key == "ConsumedEdges") event_signature_keys |= unified::EventKey_ConsumedEdges;
-                                    else if (key == "ProducedEdges") event_signature_keys |= unified::EventKey_ProducedEdges;
+                                    if (key == "InputState") event_signature_keys |= hypergraph::EventKey_InputState;
+                                    else if (key == "OutputState") event_signature_keys |= hypergraph::EventKey_OutputState;
+                                    else if (key == "Step") event_signature_keys |= hypergraph::EventKey_Step;
+                                    else if (key == "Rule") event_signature_keys |= hypergraph::EventKey_Rule;
+                                    else if (key == "ConsumedEdges") event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
+                                    else if (key == "ProducedEdges") event_signature_keys |= hypergraph::EventKey_ProducedEdges;
                                 }
                             } catch (...) {
                                 // Read as symbol
                                 std::string symbol = option_parser.read<std::string>();
                                 if (symbol == "None") {
-                                    event_signature_keys = unified::EVENT_SIG_NONE;
+                                    event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 } else if (symbol == "Full") {
-                                    event_signature_keys = unified::EVENT_SIG_FULL;
+                                    event_signature_keys = hypergraph::EVENT_SIG_FULL;
                                 } else if (symbol == "Automatic") {
-                                    event_signature_keys = unified::EVENT_SIG_AUTOMATIC;
+                                    event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
                                 }
                                 // else keep default (None)
                             }
@@ -487,15 +487,15 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                             // display-time grouping via ContentStateId computed in the FFI.
                             std::string symbol = option_parser.read<std::string>();
                             if (symbol == "None" || symbol == "False") {
-                                state_canon_mode = unified::StateCanonicalizationMode::None;
+                                state_canon_mode = hypergraph::StateCanonicalizationMode::None;
                                 canonicalize_states_mode = "None";
                             } else if (symbol == "Automatic") {
                                 // Automatic behaves like None for evolution (no deduplication)
                                 // ContentStateId is computed separately for display-time grouping
-                                state_canon_mode = unified::StateCanonicalizationMode::None;
+                                state_canon_mode = hypergraph::StateCanonicalizationMode::None;
                                 canonicalize_states_mode = "Automatic";
                             } else if (symbol == "Full" || symbol == "True") {
-                                state_canon_mode = unified::StateCanonicalizationMode::Full;
+                                state_canon_mode = hypergraph::StateCanonicalizationMode::Full;
                                 canonicalize_states_mode = "Full";
                             }
                         } else if (option_key == "GraphProperties") {
@@ -634,15 +634,15 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         }
 
         // Create unified hypergraph
-        unified::UnifiedHypergraph hg;
+        hypergraph::UnifiedHypergraph hg;
 
         // Set hash strategy
         if (hash_strategy == "WL") {
-            hg.set_hash_strategy(unified::HashStrategy::WL);
+            hg.set_hash_strategy(hypergraph::HashStrategy::WL);
         } else if (hash_strategy == "UT") {
-            hg.set_hash_strategy(unified::HashStrategy::UniquenessTree);
+            hg.set_hash_strategy(hypergraph::HashStrategy::UniquenessTree);
         } else {
-            hg.set_hash_strategy(unified::HashStrategy::IncrementalUniquenessTree);
+            hg.set_hash_strategy(hypergraph::HashStrategy::IncrementalUniquenessTree);
         }
 
         // Configure event canonicalization
@@ -652,7 +652,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         hg.set_state_canonicalization_mode(state_canon_mode);
 
         // Create parallel evolution engine
-        unified::ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
+        hypergraph::ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
 
         // Configure engine options
         engine.set_max_steps(static_cast<size_t>(steps));
@@ -668,7 +668,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         for (const auto& [rule_name, rule_data] : parsed_rules_raw) {
             if (rule_data.size() != 2) continue;
 
-            unified::RewriteRule rule;
+            hypergraph::RewriteRule rule;
             rule.index = rule_index++;
 
             // Track max variable seen for variable counting
@@ -678,11 +678,11 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // Parse LHS edges
             rule.num_lhs_edges = 0;
             for (const auto& edge : rule_data[0]) {
-                if (rule.num_lhs_edges >= unified::MAX_PATTERN_EDGES) break;
-                unified::PatternEdge& pe = rule.lhs[rule.num_lhs_edges];
+                if (rule.num_lhs_edges >= hypergraph::MAX_PATTERN_EDGES) break;
+                hypergraph::PatternEdge& pe = rule.lhs[rule.num_lhs_edges];
                 pe.arity = 0;
                 for (int64_t v : edge) {
-                    if (v >= 0 && pe.arity < unified::MAX_ARITY) {
+                    if (v >= 0 && pe.arity < hypergraph::MAX_ARITY) {
                         pe.vars[pe.arity++] = static_cast<uint8_t>(v);
                         if (v > max_lhs_var) max_lhs_var = static_cast<uint8_t>(v);
                     }
@@ -695,11 +695,11 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // Parse RHS edges
             rule.num_rhs_edges = 0;
             for (const auto& edge : rule_data[1]) {
-                if (rule.num_rhs_edges >= unified::MAX_PATTERN_EDGES) break;
-                unified::PatternEdge& pe = rule.rhs[rule.num_rhs_edges];
+                if (rule.num_rhs_edges >= hypergraph::MAX_PATTERN_EDGES) break;
+                hypergraph::PatternEdge& pe = rule.rhs[rule.num_rhs_edges];
                 pe.arity = 0;
                 for (int64_t v : edge) {
-                    if (v >= 0 && pe.arity < unified::MAX_ARITY) {
+                    if (v >= 0 && pe.arity < hypergraph::MAX_ARITY) {
                         pe.vars[pe.arity++] = static_cast<uint8_t>(v);
                         if (v > max_rhs_var) max_rhs_var = static_cast<uint8_t>(v);
                     }
@@ -725,17 +725,17 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // get the SAME internal representation and thus the SAME canonical hash.
         // The engine handles multiplicity - if the same canonical state appears multiple
         // times, it spawns MATCH tasks for each instance.
-        std::vector<std::vector<std::vector<unified::VertexId>>> initial_states;
+        std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
 
         for (const auto& state_raw : initial_states_raw) {
             // Create a per-state vertex mapping: input_vertex -> canonical_vertex
             // Always start from 0 for canonical form
-            std::unordered_map<int64_t, unified::VertexId> vertex_map;
-            unified::VertexId next_vertex = 0;
+            std::unordered_map<int64_t, hypergraph::VertexId> vertex_map;
+            hypergraph::VertexId next_vertex = 0;
 
-            std::vector<std::vector<unified::VertexId>> state_edges;
+            std::vector<std::vector<hypergraph::VertexId>> state_edges;
             for (const auto& edge : state_raw) {
-                std::vector<unified::VertexId> edge_vertices;
+                std::vector<hypergraph::VertexId> edge_vertices;
                 for (int64_t v : edge) {
                     if (v >= 0) {
                         // Map this input vertex to a canonical vertex ID
@@ -928,13 +928,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build edges for SimpleGraph (only binary edges)
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -989,13 +989,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build SimpleGraph
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1077,13 +1077,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build SimpleGraph
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1158,13 +1158,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build SimpleGraph
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1230,13 +1230,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build SimpleGraph
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1302,13 +1302,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Build SimpleGraph
                 std::vector<bh::Edge> edges;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1377,8 +1377,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 bh::BranchState bs;
                 bs.state_id = sid;
@@ -1387,8 +1387,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                 // Collect all unique vertices in this state
                 std::unordered_set<bh::VertexId> vertex_set;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     for (size_t i = 0; i < edge.arity; ++i) {
                         vertex_set.insert(edge.vertices[i]);
                     }
@@ -1396,8 +1396,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 bs.vertices.assign(vertex_set.begin(), vertex_set.end());
 
                 // Collect edges
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     if (edge.arity == 2) {
                         bs.edges.push_back({edge.vertices[0], edge.vertices[1]});
                     }
@@ -1525,13 +1525,13 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // Single pass: compute content hash for each state and build mapping
             // Uses the library's get_state_content_hash which is the SAME function
             // used during evolution for Automatic state deduplication, ensuring consistency.
-            std::unordered_map<uint64_t, unified::StateId> content_hash_to_id;
+            std::unordered_map<uint64_t, hypergraph::StateId> content_hash_to_id;
             std::vector<uint64_t> state_content_hashes(num_states, 0);
             content_hash_to_id.reserve(num_states);
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Use the library's content hash function (same as evolution-time deduplication)
                 // This ensures FFI ContentStateId matches the grouping done during evolution
@@ -1545,19 +1545,19 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
             // Export states with both canonical IDs
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Get canonical state ID (isomorphism-based)
-                unified::StateId canonical_id = hg.get_canonical_state(sid);
+                hypergraph::StateId canonical_id = hg.get_canonical_state(sid);
 
                 // Get content state ID (content-based) - from cached hash
-                unified::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
+                hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
 
                 // Build edge list: each edge is {edge_id, v1, v2, ...}
                 wxf::ValueList edge_list;
-                state.edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     wxf::ValueList edge_data;
                     edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
                     for (uint8_t i = 0; i < edge.arity; ++i) {
@@ -1589,8 +1589,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             wxf::ValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
-                const unified::Event& event = hg.get_event(eid);
-                if (event.id == unified::INVALID_ID) continue;
+                const hypergraph::Event& event = hg.get_event(eid);
+                if (event.id == hypergraph::INVALID_ID) continue;
                 // Skip genesis events if ShowGenesisEvents is false
                 if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
 
@@ -1641,8 +1641,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             wxf::ValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
-                const unified::Event& event = hg.get_event(eid);
-                if (event.id == unified::INVALID_ID) continue;
+                const hypergraph::Event& event = hg.get_event(eid);
+                if (event.id == hypergraph::INVALID_ID) continue;
                 if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
 
                 // Send BOTH raw and canonical state IDs - WL chooses which to use per graph type
@@ -1682,10 +1682,10 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
             // Deduplicate by RAW event pairs (not canonical) - this removes internal doubling
             // while preserving edges that happen to have the same canonical endpoints
-            auto pair_hash = [](const std::pair<unified::EventId, unified::EventId>& p) {
+            auto pair_hash = [](const std::pair<hypergraph::EventId, hypergraph::EventId>& p) {
                 return std::hash<uint64_t>{}((static_cast<uint64_t>(p.first) << 32) | p.second);
             };
-            std::unordered_set<std::pair<unified::EventId, unified::EventId>, decltype(pair_hash)> seen_raw_pairs(
+            std::unordered_set<std::pair<hypergraph::EventId, hypergraph::EventId>, decltype(pair_hash)> seen_raw_pairs(
                 causal_edge_vec.size(), pair_hash);
 
             for (const auto& edge : causal_edge_vec) {
@@ -1701,8 +1701,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 seen_raw_pairs.insert(raw_pair);
 
                 // Map to canonical event IDs for output (also include raw for flexibility)
-                unified::EventId canonical_from = hg.get_canonical_event(edge.producer);
-                unified::EventId canonical_to = hg.get_canonical_event(edge.consumer);
+                hypergraph::EventId canonical_from = hg.get_canonical_event(edge.producer);
+                hypergraph::EventId canonical_to = hg.get_canonical_event(edge.consumer);
 
                 wxf::ValueAssociation edge_data;
                 edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(canonical_from))});
@@ -1728,8 +1728,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     continue;
                 }
                 // Map to canonical event IDs
-                unified::EventId canonical_from = hg.get_canonical_event(edge.event1);
-                unified::EventId canonical_to = hg.get_canonical_event(edge.event2);
+                hypergraph::EventId canonical_from = hg.get_canonical_event(edge.event1);
+                hypergraph::EventId canonical_to = hg.get_canonical_event(edge.event2);
 
                 wxf::ValueAssociation edge_data;
                 edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(canonical_from))});
@@ -1745,7 +1745,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // NOTE: Do NOT deduplicate by canonical state pair - reference preserves edge multiplicity
         if (include_branchial_state_edges) {
             wxf::ValueList branchial_state_edges;
-            std::set<unified::StateId> unique_states;
+            std::set<hypergraph::StateId> unique_states;
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
 
             // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
@@ -1768,19 +1768,19 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     continue;
                 }
                 // Get the output states of the events, mapped to canonical state IDs
-                const unified::Event& event1 = hg.get_event(edge.event1);
-                const unified::Event& event2 = hg.get_event(edge.event2);
+                const hypergraph::Event& event1 = hg.get_event(edge.event1);
+                const hypergraph::Event& event2 = hg.get_event(edge.event2);
 
                 // Filter by step if specified (branchial edges are between events at the same step)
                 if (filter_by_step) {
-                    const unified::State& output_state = hg.get_state(event1.output_state);
+                    const hypergraph::State& output_state = hg.get_state(event1.output_state);
                     if (output_state.step != target_step) {
                         continue;
                     }
                 }
 
-                unified::StateId state1 = hg.get_canonical_state(event1.output_state);
-                unified::StateId state2 = hg.get_canonical_state(event2.output_state);
+                hypergraph::StateId state1 = hg.get_canonical_state(event1.output_state);
+                hypergraph::StateId state2 = hg.get_canonical_state(event2.output_state);
 
                 // Track unique states for vertices
                 unique_states.insert(state1);
@@ -1796,7 +1796,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
             // Send unique state vertices
             wxf::ValueList state_vertices;
-            for (unified::StateId sid : unique_states) {
+            for (hypergraph::StateId sid : unique_states) {
                 state_vertices.push_back(wxf::Value(static_cast<int64_t>(sid)));
             }
             full_result.push_back({wxf::Value("BranchialStateVertices"), wxf::Value(state_vertices)});
@@ -1806,7 +1806,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // This matches reference BranchialGraph behavior (no overlap check, all siblings)
         if (include_branchial_state_edges_all_siblings) {
             wxf::ValueList branchial_state_edges;
-            std::set<unified::StateId> unique_states;
+            std::set<hypergraph::StateId> unique_states;
 
             // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
             uint32_t target_step = 0;
@@ -1820,10 +1820,10 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             }
 
             // Iterate over all input states and their events
-            hg.causal_graph().for_each_state_events([&]([[maybe_unused]] unified::StateId input_state, auto* event_list) {
+            hg.causal_graph().for_each_state_events([&]([[maybe_unused]] hypergraph::StateId input_state, auto* event_list) {
                 // Collect all events from this input state
-                std::vector<unified::EventId> events;
-                event_list->for_each([&](unified::EventId eid) {
+                std::vector<hypergraph::EventId> events;
+                event_list->for_each([&](hypergraph::EventId eid) {
                     // Skip genesis events if not showing them
                     if (!show_genesis_events && hg.is_genesis_event(eid)) {
                         return;
@@ -1833,30 +1833,30 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                 // Create all pairs of output states (C(n,2) pairs)
                 for (size_t i = 0; i < events.size(); ++i) {
-                    const unified::Event& event1 = hg.get_event(events[i]);
+                    const hypergraph::Event& event1 = hg.get_event(events[i]);
 
                     // Filter by step if specified
                     if (filter_by_step) {
-                        const unified::State& output_state = hg.get_state(event1.output_state);
+                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
                         if (output_state.step != target_step) {
                             continue;
                         }
                     }
 
-                    unified::StateId state1 = hg.get_canonical_state(event1.output_state);
+                    hypergraph::StateId state1 = hg.get_canonical_state(event1.output_state);
 
                     for (size_t j = i + 1; j < events.size(); ++j) {
-                        const unified::Event& event2 = hg.get_event(events[j]);
+                        const hypergraph::Event& event2 = hg.get_event(events[j]);
 
                         // Filter event2 by step too
                         if (filter_by_step) {
-                            const unified::State& output_state2 = hg.get_state(event2.output_state);
+                            const hypergraph::State& output_state2 = hg.get_state(event2.output_state);
                             if (output_state2.step != target_step) {
                                 continue;
                             }
                         }
 
-                        unified::StateId state2 = hg.get_canonical_state(event2.output_state);
+                        hypergraph::StateId state2 = hg.get_canonical_state(event2.output_state);
 
                         // Track unique states
                         unique_states.insert(state1);
@@ -1875,7 +1875,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
             // Send unique state vertices
             wxf::ValueList state_vertices;
-            for (unified::StateId sid : unique_states) {
+            for (hypergraph::StateId sid : unique_states) {
                 state_vertices.push_back(wxf::Value(static_cast<int64_t>(sid)));
             }
             full_result.push_back({wxf::Value("BranchialStateVertices"), wxf::Value(state_vertices)});
@@ -1887,14 +1887,14 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (!graph_properties.empty()) {
             // Compute content hashes for Automatic mode (if not already computed)
             uint32_t num_states = hg.num_states();
-            std::unordered_map<uint64_t, unified::StateId> gd_content_hash_to_id;
+            std::unordered_map<uint64_t, hypergraph::StateId> gd_content_hash_to_id;
             std::vector<uint64_t> gd_state_content_hashes(num_states, 0);
 
             if (canonicalize_states_mode == "Automatic") {
                 gd_content_hash_to_id.reserve(num_states);
                 for (uint32_t sid = 0; sid < num_states; ++sid) {
-                    const unified::State& state = hg.get_state(sid);
-                    if (state.id == unified::INVALID_ID) continue;
+                    const hypergraph::State& state = hg.get_state(sid);
+                    if (state.id == hypergraph::INVALID_ID) continue;
                     uint64_t hash = hg.get_state_content_hash(sid);
                     gd_state_content_hashes[sid] = hash;
                     if (gd_content_hash_to_id.find(hash) == gd_content_hash_to_id.end()) {
@@ -1904,7 +1904,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             }
 
             // Helper: Get effective state ID based on canonicalization mode
-            auto get_effective_state_id = [&](unified::StateId sid) -> int64_t {
+            auto get_effective_state_id = [&](hypergraph::StateId sid) -> int64_t {
                 if (canonicalize_states_mode == "Full")
                     return static_cast<int64_t>(hg.get_canonical_state(sid));
                 if (canonicalize_states_mode == "Automatic")
@@ -1916,19 +1916,19 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // Note: EVENT_SIG_FULL uses InputState/OutputState which require canonical state IDs.
             // When CanonicalizeStates=None, we must use raw event IDs because canonical_event_id
             // was computed using canonical state IDs during evolution.
-            auto get_effective_event_id = [&](unified::EventId eid) -> int64_t {
-                if (canonicalize_states_mode == "None" || event_signature_keys == unified::EVENT_SIG_NONE)
+            auto get_effective_event_id = [&](hypergraph::EventId eid) -> int64_t {
+                if (canonicalize_states_mode == "None" || event_signature_keys == hypergraph::EVENT_SIG_NONE)
                     return static_cast<int64_t>(eid);
-                const unified::Event& e = hg.get_event(eid);
+                const hypergraph::Event& e = hg.get_event(eid);
                 return e.is_canonical() ? static_cast<int64_t>(eid)
                                         : static_cast<int64_t>(e.canonical_event_id);
             };
 
             // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
-            auto serialize_state_edges = [&](unified::StateId sid) -> wxf::ValueList {
+            auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::ValueList {
                 wxf::ValueList edge_list;
-                hg.get_state(sid).edges.for_each([&](unified::EdgeId eid) {
-                    const unified::Edge& edge = hg.get_edge(eid);
+                hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
                     wxf::ValueList e;
                     e.push_back(wxf::Value(static_cast<int64_t>(eid)));
                     for (uint8_t i = 0; i < edge.arity; ++i)
@@ -1939,8 +1939,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             };
 
             // Helper: Serialize state data for tooltips
-            auto serialize_state_data = [&](unified::StateId sid) -> wxf::ValueAssociation {
-                const unified::State& state = hg.get_state(sid);
+            auto serialize_state_data = [&](hypergraph::StateId sid) -> wxf::ValueAssociation {
+                const hypergraph::State& state = hg.get_state(sid);
                 wxf::ValueAssociation d;
                 d.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(sid))});
                 d.push_back({wxf::Value("CanonicalId"), wxf::Value(static_cast<int64_t>(hg.get_canonical_state(sid)))});
@@ -1951,8 +1951,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             };
 
             // Helper: Serialize event data for tooltips
-            auto serialize_event_data = [&](unified::EventId eid) -> wxf::ValueAssociation {
-                const unified::Event& e = hg.get_event(eid);
+            auto serialize_event_data = [&](hypergraph::EventId eid) -> wxf::ValueAssociation {
+                const hypergraph::Event& e = hg.get_event(eid);
                 wxf::ValueAssociation d;
                 d.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(eid))});
                 d.push_back({wxf::Value("CanonicalId"), wxf::Value(get_effective_event_id(eid))});
@@ -1974,9 +1974,9 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             };
 
             // Helper: Check if event should be included
-            auto is_valid_event = [&](unified::EventId eid) -> bool {
-                const unified::Event& e = hg.get_event(eid);
-                if (e.id == unified::INVALID_ID) return false;
+            auto is_valid_event = [&](hypergraph::EventId eid) -> bool {
+                const hypergraph::Event& e = hg.get_event(eid);
+                if (e.id == hypergraph::INVALID_ID) return false;
                 if (!show_genesis_events && hg.is_genesis_event(eid)) return false;
                 return true;
             };
@@ -2015,7 +2015,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // IMPORTANT: Each edge must have unique data or Mathematica's Graph[] will deduplicate!
             auto add_causal_edges = [&]() {
                 // First pass: count CausalEdges per raw (producer, consumer) pair
-                std::map<std::pair<unified::EventId, unified::EventId>, size_t> pair_counts;
+                std::map<std::pair<hypergraph::EventId, hypergraph::EventId>, size_t> pair_counts;
                 for (const auto& ce : hg.causal_graph().get_causal_edges()) {
                     if (!show_genesis_events && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
                     pair_counts[{ce.producer, ce.consumer}]++;
@@ -2045,9 +2045,9 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             if (is_states) {
                 // === STATES GRAPH ===
                 // Vertices: states (deduplicated by effective ID)
-                std::map<int64_t, unified::StateId> state_verts;
+                std::map<int64_t, hypergraph::StateId> state_verts;
                 for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
-                    if (hg.get_state(sid).id == unified::INVALID_ID) continue;
+                    if (hg.get_state(sid).id == hypergraph::INVALID_ID) continue;
                     int64_t eff = get_effective_state_id(sid);
                     if (!state_verts.count(eff)) state_verts[eff] = sid;
                 }
@@ -2058,7 +2058,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 // Edges: events (state → state)
                 for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
                     if (!is_valid_event(eid)) continue;
-                    const unified::Event& e = hg.get_event(eid);
+                    const hypergraph::Event& e = hg.get_event(eid);
                     add_graph_edge(wxf::Value(get_effective_state_id(e.input_state)),
                                    wxf::Value(get_effective_state_id(e.output_state)),
                                    "Directed", serialize_event_data(eid));
@@ -2067,7 +2067,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             else if (is_causal) {
                 // === CAUSAL GRAPH ===
                 // Vertices: events (deduplicated, tagged)
-                std::map<int64_t, unified::EventId> event_verts;
+                std::map<int64_t, hypergraph::EventId> event_verts;
                 for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
                     if (!is_valid_event(eid)) continue;
                     int64_t eff = get_effective_event_id(eid);
@@ -2084,8 +2084,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             else if (is_branchial) {
                 // === BRANCHIAL GRAPH ===
                 // Vertices: states involved in branchial edges (output states of branchial event pairs)
-                std::set<unified::StateId> state_set;
-                std::map<int64_t, unified::StateId> state_verts;
+                std::set<hypergraph::StateId> state_set;
+                std::map<int64_t, hypergraph::StateId> state_verts;
                 auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
 
                 // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
@@ -2103,12 +2103,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 for (const auto& edge : branchial_edge_vec) {
                     if (!show_genesis_events &&
                         (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) continue;
-                    const unified::Event& event1 = hg.get_event(edge.event1);
-                    const unified::Event& event2 = hg.get_event(edge.event2);
+                    const hypergraph::Event& event1 = hg.get_event(edge.event1);
+                    const hypergraph::Event& event2 = hg.get_event(edge.event2);
 
                     // Filter by step if specified
                     if (filter_by_step) {
-                        const unified::State& output_state = hg.get_state(event1.output_state);
+                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
                         if (output_state.step != target_step) continue;
                     }
 
@@ -2131,12 +2131,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 for (const auto& edge : branchial_edge_vec) {
                     if (!show_genesis_events &&
                         (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) continue;
-                    const unified::Event& event1 = hg.get_event(edge.event1);
-                    const unified::Event& event2 = hg.get_event(edge.event2);
+                    const hypergraph::Event& event1 = hg.get_event(edge.event1);
+                    const hypergraph::Event& event2 = hg.get_event(edge.event2);
 
                     // Filter by step if specified
                     if (filter_by_step) {
-                        const unified::State& output_state = hg.get_state(event1.output_state);
+                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
                         if (output_state.step != target_step) continue;
                     }
 
@@ -2154,12 +2154,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 // === EVOLUTION GRAPH ===
                 // Vertices: states (tagged {"S", id}) + events (tagged {"E", id})
                 std::set<int64_t> state_ids;
-                std::map<int64_t, unified::StateId> raw_states;
-                std::map<int64_t, unified::EventId> event_verts;
+                std::map<int64_t, hypergraph::StateId> raw_states;
+                std::map<int64_t, hypergraph::EventId> event_verts;
 
                 for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
                     if (!is_valid_event(eid)) continue;
-                    const unified::Event& e = hg.get_event(eid);
+                    const hypergraph::Event& e = hg.get_event(eid);
                     // Track states using effective IDs for proper deduplication
                     int64_t in_id = get_effective_state_id(e.input_state);
                     int64_t out_id = get_effective_state_id(e.output_state);
@@ -2187,7 +2187,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 // Edges: state↔event from each event (use effective IDs for deduplication)
                 for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
                     if (!is_valid_event(eid)) continue;
-                    const unified::Event& e = hg.get_event(eid);
+                    const hypergraph::Event& e = hg.get_event(eid);
                     int64_t eff_eid = get_effective_event_id(eid);
                     wxf::ValueList s_in = {wxf::Value("S"), wxf::Value(get_effective_state_id(e.input_state))};
                     wxf::ValueList s_out = {wxf::Value("S"), wxf::Value(get_effective_state_id(e.output_state))};
@@ -2222,8 +2222,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                         // Filter by step if specified
                         if (filter_by_step) {
-                            const unified::Event& event1 = hg.get_event(be.event1);
-                            const unified::State& output_state = hg.get_state(event1.output_state);
+                            const hypergraph::Event& event1 = hg.get_event(be.event1);
+                            const hypergraph::State& output_state = hg.get_state(event1.output_state);
                             if (output_state.step != target_step) continue;
                         }
 
@@ -2270,10 +2270,10 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             } else {
                 // Filter out genesis event pairs - must iterate and count
                 auto causal_edge_vec = hg.causal_graph().get_causal_edges();
-                auto pair_hash = [](const std::pair<unified::EventId, unified::EventId>& p) {
+                auto pair_hash = [](const std::pair<hypergraph::EventId, hypergraph::EventId>& p) {
                     return std::hash<uint64_t>{}((static_cast<uint64_t>(p.first) << 32) | p.second);
                 };
-                std::unordered_set<std::pair<unified::EventId, unified::EventId>, decltype(pair_hash)> seen_pairs(
+                std::unordered_set<std::pair<hypergraph::EventId, hypergraph::EventId>, decltype(pair_hash)> seen_pairs(
                     0, pair_hash);
                 seen_pairs.reserve(causal_edge_vec.size());
 
@@ -2298,8 +2298,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             wxf::ValueList global_edges;
             uint32_t num_edges = hg.num_edges();
             for (uint32_t eid = 0; eid < num_edges; ++eid) {
-                const unified::Edge& edge = hg.get_edge(eid);
-                if (edge.id == unified::INVALID_ID) continue;
+                const hypergraph::Edge& edge = hg.get_edge(eid);
+                if (edge.id == hypergraph::INVALID_ID) continue;
 
                 wxf::ValueList edge_data;
                 edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
@@ -2317,12 +2317,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             wxf::ValueAssociation state_bitvectors;
             uint32_t num_states = hg.num_states();
             for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const unified::State& state = hg.get_state(sid);
-                if (state.id == unified::INVALID_ID) continue;
+                const hypergraph::State& state = hg.get_state(sid);
+                if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Convert SparseBitset to list of edge IDs
                 wxf::ValueList edge_ids;
-                state.edges.for_each([&](unified::EdgeId eid) {
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
                     edge_ids.push_back(wxf::Value(static_cast<int64_t>(eid)));
                 });
 

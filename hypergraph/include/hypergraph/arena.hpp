@@ -7,7 +7,7 @@
 #include <new>
 #include <type_traits>
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Arena<T>: Typed single-threaded arena allocator
@@ -795,4 +795,4 @@ private:
     size_t capacity_;
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

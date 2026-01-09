@@ -10,7 +10,7 @@
 #include "concurrent_map.hpp"
 #include "bitset.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // SignatureIndex
@@ -370,4 +370,4 @@ public:
     InvertedVertexIndex& inverted_index() { return inverted_index_; }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

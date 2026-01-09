@@ -15,7 +15,7 @@
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Pattern Matching Tasks (HGMatch Dataflow Model)
@@ -592,4 +592,4 @@ void find_delta_matches(
     }
 }
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

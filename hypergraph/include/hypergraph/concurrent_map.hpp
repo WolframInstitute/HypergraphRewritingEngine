@@ -11,7 +11,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // ConcurrentMap<K, V>: Lock-free hash map with open addressing
@@ -599,4 +599,4 @@ private:
     size_t count_;
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

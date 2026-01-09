@@ -11,7 +11,7 @@
 #include "unified_hypergraph.hpp"
 #include "hypergraph/debug_log.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // RewriteResult
@@ -295,4 +295,4 @@ inline RewriteResult apply_rewrite(
     return rewriter.apply(rule, input_state, matched_edges, num_matched, binding, output_step);
 }
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

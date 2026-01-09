@@ -19,7 +19,7 @@
 // GPU host interface (pure C++, no CUDA headers)
 #include "../gpu_evolution_host.hpp"
 
-namespace v2 = hypergraph::unified;
+namespace v2 = hypergraph;
 namespace gpu = hypergraph::gpu;
 
 // =============================================================================

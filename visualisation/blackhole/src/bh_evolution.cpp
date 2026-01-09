@@ -143,7 +143,7 @@ bool EvolutionRunner::parse_rule(const std::string& rule_string) {
     };
 
     // Build rule using RuleBuilder
-    using namespace hypergraph::unified;
+    using namespace hypergraph;
     auto builder = make_rule(0);
 
     // Add LHS edges
@@ -188,10 +188,10 @@ bool EvolutionRunner::parse_rule(const std::string& rule_string) {
     return true;
 }
 
-std::vector<std::vector<hypergraph::unified::VertexId>> EvolutionRunner::convert_edges(
+std::vector<std::vector<hypergraph::VertexId>> EvolutionRunner::convert_edges(
     const BHInitialCondition& initial
 ) {
-    std::vector<std::vector<hypergraph::unified::VertexId>> result;
+    std::vector<std::vector<hypergraph::VertexId>> result;
     result.reserve(initial.edges.size());
 
     for (const auto& edge : initial.edges) {
@@ -252,7 +252,7 @@ EvolutionResult EvolutionRunner::extract_states() {
         StateData sd;
         std::unordered_set<VertexId> vertex_set;
 
-        state.edges.for_each([&](hypergraph::unified::EdgeId eid) {
+        state.edges.for_each([&](hypergraph::EdgeId eid) {
             const auto& edge = hypergraph_->get_edge(eid);
 
             // For binary edges (arity 2), store directly with edge ID
@@ -293,8 +293,8 @@ EvolutionResult EvolutionRunner::run_evolution(
     report_progress("Initializing", 0.0f);
 
     // Create fresh hypergraph and engine
-    hypergraph_ = std::make_unique<hypergraph::unified::UnifiedHypergraph>();
-    engine_ = std::make_unique<hypergraph::unified::ParallelEvolutionEngine>(
+    hypergraph_ = std::make_unique<hypergraph::UnifiedHypergraph>();
+    engine_ = std::make_unique<hypergraph::ParallelEvolutionEngine>(
         hypergraph_.get(), num_threads_
     );
 
@@ -307,19 +307,19 @@ EvolutionResult EvolutionRunner::run_evolution(
     // State canonicalization: deduplicate isomorphic states
     if (config.canonicalize_states) {
         hypergraph_->set_state_canonicalization_mode(
-            hypergraph::unified::StateCanonicalizationMode::Full
+            hypergraph::StateCanonicalizationMode::Full
         );
     } else {
         hypergraph_->set_state_canonicalization_mode(
-            hypergraph::unified::StateCanonicalizationMode::None
+            hypergraph::StateCanonicalizationMode::None
         );
     }
 
     // Event canonicalization: deduplicate equivalent events
     if (config.canonicalize_events) {
-        hypergraph_->set_event_signature_keys(hypergraph::unified::EVENT_SIG_FULL);
+        hypergraph_->set_event_signature_keys(hypergraph::EVENT_SIG_FULL);
     } else {
-        hypergraph_->set_event_signature_keys(hypergraph::unified::EVENT_SIG_NONE);
+        hypergraph_->set_event_signature_keys(hypergraph::EVENT_SIG_NONE);
     }
 
     // Exploration: only explore from canonical state representatives
@@ -1171,8 +1171,8 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 // =============================================================================
 
 SimpleGraph state_to_simple_graph(
-    const hypergraph::unified::UnifiedHypergraph& hg,
-    hypergraph::unified::StateId state_id
+    const hypergraph::UnifiedHypergraph& hg,
+    hypergraph::StateId state_id
 ) {
     const auto& state = hg.get_state(state_id);
 
@@ -1181,7 +1181,7 @@ SimpleGraph state_to_simple_graph(
     std::vector<Edge> edges;
     std::unordered_set<VertexId> vertex_set;
 
-    state.edges.for_each([&](hypergraph::unified::EdgeId eid) {
+    state.edges.for_each([&](hypergraph::EdgeId eid) {
         const auto& edge = hg.get_edge(eid);
 
         // For binary edges (arity 2), convert directly

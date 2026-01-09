@@ -13,7 +13,7 @@
 #include "segmented_array.hpp"
 #include "lock_free_list.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // UnifiedUniquenessTree: Gorard-style Uniqueness Trees for Unified Hypergraph
@@ -988,4 +988,4 @@ private:
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

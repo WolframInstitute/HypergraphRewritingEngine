@@ -6,7 +6,7 @@
 #include "types.hpp"
 #include "signature.hpp"
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Constants
@@ -417,4 +417,4 @@ struct PartialMatch {
     }
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

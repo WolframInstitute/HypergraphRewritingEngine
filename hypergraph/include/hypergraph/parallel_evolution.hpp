@@ -34,7 +34,7 @@
 #include <events/viz_event_sink.hpp>
 #endif
 
-namespace hypergraph::unified {
+namespace hypergraph {
 
 // =============================================================================
 // Match Record
@@ -2709,4 +2709,4 @@ private:
 
 };
 
-}  // namespace hypergraph::unified
+}  // namespace hypergraph

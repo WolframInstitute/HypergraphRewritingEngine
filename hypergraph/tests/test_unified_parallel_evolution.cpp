@@ -3,7 +3,7 @@
 #include <set>
 #include <chrono>
 
-using namespace hypergraph::unified;
+using namespace hypergraph;
 
 // =============================================================================
 // Test Helpers (static to have internal linkage, avoiding ODR conflicts)

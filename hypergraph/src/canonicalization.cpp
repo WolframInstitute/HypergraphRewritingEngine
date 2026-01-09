@@ -513,16 +513,16 @@ CanonicalizationResult Canonicalizer::canonicalize_edges(const std::vector<std::
 }
 
 // Explicit template instantiations for the types we use
-// Note: VertexId and GlobalVertexId are both std::size_t, so only instantiate once
+// VertexId is uint32_t (from types.hpp)
 template CanonicalizationResult Canonicalizer::canonicalize_edges<VertexId>(const std::vector<std::vector<VertexId>>& edges) const;
 
 template std::vector<std::vector<VertexId>> Canonicalizer::wolfram_canonical_hypergraph<VertexId>(
     const std::vector<std::vector<VertexId>>& edges, VertexMapping& mapping) const;
 
-// Also instantiate for uint32_t (used by unified::VertexId)
-template CanonicalizationResult Canonicalizer::canonicalize_edges<uint32_t>(const std::vector<std::vector<uint32_t>>& edges) const;
+// Also instantiate for size_t (may be needed by some callers)
+template CanonicalizationResult Canonicalizer::canonicalize_edges<std::size_t>(const std::vector<std::vector<std::size_t>>& edges) const;
 
-template std::vector<std::vector<uint32_t>> Canonicalizer::wolfram_canonical_hypergraph<uint32_t>(
-    const std::vector<std::vector<uint32_t>>& edges, VertexMapping& mapping) const;
+template std::vector<std::vector<std::size_t>> Canonicalizer::wolfram_canonical_hypergraph<std::size_t>(
+    const std::vector<std::vector<std::size_t>>& edges, VertexMapping& mapping) const;
 
 } // namespace hypergraph

@@ -3,7 +3,7 @@
 #include <set>
 #include <iostream>
 
-using namespace hypergraph::unified;
+using namespace hypergraph;
 
 class UnifiedMultipleInitialStatesTest : public ::testing::Test {
 protected:
