@@ -20,9 +20,9 @@
 #include "hypergraph/wolfram_states.hpp"
 
 // Include unified engine headers (V2)
-#include "hypergraph/unified/unified_hypergraph.hpp"
-#include "hypergraph/unified/parallel_evolution.hpp"
-#include "hypergraph/unified/pattern.hpp"
+#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/pattern.hpp"
 #include "hypergraph/debug_log.hpp"
 
 // Include comprehensive WXF library

@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "hypergraph/unified/arena.hpp"
-#include "hypergraph/unified/types.hpp"
-#include "hypergraph/unified/bitset.hpp"
-#include "hypergraph/unified/unified_hypergraph.hpp"
-#include "hypergraph/unified/rewriter.hpp"
-#include "hypergraph/unified/causal_graph.hpp"
+#include "hypergraph/arena.hpp"
+#include "hypergraph/types.hpp"
+#include "hypergraph/bitset.hpp"
+#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/rewriter.hpp"
+#include "hypergraph/causal_graph.hpp"
 #include <vector>
 #include <set>
 #include <algorithm>

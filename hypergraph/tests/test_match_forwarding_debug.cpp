@@ -10,13 +10,13 @@
 #include "hypergraph/pattern_matching.hpp"
 
 // v2 (unified) includes
-#include "hypergraph/unified/arena.hpp"
-#include "hypergraph/unified/types.hpp"
-#include "hypergraph/unified/bitset.hpp"
-#include "hypergraph/unified/unified_hypergraph.hpp"
-#include "hypergraph/unified/pattern.hpp"
-#include "hypergraph/unified/rewriter.hpp"
-#include "hypergraph/unified/parallel_evolution.hpp"
+#include "hypergraph/arena.hpp"
+#include "hypergraph/types.hpp"
+#include "hypergraph/bitset.hpp"
+#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/pattern.hpp"
+#include "hypergraph/rewriter.hpp"
+#include "hypergraph/parallel_evolution.hpp"
 
 using namespace hypergraph;
 namespace v2 = hypergraph::unified;

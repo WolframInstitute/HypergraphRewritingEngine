@@ -1,13 +1,13 @@
 #include <gtest/gtest.h>
-#include "hypergraph/unified/arena.hpp"
-#include "hypergraph/unified/types.hpp"
-#include "hypergraph/unified/bitset.hpp"
-#include "hypergraph/unified/signature.hpp"
-#include "hypergraph/unified/pattern.hpp"
-#include "hypergraph/unified/index.hpp"
-#include "hypergraph/unified/pattern_matcher.hpp"
-#include "hypergraph/unified/unified_hypergraph.hpp"
-#include "hypergraph/unified/rewriter.hpp"
+#include "hypergraph/arena.hpp"
+#include "hypergraph/types.hpp"
+#include "hypergraph/bitset.hpp"
+#include "hypergraph/signature.hpp"
+#include "hypergraph/pattern.hpp"
+#include "hypergraph/index.hpp"
+#include "hypergraph/pattern_matcher.hpp"
+#include "hypergraph/unified_hypergraph.hpp"
+#include "hypergraph/rewriter.hpp"
 #include <vector>
 #include <set>
 

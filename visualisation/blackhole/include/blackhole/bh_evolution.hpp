@@ -4,8 +4,8 @@
 #include "bh_initial_condition.hpp"
 #include "hausdorff_analysis.hpp"
 
-#include <hypergraph/unified/parallel_evolution.hpp>
-#include <hypergraph/unified/unified_hypergraph.hpp>
+#include <hypergraph/parallel_evolution.hpp>
+#include <hypergraph/unified_hypergraph.hpp>
 #include <job_system/job_system.hpp>
 
 #include <vector>

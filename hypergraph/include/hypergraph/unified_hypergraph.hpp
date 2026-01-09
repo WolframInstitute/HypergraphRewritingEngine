@@ -22,7 +22,7 @@
 #include "concurrent_map.hpp"
 
 // Include v1 canonicalizer for exact isomorphism checking
-#include "../canonicalization.hpp"
+#include "canonicalization.hpp"
 
 namespace hypergraph::unified {
 

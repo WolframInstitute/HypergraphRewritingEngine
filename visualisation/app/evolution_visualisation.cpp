@@ -19,8 +19,8 @@
 
 // Engine headers (only included when HYPERGRAPH_ENABLE_VISUALIZATION is defined)
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-#include <hypergraph/unified/parallel_evolution.hpp>
-#include <hypergraph/unified/unified_hypergraph.hpp>
+#include <hypergraph/parallel_evolution.hpp>
+#include <hypergraph/unified_hypergraph.hpp>
 #endif
 
 #include <iostream>

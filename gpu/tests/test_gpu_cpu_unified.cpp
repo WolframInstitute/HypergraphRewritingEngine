@@ -1,7 +1,7 @@
 // GPU vs CPU Unified Comparison Test
 // This file is compiled with C++20 and links against both:
 // - GPU library via host interface (gpu_evolution_host.hpp)
-// - CPU unified library (hypergraph/unified/)
+// - CPU unified library (hypergraph/)
 
 #include <gtest/gtest.h>
 #include <chrono>
@@ -11,9 +11,9 @@
 #include <thread>
 
 // CPU unified includes (C++20)
-#include <hypergraph/unified/unified_hypergraph.hpp>
-#include <hypergraph/unified/parallel_evolution.hpp>
-#include <hypergraph/unified/pattern.hpp>
+#include <hypergraph/unified_hypergraph.hpp>
+#include <hypergraph/parallel_evolution.hpp>
+#include <hypergraph/pattern.hpp>
 #include <job_system/job_system.hpp>
 
 // GPU host interface (pure C++, no CUDA headers)

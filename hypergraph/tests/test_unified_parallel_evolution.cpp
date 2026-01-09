@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "hypergraph/unified/parallel_evolution.hpp"
+#include "hypergraph/parallel_evolution.hpp"
 #include <set>
 #include <chrono>
 
