@@ -20,6 +20,10 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/bh_initial_condition.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/geodesic_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/particle_detection.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/entropy_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/curvature_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/rotation_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branchial_analysis.cpp
 )
 
 # Create the library

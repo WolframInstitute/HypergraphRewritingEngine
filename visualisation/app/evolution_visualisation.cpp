@@ -164,7 +164,7 @@ private:
         std::cout << "[Evolution] VizEventSink active: " << (viz::VizEventSink::is_active() ? "YES" : "NO") << std::endl;
 
         // Create hypergraph and engine
-        Hypergraph hg;
+        hypergraph::Hypergraph hg;
         // Enable state canonicalization for equivalencing (isomorphic states merge)
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         ParallelEvolutionEngine engine(&hg);  // 4 worker threads
