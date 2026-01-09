@@ -727,6 +727,28 @@ public:
         finalize_evolution();
     }
 
+    // Overload for multiple initial states (without abort callback)
+    // Each initial state is evolved from independently, exploring the full multiway system
+    void evolve(const std::vector<std::vector<std::vector<VertexId>>>& initial_states, size_t steps) {
+        if (!hg_ || rules_.empty() || initial_states.empty()) return;
+
+        max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
+        hg_->set_abort_flag(&should_stop_);
+
+        // Create all initial states - they will all be explored
+        for (const auto& state_edges : initial_states) {
+            create_and_register_initial_state(state_edges);
+        }
+
+        // Single synchronization point at the end
+        job_system_->wait_for_completion();
+
+        finalize_evolution();
+    }
+
     // Evolve with abort callback - allows external abort control (e.g., from Mathematica)
     // The abort_check callback is called from the main thread periodically (~50ms)
     // If it returns true, evolution stops early and this function returns true (aborted)

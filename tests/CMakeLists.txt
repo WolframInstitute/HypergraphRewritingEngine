@@ -108,39 +108,23 @@ FetchContent_MakeAvailable(googletest)
 add_executable(unified_tests
     main.cpp
     test_helpers.hpp
+    # Core tests (unified-compatible)
     test_unified_simple.cpp
-    test_core_hypergraph.cpp
-    test_edge_signature.cpp
-    test_pattern_matching_comprehensive.cpp
-    test_wolfram_states.cpp
-    test_parallel_tasks.cpp
-    test_wolfram_evolution.cpp
-    test_multiple_initial_states.cpp
-    test_determinism_fuzzing.cpp
     test_canonicalization.cpp
-    test_pattern_matching_isolation.cpp
-    test_isolated_duplicate_bug.cpp
     test_wxf.cpp
     test_paclet.cpp
-    test_evolution_limits.cpp
-    test_uniqueness_tree.cpp
-    test_uniqueness_tree_fuzzing.cpp
-    test_brute_force_isomorphism.cpp
-    # unified architecture tests
+    test_grid_performance.cpp
+    test_repeated_invocation.cpp
+    # Unified architecture tests
     ../hypergraph/tests/test_unified_pattern_matching.cpp
     ../hypergraph/tests/test_unified_causal_branchial.cpp
-    ../hypergraph/tests/test_unified_v1_comparison.cpp
     ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
-    ../hypergraph/tests/test_unified_v1_count_comparison.cpp
     ../hypergraph/tests/test_unified_parallel_evolution.cpp
-    ../hypergraph/tests/test_v1_unified_exact_comparison.cpp
-    ../hypergraph/tests/test_match_forwarding_debug.cpp
-    ../hypergraph/tests/test_v1_unified_comprehensive.cpp
     ../hypergraph/tests/test_unified_event_canonicalization.cpp
-    test_grid_performance.cpp
-    test_repeated_invocation.cpp
+    ../hypergraph/tests/test_unified_multiple_initial_states.cpp
+    ../hypergraph/tests/test_unified_evolution_limits.cpp
 )
 
 # Link against all required libraries

@@ -123,7 +123,7 @@ TEST_F(JobSystemSimpleTest, Statistics) {
     EXPECT_EQ(stats.total_jobs_executed, static_cast<size_t>(num_jobs));
 }
 
-// === CANONICALIZATION TESTS (Fixed) ===
+// === CANONICALIZATION TESTS ===
 
 class CanonicalizationSimpleTest : public ::testing::Test {
 protected:
@@ -131,36 +131,36 @@ protected:
 };
 
 TEST_F(CanonicalizationSimpleTest, EmptyHypergraph) {
-    hypergraph::Hypergraph empty_hg;
-    auto result = canonicalizer.canonicalize(empty_hg);
-    
+    std::vector<std::vector<hypergraph::VertexId>> empty_edges;
+    auto result = canonicalizer.canonicalize_edges(empty_edges);
+
     // Check the structure exists
     EXPECT_TRUE(result.canonical_form.edges.empty());
-    EXPECT_EQ(result.canonical_form.vertex_count, 0);
+    EXPECT_EQ(result.canonical_form.vertex_count, 0u);
 }
 
 TEST_F(CanonicalizationSimpleTest, SingleEdge) {
-    auto hg = test_utils::create_test_hypergraph({{1, 2}});
-    auto result = canonicalizer.canonicalize(hg);
-    
+    std::vector<std::vector<hypergraph::VertexId>> edges = {{1, 2}};
+    auto result = canonicalizer.canonicalize_edges(edges);
+
     EXPECT_FALSE(result.canonical_form.edges.empty());
-    EXPECT_EQ(result.canonical_form.vertex_count, 2);
+    EXPECT_EQ(result.canonical_form.vertex_count, 2u);
 }
 
 TEST_F(CanonicalizationSimpleTest, VertexRelabeling) {
     // Same structure, different vertex labels should canonicalize to same form
-    auto hg1 = test_utils::create_test_hypergraph({{10, 20}, {10, 30}});
-    auto hg2 = test_utils::create_test_hypergraph({{100, 200}, {100, 300}});
-    
-    test_utils::expect_canonical_equal(hg1, hg2);
+    std::vector<std::vector<hypergraph::VertexId>> edges1 = {{10, 20}, {10, 30}};
+    std::vector<std::vector<hypergraph::VertexId>> edges2 = {{100, 200}, {100, 300}};
+
+    test_utils::expect_canonical_equal(edges1, edges2);
 }
 
 TEST_F(CanonicalizationSimpleTest, DifferentStructures) {
     // Different connectivity patterns should canonicalize differently
-    auto hg1 = test_utils::create_test_hypergraph({{1, 2}, {3, 4}});  // Disconnected
-    auto hg2 = test_utils::create_test_hypergraph({{1, 2}, {2, 3}});  // Connected
-    
-    test_utils::expect_canonical_different(hg1, hg2);
+    std::vector<std::vector<hypergraph::VertexId>> edges1 = {{1, 2}, {3, 4}};  // Disconnected
+    std::vector<std::vector<hypergraph::VertexId>> edges2 = {{1, 2}, {2, 3}};  // Connected
+
+    test_utils::expect_canonical_different(edges1, edges2);
 }
 
 // === INTEGRATION TEST ===
