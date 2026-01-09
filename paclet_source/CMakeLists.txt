@@ -28,10 +28,11 @@ add_library(HypergraphRewriting SHARED ${SOURCES})
 # Link against our existing targets
 # Note: Mathematica libraries are NOT needed at link time for LibraryLink
 # LibraryLink is header-only - Mathematica loads our library and calls our exports
+# Note: viz_blackhole is NOT linked - we compile the needed sources directly above
+# to avoid requiring BUILD_VISUALIZATION=ON
 target_link_libraries(HypergraphRewriting
     hypergraph
     wxf
-    viz_blackhole
 )
 
 # Include directories

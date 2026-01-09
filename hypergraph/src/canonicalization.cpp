@@ -6,6 +6,7 @@
 #include <numeric>
 #include <algorithm>
 #include <unordered_set>
+#include <functional>
 
 namespace hypergraph {
 
@@ -481,31 +482,6 @@ std::vector<std::vector<std::size_t>> Canonicalizer::edges_to_size_t(
         }
         result.push_back(new_edge);
     }
-    return result;
-}
-
-CanonicalizationResult Canonicalizer::canonicalize(const Hypergraph& hg) const {
-    CanonicalizationResult result;
-    
-    if (hg.num_vertices() == 0) {
-        result.canonical_form.vertex_count = 0;
-        return result;
-    }
-    
-    // Extract edges as vectors
-    std::vector<std::vector<VertexId>> edges;
-    for (const Hyperedge& edge : hg.edges()) {
-        std::vector<VertexId> edge_vertices;
-        for (VertexId v : edge.vertices()) {
-            edge_vertices.push_back(v);
-        }
-        edges.push_back(edge_vertices);
-    }
-    
-    // Apply Wolfram canonicalization
-    result.canonical_form.edges = wolfram_canonical_hypergraph(edges, result.vertex_mapping);
-    result.canonical_form.vertex_count = result.vertex_mapping.canonical_to_original.size();
-    
     return result;
 }
 

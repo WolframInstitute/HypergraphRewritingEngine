@@ -1,15 +1,18 @@
 #ifndef HYPERGRAPH_CANONICALIZATION_HPP
 #define HYPERGRAPH_CANONICALIZATION_HPP
 
-#include <hypergraph/hypergraph.hpp>
-#include <hypergraph/types.hpp>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
 #include <string>
 #include <limits>
+#include <cstdint>
 
 namespace hypergraph {
+
+// Self-contained type definitions for canonicalization
+using VertexId = std::size_t;
+constexpr VertexId INVALID_VERTEX = std::numeric_limits<VertexId>::max();
 
 /**
  * Canonical representation of a hypergraph.
@@ -104,22 +107,10 @@ private:
 
 public:
     /**
-     * Canonicalize a hypergraph, returning both canonical form and vertex mapping.
-     */
-    CanonicalizationResult canonicalize(const Hypergraph& hg) const;
-
-    /**
      * Canonicalize using raw edge vectors.
      */
     template<typename VertexType>
     CanonicalizationResult canonicalize_edges(const std::vector<std::vector<VertexType>>& edges) const;
-
-    /**
-     * Quick check if two hypergraphs are isomorphic (same canonical form).
-     */
-    bool are_isomorphic(const Hypergraph& a, const Hypergraph& b) const {
-        return canonicalize(a).canonical_form == canonicalize(b).canonical_form;
-    }
 };
 
 } // namespace hypergraph
