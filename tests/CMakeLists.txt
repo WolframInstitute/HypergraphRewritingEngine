@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-# Unified Test Suite
+# Test Suite Configuration
 
 # Find required packages
 find_package(Threads REQUIRED)
@@ -104,120 +104,173 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
-# Create unified test executable
-add_executable(unified_tests
+# =============================================================================
+# Common test libraries
+# =============================================================================
+set(TEST_COMMON_LIBS
+    hypergraph
+    job_system
+    lockfree_deque
+    wxf
+    GTest::gtest_main
+    GTest::gtest
+    Threads::Threads
+)
+
+# Helper function to create test executable
+function(create_test_executable TARGET_NAME)
+    add_executable(${TARGET_NAME} ${ARGN})
+    target_link_libraries(${TARGET_NAME} PRIVATE ${TEST_COMMON_LIBS})
+    target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    if(DEBUG_OUTPUT)
+        target_compile_definitions(${TARGET_NAME} PRIVATE ENABLE_DEBUG_OUTPUT)
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+        target_link_options(${TARGET_NAME} PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+
+    if(BUILD_MATHEMATICA_PACLET)
+        add_dependencies(${TARGET_NAME} paclet)
+    endif()
+
+    include(GoogleTest)
+    gtest_discover_tests(${TARGET_NAME})
+endfunction()
+
+# =============================================================================
+# all_tests - Complete test suite (everything)
+# =============================================================================
+create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
-    # Core tests (unified-compatible)
+    # Core tests
     test_unified_simple.cpp
     test_canonicalization.cpp
     test_wxf.cpp
     test_paclet.cpp
     test_grid_performance.cpp
     test_repeated_invocation.cpp
-    # Unified architecture tests
+    # Evolution and pattern matching
     ../hypergraph/tests/test_unified_pattern_matching.cpp
+    ../hypergraph/tests/test_unified_parallel_evolution.cpp
+    ../hypergraph/tests/test_unified_multiple_initial_states.cpp
+    ../hypergraph/tests/test_unified_evolution_limits.cpp
+    # Causal/branchial graph tests
     ../hypergraph/tests/test_unified_causal_branchial.cpp
+    ../hypergraph/tests/test_unified_event_canonicalization.cpp
+    # Determinism and stress tests
     ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
+)
+
+# =============================================================================
+# core_tests - Fast core functionality tests
+# =============================================================================
+create_test_executable(core_tests
+    main.cpp
+    test_helpers.hpp
+    test_unified_simple.cpp
+    test_canonicalization.cpp
+    test_wxf.cpp
+)
+
+# =============================================================================
+# evolution_tests - Evolution and pattern matching tests
+# =============================================================================
+create_test_executable(evolution_tests
+    main.cpp
+    test_helpers.hpp
+    ../hypergraph/tests/test_unified_pattern_matching.cpp
     ../hypergraph/tests/test_unified_parallel_evolution.cpp
-    ../hypergraph/tests/test_unified_event_canonicalization.cpp
     ../hypergraph/tests/test_unified_multiple_initial_states.cpp
     ../hypergraph/tests/test_unified_evolution_limits.cpp
 )
 
-# Link against all required libraries
-target_link_libraries(unified_tests
-    PRIVATE
-    # Core libraries
-    hypergraph
-    job_system
-    lockfree_deque
-    wxf  # WXF serialization library
-
-    # GoogleTest
-    GTest::gtest_main
-    GTest::gtest
-
-    # System libraries
-    Threads::Threads
+# =============================================================================
+# causal_tests - Causal and branchial graph tests
+# =============================================================================
+create_test_executable(causal_tests
+    main.cpp
+    test_helpers.hpp
+    ../hypergraph/tests/test_unified_causal_branchial.cpp
+    ../hypergraph/tests/test_unified_event_canonicalization.cpp
 )
 
-# GPU vs CPU comparison tests are in gpu/tests/ and built as gpu_tests
-# (unified_tests uses pure C++ and cannot link against CUDA device code)
-
-# Add paclet dependency when paclet building is enabled
-if(BUILD_MATHEMATICA_PACLET)
-    add_dependencies(unified_tests paclet)
-endif()
-
-# Static linking for MinGW to avoid DLL dependencies during test discovery
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
-    target_link_options(unified_tests PRIVATE -static-libgcc -static-libstdc++)
-endif()
-
-# Include directories
-target_include_directories(unified_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+# =============================================================================
+# stress_tests - Determinism fuzzing and performance tests
+# =============================================================================
+create_test_executable(stress_tests
+    main.cpp
+    test_helpers.hpp
+    ../hypergraph/tests/test_unified_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
+    test_grid_performance.cpp
+    test_repeated_invocation.cpp
 )
 
-# Pass DEBUG_OUTPUT definition to test executable (headers have ifdefs)
-if(DEBUG_OUTPUT)
-    target_compile_definitions(unified_tests PRIVATE ENABLE_DEBUG_OUTPUT)
-endif()
+# =============================================================================
+# integration_tests - Integration tests (paclet, blackhole)
+# =============================================================================
+create_test_executable(integration_tests
+    main.cpp
+    test_helpers.hpp
+    test_paclet.cpp
+    ../hypergraph/tests/test_blackhole_idempotent.cpp
+)
 
+# =============================================================================
+# Run targets for convenience
+# =============================================================================
 
-# Enable GoogleTest discovery
-include(GoogleTest)
-gtest_discover_tests(unified_tests)
-
-# Add test target for easy execution
+# Run all tests
 add_custom_target(run_tests
-    COMMAND unified_tests --gtest_color=yes
-    DEPENDS unified_tests
+    COMMAND all_tests --gtest_color=yes
+    DEPENDS all_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running unified test suite..."
+    COMMENT "Running all tests..."
 )
 
-# Performance test target (runs only performance-related tests)
-add_custom_target(run_perf_tests
-    COMMAND unified_tests --gtest_filter="*Stress*:*Performance*:*Concurrency*" --gtest_color=yes
-    DEPENDS unified_tests  
+# Run core tests (fast)
+add_custom_target(run_core_tests
+    COMMAND core_tests --gtest_color=yes
+    DEPENDS core_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running performance tests..."
+    COMMENT "Running core tests..."
 )
 
-# Determinism fuzzing test target (runs determinism tests)
-add_custom_target(run_determinism_tests
-    COMMAND unified_tests --gtest_filter="*DeterminismFuzzing*" --gtest_color=yes
-    DEPENDS unified_tests
+# Run evolution tests
+add_custom_target(run_evolution_tests
+    COMMAND evolution_tests --gtest_color=yes
+    DEPENDS evolution_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running determinism fuzzing tests..."
+    COMMENT "Running evolution tests..."
 )
 
-# Integration test target (runs only integration tests)
+# Run causal tests
+add_custom_target(run_causal_tests
+    COMMAND causal_tests --gtest_color=yes
+    DEPENDS causal_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running causal/branchial tests..."
+)
+
+# Run stress tests
+add_custom_target(run_stress_tests
+    COMMAND stress_tests --gtest_color=yes
+    DEPENDS stress_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running stress/determinism tests..."
+)
+
+# Run integration tests
 add_custom_target(run_integration_tests
-    COMMAND unified_tests --gtest_filter="*Integration*" --gtest_color=yes
-    DEPENDS unified_tests
+    COMMAND integration_tests --gtest_color=yes
+    DEPENDS integration_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running integration tests..."
-)
-
-# Unit test target (runs core unit tests only)
-add_custom_target(run_unit_tests
-    COMMAND unified_tests --gtest_filter="*Unit*" --gtest_color=yes
-    DEPENDS unified_tests
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running unit tests..."
-)
-
-# WXF test target (runs WXF serialization tests)
-add_custom_target(run_wxf_tests
-    COMMAND unified_tests --gtest_filter="*WXF*" --gtest_color=yes
-    DEPENDS unified_tests
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running WXF serialization tests..."
 )
 
 # =============================================================================
