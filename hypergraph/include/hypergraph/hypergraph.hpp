@@ -273,64 +273,12 @@ public:
         uint8_t arity,
         EventId creator_event = INVALID_ID,
         uint32_t step = 0
-    ) {
-        EdgeId eid = counters_.alloc_edge();
-
-        // Allocate and copy vertex array
-        VertexId* verts = arena_.allocate_array<VertexId>(arity);
-        std::memcpy(verts, vertices, arity * sizeof(VertexId));
-
-        // Directly construct edge at slot eid using emplace_at
-        // This avoids the race condition in ensure_size where another thread's
-        // emplace might be in the middle of constructing our slot
-        edges_.emplace_at(eid, arena_, eid, verts, arity, creator_event, step);
-
-        // CRITICAL: Release fence to ensure vertex data (from memcpy above) and
-        // edge struct are visible to other threads before the edge ID escapes.
-        // Without this, other threads reading edges_[eid] might see stale vertex data.
-        std::atomic_thread_fence(std::memory_order_release);
-
-        // Compute and cache edge signature (immutable after creation)
-        edge_signatures_.emplace_at(eid, arena_, EdgeSignature::from_edge(vertices, arity));
-
-        // Update indices
-        match_index_.add_edge(eid, vertices, arity, arena_);
-
-        // Register in global vertex adjacency index
-        // This is the canonical adjacency structure used by all hash strategies
-        for (uint8_t i = 0; i < arity; ++i) {
-            VertexId v = vertices[i];
-            EdgeOccurrence occ(eid, i, arity);
-            vertex_adjacency_.get_or_default(v, arena_).push(occ, arena_);
-        }
-
-        // Register with hash implementations (for any additional per-strategy state)
-        if (unified_tree_) {
-            unified_tree_->register_edge(eid, vertices, arity);
-        }
-        if (incremental_tree_) {
-            incremental_tree_->register_edge(eid, vertices, arity);
-        }
-        if (wl_hash_) {
-            wl_hash_->register_edge(eid, vertices, arity);
-        }
-
-        return eid;
-    }
+    );
 
     // Create edge from initializer list (convenience)
     EdgeId create_edge(std::initializer_list<VertexId> vertices,
                        EventId creator_event = INVALID_ID,
-                       uint32_t step = 0) {
-        VertexId verts[MAX_ARITY];
-        uint8_t arity = 0;
-        for (VertexId v : vertices) {
-            if (arity < MAX_ARITY) {
-                verts[arity++] = v;
-            }
-        }
-        return create_edge(verts, arity, creator_event, step);
-    }
+                       uint32_t step = 0);
 
     // Get edge by ID
     const Edge& get_edge(EdgeId eid) const {
@@ -630,27 +578,7 @@ public:
         uint32_t step = 0,
         uint64_t canonical_hash = 0,
         EventId parent_event = INVALID_ID
-    ) {
-        StateId sid = counters_.alloc_state();
-
-        // Ensure auxiliary arrays are large enough (thread-safe)
-        // These are LockFreeLists which only need default construction
-        state_children_.ensure_size(sid + 1, arena_);
-        state_matches_.ensure_size(sid + 1, arena_);
-
-        // Directly construct state at slot sid using emplace_at
-        // This avoids the race condition in ensure_size where another thread's
-        // emplace might be in the middle of constructing our slot while we're
-        // trying to move-assign over it
-        states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
-
-        // CRITICAL: Release fence to ensure state data (including SparseBitset's
-        // internal pointers and the chunk data they point to) is visible to other
-        // threads before the state ID escapes.
-        std::atomic_thread_fence(std::memory_order_release);
-
-        return sid;
-    }
+    );
 
     // Create state from edge IDs (convenience)
     StateId create_state(
@@ -659,25 +587,13 @@ public:
         uint32_t step = 0,
         uint64_t canonical_hash = 0,
         EventId parent_event = INVALID_ID
-    ) {
-        SparseBitset edge_set;
-        for (uint32_t i = 0; i < num_edges; ++i) {
-            edge_set.set(edge_ids[i], arena_);
-        }
-        return create_state(std::move(edge_set), step, canonical_hash, parent_event);
-    }
+    );
 
     // Create state from initializer list (convenience)
     StateId create_state(std::initializer_list<EdgeId> edge_ids,
                          uint32_t step = 0,
                          uint64_t canonical_hash = 0,
-                         EventId parent_event = INVALID_ID) {
-        SparseBitset edge_set;
-        for (EdgeId eid : edge_ids) {
-            edge_set.set(eid, arena_);
-        }
-        return create_state(std::move(edge_set), step, canonical_hash, parent_event);
-    }
+                         EventId parent_event = INVALID_ID);
 
     // Get state by ID
     const State& get_state(StateId sid) const {
@@ -716,27 +632,7 @@ public:
     // Get the genesis state ID (creates it lazily if needed)
     // The genesis state is an empty state (no edges) that serves as the origin
     // for all initial states via genesis events.
-    StateId get_or_create_genesis_state() {
-        // Fast path: already created
-        if (genesis_state_created_.load(std::memory_order_acquire)) {
-            return genesis_state_;
-        }
-
-        // Slow path: create under lock
-        std::lock_guard<std::mutex> lock(genesis_state_mutex_);
-
-        // Double-check after acquiring lock
-        if (genesis_state_created_.load(std::memory_order_relaxed)) {
-            return genesis_state_;
-        }
-
-        // Create empty state (no edges, step 0, hash 0)
-        SparseBitset empty_edges;
-        genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
-
-        genesis_state_created_.store(true, std::memory_order_release);
-        return genesis_state_;
-    }
+    StateId get_or_create_genesis_state();
 
     // Check if a state is the genesis state
     bool is_genesis_state(StateId sid) const {
@@ -786,54 +682,7 @@ public:
         uint64_t canonical_hash,
         uint32_t step = 0,
         EventId parent_event = INVALID_ID
-    ) {
-        // First, create the state unconditionally
-        // This ensures the StateId we insert is always valid
-        StateId new_sid = create_state(std::move(edge_set), step, canonical_hash, parent_event);
-
-        // Determine the key for canonical map based on mode:
-        // - None: use state ID as key (each state is unique, no deduplication)
-        // - Automatic: use content-ordered hash (fast but not isomorphism-invariant)
-        // - Full: use canonical_hash from WL/UT (isomorphism-invariant)
-        uint64_t map_key;
-        switch (state_canonicalization_mode_) {
-            case StateCanonicalizationMode::None:
-                map_key = static_cast<uint64_t>(new_sid);
-                break;
-            case StateCanonicalizationMode::Automatic:
-                // Content-ordered hash: hash edges in order by edge ID
-                map_key = compute_content_ordered_hash(get_state(new_sid).edges);
-                break;
-            case StateCanonicalizationMode::Full:
-            default:
-                map_key = canonical_hash;
-                break;
-        }
-
-        // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
-        // Must use waiting version to handle concurrent inserts during resize
-        auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
-
-        // Also insert into event_canonical_state_map_ using the isomorphism-invariant hash.
-        // This is always keyed by canonical_hash regardless of state_canonicalization_mode_,
-        // ensuring event canonicalization can find canonical representatives for edge
-        // correspondence computation even when state mode is None or Automatic.
-        event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
-
-        // Cache the canonical ID in the state for fast lookup
-        // This avoids race conditions and map lookups in get_canonical_state
-        states_[new_sid].canonical_id = existing_or_new;
-
-        if (!was_inserted) {
-            // Another thread beat us - they have the canonical representative
-            // Our new_sid is the raw state with actual edges, existing_or_new is the canonical
-            return {existing_or_new, new_sid, false};
-        }
-
-        // We won the race - our state is the canonical representative
-        // raw_state == state in this case
-        return {new_sid, new_sid, true};
-    }
+    );
 
     // Lookup existing canonical state by hash (waits for concurrent inserts)
     std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const {
@@ -875,23 +724,7 @@ public:
     // Get the canonical hash for a state (compute on-demand if not available)
     // This is used for event canonicalization, which needs isomorphism-invariant
     // state hashes regardless of whether state_canonicalization_mode_ is None.
-    uint64_t get_or_compute_canonical_hash(StateId state_id) {
-        if (state_id == INVALID_ID) return 0;
-
-        State& state = states_[state_id];
-
-        // If hash is already computed, return it
-        if (state.canonical_hash != 0) {
-            return state.canonical_hash;
-        }
-
-        // Compute hash on-demand using hash dispatch
-        auto [hash, cache] = compute_hash_with_cache_dispatch(state.edges);
-
-        // Cache the hash for future use (not thread-safe, but hash is idempotent)
-        state.canonical_hash = hash;
-        return hash;
-    }
+    uint64_t get_or_compute_canonical_hash(StateId state_id);
 
     // Number of unique canonical states
     // Uses count_unique() for accurate counting after evolution completes,
@@ -981,128 +814,7 @@ public:
         const EdgeId* produced,
         uint8_t num_produced,
         const VariableBinding& binding
-    ) {
-        // Allocate event ID
-        EventId eid = counters_.alloc_event();
-
-        bool is_canonical = true;
-        EventId canonical_eid = eid;
-
-        // Event canonicalization: check if this event signature already exists
-        // Signature is built from components specified by event_signature_keys_ bitflag
-        if (event_signature_keys_ != EVENT_SIG_NONE) {
-            const EventSignatureKeys keys = event_signature_keys_;
-
-            // Get canonical state IDs for event canonicalization (isomorphism-based)
-            // Use get_canonical_state_for_event() which ALWAYS uses isomorphism hash,
-            // because the reference's CanonicalEventFunction ALWAYS uses
-            // CanonicalLinkedHypergraph (isomorphism) regardless of state mode.
-            StateId canonical_input = get_canonical_state_for_event(input_state);
-            StateId canonical_output = get_canonical_state_for_event(output_state);
-            const State& canonical_out_state = get_state(canonical_output);
-
-            uint64_t sig_key = FNV_OFFSET;
-
-            // Add isomorphism-invariant state hashes to signature if requested
-            if (keys & EventKey_InputState) {
-                uint64_t input_hash = get_or_compute_canonical_hash(input_state);
-                sig_key = fnv_hash(sig_key, input_hash);
-            }
-            if (keys & EventKey_OutputState) {
-                uint64_t output_hash = get_or_compute_canonical_hash(output_state);
-                sig_key = fnv_hash(sig_key, output_hash);
-            }
-            if (keys & EventKey_Step) {
-                sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_out_state.step));
-            }
-            if (keys & EventKey_Rule) {
-                sig_key = fnv_hash(sig_key, static_cast<uint64_t>(rule_index));
-            }
-
-            // Add edge signatures if requested (requires edge correspondence computation)
-            if (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) {
-                const State& in_state = get_state(input_state);
-                const State& out_state = get_state(output_state);
-                const State& canonical_in_state = get_state(canonical_input);
-
-                // Compute edge correspondence using hash dispatch
-                EdgeCorrespondence input_correspondence = find_edge_correspondence_dispatch(
-                    in_state.edges, canonical_in_state.edges);
-                EdgeCorrespondence output_correspondence = find_edge_correspondence_dispatch(
-                    out_state.edges, canonical_out_state.edges);
-
-                // Build edge mappings: raw_edge_id -> canonical_edge_id
-                std::unordered_map<EdgeId, EdgeId> input_edge_map, output_edge_map;
-                if (input_correspondence.valid) {
-                    for (uint32_t i = 0; i < input_correspondence.count; ++i) {
-                        input_edge_map[input_correspondence.state1_edges[i]] =
-                            input_correspondence.state2_edges[i];
-                    }
-                }
-                if (output_correspondence.valid) {
-                    for (uint32_t i = 0; i < output_correspondence.count; ++i) {
-                        output_edge_map[output_correspondence.state1_edges[i]] =
-                            output_correspondence.state2_edges[i];
-                    }
-                }
-
-                // Map edges to canonical equivalents and compute signatures
-                if (keys & EventKey_ConsumedEdges) {
-                    for (uint8_t i = 0; i < num_consumed; ++i) {
-                        auto it = input_edge_map.find(consumed[i]);
-                        EdgeId canonical_edge = (it != input_edge_map.end()) ? it->second : consumed[i];
-                        sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_edge));
-                    }
-                }
-
-                if (keys & EventKey_ProducedEdges) {
-                    for (uint8_t i = 0; i < num_produced; ++i) {
-                        auto it = output_edge_map.find(produced[i]);
-                        EdgeId canonical_edge = (it != output_edge_map.end()) ? it->second : produced[i];
-                        sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_edge));
-                    }
-                }
-            }
-
-            // Avoid key=0 (reserved as EMPTY_KEY in ConcurrentMap)
-            if (sig_key == 0 || sig_key == FNV_OFFSET) sig_key = 1;
-
-            // Try to insert this signature - if it exists, we have a duplicate
-            auto [existing_or_new, was_inserted] = canonical_event_map_.insert_if_absent_waiting(sig_key, eid);
-
-            if (!was_inserted) {
-                is_canonical = false;
-                canonical_eid = existing_or_new;
-            } else {
-                canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-
-        // Allocate and copy edge arrays
-        EdgeId* cons = arena_.allocate_array<EdgeId>(num_consumed);
-        std::memcpy(cons, consumed, num_consumed * sizeof(EdgeId));
-
-        EdgeId* prod = arena_.allocate_array<EdgeId>(num_produced);
-        std::memcpy(prod, produced, num_produced * sizeof(EdgeId));
-
-        // Directly construct event at slot eid using emplace_at
-        // Pass canonical_event_id: INVALID_ID if this event is canonical, otherwise the canonical event's ID
-        EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
-        events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
-                           cons, num_consumed, prod, num_produced, binding, canonical_id_for_event);
-
-        // CRITICAL: Release fence to ensure event data is visible to other threads
-        // before the event ID escapes via the return value or is used in concurrent
-        // callbacks (e.g., branchial tracking iterates events and accesses event data).
-        // Without this, another thread may see the event ID in a list but not see
-        // the event's data in the SegmentedArray due to memory ordering.
-        std::atomic_thread_fence(std::memory_order_release);
-
-        // Track parent-child relationship
-        add_state_child(input_state, output_state);
-
-        return {eid, canonical_eid, is_canonical};
-    }
+    );
 
     // Get event by ID
     const Event& get_event(EventId eid) const {
@@ -1195,25 +907,7 @@ public:
         uint8_t num_edges,
         const VariableBinding& binding,
         StateId origin_state
-    ) {
-        MatchId mid = counters_.alloc_match();
-
-        // Allocate and copy edge array
-        EdgeId* edges = arena_.allocate_array<EdgeId>(num_edges);
-        std::memcpy(edges, matched_edges, num_edges * sizeof(EdgeId));
-
-        // Directly construct match at slot mid using emplace_at
-        // This avoids the race condition in ensure_size where another thread's
-        // emplace might be constructing our slot while we're trying to assign
-        matches_.emplace_at(mid, arena_, mid, rule_index, edges, num_edges, binding, origin_state);
-
-        // Add to state's match list
-        if (origin_state < state_matches_.size()) {
-            state_matches_[origin_state].push(mid, arena_);
-        }
-
-        return mid;
-    }
+    );
 
     // Get match by ID
     const Match& get_match(MatchId mid) const {
@@ -1280,87 +974,7 @@ public:
     // This synthetic event connects the empty genesis state to the initial state.
     // It "produces" all edges in the initial state, enabling causal tracking from gen 0.
     // Returns the genesis event ID.
-    EventId create_genesis_event(StateId initial_state, const EdgeId* edges, uint8_t num_edges) {
-        // Ensure genesis state exists
-        StateId genesis = get_or_create_genesis_state();
-
-        // Allocate event ID
-        EventId eid = counters_.alloc_event();
-
-        // Event canonicalization for genesis events
-        bool is_canonical = true;
-        EventId canonical_eid = eid;
-
-        if (event_signature_keys_ != EVENT_SIG_NONE) {
-            const EventSignatureKeys keys = event_signature_keys_;
-
-            // Get canonical state IDs (used for edge correspondence if needed)
-            StateId canonical_output = get_canonical_state(initial_state);
-            const State& canonical_out_state = get_state(canonical_output);
-
-            // Build signature from selected keys
-            // (genesis events don't have consumed edges or rule, only produced edges)
-            uint64_t sig_key = FNV_OFFSET;
-
-            // Use isomorphism-invariant state hashes for event signature
-            if (keys & EventKey_InputState) {
-                uint64_t input_hash = get_or_compute_canonical_hash(genesis);
-                sig_key = fnv_hash(sig_key, input_hash);
-            }
-            if (keys & EventKey_OutputState) {
-                uint64_t output_hash = get_or_compute_canonical_hash(initial_state);
-                sig_key = fnv_hash(sig_key, output_hash);
-            }
-            if (keys & EventKey_Step) {
-                sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_out_state.step));
-            }
-            // Note: Rule key not applicable for genesis events (rule_index = -1)
-            // Note: ConsumedEdges not applicable (genesis consumes nothing)
-            if (keys & EventKey_ProducedEdges) {
-                // For genesis, produced edges are the initial state's edges
-                for (uint8_t i = 0; i < num_edges; ++i) {
-                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(edges[i]));
-                }
-            }
-
-            if (sig_key == 0 || sig_key == FNV_OFFSET) sig_key = 1;
-
-            // Try to insert - if it exists, we have a duplicate genesis event
-            auto [existing_or_new, was_inserted] = canonical_event_map_.insert_if_absent_waiting(sig_key, eid);
-
-            if (!was_inserted) {
-                is_canonical = false;
-                canonical_eid = existing_or_new;
-            } else {
-                canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-
-        // Allocate produced edges array
-        EdgeId* produced = arena_.allocate_array<EdgeId>(num_edges);
-        std::memcpy(produced, edges, num_edges * sizeof(EdgeId));
-
-        // Directly construct event at slot eid using emplace_at
-        // Genesis event: input_state = genesis state (empty), output_state = initial_state
-        // Rule index = -1 (no rule applied), consumes nothing, produces all initial edges
-        EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
-        events_.emplace_at(eid, arena_, eid, genesis, initial_state,
-                           static_cast<RuleIndex>(-1),
-                           nullptr, 0,  // consumed_edges (none)
-                           produced, num_edges,  // produced_edges
-                           VariableBinding{},  // empty binding
-                           canonical_id_for_event);
-
-        // CRITICAL: Release fence to ensure event data is visible to other threads
-        std::atomic_thread_fence(std::memory_order_release);
-
-        // Register this event as the producer of all initial edges
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            set_edge_producer(edges[i], eid);
-        }
-
-        return eid;
-    }
+    EventId create_genesis_event(StateId initial_state, const EdgeId* edges, uint8_t num_edges);
 
     // Register event for branchial tracking
     // When event canonicalization is enabled, uses edge equivalence for overlap detection
@@ -1371,43 +985,7 @@ public:
         const EdgeId* consumed_edges,
         uint8_t num_consumed,
         EventId canonical_event = INVALID_ID  // Pass canonical_event_id for deduplication
-    ) {
-        if (event_signature_keys_ != EVENT_SIG_NONE) {
-            // Use edge equivalence-aware branchial registration
-            causal_graph_.register_event_from_state_with_canonicalization(
-                event, input_state, consumed_edges, num_consumed,
-                // Get consumed edges callback
-                [this](EventId eid, const EdgeId*& edges, uint8_t& num) {
-                    const Event& ev = events_[eid];
-                    edges = ev.consumed_edges;
-                    num = ev.num_consumed;
-                },
-                // Same canonical event check - for v1 compatibility, don't skip any events
-                // v1 creates branchial edges between all event pairs with overlap,
-                // even if they're canonically equivalent
-                [this, canonical_event](EventId e1, EventId e2) -> bool {
-                    // Return false = don't skip = create branchial edge
-                    // This matches v1's behavior
-                    (void)e1; (void)e2; (void)canonical_event;
-                    return false;
-                },
-                // Edge equivalence check - v1 uses raw edge ID comparison
-                [](EdgeId e1, EdgeId e2) -> bool {
-                    return e1 == e2;
-                }
-            );
-        } else {
-            // No canonicalization - use simple overlap check with raw edge IDs
-            causal_graph_.register_event_from_state_with_overlap_check(
-                event, input_state, consumed_edges, num_consumed,
-                [this](EventId eid, const EdgeId*& edges, uint8_t& num) {
-                    const Event& ev = events_[eid];
-                    edges = ev.consumed_edges;
-                    num = ev.num_consumed;
-                }
-            );
-        }
-    }
+    );
 
     // Get causal/branchial statistics
     size_t num_causal_edges() const { return causal_graph_.num_causal_edges(); }
@@ -1444,266 +1022,41 @@ public:
 
     // Compute content-ordered hash for Automatic state canonicalization mode
     // Hashes edge contents in order by edge ID: (arity, v1, v2, ...) for each edge
-    // This preserves edge ordering - states with same content in different order
-    // will have different hashes (matching reference MultiwaySystem behavior).
-    // Fast but not isomorphism-invariant - states with same content but different
-    // vertex numbering will have different hashes.
-    uint64_t compute_content_ordered_hash(const SparseBitset& edges) const {
-        uint64_t h = FNV_OFFSET;
-
-        // Hash edge count first for extra differentiation
-        h = fnv_hash(h, mix64(edges.count()));
-
-        // SparseBitset iteration is ordered by edge ID - this preserves edge order
-        edges.for_each([&](EdgeId eid) {
-            const Edge& e = edges_[eid];
-            // Hash arity with mixing for better avalanche on small values
-            h = fnv_hash(h, mix64(static_cast<uint64_t>(e.arity)));
-            // Hash each vertex in order with mixing
-            for (uint8_t i = 0; i < e.arity; ++i) {
-                h = fnv_hash(h, mix64(static_cast<uint64_t>(e.vertices[i])));
-            }
-            // Edge separator to prevent boundary ambiguity
-            h = fnv_hash(h, 0xDEADBEEFCAFEBABEULL);
-        });
-
-        return h;
-    }
+    // Fast but not isomorphism-invariant.
+    uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
 
     // Compute canonical hash using exact canonicalization (isomorphism-invariant)
     // Uses factorial-time algorithm for correctness, but fast for small graphs
     // If shared_tree is enabled, uses faster uniqueness tree hashing instead
-    uint64_t compute_canonical_hash(const SparseBitset& edges) const {
-        // Use unified uniqueness tree if enabled (faster with incremental computation)
-        if (use_shared_tree_ && unified_tree_) {
-            return compute_canonical_hash_shared(edges);
-        }
-
-        // Build edge vectors for canonicalizer (use std::size_t for v1 compatibility)
-        std::vector<std::vector<std::size_t>> edge_vectors;
-
-        // CRITICAL: Acquire fence to ensure we see all edge data written by other threads.
-        // Pairs with release fence in create_edge after edge construction.
-        std::atomic_thread_fence(std::memory_order_acquire);
-
-        edges.for_each([&](EdgeId eid) {
-            const Edge& e = edges_[eid];
-
-            std::vector<std::size_t> verts;
-            verts.reserve(e.arity);
-            for (uint8_t i = 0; i < e.arity; ++i) {
-                verts.push_back(static_cast<std::size_t>(e.vertices[i]));
-            }
-            edge_vectors.push_back(std::move(verts));
-        });
-
-        if (edge_vectors.empty()) {
-            return 0;
-        }
-
-        // Use exact canonicalization (same as v1)
-        hypergraph::Canonicalizer canonicalizer;
-        auto result = canonicalizer.canonicalize_edges(edge_vectors);
-
-        // FNV-style hash of canonical form
-        uint64_t hash = 14695981039346656037ULL;  // FNV offset basis
-        constexpr uint64_t FNV_PRIME = 1099511628211ULL;
-
-        for (const auto& edge : result.canonical_form.edges) {
-            for (auto vertex : edge) {
-                hash ^= static_cast<uint64_t>(vertex);
-                hash *= FNV_PRIME;
-            }
-            // Add separator between edges
-            hash ^= 0xDEADBEEF;
-            hash *= FNV_PRIME;
-        }
-
-        return hash;
-    }
+    uint64_t compute_canonical_hash(const SparseBitset& edges) const;
 
     // Debug: Get canonical form as string
-    std::string get_canonical_form_string(const SparseBitset& edges) const {
-        std::vector<std::vector<std::size_t>> edge_vectors;
-        edges.for_each([&](EdgeId eid) {
-            const Edge& e = edges_[eid];
-            std::vector<std::size_t> verts;
-            verts.reserve(e.arity);
-            for (uint8_t i = 0; i < e.arity; ++i) {
-                verts.push_back(static_cast<std::size_t>(e.vertices[i]));
-            }
-            edge_vectors.push_back(std::move(verts));
-        });
-
-        if (edge_vectors.empty()) {
-            return "{}";
-        }
-
-        hypergraph::Canonicalizer canonicalizer;
-        auto result = canonicalizer.canonicalize_edges(edge_vectors);
-
-        std::string s = "{";
-        for (size_t i = 0; i < result.canonical_form.edges.size(); ++i) {
-            if (i > 0) s += ", ";
-            s += "{";
-            for (size_t j = 0; j < result.canonical_form.edges[i].size(); ++j) {
-                if (j > 0) s += ",";
-                s += std::to_string(result.canonical_form.edges[i][j]);
-            }
-            s += "}";
-        }
-        s += "}";
-        return s;
-    }
+    std::string get_canonical_form_string(const SparseBitset& edges) const;
 
     // Debug: Get raw edges as string
-    std::string get_raw_edges_string(const SparseBitset& edges) const {
-        std::string s = "{";
-        bool first = true;
-        edges.for_each([&](EdgeId eid) {
-            if (!first) s += ", ";
-            first = false;
-            const Edge& e = edges_[eid];
-            s += "{";
-            for (uint8_t i = 0; i < e.arity; ++i) {
-                if (i > 0) s += ",";
-                s += std::to_string(e.vertices[i]);
-            }
-            s += "}";
-        });
-        s += "}";
-        return s;
-    }
+    std::string get_raw_edges_string(const SparseBitset& edges) const;
 
     // Compute canonical hash using the selected hash strategy
     // Uses globally cached vertex tree data for incremental computation
-    // This is faster than full canonicalization and correctly identifies isomorphism
-    uint64_t compute_canonical_hash_shared(const SparseBitset& edges) const {
-        if (edges.empty()) {
-            return 0;
-        }
-
-        // CRITICAL: Acquire fence to ensure we see all edge data written by other threads.
-        // Pairs with release fence in create_edge after edge construction.
-        std::atomic_thread_fence(std::memory_order_acquire);
-
-        // Use hash dispatch
-        auto [hash, cache] = compute_hash_with_cache_dispatch(edges);
-        return hash;
-    }
+    uint64_t compute_canonical_hash_shared(const SparseBitset& edges) const;
 
     // Compute canonical hash using UniquenessTree (polynomial-time, approximate)
-    // This is faster but may have rare false positives/negatives
     uint64_t compute_canonical_hash_wl(const SparseBitset& edges) {
-        // Delegate to compute_canonical_hash_shared
         return compute_canonical_hash_shared(edges);
     }
 
     // Get or compute WL hash cache for a state (memoized)
     // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
-    VertexHashCache get_or_compute_wl_cache(StateId state_id) {
-        WLHashCacheEntry& entry = wl_hash_cache_.get_or_default(state_id, arena_);
-
-        // Fast path: already computed
-        VertexHashCache* cached = entry.cache_ptr.load(std::memory_order_acquire);
-        if (cached) {
-            return *cached;
-        }
-
-        // Slow path: compute cache
-        const State& state = get_state(state_id);
-        EdgeVertexAccessorRaw vert_acc(this);
-        EdgeArityAccessorRaw arity_acc(this);
-
-        auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
-            state.edges, vert_acc, arity_acc);
-
-        // Allocate cache on arena and copy data
-        VertexHashCache* new_cache = arena_.create<VertexHashCache>(cache);
-
-        // Try to set the pointer atomically - if someone else beat us, use theirs
-        VertexHashCache* expected = nullptr;
-        if (entry.cache_ptr.compare_exchange_strong(expected, new_cache,
-                                                     std::memory_order_release,
-                                                     std::memory_order_acquire)) {
-            // We won the race - our cache is now the canonical one
-            return *new_cache;
-        } else {
-            // Someone else won - expected now contains their pointer
-            // Our new_cache allocation is wasted but that's OK (arena memory)
-            return *expected;
-        }
-    }
+    VertexHashCache get_or_compute_wl_cache(StateId state_id);
 
     // Get or compute UT-Inc hash cache for a state (memoized)
     // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
-    VertexHashCache get_or_compute_ut_cache(StateId state_id) {
-        StateIncrementalCache& entry = state_incremental_cache_.get_or_default(state_id, arena_);
-
-        // Fast path: already computed
-        StateIncrementalCacheData* cached = entry.data_ptr.load(std::memory_order_acquire);
-        if (cached) {
-            return cached->vertex_cache;
-        }
-
-        // Slow path: compute cache
-        const State& state = get_state(state_id);
-        EdgeVertexAccessorRaw vert_acc(this);
-        EdgeArityAccessorRaw arity_acc(this);
-
-        auto [hash, cache] = incremental_tree_->compute_state_hash_with_cache(
-            state.edges, vert_acc, arity_acc);
-
-        // Allocate cache data on arena
-        StateIncrementalCacheData* new_data = arena_.create<StateIncrementalCacheData>();
-        new_data->vertex_cache = cache;
-
-        // Try to set the pointer atomically - if someone else beat us, use theirs
-        StateIncrementalCacheData* expected = nullptr;
-        if (entry.data_ptr.compare_exchange_strong(expected, new_data,
-                                                    std::memory_order_release,
-                                                    std::memory_order_acquire)) {
-            // We won the race
-            return new_data->vertex_cache;
-        } else {
-            // Someone else won - expected now contains their pointer
-            return expected->vertex_cache;
-        }
-    }
+    VertexHashCache get_or_compute_ut_cache(StateId state_id);
 
     // Get or compute plain UT hash cache for a state (memoized)
     // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
     // Reuses wl_hash_cache_ since WL and UT are mutually exclusive
-    VertexHashCache get_or_compute_ut_plain_cache(StateId state_id) {
-        WLHashCacheEntry& entry = wl_hash_cache_.get_or_default(state_id, arena_);
-
-        // Fast path: already computed
-        VertexHashCache* cached = entry.cache_ptr.load(std::memory_order_acquire);
-        if (cached) {
-            return *cached;
-        }
-
-        // Slow path: compute cache
-        const State& state = get_state(state_id);
-        EdgeVertexAccessorRaw vert_acc(this);
-        EdgeArityAccessorRaw arity_acc(this);
-
-        auto [hash, cache] = unified_tree_->compute_state_hash_with_cache(
-            state.edges, vert_acc, arity_acc);
-
-        // Allocate cache on arena and copy data
-        VertexHashCache* new_cache = arena_.create<VertexHashCache>(cache);
-
-        // Try to set the pointer atomically - if someone else beat us, use theirs
-        VertexHashCache* expected = nullptr;
-        if (entry.cache_ptr.compare_exchange_strong(expected, new_cache,
-                                                     std::memory_order_release,
-                                                     std::memory_order_acquire)) {
-            return *new_cache;
-        } else {
-            return *expected;
-        }
-    }
+    VertexHashCache get_or_compute_ut_plain_cache(StateId state_id);
 
     // =========================================================================
     // Unified Hash Strategy Dispatch Helpers
@@ -1715,57 +1068,18 @@ public:
     // Returns {hash, vertex_cache} pair
     std::pair<uint64_t, VertexHashCache> compute_hash_with_cache_dispatch(
         const SparseBitset& edges
-    ) const {
-        if (edges.empty()) {
-            return {0, VertexHashCache()};
-        }
-
-        EdgeVertexAccessorRaw vert_acc(this);
-        EdgeArityAccessorRaw arity_acc(this);
-
-        if ((hash_strategy_ == HashStrategy::WL || hash_strategy_ == HashStrategy::IncrementalWL) && wl_hash_) {
-            return wl_hash_->compute_state_hash_with_cache(edges, vert_acc, arity_acc);
-        } else if (hash_strategy_ == HashStrategy::IncrementalUniquenessTree && incremental_tree_) {
-            return incremental_tree_->compute_state_hash_with_cache(edges, vert_acc, arity_acc);
-        } else if (unified_tree_) {
-            return unified_tree_->compute_state_hash_with_cache(edges, vert_acc, arity_acc);
-        }
-        return {0, VertexHashCache()};
-    }
+    ) const;
 
     // Get or compute hash cache for a state using the active hash strategy
     // Thread-safe: memoizes the result per state
-    VertexHashCache get_or_compute_hash_cache_dispatch(StateId state_id) {
-        switch (hash_strategy_) {
-            case HashStrategy::WL:
-            case HashStrategy::IncrementalWL:
-                return get_or_compute_wl_cache(state_id);
-            case HashStrategy::IncrementalUniquenessTree:
-                return get_or_compute_ut_cache(state_id);
-            case HashStrategy::UniquenessTree:
-            default:
-                return get_or_compute_ut_plain_cache(state_id);
-        }
-    }
+    VertexHashCache get_or_compute_hash_cache_dispatch(StateId state_id);
 
     // Find edge correspondence between two isomorphic states using active strategy
     // Returns mapping from state1 edges to state2 edges
     EdgeCorrespondence find_edge_correspondence_dispatch(
         const SparseBitset& state1_edges,
         const SparseBitset& state2_edges
-    ) const {
-        EdgeVertexAccessorRaw vert_acc(this);
-        EdgeArityAccessorRaw arity_acc(this);
-
-        if ((hash_strategy_ == HashStrategy::WL || hash_strategy_ == HashStrategy::IncrementalWL) && wl_hash_) {
-            return wl_hash_->find_edge_correspondence(state1_edges, state2_edges, vert_acc, arity_acc);
-        } else if (hash_strategy_ == HashStrategy::IncrementalUniquenessTree && incremental_tree_) {
-            return incremental_tree_->find_edge_correspondence(state1_edges, state2_edges, vert_acc, arity_acc);
-        } else if (unified_tree_) {
-            return unified_tree_->find_edge_correspondence(state1_edges, state2_edges, vert_acc, arity_acc);
-        }
-        return EdgeCorrespondence{};  // Invalid
-    }
+    ) const;
 
     // =========================================================================
     // Incremental Hash Computation
@@ -1775,336 +1089,25 @@ public:
 
     // Compute canonical hash incrementally using parent state's cache
     // Returns (hash, cache_for_new_state)
-    //
-    // BLOOM FILTER STRATEGY:
-    // 1. Build per-state adjacency once (like UT does) - O(edges_in_state)
-    // 2. Compute tree hash with bloom filter for each vertex's subtree
-    // 3. For child states, check if vertex's bloom filter contains any affected vertex
-    // 4. If bloom filter says no affected vertices → reuse parent's cached hash
-    // 5. If bloom filter says maybe affected → recompute with new adjacency
-    //
-    // This achieves O(affected_subtrees) for most rewrites on sparse graphs.
-    //
     std::pair<uint64_t, VertexHashCache> compute_canonical_hash_incremental(
         const SparseBitset& new_edges,
         StateId parent_state,
         const EdgeId* consumed_edges, uint8_t num_consumed,
         const EdgeId* produced_edges, uint8_t num_produced
-    ) {
-        if (new_edges.empty()) {
-            return {0, VertexHashCache()};
-        }
-
-        // NOTE: We always compute the isomorphism-invariant hash regardless of
-        // state_canonicalization_mode_. This is needed for EVENT canonicalization,
-        // which must find canonical representatives even when state mode is None.
-        // The state mode only affects whether STATES are deduplicated, not whether
-        // their canonical hashes are computed.
-
-        // Handle WL strategy (non-incremental)
-        if (hash_strategy_ == HashStrategy::WL && wl_hash_) {
-            EdgeVertexAccessorRaw verts_accessor(this);
-            EdgeArityAccessorRaw arities_accessor(this);
-            auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
-                new_edges, verts_accessor, arities_accessor);
-            return {hash, cache};
-        }
-
-        // Handle IncrementalWL strategy
-        if (hash_strategy_ == HashStrategy::IncrementalWL && wl_hash_) {
-            EdgeVertexAccessorRaw verts_accessor(this);
-            EdgeArityAccessorRaw arities_accessor(this);
-
-            // Try to get parent cache for incremental computation
-            const VertexHashCache* parent_wl_cache = nullptr;
-            if (parent_state != INVALID_ID && parent_state < wl_hash_cache_.size()) {
-                const WLHashCacheEntry& entry = wl_hash_cache_[parent_state];
-                VertexHashCache* cached = entry.cache_ptr.load(std::memory_order_acquire);
-                if (cached && cached->count > 0) {
-                    parent_wl_cache = cached;
-                }
-            }
-
-            if (parent_wl_cache) {
-                // Use incremental WL computation
-                auto [hash, cache] = wl_hash_->compute_state_hash_incremental_with_cache(
-                    new_edges, *parent_wl_cache,
-                    consumed_edges, num_consumed,
-                    produced_edges, num_produced,
-                    verts_accessor, arities_accessor);
-                return {hash, cache};
-            } else {
-                // No parent cache, use full computation
-                auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
-                    new_edges, verts_accessor, arities_accessor);
-                return {hash, cache};
-            }
-        }
-
-        // Use incremental path only for IncrementalUniquenessTree strategy
-        if (hash_strategy_ != HashStrategy::IncrementalUniquenessTree || !incremental_tree_) {
-            // Fall back to non-incremental computation for other strategies
-            EdgeVertexAccessorRaw verts_accessor(this);
-            EdgeArityAccessorRaw arities_accessor(this);
-
-            if (unified_tree_) {
-                auto [hash, cache] = unified_tree_->compute_state_hash_with_cache(
-                    new_edges, verts_accessor, arities_accessor);
-                return {hash, cache};
-            }
-            return {0, VertexHashCache()};
-        }
-
-        std::atomic_thread_fence(std::memory_order_acquire);
-
-        EdgeVertexAccessorRaw verts_accessor(this);
-        EdgeArityAccessorRaw arities_accessor(this);
-
-        // Get parent's vertex hash cache for incremental reuse
-        // Thread-safe: uses acquire semantics to synchronize with store_state_cache's release.
-        const VertexHashCache* parent_vertex_cache = nullptr;
-        if (parent_state != INVALID_ID && parent_state < state_incremental_cache_.size()) {
-            const StateIncrementalCache* pcache = state_incremental_cache_.get(parent_state);
-            // Acquire load synchronizes with release store in store_state_cache
-            if (pcache) {
-                StateIncrementalCacheData* data = pcache->data_ptr.load(std::memory_order_acquire);
-                if (data) {
-                    const VertexHashCache& vc = data->vertex_cache;
-                    // Verify ALL required pointers are non-null before using
-                    if (vc.count > 0 && vc.vertices != nullptr &&
-                        vc.hashes != nullptr && vc.subtree_filters != nullptr) {
-                        parent_vertex_cache = &vc;
-                    }
-                }
-            }
-        }
-
-        // Collect directly affected vertices (vertices in consumed or produced edges)
-        ArenaVector<VertexId> affected_vertices(arena_);
-        for (uint8_t i = 0; i < num_consumed; ++i) {
-            EdgeId eid = consumed_edges[i];
-            uint8_t arity = arities_accessor[eid];
-            const VertexId* verts = verts_accessor[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
-            }
-        }
-        for (uint8_t i = 0; i < num_produced; ++i) {
-            EdgeId eid = produced_edges[i];
-            uint8_t arity = arities_accessor[eid];
-            const VertexId* verts = verts_accessor[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
-            }
-        }
-        // Remove duplicates for efficient bloom filter checking
-        std::sort(affected_vertices.begin(), affected_vertices.end());
-        auto new_end = std::unique(affected_vertices.begin(), affected_vertices.end());
-        affected_vertices.resize(new_end - affected_vertices.begin());
-
-        // If no parent cache with bloom filters, use the full computation
-        // which builds bloom filters for future children
-        if (!parent_vertex_cache) {
-            return incremental_tree_->compute_state_hash_with_cache(
-                new_edges, verts_accessor, arities_accessor);
-        }
-
-        // Bloom filter reuse path - use parent's vertex hash cache for incremental computation
-
-        // Collect all vertices in child state (O(E) scan)
-        // TODO: Consider incremental vertex collection once performance is validated
-        ArenaVector<VertexId> vertices(arena_);
-        std::unordered_set<VertexId> seen_vertices;
-        new_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = arities_accessor[eid];
-            const VertexId* verts = verts_accessor[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                if (seen_vertices.insert(verts[j]).second) {
-                    vertices.push_back(verts[j]);
-                }
-            }
-        });
-        std::sort(vertices.begin(), vertices.end());
-
-        if (vertices.empty()) {
-            return {0, VertexHashCache()};
-        }
-
-        // Prepare result cache with space for bloom filters
-        VertexHashCache result_cache;
-        result_cache.capacity = static_cast<uint32_t>(vertices.size());
-        result_cache.vertices = arena_.allocate_array<VertexId>(result_cache.capacity);
-        result_cache.hashes = arena_.allocate_array<uint64_t>(result_cache.capacity);
-        result_cache.subtree_filters = arena_.allocate_array<SubtreeBloomFilter>(result_cache.capacity);
-        result_cache.count = 0;
-
-        ArenaVector<uint64_t> tree_hashes(arena_, vertices.size());
-
-        // Track stats via member atomics for reporting
-        size_t local_reused = 0;
-        size_t local_recomputed = 0;
-
-        // Lazy adjacency building: only build if we need to recompute vertices
-        // This is O(E) but only when needed, and subsequent lookups are O(1)
-        std::unordered_map<VertexId, ArenaVector<std::pair<EdgeId, uint8_t>>> adjacency;
-        bool adjacency_built = false;
-
-        auto build_adjacency_if_needed = [&]() {
-            if (adjacency_built) return;
-            adjacency_built = true;
-
-            new_edges.for_each([&](EdgeId eid) {
-                uint8_t arity = arities_accessor[eid];
-                const VertexId* verts = verts_accessor[eid];
-                for (uint8_t i = 0; i < arity; ++i) {
-                    VertexId v = verts[i];
-                    auto it = adjacency.find(v);
-                    if (it == adjacency.end()) {
-                        it = adjacency.emplace(v, ArenaVector<std::pair<EdgeId, uint8_t>>(arena_)).first;
-                    }
-                    it->second.push_back({eid, i});
-                }
-            });
-        };
-
-        // Build O(1) lookup map from parent cache for efficient vertex hash lookup
-        std::unordered_map<VertexId, uint32_t> parent_cache_index;
-        parent_cache_index.reserve(parent_vertex_cache->count);
-        for (uint32_t i = 0; i < parent_vertex_cache->count; ++i) {
-            parent_cache_index[parent_vertex_cache->vertices[i]] = i;
-        }
-
-        // Compute tree hash for each vertex, reusing where possible
-        for (VertexId root : vertices) {
-            // Check if we can reuse parent's hash via bloom filter (O(1) lookup)
-            auto cache_it = parent_cache_index.find(root);
-            if (cache_it != parent_cache_index.end()) {
-                uint32_t idx = cache_it->second;
-                uint64_t parent_hash = parent_vertex_cache->hashes[idx];
-                const SubtreeBloomFilter* bloom = parent_vertex_cache->subtree_filters
-                    ? &parent_vertex_cache->subtree_filters[idx] : nullptr;
-
-                if (bloom != nullptr && parent_hash != 0) {
-                    // Check if any affected vertex might be in this subtree
-                    bool might_be_affected = false;
-                    for (VertexId affected : affected_vertices) {
-                        if (bloom->might_contain(affected)) {
-                            might_be_affected = true;
-                            break;
-                        }
-                    }
-
-                    if (!might_be_affected) {
-                        // Bloom filter says no affected vertices in subtree - reuse hash!
-                        tree_hashes.push_back(parent_hash);
-                        result_cache.insert_with_subtree(root, parent_hash, *bloom);
-                        ++local_reused;
-                        continue;
-                    }
-                }
-            }
-
-            // Need to recompute this vertex's hash
-            build_adjacency_if_needed();
-            ++local_recomputed;
-
-            // Use DirectAdjacencyWithArity wrapper for the tree hash computation
-            DirectAdjacencyWithArity<decltype(adjacency), EdgeArityAccessorRaw> adj_provider(adjacency, arities_accessor);
-
-            // Compute tree hash with bloom filter
-            SparseBitset visited;
-            SubtreeBloomFilter new_bloom;
-            new_bloom.clear();
-
-            uint64_t tree_hash = incremental_tree_->compute_tree_hash_with_bloom(
-                root, new_edges, verts_accessor, arities_accessor,
-                adj_provider, visited, new_bloom);
-
-            tree_hashes.push_back(tree_hash);
-            result_cache.insert_with_subtree(root, tree_hash, new_bloom);
-        }
-
-        // Update member atomics for stats reporting
-        bloom_reused_.fetch_add(local_reused, std::memory_order_relaxed);
-        bloom_recomputed_.fetch_add(local_recomputed, std::memory_order_relaxed);
-
-        // Combine tree hashes into state hash
-        std::sort(tree_hashes.begin(), tree_hashes.end());
-        uint64_t state_hash = FNV_OFFSET;
-        state_hash = fnv_hash(state_hash, tree_hashes.size());
-        for (uint64_t h : tree_hashes) {
-            state_hash = fnv_hash(state_hash, h);
-        }
-
-        return {state_hash, result_cache};
-    }
+    );
 
     // Store computed cache for a state (call after creating state)
     // Thread-safe: uses compare-exchange on atomic pointer to ensure only one thread writes.
-    void store_state_cache(StateId state, const VertexHashCache& cache) {
-        // Store for IncrementalWL strategy
-        if (hash_strategy_ == HashStrategy::IncrementalWL) {
-            WLHashCacheEntry& slot = wl_hash_cache_.get_or_default(state, arena_);
-
-            // Allocate cache on arena
-            VertexHashCache* new_cache = arena_.create<VertexHashCache>(cache);
-
-            // Try to set the pointer atomically - if someone else beat us, skip
-            VertexHashCache* expected = nullptr;
-            slot.cache_ptr.compare_exchange_strong(expected, new_cache,
-                    std::memory_order_release, std::memory_order_relaxed);
-            // If CAS fails, new_cache is wasted but that's OK (arena memory)
-            return;
-        }
-
-        // Store for iUT strategy
-        if (hash_strategy_ != HashStrategy::IncrementalUniquenessTree) {
-            return;  // Only store for incremental strategies (iUT, iWL)
-        }
-
-        StateIncrementalCache& slot = state_incremental_cache_.get_or_default(state, arena_);
-
-        // Allocate cache data on arena
-        StateIncrementalCacheData* new_data = arena_.create<StateIncrementalCacheData>();
-        new_data->vertex_cache = cache;
-
-        // Try to set the pointer atomically - if someone else beat us, skip
-        StateIncrementalCacheData* expected = nullptr;
-        slot.data_ptr.compare_exchange_strong(expected, new_data,
-                std::memory_order_release, std::memory_order_relaxed);
-        // If CAS fails, new_data is wasted but that's OK (arena memory)
-    }
+    void store_state_cache(StateId state, const VertexHashCache& cache);
 
     // Get number of stored caches (for debugging/profiling)
-    size_t num_stored_caches() const {
-        size_t count = 0;
-        for (size_t i = 0; i < state_incremental_cache_.size(); ++i) {
-            if (state_incremental_cache_[i].data_ptr.load(std::memory_order_relaxed) != nullptr) {
-                ++count;
-            }
-        }
-        return count;
-    }
+    size_t num_stored_caches() const;
 
     // Get incremental tree stats (for profiling)
     // Returns stats from bloom filter reuse path + incremental tree fallback path
-    std::pair<size_t, size_t> incremental_tree_stats() const {
-        size_t reused = bloom_reused_.load(std::memory_order_relaxed);
-        size_t recomputed = bloom_recomputed_.load(std::memory_order_relaxed);
-        if (incremental_tree_) {
-            reused += incremental_tree_->stats_reused();
-            recomputed += incremental_tree_->stats_recomputed();
-        }
-        return {reused, recomputed};
-    }
+    std::pair<size_t, size_t> incremental_tree_stats() const;
 
-    void reset_incremental_tree_stats() {
-        bloom_reused_.store(0, std::memory_order_relaxed);
-        bloom_recomputed_.store(0, std::memory_order_relaxed);
-        if (incremental_tree_) {
-            incremental_tree_->reset_stats();
-        }
-    }
+    void reset_incremental_tree_stats();
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const {

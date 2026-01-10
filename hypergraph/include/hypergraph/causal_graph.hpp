@@ -142,141 +142,31 @@ public:
     // =========================================================================
 
     // Get or create producer info for an edge (thread-safe)
-    EdgeCausalInfo* get_or_create_edge_producer(EdgeId edge) {
-        uint64_t key = edge;
-
-        auto result = edge_producers_.lookup(key);
-        if (result.has_value()) {
-            return *result;
-        }
-
-        auto* new_info = arena_->template create<EdgeCausalInfo>();
-        auto [existing, inserted] = edge_producers_.insert_if_absent(key, new_info);
-        return inserted ? new_info : existing;
-    }
+    EdgeCausalInfo* get_or_create_edge_producer(EdgeId edge);
 
     // Get or create consumer list for an edge (thread-safe)
-    LockFreeList<EventId>* get_or_create_edge_consumers(EdgeId edge) {
-        uint64_t key = edge;
-
-        auto result = edge_consumers_.lookup(key);
-        if (result.has_value()) {
-            return *result;
-        }
-
-        auto* new_list = arena_->template create<LockFreeList<EventId>>();
-        auto [existing, inserted] = edge_consumers_.insert_if_absent(key, new_list);
-        return inserted ? new_list : existing;
-    }
+    LockFreeList<EventId>* get_or_create_edge_consumers(EdgeId edge);
 
     // Get or create Desc set for an event (Goranci algorithm)
-    // Returns lock-free ConcurrentMap used as a set (key present = in set)
-    DescAncSet* get_or_create_desc(EventId event) {
-        uint64_t key = event;
-
-        auto result = desc_.lookup(key);
-        if (result.has_value()) {
-            return *result;
-        }
-
-        auto* new_set = arena_->template create<DescAncSet>();
-        auto [existing, inserted] = desc_.insert_if_absent(key, new_set);
-        return inserted ? new_set : existing;
-    }
+    DescAncSet* get_or_create_desc(EventId event);
 
     // Get or create Anc set for an event (Goranci algorithm)
-    // Returns lock-free ConcurrentMap used as a set (key present = in set)
-    DescAncSet* get_or_create_anc(EventId event) {
-        uint64_t key = event;
-
-        auto result = anc_.lookup(key);
-        if (result.has_value()) {
-            return *result;
-        }
-
-        auto* new_set = arena_->template create<DescAncSet>();
-        auto [existing, inserted] = anc_.insert_if_absent(key, new_set);
-        return inserted ? new_set : existing;
-    }
+    DescAncSet* get_or_create_anc(EventId event);
 
     // O(1) redundancy check: is consumer reachable from producer?
-    // Uses Desc[producer] set from Goranci algorithm (lock-free)
-    bool is_reachable_via_desc(EventId producer, EventId consumer) const {
-        if (producer == consumer) return true;
-
-        auto desc_result = desc_.lookup(producer);
-        if (!desc_result.has_value()) return false;
-
-        return (*desc_result)->contains(consumer);  // O(1) lock-free lookup
-    }
+    bool is_reachable_via_desc(EventId producer, EventId consumer) const;
 
     // Get or create the event list for a state (thread-safe)
-    // Uses ConcurrentMap for proper "create once" semantics
-    LockFreeList<EventId>* get_or_create_state_events(StateId state) {
-        uint64_t key = state;
-
-        // First, try to look up existing list
-        auto result = state_events_.lookup(key);
-        if (result.has_value()) {
-            return *result;
-        }
-
-        // Need to create - allocate new list from arena
-        auto* new_list = arena_->template create<LockFreeList<EventId>>();
-
-        // Try to insert - if another thread beat us, use theirs
-        auto [existing, inserted] = state_events_.insert_if_absent(key, new_list);
-
-        // Return whichever list is now in the map
-        return inserted ? new_list : existing;
-    }
+    LockFreeList<EventId>* get_or_create_state_events(StateId state);
 
     // Called when an edge is produced by an event
-    // Returns true if producer was set (first time), false if already set
-    bool set_edge_producer(EdgeId edge, EventId producer) {
-        EdgeCausalInfo* info = get_or_create_edge_producer(edge);
-        LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
-
-        // Try to set producer atomically (only succeeds if INVALID_ID)
-        EventId expected = INVALID_ID;
-        bool was_set = info->producer.compare_exchange_strong(
-            expected, producer,
-            std::memory_order_release,
-            std::memory_order_acquire
-        );
-
-        if (was_set) {
-            // We are the producer. Check for any consumers that arrived first.
-            // (Rendezvous pattern: write then read)
-            consumers->for_each([&](EventId consumer) {
-                add_causal_edge(producer, consumer, edge);
-            });
-        }
-
-        return was_set;
-    }
+    bool set_edge_producer(EdgeId edge, EventId producer);
 
     // Called when an edge is consumed by an event
-    void add_edge_consumer(EdgeId edge, EventId consumer) {
-        EdgeCausalInfo* info = get_or_create_edge_producer(edge);
-        LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
-
-        // Add self to consumers list (write)
-        consumers->push(consumer, *arena_);
-
-        // Check for producer (read)
-        EventId producer = info->producer.load(std::memory_order_acquire);
-        if (producer != INVALID_ID) {
-            add_causal_edge(producer, consumer, edge);
-        }
-    }
+    void add_edge_consumer(EdgeId edge, EventId consumer);
 
     // Get producer of an edge (may be INVALID_ID for initial edges)
-    EventId get_edge_producer(EdgeId edge) const {
-        auto result = edge_producers_.lookup(edge);
-        if (!result.has_value()) return INVALID_ID;
-        return (*result)->producer.load(std::memory_order_acquire);
-    }
+    EventId get_edge_producer(EdgeId edge) const;
 
     // =========================================================================
     // Branchial Tracking
@@ -287,22 +177,9 @@ public:
     void register_event_from_state(
         EventId event,
         StateId input_state,
-        [[maybe_unused]] const EdgeId* consumed_edges,
-        [[maybe_unused]] uint8_t num_consumed
-    ) {
-        // Get or create the event list for this state (thread-safe)
-        LockFreeList<EventId>* list = get_or_create_state_events(input_state);
-
-        // Check for branchial relationships with existing events from this state
-        list->for_each([]([[maybe_unused]] EventId other_event) {
-            // Check for edge overlap
-            // Note: we need access to other event's consumed edges
-            // This is deferred - the caller must provide the check function
-        });
-
-        // Add self to state's event list
-        list->push(event, *arena_);
-    }
+        const EdgeId* consumed_edges,
+        uint8_t num_consumed
+    );
 
     // More detailed branchial check with access to event data
     //
@@ -410,122 +287,13 @@ public:
     // =========================================================================
 
     // Add a causal edge (producer -> consumer) with deduplication and optional TR
-    // The rendezvous pattern can cause both set_edge_producer and add_edge_consumer
-    // to detect the same (producer, consumer, edge) triple, so we deduplicate here.
-    // Each edge creates its own causal relationship.
-    //
-    // Online Transitive Reduction (Goranci Algorithm):
-    // Before storing, check if consumer ∈ Desc[producer]. If so, edge is redundant.
-    // After storing, update Desc/Anc sets for transitive closure maintenance.
-    void add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
-        // Online TR check using Goranci algorithm: O(1) lookup
-        if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-            // First check if we already have a DIRECT edge (producer -> consumer)
-            // If so, this is a duplicate, not a TR skip - let deduplication handle it
-            uint64_t pair_key = (static_cast<uint64_t>(producer) << 32) | consumer;
-            auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
-
-            if (!existing_pair.has_value()) {
-                // No direct edge yet - check if consumer already reachable via Desc set
-                if (is_reachable_via_desc(producer, consumer)) {
-                    // Consumer already reachable - edge is redundant
-                    num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
-                    return;
-                }
-            }
-        }
-
-        // Hash (producer, consumer, edge) into 64 bits for per-edge deduplication
-        // FNV-1a style hash for good distribution
-        uint64_t triple_key = 14695981039346656037ULL;
-        triple_key ^= producer;
-        triple_key *= 1099511628211ULL;
-        triple_key ^= consumer;
-        triple_key *= 1099511628211ULL;
-        triple_key ^= edge;
-        triple_key *= 1099511628211ULL;
-
-        auto [_, inserted] = seen_causal_triples_.insert_if_absent(triple_key, true);
-        if (inserted) {
-            causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
-            num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
-
-            // Emit visualization event for causal edge
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-            VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
-#endif
-
-            // Update Desc/Anc sets for Goranci algorithm (maintains transitive closure)
-            if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-                update_transitive_closure(producer, consumer);
-            }
-
-            // Also track unique event pairs (for v1 compatibility)
-            uint64_t pair_key = (static_cast<uint64_t>(producer) << 32) | consumer;
-            auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
-            if (pair_inserted) {
-                num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-    }
+    void add_causal_edge(EventId producer, EventId consumer, EdgeId edge);
 
     // Update Desc and Anc sets after adding edge (producer -> consumer)
-    // Goranci algorithm: propagate reachability through transitive closure
-    // Thread-safe: uses lock-free ConcurrentMap operations throughout
-    void update_transitive_closure(EventId producer, EventId consumer) {
-        // Get consumer's descendants (events reachable from consumer)
-        DescAncSet* desc_consumer = get_or_create_desc(consumer);
-
-        // Get producer's ancestors (events that can reach producer)
-        DescAncSet* anc_producer = get_or_create_anc(producer);
-
-        // Collect events to update: {producer} ∪ Anc[producer]
-        // Reserve based on current size (approximate, but avoids most reallocs)
-        std::vector<EventId> ancestors_to_update;
-        ancestors_to_update.reserve(1 + anc_producer->size());
-        ancestors_to_update.push_back(producer);
-        anc_producer->for_each([&](uint64_t id, bool) {
-            ancestors_to_update.push_back(static_cast<EventId>(id));
-        });
-
-        // Collect new reachable events: {consumer} ∪ Desc[consumer]
-        std::vector<EventId> descendants_to_add;
-        descendants_to_add.reserve(1 + desc_consumer->size());
-        descendants_to_add.push_back(consumer);
-        desc_consumer->for_each([&](uint64_t id, bool) {
-            descendants_to_add.push_back(static_cast<EventId>(id));
-        });
-
-        // Update Desc sets: for all a ∈ {producer} ∪ Anc[producer], add {consumer} ∪ Desc[consumer]
-        for (EventId a : ancestors_to_update) {
-            DescAncSet* desc_a = get_or_create_desc(a);
-            for (EventId d : descendants_to_add) {
-                desc_a->insert_if_absent(d, true);  // Lock-free, idempotent
-            }
-        }
-
-        // Update Anc sets: for all d ∈ {consumer} ∪ Desc[consumer], add {producer} ∪ Anc[producer]
-        // Reuse ancestors_to_update - no need to rebuild
-        for (EventId d : descendants_to_add) {
-            DescAncSet* anc_d = get_or_create_anc(d);
-            for (EventId a : ancestors_to_update) {
-                anc_d->insert_if_absent(a, true);  // Lock-free, idempotent
-            }
-        }
-    }
+    void update_transitive_closure(EventId producer, EventId consumer);
 
     // Add a branchial edge (event <-> event)
-    void add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
-        branchial_edges_.push(BranchialEdge(e1, e2, shared), *arena_);
-        num_branchial_edges_.fetch_add(1, std::memory_order_relaxed);
-
-        // Emit visualization event for branchial edge
-        // Note: We use generation=0 here as we don't have generation info in this context
-        // The actual generation can be determined by the visualization from event data
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-        VIZ_EMIT_BRANCHIAL_EDGE(e1, e2, 0);
-#endif
-    }
+    void add_branchial_edge(EventId e1, EventId e2, EdgeId shared);
 
     // Iterate over causal edges
     template<typename Visitor>
@@ -567,22 +335,10 @@ public:
     // =========================================================================
 
     // Collect causal edges into vector (for export/testing)
-    std::vector<CausalEdge> get_causal_edges() const {
-        std::vector<CausalEdge> result;
-        for_each_causal_edge([&](const CausalEdge& e) {
-            result.push_back(e);
-        });
-        return result;
-    }
+    std::vector<CausalEdge> get_causal_edges() const;
 
     // Collect branchial edges into vector (for export/testing)
-    std::vector<BranchialEdge> get_branchial_edges() const {
-        std::vector<BranchialEdge> result;
-        for_each_branchial_edge([&](const BranchialEdge& e) {
-            result.push_back(e);
-        });
-        return result;
-    }
+    std::vector<BranchialEdge> get_branchial_edges() const;
 
     // Iterate over all (input_state -> events) mappings
     // Visitor signature: void(StateId input_state, LockFreeList<EventId>* event_list)
@@ -599,16 +355,7 @@ private:
     static EdgeId find_shared_edge(
         const EdgeId* edges1, uint8_t n1,
         const EdgeId* edges2, uint8_t n2
-    ) {
-        for (uint8_t i = 0; i < n1; ++i) {
-            for (uint8_t j = 0; j < n2; ++j) {
-                if (edges1[i] == edges2[j]) {
-                    return edges1[i];
-                }
-            }
-        }
-        return INVALID_ID;
-    }
+    );
 
     // Find first shared edge using edge equivalence (O(n*m) but sets are small)
     // Two edges are considered "shared" if they are equivalent (same canonical class)

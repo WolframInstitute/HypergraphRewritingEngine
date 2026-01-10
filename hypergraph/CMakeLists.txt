@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 
 # Create hypergraph library
-# The unified architecture is header-only; only canonicalization needs compilation
 add_library(hypergraph
     src/canonicalization.cpp
+    src/rewriter.cpp
+    src/causal_graph.cpp
+    src/parallel_evolution.cpp
+    src/hypergraph.cpp
 )
 
 # Include directories
