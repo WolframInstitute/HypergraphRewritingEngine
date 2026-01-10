@@ -113,13 +113,17 @@ if(COMPILER_TYPE STREQUAL "clang")
 
         # Detect Windows SDK in WSL environment for ARM64 cross-compilation
         if(EXISTS "/mnt/c/Program Files (x86)/Windows Kits")
-            # Find the latest Windows SDK version
-            file(GLOB SDK_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Lib/*")
+            # Find the latest Windows SDK version (filter for 10.x.x.x directories only)
+            file(GLOB SDK_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Lib/10.*")
             list(SORT SDK_VERSIONS)
             list(REVERSE SDK_VERSIONS)
-            list(GET SDK_VERSIONS 0 SDK_PATH)
+            if(SDK_VERSIONS)
+                list(GET SDK_VERSIONS 0 SDK_PATH)
+            else()
+                set(SDK_PATH "")
+            endif()
 
-            if(EXISTS "${SDK_PATH}/um/arm64" AND EXISTS "${SDK_PATH}/ucrt/arm64")
+            if(SDK_PATH AND EXISTS "${SDK_PATH}/um/arm64" AND EXISTS "${SDK_PATH}/ucrt/arm64")
                 set(WINSDK_LIB_PATH "${SDK_PATH}")
                 message(STATUS "Found Windows SDK for ARM64: ${SDK_PATH}")
 
@@ -133,16 +137,18 @@ if(COMPILER_TYPE STREQUAL "clang")
                                 set(MSVC_BASE "${VS_YEAR}/${EDITION}/VC/Tools/MSVC")
                                 if(EXISTS "${MSVC_BASE}")
                                     file(GLOB MSVC_VERSIONS LIST_DIRECTORIES true "${MSVC_BASE}/*")
-                                    list(SORT MSVC_VERSIONS)
-                                    list(REVERSE MSVC_VERSIONS)
-                                    list(GET MSVC_VERSIONS 0 MSVC_PATH)
+                                    if(MSVC_VERSIONS)
+                                        list(SORT MSVC_VERSIONS)
+                                        list(REVERSE MSVC_VERSIONS)
+                                        list(GET MSVC_VERSIONS 0 MSVC_PATH)
 
-                                    if(EXISTS "${MSVC_PATH}/lib/arm64")
-                                        set(MSVC_LIB_PATH "${MSVC_PATH}/lib/arm64")
-                                        set(MSVC_INCLUDE_PATH "${MSVC_PATH}/include")
-                                        message(STATUS "Found MSVC ARM64 libraries: ${MSVC_LIB_PATH}")
-                                        message(STATUS "Found MSVC C++ headers: ${MSVC_INCLUDE_PATH}")
-                                        break()
+                                        if(EXISTS "${MSVC_PATH}/lib/arm64")
+                                            set(MSVC_LIB_PATH "${MSVC_PATH}/lib/arm64")
+                                            set(MSVC_INCLUDE_PATH "${MSVC_PATH}/include")
+                                            message(STATUS "Found MSVC ARM64 libraries: ${MSVC_LIB_PATH}")
+                                            message(STATUS "Found MSVC C++ headers: ${MSVC_INCLUDE_PATH}")
+                                            break()
+                                        endif()
                                     endif()
                                 endif()
                             endforeach()
@@ -171,17 +177,18 @@ if(COMPILER_TYPE STREQUAL "clang")
                 endif()
 
                 if(EXISTS "/mnt/c/Program Files (x86)/Windows Kits/10/Include")
-                    file(GLOB SDK_INCLUDE_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Include/*")
+                    file(GLOB SDK_INCLUDE_VERSIONS LIST_DIRECTORIES true "/mnt/c/Program Files (x86)/Windows Kits/10/Include/10.*")
                     list(SORT SDK_INCLUDE_VERSIONS)
                     list(REVERSE SDK_INCLUDE_VERSIONS)
-                    list(GET SDK_INCLUDE_VERSIONS 0 SDK_INCLUDE_PATH)
-
-                    include_directories(SYSTEM
-                        "${SDK_INCLUDE_PATH}/ucrt"
-                        "${SDK_INCLUDE_PATH}/um"
-                        "${SDK_INCLUDE_PATH}/shared"
-                    )
-                    message(STATUS "Added Windows SDK include paths from: ${SDK_INCLUDE_PATH}")
+                    if(SDK_INCLUDE_VERSIONS)
+                        list(GET SDK_INCLUDE_VERSIONS 0 SDK_INCLUDE_PATH)
+                        include_directories(SYSTEM
+                            "${SDK_INCLUDE_PATH}/ucrt"
+                            "${SDK_INCLUDE_PATH}/um"
+                            "${SDK_INCLUDE_PATH}/shared"
+                        )
+                        message(STATUS "Added Windows SDK include paths from: ${SDK_INCLUDE_PATH}")
+                    endif()
                 endif()
             else()
                 message(WARNING "Windows SDK ARM64 libraries not found - build may fail")
@@ -194,6 +201,7 @@ if(COMPILER_TYPE STREQUAL "clang")
     set(CMAKE_CXX_COMPILER_TARGET ${CLANG_TARGET})
     set(CMAKE_C_FLAGS_INIT "--target=${CLANG_TARGET}")
     set(CMAKE_CXX_FLAGS_INIT "--target=${CLANG_TARGET}")
+
     message(STATUS "Using Clang with target: ${CLANG_TARGET}")
 elseif(COMPILER_TYPE STREQUAL "msvc")
     # MSVC/clang-cl specific settings

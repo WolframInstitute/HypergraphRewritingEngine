@@ -2,6 +2,78 @@
 
 This project supports building for Linux, Windows, and macOS from any host platform using flexible cross-compilation toolchains.
 
+## Dependencies
+
+### All Platforms (Ubuntu/Debian)
+
+Install all cross-compilation dependencies at once:
+
+```bash
+# All dependencies for all 6 target platforms
+sudo apt install \
+    cmake build-essential \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    clang-22 lld-22 \
+    llvm-dev libxml2-dev uuid-dev libssl-dev \
+    libbz2-dev zlib1g-dev
+```
+
+**Note:** `clang-22` requires adding the LLVM apt repository first (see Windows ARM64 Setup below).
+
+### Per-Platform Dependencies
+
+| Target Platform | Required Packages |
+|-----------------|-------------------|
+| Linux x86-64 | `build-essential cmake` |
+| Linux ARM64 | `gcc-aarch64-linux-gnu g++-aarch64-linux-gnu` |
+| Windows x86-64 | `gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64` |
+| Windows ARM64 | `clang-22 lld-22` + Windows SDK with ARM64 libs (see below) |
+| macOS (both) | OSXCross + `clang llvm-dev libxml2-dev uuid-dev libssl-dev libbz2-dev zlib1g-dev` |
+
+### Windows ARM64 Setup (WSL2)
+
+Windows ARM64 cross-compilation requires clang 22+, the Windows SDK, and MSVC ARM64 libraries.
+
+**1. Install clang-22 from LLVM repository:**
+```bash
+wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+sudo add-apt-repository "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs) main"
+sudo apt update
+sudo apt install clang-22 lld-22
+
+# Set as default
+sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
+sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
+sudo update-alternatives --install /usr/bin/lld-link lld-link /usr/bin/lld-link-22 100
+```
+
+**2. Install Visual Studio ARM64 build tools (on Windows):**
+- Open Visual Studio Installer → Modify → Individual Components
+- Search "ARM64" and select "MSVC v143 - VS 2022 C++ ARM64 build tools (Latest)"
+
+Or via command line:
+```powershell
+vs_installer.exe modify --installPath "C:\Program Files\Microsoft Visual Studio\2022\Community" --add Microsoft.VisualStudio.Component.VC.Tools.ARM64
+```
+
+The toolchain automatically finds Windows SDK and MSVC at `/mnt/c/Program Files/...`
+
+### OSXCross Setup
+
+For macOS cross-compilation, OSXCross must be installed at `~/osxcross` (or set `OSXCROSS_ROOT`):
+
+```bash
+cd ~
+git clone https://github.com/tpoechtrager/osxcross
+cd osxcross/tarballs
+wget https://github.com/joseluisq/macosx-sdks/releases/download/12.3/MacOSX12.3.sdk.tar.xz
+cd ..
+./build.sh
+```
+
+See the [OSXCross section](#from-linux-using-osxcross) below for detailed instructions.
+
 ## Quick Start
 
 ### Build All Platforms

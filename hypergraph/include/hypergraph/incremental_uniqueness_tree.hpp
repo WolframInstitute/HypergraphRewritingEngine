@@ -822,7 +822,7 @@ public:
         std::sort(vertices.begin(), vertices.end());
 
         if (vertices.size() == 0) {
-            return {0, cache, adjacency};
+            return {0, cache, std::move(adjacency)};
         }
 
         cache.capacity = static_cast<uint32_t>(vertices.size());

@@ -117,24 +117,30 @@ StateId Hypergraph::create_state(std::initializer_list<EdgeId> edge_ids,
 }
 
 StateId Hypergraph::get_or_create_genesis_state() {
+    // Lock-free initialization using CAS
+    // States: 0=uninit, 1=in_progress, 2=done
+
     // Fast path: already created
-    if (genesis_state_created_.load(std::memory_order_acquire)) {
+    int state = genesis_state_init_.load(std::memory_order_acquire);
+    if (state == 2) {
         return genesis_state_;
     }
 
-    // Slow path: create under lock
-    std::lock_guard<std::mutex> lock(genesis_state_mutex_);
-
-    // Double-check after acquiring lock
-    if (genesis_state_created_.load(std::memory_order_relaxed)) {
+    // Try to become the initializer (CAS 0 -> 1)
+    int expected = 0;
+    if (genesis_state_init_.compare_exchange_strong(expected, 1,
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+        // We are the initializer - create the genesis state
+        SparseBitset empty_edges;
+        genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
+        genesis_state_init_.store(2, std::memory_order_release);
         return genesis_state_;
     }
 
-    // Create empty state (no edges, step 0, hash 0)
-    SparseBitset empty_edges;
-    genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
-
-    genesis_state_created_.store(true, std::memory_order_release);
+    // Someone else is initializing or already done - spin until done
+    while (genesis_state_init_.load(std::memory_order_acquire) != 2) {
+        // Spin (could add pause/yield here for better performance)
+    }
     return genesis_state_;
 }
 

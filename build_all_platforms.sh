@@ -66,7 +66,15 @@ for arg in "$@"; do
             echo ""
             echo "Environment variables:"
             echo "  BUILD_JOBS        Number of parallel jobs (default: auto-detect)"
-            echo "  OSXCROSS_ROOT     Path to OSXCross (for macOS builds)"
+            echo "  OSXCROSS_ROOT     Path to OSXCross (default: ~/osxcross)"
+            echo ""
+            echo "Dependencies (Ubuntu/Debian):"
+            echo "  sudo apt install cmake build-essential \\"
+            echo "      gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \\"
+            echo "      gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \\"
+            echo "      clang lld"
+            echo ""
+            echo "  For macOS, also install OSXCross: https://github.com/tpoechtrager/osxcross"
             exit 0
             ;;
     esac
@@ -192,7 +200,7 @@ if $BUILD_MACOS; then
     echo -e "\n${GREEN}=== Building for macOS (x86_64) ===${NC}"
 
     # Check for OSXCross
-    OSXCROSS_ROOT=${OSXCROSS_ROOT:-/opt/osxcross}
+    OSXCROSS_ROOT=${OSXCROSS_ROOT:-$HOME/osxcross}
     if [ ! -d "$OSXCROSS_ROOT" ]; then
         echo -e "${YELLOW}Warning: OSXCross not found at $OSXCROSS_ROOT${NC}"
         echo -e "${YELLOW}Set OSXCROSS_ROOT environment variable or install OSXCross${NC}"

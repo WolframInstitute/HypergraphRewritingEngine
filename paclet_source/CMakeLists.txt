@@ -240,6 +240,10 @@ if(Mathematica_WOLFRAMSCRIPT)
     # Paclet distribution directory (contains only distribution files, no build sources)
     set(PACLET_DIST_DIR "${CMAKE_SOURCE_DIR}/paclet")
 
+    # Paclet name (must match PacletInfo.wl) - "/" becomes "__" in archive filename
+    set(PACLET_NAME "WolframInstitute/HypergraphRewriteEngine")
+    string(REPLACE "/" "__" PACLET_ARCHIVE_NAME "${PACLET_NAME}")
+
     # Create paclet_archive directory at project root
     file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet_archive")
 
@@ -257,7 +261,7 @@ if(Mathematica_WOLFRAMSCRIPT)
             # Run PacletBuild on Windows filesystem (builds documentation + creates archive)
             COMMAND "${Mathematica_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "C:\\Temp\\paclet_build" "C:\\Temp\\paclet_output"
             # Copy resulting .paclet file to paclet_archive (only .paclet files)
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different /mnt/c/Temp/paclet_output/HypergraphRewriting-${PROJECT_VERSION}.paclet "${CMAKE_SOURCE_DIR}/paclet_archive/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different /mnt/c/Temp/paclet_output/${PACLET_ARCHIVE_NAME}-${PROJECT_VERSION}.paclet "${CMAKE_SOURCE_DIR}/paclet_archive/"
             DEPENDS HypergraphRewriting
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Building paclet archive with documentation (WSL mode)"

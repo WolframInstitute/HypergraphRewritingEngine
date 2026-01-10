@@ -129,6 +129,24 @@ engine.set_explore_from_canonical_states_only(true);
 - Google Test (automatically downloaded)
 - Mathematica 12+ (optional, for paclet)
 
+### Cross-Compilation Dependencies (Ubuntu/Debian)
+
+To build for all 6 platforms from Linux:
+
+```bash
+sudo apt install \
+    cmake build-essential \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    clang-22 lld-22 \
+    llvm-dev libxml2-dev uuid-dev libssl-dev \
+    libbz2-dev zlib1g-dev
+```
+
+**Note:** Windows ARM64 requires clang-22+ from the [LLVM apt repository](https://apt.llvm.org/). macOS builds require [OSXCross](https://github.com/tpoechtrager/osxcross) at `~/osxcross`.
+
+See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup instructions.
+
 ## Supported Platforms
 
 The paclet supports 6 platforms:
@@ -138,14 +156,22 @@ The paclet supports 6 platforms:
 
 ### Cross-Compilation
 
-Cross-compilation from Linux is supported for all platforms. The build script automatically detects available toolchains:
+Build all platforms with a single command:
 
-- **Linux ARM64**: Requires `gcc-aarch64-linux-gnu`
-- **Windows x86-64**: Requires MinGW-w64 (`gcc-mingw-w64-x86-64`)
-- **Windows ARM64**: Requires Clang + Windows SDK (auto-detected in WSL2)
-- **macOS**: Requires OSXCross
+```bash
+./build_all_platforms.sh
+```
 
-See `paclet_source/README.md` for detailed build instructions.
+The script automatically detects available toolchains:
+
+| Target | Toolchain | Packages |
+|--------|-----------|----------|
+| Linux ARM64 | GCC cross-compiler | `gcc-aarch64-linux-gnu g++-aarch64-linux-gnu` |
+| Windows x86-64 | MinGW-w64 | `gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64` |
+| Windows ARM64 | Clang 22 + LLD + MSVC ARM64 | `clang-22 lld-22` + VS ARM64 build tools |
+| macOS x86-64/ARM64 | OSXCross | See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) |
+
+See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup instructions.
 
 ## Project Structure
 
