@@ -1,15 +1,7 @@
-/.cache/
-/.vscode/
 /build*/
-/paclet_archive/
-/research/
-/tmp/
-/tools/
-/utils/
-/venv/
 /compile_commands.json
 
-# Benchmark results - exclude intermediate files ...
+# Benchmark results - exclude intermediate files
 /benchmark_results/*/*.csv
 /benchmark_results/*/per_benchmark/
 /benchmark_results/*/benchmark_config.txt

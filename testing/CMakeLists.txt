@@ -145,25 +145,23 @@ endfunction()
 create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
-    # Core tests
-    test_simple.cpp
-    test_canonicalization.cpp
-    test_wxf.cpp
-    test_paclet.cpp
-    test_grid_performance.cpp
-    test_repeated_invocation.cpp
-    # Evolution and pattern matching
+    # Hypergraph tests
+    ../hypergraph/tests/test_canonicalization.cpp
     ../hypergraph/tests/test_pattern_matching.cpp
     ../hypergraph/tests/test_parallel_evolution.cpp
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
-    # Causal/branchial graph tests
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
-    # Determinism and stress tests
     ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
+    ../hypergraph/tests/test_grid_performance.cpp
+    ../hypergraph/tests/test_repeated_invocation.cpp
+    # WXF tests
+    ../wxf/tests/test_wxf.cpp
+    # Paclet tests
+    ../paclet_source/tests/test_paclet.cpp
 )
 
 # =============================================================================
@@ -172,9 +170,8 @@ create_test_executable(all_tests
 create_test_executable(core_tests
     main.cpp
     test_helpers.hpp
-    test_simple.cpp
-    test_canonicalization.cpp
-    test_wxf.cpp
+    ../hypergraph/tests/test_canonicalization.cpp
+    ../wxf/tests/test_wxf.cpp
 )
 
 # =============================================================================
@@ -207,8 +204,8 @@ create_test_executable(stress_tests
     test_helpers.hpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
-    test_grid_performance.cpp
-    test_repeated_invocation.cpp
+    ../hypergraph/tests/test_grid_performance.cpp
+    ../hypergraph/tests/test_repeated_invocation.cpp
 )
 
 # =============================================================================
@@ -217,7 +214,7 @@ create_test_executable(stress_tests
 create_test_executable(integration_tests
     main.cpp
     test_helpers.hpp
-    test_paclet.cpp
+    ../paclet_source/tests/test_paclet.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
 )
 
@@ -278,7 +275,7 @@ add_custom_target(run_integration_tests
 # =============================================================================
 # Standalone test for geodesic/particle analysis (doesn't need GoogleTest)
 add_executable(test_quantum_analysis
-    test_quantum_analysis.cpp
+    ../visualisation/tests/test_quantum_analysis.cpp
 )
 
 target_link_libraries(test_quantum_analysis

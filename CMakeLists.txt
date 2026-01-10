@@ -106,7 +106,7 @@ add_subdirectory(wxf)
 # Unified test suite
 option(BUILD_TESTS "Build unified test suite" ON)
 if(BUILD_TESTS)
-    add_subdirectory(tests)
+    add_subdirectory(testing)
 endif()
 
 # Examples - API documentation and usage examples
