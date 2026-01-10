@@ -89,7 +89,7 @@ Hypergraph hg;
 
 // Create edges and states
 EdgeId e1 = hg.create_edge({1, 2, 3});
-StateId s = hg.create_state(&e1, 1);
+StateId s = hg.create_state({e1});
 
 // Configure canonicalization
 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -119,7 +119,7 @@ engine.add_rule(rule);
 engine.evolve(initial_edges, num_steps);
 
 // Optional: explore only from canonical states (deduplication)
-engine.set_explore_from_canonical_only(true);
+engine.set_explore_from_canonical_states_only(true);
 ```
 
 ## Build Requirements
@@ -150,7 +150,7 @@ See `paclet_source/README.md` for detailed build instructions.
 ## Project Structure
 
 ```
-hypergraph/
+hypergraph/              # Core hypergraph rewriting library
   include/hypergraph/
     hypergraph.hpp         # Main Hypergraph class
     parallel_evolution.hpp # ParallelEvolutionEngine
@@ -158,12 +158,23 @@ hypergraph/
     pattern_matcher.hpp    # Pattern matching
     causal_graph.hpp       # Causal/branchial edges
     types.hpp              # Core types (VertexId, EdgeId, etc.)
-tests/
-  all_tests, core_tests, evolution_tests, ...
-examples/
-  basic_evolution.cpp, pattern_matching.cpp, ...
-benchmarks/
-  benchmark_suite
-paclet_source/
-  hypergraph_ffi.cpp       # Mathematica LibraryLink bindings
+  tests/                   # Hypergraph unit tests
+
+job_system/              # Work-stealing task scheduler
+lockfree_deque/          # Lock-free concurrent deque
+wxf/                     # Wolfram Exchange Format serialization
+
+visualisation/           # 3D visualization (Vulkan)
+  blackhole/               # Physics analysis (geodesics, curvature, etc.)
+  scene/                   # Rendering pipeline
+  shaders/                 # GLSL/SPIR-V shaders
+
+gpu/                     # GPU compute kernels (experimental)
+
+testing/                 # Test infrastructure (CMake, helpers)
+examples/                # Usage examples
+benchmarks/              # Performance benchmarks
+
+paclet/                  # Mathematica paclet skeleton
+paclet_source/           # LibraryLink FFI implementation
 ```
