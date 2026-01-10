@@ -116,9 +116,11 @@ public:
     static uint64_t events_dropped() { return events_dropped_; }
 
 private:
-    static inline MPSCRingBuffer<VizEvent>* buffer_ = nullptr;
-    static inline std::atomic<uint64_t> events_emitted_{0};
-    static inline std::atomic<uint64_t> events_dropped_{0};
+    // Defined in viz_event_sink.cpp - NOT inline to avoid ODR issues
+    // when hypergraph library and visualization are linked together
+    static MPSCRingBuffer<VizEvent>* buffer_;
+    static std::atomic<uint64_t> events_emitted_;
+    static std::atomic<uint64_t> events_dropped_;
 };
 
 } // namespace viz

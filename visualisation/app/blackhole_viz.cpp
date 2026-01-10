@@ -4490,14 +4490,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Load shaders
-    auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
-    auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
-    auto cylinder_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cylinder.vert.spv");
-    auto sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
+    auto vert_spirv = load_spirv("./shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("./shaders/spirv/basic3d.frag.spv");
+    auto cylinder_vert_spirv = load_spirv("./shaders/spirv/instance_cylinder.vert.spv");
+    auto sphere_vert_spirv = load_spirv("./shaders/spirv/instance_sphere.vert.spv");
 
     // Picking shaders
-    auto picking_sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/picking_sphere.vert.spv");
-    auto picking_sphere_frag_spirv = load_spirv("../visualisation/shaders/spirv/picking_sphere.frag.spv");
+    auto picking_sphere_vert_spirv = load_spirv("./shaders/spirv/picking_sphere.vert.spv");
+    auto picking_sphere_frag_spirv = load_spirv("./shaders/spirv/picking_sphere.frag.spv");
     bool picking_shaders_available = !picking_sphere_vert_spirv.empty() && !picking_sphere_frag_spirv.empty();
     if (!picking_shaders_available) {
         std::cerr << "Warning: Picking shaders not found - vertex selection disabled" << std::endl;
@@ -4967,8 +4967,8 @@ int main(int argc, char* argv[]) {
     // ==========================================================================
 
     // Load text shaders
-    auto text_vert_spirv = load_spirv("../visualisation/shaders/spirv/text.vert.spv");
-    auto text_frag_spirv = load_spirv("../visualisation/shaders/spirv/text.frag.spv");
+    auto text_vert_spirv = load_spirv("./shaders/spirv/text.vert.spv");
+    auto text_frag_spirv = load_spirv("./shaders/spirv/text.frag.spv");
     bool text_rendering_available = !text_vert_spirv.empty() && !text_frag_spirv.empty();
     std::unique_ptr<gal::Shader> text_vertex_shader;
     std::unique_ptr<gal::Shader> text_fragment_shader;

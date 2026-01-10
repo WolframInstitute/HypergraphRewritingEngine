@@ -406,8 +406,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Load shaders
-    auto vert_spirv = load_spirv("../shaders/spirv/basic3d.vert.spv");
-    auto frag_spirv = load_spirv("../shaders/spirv/basic3d.frag.spv");
+    auto vert_spirv = load_spirv("./shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("./shaders/spirv/basic3d.frag.spv");
 
     if (vert_spirv.empty() || frag_spirv.empty()) {
         std::cerr << "Failed to load shaders" << std::endl;

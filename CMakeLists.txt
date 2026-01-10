@@ -88,6 +88,18 @@ endif()
 
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
+
+# When visualization is enabled, create viz_events library BEFORE hypergraph
+# so hypergraph can link to it for the VizEventSink static variables
+if(BUILD_VISUALIZATION)
+    add_library(viz_events STATIC
+        visualisation/events/src/viz_event_sink.cpp
+    )
+    target_include_directories(viz_events PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/visualisation/events/include
+    )
+endif()
+
 add_subdirectory(hypergraph)
 add_subdirectory(wxf)
 

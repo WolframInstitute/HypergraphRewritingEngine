@@ -327,20 +327,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Load shaders
-    auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
-    auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
+    auto vert_spirv = load_spirv("./shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("./shaders/spirv/basic3d.frag.spv");
 
     // Instanced cone shaders (uses basic3d.frag for fragment stage)
-    auto instance_cone_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cone.vert.spv");
+    auto instance_cone_vert_spirv = load_spirv("./shaders/spirv/instance_cone.vert.spv");
 
     // Instanced sphere shaders (uses basic3d.frag for fragment stage)
-    auto instance_sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
+    auto instance_sphere_vert_spirv = load_spirv("./shaders/spirv/instance_sphere.vert.spv");
 
     // WBOIT shaders
-    auto wboit_vert_spirv = load_spirv("../visualisation/shaders/spirv/wboit.vert.spv");
-    auto wboit_frag_spirv = load_spirv("../visualisation/shaders/spirv/wboit.frag.spv");
-    auto composite_vert_spirv = load_spirv("../visualisation/shaders/spirv/composite.vert.spv");
-    auto composite_frag_spirv = load_spirv("../visualisation/shaders/spirv/composite.frag.spv");
+    auto wboit_vert_spirv = load_spirv("./shaders/spirv/wboit.vert.spv");
+    auto wboit_frag_spirv = load_spirv("./shaders/spirv/wboit.frag.spv");
+    auto composite_vert_spirv = load_spirv("./shaders/spirv/composite.vert.spv");
+    auto composite_frag_spirv = load_spirv("./shaders/spirv/composite.frag.spv");
 
     if (vert_spirv.empty() || frag_spirv.empty()) {
         std::cerr << "Failed to load basic shaders" << std::endl;

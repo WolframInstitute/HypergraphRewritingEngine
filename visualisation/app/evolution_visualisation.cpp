@@ -568,10 +568,10 @@ int main(int argc, char* argv[]) {
 
     // Load shaders
     auto shader_start = std::chrono::high_resolution_clock::now();
-    auto vert_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.vert.spv");
-    auto frag_spirv = load_spirv("../visualisation/shaders/spirv/basic3d.frag.spv");
-    auto instance_cone_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_cone.vert.spv");
-    auto instance_sphere_vert_spirv = load_spirv("../visualisation/shaders/spirv/instance_sphere.vert.spv");
+    auto vert_spirv = load_spirv("./shaders/spirv/basic3d.vert.spv");
+    auto frag_spirv = load_spirv("./shaders/spirv/basic3d.frag.spv");
+    auto instance_cone_vert_spirv = load_spirv("./shaders/spirv/instance_cone.vert.spv");
+    auto instance_sphere_vert_spirv = load_spirv("./shaders/spirv/instance_sphere.vert.spv");
 
     if (vert_spirv.empty() || frag_spirv.empty()) {
         std::cerr << "Failed to load basic shaders" << std::endl;

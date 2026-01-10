@@ -120,6 +120,74 @@ endif()
 
 target_link_libraries(viz_platform PUBLIC viz_gal)
 
+# ==============================================================================
+# SPIR-V Shader Compilation
+# ==============================================================================
+# Compile GLSL shaders to SPIR-V using glslc (from Vulkan SDK)
+
+# Find glslc compiler
+find_program(GLSLC_EXECUTABLE glslc
+    HINTS
+        $ENV{VULKAN_SDK}/Bin
+        $ENV{VULKAN_SDK}/bin
+        /usr/bin
+        /usr/local/bin
+)
+
+if(GLSLC_EXECUTABLE)
+    message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
+
+    set(SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders/glsl)
+    # Output to build directory, not source tree
+    set(SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders/spirv)
+
+    # List of all GLSL shaders
+    set(GLSL_SHADERS
+        basic3d.vert
+        basic3d.frag
+        composite.vert
+        composite.frag
+        instance_cone.vert
+        instance_cylinder.vert
+        instance_sphere.vert
+        picking_2d.vert
+        picking_sphere.vert
+        picking_sphere.frag
+        text.vert
+        text.frag
+        triangle.vert
+        triangle.frag
+        wboit.vert
+        wboit.frag
+    )
+
+    # Create output directory if it doesn't exist
+    file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
+
+    # Generate compile commands for each shader
+    set(SPIRV_OUTPUTS)
+    foreach(SHADER ${GLSL_SHADERS})
+        set(GLSL_SOURCE ${SHADER_SOURCE_DIR}/${SHADER})
+        set(SPIRV_OUTPUT ${SHADER_OUTPUT_DIR}/${SHADER}.spv)
+
+        add_custom_command(
+            OUTPUT ${SPIRV_OUTPUT}
+            COMMAND ${GLSLC_EXECUTABLE} -o ${SPIRV_OUTPUT} ${GLSL_SOURCE}
+            DEPENDS ${GLSL_SOURCE}
+            COMMENT "Compiling ${SHADER} -> ${SHADER}.spv"
+            VERBATIM
+        )
+
+        list(APPEND SPIRV_OUTPUTS ${SPIRV_OUTPUT})
+    endforeach()
+
+    # Create a target for all shaders
+    add_custom_target(compile_shaders ALL DEPENDS ${SPIRV_OUTPUTS})
+
+else()
+    message(WARNING "glslc not found - shaders will not be compiled. Install Vulkan SDK or add glslc to PATH.")
+endif()
+
 # Math library (header-only for now)
 add_library(viz_math INTERFACE)
 target_include_directories(viz_math INTERFACE
@@ -150,11 +218,18 @@ target_include_directories(viz_scene INTERFACE
 )
 target_link_libraries(viz_scene INTERFACE viz_math)
 
-# Events library (header-only for visualization event streaming)
-add_library(viz_events INTERFACE)
-target_include_directories(viz_events INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/events/include
-)
+# Events library (viz_events) is created in the top-level CMakeLists.txt
+# BEFORE hypergraph, so that hypergraph can link to it for VizEventSink statics.
+# We just need to ensure it exists here for local targets to link against.
+if(NOT TARGET viz_events)
+    # Fallback if building visualisation standalone (not via top-level CMake)
+    add_library(viz_events STATIC
+        events/src/viz_event_sink.cpp
+    )
+    target_include_directories(viz_events PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/events/include
+    )
+endif()
 
 # CUDA layout backend (optional)
 if(VIZ_CUDA_LAYOUT)
@@ -180,12 +255,18 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
         app/native_main.cpp
     )
     target_link_libraries(hypergraph_viz PRIVATE viz_platform viz_gal viz_camera viz_math viz_layout)
+    if(TARGET compile_shaders)
+        add_dependencies(hypergraph_viz compile_shaders)
+    endif()
 
     # Hypergraph rendering test application
     add_executable(hypergraph_test
         app/hypergraph_test.cpp
     )
     target_link_libraries(hypergraph_test PRIVATE viz_platform viz_gal viz_camera viz_math viz_layout viz_scene)
+    if(TARGET compile_shaders)
+        add_dependencies(hypergraph_test compile_shaders)
+    endif()
 
     # Evolution visualisation application - links to hypergraph engine
     # Only built when hypergraph library is available (built from top-level CMake)
@@ -205,6 +286,9 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             job_system
         )
         target_compile_definitions(evolution_viz PRIVATE HYPERGRAPH_ENABLE_VISUALIZATION=1)
+        if(TARGET compile_shaders)
+            add_dependencies(evolution_viz compile_shaders)
+        endif()
         message(STATUS "Building evolution_viz with hypergraph engine integration")
     else()
         message(STATUS "Skipping evolution_viz (hypergraph target not available)")
@@ -247,6 +331,9 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             viz_blackhole
         )
         target_compile_definitions(blackhole_viz PRIVATE HYPERGRAPH_ENABLE_VISUALIZATION=1)
+        if(TARGET compile_shaders)
+            add_dependencies(blackhole_viz compile_shaders)
+        endif()
         message(STATUS "Building blackhole_viz with hypergraph engine integration")
 
         # Analysis tool for .bhdata files

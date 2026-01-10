@@ -22,11 +22,20 @@ set_target_properties(hypergraph PROPERTIES
 
 # Link dependencies
 find_package(Threads REQUIRED)
-target_link_libraries(hypergraph PUBLIC 
+target_link_libraries(hypergraph PUBLIC
     Threads::Threads
     job_system
     lockfree_deque
 )
+
+# Visualization event streaming (conditional on viz_events target existence)
+# When HYPERGRAPH_ENABLE_VISUALIZATION is defined, hypergraph uses VizEventSink
+# which requires linking to viz_events library for the static variable definitions
+if(TARGET viz_events)
+    target_link_libraries(hypergraph PUBLIC viz_events)
+    # Enable the VIZ_EMIT_* macros so hypergraph actually emits events
+    target_compile_definitions(hypergraph PUBLIC HYPERGRAPH_ENABLE_VISUALIZATION=1)
+endif()
 
 # Optional debug definitions (can be enabled via cmake -DDEBUG_OUTPUT=ON)
 option(DEBUG_OUTPUT "Enable debug output" OFF)
