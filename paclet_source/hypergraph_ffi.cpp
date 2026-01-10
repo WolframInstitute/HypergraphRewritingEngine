@@ -615,7 +615,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Generated Minkowski sprinkling with "
+                oss << "HGEvolve: Generated Minkowski sprinkling with "
                     << sprinkling.points.size() << " points, "
                     << sprinkling_edges.size() << " edges";
                 print_to_frontend(libData, oss.str());
@@ -768,7 +768,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         size_t last_causal = 0, last_branchial = 0;
 
         if (show_progress) {
-            print_to_frontend(libData, "HGEvolveV2: Starting evolution...");
+            print_to_frontend(libData, "HGEvolve: Starting evolution...");
         }
 
         // Set up debug callback to route DEBUG_LOG to our queue
@@ -891,9 +891,9 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(evolution_end - evolution_start).count();
             std::ostringstream oss;
             if (was_aborted) {
-                oss << "HGEvolveV2: ABORTED after " << evolution_ms << "ms. ";
+                oss << "HGEvolve: ABORTED after " << evolution_ms << "ms. ";
             } else {
-                oss << "HGEvolveV2: Evolution complete in " << evolution_ms << "ms. ";
+                oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. ";
             }
             oss << "States: " << hg.num_canonical_states() << ", "
                 << "Events: " << hg.num_events() << ", "
@@ -901,7 +901,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 << "Branchial: " << hg.num_branchial_edges();
             print_to_frontend(libData, oss.str());
             if (!was_aborted) {
-                print_to_frontend(libData, "HGEvolveV2: Starting serialization...");
+                print_to_frontend(libData, "HGEvolve: Starting serialization...");
             }
         }
 #else
@@ -922,7 +922,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_dimensions) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing dimension analysis...");
+                print_to_frontend(libData, "HGEvolve: Computing dimension analysis...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -965,7 +965,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Dimension analysis complete. Analyzed "
+                oss << "HGEvolve: Dimension analysis complete. Analyzed "
                     << state_dimension_stats.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -983,7 +983,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_geodesics) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing geodesic analysis...");
+                print_to_frontend(libData, "HGEvolve: Computing geodesic analysis...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -1046,7 +1046,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Geodesic analysis complete. Analyzed "
+                oss << "HGEvolve: Geodesic analysis complete. Analyzed "
                     << state_geodesic_paths.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -1071,7 +1071,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (detect_particles) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Detecting topological defects...");
+                print_to_frontend(libData, "HGEvolve: Detecting topological defects...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -1135,7 +1135,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Particle detection complete. Analyzed "
+                oss << "HGEvolve: Particle detection complete. Analyzed "
                     << state_defects.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -1152,7 +1152,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_curvature) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing curvature analysis...");
+                print_to_frontend(libData, "HGEvolve: Computing curvature analysis...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -1205,7 +1205,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Curvature analysis complete. Analyzed "
+                oss << "HGEvolve: Curvature analysis complete. Analyzed "
                     << state_ollivier_ricci.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -1224,7 +1224,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_entropy) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing entropy analysis...");
+                print_to_frontend(libData, "HGEvolve: Computing entropy analysis...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -1281,7 +1281,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Entropy analysis complete. Analyzed "
+                oss << "HGEvolve: Entropy analysis complete. Analyzed "
                     << state_degree_entropy.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -1296,7 +1296,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_rotation_curve) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Computing rotation curve analysis...");
+                print_to_frontend(libData, "HGEvolve: Computing rotation curve analysis...");
             }
 #endif
             uint32_t num_states = hg.num_states();
@@ -1342,7 +1342,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Rotation curve analysis complete. Analyzed "
+                oss << "HGEvolve: Rotation curve analysis complete. Analyzed "
                     << state_rotation_curves.size() << " states";
                 print_to_frontend(libData, oss.str());
             }
@@ -1369,7 +1369,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         if (compute_hilbert_space || compute_branchial || compute_multispace) {
 #ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolveV2: Building branchial structures...");
+                print_to_frontend(libData, "HGEvolve: Building branchial structures...");
             }
 #endif
             // Build BranchState structures from the hypergraph
@@ -1415,7 +1415,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 if (compute_hilbert_space) {
 #ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolveV2: Computing Hilbert space analysis...");
+                        print_to_frontend(libData, "HGEvolve: Computing Hilbert space analysis...");
                     }
 #endif
                     if (hilbert_step >= 0) {
@@ -1430,7 +1430,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 if (compute_branchial) {
 #ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolveV2: Computing branchial analysis...");
+                        print_to_frontend(libData, "HGEvolve: Computing branchial analysis...");
                     }
 #endif
                     branchial_result = bh::analyze_branchial(branch_states);
@@ -1441,7 +1441,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 if (compute_multispace) {
 #ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolveV2: Computing multispace analysis...");
+                        print_to_frontend(libData, "HGEvolve: Computing multispace analysis...");
                     }
 #endif
                     // Compute vertex probabilities (how often each vertex appears across branches)
@@ -1491,7 +1491,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
-                oss << "HGEvolveV2: Branchial analyses complete.";
+                oss << "HGEvolve: Branchial analyses complete.";
                 if (has_hilbert_data) {
                     oss << " Hilbert: " << hilbert_result.num_states << " states.";
                 }
@@ -2767,7 +2767,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
 #ifdef HAVE_WSTP
         if (show_progress) {
-            print_to_frontend(libData, "HGEvolveV2: Serialization complete.");
+            print_to_frontend(libData, "HGEvolve: Serialization complete.");
         }
 #endif
 

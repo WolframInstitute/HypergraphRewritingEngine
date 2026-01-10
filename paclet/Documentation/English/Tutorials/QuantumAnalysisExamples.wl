@@ -34,7 +34,7 @@ initial = {{0, 1}, {1, 2}, {2, 0}};
 (* Evolve for several steps with dimension analysis enabled *)
 Print["Running evolution with analysis options..."];
 
-result = HGEvolveV2[
+result = HGEvolve[
   {rule},
   initial,
   6,  (* steps *)
@@ -156,7 +156,7 @@ If[KeyExistsQ[result, "TopologicalData"],
 Print["\n=== Curvature Analysis ==="];
 
 (* Run evolution with curvature analysis enabled *)
-curvResult = HGEvolveV2[
+curvResult = HGEvolve[
   {rule},
   initial,
   5,
@@ -193,7 +193,7 @@ If[KeyExistsQ[curvResult, "CurvatureData"],
 
 Print["\n=== Entropy Analysis ==="];
 
-entropyResult = HGEvolveV2[
+entropyResult = HGEvolve[
   {rule},
   initial,
   5,
@@ -237,7 +237,7 @@ If[KeyExistsQ[entropyResult, "EntropyData"],
 
 Print["\n=== Rotation Curve Analysis ==="];
 
-rotResult = HGEvolveV2[
+rotResult = HGEvolve[
   {rule},
   initial,
   6,
@@ -280,7 +280,7 @@ If[KeyExistsQ[rotResult, "RotationData"],
 
 Print["\n=== Hilbert Space Analysis ==="];
 
-hilbertResult = HGEvolveV2[
+hilbertResult = HGEvolve[
   {rule},
   initial,
   4,  (* Fewer steps to limit branching *)

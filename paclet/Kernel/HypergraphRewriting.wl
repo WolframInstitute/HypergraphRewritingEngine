@@ -3,7 +3,6 @@
 BeginPackage["HypergraphRewriting`"]
 
 PackageExport["HGEvolve"]
-PackageExport["HGEvolveV2"]
 PackageExport["HGHausdorffAnalysis"]
 PackageExport["HGStateDimensionPlot"]
 PackageExport["HGTimestepUnionPlot"]
@@ -12,14 +11,13 @@ PackageExport["EdgeId"]
 
 (* Public symbols *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution."
-HGEvolveV2::usage = "HGEvolveV2[rules, initialEdges, steps, property] performs multiway rewriting using the V2 engine."
 HGHausdorffAnalysis::usage = "HGHausdorffAnalysis[edges, opts] computes local Hausdorff dimension for each vertex in a graph."
 HGStateDimensionPlot::usage = "HGStateDimensionPlot[edges, opts] plots a hypergraph with vertices colored by local dimension."
 HGTimestepUnionPlot::usage = "HGTimestepUnionPlot[evolutionResult, step, opts] plots the union graph at a timestep with dimension coloring."
 HGDimensionFilmstrip::usage = "HGDimensionFilmstrip[evolutionResult, opts] shows a grid of timestep union graphs with dimension coloring."
 EdgeId::usage = "EdgeId[id] wraps an edge identifier."
 
-Options[HGEvolveV2] = {
+Options[HGEvolve] = {
   "HashStrategy" -> "WL",
   "CanonicalizeStates" -> None,  (* None, Automatic, Full *)
   "CanonicalizeEvents" -> None,  (* None, Full, Automatic, or {keys...} *)
@@ -161,7 +159,7 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
 
   unknown = Complement[props, Keys[propertyRequirementsBase]];
   If[Length[unknown] > 0,
-    Message[HGEvolveV2::unknownprop, unknown];
+    Message[HGEvolve::unknownprop, unknown];
     Return[$Failed]
   ];
 
@@ -172,8 +170,8 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
 computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
   computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
 
-HGEvolveV2::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
-HGEvolveV2::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
+HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
+HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -476,12 +474,12 @@ makeStyledStateVertexWithDimensionFn[vertexData_, dimensionData_, palette_, colo
 ];
 
 (* ============================================================================ *)
-(* Main Function: HGEvolveV2 *)
+(* Main Function: HGEvolve *)
 (* ============================================================================ *)
 
-HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
-           property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-           OptionsPattern[]] := Module[
+HGEvolve[rules_List, initialEdges_List, steps_Integer,
+         property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
+         OptionsPattern[]] := Module[
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, aspectRatio, props,
    includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties},
@@ -522,7 +520,7 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
 
   (* Debug: print what data we're requesting from FFI *)
   If[OptionValue["DebugFFI"],
-    Print["HGEvolveV2 FFI Debug:"];
+    Print["HGEvolve FFI Debug:"];
     Print["  Requested properties: ", props];
     Print["  Required data components: ", requiredData];
     Print["  Graph properties: ", graphProperties];
@@ -630,27 +628,27 @@ HGEvolveV2[rules_List, initialEdges_List, steps_Integer,
   (* Only use defaults for data we didn't request *)
   states = If[MemberQ[requiredData, "States"],
     If[KeyExistsQ[wxfData, "States"], wxfData["States"],
-      Message[HGEvolveV2::missingdata, "States"]; Return[$Failed]],
+      Message[HGEvolve::missingdata, "States"]; Return[$Failed]],
     <||>
   ];
   events = If[MemberQ[requiredData, "Events"] || MemberQ[requiredData, "EventsMinimal"],
     If[KeyExistsQ[wxfData, "Events"], wxfData["Events"],
-      Message[HGEvolveV2::missingdata, "Events"]; Return[$Failed]],
+      Message[HGEvolve::missingdata, "Events"]; Return[$Failed]],
     <||>
   ];
   causalEdges = If[MemberQ[requiredData, "CausalEdges"],
     If[KeyExistsQ[wxfData, "CausalEdges"], wxfData["CausalEdges"],
-      Message[HGEvolveV2::missingdata, "CausalEdges"]; Return[$Failed]],
+      Message[HGEvolve::missingdata, "CausalEdges"]; Return[$Failed]],
     {}
   ];
   branchialEdges = If[MemberQ[requiredData, "BranchialEdges"],
     If[KeyExistsQ[wxfData, "BranchialEdges"], wxfData["BranchialEdges"],
-      Message[HGEvolveV2::missingdata, "BranchialEdges"]; Return[$Failed]],
+      Message[HGEvolve::missingdata, "BranchialEdges"]; Return[$Failed]],
     {}
   ];
   branchialStateEdges = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
     If[KeyExistsQ[wxfData, "BranchialStateEdges"], wxfData["BranchialStateEdges"],
-      Message[HGEvolveV2::missingdata, "BranchialStateEdges"]; Return[$Failed]],
+      Message[HGEvolve::missingdata, "BranchialStateEdges"]; Return[$Failed]],
     {}
   ];
   branchialStateVertices = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
@@ -798,17 +796,6 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     _, $Failed
   ]
 ]
-
-(* ============================================================================ *)
-(* Legacy HGEvolve (V1) - kept for backward compatibility *)
-(* ============================================================================ *)
-
-Options[HGEvolve] = Options[HGEvolveV2];
-
-HGEvolve[rules_List, initialEdges_List, steps_Integer,
-         property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-         opts:OptionsPattern[]] :=
-  HGEvolveV2[rules, initialEdges, steps, property, opts]
 
 (* ============================================================================ *)
 (* HGHausdorffAnalysis - Local dimension estimation via FFI *)
