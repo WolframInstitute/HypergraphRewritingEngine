@@ -368,7 +368,6 @@ float klein_distance(const Vec2& a, const Vec2& b, const TopologyConfig& config)
 
     float z_min = config.domain_y[0];
     float z_max = config.domain_y[1];
-    float z_range = z_max - z_min;
 
     // Direct distance
     float dtheta_direct = std::abs(a.x - b.x);

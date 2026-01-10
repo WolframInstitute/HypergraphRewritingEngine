@@ -6672,8 +6672,8 @@ int main(int argc, char* argv[]) {
                 copy_region.texture_mip_level = 0;
                 copy_region.texture_array_layer = 0;
                 copy_region.texture_offset = {
-                    static_cast<uint32_t>(std::clamp(picking_click_x, 0, static_cast<int>(w) - 1)),
-                    static_cast<uint32_t>(std::clamp(picking_click_y, 0, static_cast<int>(h) - 1)),
+                    static_cast<int32_t>(std::clamp(picking_click_x, 0, static_cast<int>(w) - 1)),
+                    static_cast<int32_t>(std::clamp(picking_click_y, 0, static_cast<int>(h) - 1)),
                     0
                 };
                 copy_region.copy_size = {1, 1, 1};

@@ -594,7 +594,7 @@ bool contains_k33_minor_approx(
 
 std::vector<TopologicalDefect> detect_k5_minors(
     const SimpleGraph& graph,
-    int max_search_depth
+    [[maybe_unused]] int max_search_depth
 ) {
     std::vector<TopologicalDefect> defects;
 
@@ -632,7 +632,7 @@ std::vector<TopologicalDefect> detect_k5_minors(
 
 std::vector<TopologicalDefect> detect_k33_minors(
     const SimpleGraph& graph,
-    int max_search_depth
+    [[maybe_unused]] int max_search_depth
 ) {
     std::vector<TopologicalDefect> defects;
 

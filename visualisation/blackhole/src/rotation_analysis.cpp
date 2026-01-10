@@ -225,7 +225,7 @@ std::tuple<float, float, float> fit_power_law(
 
 std::pair<float, float> detect_flat_region(
     const std::vector<RotationCurvePoint>& curve,
-    float threshold
+    [[maybe_unused]] float threshold
 ) {
     if (curve.size() < 3) {
         return {0.0f, 0.0f};

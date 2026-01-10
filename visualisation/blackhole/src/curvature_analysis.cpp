@@ -209,7 +209,7 @@ float local_scalar_curvature(
     const SimpleGraph& graph,
     VertexId vertex,
     const std::vector<float>& dimensions,
-    int radius
+    [[maybe_unused]] int radius
 ) {
     // Get vertex index
     const auto& verts = graph.vertices();

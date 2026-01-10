@@ -573,9 +573,9 @@ std::unordered_map<VertexId, std::vector<int>> compute_geodesic_coordinates(
 // Local Hausdorff Dimension
 // =============================================================================
 
-// Debug: print ball growth for first few calls
-static int debug_dimension_calls = 0;
-static constexpr int DEBUG_DIMENSION_LIMIT = 5;
+// Debug: print ball growth for first few calls (currently unused)
+// static int debug_dimension_calls = 0;
+// static constexpr int DEBUG_DIMENSION_LIMIT = 5;
 
 float estimate_local_dimension(
     const std::vector<int>& distances_from_vertex,
@@ -1449,13 +1449,11 @@ TimestepAggregation aggregate_timestep_streaming(
 
     // Minimum anchors needed for reasonable coordinate system
     constexpr int MIN_ANCHORS = 3;
-    bool using_local_anchors = false;
     int original_valid_count = static_cast<int>(valid_anchors.size());
 
     if (original_valid_count < MIN_ANCHORS) {
         // Not enough global anchors survive in this timestep - fall back to local anchors
         // Properties are basis-invariant so this is mathematically sound
-        using_local_anchors = true;
         valid_anchors = select_anchors(
             union_graph,
             result.union_vertices,

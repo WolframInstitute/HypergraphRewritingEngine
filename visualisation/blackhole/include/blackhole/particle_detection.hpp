@@ -203,9 +203,9 @@ std::vector<std::vector<VertexId>> find_dense_subgraphs(
 struct ParticleTrack {
     std::vector<TopologicalDefect> states;  // Defect at each timestep
     std::vector<uint32_t> timesteps;        // Which timesteps
-    VertexId initial_vertex;                // Starting vertex
-    bool is_persistent;                     // Present in multiple timesteps
-    float mean_charge;                      // Average charge over time
+    VertexId initial_vertex{0};             // Starting vertex
+    bool is_persistent{false};              // Present in multiple timesteps
+    float mean_charge{0.0f};                // Average charge over time
 };
 
 // Track particles across evolution timesteps

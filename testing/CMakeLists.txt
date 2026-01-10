@@ -274,31 +274,34 @@ add_custom_target(run_integration_tests
 # Quantum Analysis Tests (geodesic tracing + particle detection)
 # =============================================================================
 # Standalone test for geodesic/particle analysis (doesn't need GoogleTest)
-add_executable(test_quantum_analysis
-    ../visualisation/tests/test_quantum_analysis.cpp
-)
+# Only build if viz_blackhole is available (requires BUILD_VISUALIZATION=ON)
+if(TARGET viz_blackhole)
+    add_executable(test_quantum_analysis
+        ../visualisation/tests/test_quantum_analysis.cpp
+    )
 
-target_link_libraries(test_quantum_analysis
-    PRIVATE
-    viz_blackhole
-    hypergraph
-    Threads::Threads
-)
+    target_link_libraries(test_quantum_analysis
+        PRIVATE
+        viz_blackhole
+        hypergraph
+        Threads::Threads
+    )
 
-target_include_directories(test_quantum_analysis PRIVATE
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
-    ${CMAKE_SOURCE_DIR}/hypergraph/include
-)
+    target_include_directories(test_quantum_analysis PRIVATE
+        ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
+        ${CMAKE_SOURCE_DIR}/hypergraph/include
+    )
 
-# Static linking for MinGW
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
-    target_link_options(test_quantum_analysis PRIVATE -static-libgcc -static-libstdc++)
+    # Static linking for MinGW
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+        target_link_options(test_quantum_analysis PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+
+    # Test target
+    add_custom_target(run_quantum_tests
+        COMMAND test_quantum_analysis
+        DEPENDS test_quantum_analysis
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running quantum analysis tests (geodesics + particles)..."
+    )
 endif()
-
-# Test target
-add_custom_target(run_quantum_tests
-    COMMAND test_quantum_analysis
-    DEPENDS test_quantum_analysis
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running quantum analysis tests (geodesics + particles)..."
-)
