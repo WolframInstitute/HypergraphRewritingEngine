@@ -3,6 +3,7 @@
 #include "bh_types.hpp"
 #include "hausdorff_analysis.hpp"
 #include <vector>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -229,6 +230,14 @@ struct HilbertSpaceAnalysis {
     // Normalized: ⟨ψ|φ⟩ = |ψ ∩ φ| / sqrt(|ψ| * |φ|)
     std::vector<std::vector<float>> inner_product_matrix;
 
+    // Mutual information matrix between states (vertex-level): mi[i][j] = I(state_i; state_j)
+    // Computed from joint distribution of vertex membership
+    std::vector<std::vector<float>> mutual_information_matrix;
+
+    // Edge-level mutual information matrix: edge_mi[i][j] = I(state_i; state_j)
+    // Computed from joint distribution of edge membership
+    std::vector<std::vector<float>> edge_mutual_information_matrix;
+
     // State indices corresponding to matrix rows/columns
     std::vector<uint32_t> state_indices;
 
@@ -237,6 +246,14 @@ struct HilbertSpaceAnalysis {
     float max_inner_product = 0.0f;       // Maximum off-diagonal inner product
     float mean_vertex_probability = 0.0f; // Average P(vertex exists)
     float vertex_probability_entropy = 0.0f; // Entropy of vertex probability distribution
+
+    // Mutual information statistics (vertex-level)
+    float mean_mutual_information = 0.0f; // Average off-diagonal MI
+    float max_mutual_information = 0.0f;  // Maximum off-diagonal MI
+
+    // Edge-level mutual information statistics
+    float mean_edge_mutual_information = 0.0f;
+    float max_edge_mutual_information = 0.0f;
 
     // Number of states analyzed
     size_t num_states = 0;
@@ -249,6 +266,25 @@ struct HilbertSpaceAnalysis {
 float compute_state_inner_product(
     const BranchState& a,
     const BranchState& b
+);
+
+// Compute mutual information between two states (vertex-level)
+// I(A;B) = H(A) + H(B) - H(A,B) where H is entropy of vertex membership
+// Each state is treated as a binary vector over the universe of vertices
+// Returns bits of shared information between the two states
+float compute_state_mutual_information(
+    const BranchState& a,
+    const BranchState& b,
+    const std::unordered_set<VertexId>& universe  // All vertices at this timestep
+);
+
+// Compute edge-level mutual information between two states
+// I(A;B) where membership is over the edge universe
+// Uses edge representation as {v1, v2} pairs
+float compute_state_edge_mutual_information(
+    const BranchState& a,
+    const BranchState& b,
+    const std::set<Edge>& edge_universe  // All edges at this timestep
 );
 
 // Compute per-vertex probability across all states at a given timestep

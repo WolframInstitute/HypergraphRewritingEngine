@@ -5,6 +5,7 @@
 #endif
 #include <vector>
 #include <set>
+#include <map>
 #include <unordered_set>
 #include <cstring>
 #include <unordered_map>
@@ -32,6 +33,7 @@
 #include "blackhole/entropy_analysis.hpp"
 #include "blackhole/rotation_analysis.hpp"
 #include "blackhole/branchial_analysis.hpp"
+#include "blackhole/equilibrium_analysis.hpp"
 #include "blackhole/bh_initial_condition.hpp"
 
 using namespace hypergraph;
@@ -301,6 +303,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Multispace analysis options - vertex/edge probabilities across branches
         bool compute_multispace = false;
 
+        // Equilibrium analysis options - track macroscopic property stability
+        bool compute_equilibrium = false;
+        int equilibrium_window = 20;        // Sliding window for stability computation
+        float equilibrium_threshold = 0.95f; // Threshold for equilibrium detection
+
         // Topology configuration (for initial condition generation)
         std::string topology_type = "Flat";
 
@@ -401,6 +408,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         } else if (option_key == "HilbertStep") {
                             // Which step to analyze for Hilbert space (-1 = all steps)
                             hilbert_step = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "EquilibriumWindow") {
+                            // Sliding window size for equilibrium stability computation
+                            equilibrium_window = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "EquilibriumThreshold") {
+                            // Threshold for equilibrium detection (0-1)
+                            equilibrium_threshold = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "Topology") {
                             topology_type = option_parser.read<std::string>();
                         } else if (option_key == "InitialCondition") {
@@ -576,6 +589,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             } else if (option_key == "MultispaceAnalysis") {
                                 // Compute multispace analysis (vertex/edge probabilities)
                                 compute_multispace = value;
+                            } else if (option_key == "EquilibriumAnalysis") {
+                                // Compute equilibrium analysis (macroscopic stability)
+                                compute_equilibrium = value;
                             }
                         }
                     } catch (...) {
@@ -1477,9 +1493,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // ==========================================================================
         bh::HilbertSpaceAnalysis hilbert_result;
         bh::BranchialAnalysisResult branchial_result;
+        bh::EquilibriumAnalysisResult equilibrium_result;
         bool has_hilbert_data = false;
         bool has_branchial_data = false;
         bool has_multispace_data = false;
+        bool has_equilibrium_data = false;
 
         // Shared vertex/edge probability data for multispace
         std::unordered_map<bh::VertexId, float> multispace_vertex_probs;
@@ -1488,7 +1506,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         float multispace_mean_edge_prob = 0.0f;
         float multispace_total_entropy = 0.0f;
 
-        if (compute_hilbert_space || compute_branchial || compute_multispace) {
+        if (compute_hilbert_space || compute_branchial || compute_multispace || compute_equilibrium) {
 #ifdef HAVE_WSTP
             if (show_progress) {
                 print_to_frontend(libData, "HGEvolve: Building branchial structures...");
@@ -1546,6 +1564,81 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         hilbert_result = bh::analyze_hilbert_space_full(branchial_graph);
                     }
                     has_hilbert_data = (hilbert_result.num_states > 0);
+
+                    // Compute edge-level MI directly from SparseBitsets (dot product of edge membership)
+                    if (has_hilbert_data && hilbert_result.num_states > 1) {
+                        size_t n = hilbert_result.num_states;
+                        hilbert_result.edge_mutual_information_matrix.resize(n, std::vector<float>(n, 0.0f));
+
+                        // Build edge universe (all edges across all states being analyzed)
+                        std::unordered_set<hypergraph::EdgeId> edge_universe;
+                        for (uint32_t sid : hilbert_result.state_indices) {
+                            const hypergraph::State& state = hg.get_state(sid);
+                            if (state.id != hypergraph::INVALID_ID) {
+                                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                                    edge_universe.insert(eid);
+                                });
+                            }
+                        }
+
+                        float universe_size = static_cast<float>(edge_universe.size());
+                        if (universe_size > 0) {
+                            float sum_edge_mi = 0.0f;
+                            int edge_mi_count = 0;
+
+                            for (size_t i = 0; i < n; ++i) {
+                                const hypergraph::State& state_a = hg.get_state(hilbert_result.state_indices[i]);
+                                if (state_a.id == hypergraph::INVALID_ID) continue;
+
+                                for (size_t j = i; j < n; ++j) {
+                                    const hypergraph::State& state_b = hg.get_state(hilbert_result.state_indices[j]);
+                                    if (state_b.id == hypergraph::INVALID_ID) continue;
+
+                                    // Count joint occurrences over edge universe
+                                    int n00 = 0, n01 = 0, n10 = 0, n11 = 0;
+                                    for (hypergraph::EdgeId eid : edge_universe) {
+                                        bool in_a = state_a.edges.contains(eid);
+                                        bool in_b = state_b.edges.contains(eid);
+                                        if (!in_a && !in_b) ++n00;
+                                        else if (!in_a && in_b) ++n01;
+                                        else if (in_a && !in_b) ++n10;
+                                        else ++n11;
+                                    }
+
+                                    // Compute MI
+                                    float p00 = n00 / universe_size, p01 = n01 / universe_size;
+                                    float p10 = n10 / universe_size, p11 = n11 / universe_size;
+                                    float p_a0 = p00 + p01, p_a1 = p10 + p11;
+                                    float p_b0 = p00 + p10, p_b1 = p01 + p11;
+
+                                    float mi = 0.0f;
+                                    auto add_term = [&](float pj, float px, float py) {
+                                        if (pj > 0 && px > 0 && py > 0) mi += pj * std::log2(pj / (px * py));
+                                    };
+                                    add_term(p00, p_a0, p_b0);
+                                    add_term(p01, p_a0, p_b1);
+                                    add_term(p10, p_a1, p_b0);
+                                    add_term(p11, p_a1, p_b1);
+                                    mi = std::max(0.0f, mi);
+
+                                    hilbert_result.edge_mutual_information_matrix[i][j] = mi;
+                                    hilbert_result.edge_mutual_information_matrix[j][i] = mi;
+
+                                    if (i != j) {
+                                        sum_edge_mi += mi;
+                                        ++edge_mi_count;
+                                        if (mi > hilbert_result.max_edge_mutual_information) {
+                                            hilbert_result.max_edge_mutual_information = mi;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (edge_mi_count > 0) {
+                                hilbert_result.mean_edge_mutual_information = sum_edge_mi / edge_mi_count;
+                            }
+                        }
+                    }
                 }
 
                 // Branchial Analysis (distribution sharpness, branch entropy)
@@ -1610,6 +1703,107 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
             }
 
+                // Equilibrium Analysis
+                if (compute_equilibrium) {
+#ifdef HAVE_WSTP
+                    if (show_progress) {
+                        print_to_frontend(libData, "HGEvolve: Computing equilibrium analysis...");
+                    }
+#endif
+                    bh::EquilibriumConfig eq_config;
+                    eq_config.stability_window = equilibrium_window;
+                    eq_config.equilibrium_threshold = equilibrium_threshold;
+                    eq_config.compute_branchial_metrics = true;
+                    eq_config.compute_hilbert_metrics = true;
+
+                    // Build timestep aggregations from the hypergraph states
+                    // Group states by step and aggregate their data
+                    std::map<uint32_t, std::vector<const hypergraph::State*>> states_by_step;
+                    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+                        const hypergraph::State& state = hg.get_state(sid);
+                        if (state.id != hypergraph::INVALID_ID) {
+                            states_by_step[state.step].push_back(&state);
+                        }
+                    }
+
+                    // For each step, compute metrics
+                    for (const auto& [step, states_at_step] : states_by_step) {
+                        bh::TimestepMetrics metrics;
+                        metrics.step = step;
+                        metrics.state_count = states_at_step.size();
+
+                        // Collect all vertices and edges at this step
+                        std::unordered_set<uint32_t> all_vertices;
+                        std::set<std::pair<uint32_t, uint32_t>> all_edges;
+
+                        for (const auto* state : states_at_step) {
+                            state->edges.for_each([&](hypergraph::EdgeId eid) {
+                                const hypergraph::Edge& edge = hg.get_edge(eid);
+                                for (size_t i = 0; i < edge.arity; ++i) {
+                                    all_vertices.insert(edge.vertices[i]);
+                                }
+                                if (edge.arity >= 2) {
+                                    uint32_t v1 = edge.vertices[0], v2 = edge.vertices[1];
+                                    if (v1 > v2) std::swap(v1, v2);
+                                    all_edges.insert(std::make_pair(v1, v2));
+                                }
+                            });
+                        }
+
+                        metrics.vertex_count = all_vertices.size();
+                        metrics.edge_count = all_edges.size();
+
+                        // Compute dimension statistics if we have state_dimension_stats
+                        if (!state_dimension_stats.empty()) {
+                            std::vector<float> dims;
+                            for (const auto* state : states_at_step) {
+                                auto it = state_dimension_stats.find(state->id);
+                                if (it != state_dimension_stats.end()) {
+                                    dims.push_back(it->second.mean);
+                                }
+                            }
+                            if (!dims.empty()) {
+                                float sum = 0;
+                                for (float d : dims) sum += d;
+                                metrics.mean_dimension = sum / dims.size();
+
+                                float var_sum = 0;
+                                for (float d : dims) {
+                                    float diff = d - metrics.mean_dimension;
+                                    var_sum += diff * diff;
+                                }
+                                metrics.dimension_variance = var_sum / dims.size();
+                            }
+                        }
+
+                        // Build SimpleGraph for degree entropy
+                        std::vector<bh::VertexId> verts(all_vertices.begin(), all_vertices.end());
+                        std::vector<bh::Edge> edges;
+                        for (const auto& e : all_edges) {
+                            edges.push_back({e.first, e.second});
+                        }
+                        bh::SimpleGraph graph;
+                        graph.build(verts, edges);
+                        metrics.degree_entropy = bh::compute_degree_entropy(graph);
+
+                        if (graph.vertex_count() > 0) {
+                            float deg_sum = 0;
+                            for (auto v : graph.vertices()) {
+                                deg_sum += graph.neighbors(v).size();
+                            }
+                            metrics.mean_degree = deg_sum / graph.vertex_count();
+                        }
+
+                        equilibrium_result.history.push_back(metrics);
+                    }
+
+                    // Compute stability scores
+                    bh::compute_stability_scores(equilibrium_result, eq_config.stability_window);
+                    bh::detect_equilibrium(equilibrium_result, eq_config.equilibrium_threshold,
+                                          eq_config.min_steps_for_equilibrium);
+                    has_equilibrium_data = !equilibrium_result.history.empty();
+                }
+
 #ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
@@ -1622,6 +1816,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
                 if (has_multispace_data) {
                     oss << " Multispace: " << multispace_vertex_probs.size() << " vertices.";
+                }
+                if (has_equilibrium_data) {
+                    oss << " Equilibrium: " << equilibrium_result.history.size() << " steps, "
+                        << (equilibrium_result.is_equilibrated ? "EQUILIBRATED" : "not equilibrated") << ".";
                 }
                 print_to_frontend(libData, oss.str());
             }
@@ -2885,6 +3083,40 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
             hilbert_data.push_back({wxf::WXFValue("InnerProductMatrix"), wxf::WXFValue(ip_matrix)});
 
+            // Mutual information matrix (as list of lists)
+            wxf::WXFValueList mi_matrix;
+            for (const auto& row : hilbert_result.mutual_information_matrix) {
+                wxf::WXFValueList row_list;
+                for (float val : row) {
+                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                }
+                mi_matrix.push_back(wxf::WXFValue(row_list));
+            }
+            hilbert_data.push_back({wxf::WXFValue("MutualInformationMatrix"), wxf::WXFValue(mi_matrix)});
+
+            // Mutual information statistics (vertex-level)
+            hilbert_data.push_back({wxf::WXFValue("MeanMutualInformation"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_mutual_information))});
+            hilbert_data.push_back({wxf::WXFValue("MaxMutualInformation"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_mutual_information))});
+
+            // Edge-level mutual information matrix (as list of lists)
+            wxf::WXFValueList edge_mi_matrix;
+            for (const auto& row : hilbert_result.edge_mutual_information_matrix) {
+                wxf::WXFValueList row_list;
+                for (float val : row) {
+                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                }
+                edge_mi_matrix.push_back(wxf::WXFValue(row_list));
+            }
+            hilbert_data.push_back({wxf::WXFValue("EdgeMutualInformationMatrix"), wxf::WXFValue(edge_mi_matrix)});
+
+            // Edge mutual information statistics
+            hilbert_data.push_back({wxf::WXFValue("MeanEdgeMutualInformation"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_edge_mutual_information))});
+            hilbert_data.push_back({wxf::WXFValue("MaxEdgeMutualInformation"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_edge_mutual_information))});
+
             // State indices (for mapping matrix rows/columns to state IDs)
             wxf::WXFValueList state_ids;
             for (uint32_t sid : hilbert_result.state_indices) {
@@ -2969,9 +3201,62 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             full_result.push_back(std::make_pair(wxf::WXFValue("MultispaceData"), wxf::WXFValue(multispace_data)));
         }
 
+        // EquilibriumData -> Association with stability scores and per-timestep metrics
+        if (has_equilibrium_data) {
+            wxf::WXFValueAssociation eq_data;
+
+            // Overall stability scores
+            eq_data.push_back(std::make_pair(wxf::WXFValue("DimensionStability"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.dimension_stability))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("DegreeEntropyStability"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.degree_entropy_stability))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("SharpnessStability"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.sharpness_stability))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("SizeStability"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.size_stability))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("OverallStability"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.overall_stability))));
+
+            // Equilibrium detection
+            eq_data.push_back(std::make_pair(wxf::WXFValue("IsEquilibrated"),
+                              wxf::WXFValue(equilibrium_result.is_equilibrated)));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("EquilibrationStep"),
+                              wxf::WXFValue(static_cast<int64_t>(equilibrium_result.equilibration_step))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("EquilibriumThreshold"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.equilibrium_threshold))));
+
+            // Trend analysis
+            eq_data.push_back(std::make_pair(wxf::WXFValue("DimensionTrend"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.dimension_trend))));
+            eq_data.push_back(std::make_pair(wxf::WXFValue("SizeTrend"),
+                              wxf::WXFValue(static_cast<double>(equilibrium_result.size_trend))));
+
+            // Per-timestep metrics history
+            wxf::WXFValueList history_list;
+            for (const auto& m : equilibrium_result.history) {
+                wxf::WXFValueAssociation step_data;
+                step_data.push_back(std::make_pair(wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(m.step))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("MeanDimension"), wxf::WXFValue(static_cast<double>(m.mean_dimension))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("DimensionVariance"), wxf::WXFValue(static_cast<double>(m.dimension_variance))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("DegreeEntropy"), wxf::WXFValue(static_cast<double>(m.degree_entropy))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("MeanDegree"), wxf::WXFValue(static_cast<double>(m.mean_degree))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("MeanSharpness"), wxf::WXFValue(static_cast<double>(m.mean_sharpness))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("VertexCount"), wxf::WXFValue(static_cast<int64_t>(m.vertex_count))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("EdgeCount"), wxf::WXFValue(static_cast<int64_t>(m.edge_count))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("StateCount"), wxf::WXFValue(static_cast<int64_t>(m.state_count))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("MeanInnerProduct"), wxf::WXFValue(static_cast<double>(m.mean_inner_product))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("MeanMutualInformation"), wxf::WXFValue(static_cast<double>(m.mean_mutual_information))));
+                step_data.push_back(std::make_pair(wxf::WXFValue("VertexProbabilityEntropy"), wxf::WXFValue(static_cast<double>(m.vertex_probability_entropy))));
+                history_list.push_back(wxf::WXFValue(step_data));
+            }
+            eq_data.push_back(std::make_pair(wxf::WXFValue("History"), wxf::WXFValue(history_list)));
+
+            full_result.push_back(std::make_pair(wxf::WXFValue("EquilibriumData"), wxf::WXFValue(eq_data)));
+        }
+
         // Topology -> String (for metadata)
         if (!topology_type.empty() && topology_type != "Flat") {
-            full_result.push_back({wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)});
+            full_result.push_back(std::make_pair(wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)));
         }
 
         // Write final association

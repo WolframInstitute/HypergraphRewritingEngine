@@ -409,6 +409,117 @@ float compute_state_inner_product(
     return static_cast<float>(intersection) / norm;
 }
 
+float compute_state_mutual_information(
+    const BranchState& a,
+    const BranchState& b,
+    const std::unordered_set<VertexId>& universe
+) {
+    if (universe.empty()) {
+        return 0.0f;
+    }
+
+    // Build sets for fast lookup
+    std::unordered_set<VertexId> set_a(a.vertices.begin(), a.vertices.end());
+    std::unordered_set<VertexId> set_b(b.vertices.begin(), b.vertices.end());
+
+    // Count joint occurrences over the universe
+    // P(a,b) where a,b ∈ {0,1} indicating vertex membership
+    int n00 = 0, n01 = 0, n10 = 0, n11 = 0;
+
+    for (VertexId v : universe) {
+        bool in_a = set_a.count(v) > 0;
+        bool in_b = set_b.count(v) > 0;
+
+        if (!in_a && !in_b) ++n00;
+        else if (!in_a && in_b) ++n01;
+        else if (in_a && !in_b) ++n10;
+        else ++n11;  // in_a && in_b
+    }
+
+    float n = static_cast<float>(universe.size());
+    if (n == 0) return 0.0f;
+
+    // Probabilities
+    float p00 = n00 / n, p01 = n01 / n, p10 = n10 / n, p11 = n11 / n;
+
+    // Marginals
+    float p_a0 = p00 + p01;  // P(A=0)
+    float p_a1 = p10 + p11;  // P(A=1)
+    float p_b0 = p00 + p10;  // P(B=0)
+    float p_b1 = p01 + p11;  // P(B=1)
+
+    // Mutual information: I(A;B) = Σ p(a,b) * log2(p(a,b) / (p(a) * p(b)))
+    float mi = 0.0f;
+
+    auto add_term = [&](float p_joint, float p_x, float p_y) {
+        if (p_joint > 0.0f && p_x > 0.0f && p_y > 0.0f) {
+            mi += p_joint * std::log2(p_joint / (p_x * p_y));
+        }
+    };
+
+    add_term(p00, p_a0, p_b0);
+    add_term(p01, p_a0, p_b1);
+    add_term(p10, p_a1, p_b0);
+    add_term(p11, p_a1, p_b1);
+
+    return std::max(0.0f, mi);  // Clip numerical errors
+}
+
+float compute_state_edge_mutual_information(
+    const BranchState& a,
+    const BranchState& b,
+    const std::set<Edge>& edge_universe
+) {
+    if (edge_universe.empty()) {
+        return 0.0f;
+    }
+
+    // Build sets for fast lookup
+    std::set<Edge> set_a(a.edges.begin(), a.edges.end());
+    std::set<Edge> set_b(b.edges.begin(), b.edges.end());
+
+    // Count joint occurrences over the edge universe
+    int n00 = 0, n01 = 0, n10 = 0, n11 = 0;
+
+    for (const Edge& e : edge_universe) {
+        bool in_a = set_a.count(e) > 0;
+        bool in_b = set_b.count(e) > 0;
+
+        if (!in_a && !in_b) ++n00;
+        else if (!in_a && in_b) ++n01;
+        else if (in_a && !in_b) ++n10;
+        else ++n11;
+    }
+
+    float n = static_cast<float>(edge_universe.size());
+    if (n == 0) return 0.0f;
+
+    // Probabilities
+    float p00 = n00 / n, p01 = n01 / n, p10 = n10 / n, p11 = n11 / n;
+
+    // Marginals
+    float p_a0 = p00 + p01;
+    float p_a1 = p10 + p11;
+    float p_b0 = p00 + p10;
+    float p_b1 = p01 + p11;
+
+    // Mutual information
+    float mi = 0.0f;
+
+    auto add_term = [&](float p_joint, float p_x, float p_y) {
+        if (p_joint > 0.0f && p_x > 0.0f && p_y > 0.0f) {
+            mi += p_joint * std::log2(p_joint / (p_x * p_y));
+        }
+    };
+
+    add_term(p00, p_a0, p_b0);
+    add_term(p01, p_a0, p_b1);
+    add_term(p10, p_a1, p_b0);
+    add_term(p11, p_a1, p_b1);
+
+    return std::max(0.0f, mi);
+}
+
 std::unordered_map<VertexId, float> compute_vertex_probabilities(
     const BranchialGraph& graph,
     uint32_t step
@@ -493,6 +604,46 @@ HilbertSpaceAnalysis analyze_hilbert_space(
         result.mean_inner_product = sum_off_diagonal / off_diagonal_count;
     }
 
+    // Build universe of all vertices at this step for MI computation
+    std::unordered_set<VertexId> universe;
+    for (const auto& [vid, prob] : result.vertex_probabilities) {
+        universe.insert(vid);
+    }
+
+    // Compute mutual information matrix
+    result.mutual_information_matrix.resize(n, std::vector<float>(n, 0.0f));
+    float sum_mi_off_diagonal = 0.0f;
+    int mi_off_diagonal_count = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t si = result.state_indices[i];
+        if (si >= graph.states.size()) continue;
+
+        for (size_t j = i; j < n; ++j) {
+            uint32_t sj = result.state_indices[j];
+            if (sj >= graph.states.size()) continue;
+
+            float mi = compute_state_mutual_information(graph.states[si], graph.states[sj], universe);
+            result.mutual_information_matrix[i][j] = mi;
+            result.mutual_information_matrix[j][i] = mi;
+
+            if (i != j) {
+                sum_mi_off_diagonal += mi;
+                ++mi_off_diagonal_count;
+                if (mi > result.max_mutual_information) {
+                    result.max_mutual_information = mi;
+                }
+            }
+        }
+    }
+
+    if (mi_off_diagonal_count > 0) {
+        result.mean_mutual_information = sum_mi_off_diagonal / mi_off_diagonal_count;
+    }
+
+    // Note: Edge-level MI is computed in the FFI where we have access to the
+    // original hypergraph SparseBitsets for direct edge ID comparison
+
     // Compute mean vertex probability and entropy
     if (!result.vertex_probabilities.empty()) {
         float sum_prob = 0.0f;
@@ -569,6 +720,40 @@ HilbertSpaceAnalysis analyze_hilbert_space_full(
     if (off_diagonal_count > 0) {
         result.mean_inner_product = sum_off_diagonal / off_diagonal_count;
     }
+
+    // Build universe of all vertices for MI computation
+    std::unordered_set<VertexId> universe;
+    for (const auto& [vid, prob] : result.vertex_probabilities) {
+        universe.insert(vid);
+    }
+
+    // Compute mutual information matrix
+    result.mutual_information_matrix.resize(n, std::vector<float>(n, 0.0f));
+    float sum_mi_off_diagonal = 0.0f;
+    int mi_off_diagonal_count = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i; j < n; ++j) {
+            float mi = compute_state_mutual_information(graph.states[i], graph.states[j], universe);
+            result.mutual_information_matrix[i][j] = mi;
+            result.mutual_information_matrix[j][i] = mi;
+
+            if (i != j) {
+                sum_mi_off_diagonal += mi;
+                ++mi_off_diagonal_count;
+                if (mi > result.max_mutual_information) {
+                    result.max_mutual_information = mi;
+                }
+            }
+        }
+    }
+
+    if (mi_off_diagonal_count > 0) {
+        result.mean_mutual_information = sum_mi_off_diagonal / mi_off_diagonal_count;
+    }
+
+    // Note: Edge-level MI is computed in the FFI where we have access to the
+    // original hypergraph SparseBitsets for direct edge ID comparison
 
     // Compute mean vertex probability and entropy
     if (!result.vertex_probabilities.empty()) {

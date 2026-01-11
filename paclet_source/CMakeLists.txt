@@ -24,6 +24,7 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/curvature_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/rotation_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branchial_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/equilibrium_analysis.cpp
 )
 
 # Create the library

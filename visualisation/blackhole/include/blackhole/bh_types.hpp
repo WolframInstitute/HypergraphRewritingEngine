@@ -77,6 +77,15 @@ struct Edge {
         }
         return v1 == o.v1 && v2 == o.v2;
     }
+
+    // Less-than for std::set/std::map usage
+    bool operator<(const Edge& o) const {
+        if (id != INVALID_EDGE_ID && o.id != INVALID_EDGE_ID) {
+            return id < o.id;
+        }
+        if (v1 != o.v1) return v1 < o.v1;
+        return v2 < o.v2;
+    }
 };
 
 // =============================================================================

@@ -817,6 +817,9 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     Return[$Failed]
   ];
 
+  (* Track if original input was a list (for return format) *)
+  propertyWasList = ListQ[property];
+
   (* Normalize property to list and deduplicate *)
   props = DeleteDuplicates[Flatten[{property}]];
 
@@ -1065,10 +1068,11 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     If[KeyExistsQ[dimensionData, "GlobalRange"], dimensionData["GlobalRange"], {0, 3}]];
 
   (* Return requested properties *)
-  If[Length[props] == 1,
-    (* Single property: return directly *)
+  (* String input returns data directly; list input always returns association *)
+  If[Length[props] == 1 && !propertyWasList,
+    (* Single string property: return directly *)
     getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData],
-    (* Multiple properties: return association *)
+    (* List input: return association keyed by property names *)
     Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData] & /@ props]
   ]
 ]
