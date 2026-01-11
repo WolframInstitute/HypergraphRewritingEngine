@@ -1,6 +1,7 @@
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
 #include "hypergraph/hypergraph.hpp"
+#include <thread>
 
 namespace hypergraph {
 
@@ -139,7 +140,7 @@ StateId Hypergraph::get_or_create_genesis_state() {
 
     // Someone else is initializing or already done - spin until done
     while (genesis_state_init_.load(std::memory_order_acquire) != 2) {
-        // Spin (could add pause/yield here for better performance)
+        std::this_thread::yield();  // Allow other threads to progress
     }
     return genesis_state_;
 }

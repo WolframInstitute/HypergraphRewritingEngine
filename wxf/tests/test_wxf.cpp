@@ -482,18 +482,18 @@ TEST_F(WXFTest, ReadStringHandlesBothStringAndSymbol) {
 }
 
 TEST_F(WXFTest, ValueVariantHeterogeneousNesting) {
-    wxf::ValueList list;
-    list.push_back(wxf::Value(int64_t(42)));
-    list.push_back(wxf::Value("string"));
-    list.push_back(wxf::Value(3.14));
+    wxf::WXFValueList list;
+    list.push_back(wxf::WXFValue(int64_t(42)));
+    list.push_back(wxf::WXFValue("string"));
+    list.push_back(wxf::WXFValue(3.14));
 
-    wxf::ValueAssociation nested_assoc;
-    nested_assoc.push_back({wxf::Value("nested_key"), wxf::Value(int64_t(999))});
-    list.push_back(wxf::Value(nested_assoc));
+    wxf::WXFValueAssociation nested_assoc;
+    nested_assoc.push_back({wxf::WXFValue("nested_key"), wxf::WXFValue(int64_t(999))});
+    list.push_back(wxf::WXFValue(nested_assoc));
 
     wxf::Writer writer;
     writer.write_header();
-    writer.write(wxf::Value(list));
+    writer.write(wxf::WXFValue(list));
 
     wxf::Parser parser(writer.data());
     parser.skip_header();

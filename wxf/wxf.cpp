@@ -9,7 +9,7 @@ namespace wxf {
 
 uint8_t Parser::read_byte() {
     ensure_bytes(1);
-    return data_[pos_++];
+    return data_[read_position_++];
 }
 
 size_t Parser::read_varint() {
@@ -20,7 +20,7 @@ size_t Parser::read_varint() {
     do {
         byte = read_byte();
         if (shift >= 63) {
-            throw ParseError("Varint too large", pos_ - 1);
+            throw ParseError("Varint too large", read_position_ - 1);
         }
         value |= (size_t(byte & 0x7F) << shift);
         shift += 7;
@@ -47,7 +47,7 @@ void Parser::skip_header() {
 int8_t Parser::read_int8() {
     Token token = peek_token();
     if (token != Token::Integer8) {
-        throw TypeError("Expected 8-bit integer", pos_);
+        throw TypeError("Expected 8-bit integer", read_position_);
     }
     read_byte(); // consume token
     return static_cast<int8_t>(read_byte());
@@ -56,7 +56,7 @@ int8_t Parser::read_int8() {
 int16_t Parser::read_int16() {
     Token token = peek_token();
     if (token != Token::Integer16) {
-        throw TypeError("Expected 16-bit integer", pos_);
+        throw TypeError("Expected 16-bit integer", read_position_);
     }
     read_byte(); // consume token
 
@@ -64,16 +64,16 @@ int16_t Parser::read_int16() {
     int16_t value = 0;
     // Little-endian encoding
     for (int i = 0; i < 2; i++) {
-        value |= (static_cast<int16_t>(data_[pos_ + i]) << (i * 8));
+        value |= (static_cast<int16_t>(data_[read_position_ + i]) << (i * 8));
     }
-    pos_ += 2;
+    read_position_ += 2;
     return value;
 }
 
 int32_t Parser::read_int32() {
     Token token = peek_token();
     if (token != Token::Integer32) {
-        throw TypeError("Expected 32-bit integer", pos_);
+        throw TypeError("Expected 32-bit integer", read_position_);
     }
     read_byte(); // consume token
 
@@ -81,16 +81,16 @@ int32_t Parser::read_int32() {
     int32_t value = 0;
     // Little-endian encoding
     for (int i = 0; i < 4; i++) {
-        value |= (static_cast<int32_t>(data_[pos_ + i]) << (i * 8));
+        value |= (static_cast<int32_t>(data_[read_position_ + i]) << (i * 8));
     }
-    pos_ += 4;
+    read_position_ += 4;
     return value;
 }
 
 int64_t Parser::read_int64() {
     Token token = peek_token();
     if (token != Token::Integer64) {
-        throw TypeError("Expected 64-bit integer", pos_);
+        throw TypeError("Expected 64-bit integer", read_position_);
     }
     read_byte(); // consume token
 
@@ -98,23 +98,23 @@ int64_t Parser::read_int64() {
     int64_t value = 0;
     // Little-endian encoding
     for (int i = 0; i < 8; i++) {
-        value |= (static_cast<int64_t>(data_[pos_ + i]) << (i * 8));
+        value |= (static_cast<int64_t>(data_[read_position_ + i]) << (i * 8));
     }
-    pos_ += 8;
+    read_position_ += 8;
     return value;
 }
 
 double Parser::read_real64() {
     Token token = peek_token();
     if (token != Token::Real64) {
-        throw TypeError("Expected 64-bit real", pos_);
+        throw TypeError("Expected 64-bit real", read_position_);
     }
     read_byte(); // consume token
 
     ensure_bytes(8);
     double value;
-    std::memcpy(&value, &data_[pos_], 8);
-    pos_ += 8;
+    std::memcpy(&value, &data_[read_position_], 8);
+    read_position_ += 8;
 
     // Ensure little-endian interpretation on big-endian systems
     // Simple endianness check for C++17 compatibility
@@ -134,7 +134,7 @@ double Parser::read_real64() {
 std::string Parser::read_string() {
     Token token = peek_token();
     if (token != Token::String) {
-        throw TypeError("Expected string", pos_);
+        throw TypeError("Expected string", read_position_);
     }
     read_byte(); // consume token
 
@@ -142,8 +142,8 @@ std::string Parser::read_string() {
     ensure_bytes(len);
 
     std::string result(len, '\0');
-    std::memcpy(result.data(), &data_[pos_], len);
-    pos_ += len;
+    std::memcpy(result.data(), &data_[read_position_], len);
+    read_position_ += len;
 
     // Note: WXF supports full UTF-8, skipping validation for now
     // TODO: Implement proper UTF-8 validation if needed
@@ -154,7 +154,7 @@ std::string Parser::read_string() {
 std::string Parser::read_symbol() {
     Token token = peek_token();
     if (token != Token::Symbol) {
-        throw TypeError("Expected symbol", pos_);
+        throw TypeError("Expected symbol", read_position_);
     }
     read_byte(); // consume token
 
@@ -162,8 +162,8 @@ std::string Parser::read_symbol() {
     ensure_bytes(len);
 
     std::string result(len, '\0');
-    std::memcpy(result.data(), &data_[pos_], len);
-    pos_ += len;
+    std::memcpy(result.data(), &data_[read_position_], len);
+    read_position_ += len;
 
     return result;
 }
@@ -171,7 +171,7 @@ std::string Parser::read_symbol() {
 std::vector<uint8_t> Parser::read_binary_string() {
     Token token = peek_token();
     if (token != Token::BinaryString) {
-        throw TypeError("Expected binary string", pos_);
+        throw TypeError("Expected binary string", read_position_);
     }
     read_byte(); // consume token
 
@@ -179,8 +179,8 @@ std::vector<uint8_t> Parser::read_binary_string() {
     ensure_bytes(len);
 
     std::vector<uint8_t> result(len);
-    std::memcpy(result.data(), &data_[pos_], len);
-    pos_ += len;
+    std::memcpy(result.data(), &data_[read_position_], len);
+    read_position_ += len;
 
     return result;
 }
@@ -188,25 +188,25 @@ std::vector<uint8_t> Parser::read_binary_string() {
 std::string Parser::read_big_integer() {
     Token token = peek_token();
     if (token != Token::BigInteger) {
-        throw TypeError("Expected big integer", pos_);
+        throw TypeError("Expected big integer", read_position_);
     }
-    throw ParseError("BigInteger not implemented - requires arbitrary precision library", pos_);
+    throw ParseError("BigInteger not implemented - requires arbitrary precision library", read_position_);
 }
 
 std::string Parser::read_big_real() {
     Token token = peek_token();
     if (token != Token::BigReal) {
-        throw TypeError("Expected big real", pos_);
+        throw TypeError("Expected big real", read_position_);
     }
-    throw ParseError("BigReal not implemented - requires arbitrary precision library", pos_);
+    throw ParseError("BigReal not implemented - requires arbitrary precision library", read_position_);
 }
 
 void Parser::read_association(const AssociationCallback& callback) {
     Token token = peek_token();
     if (token != Token::Association) {
         char err[256];
-        snprintf(err, sizeof(err), "Expected association at pos %zu, got token 0x%02X", pos_, static_cast<uint8_t>(token));
-        throw TypeError(err, pos_);
+        snprintf(err, sizeof(err), "Expected association at pos %zu, got token 0x%02X", read_position_, static_cast<uint8_t>(token));
+        throw TypeError(err, read_position_);
     }
     read_byte(); // consume 'A'
 
@@ -217,8 +217,8 @@ void Parser::read_association(const AssociationCallback& callback) {
         if (rule_token != Token::Rule) {
             char err[256];
             snprintf(err, sizeof(err), "Expected rule marker in association at pos %zu (entry %zu/%zu), got 0x%02X",
-                     pos_, i+1, num_entries, static_cast<uint8_t>(rule_token));
-            throw TypeError(err, pos_);
+                     read_position_, i+1, num_entries, static_cast<uint8_t>(rule_token));
+            throw TypeError(err, read_position_);
         }
         read_byte(); // consume '-'
 
@@ -242,15 +242,15 @@ void Parser::read_association(const AssociationCallback& callback) {
                 key = std::to_string(read_int64());
             }
         } else {
-            throw TypeError("Association key must be String, Symbol, or Integer", pos_);
+            throw TypeError("Association key must be String, Symbol, or Integer", read_position_);
         }
 
         // Create a sub-parser for the value
-        Parser value_parser(data_ + pos_, size_ - pos_);
+        Parser value_parser(data_ + read_position_, size_ - read_position_);
         callback(key, value_parser);
 
         // Advance our position by how much the callback consumed
-        pos_ += value_parser.position();
+        read_position_ += value_parser.position();
     }
 }
 
@@ -303,14 +303,14 @@ void Parser::skip_value() {
             skip_value(); // skip value
             break;
         default:
-            throw TypeError("Cannot skip unsupported or invalid token", pos_);
+            throw TypeError("Cannot skip unsupported or invalid token", read_position_);
     }
 }
 
 void Parser::read_association_generic(const GenericAssociationCallback& callback) {
     Token token = peek_token();
     if (token != Token::Association) {
-        throw TypeError("Expected association", pos_);
+        throw TypeError("Expected association", read_position_);
     }
     read_byte(); // consume 'A'
 
@@ -321,32 +321,32 @@ void Parser::read_association_generic(const GenericAssociationCallback& callback
         if (rule_token != Token::Rule) {
             char err[256];
             snprintf(err, sizeof(err), "Expected rule marker in association (generic) at pos %zu (entry %zu/%zu), got 0x%02X",
-                     pos_, i+1, num_entries, static_cast<uint8_t>(rule_token));
-            throw TypeError(err, pos_);
+                     read_position_, i+1, num_entries, static_cast<uint8_t>(rule_token));
+            throw TypeError(err, read_position_);
         }
         read_byte(); // consume '-'
 
         // Measure the key length by skipping it in a temporary parser
-        Parser key_measurer(data_ + pos_, size_ - pos_);
+        Parser key_measurer(data_ + read_position_, size_ - read_position_);
         key_measurer.skip_value();
         size_t key_length = key_measurer.position();
 
         // Create properly positioned parsers
-        Parser key_parser(data_ + pos_, key_length);
-        pos_ += key_length;
+        Parser key_parser(data_ + read_position_, key_length);
+        read_position_ += key_length;
 
-        Parser value_parser(data_ + pos_, size_ - pos_);
+        Parser value_parser(data_ + read_position_, size_ - read_position_);
         callback(key_parser, value_parser);
 
         // Advance our position by how much the value callback consumed
-        pos_ += value_parser.position();
+        read_position_ += value_parser.position();
     }
 }
 
 void Parser::read_function(const FunctionCallback& callback) {
     Token token = peek_token();
     if (token != Token::Function) {
-        throw TypeError("Expected function", pos_);
+        throw TypeError("Expected function", read_position_);
     }
     read_byte(); // consume 'f'
 
@@ -356,22 +356,22 @@ void Parser::read_function(const FunctionCallback& callback) {
     std::string head = read_symbol();
 
     // Create a sub-parser for the arguments
-    Parser args_parser(data_ + pos_, size_ - pos_);
+    Parser args_parser(data_ + read_position_, size_ - read_position_);
     callback(head, arg_count, args_parser);
 
     // Advance our position by how much the callback consumed
-    pos_ += args_parser.position();
+    read_position_ += args_parser.position();
 }
 
 void Parser::ensure_bytes(size_t count) {
-    if (pos_ + count > size_) {
-        throw ParseError("Unexpected end of WXF data", pos_);
+    if (read_position_ + count > size_) {
+        throw ParseError("Unexpected end of WXF data", read_position_);
     }
 }
 
 Token Parser::peek_token() {
     ensure_bytes(1);
-    return static_cast<Token>(data_[pos_]);
+    return static_cast<Token>(data_[read_position_]);
 }
 
 // Writer implementation

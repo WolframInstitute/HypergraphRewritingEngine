@@ -1510,7 +1510,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         wxf::Writer wxf_writer;
         wxf_writer.write_header();
 
-        wxf::ValueAssociation full_result;
+        wxf::WXFValueAssociation full_result;
 
         // States -> Association[state_id -> state_data]
         // Send ALL states (not just canonical) - WL uses CanonicalId/ContentStateId for vertex merging
@@ -1519,7 +1519,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
         // This matches reference behavior where canonicalization is applied at display time
         if (include_states) {
-            wxf::ValueAssociation states_assoc;
+            wxf::WXFValueAssociation states_assoc;
             uint32_t num_states = hg.num_states();
 
             // Single pass: compute content hash for each state and build mapping
@@ -1555,28 +1555,28 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
 
                 // Build edge list: each edge is {edge_id, v1, v2, ...}
-                wxf::ValueList edge_list;
+                wxf::WXFValueList edge_list;
                 state.edges.for_each([&](hypergraph::EdgeId eid) {
                     const hypergraph::Edge& edge = hg.get_edge(eid);
-                    wxf::ValueList edge_data;
-                    edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                    wxf::WXFValueList edge_data;
+                    edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
                     for (uint8_t i = 0; i < edge.arity; ++i) {
-                        edge_data.push_back(wxf::Value(static_cast<int64_t>(edge.vertices[i])));
+                        edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
                     }
-                    edge_list.push_back(wxf::Value(edge_data));
+                    edge_list.push_back(wxf::WXFValue(edge_data));
                 });
 
-                wxf::ValueAssociation state_assoc;
-                state_assoc.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(sid))});
-                state_assoc.push_back({wxf::Value("CanonicalId"), wxf::Value(static_cast<int64_t>(canonical_id))});
-                state_assoc.push_back({wxf::Value("ContentStateId"), wxf::Value(static_cast<int64_t>(content_id))});
-                state_assoc.push_back({wxf::Value("Step"), wxf::Value(static_cast<int64_t>(state.step))});
-                state_assoc.push_back({wxf::Value("Edges"), wxf::Value(edge_list)});
-                state_assoc.push_back({wxf::Value("IsInitial"), wxf::Value(state.step == 0)});
+                wxf::WXFValueAssociation state_assoc;
+                state_assoc.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
+                state_assoc.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(canonical_id))});
+                state_assoc.push_back({wxf::WXFValue("ContentStateId"), wxf::WXFValue(static_cast<int64_t>(content_id))});
+                state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
+                state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
+                state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
 
-                states_assoc.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_assoc)});
+                states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_assoc)});
             }
-            full_result.push_back({wxf::Value("States"), wxf::Value(states_assoc)});
+            full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
         }
 
         // Events -> Association[event_id -> event_data]
@@ -1586,7 +1586,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             // Send ALL events (not just canonical) - WL uses CanonicalId for vertex merging
             // This preserves event multiplicity: multiple events with same canonical ID
             // map to one vertex, but their edges to different output states are preserved.
-            wxf::ValueAssociation events_assoc;
+            wxf::WXFValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
@@ -1607,38 +1607,38 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     ? static_cast<int64_t>(eid)
                     : static_cast<int64_t>(event.canonical_event_id);
 
-                wxf::ValueAssociation event_data;
-                event_data.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(eid))});
-                event_data.push_back({wxf::Value("CanonicalId"), wxf::Value(canonical_event_id)});
-                event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
+                wxf::WXFValueAssociation event_data;
+                event_data.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
+                event_data.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(canonical_event_id)});
+                event_data.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(event.rule_index))});
                 // Raw state IDs (always included)
-                event_data.push_back({wxf::Value("InputState"), wxf::Value(raw_input_state_id)});
-                event_data.push_back({wxf::Value("OutputState"), wxf::Value(raw_output_state_id)});
+                event_data.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(raw_input_state_id)});
+                event_data.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(raw_output_state_id)});
                 // Canonical state IDs (for when state canonicalization is enabled)
-                event_data.push_back({wxf::Value("CanonicalInputState"), wxf::Value(canonical_input_state_id)});
-                event_data.push_back({wxf::Value("CanonicalOutputState"), wxf::Value(canonical_output_state_id)});
+                event_data.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(canonical_input_state_id)});
+                event_data.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(canonical_output_state_id)});
 
                 // Consumed/produced edges
-                wxf::ValueList consumed_list, produced_list;
+                wxf::WXFValueList consumed_list, produced_list;
                 for (uint8_t i = 0; i < event.num_consumed; ++i) {
-                    consumed_list.push_back(wxf::Value(static_cast<int64_t>(event.consumed_edges[i])));
+                    consumed_list.push_back(wxf::WXFValue(static_cast<int64_t>(event.consumed_edges[i])));
                 }
                 for (uint8_t i = 0; i < event.num_produced; ++i) {
-                    produced_list.push_back(wxf::Value(static_cast<int64_t>(event.produced_edges[i])));
+                    produced_list.push_back(wxf::WXFValue(static_cast<int64_t>(event.produced_edges[i])));
                 }
-                event_data.push_back({wxf::Value("ConsumedEdges"), wxf::Value(consumed_list)});
-                event_data.push_back({wxf::Value("ProducedEdges"), wxf::Value(produced_list)});
+                event_data.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed_list)});
+                event_data.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced_list)});
 
-                events_assoc.push_back({wxf::Value(static_cast<int64_t>(eid)), wxf::Value(event_data)});
+                events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(eid)), wxf::WXFValue(event_data)});
             }
-            full_result.push_back({wxf::Value("Events"), wxf::Value(events_assoc)});
+            full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
         }
 
         // EventsMinimal -> Association[event_id -> {Id, CanonicalId, RuleIndex, InputState, OutputState, CanonicalInputState, CanonicalOutputState}]
         // Reduced event data for graph structure variants that don't need full event details
         // Send ALL events - WL uses CanonicalId for vertex merging, RuleIndex for Event=Automatic grouping
         if (include_events_minimal && !include_events) {
-            wxf::ValueAssociation events_assoc;
+            wxf::WXFValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
@@ -1656,20 +1656,20 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     ? static_cast<int64_t>(eid)
                     : static_cast<int64_t>(event.canonical_event_id);
 
-                wxf::ValueAssociation event_data;
-                event_data.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(eid))});
-                event_data.push_back({wxf::Value("CanonicalId"), wxf::Value(canonical_event_id)});
-                event_data.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(event.rule_index))});
+                wxf::WXFValueAssociation event_data;
+                event_data.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
+                event_data.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(canonical_event_id)});
+                event_data.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(event.rule_index))});
                 // Raw state IDs (always included)
-                event_data.push_back({wxf::Value("InputState"), wxf::Value(raw_input_state_id)});
-                event_data.push_back({wxf::Value("OutputState"), wxf::Value(raw_output_state_id)});
+                event_data.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(raw_input_state_id)});
+                event_data.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(raw_output_state_id)});
                 // Canonical state IDs (for when state canonicalization is enabled)
-                event_data.push_back({wxf::Value("CanonicalInputState"), wxf::Value(canonical_input_state_id)});
-                event_data.push_back({wxf::Value("CanonicalOutputState"), wxf::Value(canonical_output_state_id)});
+                event_data.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(canonical_input_state_id)});
+                event_data.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(canonical_output_state_id)});
 
-                events_assoc.push_back({wxf::Value(static_cast<int64_t>(eid)), wxf::Value(event_data)});
+                events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(eid)), wxf::WXFValue(event_data)});
             }
-            full_result.push_back({wxf::Value("Events"), wxf::Value(events_assoc)});
+            full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
         }
 
         // CausalEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -1677,7 +1677,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // Deduplicated by RAW (producer, consumer) pairs to remove internal duplication
         // but preserving all unique raw relationships (which may share canonical endpoints)
         if (include_causal_edges) {
-            wxf::ValueList causal_edges;
+            wxf::WXFValueList causal_edges;
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
 
             // Deduplicate by RAW event pairs (not canonical) - this removes internal doubling
@@ -1704,22 +1704,22 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 hypergraph::EventId canonical_from = hg.get_canonical_event(edge.producer);
                 hypergraph::EventId canonical_to = hg.get_canonical_event(edge.consumer);
 
-                wxf::ValueAssociation edge_data;
-                edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(canonical_from))});
-                edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(canonical_to))});
+                wxf::WXFValueAssociation edge_data;
+                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
+                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
                 // Also include raw event IDs for when event canonicalization is disabled
-                edge_data.push_back({wxf::Value("RawFrom"), wxf::Value(static_cast<int64_t>(edge.producer))});
-                edge_data.push_back({wxf::Value("RawTo"), wxf::Value(static_cast<int64_t>(edge.consumer))});
-                causal_edges.push_back(wxf::Value(edge_data));
+                edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(edge.producer))});
+                edge_data.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(edge.consumer))});
+                causal_edges.push_back(wxf::WXFValue(edge_data));
             }
-            full_result.push_back({wxf::Value("CausalEdges"), wxf::Value(causal_edges)});
+            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal_edges)});
         }
 
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
         // For Evolution*Branchial graphs where event vertices need canonical IDs
         // NO deduplication - multiplicity matters for branchial edges
         if (include_branchial_edges) {
-            wxf::ValueList branchial_edges;
+            wxf::WXFValueList branchial_edges;
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
             for (const auto& edge : branchial_edge_vec) {
                 // Skip edges involving genesis events if ShowGenesisEvents is false
@@ -1731,12 +1731,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 hypergraph::EventId canonical_from = hg.get_canonical_event(edge.event1);
                 hypergraph::EventId canonical_to = hg.get_canonical_event(edge.event2);
 
-                wxf::ValueAssociation edge_data;
-                edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(canonical_from))});
-                edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(canonical_to))});
-                branchial_edges.push_back(wxf::Value(edge_data));
+                wxf::WXFValueAssociation edge_data;
+                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
+                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
+                branchial_edges.push_back(wxf::WXFValue(edge_data));
             }
-            full_result.push_back({wxf::Value("BranchialEdges"), wxf::Value(branchial_edges)});
+            full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial_edges)});
         }
 
         // BranchialStateEdges -> List of {From -> canonical_state_id, To -> canonical_state_id}
@@ -1744,7 +1744,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         // For BranchialGraph where state vertices are the output states of events
         // NOTE: Do NOT deduplicate by canonical state pair - reference preserves edge multiplicity
         if (include_branchial_state_edges) {
-            wxf::ValueList branchial_state_edges;
+            wxf::WXFValueList branchial_state_edges;
             std::set<hypergraph::StateId> unique_states;
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
 
@@ -1787,25 +1787,25 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 unique_states.insert(state2);
 
                 // No deduplication - preserve edge multiplicity like reference
-                wxf::ValueAssociation edge_data;
-                edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(state1))});
-                edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(state2))});
-                branchial_state_edges.push_back(wxf::Value(edge_data));
+                wxf::WXFValueAssociation edge_data;
+                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(state1))});
+                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(state2))});
+                branchial_state_edges.push_back(wxf::WXFValue(edge_data));
             }
-            full_result.push_back({wxf::Value("BranchialStateEdges"), wxf::Value(branchial_state_edges)});
+            full_result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(branchial_state_edges)});
 
             // Send unique state vertices
-            wxf::ValueList state_vertices;
+            wxf::WXFValueList state_vertices;
             for (hypergraph::StateId sid : unique_states) {
-                state_vertices.push_back(wxf::Value(static_cast<int64_t>(sid)));
+                state_vertices.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
             }
-            full_result.push_back({wxf::Value("BranchialStateVertices"), wxf::Value(state_vertices)});
+            full_result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(state_vertices)});
         }
 
         // BranchialStateEdgesAllSiblings: ALL pairs of output states from same input state
         // This matches reference BranchialGraph behavior (no overlap check, all siblings)
         if (include_branchial_state_edges_all_siblings) {
-            wxf::ValueList branchial_state_edges;
+            wxf::WXFValueList branchial_state_edges;
             std::set<hypergraph::StateId> unique_states;
 
             // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
@@ -1863,22 +1863,22 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                         unique_states.insert(state2);
 
                         // Add edge (no deduplication - preserve multiplicity like reference)
-                        wxf::ValueAssociation edge_data;
-                        edge_data.push_back({wxf::Value("From"), wxf::Value(static_cast<int64_t>(state1))});
-                        edge_data.push_back({wxf::Value("To"), wxf::Value(static_cast<int64_t>(state2))});
-                        branchial_state_edges.push_back(wxf::Value(edge_data));
+                        wxf::WXFValueAssociation edge_data;
+                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(state1))});
+                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(state2))});
+                        branchial_state_edges.push_back(wxf::WXFValue(edge_data));
                     }
                 }
             });
 
-            full_result.push_back({wxf::Value("BranchialStateEdges"), wxf::Value(branchial_state_edges)});
+            full_result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(branchial_state_edges)});
 
             // Send unique state vertices
-            wxf::ValueList state_vertices;
+            wxf::WXFValueList state_vertices;
             for (hypergraph::StateId sid : unique_states) {
-                state_vertices.push_back(wxf::Value(static_cast<int64_t>(sid)));
+                state_vertices.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
             }
-            full_result.push_back({wxf::Value("BranchialStateVertices"), wxf::Value(state_vertices)});
+            full_result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(state_vertices)});
         }
 
         // ========================================================================
@@ -1925,51 +1925,51 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             };
 
             // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
-            auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::ValueList {
-                wxf::ValueList edge_list;
+            auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
+                wxf::WXFValueList edge_list;
                 hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
                     const hypergraph::Edge& edge = hg.get_edge(eid);
-                    wxf::ValueList e;
-                    e.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                    wxf::WXFValueList e;
+                    e.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
                     for (uint8_t i = 0; i < edge.arity; ++i)
-                        e.push_back(wxf::Value(static_cast<int64_t>(edge.vertices[i])));
-                    edge_list.push_back(wxf::Value(e));
+                        e.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
+                    edge_list.push_back(wxf::WXFValue(e));
                 });
                 return edge_list;
             };
 
             // Helper: Serialize state data for tooltips
-            auto serialize_state_data = [&](hypergraph::StateId sid) -> wxf::ValueAssociation {
+            auto serialize_state_data = [&](hypergraph::StateId sid) -> wxf::WXFValueAssociation {
                 const hypergraph::State& state = hg.get_state(sid);
-                wxf::ValueAssociation d;
-                d.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(sid))});
-                d.push_back({wxf::Value("CanonicalId"), wxf::Value(static_cast<int64_t>(hg.get_canonical_state(sid)))});
-                d.push_back({wxf::Value("Step"), wxf::Value(static_cast<int64_t>(state.step))});
-                d.push_back({wxf::Value("Edges"), wxf::Value(serialize_state_edges(sid))});
-                d.push_back({wxf::Value("IsInitial"), wxf::Value(state.step == 0)});
+                wxf::WXFValueAssociation d;
+                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
+                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(hg.get_canonical_state(sid)))});
+                d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
+                d.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(serialize_state_edges(sid))});
+                d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
                 return d;
             };
 
             // Helper: Serialize event data for tooltips
-            auto serialize_event_data = [&](hypergraph::EventId eid) -> wxf::ValueAssociation {
+            auto serialize_event_data = [&](hypergraph::EventId eid) -> wxf::WXFValueAssociation {
                 const hypergraph::Event& e = hg.get_event(eid);
-                wxf::ValueAssociation d;
-                d.push_back({wxf::Value("Id"), wxf::Value(static_cast<int64_t>(eid))});
-                d.push_back({wxf::Value("CanonicalId"), wxf::Value(get_effective_event_id(eid))});
-                d.push_back({wxf::Value("RuleIndex"), wxf::Value(static_cast<int64_t>(e.rule_index))});
-                d.push_back({wxf::Value("InputState"), wxf::Value(static_cast<int64_t>(e.input_state))});
-                d.push_back({wxf::Value("OutputState"), wxf::Value(static_cast<int64_t>(e.output_state))});
+                wxf::WXFValueAssociation d;
+                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
+                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(get_effective_event_id(eid))});
+                d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule_index))});
+                d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(e.input_state))});
+                d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(e.output_state))});
                 // Consumed/produced edges
-                wxf::ValueList consumed, produced;
+                wxf::WXFValueList consumed, produced;
                 for (uint8_t i = 0; i < e.num_consumed; ++i)
-                    consumed.push_back(wxf::Value(static_cast<int64_t>(e.consumed_edges[i])));
+                    consumed.push_back(wxf::WXFValue(static_cast<int64_t>(e.consumed_edges[i])));
                 for (uint8_t i = 0; i < e.num_produced; ++i)
-                    produced.push_back(wxf::Value(static_cast<int64_t>(e.produced_edges[i])));
-                d.push_back({wxf::Value("ConsumedEdges"), wxf::Value(consumed)});
-                d.push_back({wxf::Value("ProducedEdges"), wxf::Value(produced)});
+                    produced.push_back(wxf::WXFValue(static_cast<int64_t>(e.produced_edges[i])));
+                d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
+                d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
                 // For styled rendering: include input/output state edges
-                d.push_back({wxf::Value("InputStateEdges"), wxf::Value(serialize_state_edges(e.input_state))});
-                d.push_back({wxf::Value("OutputStateEdges"), wxf::Value(serialize_state_edges(e.output_state))});
+                d.push_back({wxf::WXFValue("InputStateEdges"), wxf::WXFValue(serialize_state_edges(e.input_state))});
+                d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_state_edges(e.output_state))});
                 return d;
             };
 
@@ -1982,12 +1982,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
             };
 
             // Build GraphData for each requested graph property
-            wxf::ValueAssociation all_graph_data;
+            wxf::WXFValueAssociation all_graph_data;
 
             for (const std::string& graph_property : graph_properties) {
-                wxf::ValueList vertices;
-                wxf::ValueList edges;
-                wxf::ValueAssociation vertex_data;
+                wxf::WXFValueList vertices;
+                wxf::WXFValueList edges;
+                wxf::WXFValueAssociation vertex_data;
 
                 // Parse property name
                 bool is_states = graph_property.rfind("States", 0) == 0;
@@ -1998,14 +1998,14 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 bool has_branchial = is_evolution && graph_property.find("Branchial") != std::string::npos;
 
                 // Helper to add edge to edges list
-                auto add_graph_edge = [&](wxf::Value from, wxf::Value to, const std::string& type,
-                                          wxf::ValueAssociation data = {}) {
-                    wxf::ValueAssociation edge;
-                    edge.push_back({wxf::Value("From"), from});
-                    edge.push_back({wxf::Value("To"), to});
-                    edge.push_back({wxf::Value("Type"), wxf::Value(type)});
-                    if (!data.empty()) edge.push_back({wxf::Value("Data"), wxf::Value(data)});
-                    edges.push_back(wxf::Value(edge));
+                auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
+                                          wxf::WXFValueAssociation data = {}) {
+                    wxf::WXFValueAssociation edge;
+                    edge.push_back({wxf::WXFValue("From"), from});
+                    edge.push_back({wxf::WXFValue("To"), to});
+                    edge.push_back({wxf::WXFValue("Type"), wxf::WXFValue(type)});
+                    if (!data.empty()) edge.push_back({wxf::WXFValue("Data"), wxf::WXFValue(data)});
+                    edges.push_back(wxf::WXFValue(edge));
                 };
 
             // Helper to add causal edges with proper deduplication
@@ -2025,19 +2025,19 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 for (const auto& [pair, count] : pair_counts) {
                     int64_t from = get_effective_event_id(pair.first);
                     int64_t to = get_effective_event_id(pair.second);
-                    wxf::ValueList from_tag = {wxf::Value("E"), wxf::Value(from)};
-                    wxf::ValueList to_tag = {wxf::Value("E"), wxf::Value(to)};
+                    wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
+                    wxf::WXFValueList to_tag = {wxf::WXFValue("E"), wxf::WXFValue(to)};
 
                     size_t num_edges = edge_deduplication ? 1 : count;
                     for (size_t k = 0; k < num_edges; ++k) {
-                        wxf::ValueAssociation causal_data;
-                        causal_data.push_back({wxf::Value("ProducerEvent"), wxf::Value(from)});
-                        causal_data.push_back({wxf::Value("ConsumerEvent"), wxf::Value(to)});
+                        wxf::WXFValueAssociation causal_data;
+                        causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(from)});
+                        causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(to)});
                         // Add unique index to prevent Mathematica Graph[] deduplication
                         if (num_edges > 1) {
-                            causal_data.push_back({wxf::Value("EdgeIndex"), wxf::Value(static_cast<int64_t>(k))});
+                            causal_data.push_back({wxf::WXFValue("EdgeIndex"), wxf::WXFValue(static_cast<int64_t>(k))});
                         }
-                        add_graph_edge(wxf::Value(from_tag), wxf::Value(to_tag), "Causal", causal_data);
+                        add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Causal", causal_data);
                     }
                 }
             };
@@ -2052,15 +2052,15 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     if (!state_verts.count(eff)) state_verts[eff] = sid;
                 }
                 for (auto& [eff, raw] : state_verts) {
-                    vertices.push_back(wxf::Value(eff));
-                    vertex_data.push_back({wxf::Value(eff), wxf::Value(serialize_state_data(raw))});
+                    vertices.push_back(wxf::WXFValue(eff));
+                    vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(serialize_state_data(raw))});
                 }
                 // Edges: events (state → state)
                 for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
                     if (!is_valid_event(eid)) continue;
                     const hypergraph::Event& e = hg.get_event(eid);
-                    add_graph_edge(wxf::Value(get_effective_state_id(e.input_state)),
-                                   wxf::Value(get_effective_state_id(e.output_state)),
+                    add_graph_edge(wxf::WXFValue(get_effective_state_id(e.input_state)),
+                                   wxf::WXFValue(get_effective_state_id(e.output_state)),
                                    "Directed", serialize_event_data(eid));
                 }
             }
@@ -2074,9 +2074,9 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     if (!event_verts.count(eff)) event_verts[eff] = eid;
                 }
                 for (auto& [eff, raw] : event_verts) {
-                    wxf::ValueList tag = {wxf::Value("E"), wxf::Value(eff)};
-                    vertices.push_back(wxf::Value(tag));
-                    vertex_data.push_back({wxf::Value(tag), wxf::Value(serialize_event_data(raw))});
+                    wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
+                    vertices.push_back(wxf::WXFValue(tag));
+                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_event_data(raw))});
                 }
                 // Add causal edges using shared helper
                 add_causal_edges();
@@ -2123,8 +2123,8 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                 // Add vertices with data
                 for (auto& [eff, raw] : state_verts) {
-                    vertices.push_back(wxf::Value(eff));
-                    vertex_data.push_back({wxf::Value(eff), wxf::Value(serialize_state_data(raw))});
+                    vertices.push_back(wxf::WXFValue(eff));
+                    vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(serialize_state_data(raw))});
                 }
 
                 // Edges: branchial state edges (no deduplication - preserve multiplicity)
@@ -2144,10 +2144,10 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     int64_t state1 = get_effective_state_id(event1.output_state);
                     int64_t state2 = get_effective_state_id(event2.output_state);
                     // Tooltip data: effective state IDs (matches graph vertices)
-                    wxf::ValueAssociation branchial_data;
-                    branchial_data.push_back({wxf::Value("State1"), wxf::Value(state1)});
-                    branchial_data.push_back({wxf::Value("State2"), wxf::Value(state2)});
-                    add_graph_edge(wxf::Value(state1), wxf::Value(state2), "Branchial", branchial_data);
+                    wxf::WXFValueAssociation branchial_data;
+                    branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(state1)});
+                    branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(state2)});
+                    add_graph_edge(wxf::WXFValue(state1), wxf::WXFValue(state2), "Branchial", branchial_data);
                 }
             }
             else if (is_evolution) {
@@ -2173,15 +2173,15 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                 // Add state vertices
                 for (int64_t sid : state_ids) {
-                    wxf::ValueList tag = {wxf::Value("S"), wxf::Value(sid)};
-                    vertices.push_back(wxf::Value(tag));
-                    vertex_data.push_back({wxf::Value(tag), wxf::Value(serialize_state_data(raw_states[sid]))});
+                    wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
+                    vertices.push_back(wxf::WXFValue(tag));
+                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_state_data(raw_states[sid]))});
                 }
                 // Add event vertices
                 for (auto& [eff, raw] : event_verts) {
-                    wxf::ValueList tag = {wxf::Value("E"), wxf::Value(eff)};
-                    vertices.push_back(wxf::Value(tag));
-                    vertex_data.push_back({wxf::Value(tag), wxf::Value(serialize_event_data(raw))});
+                    wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
+                    vertices.push_back(wxf::WXFValue(tag));
+                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_event_data(raw))});
                 }
 
                 // Edges: state↔event from each event (use effective IDs for deduplication)
@@ -2189,14 +2189,14 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                     if (!is_valid_event(eid)) continue;
                     const hypergraph::Event& e = hg.get_event(eid);
                     int64_t eff_eid = get_effective_event_id(eid);
-                    wxf::ValueList s_in = {wxf::Value("S"), wxf::Value(get_effective_state_id(e.input_state))};
-                    wxf::ValueList s_out = {wxf::Value("S"), wxf::Value(get_effective_state_id(e.output_state))};
-                    wxf::ValueList e_tag = {wxf::Value("E"), wxf::Value(eff_eid)};
+                    wxf::WXFValueList s_in = {wxf::WXFValue("S"), wxf::WXFValue(get_effective_state_id(e.input_state))};
+                    wxf::WXFValueList s_out = {wxf::WXFValue("S"), wxf::WXFValue(get_effective_state_id(e.output_state))};
+                    wxf::WXFValueList e_tag = {wxf::WXFValue("E"), wxf::WXFValue(eff_eid)};
                     // Tooltip data: effective event ID (matches graph vertices)
-                    wxf::ValueAssociation edge_data;
-                    edge_data.push_back({wxf::Value("EventId"), wxf::Value(eff_eid)});
-                    add_graph_edge(wxf::Value(s_in), wxf::Value(e_tag), "StateEvent", edge_data);
-                    add_graph_edge(wxf::Value(e_tag), wxf::Value(s_out), "EventState", edge_data);
+                    wxf::WXFValueAssociation edge_data;
+                    edge_data.push_back({wxf::WXFValue("EventId"), wxf::WXFValue(eff_eid)});
+                    add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
+                    add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
                 }
 
                 // Optional causal edges using shared helper
@@ -2229,35 +2229,35 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
                         int64_t from = get_effective_event_id(be.event1);
                         int64_t to = get_effective_event_id(be.event2);
-                        wxf::ValueList from_tag = {wxf::Value("E"), wxf::Value(from)};
-                        wxf::ValueList to_tag = {wxf::Value("E"), wxf::Value(to)};
+                        wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
+                        wxf::WXFValueList to_tag = {wxf::WXFValue("E"), wxf::WXFValue(to)};
                         // Tooltip data: effective event IDs (matches graph vertices)
-                        wxf::ValueAssociation branchial_data;
-                        branchial_data.push_back({wxf::Value("Event1"), wxf::Value(from)});
-                        branchial_data.push_back({wxf::Value("Event2"), wxf::Value(to)});
-                        add_graph_edge(wxf::Value(from_tag), wxf::Value(to_tag), "Branchial", branchial_data);
+                        wxf::WXFValueAssociation branchial_data;
+                        branchial_data.push_back({wxf::WXFValue("Event1"), wxf::WXFValue(from)});
+                        branchial_data.push_back({wxf::WXFValue("Event2"), wxf::WXFValue(to)});
+                        add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Branchial", branchial_data);
                     }
                 }
             }
 
                 // Build GraphData association for this property
-                wxf::ValueAssociation graph_data;
-                graph_data.push_back({wxf::Value("Vertices"), wxf::Value(vertices)});
-                graph_data.push_back({wxf::Value("Edges"), wxf::Value(edges)});
-                graph_data.push_back({wxf::Value("VertexData"), wxf::Value(vertex_data)});
-                all_graph_data.push_back({wxf::Value(graph_property), wxf::Value(graph_data)});
+                wxf::WXFValueAssociation graph_data;
+                graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
+                graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edges)});
+                graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(vertex_data)});
+                all_graph_data.push_back({wxf::WXFValue(graph_property), wxf::WXFValue(graph_data)});
             }  // end for each graph_property
 
             // Add keyed GraphData to result
-            full_result.push_back({wxf::Value("GraphData"), wxf::Value(all_graph_data)});
+            full_result.push_back({wxf::WXFValue("GraphData"), wxf::WXFValue(all_graph_data)});
         }
 
         // Only include counts when requested
         if (include_num_states) {
-            full_result.push_back({wxf::Value("NumStates"), wxf::Value(static_cast<int64_t>(hg.num_canonical_states()))});
+            full_result.push_back({wxf::WXFValue("NumStates"), wxf::WXFValue(static_cast<int64_t>(hg.num_canonical_states()))});
         }
         if (include_num_events) {
-            full_result.push_back({wxf::Value("NumEvents"), wxf::Value(static_cast<int64_t>(engine.num_events()))});
+            full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(static_cast<int64_t>(engine.num_events()))});
         }
         if (include_num_causal_edges) {
             // Count unique (producer, consumer) event pairs for v1 semantics
@@ -2286,470 +2286,470 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
                 }
                 causal_count = static_cast<int64_t>(seen_pairs.size());
             }
-            full_result.push_back({wxf::Value("NumCausalEdges"), wxf::Value(causal_count)});
+            full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(causal_count)});
         }
         if (include_num_branchial_edges) {
-            full_result.push_back({wxf::Value("NumBranchialEdges"), wxf::Value(static_cast<int64_t>(hg.num_branchial_edges()))});
+            full_result.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(static_cast<int64_t>(hg.num_branchial_edges()))});
         }
 
         // GlobalEdges -> List of all edges created during evolution
         // Each edge is {edge_id, v1, v2, ...}
         if (include_global_edges) {
-            wxf::ValueList global_edges;
+            wxf::WXFValueList global_edges;
             uint32_t num_edges = hg.num_edges();
             for (uint32_t eid = 0; eid < num_edges; ++eid) {
                 const hypergraph::Edge& edge = hg.get_edge(eid);
                 if (edge.id == hypergraph::INVALID_ID) continue;
 
-                wxf::ValueList edge_data;
-                edge_data.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                wxf::WXFValueList edge_data;
+                edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
                 for (uint8_t i = 0; i < edge.arity; ++i) {
-                    edge_data.push_back(wxf::Value(static_cast<int64_t>(edge.vertices[i])));
+                    edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
                 }
-                global_edges.push_back(wxf::Value(edge_data));
+                global_edges.push_back(wxf::WXFValue(edge_data));
             }
-            full_result.push_back(std::make_pair(wxf::Value("GlobalEdges"), wxf::Value(global_edges)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("GlobalEdges"), wxf::WXFValue(global_edges)));
         }
 
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]
         // Represents each state's edge set (the bitvector) as a list of edge indices
         if (include_state_bitvectors) {
-            wxf::ValueAssociation state_bitvectors;
+            wxf::WXFValueAssociation state_bitvectors;
             uint32_t num_states = hg.num_states();
             for (uint32_t sid = 0; sid < num_states; ++sid) {
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;
 
                 // Convert SparseBitset to list of edge IDs
-                wxf::ValueList edge_ids;
+                wxf::WXFValueList edge_ids;
                 state.edges.for_each([&](hypergraph::EdgeId eid) {
-                    edge_ids.push_back(wxf::Value(static_cast<int64_t>(eid)));
+                    edge_ids.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
                 });
 
                 state_bitvectors.push_back(std::make_pair(
-                    wxf::Value(static_cast<int64_t>(sid)),
-                    wxf::Value(edge_ids)
+                    wxf::WXFValue(static_cast<int64_t>(sid)),
+                    wxf::WXFValue(edge_ids)
                 ));
             }
-            full_result.push_back(std::make_pair(wxf::Value("StateBitvectors"), wxf::Value(state_bitvectors)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"), wxf::WXFValue(state_bitvectors)));
         }
 
         // DimensionData -> Association["PerState" -> {...}, "GlobalRange" -> {min, max}]
         if (compute_dimensions && !state_dimension_stats.empty()) {
-            wxf::ValueAssociation dim_data;
+            wxf::WXFValueAssociation dim_data;
 
             // Per-state stats: state_id -> {Mean, Min, Max, StdDev}
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, stats] : state_dimension_stats) {
-                wxf::ValueAssociation stats_assoc;
-                stats_assoc.push_back({wxf::Value("Mean"), wxf::Value(static_cast<double>(stats.mean))});
-                stats_assoc.push_back({wxf::Value("Min"), wxf::Value(static_cast<double>(stats.min))});
-                stats_assoc.push_back({wxf::Value("Max"), wxf::Value(static_cast<double>(stats.max))});
-                stats_assoc.push_back({wxf::Value("StdDev"), wxf::Value(static_cast<double>(stats.stddev))});
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(stats_assoc)});
+                wxf::WXFValueAssociation stats_assoc;
+                stats_assoc.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(static_cast<double>(stats.mean))});
+                stats_assoc.push_back({wxf::WXFValue("Min"), wxf::WXFValue(static_cast<double>(stats.min))});
+                stats_assoc.push_back({wxf::WXFValue("Max"), wxf::WXFValue(static_cast<double>(stats.max))});
+                stats_assoc.push_back({wxf::WXFValue("StdDev"), wxf::WXFValue(static_cast<double>(stats.stddev))});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(stats_assoc)});
             }
-            dim_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            dim_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
             // Global range for color normalization
-            wxf::ValueList range;
+            wxf::WXFValueList range;
             if (global_dim_min <= global_dim_max) {
-                range.push_back(wxf::Value(static_cast<double>(global_dim_min)));
-                range.push_back(wxf::Value(static_cast<double>(global_dim_max)));
+                range.push_back(wxf::WXFValue(static_cast<double>(global_dim_min)));
+                range.push_back(wxf::WXFValue(static_cast<double>(global_dim_max)));
             } else {
                 // No valid data - use defaults
-                range.push_back(wxf::Value(0.0));
-                range.push_back(wxf::Value(3.0));
+                range.push_back(wxf::WXFValue(0.0));
+                range.push_back(wxf::WXFValue(3.0));
             }
-            dim_data.push_back({wxf::Value("GlobalRange"), wxf::Value(range)});
+            dim_data.push_back({wxf::WXFValue("GlobalRange"), wxf::WXFValue(range)});
 
-            full_result.push_back({wxf::Value("DimensionData"), wxf::Value(dim_data)});
+            full_result.push_back({wxf::WXFValue("DimensionData"), wxf::WXFValue(dim_data)});
         }
 
         // GeodesicData -> Association["PerState" -> {...}]
         // Each state: state_id -> {"Paths" -> {...}, "ProperTimes" -> {...}, "BundleSpread" -> float}
         if (compute_geodesics && !state_geodesic_paths.empty()) {
-            wxf::ValueAssociation geodesic_data;
+            wxf::WXFValueAssociation geodesic_data;
 
             // Per-state paths
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, paths] : state_geodesic_paths) {
-                wxf::ValueAssociation state_data;
+                wxf::WXFValueAssociation state_data;
 
                 // Paths: list of lists of vertex IDs
-                wxf::ValueList path_list;
+                wxf::WXFValueList path_list;
                 for (const auto& path : paths) {
-                    wxf::ValueList vertices;
+                    wxf::WXFValueList vertices;
                     for (bh::VertexId v : path) {
-                        vertices.push_back(wxf::Value(static_cast<int64_t>(v)));
+                        vertices.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
                     }
-                    path_list.push_back(wxf::Value(vertices));
+                    path_list.push_back(wxf::WXFValue(vertices));
                 }
-                state_data.push_back({wxf::Value("Paths"), wxf::Value(path_list)});
+                state_data.push_back({wxf::WXFValue("Paths"), wxf::WXFValue(path_list)});
 
                 // Proper times
                 auto pt_it = state_geodesic_proper_times.find(sid);
                 if (pt_it != state_geodesic_proper_times.end()) {
-                    wxf::ValueList pt_list;
+                    wxf::WXFValueList pt_list;
                     for (const auto& times : pt_it->second) {
-                        wxf::ValueList time_vals;
+                        wxf::WXFValueList time_vals;
                         for (float t : times) {
-                            time_vals.push_back(wxf::Value(static_cast<double>(t)));
+                            time_vals.push_back(wxf::WXFValue(static_cast<double>(t)));
                         }
-                        pt_list.push_back(wxf::Value(time_vals));
+                        pt_list.push_back(wxf::WXFValue(time_vals));
                     }
-                    state_data.push_back({wxf::Value("ProperTimes"), wxf::Value(pt_list)});
+                    state_data.push_back({wxf::WXFValue("ProperTimes"), wxf::WXFValue(pt_list)});
                 }
 
                 // Bundle spread
                 auto spread_it = state_geodesic_bundle_spread.find(sid);
                 if (spread_it != state_geodesic_bundle_spread.end()) {
-                    state_data.push_back({wxf::Value("BundleSpread"),
-                                         wxf::Value(static_cast<double>(spread_it->second))});
+                    state_data.push_back({wxf::WXFValue("BundleSpread"),
+                                         wxf::WXFValue(static_cast<double>(spread_it->second))});
                 }
 
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
-            geodesic_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            geodesic_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            full_result.push_back({wxf::Value("GeodesicData"), wxf::Value(geodesic_data)});
+            full_result.push_back({wxf::WXFValue("GeodesicData"), wxf::WXFValue(geodesic_data)});
         }
 
         // TopologicalData -> Association["PerState" -> {...}]
         // Each state: state_id -> {"Defects" -> [...], "Charges" -> <|vertex -> charge|>}
         if (detect_particles && !state_defects.empty()) {
-            wxf::ValueAssociation topo_data;
+            wxf::WXFValueAssociation topo_data;
 
             // Per-state defects
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, defects] : state_defects) {
-                wxf::ValueAssociation state_data;
+                wxf::WXFValueAssociation state_data;
 
                 // Defects list
-                wxf::ValueList defect_list;
+                wxf::WXFValueList defect_list;
                 for (const auto& defect : defects) {
-                    wxf::ValueAssociation def_assoc;
+                    wxf::WXFValueAssociation def_assoc;
 
                     // Type as string
                     const char* type_names[] = {"None", "K5", "K33", "HighDegree", "DimensionSpike", "Unknown"};
                     int type_idx = defect.type >= 0 && defect.type <= 5 ? defect.type : 5;
-                    def_assoc.push_back({wxf::Value("Type"), wxf::Value(type_names[type_idx])});
+                    def_assoc.push_back({wxf::WXFValue("Type"), wxf::WXFValue(type_names[type_idx])});
 
                     // Core vertices
-                    wxf::ValueList core_verts;
+                    wxf::WXFValueList core_verts;
                     for (bh::VertexId v : defect.core_vertices) {
-                        core_verts.push_back(wxf::Value(static_cast<int64_t>(v)));
+                        core_verts.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
                     }
-                    def_assoc.push_back({wxf::Value("CoreVertices"), wxf::Value(core_verts)});
+                    def_assoc.push_back({wxf::WXFValue("CoreVertices"), wxf::WXFValue(core_verts)});
 
-                    def_assoc.push_back({wxf::Value("Charge"), wxf::Value(static_cast<double>(defect.charge))});
-                    def_assoc.push_back({wxf::Value("CentroidX"), wxf::Value(static_cast<double>(defect.centroid_x))});
-                    def_assoc.push_back({wxf::Value("CentroidY"), wxf::Value(static_cast<double>(defect.centroid_y))});
-                    def_assoc.push_back({wxf::Value("LocalDimension"), wxf::Value(static_cast<double>(defect.local_dimension))});
-                    def_assoc.push_back({wxf::Value("Confidence"), wxf::Value(static_cast<int64_t>(defect.confidence))});
+                    def_assoc.push_back({wxf::WXFValue("Charge"), wxf::WXFValue(static_cast<double>(defect.charge))});
+                    def_assoc.push_back({wxf::WXFValue("CentroidX"), wxf::WXFValue(static_cast<double>(defect.centroid_x))});
+                    def_assoc.push_back({wxf::WXFValue("CentroidY"), wxf::WXFValue(static_cast<double>(defect.centroid_y))});
+                    def_assoc.push_back({wxf::WXFValue("LocalDimension"), wxf::WXFValue(static_cast<double>(defect.local_dimension))});
+                    def_assoc.push_back({wxf::WXFValue("Confidence"), wxf::WXFValue(static_cast<int64_t>(defect.confidence))});
 
-                    defect_list.push_back(wxf::Value(def_assoc));
+                    defect_list.push_back(wxf::WXFValue(def_assoc));
                 }
-                state_data.push_back({wxf::Value("Defects"), wxf::Value(defect_list)});
+                state_data.push_back({wxf::WXFValue("Defects"), wxf::WXFValue(defect_list)});
 
                 // Vertex charges (if computed)
                 auto charge_it = state_charges.find(sid);
                 if (charge_it != state_charges.end() && !charge_it->second.empty()) {
-                    wxf::ValueAssociation charges_assoc;
+                    wxf::WXFValueAssociation charges_assoc;
                     for (const auto& [v, charge] : charge_it->second) {
-                        charges_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                                wxf::Value(static_cast<double>(charge))});
+                        charges_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                                wxf::WXFValue(static_cast<double>(charge))});
                     }
-                    state_data.push_back({wxf::Value("Charges"), wxf::Value(charges_assoc)});
+                    state_data.push_back({wxf::WXFValue("Charges"), wxf::WXFValue(charges_assoc)});
                 }
 
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
-            topo_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            topo_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            full_result.push_back({wxf::Value("TopologicalData"), wxf::Value(topo_data)});
+            full_result.push_back({wxf::WXFValue("TopologicalData"), wxf::WXFValue(topo_data)});
         }
 
         // CurvatureData -> Association["PerState" -> {...}]
         // Each state: state_id -> {"OllivierRicci" -> {...}, "DimensionGradient" -> {...}, "MeanCurvature" -> float}
         if (compute_curvature && (!state_ollivier_ricci.empty() || !state_dimension_gradient.empty())) {
-            wxf::ValueAssociation curv_data;
+            wxf::WXFValueAssociation curv_data;
 
             // Per-state curvatures
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, curv_map] : state_mean_curvature) {
-                wxf::ValueAssociation state_data;
+                wxf::WXFValueAssociation state_data;
 
                 // Ollivier-Ricci per-vertex
                 auto or_it = state_ollivier_ricci.find(sid);
                 if (or_it != state_ollivier_ricci.end() && !or_it->second.empty()) {
-                    wxf::ValueAssociation or_assoc;
+                    wxf::WXFValueAssociation or_assoc;
                     for (const auto& [v, curv] : or_it->second) {
-                        or_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                           wxf::Value(static_cast<double>(curv))});
+                        or_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(curv))});
                     }
-                    state_data.push_back({wxf::Value("OllivierRicci"), wxf::Value(or_assoc)});
+                    state_data.push_back({wxf::WXFValue("OllivierRicci"), wxf::WXFValue(or_assoc)});
                 }
 
                 // Dimension gradient per-vertex
                 auto dg_it = state_dimension_gradient.find(sid);
                 if (dg_it != state_dimension_gradient.end() && !dg_it->second.empty()) {
-                    wxf::ValueAssociation dg_assoc;
+                    wxf::WXFValueAssociation dg_assoc;
                     for (const auto& [v, curv] : dg_it->second) {
-                        dg_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                           wxf::Value(static_cast<double>(curv))});
+                        dg_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(curv))});
                     }
-                    state_data.push_back({wxf::Value("DimensionGradient"), wxf::Value(dg_assoc)});
+                    state_data.push_back({wxf::WXFValue("DimensionGradient"), wxf::WXFValue(dg_assoc)});
                 }
 
                 // Mean curvature
-                state_data.push_back({wxf::Value("MeanCurvature"),
-                                     wxf::Value(static_cast<double>(curv_map))});
+                state_data.push_back({wxf::WXFValue("MeanCurvature"),
+                                     wxf::WXFValue(static_cast<double>(curv_map))});
 
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
-            curv_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            curv_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            full_result.push_back({wxf::Value("CurvatureData"), wxf::Value(curv_data)});
+            full_result.push_back({wxf::WXFValue("CurvatureData"), wxf::WXFValue(curv_data)});
         }
 
         // EntropyData -> Association["PerState" -> {...}]
         // Each state: state_id -> {"DegreeEntropy" -> float, "GraphEntropy" -> float, ...}
         if (compute_entropy && !state_degree_entropy.empty()) {
-            wxf::ValueAssociation ent_data;
+            wxf::WXFValueAssociation ent_data;
 
             // Per-state entropy
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, deg_ent] : state_degree_entropy) {
-                wxf::ValueAssociation state_data;
+                wxf::WXFValueAssociation state_data;
 
-                state_data.push_back({wxf::Value("DegreeEntropy"),
-                                     wxf::Value(static_cast<double>(deg_ent))});
+                state_data.push_back({wxf::WXFValue("DegreeEntropy"),
+                                     wxf::WXFValue(static_cast<double>(deg_ent))});
 
                 auto ge_it = state_graph_entropy.find(sid);
                 if (ge_it != state_graph_entropy.end()) {
-                    state_data.push_back({wxf::Value("GraphEntropy"),
-                                         wxf::Value(static_cast<double>(ge_it->second))});
+                    state_data.push_back({wxf::WXFValue("GraphEntropy"),
+                                         wxf::WXFValue(static_cast<double>(ge_it->second))});
                 }
 
                 // Local entropy per-vertex
                 auto le_it = state_local_entropy.find(sid);
                 if (le_it != state_local_entropy.end() && !le_it->second.empty()) {
-                    wxf::ValueAssociation le_assoc;
+                    wxf::WXFValueAssociation le_assoc;
                     for (const auto& [v, ent] : le_it->second) {
-                        le_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                           wxf::Value(static_cast<double>(ent))});
+                        le_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(ent))});
                     }
-                    state_data.push_back({wxf::Value("LocalEntropy"), wxf::Value(le_assoc)});
+                    state_data.push_back({wxf::WXFValue("LocalEntropy"), wxf::WXFValue(le_assoc)});
                 }
 
                 // Mutual info per-vertex
                 auto mi_it = state_mutual_info.find(sid);
                 if (mi_it != state_mutual_info.end() && !mi_it->second.empty()) {
-                    wxf::ValueAssociation mi_assoc;
+                    wxf::WXFValueAssociation mi_assoc;
                     for (const auto& [v, mi] : mi_it->second) {
-                        mi_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                           wxf::Value(static_cast<double>(mi))});
+                        mi_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(mi))});
                     }
-                    state_data.push_back({wxf::Value("MutualInfo"), wxf::Value(mi_assoc)});
+                    state_data.push_back({wxf::WXFValue("MutualInfo"), wxf::WXFValue(mi_assoc)});
                 }
 
                 // Fisher info per-vertex
                 auto fi_it = state_fisher_info.find(sid);
                 if (fi_it != state_fisher_info.end() && !fi_it->second.empty()) {
-                    wxf::ValueAssociation fi_assoc;
+                    wxf::WXFValueAssociation fi_assoc;
                     for (const auto& [v, fi] : fi_it->second) {
-                        fi_assoc.push_back({wxf::Value(static_cast<int64_t>(v)),
-                                           wxf::Value(static_cast<double>(fi))});
+                        fi_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(fi))});
                     }
-                    state_data.push_back({wxf::Value("FisherInfo"), wxf::Value(fi_assoc)});
+                    state_data.push_back({wxf::WXFValue("FisherInfo"), wxf::WXFValue(fi_assoc)});
                 }
 
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
-            ent_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            ent_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            full_result.push_back({wxf::Value("EntropyData"), wxf::Value(ent_data)});
+            full_result.push_back({wxf::WXFValue("EntropyData"), wxf::WXFValue(ent_data)});
         }
 
         // RotationData -> Association["PerState" -> {...}]
         // Each state: state_id -> {"Curve" -> [...], "PowerLawExponent" -> float, ...}
         if (compute_rotation_curve && !state_rotation_curves.empty()) {
-            wxf::ValueAssociation rot_data;
+            wxf::WXFValueAssociation rot_data;
 
             // Per-state rotation curves
-            wxf::ValueAssociation per_state;
+            wxf::WXFValueAssociation per_state;
             for (const auto& [sid, rot_result] : state_rotation_curves) {
-                wxf::ValueAssociation state_data;
+                wxf::WXFValueAssociation state_data;
 
                 // Center vertex
-                state_data.push_back({wxf::Value("Center"),
-                                     wxf::Value(static_cast<int64_t>(rot_result.center))});
+                state_data.push_back({wxf::WXFValue("Center"),
+                                     wxf::WXFValue(static_cast<int64_t>(rot_result.center))});
 
                 // Power law fit parameters
-                state_data.push_back({wxf::Value("PowerLawExponent"),
-                                     wxf::Value(static_cast<double>(rot_result.power_law_exponent))});
-                state_data.push_back({wxf::Value("FitResidual"),
-                                     wxf::Value(static_cast<double>(rot_result.fit_residual))});
+                state_data.push_back({wxf::WXFValue("PowerLawExponent"),
+                                     wxf::WXFValue(static_cast<double>(rot_result.power_law_exponent))});
+                state_data.push_back({wxf::WXFValue("FitResidual"),
+                                     wxf::WXFValue(static_cast<double>(rot_result.fit_residual))});
 
                 // Flat rotation detection
-                state_data.push_back({wxf::Value("HasFlatRotation"),
-                                     wxf::Value(rot_result.has_flat_rotation)});
-                state_data.push_back({wxf::Value("FlatRegionStart"),
-                                     wxf::Value(static_cast<double>(rot_result.flat_region_start))});
-                state_data.push_back({wxf::Value("FlatnessScore"),
-                                     wxf::Value(static_cast<double>(rot_result.flatness_score))});
+                state_data.push_back({wxf::WXFValue("HasFlatRotation"),
+                                     wxf::WXFValue(rot_result.has_flat_rotation)});
+                state_data.push_back({wxf::WXFValue("FlatRegionStart"),
+                                     wxf::WXFValue(static_cast<double>(rot_result.flat_region_start))});
+                state_data.push_back({wxf::WXFValue("FlatnessScore"),
+                                     wxf::WXFValue(static_cast<double>(rot_result.flatness_score))});
 
                 // Curve data points
-                wxf::ValueList curve_list;
+                wxf::WXFValueList curve_list;
                 for (const auto& pt : rot_result.curve) {
-                    wxf::ValueAssociation pt_assoc;
-                    pt_assoc.push_back({wxf::Value("Radius"),
-                                       wxf::Value(static_cast<int64_t>(pt.radius))});
-                    pt_assoc.push_back({wxf::Value("OrbitalVelocity"),
-                                       wxf::Value(static_cast<double>(pt.orbital_velocity))});
-                    pt_assoc.push_back({wxf::Value("ExpectedVelocity"),
-                                       wxf::Value(static_cast<double>(pt.expected_velocity))});
-                    pt_assoc.push_back({wxf::Value("Deviation"),
-                                       wxf::Value(static_cast<double>(pt.deviation))});
-                    curve_list.push_back(wxf::Value(pt_assoc));
+                    wxf::WXFValueAssociation pt_assoc;
+                    pt_assoc.push_back({wxf::WXFValue("Radius"),
+                                       wxf::WXFValue(static_cast<int64_t>(pt.radius))});
+                    pt_assoc.push_back({wxf::WXFValue("OrbitalVelocity"),
+                                       wxf::WXFValue(static_cast<double>(pt.orbital_velocity))});
+                    pt_assoc.push_back({wxf::WXFValue("ExpectedVelocity"),
+                                       wxf::WXFValue(static_cast<double>(pt.expected_velocity))});
+                    pt_assoc.push_back({wxf::WXFValue("Deviation"),
+                                       wxf::WXFValue(static_cast<double>(pt.deviation))});
+                    curve_list.push_back(wxf::WXFValue(pt_assoc));
                 }
-                state_data.push_back({wxf::Value("Curve"), wxf::Value(curve_list)});
+                state_data.push_back({wxf::WXFValue("Curve"), wxf::WXFValue(curve_list)});
 
-                per_state.push_back({wxf::Value(static_cast<int64_t>(sid)), wxf::Value(state_data)});
+                per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
-            rot_data.push_back({wxf::Value("PerState"), wxf::Value(per_state)});
+            rot_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            full_result.push_back({wxf::Value("RotationData"), wxf::Value(rot_data)});
+            full_result.push_back({wxf::WXFValue("RotationData"), wxf::WXFValue(rot_data)});
         }
 
         // HilbertSpaceData -> Association with inner products and vertex probabilities
         if (has_hilbert_data) {
-            wxf::ValueAssociation hilbert_data;
+            wxf::WXFValueAssociation hilbert_data;
 
             // Statistics
-            hilbert_data.push_back({wxf::Value("NumStates"),
-                                   wxf::Value(static_cast<int64_t>(hilbert_result.num_states))});
-            hilbert_data.push_back({wxf::Value("NumVertices"),
-                                   wxf::Value(static_cast<int64_t>(hilbert_result.num_vertices))});
-            hilbert_data.push_back({wxf::Value("MeanInnerProduct"),
-                                   wxf::Value(static_cast<double>(hilbert_result.mean_inner_product))});
-            hilbert_data.push_back({wxf::Value("MaxInnerProduct"),
-                                   wxf::Value(static_cast<double>(hilbert_result.max_inner_product))});
-            hilbert_data.push_back({wxf::Value("MeanVertexProbability"),
-                                   wxf::Value(static_cast<double>(hilbert_result.mean_vertex_probability))});
-            hilbert_data.push_back({wxf::Value("VertexProbabilityEntropy"),
-                                   wxf::Value(static_cast<double>(hilbert_result.vertex_probability_entropy))});
+            hilbert_data.push_back({wxf::WXFValue("NumStates"),
+                                   wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_states))});
+            hilbert_data.push_back({wxf::WXFValue("NumVertices"),
+                                   wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_vertices))});
+            hilbert_data.push_back({wxf::WXFValue("MeanInnerProduct"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_inner_product))});
+            hilbert_data.push_back({wxf::WXFValue("MaxInnerProduct"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_inner_product))});
+            hilbert_data.push_back({wxf::WXFValue("MeanVertexProbability"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_vertex_probability))});
+            hilbert_data.push_back({wxf::WXFValue("VertexProbabilityEntropy"),
+                                   wxf::WXFValue(static_cast<double>(hilbert_result.vertex_probability_entropy))});
 
             // Vertex probabilities: vertex_id -> probability
-            wxf::ValueAssociation vertex_probs;
+            wxf::WXFValueAssociation vertex_probs;
             for (const auto& [vid, prob] : hilbert_result.vertex_probabilities) {
-                vertex_probs.push_back({wxf::Value(static_cast<int64_t>(vid)),
-                                       wxf::Value(static_cast<double>(prob))});
+                vertex_probs.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                       wxf::WXFValue(static_cast<double>(prob))});
             }
-            hilbert_data.push_back({wxf::Value("VertexProbabilities"), wxf::Value(vertex_probs)});
+            hilbert_data.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs)});
 
             // Inner product matrix (as list of lists for efficient transfer)
-            wxf::ValueList ip_matrix;
+            wxf::WXFValueList ip_matrix;
             for (const auto& row : hilbert_result.inner_product_matrix) {
-                wxf::ValueList row_list;
+                wxf::WXFValueList row_list;
                 for (float val : row) {
-                    row_list.push_back(wxf::Value(static_cast<double>(val)));
+                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
                 }
-                ip_matrix.push_back(wxf::Value(row_list));
+                ip_matrix.push_back(wxf::WXFValue(row_list));
             }
-            hilbert_data.push_back({wxf::Value("InnerProductMatrix"), wxf::Value(ip_matrix)});
+            hilbert_data.push_back({wxf::WXFValue("InnerProductMatrix"), wxf::WXFValue(ip_matrix)});
 
             // State indices (for mapping matrix rows/columns to state IDs)
-            wxf::ValueList state_ids;
+            wxf::WXFValueList state_ids;
             for (uint32_t sid : hilbert_result.state_indices) {
-                state_ids.push_back(wxf::Value(static_cast<int64_t>(sid)));
+                state_ids.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
             }
-            hilbert_data.push_back({wxf::Value("StateIndices"), wxf::Value(state_ids)});
+            hilbert_data.push_back({wxf::WXFValue("StateIndices"), wxf::WXFValue(state_ids)});
 
-            full_result.push_back({wxf::Value("HilbertSpaceData"), wxf::Value(hilbert_data)});
+            full_result.push_back({wxf::WXFValue("HilbertSpaceData"), wxf::WXFValue(hilbert_data)});
         }
 
         // BranchialData -> Association with distribution sharpness and branch entropy
         if (has_branchial_data) {
-            wxf::ValueAssociation branchial_data;
+            wxf::WXFValueAssociation branchial_data;
 
             // Statistics
-            branchial_data.push_back(std::make_pair(wxf::Value("NumUniqueVertices"),
-                                     wxf::Value(static_cast<int64_t>(branchial_result.num_unique_vertices))));
-            branchial_data.push_back(std::make_pair(wxf::Value("MeanSharpness"),
-                                     wxf::Value(static_cast<double>(branchial_result.mean_sharpness))));
-            branchial_data.push_back(std::make_pair(wxf::Value("MeanBranchEntropy"),
-                                     wxf::Value(static_cast<double>(branchial_result.mean_branch_entropy))));
-            branchial_data.push_back(std::make_pair(wxf::Value("MaxBranchesPerVertex"),
-                                     wxf::Value(static_cast<int64_t>(branchial_result.max_branches_per_vertex))));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("NumUniqueVertices"),
+                                     wxf::WXFValue(static_cast<int64_t>(branchial_result.num_unique_vertices))));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("MeanSharpness"),
+                                     wxf::WXFValue(static_cast<double>(branchial_result.mean_sharpness))));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("MeanBranchEntropy"),
+                                     wxf::WXFValue(static_cast<double>(branchial_result.mean_branch_entropy))));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("MaxBranchesPerVertex"),
+                                     wxf::WXFValue(static_cast<int64_t>(branchial_result.max_branches_per_vertex))));
 
             // Per-vertex sharpness
-            wxf::ValueAssociation vertex_sharpness;
+            wxf::WXFValueAssociation vertex_sharpness;
             for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
-                vertex_sharpness.push_back(std::make_pair(wxf::Value(static_cast<int64_t>(vid)),
-                                           wxf::Value(static_cast<double>(sharpness))));
+                vertex_sharpness.push_back(std::make_pair(wxf::WXFValue(static_cast<int64_t>(vid)),
+                                           wxf::WXFValue(static_cast<double>(sharpness))));
             }
-            branchial_data.push_back(std::make_pair(wxf::Value("VertexSharpness"), wxf::Value(vertex_sharpness)));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("VertexSharpness"), wxf::WXFValue(vertex_sharpness)));
 
             // Delocalized vertices (vertices with sharpness < 1.0, appearing in multiple branches)
-            wxf::ValueList delocalized;
+            wxf::WXFValueList delocalized;
             for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
                 if (sharpness < 1.0f) {
-                    delocalized.push_back(wxf::Value(static_cast<int64_t>(vid)));
+                    delocalized.push_back(wxf::WXFValue(static_cast<int64_t>(vid)));
                 }
             }
-            branchial_data.push_back(std::make_pair(wxf::Value("DelocalizedVertices"), wxf::Value(delocalized)));
+            branchial_data.push_back(std::make_pair(wxf::WXFValue("DelocalizedVertices"), wxf::WXFValue(delocalized)));
 
-            full_result.push_back(std::make_pair(wxf::Value("BranchialData"), wxf::Value(branchial_data)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("BranchialData"), wxf::WXFValue(branchial_data)));
         }
 
         // MultispaceData -> Association with vertex/edge probabilities across branches
         if (has_multispace_data) {
-            wxf::ValueAssociation multispace_data;
+            wxf::WXFValueAssociation multispace_data;
 
             // Statistics
-            multispace_data.push_back(std::make_pair(wxf::Value("NumVertices"),
-                                      wxf::Value(static_cast<int64_t>(multispace_vertex_probs.size()))));
-            multispace_data.push_back(std::make_pair(wxf::Value("NumEdges"),
-                                      wxf::Value(static_cast<int64_t>(multispace_edge_probs.size()))));
-            multispace_data.push_back(std::make_pair(wxf::Value("MeanVertexProbability"),
-                                      wxf::Value(static_cast<double>(multispace_mean_vertex_prob))));
-            multispace_data.push_back(std::make_pair(wxf::Value("MeanEdgeProbability"),
-                                      wxf::Value(static_cast<double>(multispace_mean_edge_prob))));
-            multispace_data.push_back(std::make_pair(wxf::Value("TotalEntropy"),
-                                      wxf::Value(static_cast<double>(multispace_total_entropy))));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("NumVertices"),
+                                      wxf::WXFValue(static_cast<int64_t>(multispace_vertex_probs.size()))));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("NumEdges"),
+                                      wxf::WXFValue(static_cast<int64_t>(multispace_edge_probs.size()))));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("MeanVertexProbability"),
+                                      wxf::WXFValue(static_cast<double>(multispace_mean_vertex_prob))));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("MeanEdgeProbability"),
+                                      wxf::WXFValue(static_cast<double>(multispace_mean_edge_prob))));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("TotalEntropy"),
+                                      wxf::WXFValue(static_cast<double>(multispace_total_entropy))));
 
             // Per-vertex probabilities
-            wxf::ValueAssociation vertex_probs_assoc;
+            wxf::WXFValueAssociation vertex_probs_assoc;
             for (const auto& [vid, prob] : multispace_vertex_probs) {
-                vertex_probs_assoc.push_back(std::make_pair(wxf::Value(static_cast<int64_t>(vid)),
-                                             wxf::Value(static_cast<double>(prob))));
+                vertex_probs_assoc.push_back(std::make_pair(wxf::WXFValue(static_cast<int64_t>(vid)),
+                                             wxf::WXFValue(static_cast<double>(prob))));
             }
-            multispace_data.push_back(std::make_pair(wxf::Value("VertexProbabilities"), wxf::Value(vertex_probs_assoc)));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs_assoc)));
 
             // Per-edge probabilities (as list of {{v1, v2}, prob})
-            wxf::ValueList edge_probs_list;
+            wxf::WXFValueList edge_probs_list;
             for (const auto& [e, prob] : multispace_edge_probs) {
-                wxf::ValueList edge_entry;
-                wxf::ValueList edge_pair;
-                edge_pair.push_back(wxf::Value(static_cast<int64_t>(e.first)));
-                edge_pair.push_back(wxf::Value(static_cast<int64_t>(e.second)));
-                edge_entry.push_back(wxf::Value(edge_pair));
-                edge_entry.push_back(wxf::Value(static_cast<double>(prob)));
-                edge_probs_list.push_back(wxf::Value(edge_entry));
+                wxf::WXFValueList edge_entry;
+                wxf::WXFValueList edge_pair;
+                edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.first)));
+                edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.second)));
+                edge_entry.push_back(wxf::WXFValue(edge_pair));
+                edge_entry.push_back(wxf::WXFValue(static_cast<double>(prob)));
+                edge_probs_list.push_back(wxf::WXFValue(edge_entry));
             }
-            multispace_data.push_back(std::make_pair(wxf::Value("EdgeProbabilities"), wxf::Value(edge_probs_list)));
+            multispace_data.push_back(std::make_pair(wxf::WXFValue("EdgeProbabilities"), wxf::WXFValue(edge_probs_list)));
 
-            full_result.push_back(std::make_pair(wxf::Value("MultispaceData"), wxf::Value(multispace_data)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("MultispaceData"), wxf::WXFValue(multispace_data)));
         }
 
         // Topology -> String (for metadata)
         if (!topology_type.empty() && topology_type != "Flat") {
-            full_result.push_back({wxf::Value("Topology"), wxf::Value(topology_type)});
+            full_result.push_back({wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)});
         }
 
         // Write final association
-        wxf_writer.write(wxf::Value(full_result));
+        wxf_writer.write(wxf::WXFValue(full_result));
         const auto& wxf_data = wxf_writer.data();
 
         // Create output ByteArray
@@ -2941,60 +2941,60 @@ EXTERN_C DLLEXPORT int performHausdorffAnalysis(WolframLibraryData libData, mint
         wxf::Writer wxf_writer;
         wxf_writer.write_header();
 
-        wxf::ValueAssociation result;
+        wxf::WXFValueAssociation result;
 
         // PerVertex -> Association[vertex_id -> dimension]
-        wxf::ValueAssociation per_vertex_assoc;
+        wxf::WXFValueAssociation per_vertex_assoc;
         const auto& vertices = graph.vertices();
         for (size_t i = 0; i < vertices.size(); ++i) {
             if (dimensions[i] > 0) {
-                per_vertex_assoc.push_back({wxf::Value(static_cast<int64_t>(vertices[i])),
-                                            wxf::Value(static_cast<double>(dimensions[i]))});
+                per_vertex_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(vertices[i])),
+                                            wxf::WXFValue(static_cast<double>(dimensions[i]))});
             }
         }
-        result.push_back({wxf::Value("PerVertex"), wxf::Value(per_vertex_assoc)});
+        result.push_back({wxf::WXFValue("PerVertex"), wxf::WXFValue(per_vertex_assoc)});
 
         // GeodesicCoords -> Association[vertex_id -> {d1, d2, ...}]
-        wxf::ValueAssociation coords_assoc;
+        wxf::WXFValueAssociation coords_assoc;
         for (const auto& [vid, coords] : geodesic_coords) {
-            wxf::ValueList coord_list;
+            wxf::WXFValueList coord_list;
             for (int d : coords) {
-                coord_list.push_back(wxf::Value(static_cast<int64_t>(d)));
+                coord_list.push_back(wxf::WXFValue(static_cast<int64_t>(d)));
             }
-            coords_assoc.push_back({wxf::Value(static_cast<int64_t>(vid)), wxf::Value(coord_list)});
+            coords_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(vid)), wxf::WXFValue(coord_list)});
         }
-        result.push_back({wxf::Value("GeodesicCoords"), wxf::Value(coords_assoc)});
+        result.push_back({wxf::WXFValue("GeodesicCoords"), wxf::WXFValue(coords_assoc)});
 
         // Anchors -> {anchor1, anchor2, ...}
-        wxf::ValueList anchors_list;
+        wxf::WXFValueList anchors_list;
         for (bh::VertexId a : anchors) {
-            anchors_list.push_back(wxf::Value(static_cast<int64_t>(a)));
+            anchors_list.push_back(wxf::WXFValue(static_cast<int64_t>(a)));
         }
-        result.push_back({wxf::Value("Anchors"), wxf::Value(anchors_list)});
+        result.push_back({wxf::WXFValue("Anchors"), wxf::WXFValue(anchors_list)});
 
         // Stats -> Association
-        wxf::ValueAssociation stats_assoc;
-        stats_assoc.push_back({wxf::Value("Mean"), wxf::Value(static_cast<double>(stats.mean))});
-        stats_assoc.push_back({wxf::Value("Min"), wxf::Value(static_cast<double>(stats.min))});
-        stats_assoc.push_back({wxf::Value("Max"), wxf::Value(static_cast<double>(stats.max))});
-        stats_assoc.push_back({wxf::Value("Variance"), wxf::Value(static_cast<double>(stats.variance))});
-        stats_assoc.push_back({wxf::Value("StdDev"), wxf::Value(static_cast<double>(stats.stddev))});
-        stats_assoc.push_back({wxf::Value("Count"), wxf::Value(static_cast<int64_t>(stats.count))});
-        result.push_back({wxf::Value("Stats"), wxf::Value(stats_assoc)});
+        wxf::WXFValueAssociation stats_assoc;
+        stats_assoc.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(static_cast<double>(stats.mean))});
+        stats_assoc.push_back({wxf::WXFValue("Min"), wxf::WXFValue(static_cast<double>(stats.min))});
+        stats_assoc.push_back({wxf::WXFValue("Max"), wxf::WXFValue(static_cast<double>(stats.max))});
+        stats_assoc.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(static_cast<double>(stats.variance))});
+        stats_assoc.push_back({wxf::WXFValue("StdDev"), wxf::WXFValue(static_cast<double>(stats.stddev))});
+        stats_assoc.push_back({wxf::WXFValue("Count"), wxf::WXFValue(static_cast<int64_t>(stats.count))});
+        result.push_back({wxf::WXFValue("Stats"), wxf::WXFValue(stats_assoc)});
 
         // Config -> Association (echo back the config used)
-        wxf::ValueAssociation config_assoc;
-        config_assoc.push_back({wxf::Value("Formula"),
-            wxf::Value(formula == bh::DimensionFormula::LinearRegression ? "LinearRegression" : "DiscreteDerivative")});
-        config_assoc.push_back({wxf::Value("SaturationThreshold"), wxf::Value(static_cast<double>(saturation_threshold))});
-        config_assoc.push_back({wxf::Value("MinRadius"), wxf::Value(static_cast<int64_t>(min_radius))});
-        config_assoc.push_back({wxf::Value("MaxRadius"), wxf::Value(static_cast<int64_t>(max_radius))});
-        config_assoc.push_back({wxf::Value("NumAnchors"), wxf::Value(static_cast<int64_t>(num_anchors))});
-        config_assoc.push_back({wxf::Value("AnchorSeparation"), wxf::Value(static_cast<int64_t>(anchor_separation))});
-        result.push_back({wxf::Value("Config"), wxf::Value(config_assoc)});
+        wxf::WXFValueAssociation config_assoc;
+        config_assoc.push_back({wxf::WXFValue("Formula"),
+            wxf::WXFValue(formula == bh::DimensionFormula::LinearRegression ? "LinearRegression" : "DiscreteDerivative")});
+        config_assoc.push_back({wxf::WXFValue("SaturationThreshold"), wxf::WXFValue(static_cast<double>(saturation_threshold))});
+        config_assoc.push_back({wxf::WXFValue("MinRadius"), wxf::WXFValue(static_cast<int64_t>(min_radius))});
+        config_assoc.push_back({wxf::WXFValue("MaxRadius"), wxf::WXFValue(static_cast<int64_t>(max_radius))});
+        config_assoc.push_back({wxf::WXFValue("NumAnchors"), wxf::WXFValue(static_cast<int64_t>(num_anchors))});
+        config_assoc.push_back({wxf::WXFValue("AnchorSeparation"), wxf::WXFValue(static_cast<int64_t>(anchor_separation))});
+        result.push_back({wxf::WXFValue("Config"), wxf::WXFValue(config_assoc)});
 
         // Write output
-        wxf_writer.write(wxf::Value(result));
+        wxf_writer.write(wxf::WXFValue(result));
         const auto& wxf_data = wxf_writer.data();
 
         // Create output ByteArray

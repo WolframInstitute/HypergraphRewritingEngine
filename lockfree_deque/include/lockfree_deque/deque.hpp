@@ -15,6 +15,9 @@ template<typename T>
 class Deque {
 private:
     static constexpr std::size_t DEFAULT_CAPACITY = 1024;
+    // Maximum CAS retries before giving up on pop operations
+    // High value needed for high-contention lock-free operations
+    static constexpr int MAX_POP_RETRIES = 1000;
     
     struct Slot {
         std::atomic<T*> data{nullptr};
@@ -150,7 +153,7 @@ public:
         printf("[Deque] try_pop_front #%d start\n", my_pop);
 #endif
         int retries = 0;
-        const int max_retries = 1000;
+        const int max_retries = MAX_POP_RETRIES;
         
         while (retries < max_retries) {
             std::size_t h = head.load(std::memory_order_acquire);
@@ -230,7 +233,7 @@ public:
 
     std::optional<T> try_pop_back() {
         int retries = 0;
-        const int max_retries = 1000;
+        const int max_retries = MAX_POP_RETRIES;
         
         while (retries < max_retries) {
             std::size_t t = tail.load(std::memory_order_acquire);

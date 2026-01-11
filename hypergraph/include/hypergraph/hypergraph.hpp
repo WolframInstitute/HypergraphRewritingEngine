@@ -194,7 +194,7 @@ class Hypergraph {
     std::unique_ptr<UniquenessTree> unified_tree_;                 // Gorard-style uniqueness trees
     std::unique_ptr<IncrementalUniquenessTree> incremental_tree_;  // Incremental version
     std::unique_ptr<WLHash> wl_hash_;                                     // Weisfeiler-Lehman hashing
-    HashStrategy hash_strategy_{HashStrategy::WL}; // UT-Inc with cached adjacency
+    HashStrategy hash_strategy_{HashStrategy::WL}; // Weisfeiler-Lehman hashing (default)
 
     // Stats for bloom filter-based vertex hash reuse in compute_canonical_hash_incremental
     mutable std::atomic<size_t> bloom_reused_{0};
@@ -349,9 +349,8 @@ public:
         return EdgeArityAccessor(this);
     }
 
-    // Raw accessor that returns a pointer-indexable object
-    // This creates a temporary vector of vertex pointers for UniquenessTree
-    // Optimized accessor: direct access without caching overhead
+    // Lightweight accessor for UniquenessTree that provides pointer indexing
+    // Returns pointer to edge's inline vertex array - no copying or allocation
     class EdgeVertexAccessorRaw {
         const Hypergraph* hg_;
     public:
@@ -362,8 +361,7 @@ public:
         }
     };
 
-    // Optimized accessor: direct access without caching overhead
-    // edge_arity() is already O(1), caching added more overhead than it saved
+    // Direct arity accessor - reads from struct field, O(1)
     class EdgeArityAccessorRaw {
         const Hypergraph* hg_;
     public:
@@ -504,19 +502,19 @@ public:
         }
 
         // Collect vertices from consumed edges that might be orphaned
-        std::unordered_set<VertexId> maybe_orphaned;
+        std::unordered_set<VertexId> potentially_orphaned;
         for (uint8_t i = 0; i < num_consumed; ++i) {
             EdgeId eid = consumed_edges[i];
             uint8_t arity = edge_arities[eid];
             const VertexId* verts = edge_vertices[eid];
             for (uint8_t j = 0; j < arity; ++j) {
-                maybe_orphaned.insert(verts[j]);
+                potentially_orphaned.insert(verts[j]);
             }
         }
 
         // Check which are actually orphaned (no edges in child_edges)
         std::unordered_set<VertexId> orphaned;
-        for (VertexId v : maybe_orphaned) {
+        for (VertexId v : potentially_orphaned) {
             bool has_edge_in_child = false;
             // Use global adjacency to check vertex's edges
             if (v < vertex_adjacency_.size()) {
@@ -665,9 +663,9 @@ public:
 
     // Result of trying to create a canonical state
     struct CanonicalStateResult {
-        StateId state;       // The canonical state ID (existing or new)
-        StateId raw_state;   // The raw state ID we created (always new, with actual edges)
-        bool was_new;        // true if new state was created, false if existing found
+        StateId canonical_state_id;  // The canonical state ID (existing or new)
+        StateId created_state_id;    // The state ID we created (always new, with actual edges)
+        bool was_new;                // true if new canonical state, false if existing found
     };
 
     // Create state if no equivalent exists, otherwise return existing
