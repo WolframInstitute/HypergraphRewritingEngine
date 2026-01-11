@@ -302,8 +302,14 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Topology configuration (for initial condition generation)
         std::string topology_type = "Flat";
 
+        // Initial condition configuration
+        std::string initial_condition_type = "Edges";  // "Edges", "Grid", or "Sprinkling"
+
+        // Grid configuration (for regular grid initial conditions)
+        int grid_width = 10;
+        int grid_height = 10;
+
         // Sprinkling configuration (for Minkowski causal set initial conditions)
-        std::string initial_condition_type = "Edges";  // "Edges" (from InitialEdges) or "Sprinkling"
         int sprinkling_density = 500;        // Number of spacetime points
         float sprinkling_time_extent = 10.0f;    // Time dimension extent
         float sprinkling_spatial_extent = 10.0f; // Spatial dimension extent
@@ -397,6 +403,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             topology_type = option_parser.read<std::string>();
                         } else if (option_key == "InitialCondition") {
                             initial_condition_type = option_parser.read<std::string>();
+                        } else if (option_key == "GridWidth") {
+                            grid_width = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "GridHeight") {
+                            grid_height = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "SprinklingDensity") {
                             sprinkling_density = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "SprinklingTimeExtent") {
@@ -610,6 +620,44 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 oss << "HGEvolve: Generated Minkowski sprinkling with "
                     << sprinkling.points.size() << " points, "
                     << sprinkling_edges.size() << " edges";
+                print_to_frontend(libData, oss.str());
+            }
+#endif
+        }
+
+        // Generate grid initial condition if requested
+        if (initial_condition_type == "Grid") {
+            namespace bh = viz::blackhole;
+
+            // Create a minimal BHConfig (no black holes, just a box)
+            bh::BHConfig config;
+            config.mass1 = 0.0f;
+            config.mass2 = 0.0f;
+            config.separation = 0.0f;
+            config.box_x = {-10.0f, 10.0f};
+            config.box_y = {-10.0f, 10.0f};
+
+            auto grid = bh::generate_solid_grid(grid_width, grid_height, config);
+
+            // Convert grid edges to initial_states_raw format
+            std::vector<std::vector<int64_t>> grid_edges;
+            for (const auto& edge : grid.edges) {
+                std::vector<int64_t> edge_vec;
+                edge_vec.push_back(static_cast<int64_t>(edge.v1));
+                edge_vec.push_back(static_cast<int64_t>(edge.v2));
+                grid_edges.push_back(edge_vec);
+            }
+
+            // Replace any provided initial states with grid
+            initial_states_raw.clear();
+            initial_states_raw.push_back(grid_edges);
+
+#ifdef HAVE_WSTP
+            if (show_progress) {
+                std::ostringstream oss;
+                oss << "HGEvolve: Generated " << grid_width << "x" << grid_height
+                    << " grid with " << grid.vertex_count() << " vertices, "
+                    << grid_edges.size() << " edges";
                 print_to_frontend(libData, oss.str());
             }
 #endif
@@ -908,6 +956,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         std::unordered_map<uint32_t, bh::DimensionStats> state_dimension_stats;
         std::unordered_map<uint32_t, std::vector<float>> state_vertex_dimensions;
+        std::unordered_map<uint32_t, std::vector<bh::VertexId>> state_vertex_ids;  // Vertex IDs for dimension lookup
         float global_dim_min = std::numeric_limits<float>::max();
         float global_dim_max = std::numeric_limits<float>::lowest();
 
@@ -945,6 +994,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                     state_dimension_stats[sid] = stats;
                     state_vertex_dimensions[sid] = std::move(per_vertex);
+                    state_vertex_ids[sid] = graph.vertices();  // Store vertex IDs for serialization
 
                     // Track global range
                     if (stats.count > 0) {
@@ -970,7 +1020,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Per-state geodesic results: state_id -> vector of paths (each path is vector of vertex IDs)
         std::unordered_map<uint32_t, std::vector<std::vector<bh::VertexId>>> state_geodesic_paths;
         std::unordered_map<uint32_t, std::vector<std::vector<float>>> state_geodesic_proper_times;
+        std::unordered_map<uint32_t, std::vector<std::vector<float>>> state_geodesic_local_dimensions;
         std::unordered_map<uint32_t, float> state_geodesic_bundle_spread;
+        // Lensing metrics per state: state_id -> vector of LensingMetrics (one per path)
+        std::unordered_map<uint32_t, std::vector<bh::LensingMetrics>> state_geodesic_lensing;
+        std::unordered_map<uint32_t, float> state_geodesic_mean_deflection;
+        std::unordered_map<uint32_t, bh::VertexId> state_geodesic_lensing_center;
 
         if (compute_geodesics) {
 #ifdef HAVE_WSTP
@@ -1025,13 +1080,23 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // Store results
                     std::vector<std::vector<bh::VertexId>> paths;
                     std::vector<std::vector<float>> proper_times;
+                    std::vector<std::vector<float>> local_dims;
                     for (const auto& path : geo_result.paths) {
                         paths.push_back(path.vertices);
                         proper_times.push_back(path.proper_time);
+                        local_dims.push_back(path.local_dimension);
                     }
                     state_geodesic_paths[sid] = std::move(paths);
                     state_geodesic_proper_times[sid] = std::move(proper_times);
+                    state_geodesic_local_dimensions[sid] = std::move(local_dims);
                     state_geodesic_bundle_spread[sid] = geo_result.mean_spread;
+
+                    // Store lensing metrics
+                    if (!geo_result.lensing.empty()) {
+                        state_geodesic_lensing[sid] = geo_result.lensing;
+                        state_geodesic_mean_deflection[sid] = geo_result.mean_deflection;
+                        state_geodesic_lensing_center[sid] = geo_result.lensing_center;
+                    }
                 }
             }
 
@@ -1284,6 +1349,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Rotation Curve Analysis - orbital velocity vs radius
         // ==========================================================================
         std::unordered_map<uint32_t, bh::RotationCurveResult> state_rotation_curves;
+        std::unordered_map<uint32_t, std::vector<bh::OrbitalPath>> state_orbital_paths;
 
         if (compute_rotation_curve) {
 #ifdef HAVE_WSTP
@@ -1327,6 +1393,24 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                     // Run rotation curve analysis
                     auto rot_result = bh::analyze_rotation_curve(graph, rot_config, dims);
+
+                    // Also trace orbital paths for visualization
+                    // For each radius, get all vertices at that distance (the "shell")
+                    std::vector<bh::OrbitalPath> orbits;
+                    for (int r = rotation_min_radius; r <= rotation_max_radius; ++r) {
+                        auto shell = bh::vertices_at_radius(graph, rot_result.center, r);
+                        if (shell.size() >= 3) {
+                            // Create orbit from shell vertices (even if not fully connected)
+                            bh::OrbitalPath orbit;
+                            orbit.radius = r;
+                            orbit.vertices = std::move(shell);
+                            orbit.circumference = static_cast<float>(orbit.vertices.size());
+                            orbit.velocity = orbit.circumference / (2.0f * 3.14159f * r);
+                            orbits.push_back(std::move(orbit));
+                        }
+                    }
+                    state_orbital_paths[sid] = std::move(orbits);
+
                     state_rotation_curves[sid] = std::move(rot_result);
                 }
             }
@@ -2330,7 +2414,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         if (compute_dimensions && !state_dimension_stats.empty()) {
             wxf::WXFValueAssociation dim_data;
 
-            // Per-state stats: state_id -> {Mean, Min, Max, StdDev}
+            // Per-state stats and per-vertex dimensions: state_id -> {Mean, Min, Max, StdDev, PerVertex -> <|v->d|>}
             wxf::WXFValueAssociation per_state;
             for (const auto& [sid, stats] : state_dimension_stats) {
                 wxf::WXFValueAssociation stats_assoc;
@@ -2338,6 +2422,25 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 stats_assoc.push_back({wxf::WXFValue("Min"), wxf::WXFValue(static_cast<double>(stats.min))});
                 stats_assoc.push_back({wxf::WXFValue("Max"), wxf::WXFValue(static_cast<double>(stats.max))});
                 stats_assoc.push_back({wxf::WXFValue("StdDev"), wxf::WXFValue(static_cast<double>(stats.stddev))});
+
+                // Add per-vertex dimensions if available
+                auto vids_it = state_vertex_ids.find(sid);
+                auto dims_it = state_vertex_dimensions.find(sid);
+                if (vids_it != state_vertex_ids.end() && dims_it != state_vertex_dimensions.end()) {
+                    const auto& vids = vids_it->second;
+                    const auto& dims = dims_it->second;
+                    if (vids.size() == dims.size()) {
+                        wxf::WXFValueAssociation per_vertex;
+                        for (size_t i = 0; i < vids.size(); ++i) {
+                            if (dims[i] > 0) {
+                                per_vertex.push_back({wxf::WXFValue(static_cast<int64_t>(vids[i])),
+                                                     wxf::WXFValue(static_cast<double>(dims[i]))});
+                            }
+                        }
+                        stats_assoc.push_back({wxf::WXFValue("PerVertex"), wxf::WXFValue(per_vertex)});
+                    }
+                }
+
                 per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(stats_assoc)});
             }
             dim_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
@@ -2392,11 +2495,62 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     state_data.push_back({wxf::WXFValue("ProperTimes"), wxf::WXFValue(pt_list)});
                 }
 
+                // Local dimensions along each path
+                auto ld_it = state_geodesic_local_dimensions.find(sid);
+                if (ld_it != state_geodesic_local_dimensions.end()) {
+                    wxf::WXFValueList ld_list;
+                    for (const auto& dims : ld_it->second) {
+                        wxf::WXFValueList dim_vals;
+                        for (float d : dims) {
+                            dim_vals.push_back(wxf::WXFValue(static_cast<double>(d)));
+                        }
+                        ld_list.push_back(wxf::WXFValue(dim_vals));
+                    }
+                    state_data.push_back({wxf::WXFValue("LocalDimensions"), wxf::WXFValue(ld_list)});
+                }
+
                 // Bundle spread
                 auto spread_it = state_geodesic_bundle_spread.find(sid);
                 if (spread_it != state_geodesic_bundle_spread.end()) {
                     state_data.push_back({wxf::WXFValue("BundleSpread"),
                                          wxf::WXFValue(static_cast<double>(spread_it->second))});
+                }
+
+                // Lensing metrics per path
+                auto lensing_it = state_geodesic_lensing.find(sid);
+                if (lensing_it != state_geodesic_lensing.end() && !lensing_it->second.empty()) {
+                    wxf::WXFValueList lensing_list;
+                    for (const auto& lm : lensing_it->second) {
+                        wxf::WXFValueAssociation lm_assoc;
+                        lm_assoc.push_back({wxf::WXFValue("DeflectionAngle"),
+                                           wxf::WXFValue(static_cast<double>(lm.deflection_angle))});
+                        lm_assoc.push_back({wxf::WXFValue("ImpactParameter"),
+                                           wxf::WXFValue(static_cast<double>(lm.impact_parameter))});
+                        lm_assoc.push_back({wxf::WXFValue("ExpectedDeflection"),
+                                           wxf::WXFValue(static_cast<double>(lm.expected_deflection))});
+                        lm_assoc.push_back({wxf::WXFValue("DeflectionRatio"),
+                                           wxf::WXFValue(static_cast<double>(lm.deflection_ratio))});
+                        lm_assoc.push_back({wxf::WXFValue("ClosestVertex"),
+                                           wxf::WXFValue(static_cast<int64_t>(lm.closest_vertex))});
+                        lm_assoc.push_back({wxf::WXFValue("ClosestDimension"),
+                                           wxf::WXFValue(static_cast<double>(lm.closest_dimension))});
+                        lm_assoc.push_back({wxf::WXFValue("PassesNearCenter"),
+                                           wxf::WXFValue(lm.passes_near_center ? "True" : "False")});
+                        lensing_list.push_back(wxf::WXFValue(lm_assoc));
+                    }
+                    state_data.push_back({wxf::WXFValue("Lensing"), wxf::WXFValue(lensing_list)});
+
+                    // Mean deflection and lensing center for this state
+                    auto md_it = state_geodesic_mean_deflection.find(sid);
+                    if (md_it != state_geodesic_mean_deflection.end()) {
+                        state_data.push_back({wxf::WXFValue("MeanDeflection"),
+                                             wxf::WXFValue(static_cast<double>(md_it->second))});
+                    }
+                    auto lc_it = state_geodesic_lensing_center.find(sid);
+                    if (lc_it != state_geodesic_lensing_center.end()) {
+                        state_data.push_back({wxf::WXFValue("LensingCenter"),
+                                             wxf::WXFValue(static_cast<int64_t>(lc_it->second))});
+                    }
                 }
 
                 per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
@@ -2606,6 +2760,29 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     curve_list.push_back(wxf::WXFValue(pt_assoc));
                 }
                 state_data.push_back({wxf::WXFValue("Curve"), wxf::WXFValue(curve_list)});
+
+                // Orbital paths for visualization
+                auto orbits_it = state_orbital_paths.find(sid);
+                if (orbits_it != state_orbital_paths.end()) {
+                    wxf::WXFValueList orbits_list;
+                    for (const auto& orbit : orbits_it->second) {
+                        wxf::WXFValueAssociation orbit_assoc;
+                        orbit_assoc.push_back({wxf::WXFValue("Radius"),
+                                              wxf::WXFValue(static_cast<int64_t>(orbit.radius))});
+                        orbit_assoc.push_back({wxf::WXFValue("Velocity"),
+                                              wxf::WXFValue(static_cast<double>(orbit.velocity))});
+                        orbit_assoc.push_back({wxf::WXFValue("Circumference"),
+                                              wxf::WXFValue(static_cast<double>(orbit.circumference))});
+                        // Serialize the actual path vertices
+                        wxf::WXFValueList path_list;
+                        for (auto v : orbit.vertices) {
+                            path_list.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                        }
+                        orbit_assoc.push_back({wxf::WXFValue("Path"), wxf::WXFValue(path_list)});
+                        orbits_list.push_back(wxf::WXFValue(orbit_assoc));
+                    }
+                    state_data.push_back({wxf::WXFValue("Orbits"), wxf::WXFValue(orbits_list)});
+                }
 
                 per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
