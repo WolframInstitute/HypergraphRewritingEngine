@@ -12,6 +12,19 @@ PackageExport["HGLensingPlot"]
 PackageExport["HGRotationCurvePlot"]
 PackageExport["HGRotationOrbitsPlot"]
 PackageExport["EdgeId"]
+(* Initial Condition Generators *)
+PackageExport["HGGrid"]
+PackageExport["HGGridWithHoles"]
+PackageExport["HGCylinder"]
+PackageExport["HGTorus"]
+PackageExport["HGSphere"]
+PackageExport["HGKleinBottle"]
+PackageExport["HGMobiusStrip"]
+PackageExport["HGMinkowskiSprinkling"]
+PackageExport["HGBrillLindquist"]
+PackageExport["HGPoissonDisk"]
+PackageExport["HGUniformRandom"]
+PackageExport["HGToGraph"]
 
 (* Public symbols *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution.
@@ -27,6 +40,44 @@ HGLensingPlot::usage = "HGLensingPlot[evolutionResult, stateId, opts] plots grav
 HGRotationCurvePlot::usage = "HGRotationCurvePlot[evolutionResult, opts] plots orbital velocity vs radius with Keplerian prediction overlay."
 HGRotationOrbitsPlot::usage = "HGRotationOrbitsPlot[evolutionResult, stateId, opts] shows orbital paths overlaid on a state graph, colored by velocity deviation."
 EdgeId::usage = "EdgeId[id] wraps an edge identifier."
+
+(* Initial Condition Generator Usage *)
+HGGrid::usage = "HGGrid[width, height] generates a regular grid graph.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords|>."
+HGGridWithHoles::usage = "HGGridWithHoles[width, height, holes] generates a grid with circular holes.
+holes is a list of {centerX, centerY, radius} specifications.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords|>."
+HGCylinder::usage = "HGCylinder[resolution, height] generates a cylindrical topology graph.
+The cylinder wraps horizontally (theta direction) and is open vertically.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords, \"VertexCoordinates3D\" -> coords3D|>."
+HGTorus::usage = "HGTorus[resolution] generates a toroidal topology graph.
+Both theta and phi directions wrap around.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords, \"VertexCoordinates3D\" -> coords3D|>."
+HGSphere::usage = "HGSphere[resolution] generates a spherical topology graph using UV sampling.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords, \"VertexCoordinates3D\" -> coords3D|>."
+HGKleinBottle::usage = "HGKleinBottle[resolution, height] generates a Klein bottle topology graph.
+Theta wraps with z-flip (non-orientable surface).
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords|>."
+HGMobiusStrip::usage = "HGMobiusStrip[resolution, width] generates a Mobius strip topology graph.
+Theta wraps with z-flip, finite width in z direction.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords, \"VertexCoordinates3D\" -> coords3D|>."
+HGMinkowskiSprinkling::usage = "HGMinkowskiSprinkling[n, opts] generates a causal set by Minkowski sprinkling.
+Randomly places n points in spacetime and connects by causal structure.
+Options: \"SpatialDim\", \"TimeExtent\", \"SpatialExtent\", \"LightconeAngle\",
+\"AlexandrovCutoff\", \"TransitivityReduction\", \"MaxEdgesPerVertex\".
+Returns <|\"Edges\" -> edges, \"SpacetimePoints\" -> points, \"DimensionEstimate\" -> dim|>."
+HGBrillLindquist::usage = "HGBrillLindquist[n, {mass1, mass2}, separation, opts] generates a Brill-Lindquist initial condition.
+Creates a graph representing discrete spacetime around two black holes with specified masses and separation.
+Vertex density is proportional to the conformal factor psi^4.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords, \"HorizonCenters\" -> centers|>."
+HGPoissonDisk::usage = "HGPoissonDisk[n, minDistance, opts] generates a Poisson disk sampled graph.
+Blue noise distribution with minimum separation between vertices.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords|>."
+HGUniformRandom::usage = "HGUniformRandom[n, opts] generates a uniformly random point cloud graph.
+Returns <|\"Edges\" -> edges, \"VertexCoordinates\" -> coords|>."
+HGToGraph::usage = "HGToGraph[icResult] converts an initial condition result to a Graph.
+HGToGraph[edges] converts an edge list to a Graph.
+HGToGraph[edges, coords] converts edges with vertex coordinates to a Graph."
 
 Options[HGEvolve] = {
   "HashStrategy" -> "WL",
@@ -90,14 +141,34 @@ Options[HGEvolve] = {
   (* Multispace Analysis Options - vertex/edge probabilities across branches *)
   "MultispaceAnalysis" -> False,  (* True: compute multispace analysis *)
   (* Initial Condition Options - alternative to InitialEdges *)
-  "InitialCondition" -> "Edges",  (* "Edges" (use provided), "Grid", or "Sprinkling" *)
+  "InitialCondition" -> "Edges",  (* "Edges", "Grid", "Sprinkling", "BrillLindquist", "Poisson", "Uniform" *)
+  (* Topology options *)
+  "Topology" -> "Flat",  (* "Flat", "Cylinder", "Torus", "Sphere", "Klein", "Mobius" *)
+  "MajorRadius" -> 10.0,  (* Major radius for curved topologies *)
+  "MinorRadius" -> 3.0,  (* Minor radius for torus *)
   (* Grid options *)
   "GridWidth" -> 10,  (* Grid width for "Grid" initial condition *)
   "GridHeight" -> 10,  (* Grid height for "Grid" initial condition *)
-  (* Sprinkling options *)
+  "GridHoles" -> {},  (* List of {x, y, radius} for holes in grid *)
+  (* Sprinkling/Minkowski options *)
   "SprinklingDensity" -> 500,  (* Number of spacetime points for sprinkling *)
   "SprinklingTimeExtent" -> 10.0,  (* Time dimension extent *)
-  "SprinklingSpatialExtent" -> 10.0  (* Spatial dimension extent *)
+  "SprinklingSpatialExtent" -> 10.0,  (* Spatial dimension extent *)
+  "SprinklingSpatialDim" -> 2,  (* 1, 2, or 3 spatial dimensions *)
+  "SprinklingLightconeAngle" -> 1.0,  (* Speed of light (c = 1 default) *)
+  "SprinklingAlexandrovCutoff" -> 5.0,  (* Max proper time separation *)
+  "SprinklingTransitivityReduction" -> True,  (* Remove redundant causal edges *)
+  "SprinklingMaxEdgesPerVertex" -> 50,  (* Limit connectivity *)
+  (* Brill-Lindquist options *)
+  "BrillLindquistMass1" -> 3.0,  (* Mass of first black hole *)
+  "BrillLindquistMass2" -> 3.0,  (* Mass of second black hole *)
+  "BrillLindquistSeparation" -> 10.0,  (* Distance between black holes *)
+  "BrillLindquistBoxX" -> {-15.0, 15.0},  (* X domain *)
+  "BrillLindquistBoxY" -> {-15.0, 15.0},  (* Y domain *)
+  (* Sampling options *)
+  "EdgeThreshold" -> Automatic,  (* Max distance for edge creation *)
+  "PoissonMinDistance" -> 1.0,  (* Minimum separation for Poisson disk *)
+  "RandomSeed" -> Automatic  (* Random seed for reproducibility *)
 };
 
 Begin["`Private`"]
@@ -535,6 +606,10 @@ ruleIsNumeric[rule_Rule] := AllTrue[
 HGEvolve[rule_Rule, initial_, steps_Integer, rest___] :=
   HGEvolve[{rule}, initial, steps, rest]
 
+(* Wrapper: Graph input -> extract edge list *)
+HGEvolve[rules_, g_Graph, steps_Integer, rest___] :=
+  HGEvolve[rules, List @@@ EdgeList[g], steps, rest]
+
 (* Wrapper: string initial condition -> association *)
 HGEvolve[rules_, "Grid", steps_Integer, rest___] :=
   HGEvolve[rules, <|"Type" -> "Grid"|>, steps, rest]
@@ -542,35 +617,191 @@ HGEvolve[rules_, "Grid", steps_Integer, rest___] :=
 HGEvolve[rules_, "Sprinkling", steps_Integer, rest___] :=
   HGEvolve[rules, <|"Type" -> "Sprinkling"|>, steps, rest]
 
-(* Wrapper: association initial condition -> extract and pass to main *)
+HGEvolve[rules_, "Minkowski", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Sprinkling"|>, steps, rest]
+
+HGEvolve[rules_, "BrillLindquist", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "BrillLindquist"|>, steps, rest]
+
+HGEvolve[rules_, "Cylinder", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Cylinder"|>, steps, rest]
+
+HGEvolve[rules_, "Torus", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Torus"|>, steps, rest]
+
+HGEvolve[rules_, "Sphere", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Sphere"|>, steps, rest]
+
+HGEvolve[rules_, "Klein", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Klein"|>, steps, rest]
+
+HGEvolve[rules_, "Mobius", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Mobius"|>, steps, rest]
+
+HGEvolve[rules_, "Poisson", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Poisson"|>, steps, rest]
+
+HGEvolve[rules_, "Uniform", steps_Integer, rest___] :=
+  HGEvolve[rules, <|"Type" -> "Uniform"|>, steps, rest]
+
+(* Wrapper: IC generator result -> extract edges and pass to main *)
+HGEvolve[rules_, icResult_Association, steps_Integer, rest___] /;
+  KeyExistsQ[icResult, "Edges"] && !KeyExistsQ[icResult, "Type"] :=
+  HGEvolve[rules, icResult["Edges"], steps, rest]
+
+(* Wrapper: association initial condition -> generate edges in WL or pass to C++ *)
 HGEvolve[rules_List, initialSpec_Association, steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
          opts:OptionsPattern[]] := Module[
-  {icType, gridWidth, gridHeight, sprinklingDensity, sprinklingTime, sprinklingSpatial, newOpts},
+  {icType, icResult, edges, newOpts,
+   gridWidth, gridHeight, gridHoles, resolution,
+   sprinklingDensity, sprinklingTime, sprinklingSpatial, spatialDim,
+   lightcone, alexandrov, transitivity, maxEdgesPerVertex,
+   mass1, mass2, separation, boxX, boxY, edgeThreshold,
+   majorRadius, minorRadius, poissonMinDistance, seed},
 
   icType = Lookup[initialSpec, "Type", "Grid"];
 
-  (* Extract grid options *)
-  gridWidth = Lookup[initialSpec, "Width", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-  gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+  (* Extract common options *)
+  seed = Lookup[initialSpec, "Seed", OptionValue[HGEvolve, {opts}, "RandomSeed"]];
+  edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, {opts}, "EdgeThreshold"]];
 
-  (* Extract sprinkling options *)
-  sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
-  sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, {opts}, "SprinklingTimeExtent"]];
-  sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, {opts}, "SprinklingSpatialExtent"]];
+  (* Generate initial condition based on type *)
+  Switch[icType,
 
-  (* Build merged options *)
-  newOpts = {
-    "InitialCondition" -> icType,
-    "GridWidth" -> gridWidth,
-    "GridHeight" -> gridHeight,
-    "SprinklingDensity" -> sprinklingDensity,
-    "SprinklingTimeExtent" -> sprinklingTime,
-    "SprinklingSpatialExtent" -> sprinklingSpatial,
-    opts
-  };
+    (* ===== FLAT TOPOLOGIES ===== *)
 
-  HGEvolve[rules, {}, steps, property, Sequence @@ newOpts]
+    "Grid",
+    gridWidth = Lookup[initialSpec, "Width", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+    gridHoles = Lookup[initialSpec, "Holes", OptionValue[HGEvolve, {opts}, "GridHoles"]];
+    If[gridHoles === {} || gridHoles === None,
+      icResult = HGGrid[gridWidth, gridHeight, "RandomSeed" -> seed],
+      icResult = HGGridWithHoles[gridWidth, gridHeight, gridHoles, "RandomSeed" -> seed]
+    ];
+    edges = icResult["Edges"],
+
+    (* ===== CURVED TOPOLOGIES ===== *)
+
+    "Cylinder",
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
+    icResult = HGCylinder[resolution, gridHeight, "Radius" -> majorRadius];
+    edges = icResult["Edges"],
+
+    "Torus",
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    majorRadius = Lookup[initialSpec, "MajorRadius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
+    minorRadius = Lookup[initialSpec, "MinorRadius", OptionValue[HGEvolve, {opts}, "MinorRadius"]];
+    icResult = HGTorus[resolution, "MajorRadius" -> majorRadius, "MinorRadius" -> minorRadius];
+    edges = icResult["Edges"],
+
+    "Sphere",
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
+    icResult = HGSphere[resolution, "Radius" -> majorRadius];
+    edges = icResult["Edges"],
+
+    "Klein" | "KleinBottle",
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
+    icResult = HGKleinBottle[resolution, gridHeight, "Radius" -> majorRadius];
+    edges = icResult["Edges"],
+
+    "Mobius" | "MobiusStrip",
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    gridWidth = Lookup[initialSpec, "Width", 5];
+    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
+    icResult = HGMobiusStrip[resolution, gridWidth, "Radius" -> majorRadius];
+    edges = icResult["Edges"],
+
+    (* ===== SPACETIME GEOMETRIES ===== *)
+
+    "Sprinkling" | "Minkowski",
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
+    sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, {opts}, "SprinklingTimeExtent"]];
+    sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, {opts}, "SprinklingSpatialExtent"]];
+    spatialDim = Lookup[initialSpec, "SpatialDim", OptionValue[HGEvolve, {opts}, "SprinklingSpatialDim"]];
+    lightcone = Lookup[initialSpec, "LightconeAngle", OptionValue[HGEvolve, {opts}, "SprinklingLightconeAngle"]];
+    alexandrov = Lookup[initialSpec, "AlexandrovCutoff", OptionValue[HGEvolve, {opts}, "SprinklingAlexandrovCutoff"]];
+    transitivity = Lookup[initialSpec, "TransitivityReduction", OptionValue[HGEvolve, {opts}, "SprinklingTransitivityReduction"]];
+    maxEdgesPerVertex = Lookup[initialSpec, "MaxEdgesPerVertex", OptionValue[HGEvolve, {opts}, "SprinklingMaxEdgesPerVertex"]];
+    icResult = HGMinkowskiSprinkling[sprinklingDensity,
+      "SpatialDim" -> spatialDim,
+      "TimeExtent" -> sprinklingTime,
+      "SpatialExtent" -> sprinklingSpatial,
+      "LightconeAngle" -> lightcone,
+      "AlexandrovCutoff" -> alexandrov,
+      "TransitivityReduction" -> transitivity,
+      "MaxEdgesPerVertex" -> maxEdgesPerVertex,
+      "RandomSeed" -> seed
+    ];
+    edges = icResult["Edges"],
+
+    "BrillLindquist",
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
+    mass1 = Lookup[initialSpec, "Mass1", OptionValue[HGEvolve, {opts}, "BrillLindquistMass1"]];
+    mass2 = Lookup[initialSpec, "Mass2", OptionValue[HGEvolve, {opts}, "BrillLindquistMass2"]];
+    separation = Lookup[initialSpec, "Separation", OptionValue[HGEvolve, {opts}, "BrillLindquistSeparation"]];
+    boxX = Lookup[initialSpec, "BoxX", OptionValue[HGEvolve, {opts}, "BrillLindquistBoxX"]];
+    boxY = Lookup[initialSpec, "BoxY", OptionValue[HGEvolve, {opts}, "BrillLindquistBoxY"]];
+    edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, {opts}, "EdgeThreshold"]];
+    If[edgeThreshold === Automatic, edgeThreshold = 2.0];
+    icResult = HGBrillLindquist[sprinklingDensity, {mass1, mass2}, separation,
+      "BoxX" -> boxX,
+      "BoxY" -> boxY,
+      "EdgeThreshold" -> edgeThreshold,
+      "RandomSeed" -> seed
+    ];
+    edges = icResult["Edges"],
+
+    (* ===== SAMPLING METHODS ===== *)
+
+    "Poisson" | "PoissonDisk",
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
+    poissonMinDistance = Lookup[initialSpec, "MinDistance", OptionValue[HGEvolve, {opts}, "PoissonMinDistance"]];
+    boxX = Lookup[initialSpec, "BoxX", {0, 10}];
+    boxY = Lookup[initialSpec, "BoxY", {0, 10}];
+    icResult = HGPoissonDisk[sprinklingDensity, poissonMinDistance,
+      "BoxX" -> boxX,
+      "BoxY" -> boxY,
+      "EdgeThreshold" -> edgeThreshold,
+      "RandomSeed" -> seed
+    ];
+    edges = icResult["Edges"],
+
+    "Uniform" | "UniformRandom",
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
+    boxX = Lookup[initialSpec, "BoxX", {0, 10}];
+    boxY = Lookup[initialSpec, "BoxY", {0, 10}];
+    icResult = HGUniformRandom[sprinklingDensity,
+      "BoxX" -> boxX,
+      "BoxY" -> boxY,
+      "EdgeThreshold" -> edgeThreshold,
+      "RandomSeed" -> seed
+    ];
+    edges = icResult["Edges"],
+
+    (* ===== FALLBACK: Pass to C++ ===== *)
+    _,
+    (* Unknown type - let C++ handle it *)
+    edges = {};
+    newOpts = {
+      "InitialCondition" -> icType,
+      "GridWidth" -> Lookup[initialSpec, "Width", OptionValue[HGEvolve, {opts}, "GridWidth"]],
+      "GridHeight" -> Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]],
+      "SprinklingDensity" -> Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]],
+      "SprinklingTimeExtent" -> Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, {opts}, "SprinklingTimeExtent"]],
+      "SprinklingSpatialExtent" -> Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, {opts}, "SprinklingSpatialExtent"]],
+      opts
+    };
+    Return[HGEvolve[rules, {}, steps, property, Sequence @@ newOpts]]
+  ];
+
+  (* Call main HGEvolve with generated edges *)
+  HGEvolve[rules, edges, steps, property, opts]
 ]
 
 (* Main implementation *)
@@ -2252,6 +2483,976 @@ HGRotationOrbitsPlot[evolutionResult_Association, stateId_Integer, opts:OptionsP
 HGRotationOrbitsPlot::nodata = "RotationData not found. Enable \"RotationCurveAnalysis\" -> True in HGEvolve.";
 HGRotationOrbitsPlot::nostate = "State `1` not found in rotation data.";
 HGRotationOrbitsPlot::noorbits = "No orbital paths found for state `1`.";
+
+(* ============================================================================ *)
+(* HGToGraph - Convert edges/IC results to Graph *)
+(* ============================================================================ *)
+
+HGToGraph[icResult_Association] := Module[{edges, coords, graphEdges, vertices},
+  edges = icResult["Edges"];
+  coords = Lookup[icResult, "VertexCoordinates", None];
+  HGToGraph[edges, coords]
+]
+
+HGToGraph[edges_List] := HGToGraph[edges, None]
+
+HGToGraph[edges_List, None] := Module[{graphEdges, vertices},
+  graphEdges = DirectedEdge @@@ edges;
+  vertices = Union[Flatten[edges]];
+  Graph[vertices, graphEdges]
+]
+
+HGToGraph[edges_List, coords_Association] := Module[{graphEdges, vertices, coordList},
+  graphEdges = DirectedEdge @@@ edges;
+  vertices = Union[Flatten[edges]];
+  coordList = Table[v -> coords[v], {v, vertices}];
+  Graph[vertices, graphEdges, VertexCoordinates -> coordList]
+]
+
+(* Shared helper: finalize IC result, optionally returning Graph *)
+icFinalizeResult[result_Association, returnGraph_] :=
+  If[returnGraph, HGToGraph[result], result]
+
+(* Common options for all IC generators *)
+$ICCommonOptions = {
+  "Graph" -> False,
+  "RandomSeed" -> Automatic
+};
+
+(* ============================================================================ *)
+(* Initial Condition Generators - Pure Wolfram Language Implementations *)
+(* ============================================================================ *)
+(* These generate edge lists and vertex coordinates that can be passed to HGEvolve
+   or used directly for analysis/visualization. *)
+
+(* ---------------------------------------------------------------------------- *)
+(* HGGrid - Regular rectangular grid *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGGrid] = Join[$ICCommonOptions, {
+  "Diagonals" -> False,
+  "RandomizeDirections" -> True
+}];
+
+HGGrid[width_Integer, height_Integer, opts:OptionsPattern[]] := Module[
+  {vertices, coords, edges, vertexIndex, addDiagonals, randomize,
+   i, j, v1, v2, idx, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  addDiagonals = OptionValue["Diagonals"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  (* Create vertex positions *)
+  vertexIndex = Association[];
+  coords = Association[];
+  idx = 1;
+  Do[
+    vertexIndex[{i, j}] = idx;
+    coords[idx] = {i - 1, j - 1};
+    idx++,
+    {i, width}, {j, height}
+  ];
+
+  vertices = Range[width * height];
+
+  (* Create edges *)
+  edges = {};
+  Do[
+    v1 = vertexIndex[{i, j}];
+    If[i < width,
+      v2 = vertexIndex[{i + 1, j}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[j < height,
+      v2 = vertexIndex[{i, j + 1}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[addDiagonals,
+      If[i < width && j < height,
+        v2 = vertexIndex[{i + 1, j + 1}];
+        AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+      ];
+      If[i < width && j > 1,
+        v2 = vertexIndex[{i + 1, j - 1}];
+        AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+      ]
+    ],
+    {i, width}, {j, height}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords,
+    "Topology" -> "Grid",
+    "Width" -> width,
+    "Height" -> height,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGGridWithHoles - Grid with circular exclusion zones *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGGridWithHoles] = Join[$ICCommonOptions, {
+  "Diagonals" -> False,
+  "RandomizeDirections" -> True
+}];
+
+HGGridWithHoles[width_Integer, height_Integer, holes_List, opts:OptionsPattern[]] := Module[
+  {vertices, coords, edges, vertexIndex, addDiagonals, randomize,
+   i, j, v1, v2, idx, pos, insideHole, mid, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  addDiagonals = OptionValue["Diagonals"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  insideHole[{x_, y_}] := AnyTrue[holes,
+    With[{cx = #[[1]], cy = #[[2]], r = #[[3]]},
+      (x - cx)^2 + (y - cy)^2 < r^2
+    ] &
+  ];
+
+  vertexIndex = Association[];
+  coords = Association[];
+  idx = 1;
+  Do[
+    pos = {i - 1, j - 1};
+    If[!insideHole[pos],
+      vertexIndex[{i, j}] = idx;
+      coords[idx] = pos;
+      idx++
+    ],
+    {i, width}, {j, height}
+  ];
+
+  vertices = Range[idx - 1];
+
+  edges = {};
+  Do[
+    If[KeyExistsQ[vertexIndex, {i, j}],
+      v1 = vertexIndex[{i, j}];
+      If[i < width && KeyExistsQ[vertexIndex, {i + 1, j}],
+        v2 = vertexIndex[{i + 1, j}];
+        mid = (coords[v1] + coords[v2]) / 2;
+        If[!insideHole[mid],
+          AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+        ]
+      ];
+      If[j < height && KeyExistsQ[vertexIndex, {i, j + 1}],
+        v2 = vertexIndex[{i, j + 1}];
+        mid = (coords[v1] + coords[v2]) / 2;
+        If[!insideHole[mid],
+          AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+        ]
+      ];
+      If[addDiagonals,
+        If[i < width && j < height && KeyExistsQ[vertexIndex, {i + 1, j + 1}],
+          v2 = vertexIndex[{i + 1, j + 1}];
+          mid = (coords[v1] + coords[v2]) / 2;
+          If[!insideHole[mid],
+            AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+          ]
+        ];
+        If[i < width && j > 1 && KeyExistsQ[vertexIndex, {i + 1, j - 1}],
+          v2 = vertexIndex[{i + 1, j - 1}];
+          mid = (coords[v1] + coords[v2]) / 2;
+          If[!insideHole[mid],
+            AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+          ]
+        ]
+      ]
+    ],
+    {i, width}, {j, height}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords,
+    "Topology" -> "GridWithHoles",
+    "Width" -> width,
+    "Height" -> height,
+    "Holes" -> holes,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGCylinder - Cylindrical topology (theta wraps, z open) *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGCylinder] = Join[$ICCommonOptions, {
+  "Radius" -> 1.0,
+  "RandomizeDirections" -> True
+}];
+
+HGCylinder[resolution_Integer, height_Integer, opts:OptionsPattern[]] := Module[
+  {radius, randomize, vertices, coords2D, coords3D, edges,
+   vertexIndex, i, j, idx, theta, z, v1, v2, dtheta, dz, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  radius = OptionValue["Radius"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  dtheta = 2 Pi / resolution;
+  dz = 1.0;
+
+  vertexIndex = Association[];
+  coords2D = Association[];
+  coords3D = Association[];
+  idx = 1;
+  Do[
+    theta = (i - 1) * dtheta;
+    z = (j - 1) * dz;
+    vertexIndex[{i, j}] = idx;
+    coords2D[idx] = {theta, z};
+    coords3D[idx] = {radius * Cos[theta], radius * Sin[theta], z};
+    idx++,
+    {i, resolution}, {j, height}
+  ];
+
+  vertices = Range[resolution * height];
+
+  edges = {};
+  Do[
+    v1 = vertexIndex[{i, j}];
+    v2 = vertexIndex[{Mod[i, resolution] + 1, j}];
+    AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]];
+    If[j < height,
+      v2 = vertexIndex[{i, j + 1}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ],
+    {i, resolution}, {j, height}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords2D,
+    "VertexCoordinates3D" -> coords3D,
+    "Topology" -> "Cylinder",
+    "Resolution" -> resolution,
+    "Height" -> height,
+    "Radius" -> radius,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGTorus - Toroidal topology (both directions wrap) *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGTorus] = Join[$ICCommonOptions, {
+  "MajorRadius" -> 3.0,
+  "MinorRadius" -> 1.0,
+  "RandomizeDirections" -> True
+}];
+
+HGTorus[resolution_Integer, opts:OptionsPattern[]] := Module[
+  {majorR, minorR, randomize, vertices, coords2D, coords3D, edges,
+   vertexIndex, i, j, idx, theta, phi, v1, v2, rho, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  majorR = OptionValue["MajorRadius"];
+  minorR = OptionValue["MinorRadius"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  vertexIndex = Association[];
+  coords2D = Association[];
+  coords3D = Association[];
+  idx = 1;
+  Do[
+    theta = (i - 1) * 2 Pi / resolution;
+    phi = (j - 1) * 2 Pi / resolution;
+    vertexIndex[{i, j}] = idx;
+    coords2D[idx] = {theta, phi};
+    rho = majorR + minorR * Cos[phi];
+    coords3D[idx] = {rho * Cos[theta], rho * Sin[theta], minorR * Sin[phi]};
+    idx++,
+    {i, resolution}, {j, resolution}
+  ];
+
+  vertices = Range[resolution^2];
+
+  edges = {};
+  Do[
+    v1 = vertexIndex[{i, j}];
+    v2 = vertexIndex[{Mod[i, resolution] + 1, j}];
+    AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]];
+    v2 = vertexIndex[{i, Mod[j, resolution] + 1}];
+    AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]],
+    {i, resolution}, {j, resolution}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords2D,
+    "VertexCoordinates3D" -> coords3D,
+    "Topology" -> "Torus",
+    "Resolution" -> resolution,
+    "MajorRadius" -> majorR,
+    "MinorRadius" -> minorR,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGSphere - Spherical topology using UV grid with pole handling *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGSphere] = Join[$ICCommonOptions, {
+  "Radius" -> 1.0,
+  "RandomizeDirections" -> True
+}];
+
+HGSphere[resolution_Integer, opts:OptionsPattern[]] := Module[
+  {radius, randomize, vertices, coords2D, coords3D, edges,
+   vertexIndex, idx, nLat, nLon, theta, phi, lonCount, sinTheta,
+   i, j, v1, v2, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  radius = OptionValue["Radius"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  nLat = resolution;
+  nLon = 2 * resolution;
+
+  vertexIndex = Association[];
+  coords2D = Association[];
+  coords3D = Association[];
+  idx = 1;
+
+  Do[
+    theta = Pi * (i - 0.5) / nLat;
+    sinTheta = Sin[theta];
+    lonCount = Max[1, Round[nLon * sinTheta]];
+    Do[
+      phi = 2 Pi * (j - 1) / lonCount;
+      vertexIndex[{i, j, lonCount}] = idx;
+      coords2D[idx] = {theta, phi};
+      coords3D[idx] = {radius * sinTheta * Cos[phi], radius * sinTheta * Sin[phi], radius * Cos[theta]};
+      idx++,
+      {j, lonCount}
+    ],
+    {i, nLat}
+  ];
+
+  vertices = Range[idx - 1];
+  edges = {};
+
+  Module[{lonCounts, latOffsets, latIdx, lonIdx, currentLat, nextLat, v1Lon, closestJ},
+    lonCounts = Table[Max[1, Round[nLon * Sin[Pi * (i - 0.5) / nLat]]], {i, nLat}];
+    latOffsets = Prepend[Accumulate[Most[lonCounts]], 0];
+    Do[
+      currentLat = lonCounts[[latIdx]];
+      Do[
+        v1 = latOffsets[[latIdx]] + lonIdx;
+        v2 = latOffsets[[latIdx]] + Mod[lonIdx, currentLat] + 1;
+        AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]];
+        If[latIdx < nLat,
+          nextLat = lonCounts[[latIdx + 1]];
+          v1Lon = (lonIdx - 1) / currentLat;
+          closestJ = Clip[Round[v1Lon * nextLat] + 1, {1, nextLat}];
+          v2 = latOffsets[[latIdx + 1]] + closestJ;
+          AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+        ],
+        {lonIdx, currentLat}
+      ],
+      {latIdx, nLat}
+    ]
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords2D,
+    "VertexCoordinates3D" -> coords3D,
+    "Topology" -> "Sphere",
+    "Resolution" -> resolution,
+    "Radius" -> radius,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGKleinBottle - Klein bottle topology (theta wraps with z-flip) *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGKleinBottle] = Join[$ICCommonOptions, {
+  "Radius" -> 1.0,
+  "RandomizeDirections" -> True
+}];
+
+HGKleinBottle[resolution_Integer, height_Integer, opts:OptionsPattern[]] := Module[
+  {radius, randomize, vertices, coords2D, edges,
+   vertexIndex, i, j, idx, theta, z, v1, v2, zFlipped, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  radius = OptionValue["Radius"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  vertexIndex = Association[];
+  coords2D = Association[];
+  idx = 1;
+  Do[
+    theta = (i - 1) * 2 Pi / resolution;
+    z = (j - 1) * 1.0;
+    vertexIndex[{i, j}] = idx;
+    coords2D[idx] = {radius * theta, z};
+    idx++,
+    {i, resolution}, {j, height}
+  ];
+
+  vertices = Range[resolution * height];
+
+  edges = {};
+  Do[
+    v1 = vertexIndex[{i, j}];
+    If[i < resolution,
+      v2 = vertexIndex[{i + 1, j}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[i == resolution,
+      zFlipped = height - j + 1;
+      v2 = vertexIndex[{1, zFlipped}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[j < height,
+      v2 = vertexIndex[{i, j + 1}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ],
+    {i, resolution}, {j, height}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords2D,
+    "Topology" -> "KleinBottle",
+    "Resolution" -> resolution,
+    "Height" -> height,
+    "Radius" -> radius,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGMobiusStrip - Mobius strip (theta wraps with z-flip, finite width) *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGMobiusStrip] = Join[$ICCommonOptions, {
+  "Radius" -> 2.0,
+  "RandomizeDirections" -> True
+}];
+
+HGMobiusStrip[resolution_Integer, width_Integer, opts:OptionsPattern[]] := Module[
+  {radius, randomize, vertices, coords2D, coords3D, edges,
+   vertexIndex, i, j, idx, theta, w, v1, v2, wFlipped, halfTwist, seed, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  radius = OptionValue["Radius"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  vertexIndex = Association[];
+  coords2D = Association[];
+  coords3D = Association[];
+  idx = 1;
+  Do[
+    theta = (i - 1) * 2 Pi / resolution;
+    w = (j - 1) / (width - 1) - 0.5;
+    vertexIndex[{i, j}] = idx;
+    coords2D[idx] = {radius * theta, w * radius};
+    halfTwist = theta / 2;
+    coords3D[idx] = {
+      (radius + w * Cos[halfTwist]) * Cos[theta],
+      (radius + w * Cos[halfTwist]) * Sin[theta],
+      w * Sin[halfTwist]
+    };
+    idx++,
+    {i, resolution}, {j, width}
+  ];
+
+  vertices = Range[resolution * width];
+
+  edges = {};
+  Do[
+    v1 = vertexIndex[{i, j}];
+    If[i < resolution,
+      v2 = vertexIndex[{i + 1, j}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[i == resolution,
+      wFlipped = width - j + 1;
+      v2 = vertexIndex[{1, wFlipped}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ];
+    If[j < width,
+      v2 = vertexIndex[{i, j + 1}];
+      AppendTo[edges, If[randomize && RandomReal[] < 0.5, {v2, v1}, {v1, v2}]]
+    ],
+    {i, resolution}, {j, width}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords2D,
+    "VertexCoordinates3D" -> coords3D,
+    "Topology" -> "MobiusStrip",
+    "Resolution" -> resolution,
+    "Width" -> width,
+    "Radius" -> radius,
+    "VertexCount" -> Length[vertices],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGMinkowskiSprinkling - Causal set by Minkowski sprinkling *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGMinkowskiSprinkling] = Join[$ICCommonOptions, {
+  "SpatialDim" -> 2,
+  "TimeExtent" -> 10.0,
+  "SpatialExtent" -> 10.0,
+  "LightconeAngle" -> 1.0,
+  "AlexandrovCutoff" -> 5.0,
+  "TransitivityReduction" -> True,
+  "MaxEdgesPerVertex" -> 50
+}];
+
+HGMinkowskiSprinkling[n_Integer, opts:OptionsPattern[]] := Module[
+  {spatialDim, timeExtent, spatialExtent, lightcone, alexandrov,
+   transitivity, maxEdges, seed, points, edges, coords2D,
+   i, j, dt, dx2, tau2, causalPairs, directLinks, reduced,
+   hasIntermediate, k, m, dimensionEstimate, nPairs, nRelated, r, result},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  spatialDim = OptionValue["SpatialDim"];
+  timeExtent = OptionValue["TimeExtent"];
+  spatialExtent = OptionValue["SpatialExtent"];
+  lightcone = OptionValue["LightconeAngle"];
+  alexandrov = OptionValue["AlexandrovCutoff"];
+  transitivity = OptionValue["TransitivityReduction"];
+  maxEdges = OptionValue["MaxEdgesPerVertex"];
+
+  (* Generate random spacetime points *)
+  points = Table[
+    Prepend[
+      RandomReal[{-spatialExtent/2, spatialExtent/2}, spatialDim],
+      RandomReal[{0, timeExtent}]  (* Time coordinate first *)
+    ],
+    {n}
+  ];
+
+  (* Sort by time *)
+  points = SortBy[points, First];
+
+  (* Build causal edges *)
+  (* Point a precedes b if: t_b > t_a AND |x_b - x_a| < c * (t_b - t_a) *)
+  causalPairs = {};
+  Do[
+    Do[
+      dt = points[[j, 1]] - points[[i, 1]];
+      If[dt > 0,  (* j is in future of i *)
+        dx2 = Total[(points[[j, 2 ;; spatialDim + 1]] - points[[i, 2 ;; spatialDim + 1]])^2];
+        If[dx2 < lightcone^2 * dt^2,  (* Inside lightcone *)
+          tau2 = dt^2 - dx2 / lightcone^2;  (* Proper time squared *)
+          If[tau2 <= alexandrov^2,  (* Within Alexandrov interval *)
+            AppendTo[causalPairs, {i, j}]
+          ]
+        ]
+      ],
+      {j, i + 1, n}
+    ],
+    {i, n - 1}
+  ];
+
+  (* Transitivity reduction *)
+  If[transitivity && Length[causalPairs] > 0,
+    (* Build adjacency list *)
+    directLinks = Table[{}, {n}];
+    Do[
+      AppendTo[directLinks[[pair[[1]]]], pair[[2]]],
+      {pair, causalPairs}
+    ];
+
+    (* Remove redundant edges *)
+    Do[
+      reduced = {};
+      Do[
+        hasIntermediate = False;
+        Do[
+          If[k != j && MemberQ[directLinks[[k]], j],
+            hasIntermediate = True;
+            Break[]
+          ],
+          {k, directLinks[[i]]}
+        ];
+        If[!hasIntermediate,
+          AppendTo[reduced, j]
+        ],
+        {j, directLinks[[i]]}
+      ];
+      directLinks[[i]] = reduced,
+      {i, n}
+    ];
+
+    (* Rebuild edge list *)
+    causalPairs = Flatten[Table[{i, #} & /@ directLinks[[i]], {i, n}], 1]
+  ];
+
+  (* Limit edges per vertex *)
+  If[maxEdges > 0,
+    directLinks = Table[{}, {n}];
+    Do[
+      AppendTo[directLinks[[pair[[1]]]], pair[[2]]],
+      {pair, causalPairs}
+    ];
+    causalPairs = Flatten[Table[
+      {i, #} & /@ Take[directLinks[[i]], UpTo[maxEdges]],
+      {i, n}
+    ], 1]
+  ];
+
+  edges = causalPairs;
+
+  (* 2D coordinates: use (x, t) for visualization *)
+  coords2D = Association[Table[
+    i -> {points[[i, 2]], points[[i, 1]]},  (* x, t *)
+    {i, n}
+  ]];
+
+  (* Dimension estimate (Myrheim-Meyer) *)
+  nPairs = 0;
+  nRelated = 0;
+  Do[
+    Do[
+      If[i != j,
+        nPairs++;
+        If[MemberQ[edges, {Min[i, j], Max[i, j]}] ||
+           MemberQ[edges, {i, j}] || MemberQ[edges, {j, i}],
+          nRelated++
+        ]
+      ],
+      {j, i + 1, Min[i + 100, n]}  (* Sample nearby pairs *)
+    ],
+    {i, Min[n - 1, 100]}
+  ];
+  r = If[nPairs > 0, N[nRelated / nPairs], 0];
+  (* Approximate: d/2^d = r, solve for d *)
+  dimensionEstimate = If[r > 0.001 && r < 0.9,
+    2.0,  (* Default for typical sprinkling *)
+    spatialDim + 1  (* Fallback to expected dimension *)
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "SpacetimePoints" -> points,
+    "VertexCoordinates" -> coords2D,
+    "Topology" -> "Minkowski",
+    "SpatialDim" -> spatialDim,
+    "TimeExtent" -> timeExtent,
+    "SpatialExtent" -> spatialExtent,
+    "DimensionEstimate" -> dimensionEstimate,
+    "VertexCount" -> n,
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGBrillLindquist - Brill-Lindquist curved spacetime around black holes *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGBrillLindquist] = Join[$ICCommonOptions, {
+  "BoxX" -> {-15.0, 15.0},
+  "BoxY" -> {-15.0, 15.0},
+  "EdgeThreshold" -> 2.0,
+  "RandomizeDirections" -> True
+}];
+
+HGBrillLindquist[n_Integer, {mass1_, mass2_}, separation_, opts:OptionsPattern[]] := Module[
+  {boxX, boxY, edgeThreshold, seed, randomize, result,
+   bh1Center, bh2Center, bh1Radius, bh2Radius,
+   insideHorizon, conformalFactor, volumeElement,
+   points, coords, edges, maxVol, attempts, maxAttempts,
+   pt, vol, i, j, dist, mid, v1, v2},
+
+  boxX = OptionValue["BoxX"];
+  boxY = OptionValue["BoxY"];
+  edgeThreshold = OptionValue["EdgeThreshold"];
+  seed = OptionValue["RandomSeed"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  (* Black hole positions and horizon radii *)
+  bh1Center = {separation / 2, 0};
+  bh2Center = {-separation / 2, 0};
+  bh1Radius = mass1 / 2;
+  bh2Radius = mass2 / 2;
+
+  (* Check if point is inside either horizon *)
+  insideHorizon[{x_, y_}] :=
+    Norm[{x, y} - bh1Center] < bh1Radius || Norm[{x, y} - bh2Center] < bh2Radius;
+
+  (* Brill-Lindquist conformal factor: psi = 1 + m1/(2*r1) + m2/(2*r2) *)
+  conformalFactor[{x_, y_}] := Module[{r1, r2},
+    r1 = Max[Norm[{x, y} - bh1Center], 0.001];
+    r2 = Max[Norm[{x, y} - bh2Center], 0.001];
+    1 + mass1 / (2 r1) + mass2 / (2 r2)
+  ];
+
+  (* Volume element is psi^4 *)
+  volumeElement[pt_] := conformalFactor[pt]^4;
+
+  (* Maximum volume element for rejection sampling *)
+  maxVol = 100.0;
+
+  (* Rejection sampling *)
+  points = {};
+  attempts = 0;
+  maxAttempts = n * 1000;
+
+  While[Length[points] < n && attempts < maxAttempts,
+    attempts++;
+    pt = {
+      RandomReal[boxX],
+      RandomReal[boxY]
+    };
+
+    (* Reject if inside horizon *)
+    If[insideHorizon[pt], Continue[]];
+
+    (* Accept with probability proportional to volume element *)
+    vol = volumeElement[pt];
+    If[RandomReal[] < vol / maxVol,
+      AppendTo[points, pt]
+    ]
+  ];
+
+  (* Build coordinate association *)
+  coords = Association[Table[i -> points[[i]], {i, Length[points]}]];
+
+  (* Build edges *)
+  edges = {};
+  Do[
+    Do[
+      dist = Norm[points[[i]] - points[[j]]];
+      If[dist < edgeThreshold,
+        mid = (points[[i]] + points[[j]]) / 2;
+        If[!insideHorizon[mid],
+          AppendTo[edges,
+            If[randomize && RandomReal[] < 0.5, {j, i}, {i, j}]
+          ]
+        ]
+      ],
+      {j, i + 1, Length[points]}
+    ],
+    {i, Length[points] - 1}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords,
+    "Topology" -> "BrillLindquist",
+    "Mass1" -> mass1,
+    "Mass2" -> mass2,
+    "Separation" -> separation,
+    "HorizonCenters" -> {bh1Center, bh2Center},
+    "HorizonRadii" -> {bh1Radius, bh2Radius},
+    "VertexCount" -> Length[points],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGPoissonDisk - Poisson disk sampling with minimum separation *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGPoissonDisk] = Join[$ICCommonOptions, {
+  "BoxX" -> {0, 10},
+  "BoxY" -> {0, 10},
+  "EdgeThreshold" -> Automatic,
+  "RandomizeDirections" -> True
+}];
+
+HGPoissonDisk[n_Integer, minDistance_, opts:OptionsPattern[]] := Module[
+  {boxX, boxY, edgeThreshold, seed, randomize, result,
+   points, coords, edges, attempts, maxAttempts,
+   candidate, valid, i, j, dist},
+
+  boxX = OptionValue["BoxX"];
+  boxY = OptionValue["BoxY"];
+  edgeThreshold = OptionValue["EdgeThreshold"];
+  seed = OptionValue["RandomSeed"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  (* Auto edge threshold *)
+  If[edgeThreshold === Automatic,
+    edgeThreshold = minDistance * 2.0
+  ];
+
+  (* Dart-throwing Poisson disk sampling *)
+  points = {};
+  attempts = 0;
+  maxAttempts = n * 100;
+
+  While[Length[points] < n && attempts < maxAttempts,
+    attempts++;
+    candidate = {
+      RandomReal[boxX],
+      RandomReal[boxY]
+    };
+
+    (* Check minimum distance to all existing points *)
+    valid = True;
+    Do[
+      If[Norm[candidate - points[[i]]] < minDistance,
+        valid = False;
+        Break[]
+      ],
+      {i, Length[points]}
+    ];
+
+    If[valid,
+      AppendTo[points, candidate]
+    ]
+  ];
+
+  (* Build coordinate association *)
+  coords = Association[Table[i -> points[[i]], {i, Length[points]}]];
+
+  (* Build edges *)
+  edges = {};
+  Do[
+    Do[
+      dist = Norm[points[[i]] - points[[j]]];
+      If[dist < edgeThreshold,
+        AppendTo[edges,
+          If[randomize && RandomReal[] < 0.5, {j, i}, {i, j}]
+        ]
+      ],
+      {j, i + 1, Length[points]}
+    ],
+    {i, Length[points] - 1}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords,
+    "Sampling" -> "PoissonDisk",
+    "MinDistance" -> minDistance,
+    "EdgeThreshold" -> edgeThreshold,
+    "VertexCount" -> Length[points],
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
+
+(* ---------------------------------------------------------------------------- *)
+(* HGUniformRandom - Uniform random point cloud *)
+(* ---------------------------------------------------------------------------- *)
+
+Options[HGUniformRandom] = Join[$ICCommonOptions, {
+  "BoxX" -> {0, 10},
+  "BoxY" -> {0, 10},
+  "EdgeThreshold" -> Automatic,
+  "RandomizeDirections" -> True
+}];
+
+HGUniformRandom[n_Integer, opts:OptionsPattern[]] := Module[
+  {boxX, boxY, edgeThreshold, seed, randomize, result,
+   points, coords, edges, i, j, dist, width, height, area, spacing},
+
+  seed = OptionValue["RandomSeed"];
+  If[seed =!= Automatic, SeedRandom[seed]];
+
+  boxX = OptionValue["BoxX"];
+  boxY = OptionValue["BoxY"];
+  edgeThreshold = OptionValue["EdgeThreshold"];
+  randomize = OptionValue["RandomizeDirections"];
+
+  (* Auto edge threshold based on expected spacing *)
+  If[edgeThreshold === Automatic,
+    width = boxX[[2]] - boxX[[1]];
+    height = boxY[[2]] - boxY[[1]];
+    area = width * height;
+    spacing = Sqrt[area / n];
+    edgeThreshold = spacing * 1.5
+  ];
+
+  (* Generate random points *)
+  points = Table[{RandomReal[boxX], RandomReal[boxY]}, {n}];
+
+  (* Build coordinate association *)
+  coords = Association[Table[i -> points[[i]], {i, n}]];
+
+  (* Build edges *)
+  edges = {};
+  Do[
+    Do[
+      dist = Norm[points[[i]] - points[[j]]];
+      If[dist < edgeThreshold,
+        AppendTo[edges,
+          If[randomize && RandomReal[] < 0.5, {j, i}, {i, j}]
+        ]
+      ],
+      {j, i + 1, n}
+    ],
+    {i, n - 1}
+  ];
+
+  result = <|
+    "Edges" -> edges,
+    "VertexCoordinates" -> coords,
+    "Sampling" -> "Uniform",
+    "EdgeThreshold" -> edgeThreshold,
+    "VertexCount" -> n,
+    "EdgeCount" -> Length[edges]
+  |>;
+
+  icFinalizeResult[result, OptionValue["Graph"]]
+]
 
 End[]
 EndPackage[]
