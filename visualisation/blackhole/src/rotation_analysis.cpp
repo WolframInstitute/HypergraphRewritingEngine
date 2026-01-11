@@ -32,22 +32,33 @@ float inverse_square_velocity(int radius, float central_mass) {
 // Center Detection
 // =============================================================================
 
+// Find the graph centroid: vertex that minimizes sum of distances to all others
+// This gives a vertex that is geometrically "central" in the graph
 VertexId find_center_vertex(
     const SimpleGraph& graph,
-    const std::vector<float>& vertex_dimensions
+    const std::vector<float>& /* vertex_dimensions */  // unused, kept for API compat
 ) {
     const auto& verts = graph.vertices();
-    if (verts.empty() || vertex_dimensions.empty()) {
+    if (verts.empty()) {
         return 0;
+    }
+    if (verts.size() == 1) {
+        return verts[0];
     }
 
     VertexId center = verts[0];
-    float max_dim = -1.0f;
+    int64_t min_total_distance = std::numeric_limits<int64_t>::max();
 
-    for (size_t i = 0; i < verts.size() && i < vertex_dimensions.size(); ++i) {
-        if (vertex_dimensions[i] > max_dim) {
-            max_dim = vertex_dimensions[i];
-            center = verts[i];
+    for (const auto& v : verts) {
+        auto distances = graph.distances_from(v);
+        int64_t total = 0;
+        for (int d : distances) {
+            // Use large value for unreachable vertices
+            total += (d < 0) ? static_cast<int64_t>(verts.size()) : static_cast<int64_t>(d);
+        }
+        if (total < min_total_distance) {
+            min_total_distance = total;
+            center = v;
         }
     }
 

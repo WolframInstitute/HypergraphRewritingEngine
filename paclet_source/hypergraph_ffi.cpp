@@ -251,6 +251,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool compute_dimensions = false;
         int dim_min_radius = 1;
         int dim_max_radius = 5;
+        bool dimension_per_vertex = false;    // Include per-vertex dimension data in PerState
+        bool dimension_timestep_aggregation = false;  // Include PerTimestep aggregation section
 
         // Geodesic analysis options - trace test particles through the graph
         bool compute_geodesics = false;
@@ -270,6 +272,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         float degree_percentile = 0.95f;
         bool compute_topological_charge = false;
         float charge_radius = 3.0f;
+        bool charge_per_vertex = false;    // Include per-vertex charge data in PerState
+        bool charge_timestep_aggregation = false;  // Include PerTimestep aggregation section
 
         // Curvature analysis options - Ollivier-Ricci, Wolfram-Ricci, and dimension gradient
         bool compute_curvature = false;
@@ -279,6 +283,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool curvature_dimension_gradient = true;
         float curvature_ricci_alpha = 0.5f;  // Laziness parameter for Ollivier-Ricci
         int curvature_gradient_radius = 2;
+        bool curvature_per_vertex = false;    // Include per-vertex curvature data in PerState
+        bool curvature_timestep_aggregation = false;  // Include PerTimestep aggregation section
 
         // Entropy analysis options - graph entropy and information measures
         bool compute_entropy = false;
@@ -286,22 +292,28 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool entropy_mutual_info = true;
         bool entropy_fisher_info = true;
         int entropy_neighborhood_radius = 2;
+        bool entropy_timestep_aggregation = false;  // Include PerTimestep aggregation section
 
         // Rotation curve analysis options - orbital velocity vs radius
         bool compute_rotation_curve = false;
         int rotation_min_radius = 2;
         int rotation_max_radius = 20;
         int rotation_orbits_per_radius = 4;
+        bool rotation_timestep_aggregation = false;  // Include PerTimestep aggregation section
 
         // Hilbert space analysis options - state bitvector inner products
         bool compute_hilbert_space = false;
         int hilbert_step = -1;  // Which step to analyze (-1 = all steps)
+        std::string hilbert_scope = "Global";  // "Global", "PerTimestep", or "Both"
 
         // Branchial analysis options - distribution sharpness and branch entropy
         bool compute_branchial = false;
+        std::string branchial_scope = "Global";  // "Global", "PerTimestep", or "Both"
+        bool branchial_per_vertex = false;  // Include per-vertex sharpness data
 
         // Multispace analysis options - vertex/edge probabilities across branches
         bool compute_multispace = false;
+        std::string multispace_scope = "Global";  // "Global", "PerTimestep", or "Both"
 
         // Equilibrium analysis options - track macroscopic property stability
         bool compute_equilibrium = false;
@@ -374,6 +386,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             dim_min_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "DimensionMaxRadius") {
                             dim_max_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "DimensionPerVertex") {
+                            std::string symbol = option_parser.read<std::string>();
+                            dimension_per_vertex = (symbol == "True");
+                        } else if (option_key == "DimensionTimestepAggregation") {
+                            std::string symbol = option_parser.read<std::string>();
+                            dimension_timestep_aggregation = (symbol == "True");
                         } else if (option_key == "GeodesicSources") {
                             // List of vertex IDs for geodesic tracing ({-1} = auto-select)
                             auto sources = option_parser.read<std::vector<int64_t>>();
@@ -393,21 +411,42 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             degree_percentile = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "ChargeRadius") {
                             charge_radius = static_cast<float>(option_parser.read<double>());
+                        } else if (option_key == "ChargePerVertex") {
+                            std::string symbol = option_parser.read<std::string>();
+                            charge_per_vertex = (symbol == "True");
+                        } else if (option_key == "ChargeTimestepAggregation") {
+                            std::string symbol = option_parser.read<std::string>();
+                            charge_timestep_aggregation = (symbol == "True");
                         } else if (option_key == "CurvatureRicciAlpha") {
                             curvature_ricci_alpha = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "CurvatureGradientRadius") {
                             curvature_gradient_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "EntropyNeighborhoodRadius") {
                             entropy_neighborhood_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "EntropyTimestepAggregation") {
+                            std::string symbol = option_parser.read<std::string>();
+                            entropy_timestep_aggregation = (symbol == "True");
                         } else if (option_key == "RotationMinRadius") {
                             rotation_min_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "RotationMaxRadius") {
                             rotation_max_radius = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "RotationOrbitsPerRadius") {
                             rotation_orbits_per_radius = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "RotationTimestepAggregation") {
+                            std::string symbol = option_parser.read<std::string>();
+                            rotation_timestep_aggregation = (symbol == "True");
                         } else if (option_key == "HilbertStep") {
                             // Which step to analyze for Hilbert space (-1 = all steps)
                             hilbert_step = static_cast<int>(option_parser.read<int64_t>());
+                        } else if (option_key == "HilbertScope") {
+                            hilbert_scope = option_parser.read<std::string>();
+                        } else if (option_key == "BranchialScope") {
+                            branchial_scope = option_parser.read<std::string>();
+                        } else if (option_key == "BranchialPerVertex") {
+                            std::string symbol = option_parser.read<std::string>();
+                            branchial_per_vertex = (symbol == "True");
+                        } else if (option_key == "MultispaceScope") {
+                            multispace_scope = option_parser.read<std::string>();
                         } else if (option_key == "EquilibriumWindow") {
                             // Sliding window size for equilibrium stability computation
                             equilibrium_window = static_cast<int>(option_parser.read<int64_t>());
@@ -434,6 +473,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             hash_strategy = option_parser.read<std::string>();
                         } else if (option_key == "CurvatureMethod") {
                             curvature_method = option_parser.read<std::string>();
+                        } else if (option_key == "CurvaturePerVertex") {
+                            std::string symbol = option_parser.read<std::string>();
+                            curvature_per_vertex = (symbol == "True");
+                        } else if (option_key == "CurvatureTimestepAggregation") {
+                            std::string symbol = option_parser.read<std::string>();
+                            curvature_timestep_aggregation = (symbol == "True");
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
                             branchial_step = static_cast<int>(option_parser.read<int64_t>());
@@ -979,6 +1024,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, bh::DimensionStats> state_dimension_stats;
         std::unordered_map<uint32_t, std::vector<float>> state_vertex_dimensions;
         std::unordered_map<uint32_t, std::vector<bh::VertexId>> state_vertex_ids;  // Vertex IDs for dimension lookup
+        std::unordered_map<uint32_t, uint32_t> state_to_step;  // State ID -> timestep for aggregation
         float global_dim_min = std::numeric_limits<float>::max();
         float global_dim_max = std::numeric_limits<float>::lowest();
 
@@ -1017,6 +1063,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     state_dimension_stats[sid] = stats;
                     state_vertex_dimensions[sid] = std::move(per_vertex);
                     state_vertex_ids[sid] = graph.vertices();  // Store vertex IDs for serialization
+                    state_to_step[sid] = state.step;  // Store timestep for aggregation
 
                     // Track global range
                     if (stats.count > 0) {
@@ -1146,6 +1193,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         };
         std::unordered_map<uint32_t, std::vector<FFIDetectedDefect>> state_defects;
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_charges;
+        std::unordered_map<uint32_t, uint32_t> topological_state_to_step;  // State ID -> timestep for aggregation
 
         if (detect_particles) {
 #ifdef HAVE_WSTP
@@ -1208,6 +1256,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     }
                     state_defects[sid] = std::move(defects);
                     state_charges[sid] = particle_result.charge_map;
+                    topological_state_to_step[sid] = state.step;  // Store timestep for aggregation
                 }
             }
 
@@ -1254,6 +1303,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_wolfram_ricci;
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_dimension_gradient;
         std::unordered_map<uint32_t, float> state_mean_curvature;
+        std::unordered_map<uint32_t, uint32_t> curvature_state_to_step;  // State ID -> timestep for aggregation
 
         if (compute_curvature) {
 #ifdef HAVE_WSTP
@@ -1318,6 +1368,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     } else {
                         state_mean_curvature[sid] = 0.0f;
                     }
+                    curvature_state_to_step[sid] = state.step;  // Store timestep for aggregation
                 }
             }
 
@@ -1339,6 +1390,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_local_entropy;
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_mutual_info;
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_fisher_info;
+        std::unordered_map<uint32_t, uint32_t> entropy_state_to_step;  // State ID -> timestep for aggregation
 
         if (compute_entropy) {
 #ifdef HAVE_WSTP
@@ -1394,6 +1446,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     if (entropy_fisher_info) {
                         state_fisher_info[sid] = ent_result.fisher_info_map;
                     }
+                    entropy_state_to_step[sid] = state.step;  // Store timestep for aggregation
                 }
             }
 
@@ -1412,6 +1465,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // ==========================================================================
         std::unordered_map<uint32_t, bh::RotationCurveResult> state_rotation_curves;
         std::unordered_map<uint32_t, std::vector<bh::OrbitalPath>> state_orbital_paths;
+        std::unordered_map<uint32_t, uint32_t> rotation_state_to_step;  // For timestep aggregation
 
         if (compute_rotation_curve) {
 #ifdef HAVE_WSTP
@@ -1474,6 +1528,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     state_orbital_paths[sid] = std::move(orbits);
 
                     state_rotation_curves[sid] = std::move(rot_result);
+                    rotation_state_to_step[sid] = state.step;  // Track timestep for aggregation
                 }
             }
 
@@ -1492,19 +1547,31 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Build shared BranchState structures once if any of these are needed
         // ==========================================================================
         bh::HilbertSpaceAnalysis hilbert_result;
+        std::map<uint32_t, bh::HilbertSpaceAnalysis> hilbert_per_timestep;  // For per-timestep scope
         bh::BranchialAnalysisResult branchial_result;
+        std::map<uint32_t, bh::BranchialAnalysisResult> branchial_per_timestep;  // For per-timestep scope
         bh::EquilibriumAnalysisResult equilibrium_result;
         bool has_hilbert_data = false;
         bool has_branchial_data = false;
         bool has_multispace_data = false;
         bool has_equilibrium_data = false;
 
-        // Shared vertex/edge probability data for multispace
+        // Shared vertex/edge probability data for multispace (global)
         std::unordered_map<bh::VertexId, float> multispace_vertex_probs;
         std::map<std::pair<uint32_t, uint32_t>, float> multispace_edge_probs;
         float multispace_mean_vertex_prob = 0.0f;
         float multispace_mean_edge_prob = 0.0f;
         float multispace_total_entropy = 0.0f;
+
+        // Per-timestep multispace data
+        struct MultispaceTimestepData {
+            std::unordered_map<bh::VertexId, float> vertex_probs;
+            std::map<std::pair<uint32_t, uint32_t>, float> edge_probs;
+            float mean_vertex_prob = 0.0f;
+            float mean_edge_prob = 0.0f;
+            float total_entropy = 0.0f;
+        };
+        std::map<uint32_t, MultispaceTimestepData> multispace_per_timestep;
 
         if (compute_hilbert_space || compute_branchial || compute_multispace || compute_equilibrium) {
 #ifdef HAVE_WSTP
@@ -1639,6 +1706,101 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             }
                         }
                     }
+
+                    // Per-timestep Hilbert analysis (if scope is "PerTimestep" or "Both")
+                    bool include_per_timestep_hilbert = (hilbert_scope == "PerTimestep" || hilbert_scope == "Both");
+                    if (include_per_timestep_hilbert) {
+#ifdef HAVE_WSTP
+                        if (show_progress) {
+                            print_to_frontend(libData, "HGEvolve: Computing per-timestep Hilbert space analysis...");
+                        }
+#endif
+                        // Get unique timesteps from branchial graph
+                        for (const auto& [step, state_ids] : branchial_graph.step_to_states) {
+                            if (state_ids.empty()) continue;
+
+                            // Analyze Hilbert space for this timestep
+                            auto step_result = bh::analyze_hilbert_space(branchial_graph, step);
+                            if (step_result.num_states == 0) continue;
+
+                            // Compute edge MI for this timestep's states
+                            if (step_result.num_states > 1) {
+                                size_t n = step_result.num_states;
+                                step_result.edge_mutual_information_matrix.resize(n, std::vector<float>(n, 0.0f));
+
+                                // Build edge universe for states at this timestep
+                                std::unordered_set<hypergraph::EdgeId> step_edge_universe;
+                                for (uint32_t sid : step_result.state_indices) {
+                                    const hypergraph::State& state = hg.get_state(sid);
+                                    if (state.id != hypergraph::INVALID_ID) {
+                                        state.edges.for_each([&](hypergraph::EdgeId eid) {
+                                            step_edge_universe.insert(eid);
+                                        });
+                                    }
+                                }
+
+                                float universe_size = static_cast<float>(step_edge_universe.size());
+                                if (universe_size > 0) {
+                                    float sum_edge_mi = 0.0f;
+                                    int edge_mi_count = 0;
+
+                                    for (size_t i = 0; i < n; ++i) {
+                                        const hypergraph::State& state_a = hg.get_state(step_result.state_indices[i]);
+                                        if (state_a.id == hypergraph::INVALID_ID) continue;
+
+                                        for (size_t j = i; j < n; ++j) {
+                                            const hypergraph::State& state_b = hg.get_state(step_result.state_indices[j]);
+                                            if (state_b.id == hypergraph::INVALID_ID) continue;
+
+                                            // Count joint occurrences over edge universe
+                                            int n00 = 0, n01 = 0, n10 = 0, n11 = 0;
+                                            for (hypergraph::EdgeId eid : step_edge_universe) {
+                                                bool in_a = state_a.edges.contains(eid);
+                                                bool in_b = state_b.edges.contains(eid);
+                                                if (!in_a && !in_b) ++n00;
+                                                else if (!in_a && in_b) ++n01;
+                                                else if (in_a && !in_b) ++n10;
+                                                else ++n11;
+                                            }
+
+                                            // Compute MI
+                                            float p00 = n00 / universe_size, p01 = n01 / universe_size;
+                                            float p10 = n10 / universe_size, p11 = n11 / universe_size;
+                                            float p_a0 = p00 + p01, p_a1 = p10 + p11;
+                                            float p_b0 = p00 + p10, p_b1 = p01 + p11;
+
+                                            float mi = 0.0f;
+                                            auto add_term = [&](float pj, float px, float py) {
+                                                if (pj > 0 && px > 0 && py > 0) mi += pj * std::log2(pj / (px * py));
+                                            };
+                                            add_term(p00, p_a0, p_b0);
+                                            add_term(p01, p_a0, p_b1);
+                                            add_term(p10, p_a1, p_b0);
+                                            add_term(p11, p_a1, p_b1);
+                                            mi = std::max(0.0f, mi);
+
+                                            step_result.edge_mutual_information_matrix[i][j] = mi;
+                                            step_result.edge_mutual_information_matrix[j][i] = mi;
+
+                                            if (i != j) {
+                                                sum_edge_mi += mi;
+                                                ++edge_mi_count;
+                                                if (mi > step_result.max_edge_mutual_information) {
+                                                    step_result.max_edge_mutual_information = mi;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (edge_mi_count > 0) {
+                                        step_result.mean_edge_mutual_information = sum_edge_mi / edge_mi_count;
+                                    }
+                                }
+                            }
+
+                            hilbert_per_timestep[step] = std::move(step_result);
+                        }
+                    }
                 }
 
                 // Branchial Analysis (distribution sharpness, branch entropy)
@@ -1650,6 +1812,30 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 #endif
                     branchial_result = bh::analyze_branchial(branch_states);
                     has_branchial_data = (branchial_result.num_unique_vertices > 0);
+
+                    // Per-timestep branchial analysis (if scope is "PerTimestep" or "Both")
+                    bool include_per_timestep_branchial = (branchial_scope == "PerTimestep" || branchial_scope == "Both");
+                    if (include_per_timestep_branchial) {
+#ifdef HAVE_WSTP
+                        if (show_progress) {
+                            print_to_frontend(libData, "HGEvolve: Computing per-timestep branchial analysis...");
+                        }
+#endif
+                        // Group branch_states by timestep
+                        std::unordered_map<uint32_t, std::vector<bh::BranchState>> states_by_step;
+                        for (const auto& bs : branch_states) {
+                            states_by_step[bs.step].push_back(bs);
+                        }
+
+                        // Analyze each timestep separately
+                        for (const auto& [step, step_states] : states_by_step) {
+                            if (step_states.empty()) continue;
+                            auto step_result = bh::analyze_branchial(step_states);
+                            if (step_result.num_unique_vertices > 0) {
+                                branchial_per_timestep[step] = std::move(step_result);
+                            }
+                        }
+                    }
                 }
 
                 // Multispace Analysis (vertex/edge probabilities across branches)
@@ -1700,6 +1886,67 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                     multispace_total_entropy = vertex_entropy_sum;
                     has_multispace_data = !multispace_vertex_probs.empty();
+
+                    // Per-timestep multispace analysis (if scope is "PerTimestep" or "Both")
+                    bool include_per_timestep_multispace = (multispace_scope == "PerTimestep" || multispace_scope == "Both");
+                    if (include_per_timestep_multispace) {
+#ifdef HAVE_WSTP
+                        if (show_progress) {
+                            print_to_frontend(libData, "HGEvolve: Computing per-timestep multispace analysis...");
+                        }
+#endif
+                        // Group branch_states by timestep
+                        std::unordered_map<uint32_t, std::vector<const bh::BranchState*>> states_by_step;
+                        for (const auto& bs : branch_states) {
+                            states_by_step[bs.step].push_back(&bs);
+                        }
+
+                        // Compute multispace for each timestep separately
+                        for (const auto& [step, step_states] : states_by_step) {
+                            if (step_states.empty()) continue;
+
+                            MultispaceTimestepData step_data;
+                            std::unordered_map<bh::VertexId, int> step_vertex_counts;
+                            std::map<std::pair<uint32_t, uint32_t>, int> step_edge_counts;
+                            int step_total = static_cast<int>(step_states.size());
+
+                            for (const auto* bs : step_states) {
+                                for (bh::VertexId v : bs->vertices) {
+                                    step_vertex_counts[v]++;
+                                }
+                                for (const auto& e : bs->edges) {
+                                    auto key = std::make_pair(std::min(e.v1, e.v2), std::max(e.v1, e.v2));
+                                    step_edge_counts[key]++;
+                                }
+                            }
+
+                            // Convert counts to probabilities
+                            float step_entropy_sum = 0.0f;
+                            for (const auto& [v, count] : step_vertex_counts) {
+                                float prob = static_cast<float>(count) / step_total;
+                                step_data.vertex_probs[v] = prob;
+                                step_data.mean_vertex_prob += prob;
+                                if (prob > 0 && prob < 1) {
+                                    step_entropy_sum -= prob * std::log2(prob);
+                                }
+                            }
+                            if (!step_vertex_counts.empty()) {
+                                step_data.mean_vertex_prob /= step_vertex_counts.size();
+                            }
+
+                            for (const auto& [e, count] : step_edge_counts) {
+                                float prob = static_cast<float>(count) / step_total;
+                                step_data.edge_probs[e] = prob;
+                                step_data.mean_edge_prob += prob;
+                            }
+                            if (!step_edge_counts.empty()) {
+                                step_data.mean_edge_prob /= step_edge_counts.size();
+                            }
+
+                            step_data.total_entropy = step_entropy_sum;
+                            multispace_per_timestep[step] = std::move(step_data);
+                        }
+                    }
                 }
             }
 
@@ -2654,11 +2901,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"), wxf::WXFValue(state_bitvectors)));
         }
 
-        // DimensionData -> Association["PerState" -> {...}, "GlobalRange" -> {min, max}]
+        // DimensionData -> Association["PerState" -> {...}, "PerTimestep" -> {...}, "Global" -> {...}]
         if (compute_dimensions && !state_dimension_stats.empty()) {
             wxf::WXFValueAssociation dim_data;
 
-            // Per-state stats and per-vertex dimensions: state_id -> {Mean, Min, Max, StdDev, PerVertex -> <|v->d|>}
+            // Per-state stats: state_id -> {Mean, Min, Max, StdDev, Vertices -> <|v->d|> (if enabled)}
             wxf::WXFValueAssociation per_state;
             for (const auto& [sid, stats] : state_dimension_stats) {
                 wxf::WXFValueAssociation stats_assoc;
@@ -2667,21 +2914,23 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 stats_assoc.push_back({wxf::WXFValue("Max"), wxf::WXFValue(static_cast<double>(stats.max))});
                 stats_assoc.push_back({wxf::WXFValue("StdDev"), wxf::WXFValue(static_cast<double>(stats.stddev))});
 
-                // Add per-vertex dimensions if available
-                auto vids_it = state_vertex_ids.find(sid);
-                auto dims_it = state_vertex_dimensions.find(sid);
-                if (vids_it != state_vertex_ids.end() && dims_it != state_vertex_dimensions.end()) {
-                    const auto& vids = vids_it->second;
-                    const auto& dims = dims_it->second;
-                    if (vids.size() == dims.size()) {
-                        wxf::WXFValueAssociation per_vertex;
-                        for (size_t i = 0; i < vids.size(); ++i) {
-                            if (dims[i] > 0) {
-                                per_vertex.push_back({wxf::WXFValue(static_cast<int64_t>(vids[i])),
-                                                     wxf::WXFValue(static_cast<double>(dims[i]))});
+                // Add per-vertex dimensions only if dimension_per_vertex is enabled
+                if (dimension_per_vertex) {
+                    auto vids_it = state_vertex_ids.find(sid);
+                    auto dims_it = state_vertex_dimensions.find(sid);
+                    if (vids_it != state_vertex_ids.end() && dims_it != state_vertex_dimensions.end()) {
+                        const auto& vids = vids_it->second;
+                        const auto& dims = dims_it->second;
+                        if (vids.size() == dims.size()) {
+                            wxf::WXFValueAssociation per_vertex;
+                            for (size_t i = 0; i < vids.size(); ++i) {
+                                if (dims[i] > 0) {
+                                    per_vertex.push_back({wxf::WXFValue(static_cast<int64_t>(vids[i])),
+                                                         wxf::WXFValue(static_cast<double>(dims[i]))});
+                                }
                             }
+                            stats_assoc.push_back({wxf::WXFValue("PerVertex"), wxf::WXFValue(per_vertex)});
                         }
-                        stats_assoc.push_back({wxf::WXFValue("PerVertex"), wxf::WXFValue(per_vertex)});
                     }
                 }
 
@@ -2689,17 +2938,125 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
             dim_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
-            // Global range for color normalization
-            wxf::WXFValueList range;
-            if (global_dim_min <= global_dim_max) {
-                range.push_back(wxf::WXFValue(static_cast<double>(global_dim_min)));
-                range.push_back(wxf::WXFValue(static_cast<double>(global_dim_max)));
-            } else {
-                // No valid data - use defaults
-                range.push_back(wxf::WXFValue(0.0));
-                range.push_back(wxf::WXFValue(3.0));
+            // PerTimestep aggregation (if enabled)
+            if (dimension_timestep_aggregation) {
+                // Group states by timestep
+                std::map<uint32_t, std::vector<uint32_t>> step_to_states;
+                for (const auto& [sid, step] : state_to_step) {
+                    step_to_states[step].push_back(sid);
+                }
+
+                wxf::WXFValueAssociation per_timestep;
+                for (const auto& [step, state_ids] : step_to_states) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Compute mean/variance of state means at this timestep
+                    double sum = 0.0, sum_sq = 0.0;
+                    size_t count = 0;
+                    for (uint32_t sid : state_ids) {
+                        auto it = state_dimension_stats.find(sid);
+                        if (it != state_dimension_stats.end() && it->second.count > 0) {
+                            sum += it->second.mean;
+                            sum_sq += it->second.mean * it->second.mean;
+                            ++count;
+                        }
+                    }
+                    if (count > 0) {
+                        double mean = sum / count;
+                        double variance = (count > 1) ? (sum_sq / count - mean * mean) : 0.0;
+                        step_data.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(mean)});
+                        step_data.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(variance)});
+                        step_data.push_back({wxf::WXFValue("StateCount"), wxf::WXFValue(static_cast<int64_t>(count))});
+
+                        // Per-vertex aggregation across states at this timestep (if enabled)
+                        if (dimension_per_vertex) {
+                            std::unordered_map<bh::VertexId, std::vector<float>> vertex_values;
+                            for (uint32_t sid : state_ids) {
+                                auto vids_it = state_vertex_ids.find(sid);
+                                auto dims_it = state_vertex_dimensions.find(sid);
+                                if (vids_it != state_vertex_ids.end() && dims_it != state_vertex_dimensions.end()) {
+                                    const auto& vids = vids_it->second;
+                                    const auto& dims = dims_it->second;
+                                    for (size_t i = 0; i < vids.size() && i < dims.size(); ++i) {
+                                        if (dims[i] > 0) {
+                                            vertex_values[vids[i]].push_back(dims[i]);
+                                        }
+                                    }
+                                }
+                            }
+
+                            wxf::WXFValueAssociation vertices;
+                            for (const auto& [vid, values] : vertex_values) {
+                                double v_sum = 0.0, v_sum_sq = 0.0;
+                                for (float v : values) {
+                                    v_sum += v;
+                                    v_sum_sq += v * v;
+                                }
+                                double v_mean = v_sum / values.size();
+                                double v_var = (values.size() > 1) ? (v_sum_sq / values.size() - v_mean * v_mean) : 0.0;
+
+                                wxf::WXFValueAssociation v_data;
+                                v_data.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(v_mean)});
+                                v_data.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(v_var)});
+                                v_data.push_back({wxf::WXFValue("Count"), wxf::WXFValue(static_cast<int64_t>(values.size()))});
+
+                                vertices.push_back({wxf::WXFValue(static_cast<int64_t>(vid)), wxf::WXFValue(v_data)});
+                            }
+                            step_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
+                        }
+                    }
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+                dim_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
             }
-            dim_data.push_back({wxf::WXFValue("GlobalRange"), wxf::WXFValue(range)});
+
+            // Global section (always present)
+            {
+                wxf::WXFValueAssociation global;
+
+                // Compute global statistics across all states
+                double sum = 0.0, sum_sq = 0.0;
+                float g_min = std::numeric_limits<float>::max();
+                float g_max = std::numeric_limits<float>::lowest();
+                size_t count = 0;
+                for (const auto& [sid, stats] : state_dimension_stats) {
+                    if (stats.count > 0) {
+                        sum += stats.mean;
+                        sum_sq += stats.mean * stats.mean;
+                        g_min = std::min(g_min, stats.min);
+                        g_max = std::max(g_max, stats.max);
+                        ++count;
+                    }
+                }
+
+                if (count > 0) {
+                    double mean = sum / count;
+                    double variance = (count > 1) ? (sum_sq / count - mean * mean) : 0.0;
+                    global.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(mean)});
+                    global.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(variance)});
+                    global.push_back({wxf::WXFValue("Min"), wxf::WXFValue(static_cast<double>(g_min))});
+                    global.push_back({wxf::WXFValue("Max"), wxf::WXFValue(static_cast<double>(g_max))});
+                } else {
+                    global.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("Min"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("Max"), wxf::WXFValue(3.0)});
+                }
+
+                // Range for color normalization
+                wxf::WXFValueList range;
+                if (global_dim_min <= global_dim_max) {
+                    range.push_back(wxf::WXFValue(static_cast<double>(global_dim_min)));
+                    range.push_back(wxf::WXFValue(static_cast<double>(global_dim_max)));
+                } else {
+                    range.push_back(wxf::WXFValue(0.0));
+                    range.push_back(wxf::WXFValue(3.0));
+                }
+                global.push_back({wxf::WXFValue("Range"), wxf::WXFValue(range)});
+
+                dim_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
 
             full_result.push_back({wxf::WXFValue("DimensionData"), wxf::WXFValue(dim_data)});
         }
@@ -2804,13 +3161,16 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             full_result.push_back({wxf::WXFValue("GeodesicData"), wxf::WXFValue(geodesic_data)});
         }
 
-        // TopologicalData -> Association["PerState" -> {...}]
-        // Each state: state_id -> {"Defects" -> [...], "Charges" -> <|vertex -> charge|>}
+        // TopologicalData -> Association["PerState" -> {...}, "PerTimestep" -> {...}, "Global" -> {...}]
+        // Each state: state_id -> {"Defects" -> [...], "Charges" -> <|vertex -> charge|> (if enabled)}
         if (detect_particles && !state_defects.empty()) {
             wxf::WXFValueAssociation topo_data;
 
             // Per-state defects
             wxf::WXFValueAssociation per_state;
+            double global_charge_sum = 0.0, global_charge_sum_sq = 0.0;
+            size_t global_charge_count = 0;
+
             for (const auto& [sid, defects] : state_defects) {
                 wxf::WXFValueAssociation state_data;
 
@@ -2841,98 +3201,274 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
                 state_data.push_back({wxf::WXFValue("Defects"), wxf::WXFValue(defect_list)});
 
-                // Vertex charges (if computed)
+                // Compute mean charge for state
                 auto charge_it = state_charges.find(sid);
                 if (charge_it != state_charges.end() && !charge_it->second.empty()) {
-                    wxf::WXFValueAssociation charges_assoc;
+                    double state_charge_sum = 0.0;
                     for (const auto& [v, charge] : charge_it->second) {
-                        charges_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
-                                                wxf::WXFValue(static_cast<double>(charge))});
+                        state_charge_sum += charge;
+                        global_charge_sum += charge;
+                        global_charge_sum_sq += charge * charge;
+                        ++global_charge_count;
                     }
-                    state_data.push_back({wxf::WXFValue("Charges"), wxf::WXFValue(charges_assoc)});
+                    double state_mean_charge = state_charge_sum / charge_it->second.size();
+                    state_data.push_back({wxf::WXFValue("MeanCharge"), wxf::WXFValue(state_mean_charge)});
+
+                    // Per-vertex charges only if charge_per_vertex is enabled
+                    if (charge_per_vertex) {
+                        wxf::WXFValueAssociation charges_assoc;
+                        for (const auto& [v, charge] : charge_it->second) {
+                            charges_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                                    wxf::WXFValue(static_cast<double>(charge))});
+                        }
+                        state_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(charges_assoc)});
+                    }
                 }
 
                 per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
             topo_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
+            // PerTimestep aggregation (if enabled)
+            if (charge_timestep_aggregation) {
+                // Group states by timestep
+                std::map<uint32_t, std::vector<uint32_t>> step_to_states;
+                for (const auto& [sid, step] : topological_state_to_step) {
+                    step_to_states[step].push_back(sid);
+                }
+
+                wxf::WXFValueAssociation per_timestep;
+                for (const auto& [step, state_ids] : step_to_states) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Aggregate charges at this timestep
+                    double sum = 0.0, sum_sq = 0.0;
+                    size_t count = 0;
+                    std::unordered_map<bh::VertexId, std::vector<float>> vertex_charges;
+
+                    for (uint32_t sid : state_ids) {
+                        auto charge_it = state_charges.find(sid);
+                        if (charge_it != state_charges.end()) {
+                            for (const auto& [v, charge] : charge_it->second) {
+                                sum += charge;
+                                sum_sq += charge * charge;
+                                ++count;
+                                if (charge_per_vertex) {
+                                    vertex_charges[v].push_back(charge);
+                                }
+                            }
+                        }
+                    }
+
+                    if (count > 0) {
+                        double mean = sum / count;
+                        double variance = (count > 1) ? (sum_sq / count - mean * mean) : 0.0;
+                        step_data.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(mean)});
+                        step_data.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(variance)});
+                        step_data.push_back({wxf::WXFValue("StateCount"), wxf::WXFValue(static_cast<int64_t>(state_ids.size()))});
+
+                        // Per-vertex aggregation (if enabled)
+                        if (charge_per_vertex && !vertex_charges.empty()) {
+                            wxf::WXFValueAssociation vertices;
+                            for (const auto& [vid, values] : vertex_charges) {
+                                double v_sum = 0.0, v_sum_sq = 0.0;
+                                for (float v : values) {
+                                    v_sum += v;
+                                    v_sum_sq += v * v;
+                                }
+                                double v_mean = v_sum / values.size();
+                                double v_var = (values.size() > 1) ? (v_sum_sq / values.size() - v_mean * v_mean) : 0.0;
+
+                                wxf::WXFValueAssociation v_data;
+                                v_data.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(v_mean)});
+                                v_data.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(v_var)});
+                                v_data.push_back({wxf::WXFValue("Count"), wxf::WXFValue(static_cast<int64_t>(values.size()))});
+
+                                vertices.push_back({wxf::WXFValue(static_cast<int64_t>(vid)), wxf::WXFValue(v_data)});
+                            }
+                            step_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
+                        }
+                    }
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+                topo_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
+            }
+
+            // Global section (always present)
+            {
+                wxf::WXFValueAssociation global;
+
+                size_t total_defects = 0;
+                for (const auto& [sid, defects] : state_defects) {
+                    total_defects += defects.size();
+                }
+                global.push_back({wxf::WXFValue("TotalDefects"), wxf::WXFValue(static_cast<int64_t>(total_defects))});
+
+                if (global_charge_count > 0) {
+                    double mean = global_charge_sum / global_charge_count;
+                    double variance = (global_charge_count > 1) ?
+                        (global_charge_sum_sq / global_charge_count - mean * mean) : 0.0;
+                    global.push_back({wxf::WXFValue("MeanCharge"), wxf::WXFValue(mean)});
+                    global.push_back({wxf::WXFValue("VarianceCharge"), wxf::WXFValue(variance)});
+                } else {
+                    global.push_back({wxf::WXFValue("MeanCharge"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("VarianceCharge"), wxf::WXFValue(0.0)});
+                }
+
+                topo_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
+
             full_result.push_back({wxf::WXFValue("TopologicalData"), wxf::WXFValue(topo_data)});
         }
 
-        // CurvatureData -> Association["PerState" -> {...}]
-        // Each state: state_id -> {"OllivierRicci" -> {...}, "WolframRicci" -> {...}, "DimensionGradient" -> {...}, "MeanCurvature" -> float}
+        // CurvatureData -> Association["PerState" -> {...}, "PerTimestep" -> {...}, "Global" -> {...}]
+        // Each state: state_id -> {"MeanCurvature" -> float, "Vertices" -> {...} (if enabled)}
         if (compute_curvature && (!state_ollivier_ricci.empty() || !state_wolfram_ricci.empty() || !state_dimension_gradient.empty())) {
             wxf::WXFValueAssociation curv_data;
 
             // Per-state curvatures
             wxf::WXFValueAssociation per_state;
-            for (const auto& [sid, curv_map] : state_mean_curvature) {
+            double global_curv_sum = 0.0, global_curv_sum_sq = 0.0;
+            size_t global_curv_count = 0;
+
+            for (const auto& [sid, mean_curv] : state_mean_curvature) {
                 wxf::WXFValueAssociation state_data;
 
-                // Ollivier-Ricci per-vertex
-                auto or_it = state_ollivier_ricci.find(sid);
-                if (or_it != state_ollivier_ricci.end() && !or_it->second.empty()) {
-                    wxf::WXFValueAssociation or_assoc;
-                    for (const auto& [v, curv] : or_it->second) {
-                        or_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
-                                           wxf::WXFValue(static_cast<double>(curv))});
-                    }
-                    state_data.push_back({wxf::WXFValue("OllivierRicci"), wxf::WXFValue(or_assoc)});
-                }
-
-                // Wolfram-Ricci per-vertex (geodesic tube volume method)
-                auto wr_it = state_wolfram_ricci.find(sid);
-                if (wr_it != state_wolfram_ricci.end() && !wr_it->second.empty()) {
-                    wxf::WXFValueAssociation wr_assoc;
-                    for (const auto& [v, curv] : wr_it->second) {
-                        wr_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
-                                           wxf::WXFValue(static_cast<double>(curv))});
-                    }
-                    state_data.push_back({wxf::WXFValue("WolframRicci"), wxf::WXFValue(wr_assoc)});
-                }
-
-                // Dimension gradient per-vertex
-                auto dg_it = state_dimension_gradient.find(sid);
-                if (dg_it != state_dimension_gradient.end() && !dg_it->second.empty()) {
-                    wxf::WXFValueAssociation dg_assoc;
-                    for (const auto& [v, curv] : dg_it->second) {
-                        dg_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
-                                           wxf::WXFValue(static_cast<double>(curv))});
-                    }
-                    state_data.push_back({wxf::WXFValue("DimensionGradient"), wxf::WXFValue(dg_assoc)});
-                }
-
-                // Mean curvature
+                // Mean curvature (always present)
                 state_data.push_back({wxf::WXFValue("MeanCurvature"),
-                                     wxf::WXFValue(static_cast<double>(curv_map))});
+                                     wxf::WXFValue(static_cast<double>(mean_curv))});
+                global_curv_sum += mean_curv;
+                global_curv_sum_sq += mean_curv * mean_curv;
+                ++global_curv_count;
+
+                // Per-vertex curvatures only if curvature_per_vertex is enabled
+                if (curvature_per_vertex) {
+                    // Ollivier-Ricci per-vertex
+                    auto or_it = state_ollivier_ricci.find(sid);
+                    if (or_it != state_ollivier_ricci.end() && !or_it->second.empty()) {
+                        wxf::WXFValueAssociation or_assoc;
+                        for (const auto& [v, curv] : or_it->second) {
+                            or_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                               wxf::WXFValue(static_cast<double>(curv))});
+                        }
+                        state_data.push_back({wxf::WXFValue("OllivierRicci"), wxf::WXFValue(or_assoc)});
+                    }
+
+                    // Wolfram-Ricci per-vertex (geodesic tube volume method)
+                    auto wr_it = state_wolfram_ricci.find(sid);
+                    if (wr_it != state_wolfram_ricci.end() && !wr_it->second.empty()) {
+                        wxf::WXFValueAssociation wr_assoc;
+                        for (const auto& [v, curv] : wr_it->second) {
+                            wr_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                               wxf::WXFValue(static_cast<double>(curv))});
+                        }
+                        state_data.push_back({wxf::WXFValue("WolframRicci"), wxf::WXFValue(wr_assoc)});
+                    }
+
+                    // Dimension gradient per-vertex
+                    auto dg_it = state_dimension_gradient.find(sid);
+                    if (dg_it != state_dimension_gradient.end() && !dg_it->second.empty()) {
+                        wxf::WXFValueAssociation dg_assoc;
+                        for (const auto& [v, curv] : dg_it->second) {
+                            dg_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                               wxf::WXFValue(static_cast<double>(curv))});
+                        }
+                        state_data.push_back({wxf::WXFValue("DimensionGradient"), wxf::WXFValue(dg_assoc)});
+                    }
+                }
 
                 per_state.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_data)});
             }
             curv_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
+            // PerTimestep aggregation (if enabled)
+            if (curvature_timestep_aggregation) {
+                // Group states by timestep
+                std::map<uint32_t, std::vector<uint32_t>> step_to_states;
+                for (const auto& [sid, step] : curvature_state_to_step) {
+                    step_to_states[step].push_back(sid);
+                }
+
+                wxf::WXFValueAssociation per_timestep;
+                for (const auto& [step, state_ids] : step_to_states) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Aggregate mean curvatures at this timestep
+                    double sum = 0.0, sum_sq = 0.0;
+                    size_t count = 0;
+                    for (uint32_t sid : state_ids) {
+                        auto it = state_mean_curvature.find(sid);
+                        if (it != state_mean_curvature.end()) {
+                            sum += it->second;
+                            sum_sq += it->second * it->second;
+                            ++count;
+                        }
+                    }
+
+                    if (count > 0) {
+                        double mean = sum / count;
+                        double variance = (count > 1) ? (sum_sq / count - mean * mean) : 0.0;
+                        step_data.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(mean)});
+                        step_data.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(variance)});
+                        step_data.push_back({wxf::WXFValue("StateCount"), wxf::WXFValue(static_cast<int64_t>(count))});
+                    }
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+                curv_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
+            }
+
+            // Global section (always present)
+            {
+                wxf::WXFValueAssociation global;
+
+                if (global_curv_count > 0) {
+                    double mean = global_curv_sum / global_curv_count;
+                    double variance = (global_curv_count > 1) ?
+                        (global_curv_sum_sq / global_curv_count - mean * mean) : 0.0;
+                    global.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(mean)});
+                    global.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(variance)});
+                } else {
+                    global.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("Variance"), wxf::WXFValue(0.0)});
+                }
+
+                curv_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
+
             full_result.push_back({wxf::WXFValue("CurvatureData"), wxf::WXFValue(curv_data)});
         }
 
-        // EntropyData -> Association["PerState" -> {...}]
+        // EntropyData -> Association["PerState" -> {...}, "PerTimestep" -> {...}, "Global" -> {...}]
         // Each state: state_id -> {"DegreeEntropy" -> float, "GraphEntropy" -> float, ...}
         if (compute_entropy && !state_degree_entropy.empty()) {
             wxf::WXFValueAssociation ent_data;
 
             // Per-state entropy
             wxf::WXFValueAssociation per_state;
+            double global_deg_ent_sum = 0.0, global_deg_ent_sum_sq = 0.0;
+            double global_graph_ent_sum = 0.0, global_graph_ent_sum_sq = 0.0;
+            size_t global_count = 0;
+
             for (const auto& [sid, deg_ent] : state_degree_entropy) {
                 wxf::WXFValueAssociation state_data;
 
                 state_data.push_back({wxf::WXFValue("DegreeEntropy"),
                                      wxf::WXFValue(static_cast<double>(deg_ent))});
+                global_deg_ent_sum += deg_ent;
+                global_deg_ent_sum_sq += deg_ent * deg_ent;
 
                 auto ge_it = state_graph_entropy.find(sid);
                 if (ge_it != state_graph_entropy.end()) {
                     state_data.push_back({wxf::WXFValue("GraphEntropy"),
                                          wxf::WXFValue(static_cast<double>(ge_it->second))});
+                    global_graph_ent_sum += ge_it->second;
+                    global_graph_ent_sum_sq += ge_it->second * ge_it->second;
                 }
+                ++global_count;
 
-                // Local entropy per-vertex
+                // Local entropy per-vertex (always included - no per-vertex control for entropy)
                 auto le_it = state_local_entropy.find(sid);
                 if (le_it != state_local_entropy.end() && !le_it->second.empty()) {
                     wxf::WXFValueAssociation le_assoc;
@@ -2969,13 +3505,119 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
             ent_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
+            // PerTimestep aggregation (if enabled)
+            if (entropy_timestep_aggregation) {
+                // Group states by timestep
+                std::map<uint32_t, std::vector<uint32_t>> step_to_states;
+                for (const auto& [sid, step] : entropy_state_to_step) {
+                    step_to_states[step].push_back(sid);
+                }
+
+                wxf::WXFValueAssociation per_timestep;
+                for (const auto& [step, state_ids] : step_to_states) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Aggregate degree entropy at this timestep
+                    double deg_sum = 0.0, deg_sum_sq = 0.0;
+                    double graph_sum = 0.0, graph_sum_sq = 0.0;
+                    size_t count = 0;
+                    for (uint32_t sid : state_ids) {
+                        auto deg_it = state_degree_entropy.find(sid);
+                        if (deg_it != state_degree_entropy.end()) {
+                            deg_sum += deg_it->second;
+                            deg_sum_sq += deg_it->second * deg_it->second;
+                            ++count;
+                        }
+                        auto graph_it = state_graph_entropy.find(sid);
+                        if (graph_it != state_graph_entropy.end()) {
+                            graph_sum += graph_it->second;
+                            graph_sum_sq += graph_it->second * graph_it->second;
+                        }
+                    }
+
+                    if (count > 0) {
+                        double deg_mean = deg_sum / count;
+                        double deg_variance = (count > 1) ? (deg_sum_sq / count - deg_mean * deg_mean) : 0.0;
+                        step_data.push_back({wxf::WXFValue("DegreeEntropyMean"), wxf::WXFValue(deg_mean)});
+                        step_data.push_back({wxf::WXFValue("DegreeEntropyVariance"), wxf::WXFValue(deg_variance)});
+
+                        double graph_mean = graph_sum / count;
+                        double graph_variance = (count > 1) ? (graph_sum_sq / count - graph_mean * graph_mean) : 0.0;
+                        step_data.push_back({wxf::WXFValue("GraphEntropyMean"), wxf::WXFValue(graph_mean)});
+                        step_data.push_back({wxf::WXFValue("GraphEntropyVariance"), wxf::WXFValue(graph_variance)});
+
+                        step_data.push_back({wxf::WXFValue("StateCount"), wxf::WXFValue(static_cast<int64_t>(count))});
+                    }
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+                ent_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
+            }
+
+            // Global section (always present)
+            {
+                wxf::WXFValueAssociation global;
+
+                if (global_count > 0) {
+                    double deg_mean = global_deg_ent_sum / global_count;
+                    double deg_variance = (global_count > 1) ?
+                        (global_deg_ent_sum_sq / global_count - deg_mean * deg_mean) : 0.0;
+                    global.push_back({wxf::WXFValue("DegreeEntropyMean"), wxf::WXFValue(deg_mean)});
+                    global.push_back({wxf::WXFValue("DegreeEntropyVariance"), wxf::WXFValue(deg_variance)});
+
+                    double graph_mean = global_graph_ent_sum / global_count;
+                    double graph_variance = (global_count > 1) ?
+                        (global_graph_ent_sum_sq / global_count - graph_mean * graph_mean) : 0.0;
+                    global.push_back({wxf::WXFValue("GraphEntropyMean"), wxf::WXFValue(graph_mean)});
+                    global.push_back({wxf::WXFValue("GraphEntropyVariance"), wxf::WXFValue(graph_variance)});
+                } else {
+                    global.push_back({wxf::WXFValue("DegreeEntropyMean"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("DegreeEntropyVariance"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("GraphEntropyMean"), wxf::WXFValue(0.0)});
+                    global.push_back({wxf::WXFValue("GraphEntropyVariance"), wxf::WXFValue(0.0)});
+                }
+
+                ent_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
+
             full_result.push_back({wxf::WXFValue("EntropyData"), wxf::WXFValue(ent_data)});
         }
 
-        // RotationData -> Association["PerState" -> {...}]
-        // Each state: state_id -> {"Curve" -> [...], "PowerLawExponent" -> float, ...}
+        // RotationData -> Association["Global" -> {...}, "PerState" -> {...}, "PerTimestep" -> {...}]
         if (compute_rotation_curve && !state_rotation_curves.empty()) {
             wxf::WXFValueAssociation rot_data;
+
+            // Compute global statistics
+            float global_mean_exponent = 0.0f;
+            float global_mean_flatness = 0.0f;
+            float global_mean_residual = 0.0f;
+            int global_flat_count = 0;
+            for (const auto& [sid, rot_result] : state_rotation_curves) {
+                global_mean_exponent += rot_result.power_law_exponent;
+                global_mean_flatness += rot_result.flatness_score;
+                global_mean_residual += rot_result.fit_residual;
+                if (rot_result.has_flat_rotation) ++global_flat_count;
+            }
+            size_t num_states = state_rotation_curves.size();
+            global_mean_exponent /= num_states;
+            global_mean_flatness /= num_states;
+            global_mean_residual /= num_states;
+
+            // Global section (always present with summary stats)
+            {
+                wxf::WXFValueAssociation global;
+                global.push_back({wxf::WXFValue("NumStates"),
+                                 wxf::WXFValue(static_cast<int64_t>(num_states))});
+                global.push_back({wxf::WXFValue("MeanPowerLawExponent"),
+                                 wxf::WXFValue(static_cast<double>(global_mean_exponent))});
+                global.push_back({wxf::WXFValue("MeanFlatnessScore"),
+                                 wxf::WXFValue(static_cast<double>(global_mean_flatness))});
+                global.push_back({wxf::WXFValue("MeanFitResidual"),
+                                 wxf::WXFValue(static_cast<double>(global_mean_residual))});
+                global.push_back({wxf::WXFValue("FlatRotationCount"),
+                                 wxf::WXFValue(static_cast<int64_t>(global_flat_count))});
+                rot_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
 
             // Per-state rotation curves
             wxf::WXFValueAssociation per_state;
@@ -3043,162 +3685,442 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
             rot_data.push_back({wxf::WXFValue("PerState"), wxf::WXFValue(per_state)});
 
+            // PerTimestep aggregation (if enabled)
+            if (rotation_timestep_aggregation) {
+                // Group states by timestep
+                std::map<uint32_t, std::vector<uint32_t>> step_to_states;
+                for (const auto& [sid, step] : rotation_state_to_step) {
+                    step_to_states[step].push_back(sid);
+                }
+
+                wxf::WXFValueAssociation per_timestep;
+                for (const auto& [step, state_ids] : step_to_states) {
+                    if (state_ids.empty()) continue;
+
+                    // Compute aggregated stats for this timestep
+                    float step_mean_exponent = 0.0f;
+                    float step_var_exponent = 0.0f;
+                    float step_mean_flatness = 0.0f;
+                    float step_mean_residual = 0.0f;
+                    int step_flat_count = 0;
+
+                    // First pass: compute means
+                    for (uint32_t sid : state_ids) {
+                        const auto& rot_result = state_rotation_curves.at(sid);
+                        step_mean_exponent += rot_result.power_law_exponent;
+                        step_mean_flatness += rot_result.flatness_score;
+                        step_mean_residual += rot_result.fit_residual;
+                        if (rot_result.has_flat_rotation) ++step_flat_count;
+                    }
+                    size_t n = state_ids.size();
+                    step_mean_exponent /= n;
+                    step_mean_flatness /= n;
+                    step_mean_residual /= n;
+
+                    // Second pass: compute variance of exponent
+                    for (uint32_t sid : state_ids) {
+                        float diff = state_rotation_curves.at(sid).power_law_exponent - step_mean_exponent;
+                        step_var_exponent += diff * diff;
+                    }
+                    step_var_exponent /= n;
+
+                    wxf::WXFValueAssociation step_data;
+                    step_data.push_back({wxf::WXFValue("StateCount"),
+                                        wxf::WXFValue(static_cast<int64_t>(n))});
+                    step_data.push_back({wxf::WXFValue("MeanPowerLawExponent"),
+                                        wxf::WXFValue(static_cast<double>(step_mean_exponent))});
+                    step_data.push_back({wxf::WXFValue("VariancePowerLawExponent"),
+                                        wxf::WXFValue(static_cast<double>(step_var_exponent))});
+                    step_data.push_back({wxf::WXFValue("MeanFlatnessScore"),
+                                        wxf::WXFValue(static_cast<double>(step_mean_flatness))});
+                    step_data.push_back({wxf::WXFValue("MeanFitResidual"),
+                                        wxf::WXFValue(static_cast<double>(step_mean_residual))});
+                    step_data.push_back({wxf::WXFValue("FlatRotationCount"),
+                                        wxf::WXFValue(static_cast<int64_t>(step_flat_count))});
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+
+                rot_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
+            }
+
             full_result.push_back({wxf::WXFValue("RotationData"), wxf::WXFValue(rot_data)});
         }
 
-        // HilbertSpaceData -> Association with inner products and vertex probabilities
+        // HilbertSpaceData -> Association["Global" -> {...}, "PerTimestep" -> {...}]
+        // Scope controls: "Global" (default), "PerTimestep", or "Both"
         if (has_hilbert_data) {
             wxf::WXFValueAssociation hilbert_data;
 
-            // Statistics
-            hilbert_data.push_back({wxf::WXFValue("NumStates"),
-                                   wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_states))});
-            hilbert_data.push_back({wxf::WXFValue("NumVertices"),
-                                   wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_vertices))});
-            hilbert_data.push_back({wxf::WXFValue("MeanInnerProduct"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_inner_product))});
-            hilbert_data.push_back({wxf::WXFValue("MaxInnerProduct"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_inner_product))});
-            hilbert_data.push_back({wxf::WXFValue("MeanVertexProbability"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_vertex_probability))});
-            hilbert_data.push_back({wxf::WXFValue("VertexProbabilityEntropy"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.vertex_probability_entropy))});
+            // Global section (always present with summary stats; matrices if scope includes Global)
+            {
+                wxf::WXFValueAssociation global;
 
-            // Vertex probabilities: vertex_id -> probability
-            wxf::WXFValueAssociation vertex_probs;
-            for (const auto& [vid, prob] : hilbert_result.vertex_probabilities) {
-                vertex_probs.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
-                                       wxf::WXFValue(static_cast<double>(prob))});
-            }
-            hilbert_data.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs)});
+                // Statistics (always present)
+                global.push_back({wxf::WXFValue("NumStates"),
+                                       wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_states))});
+                global.push_back({wxf::WXFValue("NumVertices"),
+                                       wxf::WXFValue(static_cast<int64_t>(hilbert_result.num_vertices))});
+                global.push_back({wxf::WXFValue("MeanInnerProduct"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.mean_inner_product))});
+                global.push_back({wxf::WXFValue("MaxInnerProduct"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.max_inner_product))});
+                global.push_back({wxf::WXFValue("MeanVertexProbability"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.mean_vertex_probability))});
+                global.push_back({wxf::WXFValue("VertexProbabilityEntropy"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.vertex_probability_entropy))});
+                global.push_back({wxf::WXFValue("MeanMutualInformation"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.mean_mutual_information))});
+                global.push_back({wxf::WXFValue("MaxMutualInformation"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.max_mutual_information))});
+                global.push_back({wxf::WXFValue("MeanEdgeMutualInformation"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.mean_edge_mutual_information))});
+                global.push_back({wxf::WXFValue("MaxEdgeMutualInformation"),
+                                       wxf::WXFValue(static_cast<double>(hilbert_result.max_edge_mutual_information))});
 
-            // Inner product matrix (as list of lists for efficient transfer)
-            wxf::WXFValueList ip_matrix;
-            for (const auto& row : hilbert_result.inner_product_matrix) {
-                wxf::WXFValueList row_list;
-                for (float val : row) {
-                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                // Full matrices only if scope is "Global" or "Both" (not "PerTimestep" only)
+                bool include_global_matrices = (hilbert_scope == "Global" || hilbert_scope == "Both");
+                if (include_global_matrices) {
+                    // Vertex probabilities: vertex_id -> probability
+                    wxf::WXFValueAssociation vertex_probs;
+                    for (const auto& [vid, prob] : hilbert_result.vertex_probabilities) {
+                        vertex_probs.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                               wxf::WXFValue(static_cast<double>(prob))});
+                    }
+                    global.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs)});
+
+                    // Inner product matrix (as list of lists for efficient transfer)
+                    wxf::WXFValueList ip_matrix;
+                    for (const auto& row : hilbert_result.inner_product_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        ip_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    global.push_back({wxf::WXFValue("InnerProductMatrix"), wxf::WXFValue(ip_matrix)});
+
+                    // Mutual information matrix (as list of lists)
+                    wxf::WXFValueList mi_matrix;
+                    for (const auto& row : hilbert_result.mutual_information_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        mi_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    global.push_back({wxf::WXFValue("MutualInformationMatrix"), wxf::WXFValue(mi_matrix)});
+
+                    // Edge-level mutual information matrix (as list of lists)
+                    wxf::WXFValueList edge_mi_matrix;
+                    for (const auto& row : hilbert_result.edge_mutual_information_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        edge_mi_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    global.push_back({wxf::WXFValue("EdgeMutualInformationMatrix"), wxf::WXFValue(edge_mi_matrix)});
+
+                    // State indices (for mapping matrix rows/columns to state IDs)
+                    wxf::WXFValueList state_ids;
+                    for (uint32_t sid : hilbert_result.state_indices) {
+                        state_ids.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
+                    }
+                    global.push_back({wxf::WXFValue("StateIndices"), wxf::WXFValue(state_ids)});
                 }
-                ip_matrix.push_back(wxf::WXFValue(row_list));
-            }
-            hilbert_data.push_back({wxf::WXFValue("InnerProductMatrix"), wxf::WXFValue(ip_matrix)});
 
-            // Mutual information matrix (as list of lists)
-            wxf::WXFValueList mi_matrix;
-            for (const auto& row : hilbert_result.mutual_information_matrix) {
-                wxf::WXFValueList row_list;
-                for (float val : row) {
-                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                hilbert_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
+
+            // PerTimestep section (if scope is "PerTimestep" or "Both")
+            bool include_per_timestep = (hilbert_scope == "PerTimestep" || hilbert_scope == "Both");
+            if (include_per_timestep && !hilbert_per_timestep.empty()) {
+                wxf::WXFValueAssociation per_timestep;
+
+                for (const auto& [step, step_result] : hilbert_per_timestep) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Statistics for this timestep
+                    step_data.push_back({wxf::WXFValue("NumStates"),
+                                        wxf::WXFValue(static_cast<int64_t>(step_result.num_states))});
+                    step_data.push_back({wxf::WXFValue("NumVertices"),
+                                        wxf::WXFValue(static_cast<int64_t>(step_result.num_vertices))});
+                    step_data.push_back({wxf::WXFValue("MeanInnerProduct"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_inner_product))});
+                    step_data.push_back({wxf::WXFValue("MaxInnerProduct"),
+                                        wxf::WXFValue(static_cast<double>(step_result.max_inner_product))});
+                    step_data.push_back({wxf::WXFValue("MeanVertexProbability"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_vertex_probability))});
+                    step_data.push_back({wxf::WXFValue("VertexProbabilityEntropy"),
+                                        wxf::WXFValue(static_cast<double>(step_result.vertex_probability_entropy))});
+                    step_data.push_back({wxf::WXFValue("MeanMutualInformation"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_mutual_information))});
+                    step_data.push_back({wxf::WXFValue("MaxMutualInformation"),
+                                        wxf::WXFValue(static_cast<double>(step_result.max_mutual_information))});
+                    step_data.push_back({wxf::WXFValue("MeanEdgeMutualInformation"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_edge_mutual_information))});
+                    step_data.push_back({wxf::WXFValue("MaxEdgeMutualInformation"),
+                                        wxf::WXFValue(static_cast<double>(step_result.max_edge_mutual_information))});
+
+                    // Vertex probabilities
+                    wxf::WXFValueAssociation vertex_probs;
+                    for (const auto& [vid, prob] : step_result.vertex_probabilities) {
+                        vertex_probs.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                               wxf::WXFValue(static_cast<double>(prob))});
+                    }
+                    step_data.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs)});
+
+                    // Inner product matrix
+                    wxf::WXFValueList ip_matrix;
+                    for (const auto& row : step_result.inner_product_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        ip_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    step_data.push_back({wxf::WXFValue("InnerProductMatrix"), wxf::WXFValue(ip_matrix)});
+
+                    // Mutual information matrix
+                    wxf::WXFValueList mi_matrix;
+                    for (const auto& row : step_result.mutual_information_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        mi_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    step_data.push_back({wxf::WXFValue("MutualInformationMatrix"), wxf::WXFValue(mi_matrix)});
+
+                    // Edge-level mutual information matrix
+                    wxf::WXFValueList edge_mi_matrix;
+                    for (const auto& row : step_result.edge_mutual_information_matrix) {
+                        wxf::WXFValueList row_list;
+                        for (float val : row) {
+                            row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
+                        }
+                        edge_mi_matrix.push_back(wxf::WXFValue(row_list));
+                    }
+                    step_data.push_back({wxf::WXFValue("EdgeMutualInformationMatrix"), wxf::WXFValue(edge_mi_matrix)});
+
+                    // State indices
+                    wxf::WXFValueList state_ids;
+                    for (uint32_t sid : step_result.state_indices) {
+                        state_ids.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
+                    }
+                    step_data.push_back({wxf::WXFValue("StateIndices"), wxf::WXFValue(state_ids)});
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
                 }
-                mi_matrix.push_back(wxf::WXFValue(row_list));
+
+                hilbert_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
             }
-            hilbert_data.push_back({wxf::WXFValue("MutualInformationMatrix"), wxf::WXFValue(mi_matrix)});
-
-            // Mutual information statistics (vertex-level)
-            hilbert_data.push_back({wxf::WXFValue("MeanMutualInformation"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_mutual_information))});
-            hilbert_data.push_back({wxf::WXFValue("MaxMutualInformation"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_mutual_information))});
-
-            // Edge-level mutual information matrix (as list of lists)
-            wxf::WXFValueList edge_mi_matrix;
-            for (const auto& row : hilbert_result.edge_mutual_information_matrix) {
-                wxf::WXFValueList row_list;
-                for (float val : row) {
-                    row_list.push_back(wxf::WXFValue(static_cast<double>(val)));
-                }
-                edge_mi_matrix.push_back(wxf::WXFValue(row_list));
-            }
-            hilbert_data.push_back({wxf::WXFValue("EdgeMutualInformationMatrix"), wxf::WXFValue(edge_mi_matrix)});
-
-            // Edge mutual information statistics
-            hilbert_data.push_back({wxf::WXFValue("MeanEdgeMutualInformation"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.mean_edge_mutual_information))});
-            hilbert_data.push_back({wxf::WXFValue("MaxEdgeMutualInformation"),
-                                   wxf::WXFValue(static_cast<double>(hilbert_result.max_edge_mutual_information))});
-
-            // State indices (for mapping matrix rows/columns to state IDs)
-            wxf::WXFValueList state_ids;
-            for (uint32_t sid : hilbert_result.state_indices) {
-                state_ids.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
-            }
-            hilbert_data.push_back({wxf::WXFValue("StateIndices"), wxf::WXFValue(state_ids)});
 
             full_result.push_back({wxf::WXFValue("HilbertSpaceData"), wxf::WXFValue(hilbert_data)});
         }
 
-        // BranchialData -> Association with distribution sharpness and branch entropy
+        // BranchialData -> Association["Global" -> {...}, "PerTimestep" -> {...}]
+        // Scope controls: "Global" (default), "PerTimestep", or "Both"
         if (has_branchial_data) {
             wxf::WXFValueAssociation branchial_data;
 
-            // Statistics
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("NumUniqueVertices"),
-                                     wxf::WXFValue(static_cast<int64_t>(branchial_result.num_unique_vertices))));
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("MeanSharpness"),
-                                     wxf::WXFValue(static_cast<double>(branchial_result.mean_sharpness))));
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("MeanBranchEntropy"),
-                                     wxf::WXFValue(static_cast<double>(branchial_result.mean_branch_entropy))));
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("MaxBranchesPerVertex"),
-                                     wxf::WXFValue(static_cast<int64_t>(branchial_result.max_branches_per_vertex))));
+            // Global section (always present with summary stats; per-vertex if branchial_per_vertex and scope includes Global)
+            bool include_global_branchial = (branchial_scope == "Global" || branchial_scope == "Both");
+            {
+                wxf::WXFValueAssociation global;
 
-            // Per-vertex sharpness
-            wxf::WXFValueAssociation vertex_sharpness;
-            for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
-                vertex_sharpness.push_back(std::make_pair(wxf::WXFValue(static_cast<int64_t>(vid)),
-                                           wxf::WXFValue(static_cast<double>(sharpness))));
-            }
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("VertexSharpness"), wxf::WXFValue(vertex_sharpness)));
+                // Statistics (always present)
+                global.push_back({wxf::WXFValue("NumUniqueVertices"),
+                                 wxf::WXFValue(static_cast<int64_t>(branchial_result.num_unique_vertices))});
+                global.push_back({wxf::WXFValue("MeanSharpness"),
+                                 wxf::WXFValue(static_cast<double>(branchial_result.mean_sharpness))});
+                global.push_back({wxf::WXFValue("MeanBranchEntropy"),
+                                 wxf::WXFValue(static_cast<double>(branchial_result.mean_branch_entropy))});
+                global.push_back({wxf::WXFValue("MaxBranchesPerVertex"),
+                                 wxf::WXFValue(static_cast<int64_t>(branchial_result.max_branches_per_vertex))});
 
-            // Delocalized vertices (vertices with sharpness < 1.0, appearing in multiple branches)
-            wxf::WXFValueList delocalized;
-            for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
-                if (sharpness < 1.0f) {
-                    delocalized.push_back(wxf::WXFValue(static_cast<int64_t>(vid)));
+                // Per-vertex data only if branchial_per_vertex is true and scope includes Global
+                if (branchial_per_vertex && include_global_branchial) {
+                    // Per-vertex sharpness
+                    wxf::WXFValueAssociation vertex_sharpness;
+                    for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
+                        vertex_sharpness.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                   wxf::WXFValue(static_cast<double>(sharpness))});
+                    }
+                    global.push_back({wxf::WXFValue("VertexSharpness"), wxf::WXFValue(vertex_sharpness)});
+
+                    // Per-vertex entropy
+                    wxf::WXFValueAssociation vertex_entropy;
+                    for (const auto& [vid, entropy] : branchial_result.vertex_entropy) {
+                        vertex_entropy.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                 wxf::WXFValue(static_cast<double>(entropy))});
+                    }
+                    global.push_back({wxf::WXFValue("VertexEntropy"), wxf::WXFValue(vertex_entropy)});
                 }
-            }
-            branchial_data.push_back(std::make_pair(wxf::WXFValue("DelocalizedVertices"), wxf::WXFValue(delocalized)));
 
-            full_result.push_back(std::make_pair(wxf::WXFValue("BranchialData"), wxf::WXFValue(branchial_data)));
+                // Delocalized vertices (always included - just a list, not expensive)
+                wxf::WXFValueList delocalized;
+                for (const auto& [vid, sharpness] : branchial_result.vertex_sharpness) {
+                    if (sharpness < 1.0f) {
+                        delocalized.push_back(wxf::WXFValue(static_cast<int64_t>(vid)));
+                    }
+                }
+                global.push_back({wxf::WXFValue("DelocalizedVertices"), wxf::WXFValue(delocalized)});
+
+                branchial_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
+            }
+
+            // PerTimestep section (if scope is "PerTimestep" or "Both")
+            bool include_per_timestep_branchial = (branchial_scope == "PerTimestep" || branchial_scope == "Both");
+            if (include_per_timestep_branchial && !branchial_per_timestep.empty()) {
+                wxf::WXFValueAssociation per_timestep;
+
+                for (const auto& [step, step_result] : branchial_per_timestep) {
+                    wxf::WXFValueAssociation step_data;
+
+                    // Statistics for this timestep
+                    step_data.push_back({wxf::WXFValue("NumUniqueVertices"),
+                                        wxf::WXFValue(static_cast<int64_t>(step_result.num_unique_vertices))});
+                    step_data.push_back({wxf::WXFValue("MeanSharpness"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_sharpness))});
+                    step_data.push_back({wxf::WXFValue("MeanBranchEntropy"),
+                                        wxf::WXFValue(static_cast<double>(step_result.mean_branch_entropy))});
+                    step_data.push_back({wxf::WXFValue("MaxBranchesPerVertex"),
+                                        wxf::WXFValue(static_cast<int64_t>(step_result.max_branches_per_vertex))});
+
+                    // Per-vertex data if requested
+                    if (branchial_per_vertex) {
+                        wxf::WXFValueAssociation vertex_sharpness;
+                        for (const auto& [vid, sharpness] : step_result.vertex_sharpness) {
+                            vertex_sharpness.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                       wxf::WXFValue(static_cast<double>(sharpness))});
+                        }
+                        step_data.push_back({wxf::WXFValue("VertexSharpness"), wxf::WXFValue(vertex_sharpness)});
+
+                        wxf::WXFValueAssociation vertex_entropy;
+                        for (const auto& [vid, entropy] : step_result.vertex_entropy) {
+                            vertex_entropy.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                     wxf::WXFValue(static_cast<double>(entropy))});
+                        }
+                        step_data.push_back({wxf::WXFValue("VertexEntropy"), wxf::WXFValue(vertex_entropy)});
+                    }
+
+                    // Delocalized vertices for this timestep
+                    wxf::WXFValueList delocalized;
+                    for (const auto& [vid, sharpness] : step_result.vertex_sharpness) {
+                        if (sharpness < 1.0f) {
+                            delocalized.push_back(wxf::WXFValue(static_cast<int64_t>(vid)));
+                        }
+                    }
+                    step_data.push_back({wxf::WXFValue("DelocalizedVertices"), wxf::WXFValue(delocalized)});
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_data)});
+                }
+
+                branchial_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
+            }
+
+            full_result.push_back({wxf::WXFValue("BranchialData"), wxf::WXFValue(branchial_data)});
         }
 
-        // MultispaceData -> Association with vertex/edge probabilities across branches
+        // MultispaceData -> Association["Global" -> {...}, "PerTimestep" -> {...}]
+        // Scope controls: "Global" (default), "PerTimestep", or "Both"
         if (has_multispace_data) {
             wxf::WXFValueAssociation multispace_data;
 
-            // Statistics
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("NumVertices"),
-                                      wxf::WXFValue(static_cast<int64_t>(multispace_vertex_probs.size()))));
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("NumEdges"),
-                                      wxf::WXFValue(static_cast<int64_t>(multispace_edge_probs.size()))));
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("MeanVertexProbability"),
-                                      wxf::WXFValue(static_cast<double>(multispace_mean_vertex_prob))));
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("MeanEdgeProbability"),
-                                      wxf::WXFValue(static_cast<double>(multispace_mean_edge_prob))));
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("TotalEntropy"),
-                                      wxf::WXFValue(static_cast<double>(multispace_total_entropy))));
+            // Global section (always present with summary stats; full data if scope includes Global)
+            bool include_global_multispace = (multispace_scope == "Global" || multispace_scope == "Both");
+            {
+                wxf::WXFValueAssociation global;
 
-            // Per-vertex probabilities
-            wxf::WXFValueAssociation vertex_probs_assoc;
-            for (const auto& [vid, prob] : multispace_vertex_probs) {
-                vertex_probs_assoc.push_back(std::make_pair(wxf::WXFValue(static_cast<int64_t>(vid)),
-                                             wxf::WXFValue(static_cast<double>(prob))));
+                // Statistics (always present)
+                global.push_back({wxf::WXFValue("NumVertices"),
+                                 wxf::WXFValue(static_cast<int64_t>(multispace_vertex_probs.size()))});
+                global.push_back({wxf::WXFValue("NumEdges"),
+                                 wxf::WXFValue(static_cast<int64_t>(multispace_edge_probs.size()))});
+                global.push_back({wxf::WXFValue("MeanVertexProbability"),
+                                 wxf::WXFValue(static_cast<double>(multispace_mean_vertex_prob))});
+                global.push_back({wxf::WXFValue("MeanEdgeProbability"),
+                                 wxf::WXFValue(static_cast<double>(multispace_mean_edge_prob))});
+                global.push_back({wxf::WXFValue("TotalEntropy"),
+                                 wxf::WXFValue(static_cast<double>(multispace_total_entropy))});
+
+                // Full probability data only if scope includes Global
+                if (include_global_multispace) {
+                    // Per-vertex probabilities
+                    wxf::WXFValueAssociation vertex_probs_assoc;
+                    for (const auto& [vid, prob] : multispace_vertex_probs) {
+                        vertex_probs_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                     wxf::WXFValue(static_cast<double>(prob))});
+                    }
+                    global.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs_assoc)});
+
+                    // Per-edge probabilities (as list of {{v1, v2}, prob})
+                    wxf::WXFValueList edge_probs_list;
+                    for (const auto& [e, prob] : multispace_edge_probs) {
+                        wxf::WXFValueList edge_entry;
+                        wxf::WXFValueList edge_pair;
+                        edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.first)));
+                        edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.second)));
+                        edge_entry.push_back(wxf::WXFValue(edge_pair));
+                        edge_entry.push_back(wxf::WXFValue(static_cast<double>(prob)));
+                        edge_probs_list.push_back(wxf::WXFValue(edge_entry));
+                    }
+                    global.push_back({wxf::WXFValue("EdgeProbabilities"), wxf::WXFValue(edge_probs_list)});
+                }
+
+                multispace_data.push_back({wxf::WXFValue("Global"), wxf::WXFValue(global)});
             }
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs_assoc)));
 
-            // Per-edge probabilities (as list of {{v1, v2}, prob})
-            wxf::WXFValueList edge_probs_list;
-            for (const auto& [e, prob] : multispace_edge_probs) {
-                wxf::WXFValueList edge_entry;
-                wxf::WXFValueList edge_pair;
-                edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.first)));
-                edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.second)));
-                edge_entry.push_back(wxf::WXFValue(edge_pair));
-                edge_entry.push_back(wxf::WXFValue(static_cast<double>(prob)));
-                edge_probs_list.push_back(wxf::WXFValue(edge_entry));
+            // PerTimestep section (if scope is "PerTimestep" or "Both")
+            bool include_per_timestep_multispace = (multispace_scope == "PerTimestep" || multispace_scope == "Both");
+            if (include_per_timestep_multispace && !multispace_per_timestep.empty()) {
+                wxf::WXFValueAssociation per_timestep;
+
+                for (const auto& [step, step_data] : multispace_per_timestep) {
+                    wxf::WXFValueAssociation step_assoc;
+
+                    // Statistics for this timestep
+                    step_assoc.push_back({wxf::WXFValue("NumVertices"),
+                                         wxf::WXFValue(static_cast<int64_t>(step_data.vertex_probs.size()))});
+                    step_assoc.push_back({wxf::WXFValue("NumEdges"),
+                                         wxf::WXFValue(static_cast<int64_t>(step_data.edge_probs.size()))});
+                    step_assoc.push_back({wxf::WXFValue("MeanVertexProbability"),
+                                         wxf::WXFValue(static_cast<double>(step_data.mean_vertex_prob))});
+                    step_assoc.push_back({wxf::WXFValue("MeanEdgeProbability"),
+                                         wxf::WXFValue(static_cast<double>(step_data.mean_edge_prob))});
+                    step_assoc.push_back({wxf::WXFValue("TotalEntropy"),
+                                         wxf::WXFValue(static_cast<double>(step_data.total_entropy))});
+
+                    // Per-vertex probabilities
+                    wxf::WXFValueAssociation vertex_probs_assoc;
+                    for (const auto& [vid, prob] : step_data.vertex_probs) {
+                        vertex_probs_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(vid)),
+                                                     wxf::WXFValue(static_cast<double>(prob))});
+                    }
+                    step_assoc.push_back({wxf::WXFValue("VertexProbabilities"), wxf::WXFValue(vertex_probs_assoc)});
+
+                    // Per-edge probabilities
+                    wxf::WXFValueList edge_probs_list;
+                    for (const auto& [e, prob] : step_data.edge_probs) {
+                        wxf::WXFValueList edge_entry;
+                        wxf::WXFValueList edge_pair;
+                        edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.first)));
+                        edge_pair.push_back(wxf::WXFValue(static_cast<int64_t>(e.second)));
+                        edge_entry.push_back(wxf::WXFValue(edge_pair));
+                        edge_entry.push_back(wxf::WXFValue(static_cast<double>(prob)));
+                        edge_probs_list.push_back(wxf::WXFValue(edge_entry));
+                    }
+                    step_assoc.push_back({wxf::WXFValue("EdgeProbabilities"), wxf::WXFValue(edge_probs_list)});
+
+                    per_timestep.push_back({wxf::WXFValue(static_cast<int64_t>(step)), wxf::WXFValue(step_assoc)});
+                }
+
+                multispace_data.push_back({wxf::WXFValue("PerTimestep"), wxf::WXFValue(per_timestep)});
             }
-            multispace_data.push_back(std::make_pair(wxf::WXFValue("EdgeProbabilities"), wxf::WXFValue(edge_probs_list)));
 
-            full_result.push_back(std::make_pair(wxf::WXFValue("MultispaceData"), wxf::WXFValue(multispace_data)));
+            full_result.push_back({wxf::WXFValue("MultispaceData"), wxf::WXFValue(multispace_data)});
         }
 
         // EquilibriumData -> Association with stability scores and per-timestep metrics

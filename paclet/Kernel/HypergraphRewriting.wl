@@ -8,6 +8,7 @@ PackageExport["HGStateDimensionPlot"]
 PackageExport["HGTimestepUnionPlot"]
 PackageExport["HGDimensionFilmstrip"]
 PackageExport["HGGeodesicPlot"]
+PackageExport["HGGeodesicFilmstrip"]
 PackageExport["HGLensingPlot"]
 PackageExport["HGRotationCurvePlot"]
 PackageExport["HGRotationOrbitsPlot"]
@@ -36,6 +37,7 @@ HGStateDimensionPlot::usage = "HGStateDimensionPlot[edges, opts] plots a hypergr
 HGTimestepUnionPlot::usage = "HGTimestepUnionPlot[evolutionResult, step, opts] plots the union graph at a timestep with dimension coloring."
 HGDimensionFilmstrip::usage = "HGDimensionFilmstrip[evolutionResult, opts] shows a grid of timestep union graphs with dimension coloring."
 HGGeodesicPlot::usage = "HGGeodesicPlot[evolutionResult, stateId, opts] plots geodesic paths overlaid on a state graph with dimension coloring."
+HGGeodesicFilmstrip::usage = "HGGeodesicFilmstrip[evolutionResult, opts] returns a list of lists of geodesic plots, one list per timestep."
 HGLensingPlot::usage = "HGLensingPlot[evolutionResult, stateId, opts] plots gravitational lensing: deflection angle vs impact parameter with GR prediction overlay."
 HGRotationCurvePlot::usage = "HGRotationCurvePlot[evolutionResult, opts] plots orbital velocity vs radius with Keplerian prediction overlay."
 HGRotationOrbitsPlot::usage = "HGRotationOrbitsPlot[evolutionResult, stateId, opts] shows orbital paths overlaid on a state graph, colored by velocity deviation."
@@ -106,6 +108,8 @@ Options[HGEvolve] = {
   "DimensionRange" -> Automatic,  (* {min, max} or Automatic - color scale range *)
   "DimensionFormula" -> "LinearRegression",  (* "LinearRegression" or "DiscreteDerivative" *)
   "DimensionRadius" -> {1, 5},  (* {minR, maxR} for dimension computation *)
+  "DimensionPerVertex" -> False,  (* Include per-vertex dimension data in PerState *)
+  "DimensionTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Geodesic Analysis Options - trace test particles through graph *)
   "GeodesicAnalysis" -> False,  (* True: trace geodesic paths through the graph *)
   "GeodesicSources" -> Automatic,  (* List of vertex IDs or Automatic (auto-select near high-dim regions) *)
@@ -123,23 +127,33 @@ Options[HGEvolve] = {
   "DimensionSpikeThreshold" -> 1.5,  (* Multiplier above mean to flag as spike *)
   "DegreePercentile" -> 0.95,  (* Top 5% by degree *)
   "ChargeRadius" -> 3.0,  (* Radius for local charge computation *)
+  "ChargePerVertex" -> False,  (* Include per-vertex charge data in PerState *)
+  "ChargeTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Curvature Analysis Options - Ollivier-Ricci, Wolfram-Ricci, and dimension gradient *)
   "CurvatureAnalysis" -> False,  (* True: compute per-vertex curvature *)
   "CurvatureMethod" -> "All",  (* "OllivierRicci", "WolframRicci", "DimensionGradient", "Both", or "All" *)
+  "CurvaturePerVertex" -> False,  (* Include per-vertex curvature data in PerState *)
+  "CurvatureTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Entropy Analysis Options - graph entropy and information measures *)
   "EntropyAnalysis" -> False,  (* True: compute entropy measures *)
+  "EntropyTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Rotation Curve Analysis Options - orbital velocity vs radius *)
   "RotationCurveAnalysis" -> False,  (* True: compute rotation curve *)
   "RotationMinRadius" -> 2,  (* Minimum radius for rotation curve *)
   "RotationMaxRadius" -> 20,  (* Maximum radius for rotation curve *)
   "RotationOrbitsPerRadius" -> 4,  (* Orbits to sample per radius *)
+  "RotationTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Hilbert Space Analysis Options - state bitvector inner products *)
   "HilbertSpaceAnalysis" -> False,  (* True: compute Hilbert space analysis *)
   "HilbertStep" -> -1,  (* Step to analyze: -1 = final, or specific step *)
+  "HilbertScope" -> "Global",  (* "Global", "PerTimestep", or "Both" *)
   (* Branchial Analysis Options - distribution sharpness and branch entropy *)
   "BranchialAnalysis" -> False,  (* True: compute branchial analysis *)
+  "BranchialScope" -> "Global",  (* "Global", "PerTimestep", or "Both" *)
+  "BranchialPerVertex" -> False,  (* Include per-vertex sharpness data *)
   (* Multispace Analysis Options - vertex/edge probabilities across branches *)
   "MultispaceAnalysis" -> False,  (* True: compute multispace analysis *)
+  "MultispaceScope" -> "Global",  (* "Global", "PerTimestep", or "Both" *)
   (* Initial Condition Options - alternative to InitialEdges *)
   "InitialCondition" -> "Edges",  (* "Edges", "Grid", "Sprinkling", "BrillLindquist", "Poisson", "Uniform" *)
   (* Topology options *)
@@ -890,6 +904,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "DimensionAnalysis" -> dimensionAnalysis,
     "DimensionMinRadius" -> dimensionRadius[[1]],
     "DimensionMaxRadius" -> dimensionRadius[[2]],
+    "DimensionPerVertex" -> OptionValue["DimensionPerVertex"],
+    "DimensionTimestepAggregation" -> OptionValue["DimensionTimestepAggregation"],
     (* Geodesic analysis - trace test particles through graph *)
     "GeodesicAnalysis" -> OptionValue["GeodesicAnalysis"],
     "GeodesicSources" -> Replace[OptionValue["GeodesicSources"], Automatic -> {-1}],  (* -1 = auto-select *)
@@ -907,26 +923,36 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "DimensionSpikeThreshold" -> OptionValue["DimensionSpikeThreshold"],
     "DegreePercentile" -> OptionValue["DegreePercentile"],
     "ChargeRadius" -> OptionValue["ChargeRadius"],
+    "ChargePerVertex" -> OptionValue["ChargePerVertex"],
+    "ChargeTimestepAggregation" -> OptionValue["ChargeTimestepAggregation"],
     (* Uniform random evolution mode *)
     "UniformRandom" -> OptionValue["UniformRandom"],
     "MatchesPerStep" -> OptionValue["MatchesPerStep"],
     (* Curvature analysis *)
     "CurvatureAnalysis" -> OptionValue["CurvatureAnalysis"],
     "CurvatureMethod" -> OptionValue["CurvatureMethod"],
+    "CurvaturePerVertex" -> OptionValue["CurvaturePerVertex"],
+    "CurvatureTimestepAggregation" -> OptionValue["CurvatureTimestepAggregation"],
     (* Entropy analysis *)
     "EntropyAnalysis" -> OptionValue["EntropyAnalysis"],
+    "EntropyTimestepAggregation" -> OptionValue["EntropyTimestepAggregation"],
     (* Rotation curve analysis *)
     "RotationCurveAnalysis" -> OptionValue["RotationCurveAnalysis"],
     "RotationMinRadius" -> OptionValue["RotationMinRadius"],
     "RotationMaxRadius" -> OptionValue["RotationMaxRadius"],
     "RotationOrbitsPerRadius" -> OptionValue["RotationOrbitsPerRadius"],
+    "RotationTimestepAggregation" -> OptionValue["RotationTimestepAggregation"],
     (* Hilbert space analysis *)
     "HilbertSpaceAnalysis" -> OptionValue["HilbertSpaceAnalysis"],
     "HilbertStep" -> OptionValue["HilbertStep"],
+    "HilbertScope" -> OptionValue["HilbertScope"],
     (* Branchial analysis *)
     "BranchialAnalysis" -> OptionValue["BranchialAnalysis"],
+    "BranchialScope" -> OptionValue["BranchialScope"],
+    "BranchialPerVertex" -> OptionValue["BranchialPerVertex"],
     (* Multispace analysis *)
     "MultispaceAnalysis" -> OptionValue["MultispaceAnalysis"],
+    "MultispaceScope" -> OptionValue["MultispaceScope"],
     (* Initial condition *)
     "InitialCondition" -> OptionValue["InitialCondition"],
     (* Grid options *)
@@ -1301,33 +1327,33 @@ HGStateDimensionPlot[edges_List, opts:OptionsPattern[]] := Module[
 Options[HGTimestepUnionPlot] = {
   "Palette" -> "TemperatureMap",
   "DimensionRange" -> Automatic,
-  "Formula" -> "LinearRegression",
-  "MinRadius" -> 1,
-  "MaxRadius" -> 5,
-  "Directed" -> False,
-  "EdgeFilter" -> None,  (* None or {"MinStates" -> n} *)
+  "EdgeFilter" -> None,  (* None or <|"MinStates" -> n|> *)
+  "OpacityRange" -> {0.3, 1.0},  (* {min, max} opacity for edges *)
+  "OpacityByFrequency" -> True,  (* Scale opacity by edge frequency across states *)
+  "ArrowheadSize" -> 0.015,  (* Size of arrowheads on directed edges *)
   "VertexCoordinates" -> None,  (* List of {x,y} positions indexed by vertex ID, or Association *)
-  "Layout" -> "MDS",  (* "MDS", "Spring", "TSNE", "Given" *)
+  "Layout" -> "Spring",  (* "Spring", "MDS", "Given" *)
   "LayoutDimension" -> 2,  (* 2 or 3 for 3D plots *)
   ImageSize -> 500
 };
 
 HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPattern[]] := Module[
-  {palette, dimRange, formula, minR, maxR, directed, edgeFilter, positionsOpt, layoutOpt, imgSize,
+  {palette, dimRange, edgeFilter, opacityRange, opacityByFreq, arrowSize, positionsOpt, layoutOpt, imgSize,
    states, statesList, availableSteps, statesAtStep, allEdges, edgeTally, filteredTally, filteredEdges,
-   unionEdges, vertices, analysis, perVertex, validDims, meanDim, dimMin, dimMax, colorFunc, vertexColors,
-   edgeOpacity, gradientEdge, vertexCoords, graphOpts, g},
+   unionEdges, vertices, dimData, perTimestep, stepData, vertexData, perVertex, validDims, meanDim,
+   dimMin, dimMax, colorFunc, vertexColors, edgeOpacity, gradientEdge, vertexCoords, graphOpts, g,
+   opMin, opMax},
 
   palette = OptionValue["Palette"];
   dimRange = OptionValue["DimensionRange"];
-  formula = OptionValue["Formula"];
-  minR = OptionValue["MinRadius"];
-  maxR = OptionValue["MaxRadius"];
-  directed = OptionValue["Directed"];
   edgeFilter = OptionValue["EdgeFilter"];
+  opacityRange = OptionValue["OpacityRange"];
+  opacityByFreq = OptionValue["OpacityByFrequency"];
+  arrowSize = OptionValue["ArrowheadSize"];
   positionsOpt = OptionValue["VertexCoordinates"];
   layoutOpt = OptionValue["Layout"];
   imgSize = OptionValue[ImageSize];
+  {opMin, opMax} = opacityRange;
 
   (* Get states - handle both <|"States" -> ...|> and direct states association *)
   states = If[KeyExistsQ[evolutionResult, "States"],
@@ -1381,17 +1407,26 @@ HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPatte
   unionEdges = filteredEdges;
   vertices = Union[Flatten[unionEdges, 1]];
 
-  (* Compute dimensions on union graph *)
-  analysis = HGHausdorffAnalysis[unionEdges,
-    "Formula" -> formula, "MinRadius" -> minR, "MaxRadius" -> maxR,
-    "Directed" -> directed];
+  (* Get pre-computed dimension data from evolution result *)
+  (* Requires DimensionAnalysis -> True, DimensionTimestepAggregation -> True, DimensionPerVertex -> True *)
+  dimData = Lookup[evolutionResult, "DimensionData", <||>];
+  perTimestep = Lookup[dimData, "PerTimestep", <||>];
+  stepData = Lookup[perTimestep, step, <||>];
+  vertexData = Lookup[stepData, "Vertices", <||>];
 
-  If[!AssociationQ[analysis] || !KeyExistsQ[analysis, "PerVertex"],
-    perVertex = <||>,
-    perVertex = analysis["PerVertex"]
+  (* Extract per-vertex mean dimensions *)
+  perVertex = Association[Table[
+    vid -> Lookup[vertexData[vid], "Mean", -1],
+    {vid, Keys[vertexData]}
+  ]];
+
+  If[Length[perVertex] == 0,
+    Return[Failure["NoDimensionData", <|
+      "Message" -> "No pre-computed dimension data for this timestep. Run HGEvolve with DimensionAnalysis -> True, DimensionTimestepAggregation -> True, DimensionPerVertex -> True."
+    |>]]
   ];
 
-  (* Compute range and mean for fallback *)
+  (* Compute range and mean *)
   validDims = Select[Values[perVertex], # > 0 &];
   meanDim = If[Length[validDims] > 0, Mean[validDims], 2.0];
   {dimMin, dimMax} = If[dimRange === Automatic,
@@ -1416,7 +1451,10 @@ HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPatte
   (* Edge opacity by frequency - use string keys to avoid Lookup list issue *)
   edgeOpacity = Association[Table[
     With[{e = ec[[1]], count = ec[[2]], numStates = Length[statesAtStep]},
-      ToString[Sort[e]] -> N[0.3 + 0.7 * count/numStates]
+      ToString[Sort[e]] -> If[opacityByFreq,
+        N[opMin + (opMax - opMin) * count/numStates],
+        opMax
+      ]
     ],
     {ec, filteredTally}
   ]];
@@ -1430,7 +1468,7 @@ HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPatte
     With[{c1 = vertexColors[edge[[1]]], c2 = vertexColors[edge[[2]]],
           opKey = ToString[Sort[{edge[[1]], edge[[2]]}]]},
       With[{op = Replace[edgeOpacity[opKey], _Missing -> 0.5]},
-        {Opacity[op], c2, Arrowheads[0.025],
+        {Opacity[op], c2, Arrowheads[arrowSize],
          Arrow[Line[pts, VertexColors -> {c1, c2}]]}
       ]
     ]
@@ -1484,29 +1522,30 @@ HGTimestepUnionPlot[evolutionResult_Association, step_Integer, opts:OptionsPatte
 Options[HGDimensionFilmstrip] = {
   "Palette" -> "TemperatureMap",
   "DimensionRange" -> Automatic,
-  "Formula" -> "LinearRegression",
-  "MinRadius" -> 1,
-  "MaxRadius" -> 5,
-  "Directed" -> False,
-  "Steps" -> All,
+  "Steps" -> All,  (* All, list of steps, or Span[start, end] *)
+  "StepSize" -> 1,  (* Show every Nth step *)
   "EdgeFilter" -> None,
+  "OpacityRange" -> {0.3, 1.0},
+  "OpacityByFrequency" -> True,
+  "ArrowheadSize" -> 0.015,
   "VertexCoordinates" -> None,
-  "Layout" -> "MDS",
+  "Layout" -> "Spring",
   ImageSize -> 400
 };
 
 HGDimensionFilmstrip[evolutionResult_Association, opts:OptionsPattern[]] := Module[
-  {palette, dimRange, formula, minR, maxR, directed, stepsOpt, edgeFilter, positionsOpt, layoutOpt, imgSize,
+  {palette, dimRange, stepsOpt, stepSize, edgeFilter, opacityRange, opacityByFreq, arrowSize,
+   positionsOpt, layoutOpt, imgSize,
    states, statesList, allSteps, selectedSteps, plots},
 
   palette = OptionValue["Palette"];
   dimRange = OptionValue["DimensionRange"];
-  formula = OptionValue["Formula"];
-  minR = OptionValue["MinRadius"];
-  maxR = OptionValue["MaxRadius"];
-  directed = OptionValue["Directed"];
   stepsOpt = OptionValue["Steps"];
+  stepSize = OptionValue["StepSize"];
   edgeFilter = OptionValue["EdgeFilter"];
+  opacityRange = OptionValue["OpacityRange"];
+  opacityByFreq = OptionValue["OpacityByFrequency"];
+  arrowSize = OptionValue["ArrowheadSize"];
   positionsOpt = OptionValue["VertexCoordinates"];
   layoutOpt = OptionValue["Layout"];
   imgSize = OptionValue[ImageSize];
@@ -1526,16 +1565,20 @@ HGDimensionFilmstrip[evolutionResult_Association, opts:OptionsPattern[]] := Modu
     Intersection[Flatten[{stepsOpt}], allSteps]
   ];
 
+  (* Apply step size - take every Nth step *)
+  If[stepSize > 1,
+    selectedSteps = selectedSteps[[1 ;; ;; stepSize]]
+  ];
+
   (* Generate plots for each step *)
   plots = Table[
     Quiet[HGTimestepUnionPlot[evolutionResult, step,
       "Palette" -> palette,
       "DimensionRange" -> dimRange,
-      "Formula" -> formula,
-      "MinRadius" -> minR,
-      "MaxRadius" -> maxR,
-      "Directed" -> directed,
       "EdgeFilter" -> edgeFilter,
+      "OpacityRange" -> opacityRange,
+      "OpacityByFrequency" -> opacityByFreq,
+      "ArrowheadSize" -> arrowSize,
       "VertexCoordinates" -> positionsOpt,
       "Layout" -> layoutOpt,
       ImageSize -> imgSize
@@ -1548,8 +1591,7 @@ HGDimensionFilmstrip[evolutionResult_Association, opts:OptionsPattern[]] := Modu
 
   If[Length[plots] == 0, Return[$Failed]];
 
-  (* Arrange in column *)
-  Column[plots, Spacings -> 2]
+  plots
 ]
 
 (* ============================================================================ *)
@@ -1745,15 +1787,12 @@ HGGeodesicPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern
 
   (* === RIBBON MODE: Draw bundle as a filled region === *)
   If[pathStyle === "Ribbon" && Length[paths] >= 2,
-    (* Compute ribbon from actual path positions using convex hull at each step *)
+    (* Compute ribbon from actual path positions *)
     minPathLen = Min[Length /@ paths];
-
-    (* At each step, collect all path positions and find upper/lower bounds *)
-    (* relative to the bundle's flow direction *)
     ribbonPolygons = {};
 
-    Module[{stepCoords, stepCentroids, flowDir, perpDir, upperPts, lowerPts,
-            projections, minProj, maxProj, minIdx, maxIdx},
+    Module[{stepCoords, stepCentroids, globalFlowDir, perpDir, upperPts, lowerPts,
+            projections, minIdx, maxIdx},
 
       (* Get all path coordinates at each step *)
       stepCoords = Table[
@@ -1764,22 +1803,19 @@ HGGeodesicPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern
       (* Compute centroid at each step (the "spine" of the bundle) *)
       stepCentroids = Mean /@ stepCoords;
 
-      (* For each step, find upper and lower bounds perpendicular to flow *)
+      (* Use GLOBAL flow direction (first to last centroid) for consistency *)
+      globalFlowDir = If[minPathLen > 1,
+        Normalize[stepCentroids[[-1]] - stepCentroids[[1]]],
+        {1, 0}
+      ];
+      (* Fixed perpendicular direction *)
+      perpDir = {-globalFlowDir[[2]], globalFlowDir[[1]]};
+
+      (* For each step, find upper and lower bounds using consistent perpendicular *)
       upperPts = {};
       lowerPts = {};
 
       Do[
-        (* Flow direction: from previous centroid to next (or use overall direction) *)
-        flowDir = If[s == 1,
-          If[minPathLen > 1, Normalize[stepCentroids[[2]] - stepCentroids[[1]]], {1, 0}],
-          If[s == minPathLen,
-            Normalize[stepCentroids[[s]] - stepCentroids[[s - 1]]],
-            Normalize[stepCentroids[[s + 1]] - stepCentroids[[s - 1]]]
-          ]
-        ];
-        (* Perpendicular direction *)
-        perpDir = {-flowDir[[2]], flowDir[[1]]};
-
         (* Project all points at this step onto perpendicular direction *)
         projections = Table[
           (stepCoords[[s]][[p]] - stepCentroids[[s]]) . perpDir,
@@ -1787,8 +1823,6 @@ HGGeodesicPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern
         ];
 
         (* Find min and max projections *)
-        minProj = Min[projections];
-        maxProj = Max[projections];
         minIdx = First[Ordering[projections, 1]];
         maxIdx = First[Ordering[projections, -1]];
 
@@ -1943,6 +1977,70 @@ HGGeodesicPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern
 HGGeodesicPlot::nodata = "GeodesicData not found. Enable \"GeodesicAnalysis\" -> True in HGEvolve.";
 HGGeodesicPlot::nostate = "State `1` not found in geodesic data.";
 HGGeodesicPlot::nopaths = "No geodesic paths found for state `1`.";
+
+(* ============================================================================ *)
+(* HGGeodesicFilmstrip - Geodesic plots across timesteps *)
+(* ============================================================================ *)
+
+Options[HGGeodesicFilmstrip] = {
+  "Steps" -> All,
+  "StepSize" -> 1,
+  "PathStyle" -> "Line",
+  "PathColorFunction" -> "PathIndex",
+  "Palette" -> "TemperatureMap",
+  "DimensionRange" -> Automatic,
+  ImageSize -> 200
+};
+
+HGGeodesicFilmstrip[evolutionResult_Association, opts:OptionsPattern[]] := Module[
+  {stepsOpt, stepSize, pathStyle, pathColorFn, palette, dimRange, imgSize,
+   states, statesList, allSteps, selectedSteps},
+
+  stepsOpt = OptionValue["Steps"];
+  stepSize = OptionValue["StepSize"];
+  pathStyle = OptionValue["PathStyle"];
+  pathColorFn = OptionValue["PathColorFunction"];
+  palette = OptionValue["Palette"];
+  dimRange = OptionValue["DimensionRange"];
+  imgSize = OptionValue[ImageSize];
+
+  (* Get states *)
+  states = Lookup[evolutionResult, "States", <||>];
+  If[Length[states] == 0, Return[$Failed]];
+
+  statesList = If[AssociationQ[states], Values[states], states];
+  allSteps = Union[#["Step"] & /@ statesList];
+
+  selectedSteps = If[stepsOpt === All,
+    allSteps,
+    Intersection[Flatten[{stepsOpt}], allSteps]
+  ];
+
+  (* Apply step size *)
+  If[stepSize > 1,
+    selectedSteps = selectedSteps[[1 ;; ;; stepSize]]
+  ];
+
+  (* Generate list of lists: one inner list per timestep *)
+  Table[
+    With[{stateIds = Keys[Select[states, #["Step"] == step &]]},
+      Select[
+        Table[
+          Quiet[HGGeodesicPlot[evolutionResult, sid,
+            "PathStyle" -> pathStyle,
+            "PathColorFunction" -> pathColorFn,
+            "Palette" -> palette,
+            "DimensionRange" -> dimRange,
+            ImageSize -> imgSize
+          ]],
+          {sid, stateIds}
+        ],
+        Not@*FailureQ
+      ]
+    ],
+    {step, selectedSteps}
+  ]
+]
 
 (* ============================================================================ *)
 (* HGLensingPlot - Deflection angle vs impact parameter *)
@@ -2266,6 +2364,8 @@ Options[HGRotationOrbitsPlot] = {
   "OrbitColorFunction" -> "Deviation",  (* "Deviation", "Radius", "Velocity", or color *)
   "OrbitWidth" -> 3,
   "OrbitOpacity" -> 0.7,
+  "RadiusRange" -> All,  (* All or {min, max} to filter orbits by radius *)
+  "MaxOrbits" -> All,  (* All or integer to limit number of orbits shown *)
   "ShowCenter" -> True,
   "CenterSize" -> Large,
   "VertexSize" -> Small,
@@ -2275,8 +2375,8 @@ Options[HGRotationOrbitsPlot] = {
 };
 
 HGRotationOrbitsPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern[]] := Module[
-  {palette, dimRange, orbitColorFn, orbitWidth, orbitOpacity, showCenter, centerSize,
-   vertexSize, layout, vertexCoords, imgSize,
+  {palette, dimRange, orbitColorFn, orbitWidth, orbitOpacity, radiusRange, maxOrbitsOpt,
+   showCenter, centerSize, vertexSize, layout, vertexCoords, imgSize,
    rotationData, stateData, states, stateInfo, orbits, center, edges, vertices,
    dimData, perVertexDim, dimMin, dimMax, colorFunc, vertexColors,
    graphEdges, gBase, embedding, vertexCoordMap,
@@ -2289,6 +2389,8 @@ HGRotationOrbitsPlot[evolutionResult_Association, stateId_Integer, opts:OptionsP
   orbitColorFn = OptionValue["OrbitColorFunction"];
   orbitWidth = OptionValue["OrbitWidth"];
   orbitOpacity = OptionValue["OrbitOpacity"];
+  radiusRange = OptionValue["RadiusRange"];
+  maxOrbitsOpt = OptionValue["MaxOrbits"];
   showCenter = OptionValue["ShowCenter"];
   centerSize = OptionValue["CenterSize"];
   vertexSize = OptionValue["VertexSize"];
@@ -2316,6 +2418,20 @@ HGRotationOrbitsPlot[evolutionResult_Association, stateId_Integer, opts:OptionsP
   stateInfo = stateData[stateId];
   orbits = Lookup[stateInfo, "Orbits", {}];
   center = Lookup[stateInfo, "Center", None];
+
+  (* Filter orbits by radius range *)
+  If[radiusRange =!= All && ListQ[radiusRange] && Length[radiusRange] == 2,
+    orbits = Select[orbits,
+      With[{r = Lookup[#, "Radius", 0]},
+        r >= radiusRange[[1]] && r <= radiusRange[[2]]
+      ] &
+    ]
+  ];
+
+  (* Limit number of orbits *)
+  If[maxOrbitsOpt =!= All && IntegerQ[maxOrbitsOpt] && maxOrbitsOpt > 0,
+    orbits = Take[orbits, UpTo[maxOrbitsOpt]]
+  ];
 
   If[Length[orbits] == 0,
     Message[HGRotationOrbitsPlot::noorbits, stateId];
