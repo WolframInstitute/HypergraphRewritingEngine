@@ -1,10 +1,12 @@
 #include "blackhole/curvature_analysis.hpp"
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <queue>
 #include <numeric>
 #include <limits>
 #include <set>
+#include <unordered_set>
 
 namespace viz::blackhole {
 
@@ -263,6 +265,253 @@ std::unordered_map<VertexId, float> compute_dimension_gradient_curvature(
 }
 
 // =============================================================================
+// Wolfram-Ricci Curvature (Geodesic Tube Volume Method)
+// =============================================================================
+
+int geodesic_ball_volume(
+    const SimpleGraph& graph,
+    VertexId center,
+    int radius
+) {
+    // BFS to find all vertices within distance r
+    std::unordered_set<VertexId> visited;
+    std::queue<std::pair<VertexId, int>> q;
+    q.push({center, 0});
+    visited.insert(center);
+
+    while (!q.empty()) {
+        auto [v, dist] = q.front();
+        q.pop();
+
+        if (dist < radius) {
+            for (VertexId n : graph.neighbors(v)) {
+                if (visited.find(n) == visited.end()) {
+                    visited.insert(n);
+                    q.push({n, dist + 1});
+                }
+            }
+        }
+    }
+
+    return static_cast<int>(visited.size());
+}
+
+float flat_ball_volume(int radius, float dimension) {
+    // Volume of ball in d dimensions: V = C_d * r^d
+    // C_d = pi^(d/2) / Gamma(d/2 + 1)
+    // For discrete graphs, we use a simplified approximation
+    // that matches the expected scaling behavior
+
+    if (radius <= 0) return 1.0f;
+    if (dimension <= 0) return 1.0f;
+
+    // Approximate: for integer d, ball of radius r has roughly (2r+1)^d vertices
+    // in a regular lattice. We use a continuous approximation.
+    float r = static_cast<float>(radius);
+
+    // Use pi^(d/2) / Gamma(d/2 + 1) * r^d
+    // Simplified: ~(2*r)^d / d! for small d, or use tgamma
+    float half_d = dimension / 2.0f;
+    float c_d = std::pow(std::numbers::pi, half_d) / std::tgamma(half_d + 1.0f);
+
+    return c_d * std::pow(r, dimension);
+}
+
+float flat_tube_volume(int length, int radius, float dimension) {
+    // Volume of tube (cylinder) of length L and radius r in d dimensions
+    // V ≈ L * V_{d-1}(r) = L * C_{d-1} * r^{d-1}
+    // This is the cross-sectional area times length
+
+    if (length <= 0) return 1.0f;
+    if (radius <= 0) return static_cast<float>(length);
+    if (dimension <= 1) return static_cast<float>(length);
+
+    float L = static_cast<float>(length);
+    float r = static_cast<float>(radius);
+    float d_minus_1 = dimension - 1.0f;
+
+    // Cross-sectional ball volume
+    float half_d = d_minus_1 / 2.0f;
+    float c_d = std::pow(std::numbers::pi, half_d) / std::tgamma(half_d + 1.0f);
+
+    return L * c_d * std::pow(r, d_minus_1);
+}
+
+GeodesicTube compute_geodesic_tube(
+    const SimpleGraph& graph,
+    VertexId source,
+    VertexId target,
+    int tube_radius,
+    float dimension
+) {
+    GeodesicTube tube;
+    tube.source = source;
+    tube.target = target;
+    tube.tube_radius = tube_radius;
+
+    // Find shortest path from source to target
+    auto distances = graph.distances_from(source);
+    const auto& verts = graph.vertices();
+
+    // Find target index
+    auto target_it = std::find(verts.begin(), verts.end(), target);
+    if (target_it == verts.end()) {
+        tube.geodesic_length = 0;
+        tube.tube_volume = 0;
+        return tube;
+    }
+    size_t target_idx = std::distance(verts.begin(), target_it);
+    if (target_idx >= distances.size() || distances[target_idx] == std::numeric_limits<int>::max()) {
+        tube.geodesic_length = 0;
+        tube.tube_volume = 0;
+        return tube;
+    }
+
+    tube.geodesic_length = distances[target_idx];
+
+    // Reconstruct the geodesic path using BFS parent tracking
+    // For simplicity, we'll use an alternative: find all vertices within
+    // tube_radius of ANY vertex on the shortest path
+
+    // First, find all vertices on shortest paths (there may be multiple)
+    // We'll use a simpler approach: vertices v where d(source,v) + d(v,target) = d(source,target)
+    auto distances_from_target = graph.distances_from(target);
+
+    std::unordered_set<VertexId> on_geodesic;
+    for (size_t i = 0; i < verts.size(); ++i) {
+        if (i < distances.size() && i < distances_from_target.size()) {
+            int d_from_source = distances[i];
+            int d_to_target = distances_from_target[i];
+            if (d_from_source != std::numeric_limits<int>::max() &&
+                d_to_target != std::numeric_limits<int>::max() &&
+                d_from_source + d_to_target == tube.geodesic_length) {
+                on_geodesic.insert(verts[i]);
+            }
+        }
+    }
+
+    // Now find all vertices within tube_radius of the geodesic
+    std::unordered_set<VertexId> in_tube;
+    for (VertexId geo_v : on_geodesic) {
+        // BFS from each geodesic vertex
+        std::queue<std::pair<VertexId, int>> q;
+        q.push({geo_v, 0});
+        std::unordered_set<VertexId> local_visited;
+        local_visited.insert(geo_v);
+
+        while (!q.empty()) {
+            auto [v, dist] = q.front();
+            q.pop();
+            in_tube.insert(v);
+
+            if (dist < tube_radius) {
+                for (VertexId n : graph.neighbors(v)) {
+                    if (local_visited.find(n) == local_visited.end()) {
+                        local_visited.insert(n);
+                        q.push({n, dist + 1});
+                    }
+                }
+            }
+        }
+    }
+
+    tube.tube_volume = static_cast<int>(in_tube.size());
+    tube.expected_flat_volume = flat_tube_volume(tube.geodesic_length, tube_radius, dimension);
+
+    // Wolfram-Ricci: measure deviation from flat space
+    // κ = (d-1)/d * (1 - V_graph / V_flat) for d-dimensional Ricci
+    // Simplified: we use a normalized version
+    if (tube.expected_flat_volume > 0) {
+        float volume_ratio = static_cast<float>(tube.tube_volume) / tube.expected_flat_volume;
+        // Positive curvature: V_graph < V_flat (volume deficit)
+        // Negative curvature: V_graph > V_flat (volume excess)
+        tube.wolfram_ricci = 1.0f - volume_ratio;
+    } else {
+        tube.wolfram_ricci = 0.0f;
+    }
+
+    return tube;
+}
+
+float compute_vertex_wolfram_ricci(
+    const SimpleGraph& graph,
+    VertexId vertex,
+    int tube_radius,
+    float dimension,
+    int num_samples
+) {
+    const auto& neighbors = graph.neighbors(vertex);
+    if (neighbors.empty()) return 0.0f;
+
+    // Sample geodesics from this vertex to other vertices
+    // We prioritize neighbors and vertices at distance 2-3 for meaningful tubes
+    std::vector<VertexId> targets;
+
+    // Add immediate neighbors
+    for (VertexId n : neighbors) {
+        targets.push_back(n);
+    }
+
+    // Add vertices at distance 2
+    auto distances = graph.distances_from(vertex);
+    const auto& verts = graph.vertices();
+    for (size_t i = 0; i < verts.size() && targets.size() < static_cast<size_t>(num_samples * 2); ++i) {
+        if (i < distances.size() && distances[i] == 2) {
+            targets.push_back(verts[i]);
+        }
+    }
+
+    // Limit to num_samples
+    if (targets.size() > static_cast<size_t>(num_samples)) {
+        // Shuffle and take first num_samples (deterministic for now)
+        targets.resize(num_samples);
+    }
+
+    if (targets.empty()) return 0.0f;
+
+    // Compute average Wolfram-Ricci over sampled geodesics
+    float total_ricci = 0.0f;
+    int count = 0;
+
+    for (VertexId target : targets) {
+        if (target == vertex) continue;
+        auto tube = compute_geodesic_tube(graph, vertex, target, tube_radius, dimension);
+        if (tube.geodesic_length > 0) {
+            total_ricci += tube.wolfram_ricci;
+            ++count;
+        }
+    }
+
+    return count > 0 ? total_ricci / count : 0.0f;
+}
+
+std::unordered_map<VertexId, float> compute_all_wolfram_ricci(
+    const SimpleGraph& graph,
+    int tube_radius,
+    float dimension,
+    int samples_per_vertex,
+    const std::vector<float>* local_dimensions
+) {
+    std::unordered_map<VertexId, float> result;
+    const auto& verts = graph.vertices();
+
+    for (size_t i = 0; i < verts.size(); ++i) {
+        VertexId v = verts[i];
+
+        // Use local dimension if provided
+        float dim = dimension;
+        if (local_dimensions && i < local_dimensions->size()) {
+            dim = (*local_dimensions)[i];
+            if (dim < 1.0f) dim = dimension;  // Fallback for invalid dims
+        }
+
+        result[v] = compute_vertex_wolfram_ricci(graph, v, tube_radius, dim, samples_per_vertex);
+    }
+
+    return result;
+}
+
+// =============================================================================
 // Full Curvature Analysis
 // =============================================================================
 
@@ -277,11 +526,12 @@ CurvatureAnalysisResult analyze_curvature(
         return result;
     }
 
-    // Compute dimensions if not provided
+    // Compute dimensions if not provided (needed for Wolfram-Ricci and dimension gradient)
     std::vector<float> dims;
     if (vertex_dimensions) {
         dims = *vertex_dimensions;
-    } else if (config.compute_dimension_gradient) {
+    } else if (config.compute_dimension_gradient ||
+               (config.compute_wolfram_ricci && config.wolfram_use_measured_dim)) {
         // Compute dimensions using truncated BFS (efficient for local dimension)
         dims = estimate_all_dimensions_truncated(graph, config.max_radius);
     }
@@ -290,6 +540,21 @@ CurvatureAnalysisResult analyze_curvature(
     if (config.compute_ollivier_ricci) {
         result.edge_curvatures = compute_all_edge_curvatures(graph, config.ricci_alpha);
         result.ollivier_ricci_map = compute_vertex_ollivier_ricci(graph, config.ricci_alpha);
+    }
+
+    // Compute Wolfram-Ricci (geodesic tube volume method)
+    if (config.compute_wolfram_ricci) {
+        const std::vector<float>* dim_ptr = nullptr;
+        if (config.wolfram_use_measured_dim && !dims.empty()) {
+            dim_ptr = &dims;
+        }
+        result.wolfram_ricci_map = compute_all_wolfram_ricci(
+            graph,
+            config.wolfram_tube_radius,
+            config.wolfram_dimension,
+            config.wolfram_sample_geodesics,
+            dim_ptr
+        );
     }
 
     // Compute dimension gradient curvature
@@ -301,7 +566,7 @@ CurvatureAnalysisResult analyze_curvature(
     const auto& verts = graph.vertices();
     result.vertex_curvatures.reserve(verts.size());
 
-    std::vector<float> ricci_values, grad_values;
+    std::vector<float> ricci_values, wolfram_values, grad_values;
 
     for (size_t i = 0; i < verts.size(); ++i) {
         VertexCurvature vc;
@@ -312,13 +577,23 @@ CurvatureAnalysisResult analyze_curvature(
             ricci_values.push_back(vc.ollivier_ricci);
         }
 
+        if (result.wolfram_ricci_map.count(verts[i])) {
+            vc.wolfram_ricci = result.wolfram_ricci_map[verts[i]];
+            wolfram_values.push_back(vc.wolfram_ricci);
+        }
+
         if (result.dimension_gradient_map.count(verts[i])) {
             vc.dimension_gradient = result.dimension_gradient_map[verts[i]];
             grad_values.push_back(vc.dimension_gradient);
         }
 
-        // Combined scalar curvature (average of both methods)
-        vc.scalar_curvature = (vc.ollivier_ricci + vc.dimension_gradient) / 2.0f;
+        // Combined scalar curvature (average of available methods)
+        int num_methods = 0;
+        float sum = 0.0f;
+        if (result.ollivier_ricci_map.count(verts[i])) { sum += vc.ollivier_ricci; ++num_methods; }
+        if (result.wolfram_ricci_map.count(verts[i])) { sum += vc.wolfram_ricci; ++num_methods; }
+        if (result.dimension_gradient_map.count(verts[i])) { sum += vc.dimension_gradient; ++num_methods; }
+        vc.scalar_curvature = num_methods > 0 ? sum / num_methods : 0.0f;
 
         result.vertex_curvatures.push_back(vc);
     }
@@ -334,6 +609,19 @@ CurvatureAnalysisResult analyze_curvature(
         size_t q95_idx = static_cast<size_t>(ricci_values.size() * 0.95f);
         result.ricci_q05 = ricci_values[std::min(q05_idx, ricci_values.size() - 1)];
         result.ricci_q95 = ricci_values[std::min(q95_idx, ricci_values.size() - 1)];
+    }
+
+    // Compute statistics for Wolfram-Ricci
+    if (!wolfram_values.empty()) {
+        std::sort(wolfram_values.begin(), wolfram_values.end());
+        result.min_wolfram_ricci = wolfram_values.front();
+        result.max_wolfram_ricci = wolfram_values.back();
+        result.mean_wolfram_ricci = std::accumulate(wolfram_values.begin(), wolfram_values.end(), 0.0f) / wolfram_values.size();
+
+        size_t q05_idx = static_cast<size_t>(wolfram_values.size() * 0.05f);
+        size_t q95_idx = static_cast<size_t>(wolfram_values.size() * 0.95f);
+        result.wolfram_q05 = wolfram_values[std::min(q05_idx, wolfram_values.size() - 1)];
+        result.wolfram_q95 = wolfram_values[std::min(q95_idx, wolfram_values.size() - 1)];
     }
 
     // Compute statistics for dimension gradient

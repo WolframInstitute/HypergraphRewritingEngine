@@ -269,9 +269,11 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         bool compute_topological_charge = false;
         float charge_radius = 3.0f;
 
-        // Curvature analysis options - Ollivier-Ricci and dimension gradient curvature
+        // Curvature analysis options - Ollivier-Ricci, Wolfram-Ricci, and dimension gradient
         bool compute_curvature = false;
+        std::string curvature_method = "All";  // "OllivierRicci", "WolframRicci", "DimensionGradient", "Both" (OR+DG), "All"
         bool curvature_ollivier_ricci = true;
+        bool curvature_wolfram_ricci = true;
         bool curvature_dimension_gradient = true;
         float curvature_ricci_alpha = 0.5f;  // Laziness parameter for Ollivier-Ricci
         int curvature_gradient_radius = 2;
@@ -417,6 +419,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
                             hash_strategy = option_parser.read<std::string>();
+                        } else if (option_key == "CurvatureMethod") {
+                            curvature_method = option_parser.read<std::string>();
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
                             branchial_step = static_cast<int>(option_parser.read<int64_t>());
@@ -543,10 +547,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             } else if (option_key == "GeodesicFollowGradient") {
                                 geodesic_follow_gradient = value;
                             } else if (option_key == "CurvatureAnalysis") {
-                                // Compute Ollivier-Ricci and dimension gradient curvature
+                                // Compute curvature analysis
                                 compute_curvature = value;
                             } else if (option_key == "CurvatureOllivierRicci") {
                                 curvature_ollivier_ricci = value;
+                            } else if (option_key == "CurvatureWolframRicci") {
+                                curvature_wolfram_ricci = value;
                             } else if (option_key == "CurvatureDimensionGradient") {
                                 curvature_dimension_gradient = value;
                             } else if (option_key == "EntropyAnalysis") {
@@ -1200,9 +1206,36 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         }
 
         // ==========================================================================
-        // Curvature Analysis - Ollivier-Ricci and dimension gradient curvature
+        // Curvature Analysis - Ollivier-Ricci, Wolfram-Ricci, and dimension gradient
         // ==========================================================================
+
+        // Apply CurvatureMethod setting to individual flags
+        if (curvature_method == "OllivierRicci") {
+            curvature_ollivier_ricci = true;
+            curvature_wolfram_ricci = false;
+            curvature_dimension_gradient = false;
+        } else if (curvature_method == "WolframRicci") {
+            curvature_ollivier_ricci = false;
+            curvature_wolfram_ricci = true;
+            curvature_dimension_gradient = false;
+        } else if (curvature_method == "DimensionGradient") {
+            curvature_ollivier_ricci = false;
+            curvature_wolfram_ricci = false;
+            curvature_dimension_gradient = true;
+        } else if (curvature_method == "Both") {
+            // Backward compatible: Ollivier-Ricci + DimensionGradient
+            curvature_ollivier_ricci = true;
+            curvature_wolfram_ricci = false;
+            curvature_dimension_gradient = true;
+        } else if (curvature_method == "All") {
+            curvature_ollivier_ricci = true;
+            curvature_wolfram_ricci = true;
+            curvature_dimension_gradient = true;
+        }
+        // Individual flags (CurvatureOllivierRicci, etc.) can still override
+
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_ollivier_ricci;
+        std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_wolfram_ricci;
         std::unordered_map<uint32_t, std::unordered_map<bh::VertexId, float>> state_dimension_gradient;
         std::unordered_map<uint32_t, float> state_mean_curvature;
 
@@ -1234,6 +1267,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // Configure curvature analysis
                     bh::CurvatureConfig curv_config;
                     curv_config.compute_ollivier_ricci = curvature_ollivier_ricci;
+                    curv_config.compute_wolfram_ricci = curvature_wolfram_ricci;
                     curv_config.compute_dimension_gradient = curvature_dimension_gradient;
                     curv_config.ricci_alpha = curvature_ricci_alpha;
                     curv_config.gradient_radius = curvature_gradient_radius;
@@ -1252,10 +1286,22 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     if (curvature_ollivier_ricci) {
                         state_ollivier_ricci[sid] = curv_result.ollivier_ricci_map;
                     }
+                    if (curvature_wolfram_ricci) {
+                        state_wolfram_ricci[sid] = curv_result.wolfram_ricci_map;
+                    }
                     if (curvature_dimension_gradient) {
                         state_dimension_gradient[sid] = curv_result.dimension_gradient_map;
                     }
-                    state_mean_curvature[sid] = curv_result.mean_ollivier_ricci;
+                    // Use first available mean curvature
+                    if (curvature_ollivier_ricci && curv_result.mean_ollivier_ricci != 0.0f) {
+                        state_mean_curvature[sid] = curv_result.mean_ollivier_ricci;
+                    } else if (curvature_wolfram_ricci && curv_result.mean_wolfram_ricci != 0.0f) {
+                        state_mean_curvature[sid] = curv_result.mean_wolfram_ricci;
+                    } else if (curvature_dimension_gradient && curv_result.mean_dimension_gradient != 0.0f) {
+                        state_mean_curvature[sid] = curv_result.mean_dimension_gradient;
+                    } else {
+                        state_mean_curvature[sid] = 0.0f;
+                    }
                 }
             }
 
@@ -2616,8 +2662,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         }
 
         // CurvatureData -> Association["PerState" -> {...}]
-        // Each state: state_id -> {"OllivierRicci" -> {...}, "DimensionGradient" -> {...}, "MeanCurvature" -> float}
-        if (compute_curvature && (!state_ollivier_ricci.empty() || !state_dimension_gradient.empty())) {
+        // Each state: state_id -> {"OllivierRicci" -> {...}, "WolframRicci" -> {...}, "DimensionGradient" -> {...}, "MeanCurvature" -> float}
+        if (compute_curvature && (!state_ollivier_ricci.empty() || !state_wolfram_ricci.empty() || !state_dimension_gradient.empty())) {
             wxf::WXFValueAssociation curv_data;
 
             // Per-state curvatures
@@ -2634,6 +2680,17 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                                            wxf::WXFValue(static_cast<double>(curv))});
                     }
                     state_data.push_back({wxf::WXFValue("OllivierRicci"), wxf::WXFValue(or_assoc)});
+                }
+
+                // Wolfram-Ricci per-vertex (geodesic tube volume method)
+                auto wr_it = state_wolfram_ricci.find(sid);
+                if (wr_it != state_wolfram_ricci.end() && !wr_it->second.empty()) {
+                    wxf::WXFValueAssociation wr_assoc;
+                    for (const auto& [v, curv] : wr_it->second) {
+                        wr_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(v)),
+                                           wxf::WXFValue(static_cast<double>(curv))});
+                    }
+                    state_data.push_back({wxf::WXFValue("WolframRicci"), wxf::WXFValue(wr_assoc)});
                 }
 
                 // Dimension gradient per-vertex
