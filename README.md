@@ -1,48 +1,68 @@
 # Hypergraph Rewriting Engine
 
-A high-performance implementation of multiway hypergraph rewriting.
+A high-performance implementation of multiway hypergraph rewriting with Mathematica integration.
+
+## Status
+
+This project is functional but under active development. No stable release has been made yet and APIs may change between versions.
 
 ## Features
 
+- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction
 - **Parallel Pattern Matching**: Task-parallel pipeline with work-stealing scheduler
 - **Edge Signature Indexing**: Fast pattern matching via multi-level signature partitioning
 - **Incremental Rewriting**: Match reuse and patch-based matching around newly added edges
-- **Multiway Graph Evolution**: Parallel state evolution and causal/branchial edge creation
-- **Lock-free Data Structures**: High-performance concurrent queues and hash maps
 - **Canonicalization**: Isomorphism-invariant state hashing via Weisfeiler-Leman refinement
-- **Mathematica Integration**: Full paclet with LibraryLink bindings
+- **Lock-free Data Structures**: High-performance concurrent queues and hash maps
+- **Mathematica Paclet**: Full LibraryLink bindings with visualization functions
 
-## Development Status
+## Installation
 
-**This code is not ready for production use.**
+### Mathematica Paclet
 
-This repository is uploaded for progress reporting requirements and is not yet released. The implementation is under active development and contains known issues and incomplete features.
+Install the paclet directly from the releases:
 
-## Quick Start
+```mathematica
+PacletInstall["path/to/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
+<< WolframInstitute`HypergraphRewriteEngine`
+```
 
-### Build
+### Building from Source
 
 ```bash
 mkdir build_linux && cd build_linux
-cmake ..
-make -j32
+cmake .. -DBUILD_MATHEMATICA_PACLET=ON
+make -j32 paclet
 ```
 
-### Run Tests
+## Usage
 
-```bash
-# All tests
-./all_tests
+### Mathematica
 
-# Category-specific tests (faster iteration)
-./core_tests         # Fast core functionality
-./evolution_tests    # Evolution and pattern matching
-./causal_tests       # Causal/branchial graph
-./stress_tests       # Determinism and performance
-./integration_tests  # Paclet and integration
+```mathematica
+(* Load paclet *)
+<< WolframInstitute`HypergraphRewriteEngine`
+
+(* Define rule and initial state *)
+rule = {{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, x}};
+init = {{1, 2}, {2, 3}, {3, 1}};
+
+(* Evolve and get results *)
+result = HGEvolve[rule, init, 5, "All"];
+
+(* Access data *)
+result["StateCount"]           (* Number of states *)
+result["EventCount"]           (* Number of events *)
+result["CausalEdges"]          (* Causal graph edges *)
+result["BranchialEdges"]       (* Branchial graph edges *)
+
+(* Visualization *)
+HGStatePlot[result, 0]         (* Plot initial state *)
+HGCausalPlot[result]           (* Plot causal graph *)
+HGBranchialPlot[result]        (* Plot branchial graph *)
 ```
 
-### Basic Usage
+### C++ API
 
 ```cpp
 #include <hypergraph/parallel_evolution.hpp>
@@ -51,156 +71,97 @@ make -j32
 using namespace hypergraph;
 
 int main() {
-    // Create hypergraph and evolution engine
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);  // 4 threads
 
-    // Define rule: {x,y} -> {x,y},{y,z}
+    // Rule: {x,y},{y,z} -> {x,y},{y,z},{z,x}
     auto rule = make_rule(0)
-        .lhs({0, 1})      // Pattern edge {x, y}
-        .rhs({0, 1})      // Keep {x, y}
-        .rhs({1, 2})      // Add {y, z} with fresh vertex z
+        .lhs({0, 1}).lhs({1, 2})
+        .rhs({0, 1}).rhs({1, 2}).rhs({2, 0})
         .build();
 
     engine.add_rule(rule);
 
-    // Initial state and evolution
-    std::vector<std::vector<VertexId>> initial = {{1, 2}, {2, 3}};
-    engine.evolve(initial, 3);  // 3 steps
+    std::vector<std::vector<VertexId>> initial = {{1, 2}, {2, 3}, {3, 1}};
+    engine.evolve(initial, 5);
 
-    // Results
     std::cout << "States: " << hg.num_states() << "\n";
     std::cout << "Events: " << hg.num_events() << "\n";
-
-    // Causal structure
-    auto causal = hg.causal_graph().get_causal_edges();
-    auto branchial = hg.causal_graph().get_branchial_edges();
 }
 ```
 
-## Core API
+## Supported Platforms
 
-### Hypergraph
+The paclet includes native libraries for:
 
-The central data structure storing all edges, states, and events:
-
-```cpp
-Hypergraph hg;
-
-// Create edges and states
-EdgeId e1 = hg.create_edge({1, 2, 3});
-StateId s = hg.create_state({e1});
-
-// Configure canonicalization
-hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-hg.set_event_signature_keys(EVENT_SIG_FULL);
-```
-
-### Rules
-
-Rules are defined with pattern variables (0, 1, 2, ...) that bind to vertices:
-
-```cpp
-// {x,y},{y,z} -> {x,y},{y,z},{z,x}  (close triangle)
-auto rule = make_rule(0)
-    .lhs({0, 1})
-    .lhs({1, 2})
-    .rhs({0, 1})
-    .rhs({1, 2})
-    .rhs({2, 0})
-    .build();
-```
-
-### Evolution Engine
-
-```cpp
-ParallelEvolutionEngine engine(&hg, num_threads);
-engine.add_rule(rule);
-engine.evolve(initial_edges, num_steps);
-
-// Optional: explore only from canonical states (deduplication)
-engine.set_explore_from_canonical_states_only(true);
-```
+| Platform | Architecture |
+|----------|--------------|
+| Linux | x86-64, ARM64 |
+| Windows | x86-64, ARM64 |
+| macOS | x86-64 (Intel), ARM64 (Apple Silicon) |
 
 ## Build Requirements
 
-- C++20 compatible compiler (GCC 10+, Clang 12+)
+- C++20 compiler (GCC 10+, Clang 12+)
 - CMake 3.15+
 - Google Test (automatically downloaded)
 - Mathematica 12+ (optional, for paclet)
 
-### Cross-Compilation Dependencies (Ubuntu/Debian)
+## Cross-Compilation
 
-To build for all 6 platforms from Linux:
+Build all 6 platforms from Linux:
+
+```bash
+./build_all_platforms.sh
+```
+
+Required packages (Ubuntu/Debian):
 
 ```bash
 sudo apt install \
     cmake build-essential \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-    clang-22 lld-22 \
-    llvm-dev libxml2-dev uuid-dev libssl-dev \
-    libbz2-dev zlib1g-dev
+    clang-22 lld-22
 ```
 
-**Note:** Windows ARM64 requires clang-22+ from the [LLVM apt repository](https://apt.llvm.org/). macOS builds require [OSXCross](https://github.com/tpoechtrager/osxcross) at `~/osxcross`.
+| Target | Toolchain |
+|--------|-----------|
+| Linux ARM64 | `gcc-aarch64-linux-gnu` |
+| Windows x86-64 | MinGW-w64 |
+| Windows ARM64 | Clang 22 + LLD |
+| macOS | [OSXCross](https://github.com/tpoechtrager/osxcross) |
 
-See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup instructions.
-
-## Supported Platforms
-
-The paclet supports 6 platforms:
-- **Linux**: x86-64, ARM64
-- **Windows**: x86-64, ARM64
-- **macOS**: x86-64 (Intel), ARM64 (Apple Silicon)
-
-### Cross-Compilation
-
-Build all platforms with a single command:
-
-```bash
-./build_all_platforms.sh
-```
-
-The script automatically detects available toolchains:
-
-| Target | Toolchain | Packages |
-|--------|-----------|----------|
-| Linux ARM64 | GCC cross-compiler | `gcc-aarch64-linux-gnu g++-aarch64-linux-gnu` |
-| Windows x86-64 | MinGW-w64 | `gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64` |
-| Windows ARM64 | Clang 22 + LLD + MSVC ARM64 | `clang-22 lld-22` + VS ARM64 build tools |
-| macOS x86-64/ARM64 | OSXCross | See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) |
-
-See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup instructions.
+See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup.
 
 ## Project Structure
 
 ```
-hypergraph/              # Core hypergraph rewriting library
+hypergraph/              Core rewriting library
   include/hypergraph/
-    hypergraph.hpp         # Main Hypergraph class
-    parallel_evolution.hpp # ParallelEvolutionEngine
-    pattern.hpp            # RewriteRule, make_rule()
-    pattern_matcher.hpp    # Pattern matching
-    causal_graph.hpp       # Causal/branchial edges
-    types.hpp              # Core types (VertexId, EdgeId, etc.)
-  tests/                   # Hypergraph unit tests
+    hypergraph.hpp         Hypergraph class
+    parallel_evolution.hpp Evolution engine
+    pattern.hpp            RewriteRule, make_rule()
+    causal_graph.hpp       Causal/branchial edges
 
-job_system/              # Work-stealing task scheduler
-lockfree_deque/          # Lock-free concurrent deque
-wxf/                     # Wolfram Exchange Format serialization
+job_system/              Work-stealing task scheduler
+lockfree_deque/          Lock-free concurrent deque
+wxf/                     Wolfram Exchange Format serialization
 
-visualisation/           # 3D visualization (Vulkan)
-  blackhole/               # Physics analysis (geodesics, curvature, etc.)
-  scene/                   # Rendering pipeline
-  shaders/                 # GLSL/SPIR-V shaders
+visualisation/           3D visualization (Vulkan)
+  blackhole/               Physics analysis
+  scene/                   Rendering pipeline
 
-gpu/                     # GPU compute kernels (experimental)
+paclet/                  Mathematica paclet
+paclet_source/           LibraryLink FFI
+```
 
-testing/                 # Test infrastructure (CMake, helpers)
-examples/                # Usage examples
-benchmarks/              # Performance benchmarks
+## Testing
 
-paclet/                  # Mathematica paclet skeleton
-paclet_source/           # LibraryLink FFI implementation
+```bash
+cd build_linux
+./all_tests              # All tests
+./core_tests             # Core functionality
+./evolution_tests        # Evolution and pattern matching
+./causal_tests           # Causal/branchial graph
 ```
