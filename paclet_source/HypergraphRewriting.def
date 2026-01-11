@@ -1,6 +1,5 @@
 EXPORTS
 performRewriting
-performRewritingV2
 performHausdorffAnalysis
 WolframLibrary_initialize
 WolframLibrary_uninitialize

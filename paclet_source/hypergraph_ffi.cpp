@@ -184,16 +184,8 @@ static void print_to_frontend(WolframLibraryData libData, const std::string& mes
 }
 #endif
 
-// V1 performRewriting function removed - use performRewritingV2 (unified engine) instead
-
-// Deprecated V1 function stub - returns error directing to V2
-EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint /* argc */, MArgument* /* argv */, MArgument /* res */) {
-    handle_error(libData, "performRewriting (V1) has been removed. Use performRewritingV2 (unified engine) instead.");
-    return LIBRARY_FUNCTION_ERROR;
-}
-
 /**
- * Perform multiway rewriting evolution using unified V2 engine
+ * Perform multiway rewriting evolution
  * Input: WXF binary data as 1D byte tensor containing:
  *   Association[
  *     "InitialEdges" -> {{vertices...}, ...},
@@ -204,10 +196,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint /* argc
  *
  * Output: WXF Association with States, Events, CausalEdges, BranchialEdges
  */
-EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
     try {
         if (argc != 1) {
-            handle_error(libData, "performRewritingV2 expects 1 argument: WXF ByteArray data");
+            handle_error(libData, "performRewriting expects 1 argument: WXF ByteArray data");
             return LIBRARY_FUNCTION_ERROR;
         }
 
@@ -719,7 +711,7 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
         }
 
         // Convert all initial states to vectors of edges
-        // V2 now supports multiple initial states for exploring the full multiway system
+        // Multiple initial states are supported for exploring the full multiway system
         // CRITICAL: Each initial state gets CANONICAL vertex numbering (starting from 0)
         // This ensures isomorphic initial states like {{0,0},{0,0}} and {{1,1},{1,1}}
         // get the SAME internal representation and thus the SAME canonical hash.
@@ -2776,12 +2768,12 @@ EXTERN_C DLLEXPORT int performRewritingV2(WolframLibraryData libData, mint argc,
 
     } catch (const wxf::TypeError& e) {
         char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "WXF TypeError in V2: %.200s", e.what());
+        snprintf(err_msg, sizeof(err_msg), "WXF TypeError: %.200s", e.what());
         handle_error(libData, err_msg);
         return LIBRARY_FUNCTION_ERROR;
     } catch (const std::exception& e) {
         char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "Exception in V2: %.200s", e.what());
+        snprintf(err_msg, sizeof(err_msg), "HGEvolve error: %.200s", e.what());
         handle_error(libData, err_msg);
         return LIBRARY_FUNCTION_ERROR;
     }

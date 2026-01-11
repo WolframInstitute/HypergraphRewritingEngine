@@ -103,7 +103,7 @@ If[$HypergraphLibrary === $Failed,
 ];
 
 If[$HypergraphLibrary =!= $Failed,
-  performRewritingV2 = LibraryFunctionLoad[$HypergraphLibrary, "performRewritingV2",
+  performRewriting = LibraryFunctionLoad[$HypergraphLibrary, "performRewriting",
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
   performHausdorffAnalysis = LibraryFunctionLoad[$HypergraphLibrary, "performHausdorffAnalysis",
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
@@ -474,6 +474,44 @@ makeStyledStateVertexWithDimensionFn[vertexData_, dimensionData_, palette_, colo
 ];
 
 (* ============================================================================ *)
+(* Rule Normalization: Symbolic to Numeric Vertices *)
+(* ============================================================================ *)
+
+(* Normalize a single rule: convert symbolic vertices to consecutive integers *)
+(* Example: {{a, b}, {b, c}} -> {{a, c}} becomes {{0, 1}, {1, 2}} -> {{0, 2}} *)
+normalizeRule[rule_Rule] := Module[
+  {lhs, rhs, allVertices, vertexMap, mapVertex},
+
+  lhs = rule[[1]];
+  rhs = rule[[2]];
+
+  (* Collect all unique vertices from LHS first, then RHS *)
+  (* LHS vertices get lower indices, ensuring pattern matching works correctly *)
+  allVertices = DeleteDuplicates[Join[
+    Flatten[lhs],
+    Flatten[rhs]
+  ]];
+
+  (* Create mapping: vertex -> integer index (0-based) *)
+  vertexMap = Association[MapIndexed[#1 -> #2[[1]] - 1 &, allVertices]];
+
+  (* Map vertices to integers *)
+  mapVertex[v_] := vertexMap[v];
+
+  (* Apply mapping to LHS and RHS *)
+  Map[mapVertex, lhs, {2}] -> Map[mapVertex, rhs, {2}]
+];
+
+(* Normalize a list of rules *)
+normalizeRules[rules_List] := normalizeRule /@ rules;
+
+(* Check if a rule already uses numeric vertices *)
+ruleIsNumeric[rule_Rule] := AllTrue[
+  Flatten[{rule[[1]], rule[[2]]}],
+  IntegerQ
+];
+
+(* ============================================================================ *)
 (* Main Function: HGEvolve *)
 (* ============================================================================ *)
 
@@ -482,9 +520,10 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
          OptionsPattern[]] := Module[
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, aspectRatio, props,
-   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties},
+   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties,
+   normalizedRules, rulesAssoc, initialStatesData},
 
-  If[Head[performRewritingV2] =!= LibraryFunction,
+  If[Head[performRewriting] =!= LibraryFunction,
     Return[$Failed]
   ];
 
@@ -601,8 +640,11 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "SprinklingSpatialExtent" -> OptionValue["SprinklingSpatialExtent"]
   |>;
 
+  (* Normalize rules: convert symbolic vertices to integers if needed *)
+  normalizedRules = normalizeRules[rules];
+
   (* Convert rules to Association *)
-  rulesAssoc = Association[Table["Rule" <> ToString[i] -> rules[[i]], {i, Length[rules]}]];
+  rulesAssoc = Association[Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
 
   (* Handle single vs multiple initial states *)
   initialStatesData = If[Depth[initialEdges] == 3, {initialEdges}, initialEdges];
@@ -617,7 +659,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
 
   (* Call FFI *)
   wxfBytes = BinarySerialize[inputData];
-  resultBytes = performRewritingV2[wxfBytes];
+  resultBytes = performRewriting[wxfBytes];
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
 

@@ -94,7 +94,7 @@ static RewriteRule blackhole_rule() {
         .build();
 }
 
-// Mimics exactly what performRewritingV2 does with the user's exact parameters
+// Mimics exactly what performRewriting does with the user's exact parameters
 void run_grid_evolution(HashStrategy strategy, int steps, size_t max_per_parent, size_t max_per_step) {
     size_t mem_before = get_memory_usage_kb();
     {
