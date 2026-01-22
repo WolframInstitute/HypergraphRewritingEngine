@@ -110,6 +110,19 @@ public:
 
     void request_close() override { open_ = false; }
 
+    void focus() override {
+        if (connection_ && window_) {
+            // Raise window to top of stack
+            uint32_t values[] = { XCB_STACK_MODE_ABOVE };
+            xcb_configure_window(connection_, window_, XCB_CONFIG_WINDOW_STACK_MODE, values);
+
+            // Set input focus
+            xcb_set_input_focus(connection_, XCB_INPUT_FOCUS_POINTER_ROOT, window_, XCB_CURRENT_TIME);
+
+            xcb_flush(connection_);
+        }
+    }
+
     void* get_native_display() const override { return connection_; }
     void* get_native_window() const override { return reinterpret_cast<void*>(static_cast<uintptr_t>(window_)); }
 

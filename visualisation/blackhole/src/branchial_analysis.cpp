@@ -1,4 +1,5 @@
 #include "blackhole/branchial_analysis.hpp"
+#include <job_system/job_system.hpp>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -754,6 +755,307 @@ HilbertSpaceAnalysis analyze_hilbert_space_full(
 
     // Note: Edge-level MI is computed in the FFI where we have access to the
     // original hypergraph SparseBitsets for direct edge ID comparison
+
+    // Compute mean vertex probability and entropy
+    if (!result.vertex_probabilities.empty()) {
+        float sum_prob = 0.0f;
+        float entropy = 0.0f;
+
+        for (const auto& [vertex, prob] : result.vertex_probabilities) {
+            sum_prob += prob;
+            if (prob > 0.0f && prob < 1.0f) {
+                entropy -= prob * std::log2(prob);
+            }
+        }
+
+        result.mean_vertex_probability = sum_prob / result.vertex_probabilities.size();
+        result.vertex_probability_entropy = entropy;
+    }
+
+    return result;
+}
+
+// =============================================================================
+// Parallel Implementations
+// =============================================================================
+
+BranchialAnalysisResult analyze_branchial_parallel(
+    const std::vector<BranchState>& states,
+    job_system::JobSystem<int>* js,
+    const BranchialConfig& config
+) {
+    BranchialAnalysisResult result;
+
+    if (states.empty()) {
+        return result;
+    }
+
+    // Build graph (not parallelizable - builds indices)
+    result.graph = build_branchial_graph(states, config);
+
+    // Collect all unique vertices
+    std::unordered_set<VertexId> all_vertices;
+    for (const auto& state : states) {
+        for (VertexId v : state.vertices) {
+            all_vertices.insert(v);
+        }
+    }
+    result.num_unique_vertices = static_cast<int>(all_vertices.size());
+
+    // Convert to vector for parallel iteration
+    std::vector<VertexId> vertex_list(all_vertices.begin(), all_vertices.end());
+    std::vector<VertexBranchInfo> vertex_infos(vertex_list.size());
+    std::vector<float> sharpness_values(vertex_list.size(), 0.0f);
+    std::vector<float> entropy_values(vertex_list.size(), 0.0f);
+
+    // Analyze each vertex in parallel
+    for (size_t i = 0; i < vertex_list.size(); ++i) {
+        js->submit_function([&result, &vertex_list, &vertex_infos, &sharpness_values, &entropy_values, &config, i]() {
+            VertexId v = vertex_list[i];
+            VertexBranchInfo info;
+            info.vertex = v;
+
+            auto it = result.graph.vertex_to_states.find(v);
+            if (it != result.graph.vertex_to_states.end()) {
+                info.states = it->second;
+
+                std::unordered_set<uint32_t> branches;
+                for (uint32_t sid : it->second) {
+                    if (sid < result.graph.states.size()) {
+                        branches.insert(result.graph.states[sid].branch_id);
+                    }
+                }
+                info.branches.assign(branches.begin(), branches.end());
+            }
+
+            // Compute sharpness using existing function
+            if (config.compute_sharpness) {
+                info.distribution_sharpness = compute_vertex_sharpness(v, result.graph);
+                sharpness_values[i] = info.distribution_sharpness;
+            }
+
+            // Compute entropy using existing function
+            if (config.compute_entropy) {
+                info.branch_entropy = compute_vertex_branch_entropy(v, result.graph);
+                entropy_values[i] = info.branch_entropy;
+            }
+
+            vertex_infos[i] = std::move(info);
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    // Aggregate results
+    float total_sharpness = 0.0f;
+    float total_entropy = 0.0f;
+    int max_branches = 0;
+
+    for (size_t i = 0; i < vertex_infos.size(); ++i) {
+        const auto& info = vertex_infos[i];
+        result.vertex_info.push_back(info);
+        result.vertex_sharpness[info.vertex] = info.distribution_sharpness;
+        result.vertex_entropy[info.vertex] = info.branch_entropy;
+        total_sharpness += info.distribution_sharpness;
+        total_entropy += info.branch_entropy;
+        if (static_cast<int>(info.branches.size()) > max_branches) {
+            max_branches = static_cast<int>(info.branches.size());
+        }
+    }
+
+    result.max_branches_per_vertex = static_cast<float>(max_branches);
+
+    if (!result.vertex_info.empty()) {
+        result.mean_sharpness = total_sharpness / result.vertex_info.size();
+        result.mean_branch_entropy = total_entropy / result.vertex_info.size();
+    }
+
+    // Get stack edges for visualization
+    result.stack_edges = get_stacked_state_pairs(result.graph, -1);
+
+    return result;
+}
+
+HilbertSpaceAnalysis analyze_hilbert_space_parallel(
+    const BranchialGraph& graph,
+    job_system::JobSystem<int>* js,
+    uint32_t step
+) {
+    HilbertSpaceAnalysis result;
+
+    auto it = graph.step_to_states.find(step);
+    if (it == graph.step_to_states.end() || it->second.empty()) {
+        return result;
+    }
+
+    result.state_indices = it->second;
+    result.num_states = result.state_indices.size();
+    result.vertex_probabilities = compute_vertex_probabilities(graph, step);
+    result.num_vertices = result.vertex_probabilities.size();
+
+    // Compute inner product matrix in parallel
+    size_t n = result.num_states;
+    result.inner_product_matrix.resize(n, std::vector<float>(n, 0.0f));
+
+    // Parallelize over rows (each row is independent)
+    for (size_t i = 0; i < n; ++i) {
+        js->submit_function([&graph, &result, i, n]() {
+            uint32_t si = result.state_indices[i];
+            if (si >= graph.states.size()) return;
+
+            for (size_t j = i; j < n; ++j) {
+                uint32_t sj = result.state_indices[j];
+                if (sj >= graph.states.size()) continue;
+
+                float ip = compute_state_inner_product(graph.states[si], graph.states[sj]);
+                result.inner_product_matrix[i][j] = ip;
+                result.inner_product_matrix[j][i] = ip;
+            }
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    // Compute statistics
+    float sum_off_diagonal = 0.0f;
+    int off_diagonal_count = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            float ip = result.inner_product_matrix[i][j];
+            sum_off_diagonal += ip;
+            ++off_diagonal_count;
+            if (ip > result.max_inner_product) {
+                result.max_inner_product = ip;
+            }
+        }
+    }
+
+    if (off_diagonal_count > 0) {
+        result.mean_inner_product = sum_off_diagonal / off_diagonal_count;
+    }
+
+    // Compute mean vertex probability and entropy
+    if (!result.vertex_probabilities.empty()) {
+        float sum_prob = 0.0f;
+        float entropy = 0.0f;
+
+        for (const auto& [vertex, prob] : result.vertex_probabilities) {
+            sum_prob += prob;
+            if (prob > 0.0f && prob < 1.0f) {
+                entropy -= prob * std::log2(prob);
+            }
+        }
+
+        result.mean_vertex_probability = sum_prob / result.vertex_probabilities.size();
+        result.vertex_probability_entropy = entropy;
+    }
+
+    return result;
+}
+
+HilbertSpaceAnalysis analyze_hilbert_space_full_parallel(
+    const BranchialGraph& graph,
+    job_system::JobSystem<int>* js
+) {
+    HilbertSpaceAnalysis result;
+
+    if (graph.states.empty()) {
+        return result;
+    }
+
+    // Use all states
+    result.state_indices.reserve(graph.states.size());
+    for (size_t i = 0; i < graph.states.size(); ++i) {
+        result.state_indices.push_back(static_cast<uint32_t>(i));
+    }
+    result.num_states = result.state_indices.size();
+
+    // Compute vertex probabilities
+    std::unordered_map<VertexId, int> vertex_counts;
+    for (const auto& state : graph.states) {
+        for (VertexId v : state.vertices) {
+            vertex_counts[v]++;
+        }
+    }
+
+    float num_states = static_cast<float>(graph.states.size());
+    for (const auto& [vertex, count] : vertex_counts) {
+        result.vertex_probabilities[vertex] = static_cast<float>(count) / num_states;
+    }
+    result.num_vertices = result.vertex_probabilities.size();
+
+    // Compute inner product matrix in parallel
+    size_t n = result.num_states;
+    result.inner_product_matrix.resize(n, std::vector<float>(n, 0.0f));
+
+    // Parallelize over rows
+    for (size_t i = 0; i < n; ++i) {
+        js->submit_function([&graph, &result, i, n]() {
+            for (size_t j = i; j < n; ++j) {
+                float ip = compute_state_inner_product(graph.states[i], graph.states[j]);
+                result.inner_product_matrix[i][j] = ip;
+                result.inner_product_matrix[j][i] = ip;
+            }
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    // Compute statistics
+    float sum_off_diagonal = 0.0f;
+    int off_diagonal_count = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            float ip = result.inner_product_matrix[i][j];
+            sum_off_diagonal += ip;
+            ++off_diagonal_count;
+            if (ip > result.max_inner_product) {
+                result.max_inner_product = ip;
+            }
+        }
+    }
+
+    if (off_diagonal_count > 0) {
+        result.mean_inner_product = sum_off_diagonal / off_diagonal_count;
+    }
+
+    // Build universe of all vertices for MI computation
+    std::unordered_set<VertexId> universe;
+    for (const auto& [vid, prob] : result.vertex_probabilities) {
+        universe.insert(vid);
+    }
+
+    // Compute mutual information matrix in parallel
+    result.mutual_information_matrix.resize(n, std::vector<float>(n, 0.0f));
+
+    for (size_t i = 0; i < n; ++i) {
+        js->submit_function([&graph, &result, &universe, i, n]() {
+            for (size_t j = i; j < n; ++j) {
+                float mi = compute_state_mutual_information(graph.states[i], graph.states[j], universe);
+                result.mutual_information_matrix[i][j] = mi;
+                result.mutual_information_matrix[j][i] = mi;
+            }
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    // Compute MI statistics
+    float sum_mi_off_diagonal = 0.0f;
+    int mi_off_diagonal_count = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            float mi = result.mutual_information_matrix[i][j];
+            sum_mi_off_diagonal += mi;
+            ++mi_off_diagonal_count;
+            if (mi > result.max_mutual_information) {
+                result.max_mutual_information = mi;
+            }
+        }
+    }
+
+    if (mi_off_diagonal_count > 0) {
+        result.mean_mutual_information = sum_mi_off_diagonal / mi_off_diagonal_count;
+    }
 
     // Compute mean vertex probability and entropy
     if (!result.vertex_probabilities.empty()) {

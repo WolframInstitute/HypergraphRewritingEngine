@@ -22,9 +22,9 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/particle_detection.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/entropy_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/curvature_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/rotation_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branchial_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/equilibrium_analysis.cpp
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branch_alignment.cpp
 )
 
 # Create the library

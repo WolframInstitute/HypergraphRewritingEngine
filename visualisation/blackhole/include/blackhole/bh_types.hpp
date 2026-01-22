@@ -46,6 +46,12 @@ struct Vec3 {
     Vec3 operator+(const Vec3& o) const { return {x + o.x, y + o.y, z + o.z}; }
     Vec3 operator-(const Vec3& o) const { return {x - o.x, y - o.y, z - o.z}; }
     Vec3 operator*(float s) const { return {x * s, y * s, z * s}; }
+    Vec3 operator/(float s) const { return {x / s, y / s, z / s}; }
+    Vec3& operator+=(const Vec3& o) { x += o.x; y += o.y; z += o.z; return *this; }
+
+    float dot(const Vec3& o) const { return x * o.x + y * o.y + z * o.z; }
+    float norm_sq() const { return dot(*this); }
+    float norm() const { return std::sqrt(norm_sq()); }
 };
 
 struct Vec4 {
@@ -270,6 +276,12 @@ struct LightweightAnalysis {
     // Geodesic coordinates per vertex
     std::vector<std::array<int, MAX_ANCHORS>> vertex_coords;
     int num_anchors = 0;
+
+    // Per-state curvature (keyed by VertexId for flexible lookup)
+    std::unordered_map<VertexId, float> curvature_ollivier;
+    std::unordered_map<VertexId, float> curvature_wolfram_scalar;
+    std::unordered_map<VertexId, float> curvature_wolfram_ricci;
+    std::unordered_map<VertexId, float> curvature_dim_gradient;
 };
 
 // =============================================================================
@@ -332,6 +344,10 @@ struct TimestepAggregation {
     std::vector<float> min_dimensions;
     std::vector<float> max_dimensions;
 
+    // Raw per-vertex dimensions (before bucketing, averaged across states)
+    // Used for "Per-Vertex" aggregation mode (vs "Bucketed" which uses mean_dimensions)
+    std::vector<float> raw_vertex_dimensions;
+
     // Global dimension per vertex (computed on union/timeslice graph, bucketed by coordinate)
     std::vector<float> global_mean_dimensions;
     std::vector<float> global_variance_dimensions;
@@ -379,6 +395,121 @@ struct TimestepAggregation {
     // Global variance prefix sums
     std::unordered_map<VertexId, float> global_var_prefix_sum;
     std::unordered_map<VertexId, int> global_var_prefix_count;
+
+    // =========================================================================
+    // Curvature Aggregation (Branchial: mean/variance across states)
+    // =========================================================================
+    // Bucketed by geodesic coordinate, parallel to mean_dimensions/variance_dimensions
+
+    // Ollivier-Ricci curvature
+    std::vector<float> mean_curvature_ollivier;
+    std::vector<float> variance_curvature_ollivier;
+
+    // Wolfram scalar curvature (ball volume method)
+    std::vector<float> mean_curvature_wolfram_scalar;
+    std::vector<float> variance_curvature_wolfram_scalar;
+
+    // Wolfram-Ricci curvature (tube volume method)
+    std::vector<float> mean_curvature_wolfram_ricci;
+    std::vector<float> variance_curvature_wolfram_ricci;
+
+    // Dimension gradient curvature
+    std::vector<float> mean_curvature_dim_gradient;
+    std::vector<float> variance_curvature_dim_gradient;
+
+    // =========================================================================
+    // Curvature on Union Graph (Foliation: single sample, no variance)
+    // =========================================================================
+    // Computed on the union graph for this timestep
+
+    std::vector<float> foliation_curvature_ollivier;
+    std::vector<float> foliation_curvature_wolfram_scalar;
+    std::vector<float> foliation_curvature_wolfram_ricci;
+    std::vector<float> foliation_curvature_dim_gradient;
+
+    // =========================================================================
+    // Curvature Statistics (for normalization)
+    // =========================================================================
+
+    // Branchial mean curvature stats
+    float ollivier_mean_min = 0, ollivier_mean_max = 0;
+    float wolfram_scalar_mean_min = 0, wolfram_scalar_mean_max = 0;
+    float wolfram_ricci_mean_min = 0, wolfram_ricci_mean_max = 0;
+    float dim_gradient_mean_min = 0, dim_gradient_mean_max = 0;
+
+    // Branchial variance curvature stats
+    float ollivier_var_min = 0, ollivier_var_max = 0;
+    float wolfram_scalar_var_min = 0, wolfram_scalar_var_max = 0;
+    float wolfram_ricci_var_min = 0, wolfram_ricci_var_max = 0;
+    float dim_gradient_var_min = 0, dim_gradient_var_max = 0;
+
+    // Foliation curvature stats
+    float foliation_ollivier_min = 0, foliation_ollivier_max = 0;
+    float foliation_wolfram_scalar_min = 0, foliation_wolfram_scalar_max = 0;
+    float foliation_wolfram_ricci_min = 0, foliation_wolfram_ricci_max = 0;
+    float foliation_dim_gradient_min = 0, foliation_dim_gradient_max = 0;
+
+    // =========================================================================
+    // Curvature Accessors (indexed by curvature type for extensibility)
+    // Index: 0=Ollivier, 1=WolframScalar, 2=WolframRicci, 3=DimGradient
+    // =========================================================================
+    const std::vector<float>& get_mean_curvature(int idx) const {
+        static const std::vector<float> empty;
+        switch (idx) {
+            case 0: return mean_curvature_ollivier;
+            case 1: return mean_curvature_wolfram_scalar;
+            case 2: return mean_curvature_wolfram_ricci;
+            case 3: return mean_curvature_dim_gradient;
+            default: return empty;
+        }
+    }
+    const std::vector<float>& get_variance_curvature(int idx) const {
+        static const std::vector<float> empty;
+        switch (idx) {
+            case 0: return variance_curvature_ollivier;
+            case 1: return variance_curvature_wolfram_scalar;
+            case 2: return variance_curvature_wolfram_ricci;
+            case 3: return variance_curvature_dim_gradient;
+            default: return empty;
+        }
+    }
+    const std::vector<float>& get_foliation_curvature(int idx) const {
+        static const std::vector<float> empty;
+        switch (idx) {
+            case 0: return foliation_curvature_ollivier;
+            case 1: return foliation_curvature_wolfram_scalar;
+            case 2: return foliation_curvature_wolfram_ricci;
+            case 3: return foliation_curvature_dim_gradient;
+            default: return empty;
+        }
+    }
+    void get_mean_curvature_range(int idx, float& out_min, float& out_max) const {
+        switch (idx) {
+            case 0: out_min = ollivier_mean_min; out_max = ollivier_mean_max; break;
+            case 1: out_min = wolfram_scalar_mean_min; out_max = wolfram_scalar_mean_max; break;
+            case 2: out_min = wolfram_ricci_mean_min; out_max = wolfram_ricci_mean_max; break;
+            case 3: out_min = dim_gradient_mean_min; out_max = dim_gradient_mean_max; break;
+            default: out_min = -1; out_max = 1; break;
+        }
+    }
+    void get_variance_curvature_range(int idx, float& out_min, float& out_max) const {
+        switch (idx) {
+            case 0: out_min = ollivier_var_min; out_max = ollivier_var_max; break;
+            case 1: out_min = wolfram_scalar_var_min; out_max = wolfram_scalar_var_max; break;
+            case 2: out_min = wolfram_ricci_var_min; out_max = wolfram_ricci_var_max; break;
+            case 3: out_min = dim_gradient_var_min; out_max = dim_gradient_var_max; break;
+            default: out_min = 0; out_max = 1; break;
+        }
+    }
+    void get_foliation_curvature_range(int idx, float& out_min, float& out_max) const {
+        switch (idx) {
+            case 0: out_min = foliation_ollivier_min; out_max = foliation_ollivier_max; break;
+            case 1: out_min = foliation_wolfram_scalar_min; out_max = foliation_wolfram_scalar_max; break;
+            case 2: out_min = foliation_wolfram_ricci_min; out_max = foliation_wolfram_ricci_max; break;
+            case 3: out_min = foliation_dim_gradient_min; out_max = foliation_dim_gradient_max; break;
+            default: out_min = -1; out_max = 1; break;
+        }
+    }
 };
 
 // =============================================================================
@@ -410,6 +541,25 @@ struct StateData {
 };
 
 // =============================================================================
+// Per-State Aggregate Values (for scatter plots)
+// =============================================================================
+// Lightweight struct holding mean values per state for serialization
+
+struct StateAggregate {
+    uint32_t state_id;
+    uint32_t step;
+
+    // Mean dimension (average across all vertices in this state)
+    float mean_dimension = 0;
+
+    // Mean curvatures (average across all vertices in this state)
+    float mean_ollivier_ricci = 0;
+    float mean_wolfram_scalar = 0;
+    float mean_wolfram_ricci = 0;
+    float mean_dim_gradient = 0;
+};
+
+// =============================================================================
 // Complete Analysis Result
 // =============================================================================
 
@@ -424,6 +574,9 @@ struct BHAnalysisResult {
 
     // Per-state analysis (flattened across all steps)
     std::vector<StateAnalysis> per_state;
+
+    // Per-state aggregate values for scatter plots (serialized to .bhdata)
+    std::vector<StateAggregate> state_aggregates;
 
     // Per-timestep aggregation
     std::vector<TimestepAggregation> per_timestep;
@@ -547,12 +700,154 @@ struct BHAnalysisResult {
     float charge_min = 0;
     float charge_max = 1;
 
+    // =========================================================================
+    // Branch Alignment Results (curvature shape space)
+    // =========================================================================
+    // Populated when alignment analysis is performed
+    // We precompute for both curvature methods so user can toggle without recomputation
+
+    bool has_branch_alignment = false;
+    bool has_ollivier_alignment = false;  // Only if --curvature was enabled
+
+    // Per-timestep alignment aggregation (indexed by step)
+    struct PerTimestepAlignment {
+        std::vector<float> all_pc1;
+        std::vector<float> all_pc2;
+        std::vector<float> all_pc3;
+        std::vector<float> all_curvature;
+        std::vector<float> all_rank;
+        std::vector<size_t> branch_id;
+        std::vector<VertexId> all_vertices;
+        std::vector<StateId> state_id;
+        std::vector<size_t> branch_sizes;
+        size_t total_points = 0;
+        size_t num_branches = 0;
+    };
+
+    // Wolfram-Ricci alignment (K = 2 - d, always available if dimension computed)
+    std::vector<PerTimestepAlignment> alignment_per_timestep;  // Legacy name for compatibility
+    float global_pc1_min = 0, global_pc1_max = 0;
+    float global_pc2_min = 0, global_pc2_max = 0;
+    float global_pc3_min = 0, global_pc3_max = 0;
+    float global_curvature_min = 0, global_curvature_max = 0;
+    float curvature_abs_max = 0;
+
+    // Ollivier-Ricci alignment (from --curvature analysis)
+    std::vector<PerTimestepAlignment> alignment_ollivier;
+    float ollivier_pc1_min = 0, ollivier_pc1_max = 0;
+    float ollivier_pc2_min = 0, ollivier_pc2_max = 0;
+    float ollivier_pc3_min = 0, ollivier_pc3_max = 0;
+    float ollivier_curvature_min = 0, ollivier_curvature_max = 0;
+    float ollivier_curvature_abs_max = 0;
+
+    // =========================================================================
+    // Curvature Analysis Results (for 2D/3D view coloring)
+    // =========================================================================
+    bool has_curvature_analysis = false;
+    std::unordered_map<VertexId, float> curvature_ollivier_ricci;
+    std::unordered_map<VertexId, float> curvature_dimension_gradient;
+    std::unordered_map<VertexId, float> curvature_wolfram_scalar;  // Ball volume method
+    std::unordered_map<VertexId, float> curvature_wolfram_ricci;   // Tube volume method (full tensor)
+    float curvature_ollivier_mean = 0, curvature_ollivier_min = 0, curvature_ollivier_max = 0;
+    float curvature_dim_grad_mean = 0, curvature_dim_grad_min = 0, curvature_dim_grad_max = 0;
+    float curvature_wolfram_scalar_mean = 0, curvature_wolfram_scalar_min = 0, curvature_wolfram_scalar_max = 0;
+    float curvature_wolfram_ricci_mean = 0, curvature_wolfram_ricci_min = 0, curvature_wolfram_ricci_max = 0;
+
+    // Global curvature ranges (quantiles across ALL timesteps, for normalization)
+    // Branchial mean
+    float curv_ollivier_mean_q05 = 0, curv_ollivier_mean_q95 = 0;
+    float curv_wolfram_scalar_mean_q05 = 0, curv_wolfram_scalar_mean_q95 = 0;
+    float curv_wolfram_ricci_mean_q05 = 0, curv_wolfram_ricci_mean_q95 = 0;
+    float curv_dim_gradient_mean_q05 = 0, curv_dim_gradient_mean_q95 = 0;
+    // Branchial variance
+    float curv_ollivier_var_q05 = 0, curv_ollivier_var_q95 = 0;
+    float curv_wolfram_scalar_var_q05 = 0, curv_wolfram_scalar_var_q95 = 0;
+    float curv_wolfram_ricci_var_q05 = 0, curv_wolfram_ricci_var_q95 = 0;
+    float curv_dim_gradient_var_q05 = 0, curv_dim_gradient_var_q95 = 0;
+    // Foliation
+    float curv_foliation_ollivier_q05 = 0, curv_foliation_ollivier_q95 = 0;
+    float curv_foliation_wolfram_scalar_q05 = 0, curv_foliation_wolfram_scalar_q95 = 0;
+    float curv_foliation_wolfram_ricci_q05 = 0, curv_foliation_wolfram_ricci_q95 = 0;
+    float curv_foliation_dim_gradient_q05 = 0, curv_foliation_dim_gradient_q95 = 0;
+
+    // =========================================================================
+    // Hilbert Space Analysis Results
+    // =========================================================================
+    bool has_hilbert_analysis = false;
+    std::unordered_map<VertexId, float> hilbert_vertex_probabilities;
+    size_t hilbert_num_states = 0;
+    size_t hilbert_num_vertices = 0;
+    float hilbert_mean_inner_product = 0;
+    float hilbert_max_inner_product = 0;
+    float hilbert_mean_vertex_probability = 0;
+    float hilbert_vertex_probability_entropy = 0;
+
+    // =========================================================================
+    // Branchial Analysis Results
+    // =========================================================================
+    bool has_branchial_analysis = false;
+    std::unordered_map<VertexId, float> branchial_vertex_sharpness;
+    std::unordered_map<VertexId, float> branchial_vertex_entropy;
+    float branchial_mean_sharpness = 0;
+    float branchial_mean_entropy = 0;
+
     // Helpers
     const TimestepAggregation* get_timestep(int step) const {
         for (const auto& ts : per_timestep) {
             if (ts.step == static_cast<uint32_t>(step)) return &ts;
         }
         return nullptr;
+    }
+
+    // =========================================================================
+    // Curvature Accessors (indexed by curvature type for extensibility)
+    // Index: 0=Ollivier, 1=WolframScalar, 2=WolframRicci, 3=DimGradient
+    // =========================================================================
+    const std::unordered_map<VertexId, float>& get_global_curvature_map(int idx) const {
+        static const std::unordered_map<VertexId, float> empty;
+        switch (idx) {
+            case 0: return curvature_ollivier_ricci;
+            case 1: return curvature_wolfram_scalar;
+            case 2: return curvature_wolfram_ricci;
+            case 3: return curvature_dimension_gradient;
+            default: return empty;
+        }
+    }
+    void get_global_curvature_range(int idx, float& out_min, float& out_max) const {
+        switch (idx) {
+            case 0: out_min = curvature_ollivier_min; out_max = curvature_ollivier_max; break;
+            case 1: out_min = curvature_wolfram_scalar_min; out_max = curvature_wolfram_scalar_max; break;
+            case 2: out_min = curvature_wolfram_ricci_min; out_max = curvature_wolfram_ricci_max; break;
+            case 3: out_min = curvature_dim_grad_min; out_max = curvature_dim_grad_max; break;
+            default: out_min = -1; out_max = 1; break;
+        }
+    }
+    void get_mean_curvature_quantiles(int idx, float& out_q05, float& out_q95) const {
+        switch (idx) {
+            case 0: out_q05 = curv_ollivier_mean_q05; out_q95 = curv_ollivier_mean_q95; break;
+            case 1: out_q05 = curv_wolfram_scalar_mean_q05; out_q95 = curv_wolfram_scalar_mean_q95; break;
+            case 2: out_q05 = curv_wolfram_ricci_mean_q05; out_q95 = curv_wolfram_ricci_mean_q95; break;
+            case 3: out_q05 = curv_dim_gradient_mean_q05; out_q95 = curv_dim_gradient_mean_q95; break;
+            default: out_q05 = -1; out_q95 = 1; break;
+        }
+    }
+    void get_variance_curvature_quantiles(int idx, float& out_q05, float& out_q95) const {
+        switch (idx) {
+            case 0: out_q05 = curv_ollivier_var_q05; out_q95 = curv_ollivier_var_q95; break;
+            case 1: out_q05 = curv_wolfram_scalar_var_q05; out_q95 = curv_wolfram_scalar_var_q95; break;
+            case 2: out_q05 = curv_wolfram_ricci_var_q05; out_q95 = curv_wolfram_ricci_var_q95; break;
+            case 3: out_q05 = curv_dim_gradient_var_q05; out_q95 = curv_dim_gradient_var_q95; break;
+            default: out_q05 = 0; out_q95 = 1; break;
+        }
+    }
+    void get_foliation_curvature_quantiles(int idx, float& out_q05, float& out_q95) const {
+        switch (idx) {
+            case 0: out_q05 = curv_foliation_ollivier_q05; out_q95 = curv_foliation_ollivier_q95; break;
+            case 1: out_q05 = curv_foliation_wolfram_scalar_q05; out_q95 = curv_foliation_wolfram_scalar_q95; break;
+            case 2: out_q05 = curv_foliation_wolfram_ricci_q05; out_q95 = curv_foliation_wolfram_ricci_q95; break;
+            case 3: out_q05 = curv_foliation_dim_gradient_q05; out_q95 = curv_foliation_dim_gradient_q95; break;
+            default: out_q05 = -1; out_q95 = 1; break;
+        }
     }
 };
 
@@ -787,6 +1082,67 @@ inline Vec3 apply_palette(float t, ColorPalette palette) {
         case ColorPalette::Turbo: return turbo_color(t);
         default: return temperature_color(t);
     }
+}
+
+// =============================================================================
+// Diverging Colormap (for signed values: curvature, etc.)
+// =============================================================================
+
+// Apply palette in diverging mode: maps t ∈ [-1, 1] to the palette
+// -1 -> low end of palette, 0 -> middle, +1 -> high end
+// This allows any sequential palette to work as a diverging colormap
+inline Vec3 apply_palette_diverging(float t, ColorPalette palette) {
+    // Map from [-1, 1] to [0, 1]
+    float mapped = std::clamp((t + 1.0f) * 0.5f, 0.0f, 1.0f);
+    return apply_palette(mapped, palette);
+}
+
+// Coolwarm diverging colormap: Blue (negative) -> White (zero) -> Red (positive)
+// Input t is in [-1, 1] range (already normalized)
+// This is a dedicated diverging palette with perceptually balanced endpoints
+inline Vec3 diverging_coolwarm_color(float t) {
+    // Clamp and transform t from [-1, 1] to [0, 1]
+    t = std::clamp((t + 1.0f) * 0.5f, 0.0f, 1.0f);
+
+    const Vec3 blue{0.230f, 0.299f, 0.754f};   // Negative (cool)
+    const Vec3 white{0.865f, 0.865f, 0.865f};  // Zero (neutral)
+    const Vec3 red{0.706f, 0.016f, 0.150f};    // Positive (warm)
+
+    if (t < 0.5f) {
+        return lerp_color(blue, white, t * 2.0f);
+    } else {
+        return lerp_color(white, red, (t - 0.5f) * 2.0f);
+    }
+}
+
+// Normalize curvature to [-1, 1] using symmetric absolute max
+// Ensures zero maps to center of colormap
+inline float normalize_curvature_symmetric(float curvature, float abs_max) {
+    if (abs_max < 1e-6f) return 0.0f;
+    return std::clamp(curvature / abs_max, -1.0f, 1.0f);
+}
+
+// Convert curvature to color using diverging colormap with palette selection
+// curvature: the curvature value (can be negative, zero, or positive)
+// abs_max: the maximum absolute curvature for normalization
+// palette: the color palette to use (applied in diverging mode)
+inline Vec4 curvature_to_color(float curvature, float abs_max, ColorPalette palette) {
+    if (!std::isfinite(curvature)) {
+        return Vec4(0.3f, 0.3f, 0.3f, 1.0f);  // Gray for invalid
+    }
+    float normalized = normalize_curvature_symmetric(curvature, abs_max);
+    Vec3 rgb = apply_palette_diverging(normalized, palette);
+    return Vec4(rgb, 1.0f);
+}
+
+// Legacy overload using coolwarm (for backward compatibility)
+inline Vec4 curvature_to_color(float curvature, float abs_max) {
+    if (!std::isfinite(curvature)) {
+        return Vec4(0.3f, 0.3f, 0.3f, 1.0f);  // Gray for invalid
+    }
+    float normalized = normalize_curvature_symmetric(curvature, abs_max);
+    Vec3 rgb = diverging_coolwarm_color(normalized);
+    return Vec4(rgb, 1.0f);
 }
 
 // =============================================================================

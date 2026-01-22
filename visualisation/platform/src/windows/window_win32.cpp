@@ -168,6 +168,15 @@ public:
 
     void request_close() override { open_ = false; }
 
+    void focus() override {
+        if (hwnd_) {
+            // Bring window to front
+            SetForegroundWindow(hwnd_);
+            // Also set focus
+            SetFocus(hwnd_);
+        }
+    }
+
     void* get_native_display() const override { return hinstance_; }
     void* get_native_window() const override { return hwnd_; }
 

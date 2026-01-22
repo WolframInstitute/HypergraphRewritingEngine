@@ -5,6 +5,11 @@
 #include <vector>
 #include <unordered_map>
 
+// Forward declaration for job system
+namespace job_system {
+    template<typename T> class JobSystem;
+}
+
 namespace viz::blackhole {
 
 // =============================================================================
@@ -13,14 +18,23 @@ namespace viz::blackhole {
 
 enum class CurvatureMethod {
     OllivierRicci,      // Discrete Ricci curvature via optimal transport
-    WolframRicci,       // Discrete Ricci curvature via geodesic tube volumes
+    WolframRicci,       // Discrete Ricci curvature via geodesic tube volumes (legacy)
+    WolframScalar,      // Scalar curvature via ball volumes (matches ResourceFunction formula)
     DimensionGradient   // Scalar curvature from dimension rate of change
+};
+
+// Method for aggregating curvature across radii
+enum class RadiusAggregation {
+    Mean,   // Average over all radii (default)
+    Max,    // Maximum curvature
+    Min     // Minimum curvature
 };
 
 inline const char* curvature_method_name(CurvatureMethod m) {
     switch (m) {
         case CurvatureMethod::OllivierRicci: return "Ollivier-Ricci";
-        case CurvatureMethod::WolframRicci: return "Wolfram-Ricci";
+        case CurvatureMethod::WolframRicci: return "Wolfram-Ricci (tube)";
+        case CurvatureMethod::WolframScalar: return "Wolfram Scalar (ball)";
         case CurvatureMethod::DimensionGradient: return "Dimension Gradient";
         default: return "Unknown";
     }
@@ -34,7 +48,8 @@ inline const char* curvature_method_name(CurvatureMethod m) {
 struct VertexCurvature {
     VertexId vertex;
     float ollivier_ricci = 0.0f;      // Ollivier-Ricci curvature (optimal transport)
-    float wolfram_ricci = 0.0f;       // Wolfram-Ricci curvature (geodesic ball volumes)
+    float wolfram_ricci = 0.0f;       // Wolfram-Ricci curvature (geodesic tube volumes, legacy)
+    float wolfram_scalar = 0.0f;      // Wolfram scalar curvature (ball volumes, ResourceFunction formula)
     float dimension_gradient = 0.0f;  // Dimension gradient curvature
     float scalar_curvature = 0.0f;    // Combined scalar curvature estimate
 };
@@ -62,7 +77,8 @@ struct CurvatureAnalysisResult {
     std::vector<EdgeCurvature> edge_curvatures;
     std::vector<GeodesicTube> geodesic_tubes;  // For Wolfram-Ricci
     std::unordered_map<VertexId, float> ollivier_ricci_map;
-    std::unordered_map<VertexId, float> wolfram_ricci_map;
+    std::unordered_map<VertexId, float> wolfram_ricci_map;      // Tube method (legacy)
+    std::unordered_map<VertexId, float> wolfram_scalar_map;     // Ball method (ResourceFunction)
     std::unordered_map<VertexId, float> dimension_gradient_map;
 
     // Ollivier-Ricci statistics
@@ -70,10 +86,15 @@ struct CurvatureAnalysisResult {
     float min_ollivier_ricci = 0.0f;
     float max_ollivier_ricci = 0.0f;
 
-    // Wolfram-Ricci statistics
+    // Wolfram-Ricci statistics (tube method, legacy)
     float mean_wolfram_ricci = 0.0f;
     float min_wolfram_ricci = 0.0f;
     float max_wolfram_ricci = 0.0f;
+
+    // Wolfram scalar statistics (ball method, matches ResourceFunction)
+    float mean_wolfram_scalar = 0.0f;
+    float min_wolfram_scalar = 0.0f;
+    float max_wolfram_scalar = 0.0f;
 
     // Dimension gradient statistics
     float mean_dimension_gradient = 0.0f;
@@ -85,6 +106,8 @@ struct CurvatureAnalysisResult {
     float ricci_q95 = 0.0f;  // 95th percentile
     float wolfram_q05 = 0.0f;
     float wolfram_q95 = 0.0f;
+    float scalar_q05 = 0.0f;  // Wolfram scalar
+    float scalar_q95 = 0.0f;
     float grad_q05 = 0.0f;
     float grad_q95 = 0.0f;
 };
@@ -100,11 +123,18 @@ struct CurvatureConfig {
     int ricci_neighbor_radius = 1;    // Neighborhood radius for measure computation
 
     // Wolfram-Ricci settings (geodesic tube volume method)
-    bool compute_wolfram_ricci = true;
-    int wolfram_tube_radius = 1;      // Radius of tube around geodesics
-    int wolfram_sample_geodesics = 10; // Number of geodesics to sample per vertex
+    bool compute_wolfram_ricci = false;  // Disabled by default (use scalar instead)
+    int wolfram_tube_radius = 5;      // Max radius cap (actual radius is adaptive: min(geodesic_length/2, this))
+    int wolfram_sample_geodesics = 15; // Number of geodesics to sample per vertex (across various distances)
     float wolfram_dimension = 3.0f;   // Assumed dimension for flat space reference (or use measured)
     bool wolfram_use_measured_dim = true; // Use locally measured dimension instead of fixed
+    bool wolfram_ricci_full_tensor = true; // Use full tensor formula (Scalar - TubeCorrection) vs simplified
+
+    // Wolfram scalar curvature settings (ball volume method - matches ResourceFunction)
+    // Formula: K_r = (6(d+2)/r²) × (1 - V_ball/V_expected)
+    bool compute_wolfram_scalar = true;  // Enabled by default
+    int wolfram_scalar_max_radius = 5;   // Maximum radius for ball volume computation
+    RadiusAggregation wolfram_scalar_aggregation = RadiusAggregation::Mean;  // How to aggregate across radii
 
     // Dimension gradient settings
     bool compute_dimension_gradient = true;
@@ -112,6 +142,8 @@ struct CurvatureConfig {
 
     // General settings
     int max_radius = 5;               // Max BFS radius for dimension computation
+    bool use_graph_radius = false;    // If true, use GraphRadius instead of fixed max_radius
+                                      // (matches ResourceFunction defaults exactly, but expensive for large graphs)
 };
 
 // =============================================================================
@@ -186,14 +218,26 @@ float flat_ball_volume(int radius, float dimension);
 // Approximation: V(L, r) ≈ L * C_{d-1} * r^{d-1} for thin tubes
 float flat_tube_volume(int length, int radius, float dimension);
 
+// Compute the full Wolfram-Ricci tensor at a specific radius between two vertices
+// Formula: R_μν = ScalarCurvature - ((d+1)/((d-1)×r²)) × (1 - TubeVolume/V_expected)
+float compute_wolfram_ricci_tensor_at_radius(
+    const SimpleGraph& graph,
+    VertexId source,
+    VertexId target,
+    int radius,
+    float dimension
+);
+
 // Compute Wolfram-Ricci curvature for a single vertex
 // Samples geodesics to neighbors and computes average tube volume deficit
+// If use_full_tensor=true, uses the complete formula including scalar curvature correction
 float compute_vertex_wolfram_ricci(
     const SimpleGraph& graph,
     VertexId vertex,
     int tube_radius,
     float dimension,
-    int num_samples = 10
+    int num_samples = 10,
+    bool use_full_tensor = true
 );
 
 // Compute Wolfram-Ricci curvature for all vertices
@@ -202,7 +246,51 @@ std::unordered_map<VertexId, float> compute_all_wolfram_ricci(
     int tube_radius = 1,
     float dimension = 3.0f,
     int samples_per_vertex = 10,
-    const std::vector<float>* local_dimensions = nullptr  // Use local dim if provided
+    const std::vector<float>* local_dimensions = nullptr,  // Use local dim if provided
+    bool use_full_tensor = true  // Use full tensor formula vs simplified
+);
+
+// =============================================================================
+// Wolfram Scalar Curvature (Ball Volume Method - ResourceFunction formula)
+// =============================================================================
+
+// Compute Wolfram scalar curvature at a single radius for a vertex
+// Formula: K_r = (6(d+2)/r²) × (1 - V_ball/V_expected)
+// where V_expected = π^(d/2) × r^d / Γ(d/2+1)
+float wolfram_scalar_at_radius(
+    const SimpleGraph& graph,
+    VertexId vertex,
+    int radius,
+    float dimension
+);
+
+// Compute Wolfram scalar curvature for a single vertex
+// Aggregates curvature values across radii 1 to max_radius
+float compute_vertex_wolfram_scalar(
+    const SimpleGraph& graph,
+    VertexId vertex,
+    int max_radius,
+    float dimension,
+    RadiusAggregation aggregation = RadiusAggregation::Mean
+);
+
+// Compute Wolfram scalar curvature for all vertices
+std::unordered_map<VertexId, float> compute_all_wolfram_scalar(
+    const SimpleGraph& graph,
+    int max_radius = 5,
+    float dimension = 3.0f,
+    RadiusAggregation aggregation = RadiusAggregation::Mean,
+    const std::vector<float>* local_dimensions = nullptr
+);
+
+// Parallel version
+std::unordered_map<VertexId, float> compute_all_wolfram_scalar_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int max_radius = 5,
+    float dimension = 3.0f,
+    RadiusAggregation aggregation = RadiusAggregation::Mean,
+    const std::vector<float>* local_dimensions = nullptr
 );
 
 // =============================================================================
@@ -240,6 +328,51 @@ float local_scalar_curvature(
 CurvatureAnalysisResult analyze_curvature_timestep(
     const TimestepAggregation& timestep,
     const CurvatureConfig& config = {}
+);
+
+// =============================================================================
+// Parallel Curvature Computation (using job system)
+// =============================================================================
+
+// Compute Ollivier-Ricci curvature for all edges in parallel
+std::vector<EdgeCurvature> compute_all_edge_curvatures_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    float alpha = 0.5f
+);
+
+// Compute per-vertex Ollivier-Ricci in parallel
+std::unordered_map<VertexId, float> compute_vertex_ollivier_ricci_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    float alpha = 0.5f
+);
+
+// Compute Wolfram-Ricci curvature for all vertices in parallel
+std::unordered_map<VertexId, float> compute_all_wolfram_ricci_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int tube_radius = 1,
+    float dimension = 3.0f,
+    int samples_per_vertex = 10,
+    const std::vector<float>* local_dimensions = nullptr,
+    bool use_full_tensor = true  // Use full tensor formula vs simplified
+);
+
+// Compute dimension gradient curvature in parallel
+std::unordered_map<VertexId, float> compute_dimension_gradient_curvature_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const std::vector<float>& vertex_dimensions,
+    int radius = 2
+);
+
+// Full curvature analysis using job system for parallelization
+CurvatureAnalysisResult analyze_curvature_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const CurvatureConfig& config = {},
+    const std::vector<float>* vertex_dimensions = nullptr
 );
 
 }  // namespace viz::blackhole

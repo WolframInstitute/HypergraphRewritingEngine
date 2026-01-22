@@ -374,7 +374,7 @@ EvolutionResult EvolutionRunner::run_evolution(
         std::cout << "=======================" << std::endl;
     }
 
-    report_progress("Extracting states", 0.8f);
+    report_progress("Extracting states", 0.0f);
 
     auto extract_start = std::chrono::high_resolution_clock::now();
 
@@ -383,6 +383,8 @@ EvolutionResult EvolutionRunner::run_evolution(
 
     auto extract_end = std::chrono::high_resolution_clock::now();
     auto extract_ms = std::chrono::duration<double, std::milli>(extract_end - extract_start).count();
+    report_progress("Extracting states", 1.0f);
+    std::cout << std::endl;
     std::cout << "[TIMING] Extract states: " << std::fixed << std::setprecision(1) << extract_ms << " ms" << std::endl;
 
     // MEMORY OPTIMIZATION: Clear hypergraph and engine after extraction
@@ -467,7 +469,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         return result;
     }
 
-    report_progress("Selecting anchors", 0.05f);
+    report_progress("Selecting anchors", 0.0f);
 
     // Find stable vertices WITHOUT copying all graphs
     std::vector<VertexId> stable = find_stable_vertices_nested(evolution_result.states_by_step);
@@ -495,8 +497,11 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         analysis_config.anchor_min_separation
     );
 
+    report_progress("Selecting anchors", 1.0f);
+    std::cout << std::endl;
+
     // Print anchor information
-    std::cout << "\n=== Anchor Vertex Selection ===" << std::endl;
+    std::cout << "=== Anchor Vertex Selection ===" << std::endl;
     std::cout << "  Stable vertices across all timesteps: " << stable.size() << std::endl;
     std::cout << "  Candidate pool size: " << candidates.size()
               << (stable.empty() ? " (using all vertices - no stable vertices found)" : " (stable vertices)")
@@ -535,7 +540,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         return result;
     }
 
-    report_progress("Analyzing states", 0.1f);
+    report_progress("Analyzing states", 0.0f);
 
     auto state_analysis_start = std::chrono::high_resolution_clock::now();
 
@@ -585,7 +590,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
                     // Update progress
                     size_t done = states_analyzed.fetch_add(1) + 1;
                     if (done % 10 == 0) {
-                        float progress = 0.1f + 0.7f * static_cast<float>(done) / total_states;
+                        float progress = static_cast<float>(done) / total_states;
                         report_progress("Analyzing states", progress);
                     }
                 },
@@ -597,17 +602,61 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
     // Wait for all state analyses to complete
     analysis_job_system_->wait_for_completion();
 
+    report_progress("Analyzing states", 1.0f);
+    std::cout << std::endl;
+
     auto state_analysis_end = std::chrono::high_resolution_clock::now();
     auto state_analysis_ms = std::chrono::duration<double, std::milli>(state_analysis_end - state_analysis_start).count();
     std::cout << "[TIMING] State analysis (per-vertex dimensions): " << std::fixed << std::setprecision(1)
               << state_analysis_ms << " ms (" << total_states << " states)" << std::endl;
+
+    // Populate state_aggregates from per-state analysis results
+    // Each StateAggregate contains mean values for dimension + curvatures
+    {
+        uint32_t state_id = 0;
+        for (uint32_t step = 0; step < num_steps; ++step) {
+            const auto& step_analyses = analyses_by_step[step];
+            for (size_t g_idx = 0; g_idx < step_analyses.size(); ++g_idx) {
+                const auto& analysis = step_analyses[g_idx];
+                StateAggregate agg;
+                agg.state_id = state_id++;
+                agg.step = step;
+
+                // Mean dimension
+                if (!analysis.vertex_dimensions.empty()) {
+                    float sum = 0;
+                    int count = 0;
+                    for (float d : analysis.vertex_dimensions) {
+                        if (d > 0) { sum += d; count++; }
+                    }
+                    agg.mean_dimension = (count > 0) ? sum / count : 0;
+                }
+
+                // Mean curvatures (from per-vertex maps)
+                auto compute_mean = [](const std::unordered_map<VertexId, float>& m) -> float {
+                    if (m.empty()) return 0;
+                    float sum = 0;
+                    for (const auto& [v, val] : m) sum += val;
+                    return sum / m.size();
+                };
+
+                agg.mean_ollivier_ricci = compute_mean(analysis.curvature_ollivier);
+                agg.mean_wolfram_scalar = compute_mean(analysis.curvature_wolfram_scalar);
+                agg.mean_wolfram_ricci = compute_mean(analysis.curvature_wolfram_ricci);
+                agg.mean_dim_gradient = compute_mean(analysis.curvature_dim_gradient);
+
+                result.state_aggregates.push_back(std::move(agg));
+            }
+        }
+        std::cout << "[INFO] State aggregates computed: " << result.state_aggregates.size() << " states" << std::endl;
+    }
 
     if (should_stop_.load()) {
         analysis_job_system_->shutdown();
         return result;
     }
 
-    report_progress("Aggregating timesteps", 0.85f);
+    report_progress("Aggregating timesteps", 0.0f);
 
     auto aggregate_start = std::chrono::high_resolution_clock::now();
 
@@ -649,7 +698,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         if (should_stop_.load(std::memory_order_relaxed)) break;
 
         uint32_t done = steps_completed.load(std::memory_order_relaxed);
-        float progress = 0.85f + 0.07f * (static_cast<float>(done) / num_steps);
+        float progress = static_cast<float>(done) / num_steps;
         report_progress("Aggregating timesteps", progress);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -657,6 +706,9 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     // Final wait to ensure all jobs complete
     analysis_job_system_->wait_for_completion();
+
+    report_progress("Aggregating timesteps", 1.0f);
+    std::cout << std::endl;
 
     auto aggregate_end = std::chrono::high_resolution_clock::now();
     auto aggregate_ms = std::chrono::duration<double, std::milli>(aggregate_end - aggregate_start).count();
@@ -673,7 +725,7 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
 
     // Populate per_state for histogram/distribution analysis
     // This converts LightweightAnalysis to StateAnalysis for each state
-    report_progress("Storing per-state data", 0.92f);
+    report_progress("Storing per-state data", 0.0f);
     StateId state_counter = 0;
     for (uint32_t step = 0; step < num_steps; ++step) {
         const auto& step_graphs = evolution_result.states_by_step[step];
@@ -705,6 +757,9 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
             result.per_state.push_back(std::move(state_analysis));
         }
     }
+
+    report_progress("Storing per-state data", 1.0f);
+    std::cout << std::endl;
 
     // Collect all dimensions, variances, and global dimensions for global statistics
     std::vector<float> all_dimensions;
@@ -764,6 +819,87 @@ BHAnalysisResult EvolutionRunner::analyze_parallel(
         result.global_var_max = *std::max_element(all_global_vars.begin(), all_global_vars.end());
         result.global_var_q05 = quantile(all_global_vars, analysis_config.quantile_low);
         result.global_var_q95 = quantile(all_global_vars, analysis_config.quantile_high);
+    }
+
+    // Collect all curvature values for global statistics
+    std::vector<float> all_curv_ollivier_mean, all_curv_ollivier_var;
+    std::vector<float> all_curv_wolfram_scalar_mean, all_curv_wolfram_scalar_var;
+    std::vector<float> all_curv_wolfram_ricci_mean, all_curv_wolfram_ricci_var;
+    std::vector<float> all_curv_dim_gradient_mean, all_curv_dim_gradient_var;
+    std::vector<float> all_curv_foliation_ollivier, all_curv_foliation_wolfram_scalar;
+    std::vector<float> all_curv_foliation_wolfram_ricci, all_curv_foliation_dim_gradient;
+
+    for (uint32_t step = 0; step < num_steps; ++step) {
+        const auto& ts = result.per_timestep[step];
+        // Branchial mean curvatures
+        for (float v : ts.mean_curvature_ollivier) if (std::isfinite(v)) all_curv_ollivier_mean.push_back(v);
+        for (float v : ts.mean_curvature_wolfram_scalar) if (std::isfinite(v)) all_curv_wolfram_scalar_mean.push_back(v);
+        for (float v : ts.mean_curvature_wolfram_ricci) if (std::isfinite(v)) all_curv_wolfram_ricci_mean.push_back(v);
+        for (float v : ts.mean_curvature_dim_gradient) if (std::isfinite(v)) all_curv_dim_gradient_mean.push_back(v);
+        // Branchial variance curvatures
+        for (float v : ts.variance_curvature_ollivier) if (std::isfinite(v)) all_curv_ollivier_var.push_back(v);
+        for (float v : ts.variance_curvature_wolfram_scalar) if (std::isfinite(v)) all_curv_wolfram_scalar_var.push_back(v);
+        for (float v : ts.variance_curvature_wolfram_ricci) if (std::isfinite(v)) all_curv_wolfram_ricci_var.push_back(v);
+        for (float v : ts.variance_curvature_dim_gradient) if (std::isfinite(v)) all_curv_dim_gradient_var.push_back(v);
+        // Foliation curvatures
+        for (float v : ts.foliation_curvature_ollivier) if (std::isfinite(v)) all_curv_foliation_ollivier.push_back(v);
+        for (float v : ts.foliation_curvature_wolfram_scalar) if (std::isfinite(v)) all_curv_foliation_wolfram_scalar.push_back(v);
+        for (float v : ts.foliation_curvature_wolfram_ricci) if (std::isfinite(v)) all_curv_foliation_wolfram_ricci.push_back(v);
+        for (float v : ts.foliation_curvature_dim_gradient) if (std::isfinite(v)) all_curv_foliation_dim_gradient.push_back(v);
+    }
+
+    // Compute global curvature quantiles - Branchial mean
+    if (!all_curv_ollivier_mean.empty()) {
+        result.curv_ollivier_mean_q05 = quantile(all_curv_ollivier_mean, analysis_config.quantile_low);
+        result.curv_ollivier_mean_q95 = quantile(all_curv_ollivier_mean, analysis_config.quantile_high);
+    }
+    if (!all_curv_wolfram_scalar_mean.empty()) {
+        result.curv_wolfram_scalar_mean_q05 = quantile(all_curv_wolfram_scalar_mean, analysis_config.quantile_low);
+        result.curv_wolfram_scalar_mean_q95 = quantile(all_curv_wolfram_scalar_mean, analysis_config.quantile_high);
+    }
+    if (!all_curv_wolfram_ricci_mean.empty()) {
+        result.curv_wolfram_ricci_mean_q05 = quantile(all_curv_wolfram_ricci_mean, analysis_config.quantile_low);
+        result.curv_wolfram_ricci_mean_q95 = quantile(all_curv_wolfram_ricci_mean, analysis_config.quantile_high);
+    }
+    if (!all_curv_dim_gradient_mean.empty()) {
+        result.curv_dim_gradient_mean_q05 = quantile(all_curv_dim_gradient_mean, analysis_config.quantile_low);
+        result.curv_dim_gradient_mean_q95 = quantile(all_curv_dim_gradient_mean, analysis_config.quantile_high);
+    }
+
+    // Compute global curvature quantiles - Branchial variance
+    if (!all_curv_ollivier_var.empty()) {
+        result.curv_ollivier_var_q05 = quantile(all_curv_ollivier_var, analysis_config.quantile_low);
+        result.curv_ollivier_var_q95 = quantile(all_curv_ollivier_var, analysis_config.quantile_high);
+    }
+    if (!all_curv_wolfram_scalar_var.empty()) {
+        result.curv_wolfram_scalar_var_q05 = quantile(all_curv_wolfram_scalar_var, analysis_config.quantile_low);
+        result.curv_wolfram_scalar_var_q95 = quantile(all_curv_wolfram_scalar_var, analysis_config.quantile_high);
+    }
+    if (!all_curv_wolfram_ricci_var.empty()) {
+        result.curv_wolfram_ricci_var_q05 = quantile(all_curv_wolfram_ricci_var, analysis_config.quantile_low);
+        result.curv_wolfram_ricci_var_q95 = quantile(all_curv_wolfram_ricci_var, analysis_config.quantile_high);
+    }
+    if (!all_curv_dim_gradient_var.empty()) {
+        result.curv_dim_gradient_var_q05 = quantile(all_curv_dim_gradient_var, analysis_config.quantile_low);
+        result.curv_dim_gradient_var_q95 = quantile(all_curv_dim_gradient_var, analysis_config.quantile_high);
+    }
+
+    // Compute global curvature quantiles - Foliation
+    if (!all_curv_foliation_ollivier.empty()) {
+        result.curv_foliation_ollivier_q05 = quantile(all_curv_foliation_ollivier, analysis_config.quantile_low);
+        result.curv_foliation_ollivier_q95 = quantile(all_curv_foliation_ollivier, analysis_config.quantile_high);
+    }
+    if (!all_curv_foliation_wolfram_scalar.empty()) {
+        result.curv_foliation_wolfram_scalar_q05 = quantile(all_curv_foliation_wolfram_scalar, analysis_config.quantile_low);
+        result.curv_foliation_wolfram_scalar_q95 = quantile(all_curv_foliation_wolfram_scalar, analysis_config.quantile_high);
+    }
+    if (!all_curv_foliation_wolfram_ricci.empty()) {
+        result.curv_foliation_wolfram_ricci_q05 = quantile(all_curv_foliation_wolfram_ricci, analysis_config.quantile_low);
+        result.curv_foliation_wolfram_ricci_q95 = quantile(all_curv_foliation_wolfram_ricci, analysis_config.quantile_high);
+    }
+    if (!all_curv_foliation_dim_gradient.empty()) {
+        result.curv_foliation_dim_gradient_q05 = quantile(all_curv_foliation_dim_gradient, analysis_config.quantile_low);
+        result.curv_foliation_dim_gradient_q95 = quantile(all_curv_foliation_dim_gradient, analysis_config.quantile_high);
     }
 
     result.total_steps = evolution_result.max_step_reached;

@@ -1,4 +1,6 @@
 #include <blackhole/hausdorff_analysis.hpp>
+#include <blackhole/curvature_analysis.hpp>
+#include <job_system/job_system.hpp>
 #ifdef BLACKHOLE_WITH_LAYOUT
 #include <layout/layout_engine.hpp>
 #endif
@@ -264,6 +266,29 @@ std::vector<int> SimpleGraph::distances_from_truncated(VertexId source, int max_
     return result;
 }
 
+int SimpleGraph::eccentricity(VertexId v) const {
+    // Eccentricity = max distance from v to any other vertex
+    auto distances = distances_from(v);
+    int max_dist = 0;
+    for (int d : distances) {
+        if (d > max_dist) max_dist = d;
+    }
+    return max_dist;
+}
+
+int SimpleGraph::graph_radius() const {
+    // GraphRadius = minimum eccentricity over all vertices
+    // This matches Mathematica's GraphRadius[graph]
+    if (vertices_.empty()) return 0;
+
+    int min_ecc = std::numeric_limits<int>::max();
+    for (VertexId v : vertices_) {
+        int ecc = eccentricity(v);
+        if (ecc < min_ecc) min_ecc = ecc;
+    }
+    return min_ecc;
+}
+
 std::vector<std::vector<int>> SimpleGraph::all_pairs_distances() const {
     std::vector<std::vector<int>> result(vertices_.size());
 
@@ -310,6 +335,62 @@ std::vector<std::vector<int>> SimpleGraph::all_pairs_distances_directed() const 
         }
     }
 
+    return result;
+}
+
+std::vector<std::vector<int>> SimpleGraph::all_pairs_distances_parallel(
+    job_system::JobSystem<int>* js) const
+{
+    std::vector<std::vector<int>> result(vertices_.size());
+
+    for (size_t i = 0; i < vertices_.size(); ++i) {
+        js->submit_function([this, i, &result]() {
+            result[i] = distances_from(vertices_[i]);
+        }, 0);
+    }
+
+    js->wait_for_completion();
+    return result;
+}
+
+std::vector<std::vector<int>> SimpleGraph::all_pairs_distances_directed_parallel(
+    job_system::JobSystem<int>* js) const
+{
+    std::vector<std::vector<int>> result(vertices_.size());
+
+    for (size_t src_idx = 0; src_idx < vertices_.size(); ++src_idx) {
+        js->submit_function([this, src_idx, &result]() {
+            VertexId source = vertices_[src_idx];
+            result[src_idx].assign(vertices_.size(), -1);
+
+            std::unordered_map<VertexId, int> dist;
+            std::queue<VertexId> q;
+
+            dist[source] = 0;
+            q.push(source);
+
+            while (!q.empty()) {
+                VertexId curr = q.front();
+                q.pop();
+
+                for (VertexId next : out_neighbors(curr)) {
+                    if (dist.find(next) == dist.end()) {
+                        dist[next] = dist[curr] + 1;
+                        q.push(next);
+                    }
+                }
+            }
+
+            for (const auto& [v, d] : dist) {
+                auto it = vertex_to_index_.find(v);
+                if (it != vertex_to_index_.end()) {
+                    result[src_idx][it->second] = d;
+                }
+            }
+        }, 0);
+    }
+
+    js->wait_for_completion();
     return result;
 }
 
@@ -581,13 +662,8 @@ float estimate_local_dimension(
     const std::vector<int>& distances_from_vertex,
     int max_radius
 ) {
-    // Count total reachable vertices
-    int total_reachable = 0;
-    for (int d : distances_from_vertex) {
-        if (d >= 0) total_reachable++;
-    }
-
     // Count vertices at each distance (cumulative ball size)
+    // counts[r] = |B(v, r)| = number of vertices within distance r
     std::vector<int> counts(max_radius + 1, 0);
     for (int d : distances_from_vertex) {
         if (d >= 0 && d <= max_radius) {
@@ -597,46 +673,39 @@ float estimate_local_dimension(
         }
     }
 
-    // Build (log r, log N) pairs for regression
-    // Only use radii where ball hasn't saturated (< 50% of graph)
-    float saturation_threshold = 0.5f * total_reachable;
-    std::vector<std::pair<float, float>> valid_pairs;
+    // Use ResourceFunction's discrete derivative formula:
+    // d_r = (Log[V(r)] - Log[V(r-1)]) / (Log[r+1] - Log[r])
+    // This measures the local growth rate at each radius.
+    std::vector<float> dimensions;
+    dimensions.reserve(max_radius);
+
     for (int r = 1; r <= max_radius; ++r) {
-        if (counts[r] > 1 && counts[r] < saturation_threshold) {
-            valid_pairs.emplace_back(std::log(static_cast<float>(r)),
-                                     std::log(static_cast<float>(counts[r])));
+        if (counts[r] > 0 && counts[r-1] > 0) {
+            float log_v_r = std::log(static_cast<float>(counts[r]));
+            float log_v_r_minus_1 = std::log(static_cast<float>(counts[r-1]));
+            float log_r_plus_1 = std::log(static_cast<float>(r + 1));
+            float log_r = std::log(static_cast<float>(r));
+
+            float denom = log_r_plus_1 - log_r;
+            if (std::abs(denom) > 1e-10f) {
+                float d_r = (log_v_r - log_v_r_minus_1) / denom;
+                if (std::isfinite(d_r)) {
+                    dimensions.push_back(d_r);
+                }
+            }
         }
     }
 
-    if (valid_pairs.size() < 2) {
-        return -1.0f;  // Insufficient data (graph too small or saturates immediately)
+    if (dimensions.empty()) {
+        return -1.0f;  // Insufficient data
     }
 
-    // Linear regression: log N = d * log r + c
-    // d = (n * sum(xy) - sum(x)*sum(y)) / (n * sum(x²) - sum(x)²)
-    float n = static_cast<float>(valid_pairs.size());
-    float sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
-
-    for (const auto& [x, y] : valid_pairs) {
-        sum_x += x;
-        sum_y += y;
-        sum_xx += x * x;
-        sum_xy += x * y;
+    // Return mean dimension (matching ResourceFunction's default DimensionMethod -> Mean)
+    float sum = 0.0f;
+    for (float d : dimensions) {
+        sum += d;
     }
-
-    float denom = n * sum_xx - sum_x * sum_x;
-    if (std::abs(denom) < 1e-10f) {
-        return -1.0f;  // Degenerate case
-    }
-
-    float slope = (n * sum_xy - sum_x * sum_y) / denom;
-
-    // Guard against NaN/Inf (shouldn't happen with valid inputs, but be safe)
-    if (!std::isfinite(slope)) {
-        return -1.0f;
-    }
-
-    return slope;
+    return sum / static_cast<float>(dimensions.size());
 }
 
 // Version that uses pre-computed distance matrix (O(V * max_radius) scans, no BFS)
@@ -697,6 +766,86 @@ std::vector<float> estimate_all_dimensions(
     std::vector<float> dimensions(graph.vertex_count());
     for (size_t i = 0; i < graph.vertex_count(); ++i) {
         dimensions[i] = estimate_local_dimension(dist_matrix[i], max_radius);
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
+
+    return dimensions;
+}
+
+// Parallel version using job system - computes distance matrix in parallel
+std::vector<float> estimate_all_dimensions_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int max_radius
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // Compute distance matrix in parallel
+    auto dist_matrix = graph.all_pairs_distances_parallel(js);
+
+    // Dimension estimation from matrix is fast (O(V * max_radius)), can stay sequential
+    std::vector<float> dimensions(graph.vertex_count());
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        dimensions[i] = estimate_local_dimension(dist_matrix[i], max_radius);
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
+
+    return dimensions;
+}
+
+// Parallel version using truncated BFS - each vertex's BFS runs in parallel
+std::vector<float> estimate_all_dimensions_truncated_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int max_radius
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> dimensions(graph.vertex_count());
+    const auto& vertices = graph.vertices();
+
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        js->submit_function([&graph, &vertices, &dimensions, i, max_radius]() {
+            auto truncated_dists = graph.distances_from_truncated(vertices[i], max_radius);
+            dimensions[i] = estimate_local_dimension(truncated_dists, max_radius);
+        }, 0);
+    }
+
+    js->wait_for_completion();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_dimension_time_us += std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    g_dimension_calls++;
+    g_total_vertices_processed += graph.vertex_count();
+
+    return dimensions;
+}
+
+// Parallel version with full config - supports directed graphs and different formulas
+std::vector<float> estimate_all_dimensions_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const DimensionConfig& config
+) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // Use directed or undirected distances based on config (computed in parallel)
+    auto dist_matrix = config.directed
+        ? graph.all_pairs_distances_directed_parallel(js)
+        : graph.all_pairs_distances_parallel(js);
+
+    // Dimension estimation from matrix is fast, stays sequential
+    std::vector<float> dimensions(graph.vertex_count());
+    for (size_t i = 0; i < graph.vertex_count(); ++i) {
+        dimensions[i] = estimate_local_dimension(dist_matrix[i], config);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -906,14 +1055,14 @@ LightweightAnalysis analyze_state_lightweight(
     LightweightAnalysis result;
     result.num_anchors = static_cast<int>(anchors.size());
 
-    // Compute distance matrix ONCE - O(V * (V+E)) BFS traversals
-    // This is reused for both geodesic coordinates and dimension estimation
+    // Compute distance matrix ONCE - O(V × (V+E)) BFS traversals
+    // This is reused for coords, dimensions, AND curvature (avoids redundant BFS)
     auto dist_matrix = graph.all_pairs_distances();
 
-    // Compute geodesic coordinates from matrix - O(V * A) lookups
+    // Compute geodesic coordinates from matrix - O(V × A) lookups
     auto coords = compute_geodesic_coordinates_from_matrix(graph, anchors, dist_matrix);
 
-    // Compute dimensions from matrix - O(V * max_radius) scans
+    // Compute dimensions from matrix - O(V × max_radius) scans
     auto dimensions = estimate_all_dimensions_from_matrix(graph, dist_matrix, max_radius);
 
     // Build vertex data arrays
@@ -935,6 +1084,22 @@ LightweightAnalysis analyze_state_lightweight(
             std::fill(result.vertex_coords[i].begin(), result.vertex_coords[i].end(), -1);
         }
     }
+
+    // Compute all curvature types per-state for Branchial aggregation
+    CurvatureConfig curv_config;
+    curv_config.compute_ollivier_ricci = true;
+    curv_config.compute_wolfram_ricci = true;
+    curv_config.compute_wolfram_scalar = true;
+    curv_config.compute_dimension_gradient = true;
+    curv_config.max_radius = max_radius;
+
+    CurvatureAnalysisResult curv_result = analyze_curvature(graph, curv_config, &dimensions);
+
+    // Store curvature maps in result
+    result.curvature_ollivier = std::move(curv_result.ollivier_ricci_map);
+    result.curvature_wolfram_scalar = std::move(curv_result.wolfram_scalar_map);
+    result.curvature_wolfram_ricci = std::move(curv_result.wolfram_ricci_map);
+    result.curvature_dim_gradient = std::move(curv_result.dimension_gradient_map);
 
     return result;
 }
@@ -1538,6 +1703,41 @@ TimestepAggregation aggregate_timestep_streaming(
     result.variance_dimensions.resize(result.union_vertices.size(), -1);
     result.min_dimensions.resize(result.union_vertices.size(), -1);
     result.max_dimensions.resize(result.union_vertices.size(), -1);
+    result.raw_vertex_dimensions.resize(result.union_vertices.size(), -1);
+
+    // Compute raw per-vertex dimensions (average across states by vertex ID, no bucketing)
+    // Map from vertex ID -> sum and count for averaging
+    std::unordered_map<VertexId, std::pair<float, int>> vertex_dim_accum;
+    for (size_t g_idx = 0; g_idx < graphs.size(); ++g_idx) {
+        const auto& graph = graphs[g_idx];
+        const auto& analysis = analyses[g_idx];
+        const auto& verts = graph.vertices();
+
+        for (size_t i = 0; i < verts.size(); ++i) {
+            VertexId v = verts[i];
+            if (!lcc.count(v)) continue;
+            if (i >= analysis.vertex_dimensions.size()) continue;
+            if (analysis.vertex_dimensions[i] <= 0) continue;
+
+            auto& [sum, count] = vertex_dim_accum[v];
+            sum += analysis.vertex_dimensions[i];
+            count++;
+        }
+    }
+
+    // Build vertex index map for raw dimensions
+    std::unordered_map<VertexId, size_t> union_vertex_idx;
+    for (size_t i = 0; i < result.union_vertices.size(); ++i) {
+        union_vertex_idx[result.union_vertices[i]] = i;
+    }
+
+    // Assign raw per-vertex average
+    for (const auto& [vid, sum_count] : vertex_dim_accum) {
+        auto idx_it = union_vertex_idx.find(vid);
+        if (idx_it != union_vertex_idx.end() && sum_count.second > 0) {
+            result.raw_vertex_dimensions[idx_it->second] = sum_count.first / static_cast<float>(sum_count.second);
+        }
+    }
 
     for (size_t i = 0; i < result.union_vertices.size(); ++i) {
         VertexId v = result.union_vertices[i];
@@ -1693,6 +1893,222 @@ TimestepAggregation aggregate_timestep_streaming(
         result.global_var_min = *std::min_element(all_global_vars.begin(), all_global_vars.end());
         result.global_var_max = *std::max_element(all_global_vars.begin(), all_global_vars.end());
     }
+
+    // ==========================================================================
+    // CURVATURE aggregation (Branchial: mean/variance across states)
+    // ==========================================================================
+    // Same pattern as dimension: bucket by geodesic coordinate, compute mean/variance
+
+    // Buckets: coord -> list of curvature values from all states
+    std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> curv_ollivier_buckets;
+    std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> curv_wolfram_scalar_buckets;
+    std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> curv_wolfram_ricci_buckets;
+    std::unordered_map<CoordKey, std::vector<float>, CoordKeyHash> curv_dim_gradient_buckets;
+
+    for (size_t g_idx = 0; g_idx < graphs.size(); ++g_idx) {
+        const auto& graph = graphs[g_idx];
+        const auto& analysis = analyses[g_idx];
+        const auto& verts = graph.vertices();
+
+        for (size_t i = 0; i < verts.size(); ++i) {
+            VertexId v = verts[i];
+            if (!lcc.count(v)) continue;
+
+            // Get coordinate from union graph
+            auto coord_it = union_coords.find(v);
+            if (coord_it == union_coords.end()) continue;
+
+            CoordKey key;
+            key.num_anchors = num_anchors;
+            for (size_t a = 0; a < coord_it->second.size() && a < MAX_ANCHORS; ++a) {
+                key.coords[a] = coord_it->second[a];
+            }
+
+            // Collect curvature values by coordinate bucket
+            auto oll_it = analysis.curvature_ollivier.find(v);
+            if (oll_it != analysis.curvature_ollivier.end() && std::isfinite(oll_it->second)) {
+                curv_ollivier_buckets[key].push_back(oll_it->second);
+            }
+
+            auto ws_it = analysis.curvature_wolfram_scalar.find(v);
+            if (ws_it != analysis.curvature_wolfram_scalar.end() && std::isfinite(ws_it->second)) {
+                curv_wolfram_scalar_buckets[key].push_back(ws_it->second);
+            }
+
+            auto wr_it = analysis.curvature_wolfram_ricci.find(v);
+            if (wr_it != analysis.curvature_wolfram_ricci.end() && std::isfinite(wr_it->second)) {
+                curv_wolfram_ricci_buckets[key].push_back(wr_it->second);
+            }
+
+            auto dg_it = analysis.curvature_dim_gradient.find(v);
+            if (dg_it != analysis.curvature_dim_gradient.end() && std::isfinite(dg_it->second)) {
+                curv_dim_gradient_buckets[key].push_back(dg_it->second);
+            }
+        }
+    }
+
+    // Helper lambda to compute mean/variance from bucket
+    auto compute_bucket_stats = [](const std::vector<float>& vals, float& mean_out, float& var_out) {
+        if (vals.empty()) {
+            mean_out = 0;
+            var_out = 0;
+            return;
+        }
+        mean_out = std::accumulate(vals.begin(), vals.end(), 0.0f) / vals.size();
+        var_out = 0;
+        if (vals.size() > 1) {
+            for (float v : vals) {
+                float diff = v - mean_out;
+                var_out += diff * diff;
+            }
+            var_out /= vals.size();
+        }
+    };
+
+    // Compute per-bucket mean/variance for each curvature type
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_ollivier_mean, coord_ollivier_var;
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_wolfram_scalar_mean, coord_wolfram_scalar_var;
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_wolfram_ricci_mean, coord_wolfram_ricci_var;
+    std::unordered_map<CoordKey, float, CoordKeyHash> coord_dim_gradient_mean, coord_dim_gradient_var;
+
+    for (auto& [key, vals] : curv_ollivier_buckets) {
+        float mean, var;
+        compute_bucket_stats(vals, mean, var);
+        coord_ollivier_mean[key] = mean;
+        coord_ollivier_var[key] = var;
+    }
+    for (auto& [key, vals] : curv_wolfram_scalar_buckets) {
+        float mean, var;
+        compute_bucket_stats(vals, mean, var);
+        coord_wolfram_scalar_mean[key] = mean;
+        coord_wolfram_scalar_var[key] = var;
+    }
+    for (auto& [key, vals] : curv_wolfram_ricci_buckets) {
+        float mean, var;
+        compute_bucket_stats(vals, mean, var);
+        coord_wolfram_ricci_mean[key] = mean;
+        coord_wolfram_ricci_var[key] = var;
+    }
+    for (auto& [key, vals] : curv_dim_gradient_buckets) {
+        float mean, var;
+        compute_bucket_stats(vals, mean, var);
+        coord_dim_gradient_mean[key] = mean;
+        coord_dim_gradient_var[key] = var;
+    }
+
+    // Resize result vectors
+    size_t n_verts = result.union_vertices.size();
+    result.mean_curvature_ollivier.resize(n_verts, 0);
+    result.variance_curvature_ollivier.resize(n_verts, 0);
+    result.mean_curvature_wolfram_scalar.resize(n_verts, 0);
+    result.variance_curvature_wolfram_scalar.resize(n_verts, 0);
+    result.mean_curvature_wolfram_ricci.resize(n_verts, 0);
+    result.variance_curvature_wolfram_ricci.resize(n_verts, 0);
+    result.mean_curvature_dim_gradient.resize(n_verts, 0);
+    result.variance_curvature_dim_gradient.resize(n_verts, 0);
+
+    // Assign bucketed curvatures to union vertices via coordinate lookup
+    for (size_t i = 0; i < result.union_vertices.size(); ++i) {
+        VertexId v = result.union_vertices[i];
+        auto coord_it = union_coords.find(v);
+        if (coord_it == union_coords.end()) continue;
+
+        CoordKey key;
+        key.num_anchors = num_anchors;
+        for (size_t a = 0; a < coord_it->second.size() && a < MAX_ANCHORS; ++a) {
+            key.coords[a] = coord_it->second[a];
+        }
+
+        auto it_om = coord_ollivier_mean.find(key);
+        if (it_om != coord_ollivier_mean.end()) result.mean_curvature_ollivier[i] = it_om->second;
+        auto it_ov = coord_ollivier_var.find(key);
+        if (it_ov != coord_ollivier_var.end()) result.variance_curvature_ollivier[i] = it_ov->second;
+
+        auto it_wsm = coord_wolfram_scalar_mean.find(key);
+        if (it_wsm != coord_wolfram_scalar_mean.end()) result.mean_curvature_wolfram_scalar[i] = it_wsm->second;
+        auto it_wsv = coord_wolfram_scalar_var.find(key);
+        if (it_wsv != coord_wolfram_scalar_var.end()) result.variance_curvature_wolfram_scalar[i] = it_wsv->second;
+
+        auto it_wrm = coord_wolfram_ricci_mean.find(key);
+        if (it_wrm != coord_wolfram_ricci_mean.end()) result.mean_curvature_wolfram_ricci[i] = it_wrm->second;
+        auto it_wrv = coord_wolfram_ricci_var.find(key);
+        if (it_wrv != coord_wolfram_ricci_var.end()) result.variance_curvature_wolfram_ricci[i] = it_wrv->second;
+
+        auto it_dgm = coord_dim_gradient_mean.find(key);
+        if (it_dgm != coord_dim_gradient_mean.end()) result.mean_curvature_dim_gradient[i] = it_dgm->second;
+        auto it_dgv = coord_dim_gradient_var.find(key);
+        if (it_dgv != coord_dim_gradient_var.end()) result.variance_curvature_dim_gradient[i] = it_dgv->second;
+    }
+
+    // Compute curvature stats (min/max for normalization)
+    auto compute_range = [](const std::vector<float>& v, float& min_out, float& max_out) {
+        min_out = 0; max_out = 0;
+        bool first = true;
+        for (float val : v) {
+            if (std::isfinite(val)) {
+                if (first) { min_out = max_out = val; first = false; }
+                else { min_out = std::min(min_out, val); max_out = std::max(max_out, val); }
+            }
+        }
+    };
+
+    compute_range(result.mean_curvature_ollivier, result.ollivier_mean_min, result.ollivier_mean_max);
+    compute_range(result.variance_curvature_ollivier, result.ollivier_var_min, result.ollivier_var_max);
+    compute_range(result.mean_curvature_wolfram_scalar, result.wolfram_scalar_mean_min, result.wolfram_scalar_mean_max);
+    compute_range(result.variance_curvature_wolfram_scalar, result.wolfram_scalar_var_min, result.wolfram_scalar_var_max);
+    compute_range(result.mean_curvature_wolfram_ricci, result.wolfram_ricci_mean_min, result.wolfram_ricci_mean_max);
+    compute_range(result.variance_curvature_wolfram_ricci, result.wolfram_ricci_var_min, result.wolfram_ricci_var_max);
+    compute_range(result.mean_curvature_dim_gradient, result.dim_gradient_mean_min, result.dim_gradient_mean_max);
+    compute_range(result.variance_curvature_dim_gradient, result.dim_gradient_var_min, result.dim_gradient_var_max);
+
+    // ==========================================================================
+    // FOLIATION curvature (computed on union graph, single sample)
+    // ==========================================================================
+    CurvatureConfig foliation_curv_config;
+    foliation_curv_config.compute_ollivier_ricci = true;
+    foliation_curv_config.compute_wolfram_scalar = true;
+    foliation_curv_config.compute_wolfram_ricci = true;
+    foliation_curv_config.compute_dimension_gradient = true;
+    foliation_curv_config.max_radius = global_max_radius;
+
+    CurvatureAnalysisResult foliation_curv = analyze_curvature(union_graph, foliation_curv_config, &global_raw_dims);
+
+    // Resize foliation curvature vectors
+    result.foliation_curvature_ollivier.resize(n_verts, 0);
+    result.foliation_curvature_wolfram_scalar.resize(n_verts, 0);
+    result.foliation_curvature_wolfram_ricci.resize(n_verts, 0);
+    result.foliation_curvature_dim_gradient.resize(n_verts, 0);
+
+    // Assign foliation curvature to vertices
+    for (size_t i = 0; i < result.union_vertices.size(); ++i) {
+        VertexId v = result.union_vertices[i];
+
+        auto it_o = foliation_curv.ollivier_ricci_map.find(v);
+        if (it_o != foliation_curv.ollivier_ricci_map.end()) {
+            result.foliation_curvature_ollivier[i] = it_o->second;
+        }
+
+        auto it_ws = foliation_curv.wolfram_scalar_map.find(v);
+        if (it_ws != foliation_curv.wolfram_scalar_map.end()) {
+            result.foliation_curvature_wolfram_scalar[i] = it_ws->second;
+        }
+
+        auto it_wr = foliation_curv.wolfram_ricci_map.find(v);
+        if (it_wr != foliation_curv.wolfram_ricci_map.end()) {
+            result.foliation_curvature_wolfram_ricci[i] = it_wr->second;
+        }
+
+        auto it_dg = foliation_curv.dimension_gradient_map.find(v);
+        if (it_dg != foliation_curv.dimension_gradient_map.end()) {
+            result.foliation_curvature_dim_gradient[i] = it_dg->second;
+        }
+    }
+
+    // Compute foliation curvature stats
+    compute_range(result.foliation_curvature_ollivier, result.foliation_ollivier_min, result.foliation_ollivier_max);
+    compute_range(result.foliation_curvature_wolfram_scalar, result.foliation_wolfram_scalar_min, result.foliation_wolfram_scalar_max);
+    compute_range(result.foliation_curvature_wolfram_ricci, result.foliation_wolfram_ricci_min, result.foliation_wolfram_ricci_max);
+    compute_range(result.foliation_curvature_dim_gradient, result.foliation_dim_gradient_min, result.foliation_dim_gradient_max);
 
     auto bucketing_end = std::chrono::high_resolution_clock::now();
     g_bucketing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(bucketing_end - bucketing_start).count();

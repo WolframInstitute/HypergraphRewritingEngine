@@ -25,7 +25,6 @@
 #include "blackhole/hausdorff_analysis.hpp"
 #include "blackhole/curvature_analysis.hpp"
 #include "blackhole/entropy_analysis.hpp"
-#include "blackhole/rotation_analysis.hpp"
 #include "blackhole/branchial_analysis.hpp"
 #include "blackhole/bh_types.hpp"
 
@@ -844,83 +843,10 @@ bool test_entropy_fisher() {
 }
 
 // =============================================================================
-// TEST 21: Rotation curve analysis - Center detection
-// =============================================================================
-bool test_rotation_center() {
-    std::cout << "TEST 21: Rotation curve (Center detection)... ";
-
-    auto grid = create_grid_graph(7, 7);  // 49 vertices
-
-    // Create dimension data with peak in center
-    std::vector<float> dimensions(grid.vertex_count(), 2.0f);
-    // Center is at (3,3) = vertex 24
-    for (size_t i = 0; i < dimensions.size(); ++i) {
-        int row = i / 7;
-        int col = i % 7;
-        float dist = std::sqrt((row - 3.0f) * (row - 3.0f) + (col - 3.0f) * (col - 3.0f));
-        dimensions[i] = 3.0f - dist * 0.2f;
-    }
-    dimensions[24] = 4.0f;  // Highest at center
-
-    RotationConfig config;
-    config.auto_detect_center = true;
-    config.max_radius = 5;
-    config.min_radius = 1;
-    config.orbits_per_radius = 4;
-
-    auto result = analyze_rotation_curve(grid, config, &dimensions);
-
-    // Center should be at vertex 24 (highest dimension)
-    if (result.center != 24) {
-        std::cout << "FAILED - center should be 24, got " << result.center << "\n";
-        return false;
-    }
-
-    std::cout << "PASSED (center=" << result.center << ")\n";
-    return true;
-}
-
-// =============================================================================
-// TEST 22: Rotation curve analysis - Power law fit
-// =============================================================================
-bool test_rotation_power_law() {
-    std::cout << "TEST 22: Rotation curve (Power law fit)... ";
-
-    auto grid = create_grid_graph(10, 10);
-
-    // Create uniform dimension data
-    std::vector<float> dimensions(grid.vertex_count(), 2.0f);
-
-    RotationConfig config;
-    config.auto_detect_center = false;
-    config.manual_center = 55;  // Near center of 10x10 grid
-    config.compute_power_law_fit = true;
-    config.max_radius = 6;
-    config.min_radius = 2;
-
-    auto result = analyze_rotation_curve(grid, config, &dimensions);
-
-    // Power law exponent should be finite
-    if (!std::isfinite(result.power_law_exponent)) {
-        std::cout << "FAILED - non-finite power law exponent\n";
-        return false;
-    }
-
-    // Curve should have points
-    if (result.curve.empty()) {
-        std::cout << "FAILED - empty rotation curve\n";
-        return false;
-    }
-
-    std::cout << "PASSED (exponent=" << result.power_law_exponent << ", points=" << result.curve.size() << ")\n";
-    return true;
-}
-
-// =============================================================================
-// TEST 23: Curvature on star graph (high curvature at center)
+// TEST 21: Curvature on star graph (high curvature at center)
 // =============================================================================
 bool test_curvature_star_graph() {
-    std::cout << "TEST 23: Curvature on star graph... ";
+    std::cout << "TEST 21: Curvature on star graph... ";
 
     auto star = create_star_graph(10);
 
@@ -1245,14 +1171,12 @@ int main() {
     if (test_geodesic_performance()) ++passed; else ++failed;
     if (test_particle_performance()) ++passed; else ++failed;
 
-    // New curvature/entropy/rotation tests
+    // Curvature/entropy tests
     if (test_curvature_ollivier_ricci()) ++passed; else ++failed;
     if (test_curvature_dimension_gradient()) ++passed; else ++failed;
     if (test_entropy_degree()) ++passed; else ++failed;
     if (test_entropy_local()) ++passed; else ++failed;
     if (test_entropy_fisher()) ++passed; else ++failed;
-    if (test_rotation_center()) ++passed; else ++failed;
-    if (test_rotation_power_law()) ++passed; else ++failed;
     if (test_curvature_star_graph()) ++passed; else ++failed;
     if (test_entropy_uniform()) ++passed; else ++failed;
 

@@ -5,6 +5,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+// Forward declaration for job system
+namespace job_system {
+    template<typename T> class JobSystem;
+}
+
 namespace viz::blackhole {
 
 // =============================================================================
@@ -53,6 +58,20 @@ public:
 
     // Truncated BFS - only explores up to max_radius (faster for local dimension)
     std::vector<int> distances_from_truncated(VertexId source, int max_radius) const;
+
+    // Compute graph radius (minimum eccentricity) - matches Mathematica's GraphRadius[]
+    // This is the eccentricity of the graph's center vertex
+    int graph_radius() const;
+
+    // Compute eccentricity of a single vertex (max distance to any other vertex)
+    int eccentricity(VertexId v) const;
+
+    // Parallel versions using job system
+    std::vector<std::vector<int>> all_pairs_distances_parallel(
+        job_system::JobSystem<int>* js) const;
+
+    std::vector<std::vector<int>> all_pairs_distances_directed_parallel(
+        job_system::JobSystem<int>* js) const;
 
 private:
     std::vector<VertexId> vertices_;
@@ -184,6 +203,25 @@ std::vector<float> estimate_all_dimensions_truncated(
 std::vector<float> estimate_all_dimensions(
     const SimpleGraph& graph,
     const DimensionConfig& config
+);
+
+// Parallel versions using job system
+std::vector<float> estimate_all_dimensions_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int max_radius = 5
+);
+
+std::vector<float> estimate_all_dimensions_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const DimensionConfig& config
+);
+
+std::vector<float> estimate_all_dimensions_truncated_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int max_radius = 5
 );
 
 // =============================================================================

@@ -185,7 +185,23 @@ if(GLSLC_EXECUTABLE)
     add_custom_target(compile_shaders ALL DEPENDS ${SPIRV_OUTPUTS})
 
 else()
-    message(WARNING "glslc not found - shaders will not be compiled. Install Vulkan SDK or add glslc to PATH.")
+    message(STATUS "glslc not found - using precompiled shaders from source tree")
+
+    # Copy precompiled shaders from source tree to build directory
+    set(PRECOMPILED_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders/spirv)
+    set(SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders/spirv)
+
+    # Create output directory
+    file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
+
+    # Copy all .spv files
+    file(GLOB PRECOMPILED_SHADERS "${PRECOMPILED_SHADER_DIR}/*.spv")
+    foreach(SHADER_FILE ${PRECOMPILED_SHADERS})
+        get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
+        configure_file(${SHADER_FILE} ${SHADER_OUTPUT_DIR}/${SHADER_NAME} COPYONLY)
+    endforeach()
+
+    message(STATUS "Copied precompiled shaders to ${SHADER_OUTPUT_DIR}")
 endif()
 
 # Math library (header-only for now)
@@ -305,9 +321,9 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             blackhole/src/particle_detection.cpp
             blackhole/src/curvature_analysis.cpp
             blackhole/src/entropy_analysis.cpp
-            blackhole/src/rotation_analysis.cpp
             blackhole/src/branchial_analysis.cpp
             blackhole/src/equilibrium_analysis.cpp
+            blackhole/src/branch_alignment.cpp
         )
         target_include_directories(viz_blackhole PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include

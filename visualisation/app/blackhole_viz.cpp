@@ -15,8 +15,8 @@
 #include <blackhole/hausdorff_analysis.hpp>
 #include <blackhole/curvature_analysis.hpp>
 #include <blackhole/entropy_analysis.hpp>
-#include <blackhole/rotation_analysis.hpp>
 #include <blackhole/branchial_analysis.hpp>
+#include <blackhole/branch_alignment.hpp>
 #include <layout/layout_engine.hpp>
 
 #include <iostream>
@@ -35,15 +35,46 @@
 #include <csignal>
 #include <atomic>
 #include <functional>
+#include <thread>
+#include <queue>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // Global flag for Ctrl-C handling
 static std::atomic<bool> g_shutdown_requested{false};
 
 static void signal_handler(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
+        if (g_shutdown_requested.load()) {
+            // Second Ctrl+C - force exit
+            std::cerr << "\nForce exit (second Ctrl+C)\n";
+            std::_Exit(1);
+        }
         g_shutdown_requested.store(true);
+        std::cerr << "\nCtrl+C received, press again to force exit\n";
     }
 }
+
+// Mathematical constant
+static constexpr float PI = 3.14159265358979323846f;
+
+#ifdef _WIN32
+// Windows console control handler
+static BOOL WINAPI console_handler(DWORD ctrl_type) {
+    if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT) {
+        if (g_shutdown_requested.load()) {
+            std::cerr << "\nForce exit (second Ctrl+C)\n";
+            std::_Exit(1);
+        }
+        g_shutdown_requested.store(true);
+        std::cerr << "\nCtrl+C received, press again to force exit\n";
+        return TRUE;  // Signal handled
+    }
+    return FALSE;
+}
+#endif
 
 using namespace viz;
 using namespace viz::blackhole;
@@ -331,7 +362,7 @@ void init_layout_from_timestep(
             VertexId vid = vertices_to_use[i];
             // Golden ratio offset for better distribution
             float phi = 1.618033988749895f;
-            float angle = vid * phi * 2.0f * 3.14159265f;
+            float angle = vid * phi * 2.0f * PI;
             float radius = 0.1f + 0.01f * std::sqrt(static_cast<float>(vid % 1000));
             pos_x[i] = centroid_x + radius * std::cos(angle);
             pos_y[i] = centroid_y + radius * std::sin(angle);
@@ -434,11 +465,10 @@ struct SphereInstance {
 // Will be scaled/rotated per-instance
 Mesh generate_cylinder_mesh(int segments = 16) {
     Mesh mesh;
-    const float pi = 3.14159265f;
 
     // Generate cap vertices and side vertices
     for (int i = 0; i <= segments; ++i) {
-        float angle = 2.0f * pi * i / segments;
+        float angle = 2.0f * PI * i / segments;
         float cos_a = std::cos(angle);
         float sin_a = std::sin(angle);
 
@@ -489,16 +519,15 @@ Mesh generate_cylinder_mesh(int segments = 16) {
 // Generate a UV sphere mesh (radius 1)
 Mesh generate_sphere_mesh(int longitude_segments = 16, int latitude_segments = 8) {
     Mesh mesh;
-    const float pi = 3.14159265f;
 
     // Generate vertices
     for (int lat = 0; lat <= latitude_segments; ++lat) {
-        float theta = pi * lat / latitude_segments;
+        float theta = PI * lat / latitude_segments;
         float sin_theta = std::sin(theta);
         float cos_theta = std::cos(theta);
 
         for (int lon = 0; lon <= longitude_segments; ++lon) {
-            float phi = 2.0f * pi * lon / longitude_segments;
+            float phi = 2.0f * PI * lon / longitude_segments;
             float sin_phi = std::sin(phi);
             float cos_phi = std::cos(phi);
 
@@ -533,14 +562,13 @@ Mesh generate_sphere_mesh(int longitude_segments = 16, int latitude_segments = 8
 // Generate a circle mesh (for 2D mode) - just a flat disc
 Mesh generate_circle_mesh(int segments = 16) {
     Mesh mesh;
-    const float pi = 3.14159265f;
 
     // Center vertex
     mesh.vertices.push_back({0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f});
 
     // Edge vertices
     for (int i = 0; i <= segments; ++i) {
-        float angle = 2.0f * pi * i / segments;
+        float angle = 2.0f * PI * i / segments;
         float x = std::cos(angle);
         float y = std::sin(angle);
         mesh.vertices.push_back({x, y, 0.0f, 0.0f, 0.0f, 1.0f});
@@ -558,25 +586,287 @@ Mesh generate_circle_mesh(int segments = 16) {
 
 // View mode
 enum class ViewMode {
-    View2D,  // XY plane with dimension coloring
-    View3D   // 3D with dimension as Z/height
+    View2D,       // XY plane with dimension coloring
+    View3D,       // 3D with dimension as Z/height
+    ShapeSpace2D, // Curvature shape space: PC1 vs PC2
+    ShapeSpace3D  // Curvature shape space: PC1/PC2/PC3
 };
 
-// Heatmap mode (what to color by)
-enum class HeatmapMode {
-    Mean,              // Mean dimension (default)
-    Variance,          // Variance of dimension across states
-    TopologicalCharge  // Per-vertex topological charge (requires particle analysis)
+// =============================================================================
+// Value Display System - Four Orthogonal Controls
+// =============================================================================
+//
+// WHAT: ValueType - which quantity to display
+//   - WolframHausdorffDimension: Local dimension from ball volume scaling
+//   - WolframRicciScalar: Scalar curvature from ball volume deficit
+//   - WolframRicciTensor: Directional curvature from geodesic tube volume
+//   - OllivierRicciCurvature: Transport-based curvature (Wasserstein distance)
+//   - DimensionGradient: Laplacian of the dimension field
+//
+// HOW: StatisticMode - how to aggregate across multiway states
+//   - Mean: Average value
+//   - Variance: Variance of values (only meaningful for Branchial scope)
+//
+// WHERE (spatial): ValueAggregation - spatial aggregation method
+//   - PerVertex: Raw values per vertex ID
+//   - Bucketed: Values bucketed by geodesic coordinates (smooths noise)
+//
+// WHERE (graph): GraphScope - which graph topology values come from
+//   - Branchial: Per-state computation, averaged across states (dimension only)
+//   - Foliation: Per-timestep union graph computation (dimension only)
+//   - Global: Mega-union graph computation (curvature always uses this)
+//
+// APPLICABILITY MATRIX:
+// +---------------------------+----------+----------+--------+
+// | ValueType                 | Branchial| Foliation| Global |
+// +---------------------------+----------+----------+--------+
+// | WolframHausdorffDimension | ✓ Mean   | ✓        | ✓      |
+// |                           | ✓ Var    |          |        |
+// +---------------------------+----------+----------+--------+
+// | WolframRicciScalar        |          |          | ✓      |
+// | WolframRicciTensor        |          |          | ✓      |
+// | OllivierRicciCurvature    |          |          | ✓      |
+// | DimensionGradient         |          |          | ✓      |
+// +---------------------------+----------+----------+--------+
+// Note: Curvature types currently only support Global scope (computed on mega-union).
+//       Variance is only meaningful for Branchial scope with dimension.
+//
+// KEYBINDINGS:
+//   V - Cycle ValueType
+//   M - Toggle StatisticMode (Mean/Variance)
+//   B - Toggle ValueAggregation (PerVertex/Bucketed)
+//   G - Cycle GraphScope (Branchial/Foliation/Global)
+//   C - Cycle ColorPalette
+//   N - Toggle normalization (per-frame/global)
+// =============================================================================
+
+// ValueType: WHAT quantity to display
+enum class ValueType {
+    WolframHausdorffDimension,  // d = Δlog(V)/Δlog(r) - local dimension via ball volume scaling
+    WolframRicciScalar,         // K = 6(d+2)/r² × (1 - V/V_expected) - scalar curvature via ball volume
+    WolframRicciTensor,         // R_μν = Scalar - TubeCorrection - directional curvature via tube volume
+    OllivierRicciCurvature,     // κ = 1 - W₁/d - transport-based curvature
+    DimensionGradient,          // Laplacian of dimension field
+    COUNT
 };
 
-// Dimension source mode (where dimension values come from)
-enum class DimensionSource {
-    Branchial,  // Per-state dimension, averaged across states (default)
-    Foliation,  // Dimension on union graph at current timestep
-    Global      // Dimension on mega-union across ALL timesteps (constant values)
+// StatisticMode: HOW to aggregate across multiway states
+enum class StatisticMode {
+    Mean,     // Average value across states
+    Variance  // Variance of values across states (only meaningful for Branchial scope)
+};
+
+// ValueAggregation: WHERE values come from spatially
+enum class ValueAggregation {
+    PerVertex,  // Raw per-vertex values
+    Bucketed    // Geodesic-coordinate-bucketed values (default)
+};
+
+// Helper to check if value type is curvature (uses diverging colormap)
+inline bool is_curvature_type(ValueType vt) {
+    return vt != ValueType::WolframHausdorffDimension;
+}
+
+// Curvature type index for array-based lookups (avoids switch statement explosion)
+// Returns -1 for non-curvature types
+inline int curvature_type_index(ValueType vt) {
+    switch (vt) {
+        case ValueType::OllivierRicciCurvature: return 0;
+        case ValueType::WolframRicciScalar: return 1;
+        case ValueType::WolframRicciTensor: return 2;
+        case ValueType::DimensionGradient: return 3;
+        default: return -1;
+    }
+}
+constexpr int NUM_CURVATURE_TYPES = 4;
+
+// Value type display name
+inline const char* value_type_name(ValueType vt) {
+    switch (vt) {
+        case ValueType::WolframHausdorffDimension: return "Dimension (Ball)";
+        case ValueType::WolframRicciScalar: return "Curvature (Ball)";
+        case ValueType::WolframRicciTensor: return "Curvature (Tube->Scalar)";  // Tensor method, scalar output
+        case ValueType::OllivierRicciCurvature: return "Curvature (Transport)";
+        case ValueType::DimensionGradient: return "Dimension Gradient";
+        case ValueType::COUNT: return "Unknown";
+    }
+    return "Unknown";
+}
+
+// Shape space color mode (what colors curvature points)
+enum class ShapeSpaceColorMode {
+    Curvature,  // Diverging: blue (-) -> white (0) -> red (+)
+    BranchId    // Categorical colors per branch
+};
+
+// Shape space display mode
+enum class ShapeSpaceDisplayMode {
+    Merged,     // All branches combined, same opacity
+    PerBranch   // Highlight one branch, dim others
+};
+
+// GraphScope: Which graph topology values are computed from
+// This affects dimension-based value types. Curvature currently uses Global only.
+enum class GraphScope {
+    Branchial,  // Values computed per-state, then averaged across multiway states at each timestep
+    Foliation,  // Values computed on union graph at each timestep (single graph per timestep)
+    Global      // Values computed on mega-union across ALL timesteps (constant per vertex)
 };
 
 // EdgeDisplayMode is defined earlier in the file (before init_layout_from_timestep)
+
+// =============================================================================
+// Mode Configuration - Centralized compatibility and UI strings
+// =============================================================================
+
+// UI string helpers - single source of truth
+namespace ui {
+    inline const char* name(GraphScope s) {
+        switch (s) {
+            case GraphScope::Branchial: return "Branchial Aggregation";
+            case GraphScope::Foliation: return "Branchial Union";
+            case GraphScope::Global: return "All-State Union";
+            default: return "Unknown";
+        }
+    }
+
+    inline const char* name(StatisticMode m) {
+        switch (m) {
+            case StatisticMode::Mean: return "Mean";
+            case StatisticMode::Variance: return "Variance";
+            default: return "Unknown";
+        }
+    }
+
+    inline const char* name(ValueAggregation a) {
+        switch (a) {
+            case ValueAggregation::PerVertex: return "Per-Vertex";
+            case ValueAggregation::Bucketed: return "Bucketed";
+            default: return "Unknown";
+        }
+    }
+}
+
+// Centralized mode configuration with compatibility logic
+struct ModeConfig {
+    ValueType value_type = ValueType::WolframHausdorffDimension;
+    StatisticMode statistic_mode = StatisticMode::Mean;
+    GraphScope graph_scope = GraphScope::Branchial;
+    ValueAggregation value_aggregation = ValueAggregation::Bucketed;
+
+    // Compatibility checks - single source of truth
+    bool is_curvature() const {
+        return is_curvature_type(value_type);
+    }
+
+    bool supports_variance() const {
+        // Global: no variance (single mega-union, no per-state or per-bucket statistics)
+        if (graph_scope == GraphScope::Global) return false;
+        // Foliation + Curvature: no variance (curvature computed once on union graph)
+        if (graph_scope == GraphScope::Foliation && is_curvature()) return false;
+        // Branchial: always has variance (variance across states within coordinate buckets)
+        // Foliation + Dimension: has variance (variance within coordinate buckets on union graph)
+        return true;
+    }
+
+    bool supports_value_aggregation() const {
+        // Value aggregation (PerVertex vs Bucketed) applies to all value types
+        // For curvature: Bucketed averages curvature values within geodesic coordinate buckets
+        return true;
+    }
+
+    bool supports_tube_visualization() const {
+        return value_type == ValueType::WolframRicciTensor;
+    }
+
+    // State transitions with automatic constraint enforcement
+    void set_value_type(ValueType vt) {
+        value_type = vt;
+        enforce_constraints();
+    }
+
+    void set_graph_scope(GraphScope gs) {
+        graph_scope = gs;
+        enforce_constraints();
+    }
+
+    void cycle_value_type() {
+        int v = static_cast<int>(value_type);
+        v = (v + 1) % 5;  // 5 value types
+        set_value_type(static_cast<ValueType>(v));
+    }
+
+    void cycle_graph_scope() {
+        int s = static_cast<int>(graph_scope);
+        s = (s + 1) % 3;  // 3 scopes
+        set_graph_scope(static_cast<GraphScope>(s));
+    }
+
+    bool toggle_statistic_mode() {
+        if (!supports_variance()) return false;
+        statistic_mode = (statistic_mode == StatisticMode::Mean)
+            ? StatisticMode::Variance
+            : StatisticMode::Mean;
+        return true;
+    }
+
+    bool toggle_value_aggregation() {
+        if (!supports_value_aggregation()) return false;
+        value_aggregation = (value_aggregation == ValueAggregation::PerVertex)
+            ? ValueAggregation::Bucketed
+            : ValueAggregation::PerVertex;
+        return true;
+    }
+
+    // Explanations for why operations are unavailable
+    const char* why_no_variance() const {
+        if (graph_scope == GraphScope::Global) return "Global mode uses single mega-union graph";
+        if (graph_scope == GraphScope::Foliation && is_curvature()) return "Foliation curvature has no variance (single sample)";
+        return nullptr;  // Variance IS supported
+    }
+
+    const char* why_no_value_aggregation() const {
+        return nullptr;  // Aggregation is always supported
+    }
+
+    // Track what was auto-corrected for user feedback
+    struct ConstraintResult {
+        bool statistic_reset = false;
+    };
+
+    ConstraintResult last_constraint_result;
+
+private:
+    void enforce_constraints() {
+        last_constraint_result = {};
+        if (!supports_variance() && statistic_mode == StatisticMode::Variance) {
+            statistic_mode = StatisticMode::Mean;
+            last_constraint_result.statistic_reset = true;
+        }
+    }
+};
+
+// =============================================================================
+// Highlight Mode & Shell Colors
+// =============================================================================
+
+enum class HighlightMode {
+    Tube,  // Geodesic path + surrounding tube (for Curvature Tube->Scalar)
+    Ball   // Single vertex + ball neighborhood (for Dimension/Curvature Ball)
+};
+
+// Mathematica ColorData[1,...] palette for distance-based shell coloring
+static std::tuple<float, float, float> shell_color(int dist) {
+    switch (dist) {
+        case 0: return {0.37f, 0.51f, 0.71f};  // Blue (center/path)
+        case 1: return {0.88f, 0.61f, 0.14f};  // Orange
+        case 2: return {0.56f, 0.69f, 0.19f};  // Green
+        case 3: return {0.92f, 0.38f, 0.21f};  // Red
+        case 4: return {0.53f, 0.38f, 0.64f};  // Purple
+        case 5: return {0.55f, 0.34f, 0.29f};  // Brown
+        default: return {0.70f, 0.70f, 0.70f}; // Gray for distant
+    }
+}
 
 // =============================================================================
 // Vertex Selection & Histogram State
@@ -594,7 +884,7 @@ struct VertexSelectionState {
     int histogram_bin_count = 10;  // Adjustable with +/- keys
 
     // Cached histogram data (recomputed when selection/timestep/mode changes)
-    std::vector<float> dimension_values;  // Raw dimension values
+    std::vector<float> dimension_values;  // Raw values (dimension or curvature)
     std::vector<int> bin_counts;          // Histogram bin counts
     int num_bins = 0;
     float bin_min = 0.0f;
@@ -603,11 +893,12 @@ struct VertexSelectionState {
     int max_bin_count = 0;
     float mean_value = 0.0f;
     float std_dev = 0.0f;
-    DimensionSource cached_dim_source = DimensionSource::Branchial;
+    GraphScope cached_graph_scope = GraphScope::Branchial;
+    ValueType cached_value_type = ValueType::WolframHausdorffDimension;
     int cached_timestep = -1;
     int cached_bin_count = 10;
 
-    // Distribution mode info (for Foliation/Global - shows all vertices)
+    // Distribution mode info (for Foliation/Global/Curvature - shows all vertices)
     bool is_distribution_mode = false;
     float selected_vertex_value = -1.0f;  // For highlighting selected vertex in distribution
     int selected_vertex_bin = -1;         // Which bin contains selected vertex
@@ -615,6 +906,25 @@ struct VertexSelectionState {
     // Hit testing bounds (for dismissing when clicking outside)
     float panel_left = 0.0f, panel_right = 0.0f;
     float panel_top = 0.0f, panel_bottom = 0.0f;
+
+    // Highlight mode (Ball for dimension/curvature-ball, Tube for tensor)
+    HighlightMode highlight_mode = HighlightMode::Ball;
+    bool show_highlight = false;  // Toggle with T key
+    float non_highlight_alpha = 0.15f;  // Dim non-highlighted vertices
+
+    // Ball highlight data (single ball around clicked vertex)
+    std::unordered_map<VertexId, int> ball_distances;  // Vertex -> distance from center
+    int ball_radius = 5;  // Max distance to include in ball
+
+    // Tube highlight data (geodesic path + surrounding tube)
+    std::vector<std::unordered_map<VertexId, int>> tube_vertex_distances;  // Vertex -> distance from geodesic path
+    std::vector<std::vector<VertexId>> tube_geodesic_paths;  // Central geodesic paths
+    std::vector<int> tube_radii;  // Radius of each tube
+    int current_tube_index = 0;  // Which tube to display (cycle with T key)
+    int max_tube_radius = 1;  // Maximum distance in any tube (for color normalization)
+
+    // Track when highlight was computed (for auto-recompute on timestep change)
+    int highlight_timestep = -1;
 };
 
 // Picking sphere instance - outputs vertex index instead of color
@@ -937,9 +1247,10 @@ RenderData build_render_data(
     EdgeDisplayMode edge_mode = EdgeDisplayMode::Union,  // Which edges to show
     int edge_freq_threshold = 2,  // Edges must appear in >= N states (for Frequent mode)
     int selected_state_index = 0,  // Which state to show in SingleState mode
-    HeatmapMode heatmap_mode = HeatmapMode::Mean,  // What to color by
-    DimensionSource dim_source = DimensionSource::Branchial,  // Branchial, Foliation, or Global
-    bool per_frame_normalization = true,  // Per-frame (local) vs global normalization
+    ValueType value_type = ValueType::WolframHausdorffDimension,  // What quantity to display
+    StatisticMode statistic_mode = StatisticMode::Mean,  // Mean or Variance
+    GraphScope graph_scope = GraphScope::Branchial,  // Branchial, Foliation, or Global
+    bool per_frame_normalization = false,  // Per-frame (local) vs global normalization
     bool z_mapping_enabled = true,  // Map dimension to Z/height (false = flat)
     MissingDataMode missing_mode = MissingDataMode::Show,  // How to display missing vertices
     ColorPalette palette = ColorPalette::Temperature,  // Color palette for dimension heatmap
@@ -954,7 +1265,15 @@ RenderData build_render_data(
     int timeslice_width = 5,  // Number of timesteps to aggregate
     const std::vector<std::vector<int>>* all_selected_states = nullptr,  // Per-timestep selected state indices (for path selection)
     bool show_geodesics = false,  // Overlay geodesic paths
-    bool show_defects = false  // Overlay topological defect markers
+    bool show_defects = false,  // Overlay topological defect markers
+    // Highlight visualization (Ball or Tube mode)
+    bool show_highlight = false,
+    const std::unordered_map<VertexId, int>* highlight_distances = nullptr,  // vertex -> distance from center/path
+    VertexId highlight_source = 0,  // Center vertex (Ball) or source vertex (Tube)
+    VertexId highlight_target = 0,  // Target vertex (Tube only, 0 for Ball)
+    float non_highlight_alpha = 0.15f,
+    // Value aggregation (Per-Vertex vs Bucketed)
+    ValueAggregation value_aggregation = ValueAggregation::Bucketed
 ) {
     RenderData data;
 
@@ -998,16 +1317,16 @@ RenderData build_render_data(
         // Use prefix sums for dimension averaging (O(V) instead of O(W*V))
         const auto& end_ts = analysis.per_timestep[slice_end];
 
-        // Select which prefix sums to use based on dim_source and heatmap_mode
+        // Select which prefix sums to use based on graph_scope and statistic_mode
         // Foliation/Global use union-graph dimensions, Branchial uses per-state averaged dimensions
         // TODO: True Global mode uses mega-union across all timesteps (constant values, no timeslicing)
-        const bool use_foliation_data = (dim_source == DimensionSource::Foliation || dim_source == DimensionSource::Global);
+        const bool use_foliation_data = (graph_scope == GraphScope::Foliation || graph_scope == GraphScope::Global);
         const auto* end_sum = use_foliation_data
-            ? ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.global_var_prefix_sum : &end_ts.global_dim_prefix_sum)
-            : ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.var_prefix_sum : &end_ts.dim_prefix_sum);
+            ? ((statistic_mode == StatisticMode::Variance) ? &end_ts.global_var_prefix_sum : &end_ts.global_dim_prefix_sum)
+            : ((statistic_mode == StatisticMode::Variance) ? &end_ts.var_prefix_sum : &end_ts.dim_prefix_sum);
         const auto* end_count = use_foliation_data
-            ? ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.global_var_prefix_count : &end_ts.global_dim_prefix_count)
-            : ((heatmap_mode == HeatmapMode::Variance) ? &end_ts.var_prefix_count : &end_ts.dim_prefix_count);
+            ? ((statistic_mode == StatisticMode::Variance) ? &end_ts.global_var_prefix_count : &end_ts.global_dim_prefix_count)
+            : ((statistic_mode == StatisticMode::Variance) ? &end_ts.var_prefix_count : &end_ts.dim_prefix_count);
 
         // Get start-1 prefix sums (or empty if slice_start == 0)
         const std::unordered_map<VertexId, float>* start_sum = nullptr;
@@ -1015,11 +1334,11 @@ RenderData build_render_data(
         if (slice_start > 0) {
             const auto& start_ts = analysis.per_timestep[slice_start - 1];
             start_sum = use_foliation_data
-                ? ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.global_var_prefix_sum : &start_ts.global_dim_prefix_sum)
-                : ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.var_prefix_sum : &start_ts.dim_prefix_sum);
+                ? ((statistic_mode == StatisticMode::Variance) ? &start_ts.global_var_prefix_sum : &start_ts.global_dim_prefix_sum)
+                : ((statistic_mode == StatisticMode::Variance) ? &start_ts.var_prefix_sum : &start_ts.dim_prefix_sum);
             start_count = use_foliation_data
-                ? ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.global_var_prefix_count : &start_ts.global_dim_prefix_count)
-                : ((heatmap_mode == HeatmapMode::Variance) ? &start_ts.var_prefix_count : &start_ts.dim_prefix_count);
+                ? ((statistic_mode == StatisticMode::Variance) ? &start_ts.global_var_prefix_count : &start_ts.global_dim_prefix_count)
+                : ((statistic_mode == StatisticMode::Variance) ? &start_ts.var_prefix_count : &start_ts.dim_prefix_count);
         }
 
         // Use dim_prefix_count to filter vertices to only those in the slice range
@@ -1266,15 +1585,67 @@ RenderData build_render_data(
     // Reference for the rest of the function - use center timestep for stats
     const auto& ts = center_ts;
 
-    // Color scaling - use appropriate range based on dimension mode
+    // Color scaling - use appropriate range based on value type and dimension mode
     float value_min, value_max;
-    if (dim_source == DimensionSource::Global) {
+    float curvature_abs_max = 0.0f;  // For symmetric curvature scaling
+    bool using_curvature = is_curvature_type(value_type);
+
+    // Select appropriate curvature map pointer (for Global scope only)
+    const std::unordered_map<VertexId, float>* curvature_map = nullptr;
+    int curv_idx = curvature_type_index(value_type);
+    if (using_curvature && analysis.has_curvature_analysis && graph_scope == GraphScope::Global) {
+        curvature_map = &analysis.get_global_curvature_map(curv_idx);
+    }
+
+    if (using_curvature) {
+        // Get curvature ranges using accessor methods (index-based for extensibility)
+        float curv_min, curv_max;
+        if (graph_scope == GraphScope::Global) {
+            // Global: use mega-union curvature ranges (no per-frame option)
+            analysis.get_global_curvature_range(curv_idx, curv_min, curv_max);
+        } else if (graph_scope == GraphScope::Foliation) {
+            // Foliation: per-timestep or global quantiles
+            if (per_frame_normalization) {
+                ts.get_foliation_curvature_range(curv_idx, curv_min, curv_max);
+            } else {
+                analysis.get_foliation_curvature_quantiles(curv_idx, curv_min, curv_max);
+            }
+        } else {
+            // Branchial: mean or variance, per-timestep or global quantiles
+            if (statistic_mode == StatisticMode::Variance) {
+                if (per_frame_normalization) {
+                    ts.get_variance_curvature_range(curv_idx, curv_min, curv_max);
+                } else {
+                    analysis.get_variance_curvature_quantiles(curv_idx, curv_min, curv_max);
+                }
+            } else {
+                if (per_frame_normalization) {
+                    ts.get_mean_curvature_range(curv_idx, curv_min, curv_max);
+                } else {
+                    analysis.get_mean_curvature_quantiles(curv_idx, curv_min, curv_max);
+                }
+            }
+        }
+
+        if (statistic_mode == StatisticMode::Variance) {
+            // Variance mode: use sequential colormap (variance is always >= 0)
+            value_min = curv_min;
+            value_max = curv_max;
+            curvature_abs_max = 0.0f;  // Not used for variance mode
+        } else {
+            // Mean mode: use symmetric range for diverging colormap
+            curvature_abs_max = std::max(std::abs(curv_min), std::abs(curv_max));
+            if (curvature_abs_max < 0.001f) curvature_abs_max = 1.0f;  // Avoid division by zero
+            value_min = -curvature_abs_max;
+            value_max = curvature_abs_max;
+        }
+    } else if (graph_scope == GraphScope::Global) {
         // Global mode uses mega-union (constant across all timesteps, no per-frame option)
         value_min = analysis.mega_dim_min;
         value_max = analysis.mega_dim_max;
-    } else if (dim_source == DimensionSource::Foliation) {
-        if (heatmap_mode == HeatmapMode::Variance) {
-            // Foliation variance (not really applicable, but handle anyway)
+    } else if (graph_scope == GraphScope::Foliation) {
+        if (statistic_mode == StatisticMode::Variance) {
+            // Foliation dimension variance (within-bucket variance on union graph)
             if (per_frame_normalization) {
                 value_min = ts.global_var_min;
                 value_max = ts.global_var_max;
@@ -1294,7 +1665,7 @@ RenderData build_render_data(
         }
     } else {
         // Branchial mode uses per-state averaged dimensions
-        if (heatmap_mode == HeatmapMode::Variance) {
+        if (statistic_mode == StatisticMode::Variance) {
             // Branchial variance
             if (per_frame_normalization) {
                 value_min = ts.var_min;
@@ -1318,6 +1689,72 @@ RenderData build_render_data(
     // ALWAYS use center timestep vertices for rendering
     // Timeslice only affects dimension value averaging (stored in agg_dimensions), not visibility
     const std::vector<VertexId>& vertices_to_render = ts.union_vertices;
+
+    // Pre-compute bucketed curvature values if needed (curvature + Bucketed mode)
+    // Groups vertices by geodesic coordinate and averages curvature within each bucket
+    std::vector<float> bucketed_curvature;
+    if (using_curvature && curvature_map && value_aggregation == ValueAggregation::Bucketed) {
+        // Build map from VertexId to CoordKey using per-state analysis data
+        // Find a state at this timestep to get vertex coordinates
+        std::unordered_map<VertexId, CoordKey> vertex_to_coord;
+        int num_anchors = 0;
+        for (const auto& state : analysis.per_state) {
+            if (state.step == ts.step) {
+                num_anchors = state.num_anchors;
+                for (size_t i = 0; i < state.vertices.size() && i < state.vertex_coords.size(); ++i) {
+                    VertexId vid = state.vertices[i];
+                    if (vertex_to_coord.find(vid) == vertex_to_coord.end()) {
+                        CoordKey key;
+                        key.num_anchors = num_anchors;
+                        for (int a = 0; a < MAX_ANCHORS; ++a) {
+                            key.coords[a] = state.vertex_coords[i][a];
+                        }
+                        vertex_to_coord[vid] = key;
+                    }
+                }
+            }
+        }
+
+        if (!vertex_to_coord.empty()) {
+            // First pass: accumulate curvature values per coordinate bucket
+            std::unordered_map<CoordKey, std::pair<float, int>, CoordKeyHash> coord_to_curv_accum;
+            for (VertexId vid : vertices_to_render) {
+                auto coord_it = vertex_to_coord.find(vid);
+                auto curv_it = curvature_map->find(vid);
+                if (coord_it != vertex_to_coord.end() && curv_it != curvature_map->end() &&
+                    std::isfinite(curv_it->second)) {
+                    auto& accum = coord_to_curv_accum[coord_it->second];
+                    accum.first += curv_it->second;
+                    accum.second += 1;
+                }
+            }
+            // Compute averages
+            std::unordered_map<CoordKey, float, CoordKeyHash> coord_to_curv;
+            for (const auto& [key, accum] : coord_to_curv_accum) {
+                if (accum.second > 0) {
+                    coord_to_curv[key] = accum.first / accum.second;
+                }
+            }
+            // Second pass: build bucketed curvature array for each vertex
+            bucketed_curvature.resize(vertices_to_render.size(), 0.0f);
+            for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+                VertexId vid = vertices_to_render[i];
+                auto coord_it = vertex_to_coord.find(vid);
+                if (coord_it != vertex_to_coord.end()) {
+                    auto curv_it = coord_to_curv.find(coord_it->second);
+                    if (curv_it != coord_to_curv.end()) {
+                        bucketed_curvature[i] = curv_it->second;
+                        continue;
+                    }
+                }
+                // Fall back to per-vertex value
+                auto curv_it = curvature_map->find(vid);
+                if (curv_it != curvature_map->end()) {
+                    bucketed_curvature[i] = curv_it->second;
+                }
+            }
+        }
+    }
 
     // Build vertex index map, positions, and lookup tables
     std::unordered_map<VertexId, size_t> vertex_to_idx;
@@ -1396,9 +1833,93 @@ RenderData build_render_data(
         // Store base Z from layout/embedding (will be used or augmented below)
         float base_z = pz;
 
-        // Get value based on dimension source and heatmap mode
+        // Get value based on value type and graph scope
         float value = -1.0f;
-        if (timeslice_enabled && !agg_dimensions.empty()) {
+        if (using_curvature) {
+            // Find vertex index in union_vertices
+            size_t vertex_idx = SIZE_MAX;
+            for (size_t j = 0; j < ts.union_vertices.size(); ++j) {
+                if (ts.union_vertices[j] == vid) {
+                    vertex_idx = j;
+                    break;
+                }
+            }
+
+            if (graph_scope == GraphScope::Global) {
+                // Global: use mega-union curvature from BHAnalysisResult
+                if (curvature_map) {
+                    auto curv_it = curvature_map->find(vid);
+                    if (curv_it != curvature_map->end()) {
+                        value = curv_it->second;
+                    } else {
+                        value = 0.0f;
+                    }
+                }
+            } else if (graph_scope == GraphScope::Foliation) {
+                // Foliation: use union graph curvature (single sample, no variance)
+                if (vertex_idx != SIZE_MAX) {
+                    switch (value_type) {
+                        case ValueType::OllivierRicciCurvature:
+                            value = (vertex_idx < ts.foliation_curvature_ollivier.size()) ? ts.foliation_curvature_ollivier[vertex_idx] : 0.0f;
+                            break;
+                        case ValueType::WolframRicciScalar:
+                            value = (vertex_idx < ts.foliation_curvature_wolfram_scalar.size()) ? ts.foliation_curvature_wolfram_scalar[vertex_idx] : 0.0f;
+                            break;
+                        case ValueType::WolframRicciTensor:
+                            value = (vertex_idx < ts.foliation_curvature_wolfram_ricci.size()) ? ts.foliation_curvature_wolfram_ricci[vertex_idx] : 0.0f;
+                            break;
+                        case ValueType::DimensionGradient:
+                            value = (vertex_idx < ts.foliation_curvature_dim_gradient.size()) ? ts.foliation_curvature_dim_gradient[vertex_idx] : 0.0f;
+                            break;
+                        default:
+                            value = 0.0f;
+                            break;
+                    }
+                }
+            } else {
+                // Branchial: use aggregated per-state curvature (mean or variance)
+                if (vertex_idx != SIZE_MAX) {
+                    if (statistic_mode == StatisticMode::Variance) {
+                        switch (value_type) {
+                            case ValueType::OllivierRicciCurvature:
+                                value = (vertex_idx < ts.variance_curvature_ollivier.size()) ? ts.variance_curvature_ollivier[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::WolframRicciScalar:
+                                value = (vertex_idx < ts.variance_curvature_wolfram_scalar.size()) ? ts.variance_curvature_wolfram_scalar[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::WolframRicciTensor:
+                                value = (vertex_idx < ts.variance_curvature_wolfram_ricci.size()) ? ts.variance_curvature_wolfram_ricci[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::DimensionGradient:
+                                value = (vertex_idx < ts.variance_curvature_dim_gradient.size()) ? ts.variance_curvature_dim_gradient[vertex_idx] : 0.0f;
+                                break;
+                            default:
+                                value = 0.0f;
+                                break;
+                        }
+                    } else {
+                        // Mean mode
+                        switch (value_type) {
+                            case ValueType::OllivierRicciCurvature:
+                                value = (vertex_idx < ts.mean_curvature_ollivier.size()) ? ts.mean_curvature_ollivier[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::WolframRicciScalar:
+                                value = (vertex_idx < ts.mean_curvature_wolfram_scalar.size()) ? ts.mean_curvature_wolfram_scalar[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::WolframRicciTensor:
+                                value = (vertex_idx < ts.mean_curvature_wolfram_ricci.size()) ? ts.mean_curvature_wolfram_ricci[vertex_idx] : 0.0f;
+                                break;
+                            case ValueType::DimensionGradient:
+                                value = (vertex_idx < ts.mean_curvature_dim_gradient.size()) ? ts.mean_curvature_dim_gradient[vertex_idx] : 0.0f;
+                                break;
+                            default:
+                                value = 0.0f;
+                                break;
+                        }
+                    }
+                }
+            }
+        } else if (timeslice_enabled && !agg_dimensions.empty()) {
             // Use pre-computed averaged value from timeslice aggregation (O(1) lookup)
             auto it = agg_dimensions.find(vid);
             if (it != agg_dimensions.end()) {
@@ -1406,7 +1927,7 @@ RenderData build_render_data(
             }
         } else {
             // Find dimension value based on mode
-            if (dim_source == DimensionSource::Global) {
+            if (graph_scope == GraphScope::Global) {
                 // Global mode: use mega_dimension (constant across all timesteps)
                 auto it = analysis.mega_dimension.find(vid);
                 if (it != analysis.mega_dimension.end()) {
@@ -1416,18 +1937,25 @@ RenderData build_render_data(
                 // Branchial/Foliation: find vertex in center timestep
                 for (size_t j = 0; j < ts.union_vertices.size(); ++j) {
                     if (ts.union_vertices[j] == vid) {
-                        if (dim_source == DimensionSource::Foliation) {
-                            if (heatmap_mode == HeatmapMode::Variance) {
+                        if (graph_scope == GraphScope::Foliation) {
+                            if (statistic_mode == StatisticMode::Variance) {
                                 value = (j < ts.global_variance_dimensions.size()) ? ts.global_variance_dimensions[j] : -1.0f;
                             } else {
                                 value = (j < ts.global_mean_dimensions.size()) ? ts.global_mean_dimensions[j] : -1.0f;
                             }
                         } else {
-                            // Branchial mode
-                            if (heatmap_mode == HeatmapMode::Variance) {
+                            // Branchial mode - use raw or bucketed based on aggregation setting
+                            if (statistic_mode == StatisticMode::Variance) {
+                                // Variance is only available for bucketed mode
                                 value = (j < ts.variance_dimensions.size()) ? ts.variance_dimensions[j] : -1.0f;
                             } else {
-                                value = (j < ts.mean_dimensions.size()) ? ts.mean_dimensions[j] : -1.0f;
+                                // Mean: choose between raw per-vertex and bucketed
+                                if (value_aggregation == ValueAggregation::PerVertex &&
+                                    j < ts.raw_vertex_dimensions.size()) {
+                                    value = ts.raw_vertex_dimensions[j];
+                                } else {
+                                    value = (j < ts.mean_dimensions.size()) ? ts.mean_dimensions[j] : -1.0f;
+                                }
                             }
                         }
                         break;
@@ -1438,18 +1966,39 @@ RenderData build_render_data(
         vertex_dims.push_back(value);
 
         // Track if this vertex should be hidden (only in Hide mode for missing/invalid data)
-        bool is_missing = (value < 0 || !std::isfinite(value));
+        // For curvature mean: only hide if truly missing (NaN/Inf), not if 0
+        // For curvature variance: hide if negative (shouldn't happen) or NaN/Inf
+        // For dimension: hide if negative or NaN/Inf
+        bool is_missing;
+        if (using_curvature && statistic_mode == StatisticMode::Mean) {
+            is_missing = !std::isfinite(value);
+        } else {
+            is_missing = (value < 0 || !std::isfinite(value));
+        }
         bool is_hidden = (missing_mode == MissingDataMode::Hide) && is_missing;
         vertex_hidden.push_back(is_hidden);
 
-        // Color using palette and missing data mode
-        Vec4 color = dimension_to_color(value, value_min, value_max, palette, missing_mode);
+        // Color based on value type
+        Vec4 color;
+        if (using_curvature && statistic_mode == StatisticMode::Variance) {
+            // Curvature + Variance: sequential colormap for dimension variance (always positive)
+            color = dimension_to_color(value, value_min, value_max, palette, missing_mode);
+        } else if (using_curvature) {
+            // Curvature + Mean: diverging colormap for curvature values
+            color = curvature_to_color(value, curvature_abs_max, palette);
+        } else {
+            // Dimension: sequential colormap
+            color = dimension_to_color(value, value_min, value_max, palette, missing_mode);
+        }
         vertex_colors.push_back(color);
 
         // 3D position: start with base_z from layout/embedding
         // Optionally add dimension-to-height mapping on top
         float z = base_z;
-        if (z_mapping_enabled && view_mode == ViewMode::View3D && value >= 0 && std::isfinite(value)) {
+        // For curvature: any finite value is valid (including negative)
+        // For dimension: only non-negative values are valid
+        bool valid_value = using_curvature ? std::isfinite(value) : (value >= 0 && std::isfinite(value));
+        if (z_mapping_enabled && view_mode == ViewMode::View3D && valid_value) {
             // Add dimension-based height offset to base Z
             float vmin = value_min, vmax = value_max;
             if (std::isfinite(vmin) && std::isfinite(vmax)) {
@@ -1937,6 +2486,233 @@ RenderData build_render_data(
         }
     }
 
+    // Apply distance-based highlight coloring (works for both Ball and Tube modes)
+    // Colors vertices/edges by distance shells (like ResourceFunction HighlightedGraph)
+    if (show_highlight && highlight_distances && !highlight_distances->empty()) {
+
+        // Dim vertices not in highlight, color those in highlight by distance shell
+        std::vector<SphereInstance> new_spheres;
+        new_spheres.reserve(data.sphere_instances.size());
+
+        size_t sphere_idx = 0;
+        for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+            VertexId vid = vertices_to_render[i];
+            if (vertex_hidden[i]) continue;
+            if (filter_edgeless && vertices_with_edges.find(vid) == vertices_with_edges.end()) continue;
+
+            if (sphere_idx < data.sphere_instances.size()) {
+                SphereInstance inst = data.sphere_instances[sphere_idx];
+
+                auto dist_it = highlight_distances->find(vid);
+                if (dist_it != highlight_distances->end()) {
+                    // In highlight: color by distance shell
+                    auto [r, g, b] = shell_color(dist_it->second);
+                    inst.r = r;
+                    inst.g = g;
+                    inst.b = b;
+                    inst.a = 0.9f;
+                } else {
+                    // Not in highlight: dim significantly
+                    inst.a = non_highlight_alpha;
+                }
+
+                // Highlight source vertex (white, large)
+                if (vid == highlight_source) {
+                    inst.radius *= 2.0f;
+                    inst.r = 1.0f; inst.g = 1.0f; inst.b = 1.0f; inst.a = 1.0f;
+                }
+
+                // Highlight target vertex if specified (magenta, large) - Tube mode only
+                if (highlight_target != 0 && vid == highlight_target) {
+                    inst.radius *= 2.0f;
+                    inst.r = 1.0f; inst.g = 0.0f; inst.b = 1.0f; inst.a = 1.0f;
+                }
+
+                new_spheres.push_back(inst);
+                ++sphere_idx;
+            }
+        }
+
+        for (size_t extra_idx = sphere_idx; extra_idx < data.sphere_instances.size(); ++extra_idx) {
+            new_spheres.push_back(data.sphere_instances[extra_idx]);
+        }
+        data.sphere_instances = std::move(new_spheres);
+
+        // COLOR EDGES by distance shell
+        std::vector<CylinderInstance> new_cylinders;
+        new_cylinders.reserve(data.cylinder_instances.size());
+
+        for (const auto& cyl : data.cylinder_instances) {
+            CylinderInstance new_cyl = cyl;
+
+            // Find vertices at cylinder endpoints (approximate by position matching)
+            VertexId v1 = 0, v2 = 0;
+            float best_dist1 = 1e9f, best_dist2 = 1e9f;
+            for (size_t i = 0; i < vertices_to_render.size(); ++i) {
+                auto it = vertex_to_idx.find(vertices_to_render[i]);
+                if (it == vertex_to_idx.end()) continue;
+                size_t idx = it->second;
+                float dx1 = vertex_x[idx] - cyl.start_x;
+                float dy1 = vertex_y[idx] - cyl.start_y;
+                float dz1 = vertex_z[idx] - cyl.start_z;
+                float d1 = dx1*dx1 + dy1*dy1 + dz1*dz1;
+                if (d1 < best_dist1) { best_dist1 = d1; v1 = vertices_to_render[i]; }
+
+                float dx2 = vertex_x[idx] - cyl.end_x;
+                float dy2 = vertex_y[idx] - cyl.end_y;
+                float dz2 = vertex_z[idx] - cyl.end_z;
+                float d2 = dx2*dx2 + dy2*dy2 + dz2*dz2;
+                if (d2 < best_dist2) { best_dist2 = d2; v2 = vertices_to_render[i]; }
+            }
+
+            // Get distances for both endpoints
+            auto it1 = highlight_distances->find(v1);
+            auto it2 = highlight_distances->find(v2);
+
+            if (it1 != highlight_distances->end() && it2 != highlight_distances->end()) {
+                // Both endpoints in highlight - color by max distance
+                int edge_dist = std::max(it1->second, it2->second);
+                auto [r, g, b] = shell_color(edge_dist);
+                new_cyl.r1 = new_cyl.r2 = r;
+                new_cyl.g1 = new_cyl.g2 = g;
+                new_cyl.b1 = new_cyl.b2 = b;
+                new_cyl.a1 = new_cyl.a2 = 1.0f;
+                new_cyl.radius *= (edge_dist == 0) ? 2.5f : 1.5f;  // Thicker for center/path
+            } else {
+                // Edge not in highlight - dim it
+                new_cyl.a1 = new_cyl.a2 = non_highlight_alpha;
+            }
+
+            new_cylinders.push_back(new_cyl);
+        }
+        data.cylinder_instances = std::move(new_cylinders);
+    }
+
+    return data;
+}
+
+// Kelly's maximum contrast colors (for branch coloring)
+static Vec4 kelly_color(size_t index) {
+    static const Vec4 colors[] = {
+        {0.902f, 0.624f, 0.000f, 1.0f},  // Vivid Yellow
+        {0.502f, 0.243f, 0.459f, 1.0f},  // Strong Purple
+        {1.000f, 0.478f, 0.361f, 1.0f},  // Vivid Orange
+        {0.663f, 0.800f, 0.929f, 1.0f},  // Very Light Blue
+        {0.690f, 0.090f, 0.122f, 1.0f},  // Vivid Red
+        {0.776f, 0.667f, 0.055f, 1.0f},  // Grayish Yellow
+        {0.502f, 0.502f, 0.502f, 1.0f},  // Medium Gray
+        {0.000f, 0.502f, 0.333f, 1.0f},  // Vivid Green
+        {0.961f, 0.412f, 0.557f, 1.0f},  // Strong Purplish Pink
+        {0.000f, 0.329f, 0.651f, 1.0f},  // Strong Blue
+        {1.000f, 0.671f, 0.569f, 1.0f},  // Strong Yellowish Pink
+        {0.416f, 0.239f, 0.604f, 1.0f},  // Strong Violet
+        {1.000f, 0.612f, 0.416f, 1.0f},  // Vivid Orange Yellow
+        {0.651f, 0.329f, 0.329f, 1.0f},  // Strong Purplish Red
+        {0.847f, 0.843f, 0.000f, 1.0f},  // Vivid Greenish Yellow
+        {0.529f, 0.306f, 0.000f, 1.0f},  // Strong Reddish Brown
+    };
+    return colors[index % 16];
+}
+
+// Build render data for shape space (curvature) visualization
+RenderData build_shape_space_render_data(
+    const BHAnalysisResult& analysis,
+    int timestep,
+    ViewMode view_mode,
+    ShapeSpaceColorMode color_mode,
+    ShapeSpaceDisplayMode display_mode,
+    int highlighted_branch,
+    bool use_ollivier = false,  // false = Wolfram-Ricci, true = Ollivier-Ricci
+    ColorPalette palette = ColorPalette::Temperature  // Color palette for curvature
+) {
+    RenderData data;
+
+    // Select which alignment to use
+    const auto& alignment_data = use_ollivier ? analysis.alignment_ollivier : analysis.alignment_per_timestep;
+    bool has_alignment = use_ollivier ? analysis.has_ollivier_alignment : analysis.has_branch_alignment;
+
+    // Check if alignment data is available
+    if (!has_alignment) {
+        std::cerr << "[shape_space] No " << (use_ollivier ? "Ollivier-Ricci" : "Wolfram-Ricci")
+                  << " alignment data" << std::endl;
+        return data;
+    }
+    if (timestep < 0 || timestep >= static_cast<int>(alignment_data.size())) {
+        std::cerr << "[shape_space] Invalid timestep: " << timestep
+                  << " (size=" << alignment_data.size() << ")" << std::endl;
+        return data;
+    }
+
+    const auto& agg = alignment_data[timestep];
+    if (agg.total_points == 0) {
+        std::cerr << "[shape_space] No points at timestep " << timestep << std::endl;
+        return data;
+    }
+
+    // Get bounds for the selected curvature method
+    float pc1_min = use_ollivier ? analysis.ollivier_pc1_min : analysis.global_pc1_min;
+    float pc1_max = use_ollivier ? analysis.ollivier_pc1_max : analysis.global_pc1_max;
+    float pc2_min = use_ollivier ? analysis.ollivier_pc2_min : analysis.global_pc2_min;
+    float pc2_max = use_ollivier ? analysis.ollivier_pc2_max : analysis.global_pc2_max;
+    float pc3_min = use_ollivier ? analysis.ollivier_pc3_min : analysis.global_pc3_min;
+    float pc3_max = use_ollivier ? analysis.ollivier_pc3_max : analysis.global_pc3_max;
+    float curv_abs = use_ollivier ? analysis.ollivier_curvature_abs_max : analysis.curvature_abs_max;
+
+    // Compute adaptive radius based on point density
+    float pc_range = std::max({pc1_max - pc1_min, pc2_max - pc2_min, pc3_max - pc3_min});
+    float vertex_radius = pc_range / (std::sqrt(static_cast<float>(agg.total_points)) * 4.0f);
+    vertex_radius = std::clamp(vertex_radius, 0.002f, 0.05f);
+
+    // Debug: print once per timestep change
+    static int last_debug_timestep = -1;
+    static bool last_use_ollivier = false;
+    if (timestep != last_debug_timestep || use_ollivier != last_use_ollivier) {
+        std::cerr << "[shape_space] Rendering timestep " << timestep
+                  << " (" << (use_ollivier ? "Ollivier" : "Wolfram") << ")"
+                  << ": " << agg.total_points << " points, radius=" << vertex_radius << std::endl;
+        last_debug_timestep = timestep;
+        last_use_ollivier = use_ollivier;
+    }
+    if (curv_abs < 1e-6f) curv_abs = 1.0f;  // Avoid division by zero
+
+    // Reserve space for spheres
+    data.sphere_instances.reserve(agg.total_points);
+
+    // Process each point
+    for (size_t i = 0; i < agg.total_points; ++i) {
+        SphereInstance sphere;
+
+        // Position = PC coordinates
+        sphere.x = agg.all_pc1[i];
+        sphere.y = agg.all_pc2[i];
+        sphere.z = (view_mode == ViewMode::ShapeSpace3D) ? agg.all_pc3[i] : 0.0f;
+        sphere.radius = vertex_radius;
+
+        // Determine color
+        Vec4 color;
+        if (color_mode == ShapeSpaceColorMode::Curvature) {
+            // Diverging colormap using selected palette
+            color = curvature_to_color(agg.all_curvature[i], curv_abs, palette);
+        } else {
+            // Categorical color by branch ID
+            color = kelly_color(agg.branch_id[i]);
+        }
+
+        // Dim non-highlighted branches in PerBranch mode
+        if (display_mode == ShapeSpaceDisplayMode::PerBranch &&
+            highlighted_branch >= 0 &&
+            static_cast<int>(agg.branch_id[i]) != highlighted_branch) {
+            color.w = 0.15f;  // Very transparent
+        }
+
+        sphere.r = color.x;
+        sphere.g = color.y;
+        sphere.b = color.z;
+        sphere.a = color.w;
+
+        data.sphere_instances.push_back(sphere);
+    }
+
     return data;
 }
 
@@ -1988,8 +2764,8 @@ static void add_circle(std::vector<Vertex>& verts,
 
     // Create triangles from center to each edge segment
     for (int i = 0; i < segments; ++i) {
-        float angle1 = 2.0f * 3.14159265f * i / segments;
-        float angle2 = 2.0f * 3.14159265f * (i + 1) / segments;
+        float angle1 = 2.0f * PI * i / segments;
+        float angle2 = 2.0f * PI * (i + 1) / segments;
 
         float x1 = cx + rx * std::cos(angle1);
         float y1 = cy + ry * std::sin(angle1);
@@ -2039,13 +2815,13 @@ static void add_rounded_rect(std::vector<Vertex>& verts,
     add_quad(verts, tr_cx, tr_cy, right, br_cy, z, color);
 
     // Corner triangle fans (elliptical to appear circular after aspect ratio)
-    float angle_step = (3.14159265f / 2.0f) / corner_segments;
+    float angle_step = (PI / 2.0f) / corner_segments;
 
     // Top-left corner (angles from PI to PI/2)
     // Note: In Vulkan NDC, +Y is DOWN, so we SUBTRACT sin to go UP toward the corner
     for (int i = 0; i < corner_segments; i++) {
-        float a1 = 3.14159265f - i * angle_step;
-        float a2 = 3.14159265f - (i + 1) * angle_step;
+        float a1 = PI - i * angle_step;
+        float a2 = PI - (i + 1) * angle_step;
         float x1 = tl_cx + radius_x * std::cos(a1);
         float y1 = tl_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
         float x2 = tl_cx + radius_x * std::cos(a2);
@@ -2055,8 +2831,8 @@ static void add_rounded_rect(std::vector<Vertex>& verts,
 
     // Top-right corner (angles from PI/2 to 0)
     for (int i = 0; i < corner_segments; i++) {
-        float a1 = 3.14159265f / 2.0f - i * angle_step;
-        float a2 = 3.14159265f / 2.0f - (i + 1) * angle_step;
+        float a1 = PI / 2.0f - i * angle_step;
+        float a2 = PI / 2.0f - (i + 1) * angle_step;
         float x1 = tr_cx + radius_x * std::cos(a1);
         float y1 = tr_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
         float x2 = tr_cx + radius_x * std::cos(a2);
@@ -2066,8 +2842,8 @@ static void add_rounded_rect(std::vector<Vertex>& verts,
 
     // Bottom-left corner (angles from -PI to -PI/2)
     for (int i = 0; i < corner_segments; i++) {
-        float a1 = -3.14159265f + i * angle_step;
-        float a2 = -3.14159265f + (i + 1) * angle_step;
+        float a1 = -PI + i * angle_step;
+        float a2 = -PI + (i + 1) * angle_step;
         float x1 = bl_cx + radius_x * std::cos(a1);
         float y1 = bl_cy - radius_y * std::sin(a1);  // Subtract for Vulkan Y-down
         float x2 = bl_cx + radius_x * std::cos(a2);
@@ -2266,6 +3042,266 @@ TimelineData build_timeline_bar(int current_step, int max_step, float aspect_rat
     return data;
 }
 
+// =============================================================================
+// Scatter Plot Overlay
+// =============================================================================
+// Displays time series scatter plot: each point = one state's mean value
+// X-axis = timestep, Y-axis = metric value (dimension or curvature)
+// Uses ValueType enum for metric selection (same as vertex coloring)
+
+struct ScatterPlotData {
+    std::vector<Vertex> axis_verts;     // Axis lines and tick marks
+    std::vector<Vertex> line_verts;     // Mean line, variance bands
+    std::vector<Vertex> point_verts;    // Individual scatter points (one per state)
+    std::vector<Vertex> marker_verts;   // Current step marker
+
+    // Plot bounds for text positioning
+    float plot_left, plot_right, plot_top, plot_bottom;
+    float value_min, value_max;
+    int max_step;
+};
+
+// Build scatter plot overlay showing per-state values across timesteps
+ScatterPlotData build_scatter_plot(
+    const BHAnalysisResult& analysis,
+    ValueType metric,
+    int current_step,
+    float aspect_ratio
+) {
+    ScatterPlotData data;
+    int max_step = static_cast<int>(analysis.per_timestep.size()) - 1;
+    if (max_step < 0 || analysis.state_aggregates.empty()) return data;
+
+    data.max_step = max_step;
+
+    // =========================================================================
+    // Layout: Large centered plot (80% of screen)
+    // =========================================================================
+    float margin = 0.08f;           // Margin from screen edges
+    float axis_margin = 0.06f;      // Space for axis labels
+
+    float plot_left = -1.0f + margin + axis_margin;
+    float plot_right = 1.0f - margin;
+    float plot_top = -1.0f + margin + axis_margin;  // Vulkan Y: -1 = top
+    float plot_bottom = 1.0f - margin - 0.15f;      // Leave space for timeline
+
+    data.plot_left = plot_left;
+    data.plot_right = plot_right;
+    data.plot_top = plot_top;
+    data.plot_bottom = plot_bottom;
+
+    // Z-ordering (lower = closer to camera in Vulkan)
+    float z_axis = 0.002f;
+    float z_band = 0.003f;
+    float z_mean = 0.0015f;
+    float z_point = 0.001f;
+    float z_marker = 0.0005f;
+
+    // =========================================================================
+    // Collect per-state values grouped by timestep
+    // Each state_aggregate contains the mean value for that state
+    // =========================================================================
+    std::vector<std::vector<float>> values_per_step(max_step + 1);
+    float global_min = std::numeric_limits<float>::max();
+    float global_max = std::numeric_limits<float>::lowest();
+
+    for (const auto& agg : analysis.state_aggregates) {
+        if (agg.step > static_cast<uint32_t>(max_step)) continue;
+
+        float value = 0;
+        switch (metric) {
+            case ValueType::WolframHausdorffDimension:
+                value = agg.mean_dimension;
+                break;
+            case ValueType::OllivierRicciCurvature:
+                value = agg.mean_ollivier_ricci;
+                break;
+            case ValueType::WolframRicciScalar:
+                value = agg.mean_wolfram_scalar;
+                break;
+            case ValueType::WolframRicciTensor:
+                value = agg.mean_wolfram_ricci;
+                break;
+            case ValueType::DimensionGradient:
+                value = agg.mean_dim_gradient;
+                break;
+            default:
+                value = agg.mean_dimension;
+                break;
+        }
+
+        // For dimension, skip zeros; for curvature, include all values
+        bool valid = (metric == ValueType::WolframHausdorffDimension) ? (value > 0) : true;
+        if (valid) {
+            values_per_step[agg.step].push_back(value);
+            global_min = std::min(global_min, value);
+            global_max = std::max(global_max, value);
+        }
+    }
+
+    // Handle edge case of no data or constant values
+    if (global_max <= global_min) {
+        if (metric == ValueType::WolframHausdorffDimension) {
+            global_min = 1.0f;
+            global_max = 3.0f;  // Typical dimension range
+        } else {
+            global_min = -1.0f;
+            global_max = 1.0f;  // Typical curvature range
+        }
+    }
+
+    // Add small padding to range
+    float range = global_max - global_min;
+    global_min -= range * 0.05f;
+    global_max += range * 0.05f;
+
+    data.value_min = global_min;
+    data.value_max = global_max;
+
+    // =========================================================================
+    // Coordinate mapping
+    // =========================================================================
+    auto map_x = [&](float step) {
+        float t = (max_step > 0) ? step / max_step : 0.5f;
+        return plot_left + t * (plot_right - plot_left);
+    };
+    auto map_y = [&](float val) {
+        float t = (val - global_min) / (global_max - global_min);
+        return plot_bottom - t * (plot_bottom - plot_top);  // Invert Y for Vulkan
+    };
+
+    // =========================================================================
+    // Draw axes (white lines)
+    // =========================================================================
+    Vec4 axis_color{1.0f, 1.0f, 1.0f, 0.8f};
+    float axis_thickness = 0.003f;
+
+    // X-axis (bottom)
+    add_quad(data.axis_verts, plot_left, plot_bottom - axis_thickness,
+             plot_right, plot_bottom + axis_thickness, z_axis, axis_color);
+
+    // Y-axis (left)
+    add_quad(data.axis_verts, plot_left - axis_thickness, plot_top,
+             plot_left + axis_thickness, plot_bottom, z_axis, axis_color);
+
+    // X-axis tick marks (every 10 steps or so)
+    Vec4 tick_color{0.6f, 0.6f, 0.6f, 0.6f};
+    float tick_len = 0.015f;
+    int x_tick_interval = std::max(1, max_step / 10);
+    for (int t = 0; t <= max_step; t += x_tick_interval) {
+        float x = map_x(static_cast<float>(t));
+        add_quad(data.axis_verts, x - 0.002f, plot_bottom,
+                 x + 0.002f, plot_bottom + tick_len, z_axis, tick_color);
+    }
+
+    // Y-axis tick marks (5 ticks)
+    int num_y_ticks = 5;
+    for (int i = 0; i <= num_y_ticks; ++i) {
+        float val = global_min + (global_max - global_min) * i / num_y_ticks;
+        float y = map_y(val);
+        add_quad(data.axis_verts, plot_left - tick_len, y - 0.002f * aspect_ratio,
+                 plot_left, y + 0.002f * aspect_ratio, z_axis, tick_color);
+
+        // Faint horizontal grid line
+        Vec4 grid_color{0.3f, 0.3f, 0.3f, 0.3f};
+        add_quad(data.axis_verts, plot_left, y - 0.001f * aspect_ratio,
+                 plot_right, y + 0.001f * aspect_ratio, z_axis + 0.001f, grid_color);
+    }
+
+    // =========================================================================
+    // Compute per-timestep statistics for mean line and variance bands
+    // =========================================================================
+    std::vector<float> means(max_step + 1, 0);
+    std::vector<float> stddevs(max_step + 1, 0);
+
+    for (int t = 0; t <= max_step; ++t) {
+        const auto& vals = values_per_step[t];
+        if (vals.empty()) continue;
+
+        // Mean
+        float sum = 0;
+        for (float v : vals) sum += v;
+        float mean = sum / vals.size();
+        means[t] = mean;
+
+        // Standard deviation
+        float var_sum = 0;
+        for (float v : vals) var_sum += (v - mean) * (v - mean);
+        stddevs[t] = std::sqrt(var_sum / vals.size());
+    }
+
+    // =========================================================================
+    // Draw variance band (±1 std dev, semi-transparent)
+    // =========================================================================
+    Vec4 band_color{0.3f, 0.5f, 0.8f, 0.2f};
+    for (int t = 0; t < max_step; ++t) {
+        if (values_per_step[t].empty() || values_per_step[t + 1].empty()) continue;
+
+        float x1 = map_x(static_cast<float>(t));
+        float x2 = map_x(static_cast<float>(t + 1));
+
+        float y_low1 = map_y(means[t] - stddevs[t]);
+        float y_high1 = map_y(means[t] + stddevs[t]);
+        float y_low2 = map_y(means[t + 1] - stddevs[t + 1]);
+        float y_high2 = map_y(means[t + 1] + stddevs[t + 1]);
+
+        // Two triangles for the band quad
+        add_triangle(data.line_verts, x1, y_low1, x2, y_low2, x2, y_high2, z_band, band_color);
+        add_triangle(data.line_verts, x1, y_low1, x2, y_high2, x1, y_high1, z_band, band_color);
+    }
+
+    // =========================================================================
+    // Draw individual scatter points (one per state)
+    // =========================================================================
+    Vec4 point_color{0.2f, 0.8f, 1.0f, 0.7f};  // Cyan-ish
+    float point_radius = 0.003f;
+
+    for (int t = 0; t <= max_step; ++t) {
+        float x = map_x(static_cast<float>(t));
+        for (float val : values_per_step[t]) {
+            float y = map_y(val);
+            // Draw small filled circle
+            add_circle(data.point_verts, x, y, point_radius, z_point, point_color, aspect_ratio, 8);
+        }
+    }
+
+    // =========================================================================
+    // Draw mean line (yellow/orange, thicker)
+    // =========================================================================
+    Vec4 mean_color{1.0f, 0.8f, 0.2f, 1.0f};
+    float line_thickness = 0.004f;
+
+    for (int t = 0; t < max_step; ++t) {
+        if (values_per_step[t].empty() || values_per_step[t + 1].empty()) continue;
+
+        float x1 = map_x(static_cast<float>(t));
+        float x2 = map_x(static_cast<float>(t + 1));
+        float y1 = map_y(means[t]);
+        float y2 = map_y(means[t + 1]);
+
+        // Thick line as quad
+        float dx = x2 - x1, dy = y2 - y1;
+        float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 0) {
+            float nx = -dy / len * line_thickness;
+            float ny = dx / len * line_thickness * aspect_ratio;
+            add_triangle(data.line_verts, x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, z_mean, mean_color);
+            add_triangle(data.line_verts, x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, z_mean, mean_color);
+        }
+    }
+
+    // =========================================================================
+    // Draw current step marker (vertical white line)
+    // =========================================================================
+    Vec4 marker_color{1.0f, 1.0f, 1.0f, 0.9f};
+    float marker_x = map_x(static_cast<float>(current_step));
+    float marker_half_width = 0.004f;
+    add_quad(data.marker_verts, marker_x - marker_half_width, plot_top,
+             marker_x + marker_half_width, plot_bottom, z_marker, marker_color);
+
+    return data;
+}
+
 // Build color palette legend (vertical gradient bar in top right)
 struct LegendData {
     std::vector<Vertex> verts;  // Triangles for gradient
@@ -2352,7 +3388,7 @@ HistogramData build_histogram_panel(
     float aspect_ratio,
     int screen_width, int screen_height,
     ColorPalette palette,
-    DimensionSource dim_source,
+    GraphScope graph_scope,
     float global_dim_min, float global_dim_max
 ) {
     HistogramData data;
@@ -2511,224 +3547,6 @@ HistogramData build_histogram_panel(
     return data;
 }
 
-// Build rotation curve plot panel
-struct RotationPlotData {
-    std::vector<Vertex> verts;  // Background + lines
-    // Text positions (pixel coords)
-    float title_x, title_y;
-    float xlabel_x, xlabel_y;
-    float ylabel_x, ylabel_y;
-    float stats_x, stats_y;
-    // Data for text labels
-    std::string title;
-    std::string xlabel;
-    std::string ylabel;
-    std::string stats_line1;
-    std::string stats_line2;
-    // Axis labels
-    float x_min_val, x_max_val;
-    float y_min_val, y_max_val;
-    float axis_x_min_x, axis_x_min_y;
-    float axis_x_max_x, axis_x_max_y;
-    float axis_y_min_x, axis_y_min_y;
-    float axis_y_max_x, axis_y_max_y;
-};
-
-RotationPlotData build_rotation_plot_panel(
-    const RotationCurveResult& result,
-    int screen_width, int screen_height
-) {
-    RotationPlotData data;
-
-    if (result.curve.empty()) {
-        return data;
-    }
-
-    // Panel position (bottom-right corner)
-    float panel_w = 0.45f;
-    float panel_h = 0.35f;
-    float margin = 0.02f;
-
-    float panel_right = 0.98f;
-    float panel_left = panel_right - panel_w;
-    float panel_bottom = 0.98f;
-    float panel_top = panel_bottom - panel_h;
-
-    // Background (dark semi-transparent)
-    Vec4 bg_color{0.08f, 0.08f, 0.12f, 0.92f};
-    float corner_radius = 0.012f;
-    add_rounded_rect(data.verts, panel_left, panel_top, panel_right, panel_bottom,
-                     corner_radius, 0.002f, bg_color);
-
-    // Layout inside panel
-    float padding = 0.025f;
-    float inner_left = panel_left + padding;
-    float inner_right = panel_right - padding;
-    float inner_top = panel_top + padding;
-    float inner_bottom = panel_bottom - padding;
-
-    // Chart area (leave room for title at top and labels at bottom/left)
-    float title_height = 0.04f;
-    float axis_label_margin = 0.05f;
-    float chart_left = inner_left + axis_label_margin;
-    float chart_right = inner_right - 0.01f;
-    float chart_top = inner_top + title_height;
-    float chart_bottom = inner_bottom - axis_label_margin;
-    float chart_width = chart_right - chart_left;
-    float chart_height = chart_bottom - chart_top;
-
-    // Text positions (convert NDC to pixels)
-    auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_width; };
-    auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * screen_height; };
-
-    data.title = "Rotation Curve v(r)";
-    data.title_x = ndc_to_pixel_x(inner_left);
-    data.title_y = ndc_to_pixel_y(inner_top + 0.01f);
-
-    // Find data range
-    float x_min = result.curve.front().radius;
-    float x_max = result.curve.back().radius;
-    float y_min = 0.0f, y_max = 0.0f;
-    for (const auto& pt : result.curve) {
-        y_max = std::max(y_max, std::max(pt.orbital_velocity, pt.expected_velocity));
-    }
-    y_max *= 1.1f;  // Add 10% margin
-
-    data.x_min_val = x_min;
-    data.x_max_val = x_max;
-    data.y_min_val = y_min;
-    data.y_max_val = y_max;
-
-    // Draw chart background (slightly lighter)
-    Vec4 chart_bg{0.12f, 0.12f, 0.16f, 1.0f};
-    add_quad(data.verts, chart_left, chart_top, chart_right, chart_bottom, 0.0015f, chart_bg);
-
-    // Draw grid lines
-    Vec4 grid_color{0.25f, 0.25f, 0.30f, 0.6f};
-    float grid_z = 0.001f;
-    float line_thickness = 0.002f;
-
-    // Horizontal grid lines (5 divisions)
-    for (int i = 0; i <= 5; ++i) {
-        float y = chart_top + (chart_height * i / 5.0f);
-        add_quad(data.verts, chart_left, y - line_thickness/2, chart_right, y + line_thickness/2, grid_z, grid_color);
-    }
-
-    // Vertical grid lines (5 divisions)
-    for (int i = 0; i <= 5; ++i) {
-        float x = chart_left + (chart_width * i / 5.0f);
-        add_quad(data.verts, x - line_thickness/2, chart_top, x + line_thickness/2, chart_bottom, grid_z, grid_color);
-    }
-
-    // Helper to convert data to chart coordinates
-    auto data_to_chart_x = [&](float r) {
-        return chart_left + (r - x_min) / (x_max - x_min) * chart_width;
-    };
-    auto data_to_chart_y = [&](float v) {
-        return chart_bottom - (v - y_min) / (y_max - y_min) * chart_height;
-    };
-
-    // Draw expected curve (GR prediction) - lighter blue
-    float exp_r = 0.3f, exp_g = 0.5f, exp_b = 0.9f, exp_a = 0.7f;
-    float curve_z = 0.0005f;
-    float curve_thickness = 0.004f;
-    for (size_t i = 1; i < result.curve.size(); ++i) {
-        float x1 = data_to_chart_x(result.curve[i-1].radius);
-        float y1 = data_to_chart_y(result.curve[i-1].expected_velocity);
-        float x2 = data_to_chart_x(result.curve[i].radius);
-        float y2 = data_to_chart_y(result.curve[i].expected_velocity);
-        // Draw thick line as quad
-        float dx = x2 - x1, dy = y2 - y1;
-        float len = std::sqrt(dx*dx + dy*dy);
-        if (len > 0.001f) {
-            float nx = -dy / len * curve_thickness / 2;
-            float ny = dx / len * curve_thickness / 2;
-            // Two triangles forming a quad
-            data.verts.push_back({x1 + nx, y1 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-            data.verts.push_back({x1 - nx, y1 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-            data.verts.push_back({x2 + nx, y2 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-            data.verts.push_back({x2 + nx, y2 + ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-            data.verts.push_back({x1 - nx, y1 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-            data.verts.push_back({x2 - nx, y2 - ny, curve_z, exp_r, exp_g, exp_b, exp_a});
-        }
-    }
-
-    // Draw actual curve - bright green
-    float act_r = 0.2f, act_g = 0.9f, act_b = 0.3f, act_a = 1.0f;
-    curve_thickness = 0.005f;
-    for (size_t i = 1; i < result.curve.size(); ++i) {
-        float x1 = data_to_chart_x(result.curve[i-1].radius);
-        float y1 = data_to_chart_y(result.curve[i-1].orbital_velocity);
-        float x2 = data_to_chart_x(result.curve[i].radius);
-        float y2 = data_to_chart_y(result.curve[i].orbital_velocity);
-        float dx = x2 - x1, dy = y2 - y1;
-        float len = std::sqrt(dx*dx + dy*dy);
-        if (len > 0.001f) {
-            float nx = -dy / len * curve_thickness / 2;
-            float ny = dx / len * curve_thickness / 2;
-            data.verts.push_back({x1 + nx, y1 + ny, curve_z, act_r, act_g, act_b, act_a});
-            data.verts.push_back({x1 - nx, y1 - ny, curve_z, act_r, act_g, act_b, act_a});
-            data.verts.push_back({x2 + nx, y2 + ny, curve_z, act_r, act_g, act_b, act_a});
-            data.verts.push_back({x2 + nx, y2 + ny, curve_z, act_r, act_g, act_b, act_a});
-            data.verts.push_back({x1 - nx, y1 - ny, curve_z, act_r, act_g, act_b, act_a});
-            data.verts.push_back({x2 - nx, y2 - ny, curve_z, act_r, act_g, act_b, act_a});
-        }
-    }
-
-    // Draw data points as small circles
-    float pt_r = 1.0f, pt_g = 1.0f, pt_b = 0.3f, pt_a = 1.0f;
-    float point_radius = 0.008f;
-    for (const auto& pt : result.curve) {
-        float cx = data_to_chart_x(pt.radius);
-        float cy = data_to_chart_y(pt.orbital_velocity);
-        // Approximate circle with triangles (6 segments)
-        for (int s = 0; s < 6; ++s) {
-            float a1 = s * 3.14159f * 2 / 6;
-            float a2 = (s+1) * 3.14159f * 2 / 6;
-            data.verts.push_back({cx, cy, 0.0003f, pt_r, pt_g, pt_b, pt_a});
-            data.verts.push_back({cx + point_radius * std::cos(a1), cy + point_radius * std::sin(a1), 0.0003f, pt_r, pt_g, pt_b, pt_a});
-            data.verts.push_back({cx + point_radius * std::cos(a2), cy + point_radius * std::sin(a2), 0.0003f, pt_r, pt_g, pt_b, pt_a});
-        }
-    }
-
-    // Chart border
-    Vec4 border_color{0.5f, 0.5f, 0.6f, 0.9f};
-    float border_w = 0.003f;
-    add_quad(data.verts, chart_left, chart_top, chart_right, chart_top + border_w, 0.0004f, border_color);
-    add_quad(data.verts, chart_left, chart_bottom - border_w, chart_right, chart_bottom, 0.0004f, border_color);
-    add_quad(data.verts, chart_left, chart_top, chart_left + border_w, chart_bottom, 0.0004f, border_color);
-    add_quad(data.verts, chart_right - border_w, chart_top, chart_right, chart_bottom, 0.0004f, border_color);
-
-    // Stats text
-    std::ostringstream oss1, oss2;
-    oss1 << "Power law: v ~ r^" << std::fixed << std::setprecision(2) << result.power_law_exponent;
-    oss2 << "Flat rotation: " << (result.has_flat_rotation ? "YES" : "NO");
-    data.stats_line1 = oss1.str();
-    data.stats_line2 = oss2.str();
-    data.stats_x = ndc_to_pixel_x(inner_left);
-    data.stats_y = ndc_to_pixel_y(chart_bottom + 0.015f);
-
-    // Axis labels
-    data.xlabel = "Radius";
-    data.ylabel = "Velocity";
-    data.xlabel_x = ndc_to_pixel_x((chart_left + chart_right) / 2 - 0.03f);
-    data.xlabel_y = ndc_to_pixel_y(chart_bottom + 0.035f);
-    data.ylabel_x = ndc_to_pixel_x(inner_left - 0.01f);
-    data.ylabel_y = ndc_to_pixel_y((chart_top + chart_bottom) / 2);
-
-    // Axis value labels
-    data.axis_x_min_x = ndc_to_pixel_x(chart_left);
-    data.axis_x_min_y = ndc_to_pixel_y(chart_bottom + 0.015f);
-    data.axis_x_max_x = ndc_to_pixel_x(chart_right - 0.03f);
-    data.axis_x_max_y = ndc_to_pixel_y(chart_bottom + 0.015f);
-    data.axis_y_min_x = ndc_to_pixel_x(chart_left - 0.04f);
-    data.axis_y_min_y = ndc_to_pixel_y(chart_bottom - 0.01f);
-    data.axis_y_max_x = ndc_to_pixel_x(chart_left - 0.04f);
-    data.axis_y_max_y = ndc_to_pixel_y(chart_top);
-
-    return data;
-}
-
 // Build Hilbert space stats panel
 struct HilbertPanelData {
     std::vector<Vertex> verts;  // Background
@@ -2750,7 +3568,7 @@ HilbertPanelData build_hilbert_panel(
         return data;
     }
 
-    // Panel position (top-right corner, below rotation plot if visible)
+    // Panel position (top-right corner)
     float panel_w = 0.35f;
     float panel_h = 0.28f;
 
@@ -3113,8 +3931,8 @@ std::vector<Vertex> build_horizon_circles(const BHConfig& config, int segments =
 
     auto add_circle = [&](Vec2 center, float radius, Vec4 color) {
         for (int i = 0; i < segments; ++i) {
-            float a1 = 2.0f * 3.14159f * i / segments;
-            float a2 = 2.0f * 3.14159f * (i + 1) / segments;
+            float a1 = 2.0f * PI * i / segments;
+            float a2 = 2.0f * PI * (i + 1) / segments;
             verts.push_back({
                 center.x + radius * std::cos(a1),
                 center.y + radius * std::sin(a1),
@@ -3194,6 +4012,8 @@ void print_usage() {
     std::cout << "  --shuffle-edges   Shuffle initial edge order for randomness" << std::endl;
     std::cout << "  --no-canonicalize Disable state canonicalization (all states unique)" << std::endl;
     std::cout << "  --no-explore-dedup Disable explore-from-canonical-only (explore all states)" << std::endl;
+    std::cout << "  --no-canonical-orientation  Disable curvature-based canonical orientation (shape space)" << std::endl;
+    std::cout << "  --no-scale-normalization    Disable scale normalization (shape space)" << std::endl;
     std::cout << std::endl;
     std::cout << "TOPOLOGY OPTIONS (alternative to --grid/--brill):" << std::endl;
     std::cout << "  --topology TYPE   Topology: flat, cylinder, torus, sphere, klein, mobius" << std::endl;
@@ -3212,6 +4032,12 @@ void print_usage() {
     std::cout << "  --sprinkling-time T   Time extent (default: 10.0)" << std::endl;
     std::cout << "  --sprinkling-space S  Spatial extent (default: 10.0)" << std::endl;
     std::cout << std::endl;
+    std::cout << "BRILL-LINDQUIST BLACK HOLE OPTIONS:" << std::endl;
+    std::cout << "  --bh-mass1 M      Mass of first black hole (default: 3.0)" << std::endl;
+    std::cout << "  --bh-mass2 M      Mass of second black hole (default: 3.0)" << std::endl;
+    std::cout << "  --bh-separation S Distance between black holes (default: 6.0)" << std::endl;
+    std::cout << "  --bh-box X1 X2 Y1 Y2  Bounding box (default: -5 5 -4 4)" << std::endl;
+    std::cout << std::endl;
     std::cout << "ANALYSIS OPTIONS (for run, generate, analyze):" << std::endl;
     std::cout << "  --max-radius N    Max radius for ball counting (default: 8)" << std::endl;
     std::cout << "  --anchors N       Number of anchor vertices (default: 6)" << std::endl;
@@ -3219,7 +4045,7 @@ void print_usage() {
     std::cout << "  --particles       Enable particle detection (Robertson-Seymour defects)" << std::endl;
     std::cout << "  --curvature       Enable curvature analysis (Ollivier-Ricci / dimension gradient)" << std::endl;
     std::cout << "  --entropy         Enable entropy analysis (local entropy, Fisher info)" << std::endl;
-    std::cout << "  --rotation        Enable rotation curve analysis (test inverse-square law)" << std::endl;
+    std::cout << "  --hilbert         Enable Hilbert space analysis (branchial structure)" << std::endl;
     std::cout << std::endl;
     std::cout << "OUTPUT OPTIONS:" << std::endl;
     std::cout << "  --output FILE     Output file path (auto-selects extension based on command)" << std::endl;
@@ -3241,7 +4067,6 @@ void print_usage() {
     std::cout << "  K            Toggle defect markers (requires --particles)" << std::endl;
     std::cout << "  D            Cycle curvature mode: OFF/Ollivier-Ricci/Dim Gradient (requires --curvature)" << std::endl;
     std::cout << "  E            Toggle entropy heatmap (requires --entropy)" << std::endl;
-    std::cout << "  F            Toggle rotation curve overlay (requires --rotation)" << std::endl;
     std::cout << "  I            Toggle edge display (union/intersection)" << std::endl;
     std::cout << "  V            Toggle heatmap (mean dimension / variance)" << std::endl;
     std::cout << "  L            Toggle dynamic layout" << std::endl;
@@ -3271,31 +4096,68 @@ void print_usage() {
 // Vertex Selection Helpers
 // =============================================================================
 
-// Collect dimension values for histogram display
-// For Branchial mode: returns dimension of selected vertex across all states at timestep
-// For Foliation/Global: returns dimensions of ALL vertices at timestep (distribution view)
+// Collect values for histogram display (dimension or curvature)
+// For Branchial mode: returns value of selected vertex across all states at timestep
+// For Foliation/Global/Curvature: returns values of ALL vertices (distribution view)
 // Also returns the selected vertex's value for highlighting
 struct HistogramCollectionResult {
     std::vector<float> values;           // All values for histogram
     float selected_vertex_value = -1.0f; // Value of selected vertex (for highlighting)
-    bool is_distribution_mode = false;   // True if showing all vertices (Foliation/Global)
+    bool is_distribution_mode = false;   // True if showing all vertices (Foliation/Global/Curvature)
 };
 
-HistogramCollectionResult collect_vertex_dimensions(
+HistogramCollectionResult collect_vertex_values(
     const BHAnalysisResult& analysis,
     VertexId vertex_id,
     int timestep,
-    DimensionSource dim_source
+    GraphScope graph_scope,
+    ValueType value_type
 ) {
     HistogramCollectionResult result;
 
+    // Curvature mode: show distribution of ALL vertices' curvature values
+    if (is_curvature_type(value_type) && analysis.has_curvature_analysis) {
+        result.is_distribution_mode = true;
+
+        const std::unordered_map<VertexId, float>* curvature_map = nullptr;
+        switch (value_type) {
+            case ValueType::WolframRicciScalar:
+                curvature_map = &analysis.curvature_wolfram_scalar;
+                break;
+            case ValueType::WolframRicciTensor:
+                curvature_map = &analysis.curvature_wolfram_ricci;
+                break;
+            case ValueType::OllivierRicciCurvature:
+                curvature_map = &analysis.curvature_ollivier_ricci;
+                break;
+            case ValueType::DimensionGradient:
+                curvature_map = &analysis.curvature_dimension_gradient;
+                break;
+            default:
+                break;
+        }
+
+        if (curvature_map) {
+            for (const auto& [vid, curv] : *curvature_map) {
+                if (std::isfinite(curv)) {
+                    result.values.push_back(curv);
+                    if (vid == vertex_id) {
+                        result.selected_vertex_value = curv;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    // Dimension mode: handle per-timestep
     if (timestep < 0 || timestep >= static_cast<int>(analysis.per_timestep.size())) {
         return result;
     }
 
     const auto& ts = analysis.per_timestep[timestep];
 
-    if (dim_source == DimensionSource::Global) {
+    if (graph_scope == GraphScope::Global) {
         // Global mode: show distribution of ALL vertices' global dimensions
         // Highlight where the selected vertex falls
         result.is_distribution_mode = true;
@@ -3308,7 +4170,7 @@ HistogramCollectionResult collect_vertex_dimensions(
                 }
             }
         }
-    } else if (dim_source == DimensionSource::Foliation) {
+    } else if (graph_scope == GraphScope::Foliation) {
         // Foliation mode: show distribution of ALL vertices' dimensions at this timestep
         result.is_distribution_mode = true;
 
@@ -3408,11 +4270,12 @@ void update_selection_histogram(
     VertexSelectionState& selection,
     const BHAnalysisResult& analysis,
     int current_step,
-    DimensionSource dim_source
+    GraphScope graph_scope,
+    ValueType value_type
 ) {
-    // Collect dimension values
-    auto collection = collect_vertex_dimensions(
-        analysis, selection.selected_vertex, current_step, dim_source);
+    // Collect values (dimension or curvature based on value_type)
+    auto collection = collect_vertex_values(
+        analysis, selection.selected_vertex, current_step, graph_scope, value_type);
 
     selection.dimension_values = std::move(collection.values);
     selection.is_distribution_mode = collection.is_distribution_mode;
@@ -3458,7 +4321,8 @@ void update_selection_histogram(
         selection.selected_vertex_bin = -1;
     }
 
-    selection.cached_dim_source = dim_source;
+    selection.cached_graph_scope = graph_scope;
+    selection.cached_value_type = value_type;
     selection.cached_timestep = current_step;
     selection.cached_bin_count = selection.histogram_bin_count;
 }
@@ -3481,6 +4345,9 @@ int main(int argc, char* argv[]) {
     // Install signal handler for Ctrl-C
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(console_handler, TRUE);
+#endif
 
     // Parse command line
     std::string mode;  // Must be explicitly set
@@ -3503,6 +4370,8 @@ int main(int argc, char* argv[]) {
     bool shuffle_edges = false;    // Shuffle initial edges
     bool no_canonicalize = false;  // Disable state canonicalization
     bool no_explore_dedup = false; // Disable explore-from-canonical-only
+    bool canonical_orientation = true;  // Canonical orientation using signed curvature moment
+    bool scale_normalization = true;    // Scale by 1/sqrt(eigenvalue) for unit variance
     bool uniform_random = false;   // Step-synchronized uniform random mode
     int matches_per_step = 1;      // Matches to apply per step in uniform mode
     bool fast_reservoir = false;   // Early termination when reservoir full
@@ -3523,14 +4392,24 @@ int main(int argc, char* argv[]) {
     bool enable_geodesics = false; // Enable geodesic analysis (test particles)
     bool enable_particles = false; // Enable particle detection (Robertson-Seymour)
     bool enable_curvature = false; // Enable curvature analysis (Ollivier-Ricci / dimension gradient)
+    bool enable_branch_alignment = false; // Enable branch alignment (curvature shape space)
     bool enable_entropy = false;   // Enable entropy analysis
-    bool enable_rotation = false;  // Enable rotation curve analysis
+    bool enable_hilbert = false;   // Enable Hilbert space analysis
 
     // Minkowski sprinkling options
     bool use_sprinkling = false;      // Use sprinkling instead of grid/brill
     int sprinkling_n = 500;           // Number of spacetime points
     float sprinkling_time = 10.0f;    // Time extent
     float sprinkling_space = 10.0f;   // Spatial extent
+
+    // Brill-Lindquist black hole configuration
+    float bh_mass1 = 3.0f;            // Mass of first black hole
+    float bh_mass2 = 3.0f;            // Mass of second black hole
+    float bh_separation = 6.0f;       // Separation between black holes
+    float bh_box_xmin = -5.0f;        // Box x minimum
+    float bh_box_xmax = 5.0f;         // Box x maximum
+    float bh_box_ymin = -4.0f;        // Box y minimum
+    float bh_box_ymax = 4.0f;         // Box y maximum
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -3604,6 +4483,10 @@ int main(int argc, char* argv[]) {
             no_canonicalize = true;
         } else if (arg == "--no-explore-dedup") {
             no_explore_dedup = true;
+        } else if (arg == "--no-canonical-orientation") {
+            canonical_orientation = false;
+        } else if (arg == "--no-scale-normalization") {
+            scale_normalization = false;
         } else if (arg == "--solid-grid") {
             solid_grid = true;
         }
@@ -3659,12 +4542,16 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--curvature") {
             // Enable curvature analysis (Ollivier-Ricci / dimension gradient)
             enable_curvature = true;
+        } else if (arg == "--branch-alignment") {
+            // Enable branch alignment (curvature shape space) - implies curvature
+            enable_branch_alignment = true;
+            enable_curvature = true;  // Alignment needs curvature data
         } else if (arg == "--entropy") {
             // Enable entropy analysis
             enable_entropy = true;
-        } else if (arg == "--rotation") {
-            // Enable rotation curve analysis
-            enable_rotation = true;
+        } else if (arg == "--hilbert") {
+            // Enable Hilbert space analysis
+            enable_hilbert = true;
         }
         // Minkowski sprinkling options
         else if (arg == "--sprinkling" && i + 1 < argc) {
@@ -3674,6 +4561,20 @@ int main(int argc, char* argv[]) {
             sprinkling_time = std::stof(argv[++i]);
         } else if (arg == "--sprinkling-space" && i + 1 < argc) {
             sprinkling_space = std::stof(argv[++i]);
+        }
+        // Brill-Lindquist black hole configuration
+        else if (arg == "--bh-mass1" && i + 1 < argc) {
+            bh_mass1 = std::stof(argv[++i]);
+        } else if (arg == "--bh-mass2" && i + 1 < argc) {
+            bh_mass2 = std::stof(argv[++i]);
+        } else if (arg == "--bh-separation" && i + 1 < argc) {
+            bh_separation = std::stof(argv[++i]);
+        } else if (arg == "--bh-box" && i + 4 < argc) {
+            // Format: --bh-box xmin xmax ymin ymax
+            bh_box_xmin = std::stof(argv[++i]);
+            bh_box_xmax = std::stof(argv[++i]);
+            bh_box_ymin = std::stof(argv[++i]);
+            bh_box_ymax = std::stof(argv[++i]);
         }
     }
 
@@ -3721,6 +4622,13 @@ int main(int argc, char* argv[]) {
             const auto& ts0 = analysis.per_timestep[0];
             std::cout << "  Step 0: " << ts0.union_vertices.size() << " vertices, "
                       << ts0.layout_positions.size() << " layout positions" << std::endl;
+            // Curvature vector sizes
+            std::cout << "  Curvature vectors (step 0):" << std::endl;
+            std::cout << "    mean_ollivier: " << ts0.mean_curvature_ollivier.size() << std::endl;
+            std::cout << "    mean_wolfram_scalar: " << ts0.mean_curvature_wolfram_scalar.size() << std::endl;
+            std::cout << "    mean_wolfram_ricci: " << ts0.mean_curvature_wolfram_ricci.size() << std::endl;
+            std::cout << "    mean_dim_gradient: " << ts0.mean_curvature_dim_gradient.size() << std::endl;
+            std::cout << "    foliation_ollivier: " << ts0.foliation_curvature_ollivier.size() << std::endl;
             if (!ts0.layout_positions.empty()) {
                 float max_r = 0;
                 for (const auto& p : ts0.layout_positions) {
@@ -3859,16 +4767,16 @@ int main(int argc, char* argv[]) {
         } else {
             // Legacy generation
             BHConfig bh_config;
-            bh_config.mass1 = 1.0f;
-            bh_config.mass2 = 0.8f;
-            bh_config.separation = 3.0f;
+            bh_config.mass1 = bh_mass1;
+            bh_config.mass2 = bh_mass2;
+            bh_config.separation = bh_separation;
             if (edge_threshold > 0) {
                 bh_config.edge_threshold = edge_threshold;
             } else {
                 bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
             }
-            bh_config.box_x = {-5.0f, 5.0f};
-            bh_config.box_y = {-4.0f, 4.0f};
+            bh_config.box_x = {bh_box_xmin, bh_box_xmax};
+            bh_config.box_y = {bh_box_ymin, bh_box_ymax};
 
             if (brill_vertices > 0) {
                 initial = generate_brill_lindquist(brill_vertices, bh_config);
@@ -4047,18 +4955,6 @@ int main(int argc, char* argv[]) {
                   << analysis.per_timestep.size() << " timesteps" << std::endl;
         std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
 
-        std::string analysis_file = "blackhole_analysis.bhdata";
-        if (write_analysis(analysis_file, analysis)) {
-            std::cout << "Saved analysis to " << analysis_file << std::endl;
-        }
-
-        if (no_view) {
-            std::cout << "Use 'view " << analysis_file << "' to visualize." << std::endl;
-            return 0;
-        }
-
-        // Fall through to viewer
-
     } else if (mode == "analyze") {
         // Load evolution data and run analysis
         std::cout << "Loading evolution data from " << data_file << "..." << std::endl;
@@ -4110,15 +5006,6 @@ int main(int argc, char* argv[]) {
         std::cout << "Analysis complete: " << analysis.total_states << " states, "
                   << analysis.per_timestep.size() << " timesteps" << std::endl;
         std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
-
-        if (write_analysis(output_file, analysis)) {
-            std::cout << "Saved analysis to " << output_file << std::endl;
-        }
-
-        if (no_view) {
-            std::cout << "Use 'view " << output_file << "' to visualize." << std::endl;
-            return 0;
-        }
 
     } else if (mode == "run" || mode == "generate") {
         // Full pipeline: generate + evolve + analyze
@@ -4214,16 +5101,16 @@ int main(int argc, char* argv[]) {
         } else {
             // Legacy generation
             BHConfig bh_config;
-            bh_config.mass1 = 1.0f;
-            bh_config.mass2 = 0.8f;
-            bh_config.separation = 3.0f;
+            bh_config.mass1 = bh_mass1;
+            bh_config.mass2 = bh_mass2;
+            bh_config.separation = bh_separation;
             if (edge_threshold > 0) {
                 bh_config.edge_threshold = edge_threshold;
             } else {
                 bh_config.edge_threshold = (brill_vertices > 0) ? 1.5f : 0.8f;
             }
-            bh_config.box_x = {-5.0f, 5.0f};
-            bh_config.box_y = {-4.0f, 4.0f};
+            bh_config.box_x = {bh_box_xmin, bh_box_xmax};
+            bh_config.box_y = {bh_box_ymin, bh_box_ymax};
 
             if (brill_vertices > 0) {
                 initial = generate_brill_lindquist(brill_vertices, bh_config);
@@ -4283,16 +5170,6 @@ int main(int argc, char* argv[]) {
                   << analysis.per_timestep.size() << " timesteps" << std::endl;
         std::cout << "Dimension range: [" << analysis.dim_min << ", " << analysis.dim_max << "]" << std::endl;
 
-        if (write_analysis(output_file, analysis)) {
-            std::cout << "Saved analysis to " << output_file << std::endl;
-        }
-
-        // Cascade to view unless --no-view was specified
-        if (no_view) {
-            std::cout << "Use 'view " << output_file << "' to visualize." << std::endl;
-            return 0;
-        }
-
     } else {
         // Unknown mode
         std::cerr << "Unknown command: " << mode << std::endl;
@@ -4301,66 +5178,164 @@ int main(int argc, char* argv[]) {
     }
 
     // ==========================================================================
-    // Additional Analysis (curvature, entropy, rotation)
+    // Additional Analysis (curvature, entropy, hilbert, branch alignment)
     // ==========================================================================
-    // These analyses are computed on-demand from the existing dimension data
+    // These analyses are computed during run/generate mode and saved to .bhdata.
+    // In view mode, they are loaded from the file (no computation needed).
 
     CurvatureAnalysisResult curvature_result;
     EntropyAnalysisResult entropy_result;
-    RotationCurveResult rotation_result;
     HilbertSpaceAnalysis hilbert_result;
     BranchialAnalysisResult branchial_result;
     bool has_curvature_analysis = false;
     bool has_entropy_analysis = false;
-    bool has_rotation_analysis = false;
     bool has_hilbert_analysis = false;
 
-    // Build SimpleGraph from analysis data
+    // Only compute analyses during run/generate mode (view mode loads from file)
+    const bool should_compute_analyses = (mode != "view");
+
+    // In view mode, load analysis flags from the serialized data
+    if (!should_compute_analyses) {
+        has_curvature_analysis = analysis.has_curvature_analysis;
+        has_hilbert_analysis = analysis.has_hilbert_analysis;
+        // has_branchial_analysis is stored in analysis but we don't have a local variable for it
+        // Branch alignment flags are already in analysis object and used directly
+        if (analysis.has_curvature_analysis) {
+            // Reconstruct curvature_result from stored data for rendering
+            curvature_result.ollivier_ricci_map = analysis.curvature_ollivier_ricci;
+            curvature_result.dimension_gradient_map = analysis.curvature_dimension_gradient;
+            curvature_result.wolfram_scalar_map = analysis.curvature_wolfram_scalar;
+            curvature_result.wolfram_ricci_map = analysis.curvature_wolfram_ricci;
+            curvature_result.mean_ollivier_ricci = analysis.curvature_ollivier_mean;
+            curvature_result.min_ollivier_ricci = analysis.curvature_ollivier_min;
+            curvature_result.max_ollivier_ricci = analysis.curvature_ollivier_max;
+            curvature_result.mean_dimension_gradient = analysis.curvature_dim_grad_mean;
+            curvature_result.min_dimension_gradient = analysis.curvature_dim_grad_min;
+            curvature_result.max_dimension_gradient = analysis.curvature_dim_grad_max;
+            curvature_result.mean_wolfram_scalar = analysis.curvature_wolfram_scalar_mean;
+            curvature_result.min_wolfram_scalar = analysis.curvature_wolfram_scalar_min;
+            curvature_result.max_wolfram_scalar = analysis.curvature_wolfram_scalar_max;
+            curvature_result.mean_wolfram_ricci = analysis.curvature_wolfram_ricci_mean;
+            curvature_result.min_wolfram_ricci = analysis.curvature_wolfram_ricci_min;
+            curvature_result.max_wolfram_ricci = analysis.curvature_wolfram_ricci_max;
+        }
+        if (analysis.has_hilbert_analysis) {
+            hilbert_result.vertex_probabilities = analysis.hilbert_vertex_probabilities;
+            hilbert_result.num_states = analysis.hilbert_num_states;
+            hilbert_result.num_vertices = analysis.hilbert_num_vertices;
+            hilbert_result.mean_inner_product = analysis.hilbert_mean_inner_product;
+            hilbert_result.max_inner_product = analysis.hilbert_max_inner_product;
+            hilbert_result.mean_vertex_probability = analysis.hilbert_mean_vertex_probability;
+            hilbert_result.vertex_probability_entropy = analysis.hilbert_vertex_probability_entropy;
+        }
+        if (analysis.has_branchial_analysis) {
+            branchial_result.vertex_sharpness = analysis.branchial_vertex_sharpness;
+            branchial_result.vertex_entropy = analysis.branchial_vertex_entropy;
+            branchial_result.mean_sharpness = analysis.branchial_mean_sharpness;
+            branchial_result.mean_branch_entropy = analysis.branchial_mean_entropy;
+        }
+    }
+
+    // Build SimpleGraph from analysis data (for curvature/entropy analysis)
     SimpleGraph analysis_graph;
     std::vector<float> vertex_dimensions_vec;
-    if (!analysis.all_edges.empty() && !analysis.mega_dimension.empty()) {
+    bool has_dimension_data = false;
+    if (should_compute_analyses && !analysis.all_edges.empty()) {
         analysis_graph.build_from_edges(analysis.all_edges);
-        // Build dimension vector indexed by vertex position
-        vertex_dimensions_vec.resize(analysis_graph.vertex_count(), 0.0f);
-        for (size_t i = 0; i < analysis_graph.vertices().size(); ++i) {
-            VertexId vid = analysis_graph.vertices()[i];
-            auto it = analysis.mega_dimension.find(vid);
-            if (it != analysis.mega_dimension.end()) {
-                vertex_dimensions_vec[i] = it->second;
+        // Build dimension vector indexed by vertex position (if available)
+        vertex_dimensions_vec.resize(analysis_graph.vertex_count(), 2.0f);  // Default to 2D
+        if (!analysis.mega_dimension.empty()) {
+            has_dimension_data = true;
+            for (size_t i = 0; i < analysis_graph.vertices().size(); ++i) {
+                VertexId vid = analysis_graph.vertices()[i];
+                auto it = analysis.mega_dimension.find(vid);
+                if (it != analysis.mega_dimension.end()) {
+                    vertex_dimensions_vec[i] = it->second;
+                }
             }
         }
     }
 
     // Compute curvature analysis if enabled
     if (enable_curvature && analysis_graph.vertex_count() > 0) {
-        std::cout << "Computing curvature analysis..." << std::endl;
+        std::cout << "\r[Curvature analysis] 0%\033[K" << std::flush;
+        auto curv_start = std::chrono::high_resolution_clock::now();
 
         CurvatureConfig curv_config;
         curv_config.compute_ollivier_ricci = true;
-        curv_config.compute_dimension_gradient = true;
+        curv_config.compute_dimension_gradient = has_dimension_data;  // Only if we have dimension data
+        curv_config.compute_wolfram_scalar = has_dimension_data;      // Ball volume method
+        curv_config.compute_wolfram_ricci = has_dimension_data;       // Tube volume method (full tensor)
+        curv_config.wolfram_ricci_full_tensor = true;                 // Use full tensor formula
 
-        curvature_result = analyze_curvature(analysis_graph, curv_config, &vertex_dimensions_vec);
+        // Use parallel version for better performance
+        job_system::JobSystem<int> curv_js(std::thread::hardware_concurrency());
+        curv_js.start();
+        curvature_result = analyze_curvature_parallel(analysis_graph, &curv_js, curv_config, &vertex_dimensions_vec);
+        curv_js.shutdown();
         has_curvature_analysis = true;
+
+        // Store results in analysis for serialization
+        analysis.curvature_ollivier_ricci = curvature_result.ollivier_ricci_map;
+        analysis.curvature_dimension_gradient = curvature_result.dimension_gradient_map;
+        analysis.curvature_wolfram_scalar = curvature_result.wolfram_scalar_map;
+        analysis.curvature_wolfram_ricci = curvature_result.wolfram_ricci_map;
+        analysis.curvature_ollivier_mean = curvature_result.mean_ollivier_ricci;
+        analysis.curvature_ollivier_min = curvature_result.min_ollivier_ricci;
+        analysis.curvature_ollivier_max = curvature_result.max_ollivier_ricci;
+        analysis.curvature_dim_grad_mean = curvature_result.mean_dimension_gradient;
+        analysis.curvature_dim_grad_min = curvature_result.min_dimension_gradient;
+        analysis.curvature_dim_grad_max = curvature_result.max_dimension_gradient;
+        analysis.curvature_wolfram_scalar_mean = curvature_result.mean_wolfram_scalar;
+        analysis.curvature_wolfram_scalar_min = curvature_result.min_wolfram_scalar;
+        analysis.curvature_wolfram_scalar_max = curvature_result.max_wolfram_scalar;
+        analysis.curvature_wolfram_ricci_mean = curvature_result.mean_wolfram_ricci;
+        analysis.curvature_wolfram_ricci_min = curvature_result.min_wolfram_ricci;
+        analysis.curvature_wolfram_ricci_max = curvature_result.max_wolfram_ricci;
+        analysis.has_curvature_analysis = true;
+
+        std::cout << "\r[Curvature analysis] 100%\033[K" << std::endl;
+        auto curv_end = std::chrono::high_resolution_clock::now();
+        auto curv_ms = std::chrono::duration<double, std::milli>(curv_end - curv_start).count();
+        std::cout << "[TIMING] Curvature analysis: " << std::fixed << std::setprecision(1) << curv_ms << " ms" << std::endl;
 
         std::cout << "  Ollivier-Ricci: mean=" << curvature_result.mean_ollivier_ricci
                   << ", min=" << curvature_result.min_ollivier_ricci
                   << ", max=" << curvature_result.max_ollivier_ricci << std::endl;
-        std::cout << "  Dimension gradient: mean=" << curvature_result.mean_dimension_gradient
-                  << ", min=" << curvature_result.min_dimension_gradient
-                  << ", max=" << curvature_result.max_dimension_gradient << std::endl;
+        if (has_dimension_data) {
+            std::cout << "  Dimension gradient: mean=" << curvature_result.mean_dimension_gradient
+                      << ", min=" << curvature_result.min_dimension_gradient
+                      << ", max=" << curvature_result.max_dimension_gradient << std::endl;
+            std::cout << "  Wolfram scalar (ball): mean=" << curvature_result.mean_wolfram_scalar
+                      << ", min=" << curvature_result.min_wolfram_scalar
+                      << ", max=" << curvature_result.max_wolfram_scalar << std::endl;
+            std::cout << "  Wolfram Ricci (tube): mean=" << curvature_result.mean_wolfram_ricci
+                      << ", min=" << curvature_result.min_wolfram_ricci
+                      << ", max=" << curvature_result.max_wolfram_ricci << std::endl;
+        }
     }
 
     // Compute entropy analysis if enabled
     if (enable_entropy && analysis_graph.vertex_count() > 0) {
-        std::cout << "Computing entropy analysis..." << std::endl;
+        std::cout << "\r[Entropy analysis] 0%\033[K" << std::flush;
+        auto ent_start = std::chrono::high_resolution_clock::now();
 
         EntropyConfig ent_config;
         ent_config.compute_local_entropy = true;
         ent_config.compute_mutual_info = true;
         ent_config.compute_fisher_info = true;
 
-        entropy_result = analyze_entropy(analysis_graph, ent_config, &vertex_dimensions_vec);
+        // Use parallel version for better performance
+        job_system::JobSystem<int> ent_js(std::thread::hardware_concurrency());
+        ent_js.start();
+        entropy_result = analyze_entropy_parallel(analysis_graph, &ent_js, ent_config, &vertex_dimensions_vec);
+        ent_js.shutdown();
         has_entropy_analysis = true;
+
+        std::cout << "\r[Entropy analysis] 100%\033[K" << std::endl;
+        auto ent_end = std::chrono::high_resolution_clock::now();
+        auto ent_ms = std::chrono::duration<double, std::milli>(ent_end - ent_start).count();
+        std::cout << "[TIMING] Entropy analysis: " << std::fixed << std::setprecision(1) << ent_ms << " ms" << std::endl;
 
         std::cout << "  Graph entropy: " << entropy_result.graph_entropy << std::endl;
         std::cout << "  Degree entropy: " << entropy_result.degree_entropy << std::endl;
@@ -4368,26 +5343,10 @@ int main(int argc, char* argv[]) {
         std::cout << "  Total Fisher info: " << entropy_result.total_fisher_info << std::endl;
     }
 
-    // Compute rotation curve analysis if enabled
-    if (enable_rotation && analysis_graph.vertex_count() > 0) {
-        std::cout << "Computing rotation curve analysis..." << std::endl;
-
-        RotationConfig rot_config;
-        rot_config.max_radius = 20;
-        rot_config.orbits_per_radius = 8;
-
-        rotation_result = analyze_rotation_curve(analysis_graph, rot_config, &vertex_dimensions_vec);
-        has_rotation_analysis = true;
-
-        std::cout << "  Center vertex: " << rotation_result.center << std::endl;
-        std::cout << "  Power law exponent: " << rotation_result.power_law_exponent
-                  << " (Newtonian: -0.5)" << std::endl;
-        std::cout << "  Flat rotation curve: " << (rotation_result.has_flat_rotation ? "YES" : "NO") << std::endl;
-    }
-
-    // Compute Hilbert space analysis (always compute if we have states)
-    if (analysis.states_per_step.size() > 1) {
-        std::cout << "Computing Hilbert space analysis..." << std::endl;
+    // Compute Hilbert space analysis if enabled
+    if (enable_hilbert && should_compute_analyses && analysis.states_per_step.size() > 1) {
+        std::cout << "\r[Hilbert space analysis] 0%\033[K" << std::flush;
+        auto hilb_start = std::chrono::high_resolution_clock::now();
 
         // Build BranchState structures from analysis data
         std::vector<BranchState> branch_states;
@@ -4412,11 +5371,38 @@ int main(int argc, char* argv[]) {
             BranchialConfig config;
             config.compute_sharpness = true;
             config.compute_entropy = true;
-            branchial_result = analyze_branchial(branch_states, config);
+
+            // Use parallel versions for better performance
+            job_system::JobSystem<int> bran_js(std::thread::hardware_concurrency());
+            bran_js.start();
+            branchial_result = analyze_branchial_parallel(branch_states, &bran_js, config);
 
             auto branchial_graph = build_branchial_graph(branch_states, config);
-            hilbert_result = analyze_hilbert_space_full(branchial_graph);
+            hilbert_result = analyze_hilbert_space_full_parallel(branchial_graph, &bran_js);
+            bran_js.shutdown();
             has_hilbert_analysis = (hilbert_result.num_states > 0);
+
+            // Store hilbert results in analysis for serialization
+            analysis.hilbert_vertex_probabilities = hilbert_result.vertex_probabilities;
+            analysis.hilbert_num_states = hilbert_result.num_states;
+            analysis.hilbert_num_vertices = hilbert_result.num_vertices;
+            analysis.hilbert_mean_inner_product = hilbert_result.mean_inner_product;
+            analysis.hilbert_max_inner_product = hilbert_result.max_inner_product;
+            analysis.hilbert_mean_vertex_probability = hilbert_result.mean_vertex_probability;
+            analysis.hilbert_vertex_probability_entropy = hilbert_result.vertex_probability_entropy;
+            analysis.has_hilbert_analysis = true;
+
+            // Store branchial results in analysis for serialization
+            analysis.branchial_vertex_sharpness = branchial_result.vertex_sharpness;
+            analysis.branchial_vertex_entropy = branchial_result.vertex_entropy;
+            analysis.branchial_mean_sharpness = branchial_result.mean_sharpness;
+            analysis.branchial_mean_entropy = branchial_result.mean_branch_entropy;
+            analysis.has_branchial_analysis = true;
+
+            std::cout << "\r[Hilbert space analysis] 100%\033[K" << std::endl;
+            auto hilb_end = std::chrono::high_resolution_clock::now();
+            auto hilb_ms = std::chrono::duration<double, std::milli>(hilb_end - hilb_start).count();
+            std::cout << "[TIMING] Hilbert space analysis: " << std::fixed << std::setprecision(1) << hilb_ms << " ms" << std::endl;
 
             std::cout << "  States analyzed: " << hilbert_result.num_states << std::endl;
             std::cout << "  Unique vertices: " << hilbert_result.num_vertices << std::endl;
@@ -4424,6 +5410,271 @@ int main(int argc, char* argv[]) {
             std::cout << "  Max inner product: " << hilbert_result.max_inner_product << std::endl;
             std::cout << "  Mean vertex probability: " << hilbert_result.mean_vertex_probability << std::endl;
             std::cout << "  Vertex probability entropy: " << hilbert_result.vertex_probability_entropy << std::endl;
+        }
+    }
+
+    // Compute branch alignment if enabled (curvature shape space visualization)
+    // Only during run/generate mode - view mode loads from file
+    if (should_compute_analyses && enable_branch_alignment && !analysis.states_per_step.empty()) {
+        std::cout << "\r[Branch alignment] 0%\033[K" << std::flush;
+        auto align_start = std::chrono::high_resolution_clock::now();
+
+        // Prepare per-state graphs and curvature data
+        std::vector<SimpleGraph> all_graphs;
+        std::vector<std::unordered_map<VertexId, float>> all_curvatures;
+        std::vector<StateId> all_state_ids;
+        std::vector<uint32_t> state_to_step;
+
+        StateId state_id = 0;
+        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+            for (size_t branch = 0; branch < analysis.states_per_step[step].size(); ++branch) {
+                const auto& state_data = analysis.states_per_step[step][branch];
+
+                // Build graph for this state
+                SimpleGraph graph;
+                graph.build_from_edges(state_data.edges);
+
+                // Compute per-vertex curvature using dimension data (Wolfram-Ricci style)
+                std::unordered_map<VertexId, float> curvature;
+                for (VertexId v : state_data.vertices) {
+                    // Get dimension for this vertex from mega_dimension
+                    auto dim_it = analysis.mega_dimension.find(v);
+                    float dim = (dim_it != analysis.mega_dimension.end()) ? dim_it->second : 2.0f;
+
+                    // Wolfram-Ricci curvature: K = 2 - d (where d is local dimension)
+                    // Positive for d < 2, negative for d > 2
+                    curvature[v] = 2.0f - dim;
+                }
+
+                all_graphs.push_back(std::move(graph));
+                all_curvatures.push_back(std::move(curvature));
+                all_state_ids.push_back(state_id);
+                state_to_step.push_back(static_cast<uint32_t>(step));
+                state_id++;
+            }
+        }
+
+        if (!all_graphs.empty()) {
+            // Group states by timestep
+            std::map<uint32_t, std::vector<size_t>> step_to_indices;
+            for (size_t i = 0; i < all_state_ids.size(); ++i) {
+                step_to_indices[state_to_step[i]].push_back(i);
+            }
+
+            // Per-timestep alignment with FIXED reference frame (not chained)
+            // All timesteps align to the first timestep's frame to prevent drift
+            job_system::JobSystem<int> js(std::thread::hardware_concurrency());
+            js.start();
+
+            analysis.alignment_per_timestep.resize(analysis.states_per_step.size());
+            analysis.global_pc1_min = std::numeric_limits<float>::max();
+            analysis.global_pc1_max = std::numeric_limits<float>::lowest();
+            analysis.global_pc2_min = std::numeric_limits<float>::max();
+            analysis.global_pc2_max = std::numeric_limits<float>::lowest();
+            analysis.global_pc3_min = std::numeric_limits<float>::max();
+            analysis.global_pc3_max = std::numeric_limits<float>::lowest();
+            analysis.global_curvature_min = std::numeric_limits<float>::max();
+            analysis.global_curvature_max = std::numeric_limits<float>::lowest();
+
+            // Fixed reference frame from first timestep (prevents drift accumulation)
+            AlignmentReferenceFrame fixed_reference_frame;
+
+            size_t steps_done = 0;
+            size_t total_steps = step_to_indices.size();
+            for (const auto& [step, indices] : step_to_indices) {
+                // Collect graphs and curvatures for this timestep only
+                std::vector<SimpleGraph> step_graphs;
+                std::vector<std::unordered_map<VertexId, float>> step_curvatures;
+                std::vector<StateId> step_state_ids;
+
+                for (size_t i : indices) {
+                    step_graphs.push_back(all_graphs[i]);
+                    step_curvatures.push_back(all_curvatures[i]);
+                    step_state_ids.push_back(all_state_ids[i]);
+                }
+
+                // Per-branch PCA alignment with canonical orientation
+                // Use fixed reference from first timestep (not previous timestep)
+                AlignmentReferenceFrame new_frame;
+                auto agg = align_branches_per_branch(
+                    step_graphs, step_curvatures, step_state_ids, &js,
+                    fixed_reference_frame.valid ? &fixed_reference_frame : nullptr,
+                    &new_frame, canonical_orientation, scale_normalization);
+
+                // Save first timestep's frame as the fixed reference for all subsequent
+                if (!fixed_reference_frame.valid && new_frame.valid) {
+                    fixed_reference_frame = new_frame;
+                }
+
+                // Copy to PerTimestepAlignment
+                auto& pta = analysis.alignment_per_timestep[step];
+                pta.all_pc1 = std::move(agg.all_pc1);
+                pta.all_pc2 = std::move(agg.all_pc2);
+                pta.all_pc3 = std::move(agg.all_pc3);
+                pta.all_curvature = std::move(agg.all_curvature);
+                pta.all_rank = std::move(agg.all_rank);
+                pta.branch_id = std::move(agg.branch_id);
+                pta.all_vertices = std::move(agg.all_vertices);
+                pta.state_id = std::move(agg.state_id);
+                pta.branch_sizes = std::move(agg.branch_sizes);
+                pta.total_points = agg.total_points;
+                pta.num_branches = agg.num_branches;
+
+                // Update global bounds
+                if (agg.total_points > 0) {
+                    analysis.global_pc1_min = std::min(analysis.global_pc1_min, agg.pc1_min);
+                    analysis.global_pc1_max = std::max(analysis.global_pc1_max, agg.pc1_max);
+                    analysis.global_pc2_min = std::min(analysis.global_pc2_min, agg.pc2_min);
+                    analysis.global_pc2_max = std::max(analysis.global_pc2_max, agg.pc2_max);
+                    analysis.global_pc3_min = std::min(analysis.global_pc3_min, agg.pc3_min);
+                    analysis.global_pc3_max = std::max(analysis.global_pc3_max, agg.pc3_max);
+                    analysis.global_curvature_min = std::min(analysis.global_curvature_min, agg.curvature_min);
+                    analysis.global_curvature_max = std::max(analysis.global_curvature_max, agg.curvature_max);
+                }
+
+                // Progress reporting (after work is done)
+                steps_done++;
+                if (steps_done % 10 == 0 || steps_done == total_steps) {
+                    std::cout << "\r[Wolfram-Ricci alignment] " << (100 * steps_done / total_steps) << "%\033[K" << std::flush;
+                }
+            }
+            std::cout << std::endl;  // Complete progress line
+
+            js.shutdown();
+
+            analysis.curvature_abs_max = std::max(
+                std::abs(analysis.global_curvature_min),
+                std::abs(analysis.global_curvature_max)
+            );
+            analysis.has_branch_alignment = true;
+
+            auto align_end = std::chrono::high_resolution_clock::now();
+            auto align_ms = std::chrono::duration<double, std::milli>(align_end - align_start).count();
+            std::cout << "[TIMING] Branch alignment: " << std::fixed << std::setprecision(1) << align_ms << " ms" << std::endl;
+
+            std::cout << "  Wolfram-Ricci aligned " << all_graphs.size() << " states across "
+                      << analysis.states_per_step.size() << " timesteps" << std::endl;
+            std::cout << "  PC range: [" << analysis.global_pc1_min << ", " << analysis.global_pc1_max << "] x ["
+                      << analysis.global_pc2_min << ", " << analysis.global_pc2_max << "] x ["
+                      << analysis.global_pc3_min << ", " << analysis.global_pc3_max << "]" << std::endl;
+            std::cout << "  Curvature range: [" << analysis.global_curvature_min
+                      << ", " << analysis.global_curvature_max << "]" << std::endl;
+
+            // Also compute Ollivier-Ricci alignment if curvature analysis was enabled
+            if (has_curvature_analysis) {
+                std::cout << "\r[Ollivier-Ricci alignment] 0%\033[K" << std::flush;
+                auto ollivier_start = std::chrono::high_resolution_clock::now();
+
+                // Compute Ollivier-Ricci curvature for each state
+                std::vector<std::unordered_map<VertexId, float>> all_ollivier_curvatures(all_graphs.size());
+
+                job_system::JobSystem<int> ollivier_js(std::thread::hardware_concurrency());
+                ollivier_js.start();
+
+                for (size_t i = 0; i < all_graphs.size(); ++i) {
+                    ollivier_js.submit_function([&all_graphs, &all_ollivier_curvatures, i]() {
+                        all_ollivier_curvatures[i] = compute_vertex_ollivier_ricci(all_graphs[i], 0.5f);
+                    }, 0);
+                }
+                ollivier_js.wait_for_completion();
+
+                // Run alignment with Ollivier-Ricci curvature
+                analysis.alignment_ollivier.resize(analysis.states_per_step.size());
+                analysis.ollivier_pc1_min = std::numeric_limits<float>::max();
+                analysis.ollivier_pc1_max = std::numeric_limits<float>::lowest();
+                analysis.ollivier_pc2_min = std::numeric_limits<float>::max();
+                analysis.ollivier_pc2_max = std::numeric_limits<float>::lowest();
+                analysis.ollivier_pc3_min = std::numeric_limits<float>::max();
+                analysis.ollivier_pc3_max = std::numeric_limits<float>::lowest();
+                analysis.ollivier_curvature_min = std::numeric_limits<float>::max();
+                analysis.ollivier_curvature_max = std::numeric_limits<float>::lowest();
+
+                AlignmentReferenceFrame ollivier_fixed_ref;
+
+                size_t ollivier_steps_done = 0;
+                for (const auto& [step, indices] : step_to_indices) {
+                    std::vector<SimpleGraph> step_graphs;
+                    std::vector<std::unordered_map<VertexId, float>> step_curvatures;
+                    std::vector<StateId> step_state_ids;
+
+                    for (size_t i : indices) {
+                        step_graphs.push_back(all_graphs[i]);
+                        step_curvatures.push_back(all_ollivier_curvatures[i]);
+                        step_state_ids.push_back(all_state_ids[i]);
+                    }
+
+                    AlignmentReferenceFrame new_frame;
+                    auto agg = align_branches_per_branch(
+                        step_graphs, step_curvatures, step_state_ids, &ollivier_js,
+                        ollivier_fixed_ref.valid ? &ollivier_fixed_ref : nullptr,
+                        &new_frame, canonical_orientation, scale_normalization);
+
+                    if (!ollivier_fixed_ref.valid && new_frame.valid) {
+                        ollivier_fixed_ref = new_frame;
+                    }
+
+                    auto& pta = analysis.alignment_ollivier[step];
+                    pta.all_pc1 = std::move(agg.all_pc1);
+                    pta.all_pc2 = std::move(agg.all_pc2);
+                    pta.all_pc3 = std::move(agg.all_pc3);
+                    pta.all_curvature = std::move(agg.all_curvature);
+                    pta.all_rank = std::move(agg.all_rank);
+                    pta.branch_id = std::move(agg.branch_id);
+                    pta.all_vertices = std::move(agg.all_vertices);
+                    pta.state_id = std::move(agg.state_id);
+                    pta.branch_sizes = std::move(agg.branch_sizes);
+                    pta.total_points = agg.total_points;
+                    pta.num_branches = agg.num_branches;
+
+                    if (agg.total_points > 0) {
+                        analysis.ollivier_pc1_min = std::min(analysis.ollivier_pc1_min, agg.pc1_min);
+                        analysis.ollivier_pc1_max = std::max(analysis.ollivier_pc1_max, agg.pc1_max);
+                        analysis.ollivier_pc2_min = std::min(analysis.ollivier_pc2_min, agg.pc2_min);
+                        analysis.ollivier_pc2_max = std::max(analysis.ollivier_pc2_max, agg.pc2_max);
+                        analysis.ollivier_pc3_min = std::min(analysis.ollivier_pc3_min, agg.pc3_min);
+                        analysis.ollivier_pc3_max = std::max(analysis.ollivier_pc3_max, agg.pc3_max);
+                        analysis.ollivier_curvature_min = std::min(analysis.ollivier_curvature_min, agg.curvature_min);
+                        analysis.ollivier_curvature_max = std::max(analysis.ollivier_curvature_max, agg.curvature_max);
+                    }
+
+                    // Progress reporting (after work is done)
+                    ollivier_steps_done++;
+                    if (ollivier_steps_done % 10 == 0 || ollivier_steps_done == total_steps) {
+                        std::cout << "\r[Ollivier-Ricci alignment] " << (100 * ollivier_steps_done / total_steps) << "%\033[K" << std::flush;
+                    }
+                }
+                std::cout << std::endl;  // Complete progress line
+
+                ollivier_js.shutdown();
+
+                analysis.ollivier_curvature_abs_max = std::max(
+                    std::abs(analysis.ollivier_curvature_min),
+                    std::abs(analysis.ollivier_curvature_max)
+                );
+                analysis.has_ollivier_alignment = true;
+
+                auto ollivier_end = std::chrono::high_resolution_clock::now();
+                auto ollivier_ms = std::chrono::duration<double, std::milli>(ollivier_end - ollivier_start).count();
+                std::cout << "[TIMING] Ollivier-Ricci alignment: " << std::fixed << std::setprecision(1) << ollivier_ms << " ms" << std::endl;
+                std::cout << "  Ollivier-Ricci aligned " << all_graphs.size() << " states" << std::endl;
+                std::cout << "  PC range: [" << analysis.ollivier_pc1_min << ", " << analysis.ollivier_pc1_max << "] x ["
+                          << analysis.ollivier_pc2_min << ", " << analysis.ollivier_pc2_max << "] x ["
+                          << analysis.ollivier_pc3_min << ", " << analysis.ollivier_pc3_max << "]" << std::endl;
+                std::cout << "  Curvature range: [" << analysis.ollivier_curvature_min
+                          << ", " << analysis.ollivier_curvature_max << "]" << std::endl;
+            }
+        }
+    }
+
+    // Save analysis after all computations are done (only in run/generate mode)
+    if (should_compute_analyses) {
+        if (write_analysis(output_file, analysis)) {
+            std::cout << "Saved analysis to " << output_file << std::endl;
+        }
+
+        if (no_view) {
+            std::cout << "Use 'view " << output_file << "' to visualize." << std::endl;
+            return 0;
         }
     }
 
@@ -4846,6 +6097,19 @@ int main(int argc, char* argv[]) {
     float camera_distance_2d = base_camera_distance * 0.8f;  // 2D needs less distance (orthographic)
     float camera_distance_3d = base_camera_distance;          // 3D uses full distance
 
+    // Shape space camera distance (based on PC coordinate range, not physical layout)
+    float shape_space_camera_distance = 10.0f;  // Default
+    if (analysis.has_branch_alignment) {
+        float pc_range = std::max({
+            analysis.global_pc1_max - analysis.global_pc1_min,
+            analysis.global_pc2_max - analysis.global_pc2_min,
+            analysis.global_pc3_max - analysis.global_pc3_min
+        });
+        shape_space_camera_distance = std::max(1.0f, pc_range * 1.5f);
+        std::cout << "Shape space PC range: " << pc_range
+                  << ", camera distance: " << shape_space_camera_distance << std::endl;
+    }
+
     camera::PerspectiveCamera cam;
     cam.set_perspective(60.0f, static_cast<float>(window->get_width()) / window->get_height(), 0.1f, base_camera_distance * 10.0f);
     cam.set_target(math::vec3(0, 0, 0));
@@ -5246,15 +6510,20 @@ int main(int argc, char* argv[]) {
     EdgeDisplayMode edge_mode = EdgeDisplayMode::Union;
     int edge_freq_threshold = 1;   // Edges must appear in >= N states (for Frequent mode, 1 = show all)
     int selected_state_index = 0;  // Which state to show in SingleState mode (cycles with '[' and ']')
-    HeatmapMode heatmap_mode = HeatmapMode::Mean;  // Mean dimension or Variance
-    DimensionSource dim_source = DimensionSource::Branchial;  // Branchial, Foliation, or Global
-    bool per_frame_normalization = true;  // Per-frame (local) vs global color normalization
+
+    // Shape space (curvature) view state
+    ShapeSpaceColorMode shape_space_color_mode = ShapeSpaceColorMode::Curvature;
+    ShapeSpaceDisplayMode shape_space_display_mode = ShapeSpaceDisplayMode::Merged;
+    int highlighted_branch = -1;  // -1 = all, 0+ = specific branch
+    bool use_ollivier_alignment = false;  // false = Wolfram-Ricci (K=2-d), true = Ollivier-Ricci
+    // Centralized mode configuration (value type, statistic, scope, aggregation)
+    ModeConfig viz_mode;
+    bool per_frame_normalization = false;  // Per-frame (local) vs global color normalization (default: global)
     bool show_horizons = false;  // Horizon rings off by default
     bool show_geodesics = false;  // Geodesic path overlay (requires geodesic analysis)
     bool show_defects = false;    // Topological defect markers (requires particle analysis)
     int curvature_display_mode = 0;  // 0=OFF, 1=Ollivier-Ricci, 2=Dimension Gradient
     bool show_entropy = false;       // Entropy heatmap overlay (requires --entropy)
-    bool show_rotation = false;      // Rotation curve overlay (requires --rotation)
     bool show_hilbert = false;       // Hilbert space stats overlay
     bool timeslice_enabled = false;  // Timeslice view (shows range of timesteps)
     int timeslice_width = 5;         // Number of timesteps in the slice
@@ -5268,6 +6537,8 @@ int main(int argc, char* argv[]) {
     int path_selection_count = 1;         // Number of paths/states to select
     std::vector<std::vector<int>> selected_state_indices;  // Per-timestep selected state indices
     bool show_overlay = false;       // Show help overlay (toggle with / or ?)
+    bool show_scatter = false;       // Show scatter plot overlay (toggle with Y)
+    ValueType scatter_metric = ValueType::WolframHausdorffDimension;  // Which metric to display
     float z_scale = 3.0f;            // Z height multiplier (adjusted with < / >)
     bool geometry_dirty = true;
     bool layout_enabled = true;  // Live layout on - seeds from pre-computed step 0 positions
@@ -5305,23 +6576,19 @@ int main(int argc, char* argv[]) {
             {"P", "Ping-pong mode", [&]{ return ping_pong_mode ? "ON" : "OFF"; }},
         }},
         {"Dimension Mode", {
-            {"G", "Dimension source", [&]{
-                switch (dim_source) {
-                    case DimensionSource::Branchial: return "Branchial";
-                    case DimensionSource::Foliation: return "Foliation";
-                    case DimensionSource::Global: return "Global";
-                }
-                return "Unknown";
-            }},
-            {"V", "Heatmap mode", [&]{
-                // Variance only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) return "(N/A)";
-                return heatmap_mode == HeatmapMode::Mean ? "Mean" : "Variance";
+            {"G", "Graph scope", [&]{ return ui::name(viz_mode.graph_scope); }},
+            {"V", "Value type", [&]{ return value_type_name(viz_mode.value_type); }},
+            {"M", "Statistic", [&]{
+                if (!viz_mode.supports_variance()) return "(N/A)";
+                return ui::name(viz_mode.statistic_mode);
             }},
             {"N", "Normalization", [&]{
-                // Per-frame normalization not applicable for Global mode
-                if (dim_source == DimensionSource::Global) return "(N/A)";
+                if (viz_mode.graph_scope == GraphScope::Global) return "(N/A)";
                 return per_frame_normalization ? "Local" : "Global";
+            }},
+            {"B", "Value aggregation", [&]{
+                if (!viz_mode.supports_value_aggregation()) return "(N/A)";
+                return ui::name(viz_mode.value_aggregation);
             }},
         }},
         {"Display", {
@@ -5345,16 +6612,13 @@ int main(int argc, char* argv[]) {
                 }
             }},
             {"E", "Entropy heatmap", [&]{ return !has_entropy_analysis ? "(N/A)" : (show_entropy ? "ON" : "OFF"); }},
-            {"F", "Rotation curve", [&]{ return !has_rotation_analysis ? "(N/A)" : (show_rotation ? "ON" : "OFF"); }},
             {"Q", "Hilbert space", [&]{ return !has_hilbert_analysis ? "(N/A)" : (show_hilbert ? "ON" : "OFF"); }},
             {"T", "Timeslice view", [&]{
-                // Timeslice not applicable for Global mode
-                if (dim_source == DimensionSource::Global) return std::string("(N/A)");
+                if (viz_mode.graph_scope == GraphScope::Global) return std::string("(N/A)");
                 return timeslice_enabled ? "ON (w=" + std::to_string(timeslice_width) + ")" : std::string("OFF");
             }},
             {"- / +", "Timeslice width", [&]{
-                // Timeslice not applicable for Global mode
-                if (dim_source == DimensionSource::Global) return std::string("(N/A)");
+                if (viz_mode.graph_scope == GraphScope::Global) return std::string("(N/A)");
                 return std::to_string(timeslice_width);
             }},
             {"U", "Missing data mode", [&]{ return missing_mode_name(missing_mode); }},
@@ -5363,16 +6627,22 @@ int main(int argc, char* argv[]) {
             {"Shift+L", "Layout all verts", [&]{ return layout_use_all_vertices ? "ON" : "OFF"; }},
             {"M", "MSAA level", [&]{ return msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF"; }},
             {"R", "Reset camera", nullptr},
-            {"B", "States graph", [&]{ return show_states_graph ? "ON" : "OFF"; }},
+            {"B", "States graph (shape space)", [&]{
+                if (view_mode != ViewMode::ShapeSpace2D && view_mode != ViewMode::ShapeSpace3D) return "(N/A)";
+                return show_states_graph ? "ON" : "OFF";
+            }},
             {"X", "Multispace overlay", [&]{ return show_multispace ? "ON" : "OFF"; }},
+            {"Y", "Scatter plot", [&]{
+                if (!show_scatter) return std::string("OFF");
+                return std::string(value_type_name(scatter_metric));
+            }},
+            {"Shift+Y", "Cycle scatter metric", nullptr},
             {"A", "Path selection", [&]{
-                // Path selection only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) return std::string("(N/A)");
+                if (viz_mode.graph_scope != GraphScope::Branchial) return std::string("(N/A)");
                 return path_selection_enabled ? "N=" + std::to_string(path_selection_count) : std::string("OFF");
             }},
             {"9 / 0", "Path count -/+", [&]{
-                // Path count only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) return std::string("(N/A)");
+                if (viz_mode.graph_scope != GraphScope::Branchial) return std::string("(N/A)");
                 return std::to_string(path_selection_count);
             }},
         }},
@@ -5431,6 +6701,141 @@ int main(int argc, char* argv[]) {
 
     auto last_frame = std::chrono::high_resolution_clock::now();
 
+    // Unified highlight computation function - called from click handler, V key, and timestep change
+    // Having a single function ensures consistent results regardless of when/how highlight is computed
+    auto recompute_highlight = [&](VertexId vid, int timestep) {
+        if (timestep < 0 || timestep >= static_cast<int>(analysis.per_timestep.size())) {
+            vertex_selection.show_highlight = false;
+            return;
+        }
+
+        const auto& ts = analysis.per_timestep[timestep];
+        blackhole::SimpleGraph graph;
+        graph.build(ts.union_vertices, ts.union_edges);
+
+        if (!graph.has_vertex(vid)) {
+            vertex_selection.show_highlight = false;
+            return;
+        }
+
+        // Clear all highlight data
+        vertex_selection.ball_distances.clear();
+        vertex_selection.tube_vertex_distances.clear();
+        vertex_selection.tube_geodesic_paths.clear();
+        vertex_selection.tube_radii.clear();
+        vertex_selection.current_tube_index = 0;
+        vertex_selection.max_tube_radius = 1;
+
+        auto distances = graph.distances_from(vid);
+        const auto& verts = graph.vertices();
+
+        if (vertex_selection.highlight_mode == HighlightMode::Ball) {
+            // Ball mode: simple BFS from clicked vertex
+            for (size_t j = 0; j < verts.size() && j < distances.size(); ++j) {
+                if (distances[j] >= 0 && distances[j] <= vertex_selection.ball_radius) {
+                    vertex_selection.ball_distances[verts[j]] = distances[j];
+                }
+            }
+            vertex_selection.show_highlight = !vertex_selection.ball_distances.empty();
+
+        } else {
+            // Tube mode: geodesic tubes
+            std::vector<std::pair<VertexId, int>> targets_with_dist;
+            for (size_t j = 0; j < verts.size() && j < distances.size(); ++j) {
+                VertexId v = verts[j];
+                int dist = distances[j];
+                if (v != vid && dist >= 3 && dist < 1000) {
+                    targets_with_dist.push_back({v, dist});
+                }
+            }
+            std::sort(targets_with_dist.begin(), targets_with_dist.end(),
+                      [](const auto& a, const auto& b) { return a.second < b.second; });
+
+            constexpr int NUM_TUBES = 8;
+            std::vector<VertexId> targets;
+            if (!targets_with_dist.empty()) {
+                int step = std::max(1, static_cast<int>(targets_with_dist.size()) / NUM_TUBES);
+                for (size_t j = 0; j < targets_with_dist.size() && targets.size() < NUM_TUBES; j += step) {
+                    targets.push_back(targets_with_dist[j].first);
+                }
+                if (targets.size() < NUM_TUBES) {
+                    targets.push_back(targets_with_dist.back().first);
+                }
+            }
+
+            auto find_shortest_path = [&graph](VertexId from, VertexId to) -> std::vector<VertexId> {
+                if (from == to) return {from};
+                std::unordered_map<VertexId, VertexId> parent;
+                std::queue<VertexId> q;
+                q.push(from);
+                parent[from] = from;
+                while (!q.empty()) {
+                    VertexId curr = q.front();
+                    q.pop();
+                    for (VertexId neighbor : graph.neighbors(curr)) {
+                        if (parent.find(neighbor) == parent.end()) {
+                            parent[neighbor] = curr;
+                            if (neighbor == to) {
+                                std::vector<VertexId> path;
+                                VertexId v = to;
+                                while (v != from) {
+                                    path.push_back(v);
+                                    v = parent[v];
+                                }
+                                path.push_back(from);
+                                std::reverse(path.begin(), path.end());
+                                return path;
+                            }
+                            q.push(neighbor);
+                        }
+                    }
+                }
+                return {};
+            };
+
+            constexpr int MIN_VIZ_TUBE_RADIUS = 2;
+            constexpr int MAX_VIZ_TUBE_RADIUS = 6;
+            int global_max_radius = 0;
+
+            for (VertexId target : targets) {
+                if (target == vid) continue;
+                auto path = find_shortest_path(vid, target);
+                if (path.empty() || path.size() < 4) continue;
+
+                int geodesic_length = static_cast<int>(path.size()) - 1;
+                int tube_radius = std::clamp((geodesic_length + 1) / 2, MIN_VIZ_TUBE_RADIUS, MAX_VIZ_TUBE_RADIUS);
+                if (tube_radius > global_max_radius) global_max_radius = tube_radius;
+
+                std::unordered_map<VertexId, int> tube_distances;
+                for (VertexId pv : path) {
+                    tube_distances[pv] = 0;
+                }
+                std::queue<std::pair<VertexId, int>> bfs_q;
+                for (VertexId pv : path) {
+                    bfs_q.push({pv, 0});
+                }
+                while (!bfs_q.empty()) {
+                    auto [v, dist] = bfs_q.front();
+                    bfs_q.pop();
+                    if (dist < tube_radius) {
+                        for (VertexId n : graph.neighbors(v)) {
+                            if (tube_distances.find(n) == tube_distances.end()) {
+                                tube_distances[n] = dist + 1;
+                                bfs_q.push({n, dist + 1});
+                            }
+                        }
+                    }
+                }
+                vertex_selection.tube_vertex_distances.push_back(tube_distances);
+                vertex_selection.tube_geodesic_paths.push_back(path);
+                vertex_selection.tube_radii.push_back(tube_radius);
+            }
+            vertex_selection.max_tube_radius = global_max_radius;
+            vertex_selection.show_highlight = !vertex_selection.tube_geodesic_paths.empty();
+        }
+        vertex_selection.highlight_timestep = timestep;
+    };
+
     // Window callbacks
     platform::WindowCallbacks callbacks;
 
@@ -5449,6 +6854,24 @@ int main(int argc, char* argv[]) {
         }
 
         if (!pressed) return;
+
+        // Helper to regenerate random path selections (used by A, 9, 0 keys)
+        auto regenerate_path_selections = [&]() {
+            selected_state_indices.clear();
+            selected_state_indices.resize(analysis.states_per_step.size());
+            std::mt19937 rng(42);  // Fixed seed for reproducibility
+            for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
+                int n_states = static_cast<int>(analysis.states_per_step[step].size());
+                if (n_states > 0) {
+                    int count = std::min(path_selection_count, n_states);
+                    std::vector<int> indices(n_states);
+                    std::iota(indices.begin(), indices.end(), 0);
+                    std::shuffle(indices.begin(), indices.end(), rng);
+                    selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
+                    std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
+                }
+            }
+        };
 
         switch (key) {
             case platform::KeyCode::Escape:
@@ -5559,8 +6982,35 @@ int main(int argc, char* argv[]) {
                 std::cout << "3D View" << std::endl;
                 break;
 
+            case platform::KeyCode::Num4:
+                if (analysis.has_branch_alignment) {
+                    view_mode = ViewMode::ShapeSpace2D;
+                    cam.set_target(math::vec3(0, 0, 0));
+                    cam.set_distance(shape_space_camera_distance);
+                    cam.set_orbit_angles(0.0f, -1.57f);  // Top-down view
+                    geometry_dirty = true;
+                    std::cout << "Shape Space 2D (PC1 vs PC2)" << std::endl;
+                } else {
+                    std::cout << "Shape Space: N/A (requires curvature/alignment data)" << std::endl;
+                }
+                break;
+
+            case platform::KeyCode::Num5:
+                if (analysis.has_branch_alignment) {
+                    view_mode = ViewMode::ShapeSpace3D;
+                    cam.set_target(math::vec3(0, 0, 0));
+                    cam.set_distance(shape_space_camera_distance);
+                    cam.set_orbit_angles(0.5f, -0.8f);  // Angled 3D view
+                    geometry_dirty = true;
+                    std::cout << "Shape Space 3D (PC1/PC2/PC3)" << std::endl;
+                } else {
+                    std::cout << "Shape Space: N/A (requires curvature/alignment data)" << std::endl;
+                }
+                break;
+
             case platform::KeyCode::H:
                 show_horizons = !show_horizons;
+                geometry_dirty = true;
                 std::cout << "Horizons: " << (show_horizons ? "ON" : "OFF") << std::endl;
                 break;
 
@@ -5609,20 +7059,11 @@ int main(int argc, char* argv[]) {
                 }
                 break;
 
-            case platform::KeyCode::F:
-                // Toggle rotation curve overlay
-                if (has_rotation_analysis) {
-                    show_rotation = !show_rotation;
-                    std::cout << "Rotation curve: " << (show_rotation ? "ON" : "OFF") << std::endl;
-                } else {
-                    std::cout << "Rotation curve: N/A (run with --rotation to enable)" << std::endl;
-                }
-                break;
-
             case platform::KeyCode::Q:
                 // Toggle Hilbert space overlay
                 if (has_hilbert_analysis) {
                     show_hilbert = !show_hilbert;
+                    geometry_dirty = true;
                     std::cout << "Hilbert space: " << (show_hilbert ? "ON" : "OFF") << std::endl;
                 } else {
                     std::cout << "Hilbert space: N/A (need multiple states)" << std::endl;
@@ -5681,37 +7122,40 @@ int main(int argc, char* argv[]) {
                 break;
 
             case platform::KeyCode::V:
-                // V toggles between mean and variance
-                // Variance is only applicable for Branchial mode (averaging across states)
-                if (dim_source != DimensionSource::Branchial) {
-                    std::cout << "Variance: N/A for "
-                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
-                              << " mode (no per-state averaging)" << std::endl;
-                    break;
-                }
-                heatmap_mode = (heatmap_mode == HeatmapMode::Mean)
-                    ? HeatmapMode::Variance
-                    : HeatmapMode::Mean;
-                geometry_dirty = true;
                 {
-                    std::cout << "Heatmap: Branchial "
-                              << (heatmap_mode == HeatmapMode::Mean ? "Mean" : "Variance") << std::endl;
+                // V cycles through value types: Dimension -> Scalar -> Tensor -> Ollivier -> Gradient
+                viz_mode.cycle_value_type();
+                geometry_dirty = true;
+                std::cout << "Value type: " << value_type_name(viz_mode.value_type) << std::endl;
+                if (viz_mode.last_constraint_result.statistic_reset) {
+                    std::cout << "  (Statistic reset to Mean - " << viz_mode.why_no_variance() << ")" << std::endl;
+                }
+
+                // Recompute highlight for new mode if vertex is selected
+                if (vertex_selection.has_selection && vertex_selection.selected_vertex != 0) {
+                    HighlightMode new_mode = viz_mode.supports_tube_visualization()
+                        ? HighlightMode::Tube : HighlightMode::Ball;
+                    if (new_mode != vertex_selection.highlight_mode) {
+                        vertex_selection.highlight_mode = new_mode;
+                        recompute_highlight(vertex_selection.selected_vertex, current_step);
+                        if (vertex_selection.highlight_mode == HighlightMode::Ball) {
+                            std::cout << "  Recomputed ball highlight: " << vertex_selection.ball_distances.size() << " vertices" << std::endl;
+                        } else {
+                            std::cout << "  Recomputed " << vertex_selection.tube_geodesic_paths.size() << " tube highlights" << std::endl;
+                        }
+                    }
+                }
                 }
                 break;
 
             case platform::KeyCode::G:
-                // G cycles through dimension sources: Branchial -> Foliation -> Global -> Branchial
-                switch (dim_source) {
-                    case DimensionSource::Branchial: dim_source = DimensionSource::Foliation; break;
-                    case DimensionSource::Foliation: dim_source = DimensionSource::Global; break;
-                    case DimensionSource::Global: dim_source = DimensionSource::Branchial; break;
-                }
-                // Reset variance to mean when leaving Branchial mode (variance only valid for Branchial)
-                if (dim_source != DimensionSource::Branchial && heatmap_mode == HeatmapMode::Variance) {
-                    heatmap_mode = HeatmapMode::Mean;
+                // G cycles through graph scopes: Branchial -> Foliation -> Global -> Branchial
+                viz_mode.cycle_graph_scope();
+                if (viz_mode.last_constraint_result.statistic_reset) {
+                    std::cout << "  (Statistic reset to Mean - " << viz_mode.why_no_variance() << ")" << std::endl;
                 }
                 // Disable inapplicable features based on new mode
-                if (dim_source == DimensionSource::Global) {
+                if (viz_mode.graph_scope == GraphScope::Global) {
                     // Global mode: disable timeslice, path selection, per-frame normalization
                     if (timeslice_enabled) {
                         timeslice_enabled = false;
@@ -5725,10 +7169,7 @@ int main(int argc, char* argv[]) {
                         per_frame_normalization = false;
                         std::cout << "  (Per-frame normalization disabled - N/A for Global mode)" << std::endl;
                     }
-                    // Debug: show mega_dimension stats
-                    std::cout << "  [DEBUG] mega_dimension: " << analysis.mega_dimension.size() << " vertices"
-                              << ", range: [" << analysis.mega_dim_min << ", " << analysis.mega_dim_max << "]" << std::endl;
-                } else if (dim_source == DimensionSource::Foliation) {
+                } else if (viz_mode.graph_scope == GraphScope::Foliation) {
                     // Foliation mode: disable path selection
                     if (path_selection_enabled) {
                         path_selection_enabled = false;
@@ -5736,11 +7177,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 geometry_dirty = true;
-                {
-                    const char* src_name = (dim_source == DimensionSource::Global) ? "Global" :
-                                           (dim_source == DimensionSource::Foliation) ? "Foliation" : "Branchial";
-                    std::cout << "Dimension: " << src_name << std::endl;
-                }
+                std::cout << "Graph scope: " << ui::name(viz_mode.graph_scope) << std::endl;
                 break;
 
             case platform::KeyCode::L:
@@ -5768,11 +7205,12 @@ int main(int argc, char* argv[]) {
                 break;
 
             case platform::KeyCode::R:
-                if (view_mode == ViewMode::View2D) {
+                if (view_mode == ViewMode::View2D || view_mode == ViewMode::ShapeSpace2D) {
                     cam.set_target(math::vec3(0, 0, 0));
                     cam.set_distance(camera_distance_2d);
                     cam.set_orbit_angles(0.0f, -1.57f);
                 } else {
+                    // View3D and ShapeSpace3D
                     cam.set_target(math::vec3(0, 0, 2.5f));
                     cam.set_distance(camera_distance_3d);
                     cam.set_orbit_angles(0.5f, -0.8f);
@@ -5780,43 +7218,40 @@ int main(int argc, char* argv[]) {
                 std::cout << "Camera reset" << std::endl;
                 break;
 
-            case platform::KeyCode::B:  // Toggle states graph panel
-                show_states_graph = !show_states_graph;
-                std::cout << "States graph: " << (show_states_graph ? "ON" : "OFF");
-                if (show_states_graph && analysis.states_per_step.empty()) {
-                    std::cout << " [No per-state data - regenerate analysis file]";
-                } else if (show_states_graph) {
-                    std::cout << " (" << analysis.states_per_step.size() << " timesteps)";
+            case platform::KeyCode::B:
+                // In shape space: toggle states graph panel
+                // In normal view: toggle value aggregation (Per-Vertex vs Bucketed)
+                if (view_mode == ViewMode::ShapeSpace2D || view_mode == ViewMode::ShapeSpace3D) {
+                    show_states_graph = !show_states_graph;
+                    geometry_dirty = true;
+                    std::cout << "States graph: " << (show_states_graph ? "ON" : "OFF");
+                    if (show_states_graph && analysis.states_per_step.empty()) {
+                        std::cout << " [No per-state data - regenerate analysis file]";
+                    } else if (show_states_graph) {
+                        std::cout << " (" << analysis.states_per_step.size() << " timesteps)";
+                    }
+                    std::cout << std::endl;
+                } else {
+                    // Toggle value aggregation for dimension display
+                    if (viz_mode.toggle_value_aggregation()) {
+                        geometry_dirty = true;
+                        std::cout << "Value aggregation: " << ui::name(viz_mode.value_aggregation) << std::endl;
+                    } else {
+                        std::cout << "Value aggregation: N/A - " << viz_mode.why_no_value_aggregation() << std::endl;
+                    }
                 }
-                std::cout << std::endl;
                 break;
 
             case platform::KeyCode::A:  // Toggle path selection mode
             {
                 // Path selection is only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) {
-                    std::cout << "Path selection: N/A for "
-                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
-                              << " mode" << std::endl;
+                if (viz_mode.graph_scope != GraphScope::Branchial) {
+                    std::cout << "Path selection: N/A for " << ui::name(viz_mode.graph_scope) << " mode" << std::endl;
                     break;
                 }
                 path_selection_enabled = !path_selection_enabled;
                 if (path_selection_enabled) {
-                    // Generate random state selections
-                    selected_state_indices.clear();
-                    selected_state_indices.resize(analysis.states_per_step.size());
-                    std::mt19937 rng(42);  // Fixed seed for reproducibility
-                    for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
-                        int n_states = static_cast<int>(analysis.states_per_step[step].size());
-                        if (n_states > 0) {
-                            int count = std::min(path_selection_count, n_states);
-                            std::vector<int> indices(n_states);
-                            std::iota(indices.begin(), indices.end(), 0);
-                            std::shuffle(indices.begin(), indices.end(), rng);
-                            selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
-                            std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
-                        }
-                    }
+                    regenerate_path_selections();
                 }
                 geometry_dirty = true;
                 std::cout << "Path selection: " << (path_selection_enabled ? "ON (N=" + std::to_string(path_selection_count) + ")" : "OFF") << std::endl;
@@ -5825,30 +7260,14 @@ int main(int argc, char* argv[]) {
 
             case platform::KeyCode::Num9:  // ( - Decrease path count
                 // Path count is only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) {
-                    std::cout << "Path count: N/A for "
-                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
-                              << " mode" << std::endl;
+                if (viz_mode.graph_scope != GraphScope::Branchial) {
+                    std::cout << "Path count: N/A for " << ui::name(viz_mode.graph_scope) << " mode" << std::endl;
                     break;
                 }
                 if (path_selection_count > 1) {
                     path_selection_count--;
                     if (path_selection_enabled) {
-                        // Regenerate selections with new count
-                        selected_state_indices.clear();
-                        selected_state_indices.resize(analysis.states_per_step.size());
-                        std::mt19937 rng(42);
-                        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
-                            int n_states = static_cast<int>(analysis.states_per_step[step].size());
-                            if (n_states > 0) {
-                                int count = std::min(path_selection_count, n_states);
-                                std::vector<int> indices(n_states);
-                                std::iota(indices.begin(), indices.end(), 0);
-                                std::shuffle(indices.begin(), indices.end(), rng);
-                                selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
-                                std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
-                            }
-                        }
+                        regenerate_path_selections();
                         geometry_dirty = true;
                     }
                     std::cout << "Path count: " << path_selection_count << std::endl;
@@ -5858,10 +7277,8 @@ int main(int argc, char* argv[]) {
             case platform::KeyCode::Num0:  // ) - Increase path count
             {
                 // Path count is only applicable for Branchial mode
-                if (dim_source != DimensionSource::Branchial) {
-                    std::cout << "Path count: N/A for "
-                              << (dim_source == DimensionSource::Global ? "Global" : "Foliation")
-                              << " mode" << std::endl;
+                if (viz_mode.graph_scope != GraphScope::Branchial) {
+                    std::cout << "Path count: N/A for " << ui::name(viz_mode.graph_scope) << " mode" << std::endl;
                     break;
                 }
                 int max_count = 1;
@@ -5871,21 +7288,7 @@ int main(int argc, char* argv[]) {
                 if (path_selection_count < max_count) {
                     path_selection_count++;
                     if (path_selection_enabled) {
-                        // Regenerate selections with new count
-                        selected_state_indices.clear();
-                        selected_state_indices.resize(analysis.states_per_step.size());
-                        std::mt19937 rng(42);
-                        for (size_t step = 0; step < analysis.states_per_step.size(); ++step) {
-                            int n_states = static_cast<int>(analysis.states_per_step[step].size());
-                            if (n_states > 0) {
-                                int count = std::min(path_selection_count, n_states);
-                                std::vector<int> indices(n_states);
-                                std::iota(indices.begin(), indices.end(), 0);
-                                std::shuffle(indices.begin(), indices.end(), rng);
-                                selected_state_indices[step].assign(indices.begin(), indices.begin() + count);
-                                std::sort(selected_state_indices[step].begin(), selected_state_indices[step].end());
-                            }
-                        }
+                        regenerate_path_selections();
                         geometry_dirty = true;
                     }
                     std::cout << "Path count: " << path_selection_count << std::endl;
@@ -5894,17 +7297,41 @@ int main(int argc, char* argv[]) {
             }
 
             case platform::KeyCode::M:
-                // Cycle MSAA: OFF -> 2x -> 4x -> 8x -> ... -> OFF
-                msaa_level_index = (msaa_level_index + 1) % supported_msaa_levels.size();
-                msaa_samples = supported_msaa_levels[msaa_level_index];
-                msaa_enabled = (msaa_samples > 1);
-                msaa_dirty = true;
-                std::cout << "MSAA: " << (msaa_enabled ? std::to_string(msaa_samples) + "x" : "OFF") << std::endl;
+                // In shape space mode: cycle branches; otherwise toggle statistic mode
+                if (view_mode == ViewMode::ShapeSpace2D || view_mode == ViewMode::ShapeSpace3D) {
+                    if (shape_space_display_mode == ShapeSpaceDisplayMode::Merged) {
+                        shape_space_display_mode = ShapeSpaceDisplayMode::PerBranch;
+                        highlighted_branch = 0;
+                        std::cout << "Shape Space: Branch 0 highlighted" << std::endl;
+                    } else {
+                        int num_branches = 0;
+                        if (current_step >= 0 && current_step < static_cast<int>(analysis.alignment_per_timestep.size())) {
+                            num_branches = static_cast<int>(analysis.alignment_per_timestep[current_step].num_branches);
+                        }
+                        if (highlighted_branch < num_branches - 1) {
+                            highlighted_branch++;
+                            std::cout << "Shape Space: Branch " << highlighted_branch << " highlighted" << std::endl;
+                        } else {
+                            shape_space_display_mode = ShapeSpaceDisplayMode::Merged;
+                            highlighted_branch = -1;
+                            std::cout << "Shape Space: All branches merged" << std::endl;
+                        }
+                    }
+                    geometry_dirty = true;
+                } else {
+                    // Toggle statistic mode (Mean/Variance)
+                    if (viz_mode.toggle_statistic_mode()) {
+                        geometry_dirty = true;
+                        std::cout << "Statistic: " << ui::name(viz_mode.statistic_mode) << std::endl;
+                    } else {
+                        std::cout << "Variance: N/A - " << viz_mode.why_no_variance() << std::endl;
+                    }
+                }
                 break;
 
             case platform::KeyCode::N:
                 // Per-frame normalization is not applicable for Global mode (values are constant)
-                if (dim_source == DimensionSource::Global) {
+                if (viz_mode.graph_scope == GraphScope::Global) {
                     std::cout << "Normalization: N/A for Global mode (values are constant)" << std::endl;
                     break;
                 }
@@ -5914,13 +7341,49 @@ int main(int argc, char* argv[]) {
                 break;
 
             case platform::KeyCode::T:
-                // Timeslice is not applicable for Global mode (values are constant across all timesteps)
-                if (dim_source == DimensionSource::Global) {
-                    std::cout << "Timeslice: N/A for Global mode (values are constant)" << std::endl;
-                    break;
+                // With selection: toggle/cycle highlight visualization
+                // Otherwise: toggle timeslice
+                if (vertex_selection.has_selection &&
+                    vertex_selection.highlight_mode == HighlightMode::Tube &&
+                    !vertex_selection.tube_geodesic_paths.empty()) {
+                    // Tube mode: cycle through tubes
+                    if (!vertex_selection.show_highlight) {
+                        vertex_selection.show_highlight = true;
+                        vertex_selection.current_tube_index = 0;
+                    } else {
+                        vertex_selection.current_tube_index++;
+                        if (vertex_selection.current_tube_index >= static_cast<int>(vertex_selection.tube_geodesic_paths.size())) {
+                            vertex_selection.show_highlight = false;
+                            vertex_selection.current_tube_index = 0;
+                        }
+                    }
+                    geometry_dirty = true;
+                    if (vertex_selection.show_highlight) {
+                        int idx = vertex_selection.current_tube_index;
+                        std::cout << "Tube " << (idx + 1) << "/" << vertex_selection.tube_geodesic_paths.size()
+                                  << ": path length=" << (vertex_selection.tube_geodesic_paths[idx].size() - 1)
+                                  << ", radius=" << vertex_selection.tube_radii[idx]
+                                  << ", vertices=" << vertex_selection.tube_vertex_distances[idx].size() << std::endl;
+                    } else {
+                        std::cout << "Tube visualization: OFF" << std::endl;
+                    }
+                } else if (vertex_selection.has_selection &&
+                           vertex_selection.highlight_mode == HighlightMode::Ball &&
+                           !vertex_selection.ball_distances.empty()) {
+                    // Ball mode: simple toggle
+                    vertex_selection.show_highlight = !vertex_selection.show_highlight;
+                    geometry_dirty = true;
+                    std::cout << "Ball visualization: " << (vertex_selection.show_highlight ? "ON" : "OFF") << std::endl;
+                } else {
+                    // Timeslice is not applicable for Global mode (values are constant)
+                    if (viz_mode.graph_scope == GraphScope::Global) {
+                        std::cout << "Timeslice: N/A for Global mode (values are constant)" << std::endl;
+                        break;
+                    }
+                    timeslice_enabled = !timeslice_enabled;
+                    geometry_dirty = true;
+                    std::cout << "Timeslice view: " << (timeslice_enabled ? "ON (width=" + std::to_string(timeslice_width) + ")" : "OFF") << std::endl;
                 }
-                timeslice_enabled = !timeslice_enabled;
-                std::cout << "Timeslice view: " << (timeslice_enabled ? "ON (width=" + std::to_string(timeslice_width) + ")" : "OFF") << std::endl;
                 break;
 
             case platform::KeyCode::Z:
@@ -5944,15 +7407,36 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            case platform::KeyCode::C:  // Cycle color palette
-            {
-                int p = static_cast<int>(current_palette);
-                p = (p + 1) % static_cast<int>(ColorPalette::COUNT);
-                current_palette = static_cast<ColorPalette>(p);
-                geometry_dirty = true;
-                std::cout << "Color palette: " << palette_name(current_palette) << std::endl;
+            case platform::KeyCode::C:  // In shape space: toggle color mode; otherwise cycle palette
+                if (view_mode == ViewMode::ShapeSpace2D || view_mode == ViewMode::ShapeSpace3D) {
+                    shape_space_color_mode = (shape_space_color_mode == ShapeSpaceColorMode::Curvature)
+                        ? ShapeSpaceColorMode::BranchId : ShapeSpaceColorMode::Curvature;
+                    geometry_dirty = true;
+                    std::cout << "Shape Space Color: "
+                              << (shape_space_color_mode == ShapeSpaceColorMode::Curvature ? "Curvature" : "Branch ID")
+                              << std::endl;
+                } else {
+                    int p = static_cast<int>(current_palette);
+                    p = (p + 1) % static_cast<int>(ColorPalette::COUNT);
+                    current_palette = static_cast<ColorPalette>(p);
+                    geometry_dirty = true;
+                    std::cout << "Color palette: " << palette_name(current_palette) << std::endl;
+                }
                 break;
-            }
+
+            case platform::KeyCode::W:  // In shape space: toggle curvature method (Wolfram vs Ollivier)
+                if (view_mode == ViewMode::ShapeSpace2D || view_mode == ViewMode::ShapeSpace3D) {
+                    if (analysis.has_ollivier_alignment) {
+                        use_ollivier_alignment = !use_ollivier_alignment;
+                        geometry_dirty = true;
+                        std::cout << "Shape Space Curvature: "
+                                  << (use_ollivier_alignment ? "Ollivier-Ricci" : "Wolfram-Ricci (K=2-d)")
+                                  << std::endl;
+                    } else {
+                        std::cout << "Ollivier-Ricci alignment not available (use --curvature)" << std::endl;
+                    }
+                }
+                break;
 
             case platform::KeyCode::Slash:  // / or ? - Toggle help overlay
                 show_overlay = !show_overlay;
@@ -5969,18 +7453,32 @@ int main(int argc, char* argv[]) {
                 geometry_dirty = true;
                 break;
 
+            case platform::KeyCode::Y:  // Toggle scatter plot or cycle metric
+                if (has_modifier(mods, platform::Modifiers::Shift)) {
+                    // Shift+Y: cycle through metrics
+                    scatter_metric = static_cast<ValueType>(
+                        (static_cast<int>(scatter_metric) + 1) % static_cast<int>(ValueType::COUNT));
+                    std::cout << "Scatter metric: " << value_type_name(scatter_metric) << std::endl;
+                } else {
+                    // Y: toggle visibility
+                    show_scatter = !show_scatter;
+                    std::cout << "Scatter plot (" << value_type_name(scatter_metric) << "): "
+                              << (show_scatter ? "ON" : "OFF") << std::endl;
+                }
+                break;
+
             case platform::KeyCode::Minus:
                 // If histogram is showing, adjust bin count
                 if (vertex_selection.has_selection) {
                     if (vertex_selection.histogram_bin_count > 2) {
                         vertex_selection.histogram_bin_count--;
-                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                        update_selection_histogram(vertex_selection, analysis, current_step, viz_mode.graph_scope, viz_mode.value_type);
                         std::cout << "Histogram bins: " << vertex_selection.histogram_bin_count << std::endl;
                     }
                     break;
                 }
                 // Timeslice width is not applicable for Global mode
-                if (dim_source == DimensionSource::Global) {
+                if (viz_mode.graph_scope == GraphScope::Global) {
                     std::cout << "Timeslice width: N/A for Global mode" << std::endl;
                     break;
                 }
@@ -5996,13 +7494,13 @@ int main(int argc, char* argv[]) {
                 if (vertex_selection.has_selection) {
                     if (vertex_selection.histogram_bin_count < 50) {
                         vertex_selection.histogram_bin_count++;
-                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                        update_selection_histogram(vertex_selection, analysis, current_step, viz_mode.graph_scope, viz_mode.value_type);
                         std::cout << "Histogram bins: " << vertex_selection.histogram_bin_count << std::endl;
                     }
                     break;
                 }
                 // Timeslice width is not applicable for Global mode
-                if (dim_source == DimensionSource::Global) {
+                if (viz_mode.graph_scope == GraphScope::Global) {
                     std::cout << "Timeslice width: N/A for Global mode" << std::endl;
                     break;
                 }
@@ -6272,6 +7770,9 @@ int main(int argc, char* argv[]) {
     std::cout << "==========================================" << std::endl;
     std::cout << std::endl;
 
+    // Bring window to front and focus it
+    window->focus();
+
     // Main loop
     while (window->is_open() && !g_shutdown_requested.load()) {
         window->poll_events();
@@ -6280,6 +7781,12 @@ int main(int argc, char* argv[]) {
         if (g_shutdown_requested.load()) {
             std::cout << "\nShutdown requested (Ctrl-C), exiting..." << std::endl;
             break;
+        }
+
+        // Skip rendering when minimized (swapchain can't acquire 0x0 images)
+        if (window->is_minimized()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
         // Calculate delta time
@@ -6446,8 +7953,9 @@ int main(int argc, char* argv[]) {
 
         // Wait for previous frame BEFORE buffer writes to prevent race conditions
         // (GPU may still be reading buffers from previous frame)
+        // NOTE: Only reset fence just before submit, not here. If acquire fails and we
+        // continue, we'd leave the fence unsignaled causing next frame's wait to hang.
         fence->wait();
-        fence->reset();
         in_flight_cmd.reset();
 
         // Process picking readback if pending
@@ -6472,15 +7980,41 @@ int main(int argc, char* argv[]) {
                     vertex_selection.panel_ndc_y = ndc_y;
 
                     // Compute histogram data
-                    update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                    update_selection_histogram(vertex_selection, analysis, current_step, viz_mode.graph_scope, viz_mode.value_type);
+
+                    // Set highlight mode based on value type and compute highlight
+                    vertex_selection.highlight_mode = viz_mode.supports_tube_visualization()
+                        ? HighlightMode::Tube : HighlightMode::Ball;
+                    recompute_highlight(clicked_vid, current_step);
+                    geometry_dirty = true;
+
+                    // Diagnostic output
+                    if (vertex_selection.highlight_mode == HighlightMode::Ball) {
+                        std::cout << "  Computed ball highlight: " << vertex_selection.ball_distances.size()
+                                  << " vertices within radius " << vertex_selection.ball_radius << std::endl;
+                    } else if (!vertex_selection.tube_geodesic_paths.empty()) {
+                        std::cout << "  Computed " << vertex_selection.tube_geodesic_paths.size()
+                                  << " geodesic tubes from vertex " << clicked_vid
+                                  << " (max radius " << vertex_selection.max_tube_radius << "):" << std::endl;
+                        for (size_t ti = 0; ti < vertex_selection.tube_geodesic_paths.size(); ++ti) {
+                            const auto& path = vertex_selection.tube_geodesic_paths[ti];
+                            const auto& tube = vertex_selection.tube_vertex_distances[ti];
+                            std::cout << "    Tube " << ti << ": path length=" << (path.size()-1)
+                                      << ", tube vertices=" << tube.size() << std::endl;
+                        }
+                    } else if (vertex_selection.highlight_mode == HighlightMode::Tube) {
+                        std::cout << "  No valid tubes found (need paths of length >= 3)" << std::endl;
+                    }
 
                     std::cout << "Selected vertex " << clicked_vid
-                              << " (" << vertex_selection.dimension_values.size() << " dimension values)"
+                              << " (" << vertex_selection.dimension_values.size() << " values)"
                               << std::endl;
                 }
             } else {
                 // Clicked on empty space - dismiss selection
                 vertex_selection.has_selection = false;
+                vertex_selection.show_highlight = false;
+                vertex_selection.highlight_timestep = -1;
             }
 
             picking_readback_pending = false;
@@ -6489,6 +8023,12 @@ int main(int argc, char* argv[]) {
         // Rebuild geometry if needed
         if (geometry_dirty) {
             auto geom_t0 = std::chrono::high_resolution_clock::now();
+
+            // Recompute highlight if timestep changed and we have a selection
+            if (vertex_selection.has_selection && vertex_selection.selected_vertex != 0 &&
+                vertex_selection.highlight_timestep != current_step) {
+                recompute_highlight(vertex_selection.selected_vertex, current_step);
+            }
 
             // Use live layout positions when layout is enabled
             const layout::LayoutGraph* live_layout = layout_enabled ? &layout_graph : nullptr;
@@ -6502,11 +8042,52 @@ int main(int argc, char* argv[]) {
 
             // Pass position cache for vertices not in current layout (e.g., during timeslice mode)
             const PositionCache* pos_cache = layout_enabled ? &global_position_cache : nullptr;
-            render_data = build_render_data(analysis, current_step, view_mode, edge_mode, edge_freq_threshold,
-                                            selected_state_index, heatmap_mode, dim_source, per_frame_normalization,
-                                            z_mapping_enabled, missing_mode, current_palette, edge_color_mode,
-                                            live_layout, layout_verts, pos_cache, 0.04f, 0.015f, z_scale, timeslice_enabled,
-                                            timeslice_width, path_selection_ptr, show_geodesics, show_defects);
+
+            // Use shape space render data if in shape space mode, otherwise use normal render
+            if (view_mode == ViewMode::ShapeSpace2D || view_mode == ViewMode::ShapeSpace3D) {
+                render_data = build_shape_space_render_data(
+                    analysis, current_step, view_mode,
+                    shape_space_color_mode, shape_space_display_mode,
+                    highlighted_branch, use_ollivier_alignment, current_palette);
+            } else {
+                // Prepare highlight visualization data (Ball or Tube mode)
+                const std::unordered_map<VertexId, int>* highlight_distances = nullptr;
+                VertexId highlight_source = vertex_selection.selected_vertex;
+                VertexId highlight_target = 0;
+
+                bool show_hl = vertex_selection.show_highlight && vertex_selection.selected_vertex != 0;
+                if (show_hl) {
+                    if (vertex_selection.highlight_mode == HighlightMode::Ball) {
+                        // Ball mode: use ball_distances map
+                        if (!vertex_selection.ball_distances.empty()) {
+                            highlight_distances = &vertex_selection.ball_distances;
+                        }
+                    } else {
+                        // Tube mode: use current tube's distance map
+                        if (!vertex_selection.tube_vertex_distances.empty() &&
+                            vertex_selection.current_tube_index < static_cast<int>(vertex_selection.tube_vertex_distances.size())) {
+                            highlight_distances = &vertex_selection.tube_vertex_distances[vertex_selection.current_tube_index];
+                            // Get target from path
+                            if (!vertex_selection.tube_geodesic_paths.empty() &&
+                                vertex_selection.current_tube_index < static_cast<int>(vertex_selection.tube_geodesic_paths.size())) {
+                                const auto& path = vertex_selection.tube_geodesic_paths[vertex_selection.current_tube_index];
+                                if (!path.empty()) {
+                                    highlight_target = path.back();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                render_data = build_render_data(analysis, current_step, view_mode, edge_mode, edge_freq_threshold,
+                                                selected_state_index, viz_mode.value_type, viz_mode.statistic_mode, viz_mode.graph_scope, per_frame_normalization,
+                                                z_mapping_enabled, missing_mode, current_palette, edge_color_mode,
+                                                live_layout, layout_verts, pos_cache, 0.04f, 0.015f, z_scale, timeslice_enabled,
+                                                timeslice_width, path_selection_ptr, show_geodesics, show_defects,
+                                                show_hl && highlight_distances != nullptr, highlight_distances,
+                                                highlight_source, highlight_target, vertex_selection.non_highlight_alpha,
+                                                viz_mode.value_aggregation);
+            }
 
             auto geom_t1 = std::chrono::high_resolution_clock::now();
             // Print geometry timing every 60 frames (uncomment for GPU layout debugging)
@@ -6607,6 +8188,11 @@ int main(int argc, char* argv[]) {
             view_mode == ViewMode::View3D && !render_data.sphere_instances.empty()) {
 
             // Build picking instance data from sphere instances
+            // Use constant picking radius (10x base vertex radius) regardless of display state
+            // This prevents selection-dependent sphere size changes from affecting picking
+            constexpr float BASE_VERTEX_RADIUS = 0.04f;
+            constexpr float PICKING_RADIUS = BASE_VERTEX_RADIUS * 10.0f;
+
             std::vector<PickingSphereInstance> picking_instances;
             picking_instances.reserve(render_data.sphere_instances.size());
 
@@ -6616,7 +8202,7 @@ int main(int argc, char* argv[]) {
                 pi.x = si.x;
                 pi.y = si.y;
                 pi.z = si.z;
-                pi.radius = si.radius * 1.5f;  // Slightly larger for easier picking
+                pi.radius = PICKING_RADIUS;  // Constant radius for all vertices
                 pi.vertex_index = static_cast<uint32_t>(i);
                 pi._pad[0] = 0;
                 pi._pad[1] = 0;
@@ -6740,9 +8326,11 @@ int main(int argc, char* argv[]) {
             rp->set_viewport(0, 0, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f);
             rp->set_scissor(0, 0, w, h);
 
-            if (view_mode == ViewMode::View3D) {
+            if (view_mode == ViewMode::View3D ||
+                view_mode == ViewMode::ShapeSpace2D ||
+                view_mode == ViewMode::ShapeSpace3D) {
                 // =====================================================
-                // 3D Mode: Instanced rendering with cylinders and spheres
+                // 3D Mode / Shape Space: Instanced rendering with cylinders and spheres
                 // =====================================================
 
                 // Draw edges as cylinders (instanced)
@@ -6826,19 +8414,47 @@ int main(int argc, char* argv[]) {
                     // Frequency mode: show frequency range (integer counts)
                     legend_min = static_cast<float>(render_data.min_freq);
                     legend_max = static_cast<float>(render_data.max_freq);
+                } else if (viz_mode.is_curvature() && analysis.has_curvature_analysis) {
+                    // Curvature mode: symmetric range around zero
+                    switch (viz_mode.value_type) {
+                        case ValueType::WolframRicciScalar:
+                            legend_min = -std::max(std::abs(analysis.curvature_wolfram_scalar_min),
+                                                   std::abs(analysis.curvature_wolfram_scalar_max));
+                            legend_max = -legend_min;
+                            break;
+                        case ValueType::WolframRicciTensor:
+                            legend_min = -std::max(std::abs(analysis.curvature_wolfram_ricci_min),
+                                                   std::abs(analysis.curvature_wolfram_ricci_max));
+                            legend_max = -legend_min;
+                            break;
+                        case ValueType::OllivierRicciCurvature:
+                            legend_min = -std::max(std::abs(analysis.curvature_ollivier_min),
+                                                   std::abs(analysis.curvature_ollivier_max));
+                            legend_max = -legend_min;
+                            break;
+                        case ValueType::DimensionGradient:
+                            legend_min = -std::max(std::abs(analysis.curvature_dim_grad_min),
+                                                   std::abs(analysis.curvature_dim_grad_max));
+                            legend_max = -legend_min;
+                            break;
+                        default:
+                            legend_min = -1.0f;
+                            legend_max = 1.0f;
+                            break;
+                    }
                 } else if (current_step < static_cast<int>(analysis.per_timestep.size())) {
                     const auto& ts = analysis.per_timestep[current_step];
-                    if (dim_source == DimensionSource::Global) {
+                    if (viz_mode.graph_scope == GraphScope::Global) {
                         // Global mode: constant range from mega-union
                         legend_min = analysis.mega_dim_min;
                         legend_max = analysis.mega_dim_max;
-                    } else if (dim_source == DimensionSource::Foliation) {
-                        legend_min = heatmap_mode == HeatmapMode::Variance ? ts.global_var_min : ts.global_mean_min;
-                        legend_max = heatmap_mode == HeatmapMode::Variance ? ts.global_var_max : ts.global_mean_max;
+                    } else if (viz_mode.graph_scope == GraphScope::Foliation) {
+                        legend_min = viz_mode.statistic_mode == StatisticMode::Variance ? ts.global_var_min : ts.global_mean_min;
+                        legend_max = viz_mode.statistic_mode == StatisticMode::Variance ? ts.global_var_max : ts.global_mean_max;
                     } else {
                         // Branchial mode
-                        legend_min = heatmap_mode == HeatmapMode::Variance ? ts.var_min : ts.pooled_min;
-                        legend_max = heatmap_mode == HeatmapMode::Variance ? ts.var_max : ts.pooled_max;
+                        legend_min = viz_mode.statistic_mode == StatisticMode::Variance ? ts.var_min : ts.pooled_min;
+                        legend_max = viz_mode.statistic_mode == StatisticMode::Variance ? ts.var_max : ts.pooled_max;
                     }
                 }
                 legend = build_legend(static_cast<float>(w) / h, current_palette, legend_min, legend_max);
@@ -6927,9 +8543,10 @@ int main(int argc, char* argv[]) {
                 if (vertex_selection.has_selection) {
                     // Check if we need to recompute histogram (timestep, mode, or bin count changed)
                     if (vertex_selection.cached_timestep != current_step ||
-                        vertex_selection.cached_dim_source != dim_source ||
+                        vertex_selection.cached_graph_scope != viz_mode.graph_scope ||
+                        vertex_selection.cached_value_type != viz_mode.value_type ||
                         vertex_selection.cached_bin_count != vertex_selection.histogram_bin_count) {
-                        update_selection_histogram(vertex_selection, analysis, current_step, dim_source);
+                        update_selection_histogram(vertex_selection, analysis, current_step, viz_mode.graph_scope, viz_mode.value_type);
                     }
 
                     histogram_data = build_histogram_panel(
@@ -6937,7 +8554,7 @@ int main(int argc, char* argv[]) {
                         vertex_selection.panel_ndc_x, vertex_selection.panel_ndc_y,
                         static_cast<float>(w) / static_cast<float>(h),
                         w, h,
-                        current_palette, dim_source,
+                        current_palette, viz_mode.graph_scope,
                         legend_min, legend_max
                     );
 
@@ -6951,20 +8568,31 @@ int main(int argc, char* argv[]) {
                         histogram_data.verts.begin(), histogram_data.verts.end());
                 }
 
-                // 1e. Add rotation curve plot (if enabled and data available)
-                RotationPlotData rotation_plot_data;
-                if (show_rotation && has_rotation_analysis && !rotation_result.curve.empty()) {
-                    rotation_plot_data = build_rotation_plot_panel(rotation_result, w, h);
-                    all_overlay_verts.insert(all_overlay_verts.end(),
-                        rotation_plot_data.verts.begin(), rotation_plot_data.verts.end());
-                }
-
-                // 1f. Add Hilbert space panel (if enabled and data available)
+                // 1e. Add Hilbert space panel (if enabled and data available)
                 HilbertPanelData hilbert_panel_data;
                 if (show_hilbert && has_hilbert_analysis) {
                     hilbert_panel_data = build_hilbert_panel(hilbert_result, branchial_result, w, h);
                     all_overlay_verts.insert(all_overlay_verts.end(),
                         hilbert_panel_data.verts.begin(), hilbert_panel_data.verts.end());
+                }
+
+                // 1f. Add scatter plot overlay (if enabled)
+                ScatterPlotData scatter_data;
+                if (show_scatter && !analysis.state_aggregates.empty()) {
+                    scatter_data = build_scatter_plot(analysis, scatter_metric, current_step,
+                                                       static_cast<float>(w) / static_cast<float>(h));
+                    // Axes first (furthest back)
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        scatter_data.axis_verts.begin(), scatter_data.axis_verts.end());
+                    // Lines (variance band and mean line)
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        scatter_data.line_verts.begin(), scatter_data.line_verts.end());
+                    // Scatter points (one per state at each timestep)
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        scatter_data.point_verts.begin(), scatter_data.point_verts.end());
+                    // Current step marker on top
+                    all_overlay_verts.insert(all_overlay_verts.end(),
+                        scatter_data.marker_verts.begin(), scatter_data.marker_verts.end());
                 }
 
                 // --- STEP 2: Single draw call for ALL overlay geometry ---
@@ -7032,13 +8660,18 @@ int main(int argc, char* argv[]) {
                     if (edge_color_mode == EdgeColorMode::Frequency) {
                         desc_line1 = "State";
                         desc_line2 = "Frequency";
-                    } else {
-                        switch (dim_source) {
-                            case DimensionSource::Branchial: desc_line1 = "Branchial"; break;
-                            case DimensionSource::Foliation: desc_line1 = "Foliation"; break;
-                            case DimensionSource::Global:    desc_line1 = "Global"; break;
+                    } else if (viz_mode.is_curvature()) {
+                        desc_line1 = "Curvature";
+                        switch (viz_mode.value_type) {
+                            case ValueType::WolframRicciScalar: desc_line2 = "Scalar"; break;
+                            case ValueType::WolframRicciTensor: desc_line2 = "Ricci"; break;
+                            case ValueType::OllivierRicciCurvature: desc_line2 = "Ollivier"; break;
+                            case ValueType::DimensionGradient: desc_line2 = "Gradient"; break;
+                            default: desc_line2 = "Unknown"; break;
                         }
-                        desc_line2 = (heatmap_mode == HeatmapMode::Variance) ? "Variance" : "Dimension";
+                    } else {
+                        desc_line1 = ui::name(viz_mode.graph_scope);
+                        desc_line2 = (viz_mode.statistic_mode == StatisticMode::Variance) ? "Variance" : "Dimension";
                     }
 
                     std::ostringstream max_ss, min_ss;
@@ -7075,15 +8708,16 @@ int main(int argc, char* argv[]) {
                     auto ndc_to_pixel_x = [&](float ndc) { return (ndc + 1.0f) * 0.5f * w; };
                     auto ndc_to_pixel_y = [&](float ndc) { return (ndc + 1.0f) * 0.5f * h; };
 
-                    // Title: "Vertex N (Mode)"
-                    std::string mode_str;
-                    switch (dim_source) {
-                        case DimensionSource::Branchial: mode_str = "Branchial"; break;
-                        case DimensionSource::Foliation: mode_str = "Foliation"; break;
-                        case DimensionSource::Global:    mode_str = "Global"; break;
+                    // Title depends on mode
+                    std::string title;
+                    if (vertex_selection.is_distribution_mode) {
+                        // Curvature: distribution of ALL vertices
+                        title = "Curvature (" + std::string(value_type_name(viz_mode.value_type)) + ")";
+                    } else {
+                        // Dimension: values for selected vertex across timesteps
+                        title = "Vertex " + std::to_string(vertex_selection.selected_vertex) +
+                                " (" + std::string(ui::name(viz_mode.graph_scope)) + ")";
                     }
-                    std::string title = "Vertex " + std::to_string(vertex_selection.selected_vertex) +
-                                        " (" + mode_str + ")";
                     float title_px_x = ndc_to_pixel_x(histogram_data.title_x);
                     float title_px_y = ndc_to_pixel_y(histogram_data.title_y);
                     queue_text(title_px_x, title_px_y, title, TextColor::Cyan, text_scale);
@@ -7110,41 +8744,7 @@ int main(int argc, char* argv[]) {
                     queue_text(axis_max_px_x, axis_max_px_y, max_ss.str(), TextColor::White, text_scale);
                 }
 
-                // 3d. Queue rotation plot text (if visible)
-                if (show_rotation && has_rotation_analysis && !rotation_plot_data.verts.empty()) {
-                    // Title
-                    queue_text(rotation_plot_data.title_x, rotation_plot_data.title_y,
-                               rotation_plot_data.title, TextColor::Cyan, text_scale);
-
-                    // Stats lines
-                    queue_text(rotation_plot_data.stats_x, rotation_plot_data.stats_y,
-                               rotation_plot_data.stats_line1, TextColor::Green, text_scale);
-                    queue_text(rotation_plot_data.stats_x, rotation_plot_data.stats_y + text_char_h + 2,
-                               rotation_plot_data.stats_line2, TextColor::White, text_scale);
-
-                    // Axis value labels
-                    std::ostringstream x_min_ss, x_max_ss, y_min_ss, y_max_ss;
-                    x_min_ss << std::fixed << std::setprecision(0) << rotation_plot_data.x_min_val;
-                    x_max_ss << std::fixed << std::setprecision(0) << rotation_plot_data.x_max_val;
-                    y_min_ss << std::fixed << std::setprecision(2) << rotation_plot_data.y_min_val;
-                    y_max_ss << std::fixed << std::setprecision(2) << rotation_plot_data.y_max_val;
-
-                    queue_text(rotation_plot_data.axis_x_min_x, rotation_plot_data.axis_x_min_y,
-                               x_min_ss.str(), TextColor::White, text_scale);
-                    queue_text(rotation_plot_data.axis_x_max_x, rotation_plot_data.axis_x_max_y,
-                               x_max_ss.str(), TextColor::White, text_scale);
-                    queue_text(rotation_plot_data.axis_y_min_x, rotation_plot_data.axis_y_min_y,
-                               y_min_ss.str(), TextColor::White, text_scale);
-                    queue_text(rotation_plot_data.axis_y_max_x, rotation_plot_data.axis_y_max_y,
-                               y_max_ss.str(), TextColor::White, text_scale);
-
-                    // Legend
-                    float legend_y = rotation_plot_data.title_y + text_char_h + 4;
-                    queue_text(rotation_plot_data.title_x, legend_y, "-- Actual", TextColor::Green, text_scale);
-                    queue_text(rotation_plot_data.title_x + 12 * text_char_w, legend_y, "-- Expected", TextColor::Cyan, text_scale);
-                }
-
-                // 3e. Queue Hilbert space panel text (if visible)
+                // 3d. Queue Hilbert space panel text (if visible)
                 if (show_hilbert && has_hilbert_analysis && !hilbert_panel_data.verts.empty()) {
                     // Title
                     queue_text(hilbert_panel_data.title_x, hilbert_panel_data.title_y,
@@ -7182,6 +8782,7 @@ int main(int argc, char* argv[]) {
         }
 
         auto cmd = encoder->finish();
+        fence->reset();  // Reset fence just before submit (not earlier, in case acquire fails)
         device->submit(cmd.get(), image_semaphore.get(), render_semaphore.get(), fence.get());
         in_flight_cmd = std::move(encoder);
 

@@ -1,5 +1,7 @@
 EXPORTS
 performRewriting
 performHausdorffAnalysis
+performBranchAlignment
+performBranchAlignmentBatch
 WolframLibrary_initialize
 WolframLibrary_uninitialize

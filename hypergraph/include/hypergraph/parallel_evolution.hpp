@@ -852,7 +852,11 @@ private:
     bool can_have_more_children(StateId parent) const;
     bool try_reserve_successor_slot(StateId parent);
     bool try_reserve_step_slot(uint32_t step);
+    void release_step_slot(uint32_t step);
     bool should_explore();
+
+    // Bias mitigation: returns rule indices in shuffled order
+    std::vector<uint16_t> get_shuffled_rule_indices() const;
 };
 
 }  // namespace hypergraph

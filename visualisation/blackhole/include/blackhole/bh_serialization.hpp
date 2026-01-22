@@ -32,7 +32,7 @@ struct EvolutionResult;
 // All multi-byte values are little-endian.
 
 constexpr uint32_t BH_MAGIC = 0x48424844;  // "BHRD" in little-endian
-constexpr uint32_t BH_VERSION = 7;  // v7: added per-state data for single-state viewing
+constexpr uint32_t BH_VERSION = 10;  // v10: added per-state aggregates for scatter plots
 
 constexpr uint32_t EVO_MAGIC = 0x4F564542;  // "BEVO" in little-endian
 constexpr uint32_t EVO_VERSION = 1;
@@ -44,8 +44,14 @@ constexpr uint32_t SECTION_ANCHORS = 0x03;
 constexpr uint32_t SECTION_TIMESTEPS = 0x04;
 constexpr uint32_t SECTION_STATS = 0x05;
 constexpr uint32_t SECTION_STATES = 0x06;
-constexpr uint32_t SECTION_PER_STATE = 0x07;  // v7+: per-state vertices/edges
-constexpr uint32_t SECTION_MEGA_DIM = 0x08;   // v8+: mega-union dimension (Global mode)
+constexpr uint32_t SECTION_PER_STATE = 0x07;       // v7+: per-state vertices/edges
+constexpr uint32_t SECTION_MEGA_DIM = 0x08;        // v7+: mega-union dimension (Global mode)
+constexpr uint32_t SECTION_CURVATURE = 0x09;       // v8+: curvature analysis results
+constexpr uint32_t SECTION_HILBERT = 0x0A;         // v8+: Hilbert space analysis
+constexpr uint32_t SECTION_BRANCHIAL = 0x0B;       // v8+: branchial analysis
+constexpr uint32_t SECTION_BRANCH_ALIGNMENT = 0x0C; // v8+: branch alignment (shape space)
+constexpr uint32_t SECTION_CURV_QUANTILES = 0x0D;   // v9+: global curvature quantiles (for normalization)
+constexpr uint32_t SECTION_STATE_AGGREGATES = 0x0E; // v10+: per-state aggregates for scatter plots
 constexpr uint32_t SECTION_END = 0xFF;
 
 // =============================================================================

@@ -263,8 +263,10 @@ private:
         // that "produce" all initial edges, enabling causal tracking from gen 0
         engine.set_genesis_events(true);
 
-        // Run evolution (this calls job_system_->wait_for_completion() internally)
-        engine.evolve(initial, steps);
+        // Run evolution with abort callback so we can stop early
+        engine.evolve_with_abort(initial, steps, [this]() {
+            return stop_requested_.load(std::memory_order_relaxed);
+        });
 
         // Update stats
         num_states_ = engine.num_states();
@@ -1713,7 +1715,7 @@ int main(int argc, char* argv[]) {
             swapchain->resize(window->get_width(), window->get_height());
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // No sleep here - vsync handles frame pacing
     }
 
     std::cout << "\nShutting down..." << std::endl;

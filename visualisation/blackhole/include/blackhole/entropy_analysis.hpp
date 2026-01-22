@@ -5,6 +5,11 @@
 #include <vector>
 #include <unordered_map>
 
+// Forward declaration for job system
+namespace job_system {
+    template<typename T> class JobSystem;
+}
+
 namespace viz::blackhole {
 
 // =============================================================================
@@ -175,6 +180,40 @@ std::vector<int> discretize(
 EntropyAnalysisResult analyze_entropy_timestep(
     const TimestepAggregation& timestep,
     const EntropyConfig& config = {}
+);
+
+// =============================================================================
+// Parallel Versions (using job system)
+// =============================================================================
+
+// Compute all local entropies in parallel
+std::unordered_map<VertexId, float> compute_all_local_entropies_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int radius = 2
+);
+
+// Compute all mutual info in parallel
+std::unordered_map<VertexId, float> compute_all_mutual_info_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int radius = 1
+);
+
+// Compute all Fisher info in parallel
+std::unordered_map<VertexId, float> compute_all_fisher_info_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const std::vector<float>& vertex_dimensions,
+    int radius = 2
+);
+
+// Full entropy analysis using job system for parallelization
+EntropyAnalysisResult analyze_entropy_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const EntropyConfig& config = {},
+    const std::vector<float>* vertex_dimensions = nullptr
 );
 
 }  // namespace viz::blackhole

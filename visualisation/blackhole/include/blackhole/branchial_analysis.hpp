@@ -7,6 +7,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+// Forward declaration for job system
+namespace job_system {
+    template<typename T> class JobSystem;
+}
+
 namespace viz::blackhole {
 
 // =============================================================================
@@ -303,6 +308,30 @@ HilbertSpaceAnalysis analyze_hilbert_space(
 // Compute Hilbert space analysis for all states (regardless of step)
 HilbertSpaceAnalysis analyze_hilbert_space_full(
     const BranchialGraph& graph
+);
+
+// =============================================================================
+// Parallel Versions (using job system)
+// =============================================================================
+
+// Full branchial analysis using job system for parallelization
+BranchialAnalysisResult analyze_branchial_parallel(
+    const std::vector<BranchState>& states,
+    job_system::JobSystem<int>* js,
+    const BranchialConfig& config = {}
+);
+
+// Hilbert space analysis with parallel inner product computation
+HilbertSpaceAnalysis analyze_hilbert_space_parallel(
+    const BranchialGraph& graph,
+    job_system::JobSystem<int>* js,
+    uint32_t step
+);
+
+// Full Hilbert space analysis (all states) with parallel inner product computation
+HilbertSpaceAnalysis analyze_hilbert_space_full_parallel(
+    const BranchialGraph& graph,
+    job_system::JobSystem<int>* js
 );
 
 }  // namespace viz::blackhole

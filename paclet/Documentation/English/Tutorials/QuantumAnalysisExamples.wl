@@ -14,8 +14,7 @@
    3. Topological Analysis (K5/K3,3 defect detection)
    4. Curvature Analysis (Ollivier-Ricci and dimension gradient)
    5. Entropy Analysis (graph entropy and information measures)
-   6. Rotation Curve Analysis (orbital velocity vs radius)
-   7. Hilbert Space Analysis (state inner products and vertex probabilities)
+   6. Hilbert Space Analysis (state inner products and vertex probabilities)
 *)
 
 (* Load the paclet *)
@@ -232,50 +231,7 @@ If[KeyExistsQ[entropyResult, "EntropyData"],
 ];
 
 (* ============================================================================ *)
-(* 6. Rotation Curve Analysis *)
-(* ============================================================================ *)
-
-Print["\n=== Rotation Curve Analysis ==="];
-
-rotResult = HGEvolve[
-  {rule},
-  initial,
-  6,
-  "All",
-  "DimensionAnalysis" -> True,  (* Needed to find center *)
-  "RotationCurveAnalysis" -> True,
-  "ShowProgress" -> False
-];
-
-If[KeyExistsQ[rotResult, "RotationData"],
-  rotData = rotResult["RotationData"];
-
-  (* Center vertex (highest dimension) *)
-  If[KeyExistsQ[rotData, "CenterVertex"],
-    Print["Center vertex (highest dimension): ", rotData["CenterVertex"]];
-  ];
-
-  (* Rotation curve points *)
-  If[KeyExistsQ[rotData, "Curve"] && Length[rotData["Curve"]] > 0,
-    Print["Rotation curve points: ", Length[rotData["Curve"]]];
-    Print["Sample points (radius, velocity):"];
-    Do[
-      Print["  r=", pt["Radius"], " v=", pt["Velocity"]],
-      {pt, Take[rotData["Curve"], UpTo[5]]}
-    ];
-  ];
-
-  (* Power law fit *)
-  If[KeyExistsQ[rotData, "PowerLawExponent"],
-    Print["Power law fit: v ~ r^", rotData["PowerLawExponent"]];
-    Print["  (Expected for inverse-square: -0.5)"];
-  ];
-  ,
-  Print["RotationData not available - check FFI options"];
-];
-
-(* ============================================================================ *)
-(* 7. Hilbert Space Analysis *)
+(* 6. Hilbert Space Analysis *)
 (* ============================================================================ *)
 
 Print["\n=== Hilbert Space Analysis ==="];
@@ -375,7 +331,6 @@ Print["  - Geodesics trace test particle paths (like light rays)"];
 Print["  - K5/K3,3 minors indicate topological defects (particles)"];
 Print["  - Ollivier-Ricci curvature measures local graph curvature"];
 Print["  - Entropy measures information content and diversity"];
-Print["  - Rotation curves test inverse-square law emergence"];
 Print["  - Hilbert space inner products capture quantum-like state overlap"];
 Print[""];
 Print["For interactive visualization, run blackhole_viz with:"];
@@ -385,5 +340,4 @@ Print["  J - Toggle geodesic paths"];
 Print["  K - Toggle topological defect markers"];
 Print["  C - Cycle curvature heatmap modes"];
 Print["  E - Toggle entropy heatmap"];
-Print["  R - Toggle rotation curve plot"];
 Print["  Q - Toggle Hilbert space stats panel"];

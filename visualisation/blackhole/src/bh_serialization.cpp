@@ -270,6 +270,43 @@ bool write_analysis(const std::string& path, const BHAnalysisResult& result) {
         writer.write_f32(ts.global_var_pooled);
         writer.write_f32(ts.global_var_min);
         writer.write_f32(ts.global_var_max);
+
+        // Per-timestep curvature (v9+)
+        // Branchial curvature (mean/variance)
+        auto write_float_vec = [&writer](const std::vector<float>& v) {
+            writer.write_u32(static_cast<uint32_t>(v.size()));
+            for (float f : v) writer.write_f32(f);
+        };
+        write_float_vec(ts.mean_curvature_ollivier);
+        write_float_vec(ts.variance_curvature_ollivier);
+        write_float_vec(ts.mean_curvature_wolfram_scalar);
+        write_float_vec(ts.variance_curvature_wolfram_scalar);
+        write_float_vec(ts.mean_curvature_wolfram_ricci);
+        write_float_vec(ts.variance_curvature_wolfram_ricci);
+        write_float_vec(ts.mean_curvature_dim_gradient);
+        write_float_vec(ts.variance_curvature_dim_gradient);
+
+        // Branchial curvature stats
+        writer.write_f32(ts.ollivier_mean_min); writer.write_f32(ts.ollivier_mean_max);
+        writer.write_f32(ts.ollivier_var_min); writer.write_f32(ts.ollivier_var_max);
+        writer.write_f32(ts.wolfram_scalar_mean_min); writer.write_f32(ts.wolfram_scalar_mean_max);
+        writer.write_f32(ts.wolfram_scalar_var_min); writer.write_f32(ts.wolfram_scalar_var_max);
+        writer.write_f32(ts.wolfram_ricci_mean_min); writer.write_f32(ts.wolfram_ricci_mean_max);
+        writer.write_f32(ts.wolfram_ricci_var_min); writer.write_f32(ts.wolfram_ricci_var_max);
+        writer.write_f32(ts.dim_gradient_mean_min); writer.write_f32(ts.dim_gradient_mean_max);
+        writer.write_f32(ts.dim_gradient_var_min); writer.write_f32(ts.dim_gradient_var_max);
+
+        // Foliation curvature
+        write_float_vec(ts.foliation_curvature_ollivier);
+        write_float_vec(ts.foliation_curvature_wolfram_scalar);
+        write_float_vec(ts.foliation_curvature_wolfram_ricci);
+        write_float_vec(ts.foliation_curvature_dim_gradient);
+
+        // Foliation curvature stats
+        writer.write_f32(ts.foliation_ollivier_min); writer.write_f32(ts.foliation_ollivier_max);
+        writer.write_f32(ts.foliation_wolfram_scalar_min); writer.write_f32(ts.foliation_wolfram_scalar_max);
+        writer.write_f32(ts.foliation_wolfram_ricci_min); writer.write_f32(ts.foliation_wolfram_ricci_max);
+        writer.write_f32(ts.foliation_dim_gradient_min); writer.write_f32(ts.foliation_dim_gradient_max);
     }
 
     // Section: Stats
@@ -322,7 +359,7 @@ bool write_analysis(const std::string& path, const BHAnalysisResult& result) {
         }
     }
 
-    // Section: Mega-union dimension (v8+) - for Global mode
+    // Section: Mega-union dimension - for Global mode
     writer.write_u32(SECTION_MEGA_DIM);
     writer.write_f32(result.mega_dim_min);
     writer.write_f32(result.mega_dim_max);
@@ -330,6 +367,206 @@ bool write_analysis(const std::string& path, const BHAnalysisResult& result) {
     for (const auto& [vid, dim] : result.mega_dimension) {
         writer.write_u32(vid);
         writer.write_f32(dim);
+    }
+
+    // Section: Curvature Analysis (v8+)
+    if (result.has_curvature_analysis) {
+        writer.write_u32(SECTION_CURVATURE);
+        // Ollivier-Ricci map
+        writer.write_u32(static_cast<uint32_t>(result.curvature_ollivier_ricci.size()));
+        for (const auto& [vid, val] : result.curvature_ollivier_ricci) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+        writer.write_f32(result.curvature_ollivier_mean);
+        writer.write_f32(result.curvature_ollivier_min);
+        writer.write_f32(result.curvature_ollivier_max);
+        // Dimension gradient map
+        writer.write_u32(static_cast<uint32_t>(result.curvature_dimension_gradient.size()));
+        for (const auto& [vid, val] : result.curvature_dimension_gradient) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+        writer.write_f32(result.curvature_dim_grad_mean);
+        writer.write_f32(result.curvature_dim_grad_min);
+        writer.write_f32(result.curvature_dim_grad_max);
+        // Wolfram scalar curvature map (ball volume method)
+        writer.write_u32(static_cast<uint32_t>(result.curvature_wolfram_scalar.size()));
+        for (const auto& [vid, val] : result.curvature_wolfram_scalar) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+        writer.write_f32(result.curvature_wolfram_scalar_mean);
+        writer.write_f32(result.curvature_wolfram_scalar_min);
+        writer.write_f32(result.curvature_wolfram_scalar_max);
+        // Wolfram Ricci curvature map (tube volume method, full tensor)
+        writer.write_u32(static_cast<uint32_t>(result.curvature_wolfram_ricci.size()));
+        for (const auto& [vid, val] : result.curvature_wolfram_ricci) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+        writer.write_f32(result.curvature_wolfram_ricci_mean);
+        writer.write_f32(result.curvature_wolfram_ricci_min);
+        writer.write_f32(result.curvature_wolfram_ricci_max);
+    }
+
+    // Section: Hilbert Space Analysis (v8+)
+    if (result.has_hilbert_analysis) {
+        writer.write_u32(SECTION_HILBERT);
+        writer.write_u32(static_cast<uint32_t>(result.hilbert_num_states));
+        writer.write_u32(static_cast<uint32_t>(result.hilbert_num_vertices));
+        writer.write_f32(result.hilbert_mean_inner_product);
+        writer.write_f32(result.hilbert_max_inner_product);
+        writer.write_f32(result.hilbert_mean_vertex_probability);
+        writer.write_f32(result.hilbert_vertex_probability_entropy);
+        // Vertex probabilities map
+        writer.write_u32(static_cast<uint32_t>(result.hilbert_vertex_probabilities.size()));
+        for (const auto& [vid, val] : result.hilbert_vertex_probabilities) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+    }
+
+    // Section: Branchial Analysis (v8+)
+    if (result.has_branchial_analysis) {
+        writer.write_u32(SECTION_BRANCHIAL);
+        writer.write_f32(result.branchial_mean_sharpness);
+        writer.write_f32(result.branchial_mean_entropy);
+        // Vertex sharpness map
+        writer.write_u32(static_cast<uint32_t>(result.branchial_vertex_sharpness.size()));
+        for (const auto& [vid, val] : result.branchial_vertex_sharpness) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+        // Vertex entropy map
+        writer.write_u32(static_cast<uint32_t>(result.branchial_vertex_entropy.size()));
+        for (const auto& [vid, val] : result.branchial_vertex_entropy) {
+            writer.write_u32(vid);
+            writer.write_f32(val);
+        }
+    }
+
+    // Section: Branch Alignment (v8+) - curvature shape space
+    if (result.has_branch_alignment) {
+        writer.write_u32(SECTION_BRANCH_ALIGNMENT);
+        // Global bounds
+        writer.write_f32(result.global_pc1_min);
+        writer.write_f32(result.global_pc1_max);
+        writer.write_f32(result.global_pc2_min);
+        writer.write_f32(result.global_pc2_max);
+        writer.write_f32(result.global_pc3_min);
+        writer.write_f32(result.global_pc3_max);
+        writer.write_f32(result.global_curvature_min);
+        writer.write_f32(result.global_curvature_max);
+        writer.write_f32(result.curvature_abs_max);
+
+        // Per-timestep alignment (Wolfram-Ricci)
+        writer.write_u32(static_cast<uint32_t>(result.alignment_per_timestep.size()));
+        for (const auto& pta : result.alignment_per_timestep) {
+            writer.write_u32(static_cast<uint32_t>(pta.total_points));
+            writer.write_u32(static_cast<uint32_t>(pta.num_branches));
+            // PC coordinates
+            for (size_t i = 0; i < pta.total_points; ++i) {
+                writer.write_f32(pta.all_pc1[i]);
+                writer.write_f32(pta.all_pc2[i]);
+                writer.write_f32(pta.all_pc3[i]);
+                writer.write_f32(pta.all_curvature[i]);
+                writer.write_f32(pta.all_rank[i]);
+                writer.write_u32(static_cast<uint32_t>(pta.branch_id[i]));
+                writer.write_u32(pta.all_vertices[i]);
+                writer.write_u32(pta.state_id[i]);
+            }
+            // Branch sizes
+            writer.write_u32(static_cast<uint32_t>(pta.branch_sizes.size()));
+            for (size_t sz : pta.branch_sizes) {
+                writer.write_u32(static_cast<uint32_t>(sz));
+            }
+        }
+
+        // Ollivier-Ricci alignment (if available)
+        writer.write_u32(result.has_ollivier_alignment ? 1 : 0);
+        if (result.has_ollivier_alignment) {
+            writer.write_f32(result.ollivier_pc1_min);
+            writer.write_f32(result.ollivier_pc1_max);
+            writer.write_f32(result.ollivier_pc2_min);
+            writer.write_f32(result.ollivier_pc2_max);
+            writer.write_f32(result.ollivier_pc3_min);
+            writer.write_f32(result.ollivier_pc3_max);
+            writer.write_f32(result.ollivier_curvature_min);
+            writer.write_f32(result.ollivier_curvature_max);
+            writer.write_f32(result.ollivier_curvature_abs_max);
+
+            writer.write_u32(static_cast<uint32_t>(result.alignment_ollivier.size()));
+            for (const auto& pta : result.alignment_ollivier) {
+                writer.write_u32(static_cast<uint32_t>(pta.total_points));
+                writer.write_u32(static_cast<uint32_t>(pta.num_branches));
+                for (size_t i = 0; i < pta.total_points; ++i) {
+                    writer.write_f32(pta.all_pc1[i]);
+                    writer.write_f32(pta.all_pc2[i]);
+                    writer.write_f32(pta.all_pc3[i]);
+                    writer.write_f32(pta.all_curvature[i]);
+                    writer.write_f32(pta.all_rank[i]);
+                    writer.write_u32(static_cast<uint32_t>(pta.branch_id[i]));
+                    writer.write_u32(pta.all_vertices[i]);
+                    writer.write_u32(pta.state_id[i]);
+                }
+                writer.write_u32(static_cast<uint32_t>(pta.branch_sizes.size()));
+                for (size_t sz : pta.branch_sizes) {
+                    writer.write_u32(static_cast<uint32_t>(sz));
+                }
+            }
+        }
+    }
+
+    // Section: Global Curvature Quantiles (for normalization toggle)
+    // Only write if we have computed quantiles (check if any are non-zero)
+    bool has_curv_quantiles =
+        result.curv_ollivier_mean_q05 != 0 || result.curv_ollivier_mean_q95 != 0 ||
+        result.curv_foliation_ollivier_q05 != 0 || result.curv_foliation_ollivier_q95 != 0;
+    if (has_curv_quantiles) {
+        writer.write_u32(SECTION_CURV_QUANTILES);
+        // Branchial mean
+        writer.write_f32(result.curv_ollivier_mean_q05);
+        writer.write_f32(result.curv_ollivier_mean_q95);
+        writer.write_f32(result.curv_wolfram_scalar_mean_q05);
+        writer.write_f32(result.curv_wolfram_scalar_mean_q95);
+        writer.write_f32(result.curv_wolfram_ricci_mean_q05);
+        writer.write_f32(result.curv_wolfram_ricci_mean_q95);
+        writer.write_f32(result.curv_dim_gradient_mean_q05);
+        writer.write_f32(result.curv_dim_gradient_mean_q95);
+        // Branchial variance
+        writer.write_f32(result.curv_ollivier_var_q05);
+        writer.write_f32(result.curv_ollivier_var_q95);
+        writer.write_f32(result.curv_wolfram_scalar_var_q05);
+        writer.write_f32(result.curv_wolfram_scalar_var_q95);
+        writer.write_f32(result.curv_wolfram_ricci_var_q05);
+        writer.write_f32(result.curv_wolfram_ricci_var_q95);
+        writer.write_f32(result.curv_dim_gradient_var_q05);
+        writer.write_f32(result.curv_dim_gradient_var_q95);
+        // Foliation
+        writer.write_f32(result.curv_foliation_ollivier_q05);
+        writer.write_f32(result.curv_foliation_ollivier_q95);
+        writer.write_f32(result.curv_foliation_wolfram_scalar_q05);
+        writer.write_f32(result.curv_foliation_wolfram_scalar_q95);
+        writer.write_f32(result.curv_foliation_wolfram_ricci_q05);
+        writer.write_f32(result.curv_foliation_wolfram_ricci_q95);
+        writer.write_f32(result.curv_foliation_dim_gradient_q05);
+        writer.write_f32(result.curv_foliation_dim_gradient_q95);
+    }
+
+    // Section: Per-state aggregates for scatter plots
+    if (!result.state_aggregates.empty()) {
+        writer.write_u32(SECTION_STATE_AGGREGATES);
+        writer.write_u32(static_cast<uint32_t>(result.state_aggregates.size()));
+        for (const auto& agg : result.state_aggregates) {
+            writer.write_u32(agg.state_id);
+            writer.write_u32(agg.step);
+            writer.write_f32(agg.mean_dimension);
+            writer.write_f32(agg.mean_ollivier_ricci);
+            writer.write_f32(agg.mean_wolfram_scalar);
+            writer.write_f32(agg.mean_wolfram_ricci);
+            writer.write_f32(agg.mean_dim_gradient);
+        }
     }
 
     // End marker
@@ -518,6 +755,47 @@ bool read_analysis(const std::string& path, BHAnalysisResult& result) {
                         ts.global_var_min = reader.read_f32();
                         ts.global_var_max = reader.read_f32();
                     }
+
+                    // Per-timestep curvature (v9+)
+                    if (version >= 9) {
+                        auto read_float_vec = [&reader](std::vector<float>& v) {
+                            uint32_t n = reader.read_u32();
+                            v.resize(n);
+                            for (uint32_t i = 0; i < n; ++i) v[i] = reader.read_f32();
+                        };
+
+                        // Branchial curvature (mean/variance)
+                        read_float_vec(ts.mean_curvature_ollivier);
+                        read_float_vec(ts.variance_curvature_ollivier);
+                        read_float_vec(ts.mean_curvature_wolfram_scalar);
+                        read_float_vec(ts.variance_curvature_wolfram_scalar);
+                        read_float_vec(ts.mean_curvature_wolfram_ricci);
+                        read_float_vec(ts.variance_curvature_wolfram_ricci);
+                        read_float_vec(ts.mean_curvature_dim_gradient);
+                        read_float_vec(ts.variance_curvature_dim_gradient);
+
+                        // Branchial curvature stats
+                        ts.ollivier_mean_min = reader.read_f32(); ts.ollivier_mean_max = reader.read_f32();
+                        ts.ollivier_var_min = reader.read_f32(); ts.ollivier_var_max = reader.read_f32();
+                        ts.wolfram_scalar_mean_min = reader.read_f32(); ts.wolfram_scalar_mean_max = reader.read_f32();
+                        ts.wolfram_scalar_var_min = reader.read_f32(); ts.wolfram_scalar_var_max = reader.read_f32();
+                        ts.wolfram_ricci_mean_min = reader.read_f32(); ts.wolfram_ricci_mean_max = reader.read_f32();
+                        ts.wolfram_ricci_var_min = reader.read_f32(); ts.wolfram_ricci_var_max = reader.read_f32();
+                        ts.dim_gradient_mean_min = reader.read_f32(); ts.dim_gradient_mean_max = reader.read_f32();
+                        ts.dim_gradient_var_min = reader.read_f32(); ts.dim_gradient_var_max = reader.read_f32();
+
+                        // Foliation curvature
+                        read_float_vec(ts.foliation_curvature_ollivier);
+                        read_float_vec(ts.foliation_curvature_wolfram_scalar);
+                        read_float_vec(ts.foliation_curvature_wolfram_ricci);
+                        read_float_vec(ts.foliation_curvature_dim_gradient);
+
+                        // Foliation curvature stats
+                        ts.foliation_ollivier_min = reader.read_f32(); ts.foliation_ollivier_max = reader.read_f32();
+                        ts.foliation_wolfram_scalar_min = reader.read_f32(); ts.foliation_wolfram_scalar_max = reader.read_f32();
+                        ts.foliation_wolfram_ricci_min = reader.read_f32(); ts.foliation_wolfram_ricci_max = reader.read_f32();
+                        ts.foliation_dim_gradient_min = reader.read_f32(); ts.foliation_dim_gradient_max = reader.read_f32();
+                    }
                 }
                 break;
             }
@@ -589,7 +867,7 @@ bool read_analysis(const std::string& path, BHAnalysisResult& result) {
             }
 
             case SECTION_MEGA_DIM: {
-                // Mega-union dimension (v8+) - for Global mode
+                // Mega-union dimension - for Global mode
                 result.mega_dim_min = reader.read_f32();
                 result.mega_dim_max = reader.read_f32();
                 uint32_t n_dims = reader.read_u32();
@@ -601,6 +879,244 @@ bool read_analysis(const std::string& path, BHAnalysisResult& result) {
                 }
                 std::cout << "  Mega-union dimension range: [" << result.mega_dim_min
                           << ", " << result.mega_dim_max << "]" << std::endl;
+                break;
+            }
+
+            case SECTION_CURVATURE: {
+                // Curvature Analysis (v8+)
+                uint32_t n_ollivier = reader.read_u32();
+                for (uint32_t i = 0; i < n_ollivier; ++i) {
+                    VertexId vid = reader.read_u32();
+                    float val = reader.read_f32();
+                    result.curvature_ollivier_ricci[vid] = val;
+                }
+                result.curvature_ollivier_mean = reader.read_f32();
+                result.curvature_ollivier_min = reader.read_f32();
+                result.curvature_ollivier_max = reader.read_f32();
+                uint32_t n_dimgrad = reader.read_u32();
+                for (uint32_t i = 0; i < n_dimgrad; ++i) {
+                    VertexId vid = reader.read_u32();
+                    float val = reader.read_f32();
+                    result.curvature_dimension_gradient[vid] = val;
+                }
+                result.curvature_dim_grad_mean = reader.read_f32();
+                result.curvature_dim_grad_min = reader.read_f32();
+                result.curvature_dim_grad_max = reader.read_f32();
+                // Wolfram scalar curvature (v9+ extension)
+                uint32_t n_wolfram_scalar = 0;
+                uint32_t n_wolfram_ricci = 0;
+                try {
+                    n_wolfram_scalar = reader.read_u32();
+                    for (uint32_t i = 0; i < n_wolfram_scalar; ++i) {
+                        VertexId vid = reader.read_u32();
+                        float val = reader.read_f32();
+                        result.curvature_wolfram_scalar[vid] = val;
+                    }
+                    result.curvature_wolfram_scalar_mean = reader.read_f32();
+                    result.curvature_wolfram_scalar_min = reader.read_f32();
+                    result.curvature_wolfram_scalar_max = reader.read_f32();
+                    // Wolfram Ricci curvature (tube method)
+                    n_wolfram_ricci = reader.read_u32();
+                    for (uint32_t i = 0; i < n_wolfram_ricci; ++i) {
+                        VertexId vid = reader.read_u32();
+                        float val = reader.read_f32();
+                        result.curvature_wolfram_ricci[vid] = val;
+                    }
+                    result.curvature_wolfram_ricci_mean = reader.read_f32();
+                    result.curvature_wolfram_ricci_min = reader.read_f32();
+                    result.curvature_wolfram_ricci_max = reader.read_f32();
+                } catch (...) {
+                    // Old file format without Wolfram curvature - ignore
+                }
+                result.has_curvature_analysis = true;
+                std::cout << "  Curvature analysis loaded: " << n_ollivier << " Ollivier-Ricci, "
+                          << n_dimgrad << " dimension gradient, "
+                          << n_wolfram_scalar << " Wolfram scalar, "
+                          << n_wolfram_ricci << " Wolfram Ricci values" << std::endl;
+                break;
+            }
+
+            case SECTION_HILBERT: {
+                // Hilbert Space Analysis (v8+)
+                result.hilbert_num_states = reader.read_u32();
+                result.hilbert_num_vertices = reader.read_u32();
+                result.hilbert_mean_inner_product = reader.read_f32();
+                result.hilbert_max_inner_product = reader.read_f32();
+                result.hilbert_mean_vertex_probability = reader.read_f32();
+                result.hilbert_vertex_probability_entropy = reader.read_f32();
+                uint32_t n_probs = reader.read_u32();
+                for (uint32_t i = 0; i < n_probs; ++i) {
+                    VertexId vid = reader.read_u32();
+                    float val = reader.read_f32();
+                    result.hilbert_vertex_probabilities[vid] = val;
+                }
+                result.has_hilbert_analysis = true;
+                std::cout << "  Hilbert space analysis loaded: " << result.hilbert_num_states
+                          << " states, " << result.hilbert_num_vertices << " vertices" << std::endl;
+                break;
+            }
+
+            case SECTION_BRANCHIAL: {
+                // Branchial Analysis (v8+)
+                result.branchial_mean_sharpness = reader.read_f32();
+                result.branchial_mean_entropy = reader.read_f32();
+                uint32_t n_sharpness = reader.read_u32();
+                for (uint32_t i = 0; i < n_sharpness; ++i) {
+                    VertexId vid = reader.read_u32();
+                    float val = reader.read_f32();
+                    result.branchial_vertex_sharpness[vid] = val;
+                }
+                uint32_t n_entropy = reader.read_u32();
+                for (uint32_t i = 0; i < n_entropy; ++i) {
+                    VertexId vid = reader.read_u32();
+                    float val = reader.read_f32();
+                    result.branchial_vertex_entropy[vid] = val;
+                }
+                result.has_branchial_analysis = true;
+                std::cout << "  Branchial analysis loaded: " << n_sharpness << " sharpness, "
+                          << n_entropy << " entropy values" << std::endl;
+                break;
+            }
+
+            case SECTION_BRANCH_ALIGNMENT: {
+                // Branch Alignment (v8+) - curvature shape space
+                result.global_pc1_min = reader.read_f32();
+                result.global_pc1_max = reader.read_f32();
+                result.global_pc2_min = reader.read_f32();
+                result.global_pc2_max = reader.read_f32();
+                result.global_pc3_min = reader.read_f32();
+                result.global_pc3_max = reader.read_f32();
+                result.global_curvature_min = reader.read_f32();
+                result.global_curvature_max = reader.read_f32();
+                result.curvature_abs_max = reader.read_f32();
+
+                uint32_t n_timesteps = reader.read_u32();
+                result.alignment_per_timestep.resize(n_timesteps);
+                for (uint32_t t = 0; t < n_timesteps; ++t) {
+                    auto& pta = result.alignment_per_timestep[t];
+                    pta.total_points = reader.read_u32();
+                    pta.num_branches = reader.read_u32();
+                    pta.all_pc1.resize(pta.total_points);
+                    pta.all_pc2.resize(pta.total_points);
+                    pta.all_pc3.resize(pta.total_points);
+                    pta.all_curvature.resize(pta.total_points);
+                    pta.all_rank.resize(pta.total_points);
+                    pta.branch_id.resize(pta.total_points);
+                    pta.all_vertices.resize(pta.total_points);
+                    pta.state_id.resize(pta.total_points);
+                    for (size_t i = 0; i < pta.total_points; ++i) {
+                        pta.all_pc1[i] = reader.read_f32();
+                        pta.all_pc2[i] = reader.read_f32();
+                        pta.all_pc3[i] = reader.read_f32();
+                        pta.all_curvature[i] = reader.read_f32();
+                        pta.all_rank[i] = reader.read_f32();
+                        pta.branch_id[i] = reader.read_u32();
+                        pta.all_vertices[i] = reader.read_u32();
+                        pta.state_id[i] = reader.read_u32();
+                    }
+                    uint32_t n_branch_sizes = reader.read_u32();
+                    pta.branch_sizes.resize(n_branch_sizes);
+                    for (uint32_t i = 0; i < n_branch_sizes; ++i) {
+                        pta.branch_sizes[i] = reader.read_u32();
+                    }
+                }
+
+                result.has_ollivier_alignment = (reader.read_u32() != 0);
+                if (result.has_ollivier_alignment) {
+                    result.ollivier_pc1_min = reader.read_f32();
+                    result.ollivier_pc1_max = reader.read_f32();
+                    result.ollivier_pc2_min = reader.read_f32();
+                    result.ollivier_pc2_max = reader.read_f32();
+                    result.ollivier_pc3_min = reader.read_f32();
+                    result.ollivier_pc3_max = reader.read_f32();
+                    result.ollivier_curvature_min = reader.read_f32();
+                    result.ollivier_curvature_max = reader.read_f32();
+                    result.ollivier_curvature_abs_max = reader.read_f32();
+
+                    uint32_t n_ollivier_timesteps = reader.read_u32();
+                    result.alignment_ollivier.resize(n_ollivier_timesteps);
+                    for (uint32_t t = 0; t < n_ollivier_timesteps; ++t) {
+                        auto& pta = result.alignment_ollivier[t];
+                        pta.total_points = reader.read_u32();
+                        pta.num_branches = reader.read_u32();
+                        pta.all_pc1.resize(pta.total_points);
+                        pta.all_pc2.resize(pta.total_points);
+                        pta.all_pc3.resize(pta.total_points);
+                        pta.all_curvature.resize(pta.total_points);
+                        pta.all_rank.resize(pta.total_points);
+                        pta.branch_id.resize(pta.total_points);
+                        pta.all_vertices.resize(pta.total_points);
+                        pta.state_id.resize(pta.total_points);
+                        for (size_t i = 0; i < pta.total_points; ++i) {
+                            pta.all_pc1[i] = reader.read_f32();
+                            pta.all_pc2[i] = reader.read_f32();
+                            pta.all_pc3[i] = reader.read_f32();
+                            pta.all_curvature[i] = reader.read_f32();
+                            pta.all_rank[i] = reader.read_f32();
+                            pta.branch_id[i] = reader.read_u32();
+                            pta.all_vertices[i] = reader.read_u32();
+                            pta.state_id[i] = reader.read_u32();
+                        }
+                        uint32_t n_branch_sizes = reader.read_u32();
+                        pta.branch_sizes.resize(n_branch_sizes);
+                        for (uint32_t i = 0; i < n_branch_sizes; ++i) {
+                            pta.branch_sizes[i] = reader.read_u32();
+                        }
+                    }
+                }
+
+                result.has_branch_alignment = true;
+                std::cout << "  Branch alignment loaded: " << n_timesteps << " timesteps"
+                          << (result.has_ollivier_alignment ? " (with Ollivier)" : "") << std::endl;
+                break;
+            }
+
+            case SECTION_CURV_QUANTILES: {
+                // Branchial mean
+                result.curv_ollivier_mean_q05 = reader.read_f32();
+                result.curv_ollivier_mean_q95 = reader.read_f32();
+                result.curv_wolfram_scalar_mean_q05 = reader.read_f32();
+                result.curv_wolfram_scalar_mean_q95 = reader.read_f32();
+                result.curv_wolfram_ricci_mean_q05 = reader.read_f32();
+                result.curv_wolfram_ricci_mean_q95 = reader.read_f32();
+                result.curv_dim_gradient_mean_q05 = reader.read_f32();
+                result.curv_dim_gradient_mean_q95 = reader.read_f32();
+                // Branchial variance
+                result.curv_ollivier_var_q05 = reader.read_f32();
+                result.curv_ollivier_var_q95 = reader.read_f32();
+                result.curv_wolfram_scalar_var_q05 = reader.read_f32();
+                result.curv_wolfram_scalar_var_q95 = reader.read_f32();
+                result.curv_wolfram_ricci_var_q05 = reader.read_f32();
+                result.curv_wolfram_ricci_var_q95 = reader.read_f32();
+                result.curv_dim_gradient_var_q05 = reader.read_f32();
+                result.curv_dim_gradient_var_q95 = reader.read_f32();
+                // Foliation
+                result.curv_foliation_ollivier_q05 = reader.read_f32();
+                result.curv_foliation_ollivier_q95 = reader.read_f32();
+                result.curv_foliation_wolfram_scalar_q05 = reader.read_f32();
+                result.curv_foliation_wolfram_scalar_q95 = reader.read_f32();
+                result.curv_foliation_wolfram_ricci_q05 = reader.read_f32();
+                result.curv_foliation_wolfram_ricci_q95 = reader.read_f32();
+                result.curv_foliation_dim_gradient_q05 = reader.read_f32();
+                result.curv_foliation_dim_gradient_q95 = reader.read_f32();
+                std::cout << "  Curvature quantiles loaded" << std::endl;
+                break;
+            }
+
+            case SECTION_STATE_AGGREGATES: {
+                uint32_t n_states = reader.read_u32();
+                result.state_aggregates.resize(n_states);
+                for (uint32_t i = 0; i < n_states; ++i) {
+                    auto& agg = result.state_aggregates[i];
+                    agg.state_id = reader.read_u32();
+                    agg.step = reader.read_u32();
+                    agg.mean_dimension = reader.read_f32();
+                    agg.mean_ollivier_ricci = reader.read_f32();
+                    agg.mean_wolfram_scalar = reader.read_f32();
+                    agg.mean_wolfram_ricci = reader.read_f32();
+                    agg.mean_dim_gradient = reader.read_f32();
+                }
+                std::cout << "  State aggregates loaded: " << n_states << " states" << std::endl;
                 break;
             }
 

@@ -1,4 +1,5 @@
 #include "blackhole/entropy_analysis.hpp"
+#include <job_system/job_system.hpp>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -376,6 +377,174 @@ EntropyAnalysisResult analyze_entropy_timestep(
     const std::vector<float>* dims = timestep.mean_dimensions.empty() ? nullptr : &timestep.mean_dimensions;
 
     return analyze_entropy(graph, config, dims);
+}
+
+// =============================================================================
+// Parallel Implementations
+// =============================================================================
+
+std::unordered_map<VertexId, float> compute_all_local_entropies_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int radius
+) {
+    const auto& verts = graph.vertices();
+    std::vector<float> results(verts.size(), 0.0f);
+
+    for (size_t i = 0; i < verts.size(); ++i) {
+        js->submit_function([&graph, &verts, &results, i, radius]() {
+            results[i] = compute_local_entropy(graph, verts[i], radius);
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    std::unordered_map<VertexId, float> result;
+    for (size_t i = 0; i < verts.size(); ++i) {
+        result[verts[i]] = results[i];
+    }
+    return result;
+}
+
+std::unordered_map<VertexId, float> compute_all_mutual_info_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    int radius
+) {
+    const auto& verts = graph.vertices();
+    std::vector<float> results(verts.size(), 0.0f);
+
+    for (size_t i = 0; i < verts.size(); ++i) {
+        js->submit_function([&graph, &verts, &results, i, radius]() {
+            VertexId v = verts[i];
+            float total_mi = 0.0f;
+            const auto& neighbors = graph.neighbors(v);
+            for (VertexId n : neighbors) {
+                total_mi += compute_mutual_information(graph, v, n, radius);
+            }
+            results[i] = neighbors.empty() ? 0.0f : total_mi / neighbors.size();
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    std::unordered_map<VertexId, float> result;
+    for (size_t i = 0; i < verts.size(); ++i) {
+        result[verts[i]] = results[i];
+    }
+    return result;
+}
+
+std::unordered_map<VertexId, float> compute_all_fisher_info_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const std::vector<float>& vertex_dimensions,
+    int radius
+) {
+    const auto& verts = graph.vertices();
+    std::vector<float> results(verts.size(), 0.0f);
+
+    for (size_t i = 0; i < verts.size(); ++i) {
+        js->submit_function([&graph, &verts, &results, &vertex_dimensions, i, radius]() {
+            results[i] = compute_fisher_information(graph, verts[i], vertex_dimensions, radius);
+        }, 0);
+    }
+    js->wait_for_completion();
+
+    std::unordered_map<VertexId, float> result;
+    for (size_t i = 0; i < verts.size(); ++i) {
+        result[verts[i]] = results[i];
+    }
+    return result;
+}
+
+EntropyAnalysisResult analyze_entropy_parallel(
+    const SimpleGraph& graph,
+    job_system::JobSystem<int>* js,
+    const EntropyConfig& config,
+    const std::vector<float>* vertex_dimensions
+) {
+    EntropyAnalysisResult result;
+
+    if (graph.vertex_count() == 0) {
+        return result;
+    }
+
+    // Global degree entropy (fast, no need to parallelize)
+    result.degree_entropy = compute_degree_entropy(graph);
+
+    // Local entropy (parallel)
+    if (config.compute_local_entropy) {
+        result.local_entropy_map = compute_all_local_entropies_parallel(graph, js, config.neighborhood_radius);
+    }
+
+    // Mutual information (parallel)
+    if (config.compute_mutual_info) {
+        result.mutual_info_map = compute_all_mutual_info_parallel(graph, js, config.neighborhood_radius);
+    }
+
+    // Fisher information (parallel, requires dimensions)
+    if (config.compute_fisher_info && vertex_dimensions && !vertex_dimensions->empty()) {
+        result.fisher_info_map = compute_all_fisher_info_parallel(graph, js, *vertex_dimensions, config.fisher_radius);
+    }
+
+    // Build per-vertex result (same as serial version)
+    const auto& verts = graph.vertices();
+    result.vertex_entropies.reserve(verts.size());
+
+    std::vector<float> local_values, fisher_values;
+
+    for (VertexId v : verts) {
+        VertexEntropy ve;
+        ve.vertex = v;
+        ve.degree = static_cast<int>(graph.neighbors(v).size());
+
+        if (result.local_entropy_map.count(v)) {
+            ve.local_entropy = result.local_entropy_map[v];
+            local_values.push_back(ve.local_entropy);
+        }
+
+        if (result.mutual_info_map.count(v)) {
+            ve.mutual_info = result.mutual_info_map[v];
+            result.total_mutual_info += ve.mutual_info;
+        }
+
+        if (result.fisher_info_map.count(v)) {
+            ve.fisher_info = result.fisher_info_map[v];
+            fisher_values.push_back(ve.fisher_info);
+            result.total_fisher_info += ve.fisher_info;
+        }
+
+        result.vertex_entropies.push_back(ve);
+    }
+
+    // Compute statistics
+    if (!local_values.empty()) {
+        std::sort(local_values.begin(), local_values.end());
+        result.min_local_entropy = local_values.front();
+        result.max_local_entropy = local_values.back();
+        result.mean_local_entropy = std::accumulate(local_values.begin(), local_values.end(), 0.0f) / local_values.size();
+
+        size_t q05_idx = static_cast<size_t>(local_values.size() * 0.05f);
+        size_t q95_idx = static_cast<size_t>(local_values.size() * 0.95f);
+        result.local_q05 = local_values[std::min(q05_idx, local_values.size() - 1)];
+        result.local_q95 = local_values[std::min(q95_idx, local_values.size() - 1)];
+    }
+
+    if (!fisher_values.empty()) {
+        std::sort(fisher_values.begin(), fisher_values.end());
+        result.min_fisher_info = fisher_values.front();
+        result.max_fisher_info = fisher_values.back();
+        result.mean_fisher_info = std::accumulate(fisher_values.begin(), fisher_values.end(), 0.0f) / fisher_values.size();
+
+        size_t q05_idx = static_cast<size_t>(fisher_values.size() * 0.05f);
+        size_t q95_idx = static_cast<size_t>(fisher_values.size() * 0.95f);
+        result.fisher_q05 = fisher_values[std::min(q05_idx, fisher_values.size() - 1)];
+        result.fisher_q95 = fisher_values[std::min(q95_idx, fisher_values.size() - 1)];
+    }
+
+    // Graph entropy = degree entropy + mean local entropy
+    result.graph_entropy = result.degree_entropy + result.mean_local_entropy;
+
+    return result;
 }
 
 }  // namespace viz::blackhole

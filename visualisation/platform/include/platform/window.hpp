@@ -118,6 +118,9 @@ public:
     // Close request
     virtual void request_close() = 0;
 
+    // Bring window to front and give it focus
+    virtual void focus() = 0;
+
     // Platform-specific handles for Vulkan surface creation
     // Returns platform-specific data needed to create VkSurface
     virtual void* get_native_display() const = 0;  // Display*/xcb_connection_t*/HINSTANCE

@@ -10,8 +10,7 @@ PackageExport["HGDimensionFilmstrip"]
 PackageExport["HGGeodesicPlot"]
 PackageExport["HGGeodesicFilmstrip"]
 PackageExport["HGLensingPlot"]
-PackageExport["HGRotationCurvePlot"]
-PackageExport["HGRotationOrbitsPlot"]
+PackageExport["HGBranchAlignmentBatch"]
 PackageExport["EdgeId"]
 (* Initial Condition Generators *)
 PackageExport["HGGrid"]
@@ -39,8 +38,8 @@ HGDimensionFilmstrip::usage = "HGDimensionFilmstrip[evolutionResult, opts] shows
 HGGeodesicPlot::usage = "HGGeodesicPlot[evolutionResult, stateId, opts] plots geodesic paths overlaid on a state graph with dimension coloring."
 HGGeodesicFilmstrip::usage = "HGGeodesicFilmstrip[evolutionResult, opts] returns a list of lists of geodesic plots, one list per timestep."
 HGLensingPlot::usage = "HGLensingPlot[evolutionResult, stateId, opts] plots gravitational lensing: deflection angle vs impact parameter with GR prediction overlay."
-HGRotationCurvePlot::usage = "HGRotationCurvePlot[evolutionResult, opts] plots orbital velocity vs radius with Keplerian prediction overlay."
-HGRotationOrbitsPlot::usage = "HGRotationOrbitsPlot[evolutionResult, stateId, opts] shows orbital paths overlaid on a state graph, colored by velocity deviation."
+HGBranchAlignmentBatch::usage = "HGBranchAlignmentBatch[evolutionResult] computes curvature-weighted PCA alignment for all states.
+Returns <|\"PerState\" -> ..., \"PerTimestep\" -> ..., \"Global\" -> ...|>."
 EdgeId::usage = "EdgeId[id] wraps an edge identifier."
 
 (* Initial Condition Generator Usage *)
@@ -134,15 +133,12 @@ Options[HGEvolve] = {
   "CurvatureMethod" -> "All",  (* "OllivierRicci", "WolframRicci", "DimensionGradient", "Both", or "All" *)
   "CurvaturePerVertex" -> False,  (* Include per-vertex curvature data in PerState *)
   "CurvatureTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
+  (* Branch Alignment Options - curvature shape space via PCA *)
+  "BranchAlignment" -> False,  (* True: compute branch alignment (requires CurvatureAnalysis) *)
+  "BranchAlignmentMethod" -> "WolframRicci",  (* Which curvature to use: "WolframRicci" or "OllivierRicci" *)
   (* Entropy Analysis Options - graph entropy and information measures *)
   "EntropyAnalysis" -> False,  (* True: compute entropy measures *)
   "EntropyTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
-  (* Rotation Curve Analysis Options - orbital velocity vs radius *)
-  "RotationCurveAnalysis" -> False,  (* True: compute rotation curve *)
-  "RotationMinRadius" -> 2,  (* Minimum radius for rotation curve *)
-  "RotationMaxRadius" -> 20,  (* Maximum radius for rotation curve *)
-  "RotationOrbitsPerRadius" -> 4,  (* Orbits to sample per radius *)
-  "RotationTimestepAggregation" -> False,  (* Include PerTimestep aggregation section *)
   (* Hilbert Space Analysis Options - state bitvector inner products *)
   "HilbertSpaceAnalysis" -> False,  (* True: compute Hilbert space analysis *)
   "HilbertStep" -> -1,  (* Step to analyze: -1 = final, or specific step *)
@@ -208,6 +204,10 @@ If[$HypergraphLibrary =!= $Failed,
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
   performHausdorffAnalysis = LibraryFunctionLoad[$HypergraphLibrary, "performHausdorffAnalysis",
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+  performBranchAlignment = LibraryFunctionLoad[$HypergraphLibrary, "performBranchAlignment",
+    {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
+  performBranchAlignmentBatch = LibraryFunctionLoad[$HypergraphLibrary, "performBranchAlignmentBatch",
+    {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
 ];
 
 (* ============================================================================ *)
@@ -246,8 +246,8 @@ propertyRequirementsBase = <|
   "GeodesicData" -> {},
   "TopologicalData" -> {},
   "CurvatureData" -> {},
+  "AlignmentData" -> {},
   "EntropyData" -> {},
-  "RotationData" -> {},
   "HilbertSpaceData" -> {},
   "BranchialData" -> {},
   "MultispaceData" -> {}
@@ -271,7 +271,7 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
 computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
   computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
 
-HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, RotationData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
+HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 
 (* ============================================================================ *)
@@ -928,20 +928,14 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     (* Uniform random evolution mode *)
     "UniformRandom" -> OptionValue["UniformRandom"],
     "MatchesPerStep" -> OptionValue["MatchesPerStep"],
-    (* Curvature analysis *)
-    "CurvatureAnalysis" -> OptionValue["CurvatureAnalysis"],
+    (* Curvature analysis - BranchAlignment implies CurvatureAnalysis and CurvaturePerVertex *)
+    "CurvatureAnalysis" -> (OptionValue["CurvatureAnalysis"] || OptionValue["BranchAlignment"]),
     "CurvatureMethod" -> OptionValue["CurvatureMethod"],
-    "CurvaturePerVertex" -> OptionValue["CurvaturePerVertex"],
+    "CurvaturePerVertex" -> (OptionValue["CurvaturePerVertex"] || OptionValue["BranchAlignment"]),
     "CurvatureTimestepAggregation" -> OptionValue["CurvatureTimestepAggregation"],
     (* Entropy analysis *)
     "EntropyAnalysis" -> OptionValue["EntropyAnalysis"],
     "EntropyTimestepAggregation" -> OptionValue["EntropyTimestepAggregation"],
-    (* Rotation curve analysis *)
-    "RotationCurveAnalysis" -> OptionValue["RotationCurveAnalysis"],
-    "RotationMinRadius" -> OptionValue["RotationMinRadius"],
-    "RotationMaxRadius" -> OptionValue["RotationMaxRadius"],
-    "RotationOrbitsPerRadius" -> OptionValue["RotationOrbitsPerRadius"],
-    "RotationTimestepAggregation" -> OptionValue["RotationTimestepAggregation"],
     (* Hilbert space analysis *)
     "HilbertSpaceAnalysis" -> OptionValue["HilbertSpaceAnalysis"],
     "HilbertStep" -> OptionValue["HilbertStep"],
@@ -1052,20 +1046,27 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   (* Curvature data - Ollivier-Ricci and dimension gradient *)
-  curvatureData = If[OptionValue["CurvatureAnalysis"] && KeyExistsQ[wxfData, "CurvatureData"],
+  (* BranchAlignment implies CurvatureAnalysis, so check both *)
+  curvatureData = If[(OptionValue["CurvatureAnalysis"] || OptionValue["BranchAlignment"]) && KeyExistsQ[wxfData, "CurvatureData"],
     wxfData["CurvatureData"],
+    <||>
+  ];
+
+  (* Branch alignment data - computed from curvature via HGBranchAlignmentBatch *)
+  (* BranchAlignment automatically enables CurvatureAnalysis and CurvaturePerVertex *)
+  alignmentData = If[OptionValue["BranchAlignment"] && Length[curvatureData] > 0 && KeyExistsQ[curvatureData, "PerState"],
+    Module[{tempResult, aligned},
+      (* Build a temporary result structure for HGBranchAlignmentBatch *)
+      tempResult = <|"States" -> states, "CurvatureData" -> curvatureData|>;
+      aligned = Quiet[HGBranchAlignmentBatch[tempResult, OptionValue["BranchAlignmentMethod"]]];
+      If[MatchQ[aligned, _Association], aligned, <||>]
+    ],
     <||>
   ];
 
   (* Entropy data - graph entropy and information measures *)
   entropyData = If[OptionValue["EntropyAnalysis"] && KeyExistsQ[wxfData, "EntropyData"],
     wxfData["EntropyData"],
-    <||>
-  ];
-
-  (* Rotation curve data - orbital velocity vs radius *)
-  rotationData = If[OptionValue["RotationCurveAnalysis"] && KeyExistsQ[wxfData, "RotationData"],
-    wxfData["RotationData"],
     <||>
   ];
 
@@ -1097,15 +1098,15 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, rotationData, hilbertData, branchialData, multispaceData] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData] & /@ props]
   ]
 ]
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, rotationData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -1144,8 +1145,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       If[Length[geodesicData] > 0, result = Append[result, "GeodesicData" -> geodesicData]];
       If[Length[topologicalData] > 0, result = Append[result, "TopologicalData" -> topologicalData]];
       If[Length[curvatureData] > 0, result = Append[result, "CurvatureData" -> curvatureData]];
+      If[Length[alignmentData] > 0, result = Append[result, "AlignmentData" -> alignmentData]];
       If[Length[entropyData] > 0, result = Append[result, "EntropyData" -> entropyData]];
-      If[Length[rotationData] > 0, result = Append[result, "RotationData" -> rotationData]];
       If[Length[hilbertData] > 0, result = Append[result, "HilbertSpaceData" -> hilbertData]];
       If[Length[branchialData] > 0, result = Append[result, "BranchialData" -> branchialData]];
       If[Length[multispaceData] > 0, result = Append[result, "MultispaceData" -> multispaceData]];
@@ -1155,8 +1156,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     "GeodesicData", geodesicData,
     "TopologicalData", topologicalData,
     "CurvatureData", curvatureData,
+    "AlignmentData", alignmentData,
     "EntropyData", entropyData,
-    "RotationData", rotationData,
     "HilbertSpaceData", hilbertData,
     "BranchialData", branchialData,
     "MultispaceData", multispaceData,
@@ -1233,6 +1234,423 @@ HGHausdorffAnalysis[edges_List, opts:OptionsPattern[]] := Module[
   (* Parse result *)
   result = BinaryDeserialize[wxfOutput];
   result
+]
+
+(* ============================================================================ *)
+(* HGBranchAlignment - Align branch curvature using PCA on spectral embedding *)
+(* ============================================================================ *)
+(* Based on Stephen Wolfram's moment of inertia alignment method for comparing
+   curvature distributions across branches in a labeling-independent way. *)
+
+HGBranchAlignment::nolib = "HypergraphRewriting library not loaded.";
+HGBranchAlignment::nocurv = "No curvature data provided. Pass curvature as Association[vertex -> value].";
+
+HGBranchAlignment[edges_List, curvature_Association] := Module[
+  {edgesNormalized, curvatureNormalized, inputAssoc, wxfInput, wxfOutput, result},
+
+  If[performBranchAlignment === $Failed || !ValueQ[performBranchAlignment],
+    Message[HGBranchAlignment::nolib];
+    Return[$Failed]
+  ];
+
+  If[Length[curvature] == 0,
+    Message[HGBranchAlignment::nocurv];
+    Return[$Failed]
+  ];
+
+  (* Normalize edges *)
+  edgesNormalized = Replace[edges, {
+    DirectedEdge[v1_, v2_] :> {v1, v2},
+    UndirectedEdge[v1_, v2_] :> {v1, v2},
+    Rule[v1_, v2_] :> {v1, v2}
+  }, {1}];
+
+  (* Normalize curvature keys to strings for WXF *)
+  curvatureNormalized = Association[
+    KeyValueMap[ToString[#1] -> N[#2] &, curvature]
+  ];
+
+  (* Build input association *)
+  inputAssoc = <|
+    "Edges" -> edgesNormalized,
+    "Curvature" -> curvatureNormalized
+  |>;
+
+  (* Convert to WXF and call FFI *)
+  wxfInput = BinarySerialize[inputAssoc];
+  wxfOutput = performBranchAlignment[wxfInput];
+
+  If[wxfOutput === $Failed,
+    Return[$Failed]
+  ];
+
+  (* Parse and return result *)
+  result = BinaryDeserialize[wxfOutput];
+  result
+]
+
+(* Convenience: Extract alignment from HGEvolve result for a specific state *)
+HGBranchAlignment[result_Association, stateId_Integer] := Module[
+  {edges, curvature},
+
+  (* Get edges for state *)
+  If[!KeyExistsQ[result, "States"] || !KeyExistsQ[result["States"], stateId],
+    Return[$Failed]];
+  edges = result["States"][stateId]["Edges"];
+
+  (* Get curvature - prefer WolframRicci, fall back to OllivierRicci *)
+  curvature = Lookup[
+    result["CurvatureData"]["PerState"][stateId],
+    "WolframRicci",
+    Lookup[result["CurvatureData"]["PerState"][stateId], "OllivierRicci", <||>]
+  ];
+
+  If[Length[curvature] == 0,
+    Return[$Failed]];
+
+  HGBranchAlignment[edges, curvature]
+]
+
+(* Align all branches at a specific timestep *)
+HGAlignAllBranches[result_Association, step_Integer] := Module[
+  {statesAtStep},
+
+  statesAtStep = Select[
+    Keys[result["States"]],
+    result["States"][#]["Step"] == step &
+  ];
+
+  Association[
+    Table[sid -> HGBranchAlignment[result, sid], {sid, statesAtStep}]
+  ]
+]
+
+(* ============================================================================ *)
+(* HGBranchAlignmentBatch - Efficient batch alignment of all states *)
+(* ============================================================================ *)
+(*
+ * Performs branch alignment on ALL states in a single native call (no WL evaluator overhead).
+ * Returns per-state alignments, per-timestep aggregations, and global bounds.
+ *
+ * Usage:
+ *   result = HGEvolve[..., CurvatureAnalysis -> True]
+ *   aligned = HGBranchAlignmentBatch[result]
+ *   aligned["PerTimestep"][30]  (* Get timestep 30 data *)
+ *   aligned["GlobalBounds"]["CurvatureAbsMax"]  (* For diverging colormap *)
+ *)
+
+HGBranchAlignmentBatch::nolib = "HypergraphRewriting library not loaded.";
+HGBranchAlignmentBatch::nocurv = "No curvature data in result. Run HGEvolve with CurvatureAnalysis -> True.";
+
+HGBranchAlignmentBatch[result_Association, curvatureMethod_String:"WolframRicci"] := Module[
+  {statesData, stateToStep, inputAssoc, wxfInput, wxfOutput, alignmentResult},
+
+  (* Check library is loaded *)
+  If[!ValueQ[performBranchAlignmentBatch],
+    Message[HGBranchAlignmentBatch::nolib];
+    Return[$Failed]
+  ];
+
+  (* Check curvature data exists *)
+  If[!KeyExistsQ[result, "CurvatureData"] || !KeyExistsQ[result["CurvatureData"], "PerState"],
+    Message[HGBranchAlignmentBatch::nocurv];
+    Return[$Failed]
+  ];
+
+  (* Build states data from HGEvolve result *)
+  statesData = Association @ KeyValueMap[
+    Function[{sid, stateData},
+      ToString[sid] -> <|
+        "Edges" -> stateData["Edges"],
+        "Curvature" -> If[
+          KeyExistsQ[result["CurvatureData"]["PerState"], sid] &&
+          KeyExistsQ[result["CurvatureData"]["PerState"][sid], curvatureMethod],
+          Association[ToString[#[[1]]] -> #[[2]] & /@
+            Normal[result["CurvatureData"]["PerState"][sid][curvatureMethod]]],
+          <||>
+        ]
+      |>
+    ],
+    result["States"]
+  ];
+
+  (* Build state to step mapping *)
+  stateToStep = Association @ KeyValueMap[
+    Function[{sid, stateData}, ToString[sid] -> stateData["Step"]],
+    result["States"]
+  ];
+
+  (* Build input association *)
+  inputAssoc = <|"States" -> statesData, "StateToStep" -> stateToStep|>;
+
+  (* Call native batch function *)
+  wxfInput = BinarySerialize[inputAssoc];
+  wxfOutput = performBranchAlignmentBatch[wxfInput];
+
+  (* Deserialize and return result *)
+  alignmentResult = BinaryDeserialize[wxfOutput];
+
+  alignmentResult
+]
+
+(* ============================================================================ *)
+(* HGBranchAlignmentPlot1D - Curvature vs Vertex Rank *)
+(* ============================================================================ *)
+
+Options[HGBranchAlignmentPlot1D] = {
+  PlotStyle -> Automatic,
+  PlotLabel -> "Curvature vs Vertex Rank (PC1 ordered)",
+  AxesLabel -> {"Vertex Rank", "Curvature"},
+  ImageSize -> 400
+};
+
+HGBranchAlignmentPlot1D[alignment_Association, opts:OptionsPattern[]] := Module[
+  {rank, curv, data},
+
+  If[!KeyExistsQ[alignment, "Rank"] || !KeyExistsQ[alignment, "Curvature"],
+    Return[$Failed]];
+
+  rank = alignment["Rank"];
+  curv = alignment["Curvature"];
+  data = Transpose[{rank, curv}];
+
+  ListLinePlot[data,
+    PlotStyle -> OptionValue[PlotStyle],
+    PlotLabel -> OptionValue[PlotLabel],
+    AxesLabel -> OptionValue[AxesLabel],
+    ImageSize -> OptionValue[ImageSize],
+    PlotRange -> All
+  ]
+]
+
+(* Plot multiple branches overlaid *)
+HGBranchAlignmentPlot1D[alignments_Association, opts:OptionsPattern[]] /;
+  AllTrue[Values[alignments], AssociationQ] := Module[
+  {validAlignments, data},
+
+  validAlignments = Select[alignments,
+    AssociationQ[#] && KeyExistsQ[#, "Rank"] && KeyExistsQ[#, "Curvature"] &];
+
+  If[Length[validAlignments] == 0, Return[$Failed]];
+
+  data = KeyValueMap[
+    Transpose[{#2["Rank"], #2["Curvature"]}] &,
+    validAlignments
+  ];
+
+  ListLinePlot[data,
+    PlotStyle -> (OptionValue[PlotStyle] /. Automatic -> Opacity[0.5]),
+    PlotLabel -> OptionValue[PlotLabel],
+    AxesLabel -> OptionValue[AxesLabel],
+    ImageSize -> OptionValue[ImageSize],
+    PlotRange -> All,
+    PlotLegends -> Keys[validAlignments]
+  ]
+]
+
+(* ============================================================================ *)
+(* HGBranchAlignmentPlot2D - PC1 vs PC2, colored by curvature *)
+(* ============================================================================ *)
+
+Options[HGBranchAlignmentPlot2D] = {
+  "Palette" -> "TemperatureMap",
+  "CurvatureRange" -> Automatic,
+  PlotLabel -> "Aligned Shape Space (color = curvature)",
+  AxesLabel -> {"PC1", "PC2"},
+  ImageSize -> 400
+};
+
+HGBranchAlignmentPlot2D[alignment_Association, opts:OptionsPattern[]] := Module[
+  {palette, curvRange, pc1, pc2, curv, curvMin, curvMax, colorFunc, points, colors},
+
+  If[!KeyExistsQ[alignment, "PC1"] || !KeyExistsQ[alignment, "PC2"] ||
+     !KeyExistsQ[alignment, "Curvature"],
+    Return[$Failed]];
+
+  palette = OptionValue["Palette"];
+  curvRange = OptionValue["CurvatureRange"];
+
+  pc1 = alignment["PC1"];
+  pc2 = alignment["PC2"];
+  curv = alignment["Curvature"];
+
+  {curvMin, curvMax} = If[curvRange === Automatic,
+    {Min[curv], Max[curv]},
+    curvRange];
+
+  colorFunc = ColorData[palette];
+
+  points = Transpose[{pc1, pc2}];
+  colors = Map[
+    colorFunc[Clip[(# - curvMin)/(curvMax - curvMin + 0.001), {0, 1}]] &,
+    curv
+  ];
+
+  Legended[
+    Graphics[{
+      PointSize[Medium], Opacity[0.6],
+      MapThread[{#2, Point[#1]} &, {points, colors}]
+    },
+      Axes -> True,
+      AxesLabel -> OptionValue[AxesLabel],
+      PlotLabel -> OptionValue[PlotLabel],
+      PlotRange -> All,
+      Frame -> True,
+      ImageSize -> OptionValue[ImageSize]
+    ],
+    BarLegend[{palette, {curvMin, curvMax}}, LegendLabel -> "Curvature"]
+  ]
+]
+
+(* Multiple branches combined *)
+HGBranchAlignmentPlot2D[alignments_Association, opts:OptionsPattern[]] /;
+  AllTrue[Values[alignments], AssociationQ] := Module[
+  {palette, curvRange, validAlignments, allPC1, allPC2, allCurv,
+   curvMin, curvMax, colorFunc, allPoints, allColors},
+
+  validAlignments = Select[alignments,
+    AssociationQ[#] && KeyExistsQ[#, "PC1"] && KeyExistsQ[#, "PC2"] &&
+    KeyExistsQ[#, "Curvature"] &];
+
+  If[Length[validAlignments] == 0, Return[$Failed]];
+
+  palette = OptionValue["Palette"];
+  curvRange = OptionValue["CurvatureRange"];
+
+  allPC1 = Flatten[Values[validAlignments][[All, "PC1"]]];
+  allPC2 = Flatten[Values[validAlignments][[All, "PC2"]]];
+  allCurv = Flatten[Values[validAlignments][[All, "Curvature"]]];
+
+  {curvMin, curvMax} = If[curvRange === Automatic,
+    {Min[allCurv], Max[allCurv]},
+    curvRange];
+
+  colorFunc = ColorData[palette];
+
+  allPoints = Transpose[{allPC1, allPC2}];
+  allColors = Map[
+    colorFunc[Clip[(# - curvMin)/(curvMax - curvMin + 0.001), {0, 1}]] &,
+    allCurv
+  ];
+
+  Legended[
+    Graphics[{
+      PointSize[Medium], Opacity[0.6],
+      MapThread[{#2, Point[#1]} &, {allPoints, allColors}]
+    },
+      Axes -> True,
+      AxesLabel -> OptionValue[AxesLabel],
+      PlotLabel -> OptionValue[PlotLabel],
+      PlotRange -> All,
+      Frame -> True,
+      ImageSize -> OptionValue[ImageSize]
+    ],
+    BarLegend[{palette, {curvMin, curvMax}}, LegendLabel -> "Curvature"]
+  ]
+]
+
+(* ============================================================================ *)
+(* HGBranchAlignmentPlot3D - PC1 vs PC2 vs PC3, colored by curvature *)
+(* ============================================================================ *)
+
+Options[HGBranchAlignmentPlot3D] = {
+  "Palette" -> "TemperatureMap",
+  "CurvatureRange" -> Automatic,
+  PlotLabel -> "Aligned Shape Space 3D (color = curvature)",
+  AxesLabel -> {"PC1", "PC2", "PC3"},
+  ImageSize -> 500,
+  ViewPoint -> {1.5, -2, 1.5}
+};
+
+HGBranchAlignmentPlot3D[alignment_Association, opts:OptionsPattern[]] := Module[
+  {palette, curvRange, pc1, pc2, pc3, curv, curvMin, curvMax, colorFunc, points, colors},
+
+  If[!KeyExistsQ[alignment, "PC1"] || !KeyExistsQ[alignment, "PC2"] ||
+     !KeyExistsQ[alignment, "PC3"] || !KeyExistsQ[alignment, "Curvature"],
+    Return[$Failed]];
+
+  palette = OptionValue["Palette"];
+  curvRange = OptionValue["CurvatureRange"];
+
+  pc1 = alignment["PC1"];
+  pc2 = alignment["PC2"];
+  pc3 = alignment["PC3"];
+  curv = alignment["Curvature"];
+
+  {curvMin, curvMax} = If[curvRange === Automatic,
+    {Min[curv], Max[curv]},
+    curvRange];
+
+  colorFunc = ColorData[palette];
+
+  points = Transpose[{pc1, pc2, pc3}];
+  colors = Map[
+    colorFunc[Clip[(# - curvMin)/(curvMax - curvMin + 0.001), {0, 1}]] &,
+    curv
+  ];
+
+  Legended[
+    Graphics3D[{
+      PointSize[Medium], Opacity[0.6],
+      MapThread[{#2, Point[#1]} &, {points, colors}]
+    },
+      Axes -> True,
+      AxesLabel -> OptionValue[AxesLabel],
+      PlotLabel -> OptionValue[PlotLabel],
+      Boxed -> True,
+      ViewPoint -> OptionValue[ViewPoint],
+      ImageSize -> OptionValue[ImageSize]
+    ],
+    BarLegend[{palette, {curvMin, curvMax}}, LegendLabel -> "Curvature"]
+  ]
+]
+
+(* Multiple branches combined *)
+HGBranchAlignmentPlot3D[alignments_Association, opts:OptionsPattern[]] /;
+  AllTrue[Values[alignments], AssociationQ] := Module[
+  {palette, curvRange, validAlignments, allPC1, allPC2, allPC3, allCurv,
+   curvMin, curvMax, colorFunc, allPoints, allColors},
+
+  validAlignments = Select[alignments,
+    AssociationQ[#] && KeyExistsQ[#, "PC1"] && KeyExistsQ[#, "PC2"] &&
+    KeyExistsQ[#, "PC3"] && KeyExistsQ[#, "Curvature"] &];
+
+  If[Length[validAlignments] == 0, Return[$Failed]];
+
+  palette = OptionValue["Palette"];
+  curvRange = OptionValue["CurvatureRange"];
+
+  allPC1 = Flatten[Values[validAlignments][[All, "PC1"]]];
+  allPC2 = Flatten[Values[validAlignments][[All, "PC2"]]];
+  allPC3 = Flatten[Values[validAlignments][[All, "PC3"]]];
+  allCurv = Flatten[Values[validAlignments][[All, "Curvature"]]];
+
+  {curvMin, curvMax} = If[curvRange === Automatic,
+    {Min[allCurv], Max[allCurv]},
+    curvRange];
+
+  colorFunc = ColorData[palette];
+
+  allPoints = Transpose[{allPC1, allPC2, allPC3}];
+  allColors = Map[
+    colorFunc[Clip[(# - curvMin)/(curvMax - curvMin + 0.001), {0, 1}]] &,
+    allCurv
+  ];
+
+  Legended[
+    Graphics3D[{
+      PointSize[Medium], Opacity[0.6],
+      MapThread[{#2, Point[#1]} &, {allPoints, allColors}]
+    },
+      Axes -> True,
+      AxesLabel -> OptionValue[AxesLabel],
+      PlotLabel -> OptionValue[PlotLabel],
+      Boxed -> True,
+      ViewPoint -> OptionValue[ViewPoint],
+      ImageSize -> OptionValue[ImageSize]
+    ],
+    BarLegend[{palette, {curvMin, curvMax}}, LegendLabel -> "Curvature"]
+  ]
 ]
 
 (* ============================================================================ *)
@@ -2206,403 +2624,6 @@ HGLensingPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern[
 HGLensingPlot::nodata = "GeodesicData not found. Enable \"GeodesicAnalysis\" -> True in HGEvolve.";
 HGLensingPlot::nostate = "State `1` not found in geodesic data.";
 HGLensingPlot::nolensing = "No lensing data found for state `1`.";
-
-(* ============================================================================ *)
-(* HGRotationCurvePlot - Orbital velocity vs radius *)
-(* ============================================================================ *)
-
-Options[HGRotationCurvePlot] = {
-  "ShowKeplerianPrediction" -> True,
-  "MassParameter" -> Automatic,  (* Automatic: estimate from enclosed dimension *)
-  "PointSize" -> Medium,
-  "ColorByState" -> True,  (* Color points by state ID *)
-  "Palette" -> "Rainbow",
-  "PlotRange" -> Automatic,
-  "ErrorBars" -> False,  (* Show velocity variance as error bars *)
-  ImageSize -> 500
-};
-
-HGRotationCurvePlot[evolutionResult_Association, opts:OptionsPattern[]] := Module[
-  {showKeplerian, massParam, pointSize, colorByState, palette, plotRange, showErrors, imgSize,
-   rotationData, perState, stateIds, allDataPoints, stateColors, colorFunc,
-   dataPlot, keplerianCurve, plotElements, annotations, radii, velocities, rMin, rMax,
-   massEstimate},
-
-  (* Extract options *)
-  showKeplerian = OptionValue["ShowKeplerianPrediction"];
-  massParam = OptionValue["MassParameter"];
-  pointSize = OptionValue["PointSize"];
-  colorByState = OptionValue["ColorByState"];
-  palette = OptionValue["Palette"];
-  plotRange = OptionValue["PlotRange"];
-  showErrors = OptionValue["ErrorBars"];
-  imgSize = OptionValue[ImageSize];
-
-  (* Validate input *)
-  If[!KeyExistsQ[evolutionResult, "RotationData"],
-    Message[HGRotationCurvePlot::nodata];
-    Return[$Failed]
-  ];
-
-  rotationData = evolutionResult["RotationData"];
-  If[!KeyExistsQ[rotationData, "PerState"],
-    Return[$Failed]
-  ];
-
-  perState = rotationData["PerState"];
-  stateIds = Keys[perState];
-
-  If[Length[stateIds] == 0,
-    Message[HGRotationCurvePlot::nodata];
-    Return[$Failed]
-  ];
-
-  (* Collect all data points: {radius, velocity, stateId} *)
-  (* FFI returns Curve -> list of {Radius, OrbitalVelocity, ExpectedVelocity, Deviation} *)
-  allDataPoints = Flatten[Table[
-    With[{stateData = perState[sid], curve = Lookup[perState[sid], "Curve", {}]},
-      If[Length[curve] > 0,
-        Table[
-          {Lookup[curve[[i]], "Radius", 0],
-           Lookup[curve[[i]], "OrbitalVelocity", 0],
-           sid},
-          {i, Length[curve]}
-        ],
-        {}
-      ]
-    ],
-    {sid, stateIds}
-  ], 1];
-
-  If[Length[allDataPoints] == 0,
-    Message[HGRotationCurvePlot::nodata];
-    Return[$Failed]
-  ];
-
-  (* Color by state *)
-  colorFunc = ColorData[palette];
-  stateColors = If[colorByState,
-    Association[Table[
-      stateIds[[i]] -> colorFunc[(i - 1) / Max[1, Length[stateIds] - 1]],
-      {i, Length[stateIds]}
-    ]],
-    Association[Table[sid -> Blue, {sid, stateIds}]]
-  ];
-
-  (* Build colored data points *)
-  dataPlot = ListPlot[
-    Table[
-      Style[{allDataPoints[[i, 1]], allDataPoints[[i, 2]]},
-            stateColors[allDataPoints[[i, 3]]]],
-      {i, Length[allDataPoints]}
-    ],
-    PlotStyle -> PointSize[Replace[pointSize, {Small -> 0.012, Medium -> 0.018, Large -> 0.025, _ -> 0.018}]]
-  ];
-
-  (* Keplerian prediction: v = sqrt(GM/r), normalized as v ~ sqrt(mass/r) *)
-  (* For flat rotation curves (dark matter), v ~ constant *)
-  rMin = Min[allDataPoints[[All, 1]]];
-  rMax = Max[allDataPoints[[All, 1]]];
-
-  (* Estimate mass from mean velocity at largest radius (Keplerian: M = v^2 * r) *)
-  massEstimate = If[massParam === Automatic,
-    With[{outerPoints = Select[allDataPoints, #[[1]] > 0.8 * rMax &]},
-      If[Length[outerPoints] > 0,
-        Mean[#[[2]]^2 * #[[1]] & /@ outerPoints],
-        Mean[allDataPoints[[All, 2]]]^2 * Mean[allDataPoints[[All, 1]]]
-      ]
-    ],
-    massParam
-  ];
-
-  keplerianCurve = If[showKeplerian && massEstimate > 0,
-    Plot[Sqrt[massEstimate / r], {r, Max[0.5, rMin * 0.5], rMax * 1.2},
-      PlotStyle -> {Red, Dashed, Thickness[0.003]},
-      PlotLegends -> {"Keplerian: v \[Proportional] 1/\[Sqrt]r"}
-    ],
-    Nothing
-  ];
-
-  (* Combine plots *)
-  plotElements = {dataPlot};
-  If[showKeplerian && massEstimate > 0,
-    AppendTo[plotElements, keplerianCurve]
-  ];
-
-  (* Build legend *)
-  annotations = {};
-  If[colorByState && Length[stateIds] > 1 && Length[stateIds] <= 10,
-    AppendTo[annotations, SwatchLegend[
-      Values[stateColors],
-      Table["State " <> ToString[sid], {sid, stateIds}],
-      LegendLabel -> "States"
-    ]]
-  ];
-  If[showKeplerian,
-    AppendTo[annotations, LineLegend[{Directive[Red, Dashed]}, {"Keplerian: v \[Proportional] 1/\[Sqrt]r"}]]
-  ];
-
-  Show[plotElements,
-    Frame -> True,
-    FrameLabel -> {"Radius (graph distance from center)", "Orbital Velocity (edges/step)"},
-    PlotLabel -> "Rotation Curve Analysis",
-    PlotRange -> plotRange,
-    ImageSize -> imgSize,
-    PlotLegends -> If[Length[annotations] > 0, annotations, None]
-  ]
-]
-
-HGRotationCurvePlot::nodata = "RotationData not found. Enable \"RotationCurveAnalysis\" -> True in HGEvolve.";
-
-(* ============================================================================ *)
-(* HGRotationOrbitsPlot - Orbital paths overlaid on state graph *)
-(* ============================================================================ *)
-
-Options[HGRotationOrbitsPlot] = {
-  "Palette" -> "TemperatureMap",
-  "DimensionRange" -> Automatic,
-  "OrbitColorFunction" -> "Deviation",  (* "Deviation", "Radius", "Velocity", or color *)
-  "OrbitWidth" -> 3,
-  "OrbitOpacity" -> 0.7,
-  "RadiusRange" -> All,  (* All or {min, max} to filter orbits by radius *)
-  "MaxOrbits" -> All,  (* All or integer to limit number of orbits shown *)
-  "ShowCenter" -> True,
-  "CenterSize" -> Large,
-  "VertexSize" -> Small,
-  "Layout" -> "Spring",
-  "VertexCoordinates" -> None,
-  ImageSize -> 600
-};
-
-HGRotationOrbitsPlot[evolutionResult_Association, stateId_Integer, opts:OptionsPattern[]] := Module[
-  {palette, dimRange, orbitColorFn, orbitWidth, orbitOpacity, radiusRange, maxOrbitsOpt,
-   showCenter, centerSize, vertexSize, layout, vertexCoords, imgSize,
-   rotationData, stateData, states, stateInfo, orbits, center, edges, vertices,
-   dimData, perVertexDim, dimMin, dimMax, colorFunc, vertexColors,
-   graphEdges, gBase, embedding, vertexCoordMap,
-   orbitGraphics, orbitColors, deviations, maxDev,
-   baseVertexStyle, vertexStyle, edgeStyle, g, annotations},
-
-  (* Extract options *)
-  palette = OptionValue["Palette"];
-  dimRange = OptionValue["DimensionRange"];
-  orbitColorFn = OptionValue["OrbitColorFunction"];
-  orbitWidth = OptionValue["OrbitWidth"];
-  orbitOpacity = OptionValue["OrbitOpacity"];
-  radiusRange = OptionValue["RadiusRange"];
-  maxOrbitsOpt = OptionValue["MaxOrbits"];
-  showCenter = OptionValue["ShowCenter"];
-  centerSize = OptionValue["CenterSize"];
-  vertexSize = OptionValue["VertexSize"];
-  layout = OptionValue["Layout"];
-  vertexCoords = OptionValue["VertexCoordinates"];
-  imgSize = OptionValue[ImageSize];
-
-  (* Validate input *)
-  If[!KeyExistsQ[evolutionResult, "RotationData"],
-    Message[HGRotationOrbitsPlot::nodata];
-    Return[$Failed]
-  ];
-
-  rotationData = evolutionResult["RotationData"];
-  If[!KeyExistsQ[rotationData, "PerState"],
-    Return[$Failed]
-  ];
-
-  stateData = rotationData["PerState"];
-  If[!KeyExistsQ[stateData, stateId],
-    Message[HGRotationOrbitsPlot::nostate, stateId];
-    Return[$Failed]
-  ];
-
-  stateInfo = stateData[stateId];
-  orbits = Lookup[stateInfo, "Orbits", {}];
-  center = Lookup[stateInfo, "Center", None];
-
-  (* Filter orbits by radius range *)
-  If[radiusRange =!= All && ListQ[radiusRange] && Length[radiusRange] == 2,
-    orbits = Select[orbits,
-      With[{r = Lookup[#, "Radius", 0]},
-        r >= radiusRange[[1]] && r <= radiusRange[[2]]
-      ] &
-    ]
-  ];
-
-  (* Limit number of orbits *)
-  If[maxOrbitsOpt =!= All && IntegerQ[maxOrbitsOpt] && maxOrbitsOpt > 0,
-    orbits = Take[orbits, UpTo[maxOrbitsOpt]]
-  ];
-
-  If[Length[orbits] == 0,
-    Message[HGRotationOrbitsPlot::noorbits, stateId];
-    Return[$Failed]
-  ];
-
-  (* Get state edges *)
-  states = Lookup[evolutionResult, "States", <||>];
-  If[!KeyExistsQ[states, stateId],
-    Message[HGRotationOrbitsPlot::nostate, stateId];
-    Return[$Failed]
-  ];
-
-  edges = Map[Rest, states[stateId]["Edges"]];
-  vertices = Union[Flatten[edges]];
-
-  (* Get dimension data if available *)
-  dimData = Lookup[evolutionResult, "DimensionData", <||>];
-  perVertexDim = If[KeyExistsQ[dimData, "PerState"] &&
-                    KeyExistsQ[dimData["PerState"], stateId] &&
-                    KeyExistsQ[dimData["PerState"][stateId], "PerVertex"],
-    dimData["PerState"][stateId]["PerVertex"],
-    <||>
-  ];
-
-  (* Compute dimension range *)
-  If[Length[perVertexDim] > 0,
-    {dimMin, dimMax} = If[dimRange === Automatic,
-      {Min[Values[perVertexDim]], Max[Values[perVertexDim]]},
-      dimRange
-    ];
-    colorFunc = ColorData[palette];
-    vertexColors = Association[Table[
-      v -> With[{d = Lookup[perVertexDim, v, -1]},
-        If[d > 0,
-          colorFunc[Clip[(d - dimMin)/(dimMax - dimMin + 0.001), {0, 1}]],
-          LightGray
-        ]
-      ],
-      {v, vertices}
-    ]],
-    colorFunc = ColorData[palette];
-    vertexColors = Association[Table[v -> LightGray, {v, vertices}]];
-    {dimMin, dimMax} = {0, 3}
-  ];
-
-  (* Build base graph to get layout *)
-  graphEdges = UndirectedEdge @@@ edges;
-
-  gBase = Graph[vertices, graphEdges,
-    ImageSize -> imgSize,
-    GraphLayout -> Switch[layout,
-      "Spring", "SpringElectricalEmbedding",
-      "MDS", {"MultiDimensionalScaling", "Dimension" -> 2},
-      _, "SpringElectricalEmbedding"
-    ]
-  ];
-
-  (* Get vertex coordinates *)
-  If[vertexCoords =!= None,
-    vertexCoordMap = If[AssociationQ[vertexCoords], vertexCoords,
-      Association[Thread[vertices -> vertexCoords]]],
-    embedding = GraphEmbedding[gBase];
-    vertexCoordMap = Association[Thread[VertexList[gBase] -> embedding]]
-  ];
-
-  (* Compute orbit colors based on deviation from Keplerian *)
-  (* Deviation > 0 means faster than expected (dark matter-like) *)
-  deviations = Table[
-    With[{curve = Lookup[stateInfo, "Curve", {}],
-          r = Lookup[orbits[[i]], "Radius", 0]},
-      With[{pt = SelectFirst[curve, Lookup[#, "Radius", -1] == r &, <||>]},
-        Lookup[pt, "Deviation", 0]
-      ]
-    ],
-    {i, Length[orbits]}
-  ];
-  maxDev = Max[Abs[deviations], 0.1];
-
-  orbitColors = If[ColorQ[orbitColorFn],
-    Table[orbitColorFn, {Length[orbits]}],
-    Switch[orbitColorFn,
-      "Deviation",
-        (* Blue = slower than Keplerian, Red = faster (dark matter) *)
-        Table[
-          ColorData["TemperatureMap"][Clip[(deviations[[i]]/maxDev + 1)/2, {0, 1}]],
-          {i, Length[orbits]}
-        ],
-      "Radius",
-        Table[
-          ColorData["Rainbow"][i/Max[1, Length[orbits]]],
-          {i, Length[orbits]}
-        ],
-      "Velocity",
-        With[{vels = Table[Lookup[orbits[[i]], "Velocity", 0], {i, Length[orbits]}],
-              maxVel = Max[Table[Lookup[orbits[[i]], "Velocity", 0], {i, Length[orbits]}], 0.1]},
-          Table[
-            ColorData["SunsetColors"][Clip[vels[[i]]/maxVel, {0, 1}]],
-            {i, Length[vels]}
-          ]
-        ],
-      _,
-        Table[Orange, {Length[orbits]}]
-    ]
-  ];
-
-  (* Build orbit graphics as closed paths *)
-  (* Shell vertices need to be sorted by angle from center to form proper polygon *)
-  orbitGraphics = With[{centerCoord = Lookup[vertexCoordMap, center, {0, 0}]},
-    Table[
-      With[{path = Lookup[orbits[[i]], "Path", {}], color = orbitColors[[i]]},
-        If[Length[path] >= 3,
-          With[{coords = Table[
-              Lookup[vertexCoordMap, path[[j]], {0, 0}],
-              {j, Length[path]}
-            ]},
-            (* Sort by angle from center to form proper closed polygon *)
-            With[{sortedCoords = SortBy[coords,
-                ArcTan[#[[1]] - centerCoord[[1]], #[[2]] - centerCoord[[2]]] &]},
-              {Opacity[orbitOpacity], color, AbsoluteThickness[orbitWidth],
-               Line[Append[sortedCoords, First[sortedCoords]]]}  (* Close the loop *)
-            ]
-          ],
-          Nothing
-        ]
-      ],
-      {i, Length[orbits]}
-    ]
-  ];
-
-  (* Build vertex styles *)
-  baseVertexStyle = Normal[Map[Directive[#, EdgeForm[None]] &, vertexColors]];
-  vertexStyle = If[showCenter && center =!= None && MemberQ[vertices, center],
-    Append[baseVertexStyle, center -> Directive[Red, EdgeForm[{Thick, Black}]]],
-    baseVertexStyle
-  ];
-
-  (* Gray out edges *)
-  edgeStyle = Table[Directive[LightGray, Opacity[0.3]], {Length[graphEdges]}];
-
-  g = Graph[vertices, graphEdges,
-    VertexStyle -> vertexStyle,
-    VertexSize -> Table[
-      v -> If[showCenter && v === center, centerSize, vertexSize],
-      {v, vertices}
-    ],
-    EdgeStyle -> Thread[graphEdges -> edgeStyle],
-    VertexCoordinates -> Normal[vertexCoordMap],
-    ImageSize -> imgSize,
-    Prolog -> orbitGraphics  (* Draw orbits behind graph *)
-  ];
-
-  (* Legend *)
-  annotations = {};
-  If[Length[perVertexDim] > 0,
-    AppendTo[annotations, BarLegend[{palette, {dimMin, dimMax}}, LegendLabel -> "Dimension"]]
-  ];
-  If[orbitColorFn === "Deviation",
-    AppendTo[annotations, BarLegend[{"TemperatureMap", {-maxDev, maxDev}},
-      LegendLabel -> "Velocity Deviation\n(+ = dark matter-like)"]]
-  ];
-
-  If[Length[annotations] > 0,
-    Legended[g, annotations],
-    g
-  ]
-]
-
-HGRotationOrbitsPlot::nodata = "RotationData not found. Enable \"RotationCurveAnalysis\" -> True in HGEvolve.";
-HGRotationOrbitsPlot::nostate = "State `1` not found in rotation data.";
-HGRotationOrbitsPlot::noorbits = "No orbital paths found for state `1`.";
 
 (* ============================================================================ *)
 (* HGToGraph - Convert edges/IC results to Graph *)
