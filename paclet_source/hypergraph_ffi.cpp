@@ -19,6 +19,7 @@
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
+#include "hypergraph/ir_canonicalization.hpp"
 #include "hypergraph/debug_log.hpp"
 #include "job_system/job_system.hpp"
 
@@ -194,10 +195,16 @@ static void print_to_frontend(WolframLibraryData libData, const std::string& mes
  *     "InitialEdges" -> {{vertices...}, ...},
  *     "Rules" -> <"Rule1" -> {{lhs edges}, {rhs edges}}, ...>,
  *     "Steps" -> integer,
- *     "Options" -> Association[..., "HashStrategy" -> "iUT"|"UT"|"WL", ...]
+ *     "Options" -> Association[...,
+ *       "HashStrategy" -> "iUT"|"UT"|"WL",
+ *       "IRVerification" -> True|False,
+ *       "ReturnCanonicalStates" -> True|False,
+ *       ...]
  *   ]
  *
  * Output: WXF Association with States, Events, CausalEdges, BranchialEdges
+ * When ReturnCanonicalStates is True, each state includes "CanonicalEdges"
+ * with IR-canonicalized (relabeled, sorted) edge list.
  */
 EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
     try {
@@ -245,6 +252,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         double exploration_probability = 1.0;
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
         std::string hash_strategy = "iUT";  // Default: IncrementalUniquenessTree
+        bool ir_verification = false;  // IR-based exact edge correspondence and collision verification
+        bool return_canonical_states = false;  // Compute canonical forms on demand via IR
         bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
         size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
 
@@ -457,6 +466,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
                             hash_strategy = option_parser.read<std::string>();
+                        } else if (option_key == "IRVerification") {
+                            std::string symbol = option_parser.read<std::string>();
+                            ir_verification = (symbol == "True");
+                        } else if (option_key == "ReturnCanonicalStates") {
+                            std::string symbol = option_parser.read<std::string>();
+                            return_canonical_states = (symbol == "True");
                         } else if (option_key == "CurvatureMethod") {
                             curvature_method = option_parser.read<std::string>();
                         } else if (option_key == "CurvaturePerVertex") {
@@ -736,6 +751,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         } else {
             hg.set_hash_strategy(hypergraph::HashStrategy::IncrementalUniquenessTree);
         }
+
+        // Configure IR verification layer
+        hg.set_ir_verification(ir_verification);
+        hg.set_return_canonical_states(return_canonical_states);
 
         // Configure event canonicalization
         hg.set_event_signature_keys(event_signature_keys);
@@ -2122,6 +2141,31 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
                 state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
                 state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
+
+                if (hg.return_canonical_states()) {
+                    std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
+                    state.edges.for_each([&](hypergraph::EdgeId eid) {
+                        const hypergraph::Edge& e = hg.get_edge(eid);
+                        edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
+                    });
+
+                    if (!edge_vecs.empty()) {
+                        hypergraph::IRCanonicalizer ir;
+                        auto canon_result = ir.canonicalize_edges(edge_vecs);
+
+                        wxf::WXFValueList canonical_edge_list;
+                        for (const auto& canon_edge : canon_result.canonical_form.edges) {
+                            wxf::WXFValueList ce;
+                            for (auto v : canon_edge) {
+                                ce.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                            }
+                            canonical_edge_list.push_back(wxf::WXFValue(ce));
+                        }
+                        state_assoc.push_back({wxf::WXFValue("CanonicalEdges"), wxf::WXFValue(canonical_edge_list)});
+                    } else {
+                        state_assoc.push_back({wxf::WXFValue("CanonicalEdges"), wxf::WXFValue(wxf::WXFValueList{})});
+                    }
+                }
 
                 states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_assoc)});
             }

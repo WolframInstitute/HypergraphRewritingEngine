@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.14)
 # Create hypergraph library
 add_library(hypergraph
     src/canonicalization.cpp
+    src/ir_canonicalization.cpp
     src/rewriter.cpp
     src/causal_graph.cpp
     src/parallel_evolution.cpp

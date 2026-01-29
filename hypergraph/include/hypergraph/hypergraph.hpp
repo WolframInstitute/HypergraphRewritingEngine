@@ -21,8 +21,8 @@
 #include "wl_hash.hpp"
 #include "concurrent_map.hpp"
 
-// Include v1 canonicalizer for exact isomorphism checking
-#include "canonicalization.hpp"
+// Shared types: CanonicalizationResult, CanonicalForm, VertexMapping
+#include "canonical_types.hpp"
 
 namespace hypergraph {
 
@@ -204,6 +204,14 @@ class Hypergraph {
     // Flag to use shared tree vs exact canonicalization
     // Enabled by default: WL hashing is O(V²×E) vs O(g!) factorial for exact canonicalization
     bool use_shared_tree_{true};
+
+    // IR verification: when enabled, uses McKay-style individualization-refinement
+    // for exact edge correspondence (replacing heuristic WL signatures) and
+    // for hash collision verification in state deduplication
+    bool use_ir_verification_{false};
+
+    // When enabled, canonical forms are computed on demand via IR for state retrieval
+    bool return_canonical_states_{false};
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -776,6 +784,24 @@ public:
     // Check if shared tree is enabled
     bool shared_tree_enabled() const {
         return use_shared_tree_;
+    }
+
+    // IR verification: exact edge correspondence and hash collision verification
+    void set_ir_verification(bool enabled) {
+        use_ir_verification_ = enabled;
+    }
+
+    bool ir_verification_enabled() const {
+        return use_ir_verification_;
+    }
+
+    // Return canonical states: compute canonical form on demand via IR
+    void set_return_canonical_states(bool enabled) {
+        return_canonical_states_ = enabled;
+    }
+
+    bool return_canonical_states() const {
+        return return_canonical_states_;
     }
 
     // =========================================================================

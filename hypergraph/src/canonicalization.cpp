@@ -393,21 +393,17 @@ std::vector<std::vector<VertexType>> canonicalize_parts(const std::vector<std::v
     return best_tuple;
 }
 
+// TODO: Remove this class entirely once all tests are migrated to IRCanonicalizer
 template<typename VertexType>
 std::vector<std::vector<VertexType>> Canonicalizer::wolfram_canonical_hypergraph(
     const std::vector<std::vector<VertexType>>& edges,
     VertexMapping& mapping) const {
+    (void)edges; (void)mapping;
+    return {};
 
-    if (edges.empty()) {
-        return {};
-    }
-
-    // CanonicalHypergraph[list_] := CanonicalizeParts[list]
-    // canonicalize_parts now returns best_tuple BEFORE del_dup is applied
+#if 0 // DISABLED: O(V!) brute-force — replaced by IRCanonicalizer
     auto best_tuple = canonicalize_parts(edges);
 
-    // Build vertex mapping by extracting the "alphabet" that del_dup will use
-    // alphabet = DeleteDuplicates[Flatten[best_tuple]] - preserves first-appearance order
     mapping.canonical_to_original.clear();
     mapping.original_to_canonical.clear();
 
@@ -421,23 +417,18 @@ std::vector<std::vector<VertexType>> Canonicalizer::wolfram_canonical_hypergraph
         }
     }
 
-    // Build vertex mapping: alphabet[i] is the original vertex for canonical vertex i
     mapping.canonical_to_original.resize(alphabet.size());
     for (std::size_t i = 0; i < alphabet.size(); ++i) {
         mapping.canonical_to_original[i] = alphabet[i];
         mapping.original_to_canonical[alphabet[i]] = static_cast<VertexType>(i);
     }
 
-    // Now apply del_dup to get the canonical result
     auto result = del_dup(best_tuple);
 
-    // Build edge permutation by matching original edges to best_tuple positions
-    // best_tuple has original vertex IDs, just reordered
     mapping.original_edge_to_canonical.clear();
     mapping.canonical_edge_to_original.clear();
     mapping.canonical_edge_to_original.resize(edges.size());
 
-    // Create sorted versions of original edges with their indices
     std::vector<std::pair<std::vector<VertexType>, std::size_t>> sorted_original_with_idx;
     for (std::size_t i = 0; i < edges.size(); ++i) {
         std::vector<VertexType> sorted_edge = edges[i];
@@ -445,18 +436,14 @@ std::vector<std::vector<VertexType>> Canonicalizer::wolfram_canonical_hypergraph
         sorted_original_with_idx.push_back({sorted_edge, i});
     }
 
-    // Use stable_sort to ensure deterministic ordering when edges are equal
     std::stable_sort(sorted_original_with_idx.begin(), sorted_original_with_idx.end(),
                      [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    // Match each edge in best_tuple to an original edge
     std::set<std::size_t> used_original_indices;
     for (std::size_t canon_idx = 0; canon_idx < best_tuple.size(); ++canon_idx) {
-        // Sort the best_tuple edge for comparison
         std::vector<VertexType> sorted_best_tuple_edge = best_tuple[canon_idx];
         std::sort(sorted_best_tuple_edge.begin(), sorted_best_tuple_edge.end());
 
-        // Find first unused original edge that matches
         for (const auto& [sorted_orig, orig_idx] : sorted_original_with_idx) {
             if (sorted_orig == sorted_best_tuple_edge &&
                 used_original_indices.find(orig_idx) == used_original_indices.end()) {
@@ -469,6 +456,7 @@ std::vector<std::vector<VertexType>> Canonicalizer::wolfram_canonical_hypergraph
     }
 
     return result;
+#endif
 }
 
 std::vector<std::vector<std::size_t>> Canonicalizer::edges_to_size_t(
@@ -485,19 +473,17 @@ std::vector<std::vector<std::size_t>> Canonicalizer::edges_to_size_t(
     return result;
 }
 
+// TODO: Remove this class entirely once all tests are migrated to IRCanonicalizer
 template<typename VertexType>
 CanonicalizationResult Canonicalizer::canonicalize_edges(const std::vector<std::vector<VertexType>>& edges) const {
+    (void)edges;
     CanonicalizationResult result;
+    result.canonical_form.vertex_count = 0;
+    return result;
 
-    if (edges.empty()) {
-        result.canonical_form.vertex_count = 0;
-        return result;
-    }
-
-    // Apply Wolfram canonicalization directly
+#if 0 // DISABLED: O(V!) brute-force — replaced by IRCanonicalizer
     auto canonical_edges = wolfram_canonical_hypergraph(edges, result.vertex_mapping);
 
-    // Convert to CanonicalForm's VertexId type (std::size_t) if needed
     result.canonical_form.edges.reserve(canonical_edges.size());
     for (const auto& edge : canonical_edges) {
         std::vector<VertexId> converted_edge;
@@ -510,6 +496,7 @@ CanonicalizationResult Canonicalizer::canonicalize_edges(const std::vector<std::
     result.canonical_form.vertex_count = result.vertex_mapping.canonical_to_original.size();
 
     return result;
+#endif
 }
 
 // Explicit template instantiations for the types we use

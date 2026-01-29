@@ -1,6 +1,6 @@
 #pragma once
 #include <gtest/gtest.h>
-#include <hypergraph/canonicalization.hpp>
+#include <hypergraph/ir_canonicalization.hpp>
 #include <vector>
 #include <chrono>
 #include <string>
@@ -35,7 +35,7 @@ public:
 inline void expect_canonical_equal(
     const std::vector<std::vector<hypergraph::VertexId>>& edges1,
     const std::vector<std::vector<hypergraph::VertexId>>& edges2) {
-    hypergraph::Canonicalizer canonicalizer;
+    hypergraph::IRCanonicalizer canonicalizer;
     auto canon1 = canonicalizer.canonicalize_edges(edges1);
     auto canon2 = canonicalizer.canonicalize_edges(edges2);
     EXPECT_EQ(canon1.canonical_form, canon2.canonical_form)
@@ -46,7 +46,7 @@ inline void expect_canonical_equal(
 inline void expect_canonical_different(
     const std::vector<std::vector<hypergraph::VertexId>>& edges1,
     const std::vector<std::vector<hypergraph::VertexId>>& edges2) {
-    hypergraph::Canonicalizer canonicalizer;
+    hypergraph::IRCanonicalizer canonicalizer;
     auto canon1 = canonicalizer.canonicalize_edges(edges1);
     auto canon2 = canonicalizer.canonicalize_edges(edges2);
     EXPECT_NE(canon1.canonical_form, canon2.canonical_form)

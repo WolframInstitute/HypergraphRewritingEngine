@@ -1,6 +1,7 @@
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
 #include "hypergraph/hypergraph.hpp"
+#include "hypergraph/ir_canonicalization.hpp"
 #include <thread>
 
 namespace hypergraph {
@@ -180,6 +181,36 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // Also insert into event_canonical_state_map_ using the isomorphism-invariant hash
     event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
 
+    // IR verification: when hash collision found, verify isomorphism with IR
+    // If IR says non-isomorphic, this is a false positive — treat as new state
+    bool verified_duplicate = !was_inserted;
+    if (verified_duplicate && use_ir_verification_) {
+        StateId existing_sid = existing_or_new;
+        const SparseBitset& existing_edges = get_state_edges(existing_sid);
+        const SparseBitset& new_edges_ref = get_state(new_sid).edges;
+
+        auto extract_edge_vecs = [&](const SparseBitset& state_edges)
+            -> std::vector<std::vector<VertexId>> {
+            std::vector<std::vector<VertexId>> edge_vecs;
+            state_edges.for_each([&](EdgeId eid) {
+                const Edge& e = edges_[eid];
+                edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
+            });
+            return edge_vecs;
+        };
+
+        auto vecs_existing = extract_edge_vecs(existing_edges);
+        auto vecs_new = extract_edge_vecs(new_edges_ref);
+
+        IRCanonicalizer ir;
+        if (!ir.are_isomorphic(vecs_existing, vecs_new)) {
+            // False positive: hash collision but not actually isomorphic
+            // Treat as a new unique state
+            verified_duplicate = false;
+            existing_or_new = new_sid;
+        }
+    }
+
     // Cache the canonical ID in the state for fast lookup
     states_[new_sid].canonical_id = existing_or_new;
 
@@ -187,7 +218,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // on ARM64's weak memory model. Pairs with acquire fence in get_canonical_state().
     std::atomic_thread_fence(std::memory_order_release);
 
-    if (!was_inserted) {
+    if (verified_duplicate) {
         return {existing_or_new, new_sid, false};
     }
 
@@ -503,69 +534,42 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
-    // Use unified uniqueness tree if enabled
+    // Use shared tree (WL/UT) if enabled — fast approximate hash for hot path
     if (use_shared_tree_ && unified_tree_) {
         return compute_canonical_hash_shared(edges);
     }
 
-    // Build edge vectors for canonicalizer
-    std::vector<std::vector<std::size_t>> edge_vectors;
+    // Fallback: exact canonical hash via IR (polynomial for low-symmetry graphs)
+    std::vector<std::vector<VertexId>> edge_vectors;
 
     std::atomic_thread_fence(std::memory_order_acquire);
 
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
-
-        std::vector<std::size_t> verts;
-        verts.reserve(e.arity);
-        for (uint8_t i = 0; i < e.arity; ++i) {
-            verts.push_back(static_cast<std::size_t>(e.vertices[i]));
-        }
-        edge_vectors.push_back(std::move(verts));
+        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
     });
 
     if (edge_vectors.empty()) {
         return 0;
     }
 
-    // Use exact canonicalization
-    hypergraph::Canonicalizer canonicalizer;
-    auto result = canonicalizer.canonicalize_edges(edge_vectors);
-
-    // FNV-style hash of canonical form
-    uint64_t hash = 14695981039346656037ULL;
-    constexpr uint64_t FNV_PRIME = 1099511628211ULL;
-
-    for (const auto& edge : result.canonical_form.edges) {
-        for (auto vertex : edge) {
-            hash ^= static_cast<uint64_t>(vertex);
-            hash *= FNV_PRIME;
-        }
-        hash ^= 0xDEADBEEF;
-        hash *= FNV_PRIME;
-    }
-
-    return hash;
+    IRCanonicalizer ir;
+    return ir.compute_canonical_hash(edge_vectors);
 }
 
 std::string Hypergraph::get_canonical_form_string(const SparseBitset& edges) const {
-    std::vector<std::vector<std::size_t>> edge_vectors;
+    std::vector<std::vector<VertexId>> edge_vectors;
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
-        std::vector<std::size_t> verts;
-        verts.reserve(e.arity);
-        for (uint8_t i = 0; i < e.arity; ++i) {
-            verts.push_back(static_cast<std::size_t>(e.vertices[i]));
-        }
-        edge_vectors.push_back(std::move(verts));
+        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
     });
 
     if (edge_vectors.empty()) {
         return "{}";
     }
 
-    hypergraph::Canonicalizer canonicalizer;
-    auto result = canonicalizer.canonicalize_edges(edge_vectors);
+    IRCanonicalizer ir;
+    auto result = ir.canonicalize_edges(edge_vectors);
 
     std::string s = "{";
     for (size_t i = 0; i < result.canonical_form.edges.size(); ++i) {
@@ -751,6 +755,45 @@ EdgeCorrespondence Hypergraph::find_edge_correspondence_dispatch(
 ) const {
     EdgeVertexAccessorRaw vert_acc(this);
     EdgeArityAccessorRaw arity_acc(this);
+
+    if (use_ir_verification_) {
+        auto extract_edges = [&](const SparseBitset& state_edges)
+            -> std::pair<std::vector<std::vector<VertexId>>, std::vector<EdgeId>> {
+            std::vector<std::vector<VertexId>> edge_vecs;
+            std::vector<EdgeId> edge_ids;
+            state_edges.for_each([&](EdgeId eid) {
+                const Edge& e = edges_[eid];
+                edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
+                edge_ids.push_back(eid);
+            });
+            return {std::move(edge_vecs), std::move(edge_ids)};
+        };
+
+        auto [vecs1, ids1] = extract_edges(state1_edges);
+        auto [vecs2, ids2] = extract_edges(state2_edges);
+
+        IRCanonicalizer ir;
+        auto r1 = ir.canonicalize_edges(vecs1);
+        auto r2 = ir.canonicalize_edges(vecs2);
+
+        if (r1.canonical_form != r2.canonical_form) {
+            return EdgeCorrespondence{};
+        }
+
+        EdgeCorrespondence result;
+        result.count = static_cast<uint32_t>(ids1.size());
+        result.state1_edges = const_cast<ConcurrentHeterogeneousArena&>(arena_).allocate_array<EdgeId>(result.count);
+        result.state2_edges = const_cast<ConcurrentHeterogeneousArena&>(arena_).allocate_array<EdgeId>(result.count);
+
+        for (uint32_t ci = 0; ci < result.count; ++ci) {
+            size_t orig1 = r1.vertex_mapping.canonical_edge_to_original[ci];
+            size_t orig2 = r2.vertex_mapping.canonical_edge_to_original[ci];
+            result.state1_edges[ci] = ids1[orig1];
+            result.state2_edges[ci] = ids2[orig2];
+        }
+        result.valid = true;
+        return result;
+    }
 
     if ((hash_strategy_ == HashStrategy::WL || hash_strategy_ == HashStrategy::IncrementalWL) && wl_hash_) {
         return wl_hash_->find_edge_correspondence(state1_edges, state2_edges, vert_acc, arity_acc);

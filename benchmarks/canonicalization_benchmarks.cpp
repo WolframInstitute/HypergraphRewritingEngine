@@ -2,7 +2,7 @@
 
 #include "benchmark_framework.hpp"
 #include "random_hypergraph_generator.hpp"
-#include <hypergraph/canonicalization.hpp>
+#include <hypergraph/ir_canonicalization.hpp>
 
 using namespace hypergraph;
 using namespace benchmark;
@@ -20,7 +20,7 @@ BENCHMARK(canonicalization_by_edge_count, "Measures canonicalization performance
         int symmetry_groups = std::max(1, edges / 2);
         uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_edge_count", 0, edges, symmetry_groups, 3);
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 2, seed);
-        Canonicalizer canonicalizer;
+        IRCanonicalizer canonicalizer;
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize_edges(edge_list);
@@ -36,7 +36,7 @@ BENCHMARK(canonicalization_by_edge_count_arity3, "Measures canonicalization perf
         int symmetry_groups = std::max(1, edges / 2);
         uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_edge_count_arity3", 0, edges, symmetry_groups, 3);
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 3, seed);
-        Canonicalizer canonicalizer;
+        IRCanonicalizer canonicalizer;
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize_edges(edge_list);
@@ -51,7 +51,7 @@ BENCHMARK(canonicalization_by_symmetry, "Shows how graph symmetry affects canoni
 
         uint32_t seed = RandomHypergraphGenerator::compute_seed("canonicalization_by_symmetry", 0, num_edges, symmetry_groups, 3);
         auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(num_edges, symmetry_groups, 2, seed);
-        Canonicalizer canonicalizer;
+        IRCanonicalizer canonicalizer;
 
         BENCHMARK_CODE([&]() {
             canonicalizer.canonicalize_edges(edge_list);
@@ -73,7 +73,7 @@ BENCHMARK(canonicalization_2d_sweep, "2D parameter sweep: edges vs symmetry_grou
             auto edge_list = RandomHypergraphGenerator::generate_symmetric_edges(edges, symmetry_groups, 2, seed);
 
             BENCHMARK_CODE([&]() {
-                Canonicalizer canonicalizer;
+                IRCanonicalizer canonicalizer;
                 canonicalizer.canonicalize_edges(edge_list);
             });
         }

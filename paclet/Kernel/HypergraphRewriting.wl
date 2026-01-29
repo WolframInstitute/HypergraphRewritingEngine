@@ -282,6 +282,13 @@ HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates 
 stateVertexStyle = Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]];
 eventVertexStyle = Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]];
 
+(* Get edges for plotting: use CanonicalEdges when available, otherwise strip edge IDs from Edges *)
+stateDisplayEdges[data_Association] :=
+  If[KeyExistsQ[data, "CanonicalEdges"] && Length[data["CanonicalEdges"]] > 0,
+    data["CanonicalEdges"],
+    Rest /@ data["Edges"]
+  ];
+
 (* Helper function to format edges for display: bold edge ID, truncate if over limit *)
 formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
   {displayed = Take[stateEdges, UpTo[maxEdges]], formatted},
@@ -292,13 +299,19 @@ formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
 (* Format state tooltip with full info *)
 formatStateTooltip[stateData_Association] := Column[{
   Row[{Style["State", Bold]}],
-  Grid[{
+  Grid[Join[{
     {"Id:", stateData["Id"]},
     {"CanonicalId:", stateData["CanonicalId"]},
     {"Step:", stateData["Step"]},
     {"IsInitial:", stateData["IsInitial"]},
     {Row[{"Edges (", Length[stateData["Edges"]], "):"}], formatEdgesForDisplay[stateData["Edges"]]}
-  }, Alignment -> Left, Spacings -> {1, 0.5}]
+  },
+    If[KeyExistsQ[stateData, "CanonicalEdges"] && Length[stateData["CanonicalEdges"]] > 0,
+      {{Row[{"Canonical (", Length[stateData["CanonicalEdges"]], "):"}],
+        Column[Take[stateData["CanonicalEdges"], UpTo[5]]]}},
+      {}
+    ]
+  ], Alignment -> Left, Spacings -> {1, 0.5}]
 }, Spacings -> 0.5];
 
 (* Format event tooltip with full info *)
@@ -359,7 +372,7 @@ makeStyledStateVertexShapeFn[vertexData_] := Function[{pos, v, size},
   With[{data = vertexData[v]},
     If[AssociationQ[data] && KeyExistsQ[data, "Edges"],
       Inset[Framed[
-        ResourceFunction["WolframModelPlot"][Rest /@ data["Edges"], ImageSize -> {32, 32}],
+        ResourceFunction["WolframModelPlot"][stateDisplayEdges[data], ImageSize -> {32, 32}],
         Background -> LightBlue, RoundingRadius -> 3
       ], pos, {0, 0}],
       (* Fallback for missing data *)
@@ -562,7 +575,7 @@ makeStyledStateVertexWithDimensionFn[vertexData_, dimensionData_, palette_, colo
       With[{dimColor = getDimensionColor[data["Id"], dimensionData, palette, colorBy, dimRange]},
         With[{bgColor = If[MissingQ[dimColor], LightBlue, Lighter[dimColor, 0.3]]},
           Inset[Framed[
-            ResourceFunction["WolframModelPlot"][Rest /@ data["Edges"], ImageSize -> {32, 32}],
+            ResourceFunction["WolframModelPlot"][stateDisplayEdges[data], ImageSize -> {32, 32}],
             Background -> bgColor, RoundingRadius -> 3,
             FrameStyle -> If[MissingQ[dimColor], Automatic, Darker[dimColor]]
           ], pos, {0, 0}]
@@ -888,6 +901,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   options = <|
     "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
+    "ReturnCanonicalStates" -> (OptionValue["CanonicalizeStates"] === Full),
+    "IRVerification" -> (OptionValue["CanonicalizeStates"] === Full),
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
     "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
