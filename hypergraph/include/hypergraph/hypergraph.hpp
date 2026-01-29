@@ -175,7 +175,8 @@ class Hypergraph {
     // None: tree mode - no deduplication, each state is unique
     // Automatic: content-ordered hash (not yet implemented, behaves like Full)
     // Full: isomorphism-invariant hash via WL/UT
-    StateCanonicalizationMode state_canonicalization_mode_{StateCanonicalizationMode::None};
+    // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
+    std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
     // ==========================================================================
     // Global Vertex Adjacency Index
@@ -691,11 +692,15 @@ public:
     // Behavior depends on state_canonicalization_mode_:
     // - None: returns raw_state (no canonicalization)
     // - Automatic/Full: returns cached canonical_id (may differ from raw_state)
+    // NOTE: Uses acquire fence to ensure visibility of canonical_id on ARM64
     StateId get_canonical_state(StateId raw_state) const {
         if (raw_state == INVALID_ID) return INVALID_ID;
-        if (state_canonicalization_mode_ == StateCanonicalizationMode::None) {
+        if (state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::None) {
             return raw_state;
         }
+        // Acquire fence ensures we see the canonical_id write from create_or_get_canonical_state
+        // This is critical for ARM64's weak memory model
+        std::atomic_thread_fence(std::memory_order_acquire);
         const State& state = get_state(raw_state);
         return state.canonical_id;
     }
@@ -737,21 +742,25 @@ public:
     // =========================================================================
 
     // State canonicalization mode: controls state deduplication strategy
+    // Uses release semantics to ensure visibility to worker threads on ARM64
     void set_state_canonicalization_mode(StateCanonicalizationMode mode) {
-        state_canonicalization_mode_ = mode;
+        state_canonicalization_mode_.store(mode, std::memory_order_release);
     }
 
+    // Uses acquire semantics to see updates from main thread on ARM64
     StateCanonicalizationMode state_canonicalization_mode() const {
-        return state_canonicalization_mode_;
+        return state_canonicalization_mode_.load(std::memory_order_acquire);
     }
 
     // Legacy setter for backward compatibility
     void set_state_canonicalization(bool enabled) {
-        state_canonicalization_mode_ = enabled ? StateCanonicalizationMode::Full : StateCanonicalizationMode::None;
+        state_canonicalization_mode_.store(
+            enabled ? StateCanonicalizationMode::Full : StateCanonicalizationMode::None,
+            std::memory_order_release);
     }
 
     bool state_canonicalization_enabled() const {
-        return state_canonicalization_mode_ != StateCanonicalizationMode::None;
+        return state_canonicalization_mode_.load(std::memory_order_acquire) != StateCanonicalizationMode::None;
     }
 
     // Enable shared uniqueness tree for faster hashing with incremental computation

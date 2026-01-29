@@ -266,6 +266,8 @@ private:
                                 check_key = table->entries[ci].key.load(std::memory_order_acquire);
                                 #if defined(__x86_64__) || defined(_M_X64)
                                 __builtin_ia32_pause();
+                                #elif defined(__aarch64__)
+                                __asm__ volatile("yield" ::: "memory");
                                 #endif
                             } while (check_key == LOCKED_KEY);
 
@@ -353,6 +355,8 @@ private:
             while (current_key == LOCKED_KEY) {
                 #if defined(__x86_64__) || defined(_M_X64)
                 __builtin_ia32_pause();
+                #elif defined(__aarch64__)
+                __asm__ volatile("yield" ::: "memory");
                 #endif
                 current_key = entry.key.load(std::memory_order_acquire);
             }

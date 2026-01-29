@@ -159,8 +159,9 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     StateId new_sid = create_state(std::move(edge_set), step, canonical_hash, parent_event);
 
     // Determine the key for canonical map based on mode
+    // Use atomic load with acquire to ensure we see the mode set by the main thread
     uint64_t map_key;
-    switch (state_canonicalization_mode_) {
+    switch (state_canonicalization_mode_.load(std::memory_order_acquire)) {
         case StateCanonicalizationMode::None:
             map_key = static_cast<uint64_t>(new_sid);
             break;
@@ -181,6 +182,10 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
 
     // Cache the canonical ID in the state for fast lookup
     states_[new_sid].canonical_id = existing_or_new;
+
+    // CRITICAL: Release fence ensures canonical_id write is visible to other threads
+    // on ARM64's weak memory model. Pairs with acquire fence in get_canonical_state().
+    std::atomic_thread_fence(std::memory_order_release);
 
     if (!was_inserted) {
         return {existing_or_new, new_sid, false};
