@@ -83,6 +83,8 @@ HGToGraph[edges, coords] converts edges with vertex coordinates to a Graph."
 Options[HGEvolve] = {
   "HashStrategy" -> "WL",
   "CanonicalizeStates" -> None,  (* None, Automatic, Full *)
+  "ReturnCanonicalStates" -> False,
+  "IRVerification" -> False,
   "CanonicalizeEvents" -> None,  (* None, Full, Automatic, or {keys...} *)
   "CausalTransitiveReduction" -> True,
   "MaxSuccessorStatesPerParent" -> 0,
@@ -282,12 +284,9 @@ HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates 
 stateVertexStyle = Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[0.2, 0.3, 0.5]]];
 eventVertexStyle = Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]];
 
-(* Get edges for plotting: use CanonicalEdges when available, otherwise strip edge IDs from Edges *)
-stateDisplayEdges[data_Association] :=
-  If[KeyExistsQ[data, "CanonicalEdges"] && Length[data["CanonicalEdges"]] > 0,
-    data["CanonicalEdges"],
-    Rest /@ data["Edges"]
-  ];
+(* Get edges for plotting: strip edge IDs from Edges *)
+(* When ReturnCanonicalStates is enabled, Edges already contains canonical edges from the FFI *)
+stateDisplayEdges[data_Association] := Rest /@ data["Edges"];
 
 (* Helper function to format edges for display: bold edge ID, truncate if over limit *)
 formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
@@ -299,19 +298,13 @@ formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
 (* Format state tooltip with full info *)
 formatStateTooltip[stateData_Association] := Column[{
   Row[{Style["State", Bold]}],
-  Grid[Join[{
+  Grid[{
     {"Id:", stateData["Id"]},
     {"CanonicalId:", stateData["CanonicalId"]},
     {"Step:", stateData["Step"]},
     {"IsInitial:", stateData["IsInitial"]},
     {Row[{"Edges (", Length[stateData["Edges"]], "):"}], formatEdgesForDisplay[stateData["Edges"]]}
-  },
-    If[KeyExistsQ[stateData, "CanonicalEdges"] && Length[stateData["CanonicalEdges"]] > 0,
-      {{Row[{"Canonical (", Length[stateData["CanonicalEdges"]], "):"}],
-        Column[Take[stateData["CanonicalEdges"], UpTo[5]]]}},
-      {}
-    ]
-  ], Alignment -> Left, Spacings -> {1, 0.5}]
+  }, Alignment -> Left, Spacings -> {1, 0.5}]
 }, Spacings -> 0.5];
 
 (* Format event tooltip with full info *)
@@ -901,8 +894,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   options = <|
     "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
-    "ReturnCanonicalStates" -> (OptionValue["CanonicalizeStates"] === Full),
-    "IRVerification" -> (OptionValue["CanonicalizeStates"] === Full),
+    "ReturnCanonicalStates" -> (canonicalizeStates === Full),
+    "IRVerification" -> (canonicalizeStates === Full),
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
     "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],

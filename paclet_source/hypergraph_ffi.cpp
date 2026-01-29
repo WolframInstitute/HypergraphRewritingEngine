@@ -2123,25 +2123,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
 
                 // Build edge list: each edge is {edge_id, v1, v2, ...}
+                // When ReturnCanonicalStates is enabled, edges are IR-canonicalized
+                // (vertices relabeled to 0..n-1, edges sorted) with sequential edge IDs
                 wxf::WXFValueList edge_list;
-                state.edges.for_each([&](hypergraph::EdgeId eid) {
-                    const hypergraph::Edge& edge = hg.get_edge(eid);
-                    wxf::WXFValueList edge_data;
-                    edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                    for (uint8_t i = 0; i < edge.arity; ++i) {
-                        edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
-                    }
-                    edge_list.push_back(wxf::WXFValue(edge_data));
-                });
-
-                wxf::WXFValueAssociation state_assoc;
-                state_assoc.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
-                state_assoc.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(canonical_id))});
-                state_assoc.push_back({wxf::WXFValue("ContentStateId"), wxf::WXFValue(static_cast<int64_t>(content_id))});
-                state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
-                state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
-                state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
-
                 if (hg.return_canonical_states()) {
                     std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
                     state.edges.for_each([&](hypergraph::EdgeId eid) {
@@ -2152,20 +2136,35 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     if (!edge_vecs.empty()) {
                         hypergraph::IRCanonicalizer ir;
                         auto canon_result = ir.canonicalize_edges(edge_vecs);
-
-                        wxf::WXFValueList canonical_edge_list;
+                        int64_t edge_idx = 0;
                         for (const auto& canon_edge : canon_result.canonical_form.edges) {
-                            wxf::WXFValueList ce;
+                            wxf::WXFValueList edge_data;
+                            edge_data.push_back(wxf::WXFValue(edge_idx++));
                             for (auto v : canon_edge) {
-                                ce.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                                edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
                             }
-                            canonical_edge_list.push_back(wxf::WXFValue(ce));
+                            edge_list.push_back(wxf::WXFValue(edge_data));
                         }
-                        state_assoc.push_back({wxf::WXFValue("CanonicalEdges"), wxf::WXFValue(canonical_edge_list)});
-                    } else {
-                        state_assoc.push_back({wxf::WXFValue("CanonicalEdges"), wxf::WXFValue(wxf::WXFValueList{})});
                     }
+                } else {
+                    state.edges.for_each([&](hypergraph::EdgeId eid) {
+                        const hypergraph::Edge& edge = hg.get_edge(eid);
+                        wxf::WXFValueList edge_data;
+                        edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
+                        for (uint8_t i = 0; i < edge.arity; ++i) {
+                            edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
+                        }
+                        edge_list.push_back(wxf::WXFValue(edge_data));
+                    });
                 }
+
+                wxf::WXFValueAssociation state_assoc;
+                state_assoc.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
+                state_assoc.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(canonical_id))});
+                state_assoc.push_back({wxf::WXFValue("ContentStateId"), wxf::WXFValue(static_cast<int64_t>(content_id))});
+                state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
+                state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
+                state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
 
                 states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_assoc)});
             }
@@ -2518,16 +2517,37 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             };
 
             // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
+            // When ReturnCanonicalStates is enabled, emits IR-canonicalized edges
             auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
                 wxf::WXFValueList edge_list;
-                hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                    const hypergraph::Edge& edge = hg.get_edge(eid);
-                    wxf::WXFValueList e;
-                    e.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                    for (uint8_t i = 0; i < edge.arity; ++i)
-                        e.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
-                    edge_list.push_back(wxf::WXFValue(e));
-                });
+                if (hg.return_canonical_states()) {
+                    std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
+                    hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                        const hypergraph::Edge& edge = hg.get_edge(eid);
+                        edge_vecs.emplace_back(edge.vertices, edge.vertices + edge.arity);
+                    });
+                    if (!edge_vecs.empty()) {
+                        hypergraph::IRCanonicalizer ir;
+                        auto canon_result = ir.canonicalize_edges(edge_vecs);
+                        int64_t edge_idx = 0;
+                        for (const auto& canon_edge : canon_result.canonical_form.edges) {
+                            wxf::WXFValueList e;
+                            e.push_back(wxf::WXFValue(edge_idx++));
+                            for (auto v : canon_edge)
+                                e.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                            edge_list.push_back(wxf::WXFValue(e));
+                        }
+                    }
+                } else {
+                    hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                        const hypergraph::Edge& edge = hg.get_edge(eid);
+                        wxf::WXFValueList e;
+                        e.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
+                        for (uint8_t i = 0; i < edge.arity; ++i)
+                            e.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
+                        edge_list.push_back(wxf::WXFValue(e));
+                    });
+                }
                 return edge_list;
             };
 
