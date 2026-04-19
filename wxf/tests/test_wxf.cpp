@@ -597,3 +597,109 @@ TEST_F(WXFTest, WolframGeneratedData) {
     EXPECT_EQ(4u, result.size());
 }
 #endif
+
+// ============================================================================
+// VARINT EDGE CASES — pure C++ (no wolframscript), fast
+// ============================================================================
+// The parser's read_varint is private; we exercise it indirectly through a
+// BinaryString frame, whose length prefix is a varint. A legal varint decodes
+// and then the parser throws on payload truncation (distinguishable message);
+// an illegal varint throws "Varint too large" from inside read_varint itself.
+
+namespace {
+std::vector<uint8_t> encode_varint(uint64_t value) {
+    std::vector<uint8_t> out;
+    while (value >= 0x80) {
+        out.push_back(static_cast<uint8_t>((value & 0x7F) | 0x80));
+        value >>= 7;
+    }
+    out.push_back(static_cast<uint8_t>(value & 0x7F));
+    return out;
+}
+
+// Build a frame that forces read_varint to run via a BinaryString length prefix.
+std::vector<uint8_t> make_binarystring_frame(const std::vector<uint8_t>& length_varint) {
+    std::vector<uint8_t> frame = {'8', ':', static_cast<uint8_t>(wxf::Token::BinaryString)};
+    frame.insert(frame.end(), length_varint.begin(), length_varint.end());
+    return frame;
+}
+} // namespace
+
+TEST_F(WXFTest, Varint_TenByteEncoding_Uint64Max) {
+    // Encoding of UINT64_MAX is 10 bytes. The corrected `shift > 63` check accepts
+    // all 10 bytes; the old `shift >= 63` threw on byte 10 with "Varint too large".
+    // After successful varint decode the downstream vector<uint8_t> allocation will
+    // fail with std::length_error — that's fine; we only want to confirm the
+    // varint layer didn't reject the legal 10-byte encoding.
+    auto varint = encode_varint(UINT64_MAX);
+    ASSERT_EQ(varint.size(), 10u);
+
+    auto frame = make_binarystring_frame(varint);
+    wxf::Parser parser(frame);
+    parser.skip_header();
+
+    try {
+        (void)parser.read<std::vector<uint8_t>>();
+        FAIL() << "Expected some exception — frame has no payload";
+    } catch (const std::exception& e) {
+        std::string msg = e.what();
+        EXPECT_EQ(msg.find("Varint too large"), std::string::npos)
+            << "Unexpected 'Varint too large' for a legal 10-byte varint: " << msg;
+    }
+}
+
+TEST_F(WXFTest, Varint_ElevenByteEncoding_Rejected) {
+    // 11 bytes with continuation on the first 10 implies shift reaches 70 — UB if
+    // we did the shift, so the parser must reject.
+    std::vector<uint8_t> bad_varint;
+    for (int i = 0; i < 10; ++i) bad_varint.push_back(0xFF);  // continuation set
+    bad_varint.push_back(0x01);                                // final byte, no continuation
+
+    auto frame = make_binarystring_frame(bad_varint);
+    wxf::Parser parser(frame);
+    parser.skip_header();
+
+    try {
+        (void)parser.read<std::vector<uint8_t>>();
+        FAIL() << "Expected 'Varint too large' ParseError";
+    } catch (const wxf::ParseError& e) {
+        std::string msg = e.what();
+        EXPECT_NE(msg.find("Varint too large"), std::string::npos)
+            << "Expected 'Varint too large', got: " << msg;
+    }
+}
+
+TEST_F(WXFTest, Varint_BoundaryValues_Decode) {
+    // Each of these is a legal varint — the decode must not throw "Varint too large".
+    const uint64_t kCases[] = {
+        0, 1, 127,           // 1-byte
+        128, 16383,          // 2-byte
+        16384, 2097151,      // 3-byte
+        uint64_t(1) << 28,   // 5-byte
+        uint64_t(1) << 56,   // 9-byte
+        (uint64_t(1) << 63), // 10-byte — this is the value that exercises shift=63
+        UINT64_MAX,          // 10-byte max
+    };
+    for (uint64_t v : kCases) {
+        auto varint = encode_varint(v);
+        auto frame = make_binarystring_frame(varint);
+        wxf::Parser parser(frame);
+        parser.skip_header();
+
+        if (v == 0) {
+            // Empty BinaryString — should succeed.
+            auto bytes = parser.read<std::vector<uint8_t>>();
+            EXPECT_TRUE(bytes.empty()) << "v=0 should decode to empty BinaryString";
+            continue;
+        }
+
+        try {
+            (void)parser.read<std::vector<uint8_t>>();
+            FAIL() << "Expected payload underrun / oversize error for v=" << v;
+        } catch (const std::exception& e) {
+            std::string msg = e.what();
+            EXPECT_EQ(msg.find("Varint too large"), std::string::npos)
+                << "Legal varint v=" << v << " was rejected: " << msg;
+        }
+    }
+}

@@ -19,7 +19,11 @@ size_t Parser::read_varint() {
 
     do {
         byte = read_byte();
-        if (shift >= 63) {
+        // shift must stay < 64 for the `<<` below to be well-defined on size_t.
+        // 10 bytes × 7 bits = 70 bits, so bytes 1..9 cover shifts 0..56 and byte 10
+        // covers shift=63 (producing bit 63). An 11th byte would imply shift=70
+        // which is UB; throw before that happens.
+        if (shift > 63) {
             throw ParseError("Varint too large", read_position_ - 1);
         }
         value |= (size_t(byte & 0x7F) << shift);
