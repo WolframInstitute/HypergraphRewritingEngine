@@ -202,7 +202,6 @@ TEST_F(IRCanonicalizationTest, HandlesLargerGraphs) {
 
 TEST_F(IRCanonicalizationTest, IRVerificationExactEdgeCorrespondence) {
     Hypergraph hg;
-    hg.set_ir_verification(true);
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
 
     // Create two isomorphic states: {v0,v1},{v1,v2} and {v3,v4},{v4,v5}
@@ -229,7 +228,7 @@ TEST_F(IRCanonicalizationTest, IRVerificationExactEdgeCorrespondence) {
 
 TEST_F(IRCanonicalizationTest, IRVerificationNonIsomorphicNoCorrespondence) {
     Hypergraph hg;
-    hg.set_ir_verification(true);
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
 
     // Path: {v0,v1},{v1,v2} vs Star: {v3,v4},{v3,v5}
     VertexId v0 = hg.alloc_vertex();

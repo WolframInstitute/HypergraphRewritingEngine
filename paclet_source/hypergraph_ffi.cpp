@@ -197,14 +197,13 @@ static void print_to_frontend(WolframLibraryData libData, const std::string& mes
  *     "Steps" -> integer,
  *     "Options" -> Association[...,
  *       "HashStrategy" -> "iUT"|"UT"|"WL",
- *       "IRVerification" -> True|False,
- *       "ReturnCanonicalStates" -> True|False,
+ *       "CanonicalizeStates" -> None|Automatic|Full,
  *       ...]
  *   ]
  *
  * Output: WXF Association with States, Events, CausalEdges, BranchialEdges
- * When ReturnCanonicalStates is True, each state includes "CanonicalEdges"
- * with IR-canonicalized (relabeled, sorted) edge list.
+ * When CanonicalizeStates is Full, states are deduplicated and edges are
+ * IR-canonicalized (vertices relabeled to 0..n-1, edges sorted).
  */
 EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
     try {
@@ -252,8 +251,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         double exploration_probability = 1.0;
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
         std::string hash_strategy = "iUT";  // Default: IncrementalUniquenessTree
-        bool ir_verification = false;  // IR-based exact edge correspondence and collision verification
-        bool return_canonical_states = false;  // Compute canonical forms on demand via IR
+        // ir_verification and return_canonical_states are derived from state_canon_mode == Full
         bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
         size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
 
@@ -466,12 +464,6 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "HashStrategy") {
                             hash_strategy = option_parser.read<std::string>();
-                        } else if (option_key == "IRVerification") {
-                            std::string symbol = option_parser.read<std::string>();
-                            ir_verification = (symbol == "True");
-                        } else if (option_key == "ReturnCanonicalStates") {
-                            std::string symbol = option_parser.read<std::string>();
-                            return_canonical_states = (symbol == "True");
                         } else if (option_key == "CurvatureMethod") {
                             curvature_method = option_parser.read<std::string>();
                         } else if (option_key == "CurvaturePerVertex") {
@@ -752,9 +744,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             hg.set_hash_strategy(hypergraph::HashStrategy::IncrementalUniquenessTree);
         }
 
-        // Configure IR verification layer
-        hg.set_ir_verification(ir_verification);
-        hg.set_return_canonical_states(return_canonical_states);
+        // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
+        const bool full_canonicalization = (state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
 
         // Configure event canonicalization
         hg.set_event_signature_keys(event_signature_keys);
@@ -2112,9 +2103,16 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
 
             // Export states with both canonical IDs
+            // When CanonicalizeStates is Full, deduplicate: emit one state per canonical ID
+            std::unordered_set<hypergraph::StateId> emitted_canonical_ids;
             for (uint32_t sid = 0; sid < num_states; ++sid) {
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;
+
+                if (full_canonicalization) {
+                    hypergraph::StateId cid = hg.get_canonical_state(sid);
+                    if (!emitted_canonical_ids.insert(cid).second) continue;
+                }
 
                 // Get canonical state ID (isomorphism-based)
                 hypergraph::StateId canonical_id = hg.get_canonical_state(sid);
@@ -2123,10 +2121,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
 
                 // Build edge list: each edge is {edge_id, v1, v2, ...}
-                // When ReturnCanonicalStates is enabled, edges are IR-canonicalized
+                // When CanonicalizeStates is Full, edges are IR-canonicalized
                 // (vertices relabeled to 0..n-1, edges sorted) with sequential edge IDs
                 wxf::WXFValueList edge_list;
-                if (hg.return_canonical_states()) {
+                if (full_canonicalization) {
                     std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
                     state.edges.for_each([&](hypergraph::EdgeId eid) {
                         const hypergraph::Edge& e = hg.get_edge(eid);
@@ -2517,10 +2515,10 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             };
 
             // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
-            // When ReturnCanonicalStates is enabled, emits IR-canonicalized edges
+            // When CanonicalizeStates is Full, emits IR-canonicalized edges
             auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
                 wxf::WXFValueList edge_list;
-                if (hg.return_canonical_states()) {
+                if (full_canonicalization) {
                     std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
                     hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
                         const hypergraph::Edge& edge = hg.get_edge(eid);

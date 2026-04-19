@@ -83,8 +83,6 @@ HGToGraph[edges, coords] converts edges with vertex coordinates to a Graph."
 Options[HGEvolve] = {
   "HashStrategy" -> "WL",
   "CanonicalizeStates" -> None,  (* None, Automatic, Full *)
-  "ReturnCanonicalStates" -> False,
-  "IRVerification" -> False,
   "CanonicalizeEvents" -> None,  (* None, Full, Automatic, or {keys...} *)
   "CausalTransitiveReduction" -> True,
   "MaxSuccessorStatesPerParent" -> 0,
@@ -285,7 +283,7 @@ stateVertexStyle = Directive[RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RG
 eventVertexStyle = Directive[LightYellow, EdgeForm[RGBColor[0.8, 0.8, 0.4]]];
 
 (* Get edges for plotting: strip edge IDs from Edges *)
-(* When ReturnCanonicalStates is enabled, Edges already contains canonical edges from the FFI *)
+(* When CanonicalizeStates -> Full, Edges contains IR-canonical edges from the FFI *)
 stateDisplayEdges[data_Association] := Rest /@ data["Edges"];
 
 (* Helper function to format edges for display: bold edge ID, truncate if over limit *)
@@ -894,8 +892,6 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   options = <|
     "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
-    "ReturnCanonicalStates" -> (canonicalizeStates === Full),
-    "IRVerification" -> (canonicalizeStates === Full),
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
     "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],

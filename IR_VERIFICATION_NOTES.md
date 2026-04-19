@@ -1,109 +1,63 @@
-# IR Verification Layer
+# IR Canonicalization
 
-## Architecture: 3-Tier System
+## User-Facing Options
 
-### Tier 1: Hash (WL/UT) — hot path, always runs
-Produces `uint64_t` for state deduplication during evolution. No false negatives (isomorphic → same hash). Rare false positives possible. `HashStrategy` enum: WL, UT, iUT, iWL.
+Only two canonicalization options exist:
 
-### Tier 2: IR Verification — on hash collision or when edge correspondence needed
-When two states hash-equal, IR confirms or rejects isomorphism. Provides exact edge correspondence as byproduct of vertex mappings. Replaces heuristic WL edge-signature correspondence in `find_edge_correspondence_dispatch()`. Used by event canonicalization (Automatic mode) for consumed/produced edge canonicalization. No stored canonical forms — mappings used transiently then discarded.
+- `"CanonicalizeStates" -> None | Automatic | Full`
+- `"CanonicalizeEvents" -> None | Full | Automatic | {keys...}`
 
-### Tier 3: Full Canonical Form Output — on explicit user request
-`"ReturnCanonicalStates" -> True` triggers this. IR produces `CanonicalizationResult` with canonical form + vertex mapping. Returns lexicographically sorted, relabeled edges as the canonical representative.
+These are independent of each other.
 
-## Options
+### CanonicalizeStates
 
-- `"IRVerification" -> True/False` — enables Tier 2 (exact edge correspondence + collision verification)
-- `"ReturnCanonicalStates" -> True/False` — enables Tier 3 (canonical form on demand)
-- Both default to `False`
-- In the Wolfram Language interface, `"CanonicalizeStates" -> Full` enables both automatically
+| Mode | Evolution Dedup | Edge Correspondence | Output Edges | Output Dedup |
+|---|---|---|---|---|
+| None (default) | No | WL heuristic | Raw | No |
+| Automatic | No (display-time grouping via ContentStateId) | WL heuristic | Raw | No |
+| Full | Yes (IR canonical hash) | IR exact | IR-canonical (0..n-1) | Yes (one per canonical ID) |
 
-## Performance Impact
+**Full mode** uses McKay-style individualization-refinement (IRCanonicalizer) for:
+1. **Evolution-time deduplication**: IR canonical hash as map key — isomorphic states collapse to one representative
+2. **Exact edge correspondence**: `find_edge_correspondence_dispatch()` uses IR instead of WL heuristic
+3. **Canonical output**: edges relabeled to contiguous 0..n-1, lexicographically sorted, deduplicated in output
 
-The hot path is completely unchanged. Hashing uses WL/UT/iUT/iWL as before. IR code only runs when explicitly enabled.
+**Automatic mode** does NOT perform evolution-time deduplication (matches MultiwaySystem reference behavior). It computes ContentStateId at output time for display-time grouping.
 
-### Hot path (every state, unchanged)
-- **Hashing**: `compute_hash_with_cache_dispatch()` uses WL/UT — no IR involvement.
-- **State dedup**: `create_or_get_canonical_state()` does hash → ConcurrentMap lookup. When `use_ir_verification_ == false` (default), the only overhead is a single bool branch that is always not-taken.
+## Architecture
 
-### IR verification enabled (`IRVerification -> True`)
+### State Deduplication (Full mode)
 
-Two places IR activates:
+In `create_or_get_canonical_state()`, the map key is computed by `IRCanonicalizer::compute_canonical_hash()` which runs full partition refinement + backtracking to produce an exact isomorphism-invariant hash. Two states with the same IR hash ARE isomorphic — no additional verification is needed.
 
-**1. Edge correspondence** (`find_edge_correspondence_dispatch()`)
+### Edge Correspondence (Full mode)
 
-Called only during event canonicalization when `EventKey_ConsumedEdges` or `EventKey_ProducedEdges` is set. Runs partition refinement + backtracking on both states.
+In `find_edge_correspondence_dispatch()`, when Full mode is active, both states are canonicalized via IR. Edge correspondence is derived from the canonical edge ordering — exact, replacing the WL signature heuristic which can fail on symmetric graphs.
 
-- Low-symmetry graphs (most real cases): refinement produces discrete partition directly → O(V²·E), same order as WL with larger constant.
-- High-symmetry graphs: backtracking explores automorphisms, worst case exponential but bounded by automorphism group size. Refined partition prunes almost all branches in practice.
-- Replaces WL heuristic with exact answer — WL signatures can incorrectly match non-corresponding edges in graphs with symmetry.
+### Canonical Output (Full mode)
 
-**2. Hash collision verification** (`create_or_get_canonical_state()`)
+At serialization time, `serialize_state_edges()` and the main states output loop run `IRCanonicalizer::canonicalize_edges()` to relabel vertices to 0..n-1 and sort edges. The output dedup filter emits one state per unique canonical ID.
 
-Runs only when two states hash to the same value AND the insertion finds an existing entry.
+## Performance
 
-- Truly isomorphic duplicates (common): IR confirms, small overhead per duplicate.
-- False positives (rare WL collisions): IR correctly rejects, preventing incorrect state merging.
-- Unique states (most insertions): never runs — the `was_inserted == true` fast path skips IR.
-
-### Cost summary
-
-| Scenario | IR off (default) | IR on |
+| Scenario | None/Automatic | Full |
 |---|---|---|
-| State hashing | WL/UT (unchanged) | WL/UT (unchanged) |
-| State dedup (new state) | hash + map insert | same + 1 bool check |
-| State dedup (duplicate) | hash + map lookup | same + IR isomorphism check |
+| State hashing | WL/UT (hot path) | WL/UT (hot path) |
+| State dedup map key | state_id / content_hash | IR canonical hash (partition refinement + backtracking) |
 | Edge correspondence | WL signature matching | IR canonical form matching |
-| No event canonicalization | nothing | nothing |
+| Output edges | Raw | IR-canonicalized |
+
+Full mode adds IR canonicalization cost per new state. For low-symmetry graphs (most real cases), partition refinement produces a discrete partition directly — O(V²·E). For high-symmetry graphs, backtracking explores automorphisms bounded by automorphism group size.
 
 ## Brute-Force Canonicalizer Status
 
-The old `Canonicalizer` class (`canonicalization.hpp/.cpp`) with O(V!) factorial-time brute-force search is **no longer used in any production code path**. It has been fully replaced by `IRCanonicalizer`:
-
-- `compute_canonical_hash()`: fallback path (when `use_shared_tree_ == false`) now uses `IRCanonicalizer` instead of `Canonicalizer`. Note: `use_shared_tree_` is always `true` in practice — `disable_shared_tree()` is never called — so this fallback is currently dead code.
-- `get_canonical_form_string()`: debug function now uses `IRCanonicalizer`.
-- `find_edge_correspondence_dispatch()`: uses `IRCanonicalizer` when `use_ir_verification_` is set.
-- `create_or_get_canonical_state()`: uses `IRCanonicalizer::are_isomorphic()` for collision verification.
-- FFI `ReturnCanonicalStates` output: uses `IRCanonicalizer::canonicalize_edges()`.
-
-The shared types (`CanonicalizationResult`, `CanonicalForm`, `VertexMapping`) have been extracted to `canonical_types.hpp`. All production code and tests now include `canonical_types.hpp` or `ir_canonicalization.hpp` (which includes it) instead of `canonicalization.hpp`.
-
-The `Canonicalizer` class methods now early-return empty results. Their bodies are `#if 0` guarded. The class and `canonicalization.hpp/.cpp` remain only for `test_canonicalization.cpp` — these should be removed together.
-
-Cross-validation tests that compared IR against brute-force have been removed. The benchmark file (`canonicalization_benchmarks.cpp`) and test helpers (`test_helpers.hpp`) have been switched to `IRCanonicalizer`.
+The old `Canonicalizer` class (`canonicalization.hpp/.cpp`) is no longer used in any production code path. All production code uses `IRCanonicalizer`. The shared types (`CanonicalizationResult`, `CanonicalForm`, `VertexMapping`) live in `canonical_types.hpp`.
 
 ## Key Files
 
 - `hypergraph/include/hypergraph/ir_canonicalization.hpp` — IRCanonicalizer class
 - `hypergraph/src/ir_canonicalization.cpp` — partition refinement + backtracking search
-- `hypergraph/include/hypergraph/hypergraph.hpp` — `use_ir_verification_`, `return_canonical_states_` flags
-- `hypergraph/src/hypergraph.cpp` — IR verification in `find_edge_correspondence_dispatch()` and `create_or_get_canonical_state()`
-- `paclet_source/hypergraph_ffi.cpp` — `"IRVerification"` and `"ReturnCanonicalStates"` option parsing + canonical edges output
-- `paclet/Kernel/HypergraphRewriting.wl` — `stateDisplayEdges` helper, state thumbnail rendering, tooltip display
-
-## FFI Interface
-
-Options passed via WXF `"Options"` association:
-
-```
-"IRVerification" -> True|False     (* enables Tier 2: exact edge correspondence + collision verification *)
-"ReturnCanonicalStates" -> True|False  (* enables Tier 3: canonical form in output *)
-```
-
-When `ReturnCanonicalStates` is `True`, each state in the output includes an additional `"CanonicalEdges"` field containing the IR-canonicalized edge list (vertices relabeled to 0..n-1, edges lexicographically sorted). This is computed on demand during serialization, not during evolution.
-
-## Wolfram Language Integration
-
-When `"CanonicalizeStates" -> Full` is passed to `HGEvolve`, the WL layer automatically sets both `"IRVerification" -> True` and `"ReturnCanonicalStates" -> True`.
-
-State plot thumbnails (in multiway graphs) use `stateDisplayEdges[data]` which returns `data["CanonicalEdges"]` when present, falling back to `Rest /@ data["Edges"]` otherwise. This means:
-- `"CanonicalizeStates" -> Full`: thumbnails show IR-canonicalized hypergraphs
-- `"CanonicalizeStates" -> None` or `Automatic`: thumbnails show original raw edges (unchanged behavior)
-
-State tooltips also display the canonical edge list when available.
-
-## Implementation Details
-
-The `IRCanonicalizer` uses McKay-style individualization-refinement directly on the hypergraph (no incidence graph conversion). The `are_isomorphic()` method provides a cheaper yes/no answer by comparing canonical forms without building full correspondence mappings.
-
-`HashStrategy::IR` was removed from the enum — IR is not a hash strategy but a verification/correspondence layer that sits alongside whatever hash strategy is active.
+- `hypergraph/include/hypergraph/hypergraph.hpp` — `StateCanonicalizationMode` enum, `is_full_canonicalization()` method
+- `hypergraph/src/hypergraph.cpp` — IR hash in `create_or_get_canonical_state()`, IR edge correspondence in `find_edge_correspondence_dispatch()`
+- `paclet_source/hypergraph_ffi.cpp` — `full_canonicalization` flag derived from `state_canon_mode == Full`, canonical edge output + state dedup
+- `paclet/Kernel/HypergraphRewriting.wl` — `stateDisplayEdges` helper, state thumbnail rendering
