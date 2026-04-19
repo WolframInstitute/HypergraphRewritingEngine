@@ -38,13 +38,10 @@ enum class HashStrategy {
 };
 
 // =============================================================================
-// DirectAdjacency: Simple wrapper around adjacency map for use with tree hash
+// DirectAdjacencyWithArity: wraps a raw adjacency map (vertex -> list of
+// (edge, position)) to provide for_each_adjacent and for_each_occurrence
+// interfaces expected by tree-hash computations.
 // =============================================================================
-//
-// Wraps a raw adjacency map (vertex -> list of (edge, position)) to provide
-// the for_each_adjacent interface expected by compute_tree_hash_with_adjacency_provider.
-// Also provides for_each_occurrence for compute_tree_hash_external_adjacency.
-//
 template<typename AdjacencyMapT, typename ArityAccessor>
 class DirectAdjacencyWithArity {
 public:
@@ -61,7 +58,6 @@ public:
         }
     }
 
-    // For compute_tree_hash_external_adjacency which expects EdgeOccurrence
     template<typename Callback>
     void for_each_occurrence(VertexId v, Callback&& cb) const {
         auto it = adj_.find(v);
@@ -76,26 +72,6 @@ public:
 private:
     const AdjacencyMapT& adj_;
     const ArityAccessor& arities_;
-};
-
-// Simple version without arity (for backward compatibility)
-template<typename AdjacencyMapT>
-class DirectAdjacency {
-public:
-    explicit DirectAdjacency(const AdjacencyMapT& adj) : adj_(adj) {}
-
-    template<typename Callback>
-    void for_each_adjacent(VertexId v, Callback&& cb) const {
-        auto it = adj_.find(v);
-        if (it != adj_.end()) {
-            for (const auto& [eid, pos] : it->second) {
-                cb(eid, pos);
-            }
-        }
-    }
-
-private:
-    const AdjacencyMapT& adj_;
 };
 
 // =============================================================================
@@ -322,34 +298,6 @@ public:
         return edge_signatures_[eid];
     }
 
-    // Helper class to provide indexed access to edge vertices
-    class EdgeVertexAccessor {
-        const Hypergraph* hg_;
-    public:
-        explicit EdgeVertexAccessor(const Hypergraph* hg) : hg_(hg) {}
-        const VertexId* operator[](EdgeId eid) const {
-            return hg_->edge_vertices(eid);
-        }
-    };
-
-    // Helper class to provide indexed access to edge arities
-    class EdgeArityAccessor {
-        const Hypergraph* hg_;
-    public:
-        explicit EdgeArityAccessor(const Hypergraph* hg) : hg_(hg) {}
-        uint8_t operator[](EdgeId eid) const {
-            return hg_->edge_arity(eid);
-        }
-    };
-
-    EdgeVertexAccessor edge_vertex_accessor() const {
-        return EdgeVertexAccessor(this);
-    }
-
-    EdgeArityAccessor edge_arity_accessor() const {
-        return EdgeArityAccessor(this);
-    }
-
     // Lightweight accessor for UniquenessTree that provides pointer indexing
     // Returns pointer to edge's inline vertex array - no copying or allocation
     class EdgeVertexAccessorRaw {
@@ -358,7 +306,7 @@ public:
         explicit EdgeVertexAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
 
         const VertexId* operator[](EdgeId eid) const {
-            return hg_->edges_[eid].vertices;  // Direct access
+            return hg_->edges_[eid].vertices;
         }
     };
 
@@ -369,7 +317,7 @@ public:
         explicit EdgeArityAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
 
         uint8_t operator[](EdgeId eid) const {
-            return hg_->edges_[eid].arity;  // Direct access, no function call
+            return hg_->edges_[eid].arity;
         }
     };
 
@@ -475,96 +423,6 @@ public:
 
     StateFilteredAdjacencyProvider state_filtered_adjacency(const SparseBitset& state_edges) const {
         return StateFilteredAdjacencyProvider(&vertex_adjacency_, &state_edges);
-    }
-
-    // =========================================================================
-    // Incremental Vertex Collection
-    // =========================================================================
-    // Computes child vertices from parent in O(delta) instead of O(E).
-    // child_vertices = parent_vertices - orphaned + new_from_produced
-    //
-    // orphaned = vertices in consumed edges that don't appear in any child edge
-    // new = vertices in produced edges that weren't in parent
-
-    template<typename EdgeAccessor, typename ArityAccessor>
-    ArenaVector<VertexId> compute_child_vertices_incremental(
-        const VertexHashCache& parent_cache,
-        const EdgeId* consumed_edges, uint8_t num_consumed,
-        const EdgeId* produced_edges, uint8_t num_produced,
-        const SparseBitset& child_edges,
-        const EdgeAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) {
-        // Build set of parent vertices for fast lookup
-        std::unordered_set<VertexId> parent_vertex_set;
-        parent_vertex_set.reserve(parent_cache.count);
-        for (uint32_t i = 0; i < parent_cache.count; ++i) {
-            parent_vertex_set.insert(parent_cache.vertices[i]);
-        }
-
-        // Collect vertices from consumed edges that might be orphaned
-        std::unordered_set<VertexId> potentially_orphaned;
-        for (uint8_t i = 0; i < num_consumed; ++i) {
-            EdgeId eid = consumed_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                potentially_orphaned.insert(verts[j]);
-            }
-        }
-
-        // Check which are actually orphaned (no edges in child_edges)
-        std::unordered_set<VertexId> orphaned;
-        for (VertexId v : potentially_orphaned) {
-            bool has_edge_in_child = false;
-            // Use global adjacency to check vertex's edges
-            if (v < vertex_adjacency_.size()) {
-                vertex_adjacency_[v].for_each([&](const EdgeOccurrence& occ) {
-                    if (!has_edge_in_child && child_edges.contains(occ.edge_id)) {
-                        has_edge_in_child = true;
-                    }
-                });
-            }
-            if (!has_edge_in_child) {
-                orphaned.insert(v);
-            }
-        }
-
-        // Collect new vertices from produced edges
-        std::unordered_set<VertexId> new_vertices;
-        for (uint8_t i = 0; i < num_produced; ++i) {
-            EdgeId eid = produced_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                VertexId v = verts[j];
-                if (parent_vertex_set.find(v) == parent_vertex_set.end()) {
-                    new_vertices.insert(v);
-                }
-            }
-        }
-
-        // Build result: parent - orphaned + new
-        ArenaVector<VertexId> result(arena_);
-        result.reserve(parent_cache.count - orphaned.size() + new_vertices.size());
-
-        // Add parent vertices that aren't orphaned
-        for (uint32_t i = 0; i < parent_cache.count; ++i) {
-            VertexId v = parent_cache.vertices[i];
-            if (orphaned.find(v) == orphaned.end()) {
-                result.push_back(v);
-            }
-        }
-
-        // Add new vertices
-        for (VertexId v : new_vertices) {
-            result.push_back(v);
-        }
-
-        // Sort for consistency
-        std::sort(result.begin(), result.end());
-
-        return result;
     }
 
     // =========================================================================

@@ -146,7 +146,6 @@ create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
     # Hypergraph tests
-    # ../hypergraph/tests/test_canonicalization.cpp  # Disabled: Canonicalizer replaced by IRCanonicalizer
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../hypergraph/tests/test_pattern_matching.cpp
     ../hypergraph/tests/test_parallel_evolution.cpp
@@ -171,7 +170,6 @@ create_test_executable(all_tests
 create_test_executable(core_tests
     main.cpp
     test_helpers.hpp
-    # ../hypergraph/tests/test_canonicalization.cpp  # Disabled: Canonicalizer replaced by IRCanonicalizer
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../wxf/tests/test_wxf.cpp
 )

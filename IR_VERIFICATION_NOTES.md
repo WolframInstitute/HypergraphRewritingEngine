@@ -49,10 +49,6 @@ At serialization time, `serialize_state_edges()` and the main states output loop
 
 Full mode adds IR canonicalization cost per new state. For low-symmetry graphs (most real cases), partition refinement produces a discrete partition directly — O(V²·E). For high-symmetry graphs, backtracking explores automorphisms bounded by automorphism group size.
 
-## Brute-Force Canonicalizer Status
-
-The old `Canonicalizer` class (`canonicalization.hpp/.cpp`) is no longer used in any production code path. All production code uses `IRCanonicalizer`. The shared types (`CanonicalizationResult`, `CanonicalForm`, `VertexMapping`) live in `canonical_types.hpp`.
-
 ## Key Files
 
 - `hypergraph/include/hypergraph/ir_canonicalization.hpp` — IRCanonicalizer class

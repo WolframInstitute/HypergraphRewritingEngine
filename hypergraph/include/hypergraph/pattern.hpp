@@ -413,16 +413,7 @@ struct PartialMatch {
         num_matched++;
     }
 
-    // Create extended partial match with one more edge matched
-    PartialMatch extend(EdgeId new_edge, const VariableBinding& new_binding) const {
-        PartialMatch extended = *this;
-        extended.matched_edges[num_matched] = new_edge;
-        extended.num_matched = num_matched + 1;
-        extended.binding = new_binding;
-        return extended;
-    }
-
-    // Create a copy for branching
+    // Create a copy for branching during depth-first expansion.
     PartialMatch branch() const {
         return *this;
     }

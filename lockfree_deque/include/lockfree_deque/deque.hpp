@@ -76,46 +76,26 @@ public:
 
     // Non-blocking operations that return optional
     bool try_push_front(T value) {
-#ifdef DEQUE_DEBUG
-        static std::atomic<int> push_front_count{0};
-        int my_push = push_front_count.fetch_add(1);
-        printf("[Deque] try_push_front #%d start\n", my_push);
-#endif
         T* item = new T(std::move(value));
-        
+
         while (true) {
             std::size_t h = head.load(std::memory_order_acquire);
             std::size_t new_head = prev(h);
             std::size_t t = tail.load(std::memory_order_acquire);
-            
-#ifdef DEQUE_DEBUG
-            printf("[Deque] try_push_front: head=%zu, new_head=%zu, tail=%zu\n", h, new_head, t);
-#endif
-            
+
             // Check if full (leave one slot empty to distinguish full from empty)
             if (new_head == t) {
-#ifdef DEQUE_DEBUG
-                printf("[Deque] try_push_front: FULL\n");
-#endif
                 delete item;
-                return false; // Full
+                return false;
             }
-            
+
             // Try to atomically reserve the slot by updating head
-            if (head.compare_exchange_weak(h, new_head, 
-                                          std::memory_order_acq_rel, 
+            if (head.compare_exchange_weak(h, new_head,
+                                          std::memory_order_acq_rel,
                                           std::memory_order_relaxed)) {
-                // We successfully reserved the slot, now place the item
                 buffer[new_head].data.store(item, std::memory_order_release);
-#ifdef DEQUE_DEBUG
-                printf("[Deque] try_push_front #%d SUCCESS at slot %zu\n", my_push, new_head);
-#endif
                 return true;
             }
-            
-#ifdef DEQUE_DEBUG
-            printf("[Deque] try_push_front CAS failed, retrying\n");
-#endif
             // CAS failed, reload values and retry
         }
     }
@@ -147,88 +127,53 @@ public:
     }
 
     std::optional<T> try_pop_front() {
-#ifdef DEQUE_DEBUG
-        static std::atomic<int> pop_front_count{0};
-        int my_pop = pop_front_count.fetch_add(1);
-        printf("[Deque] try_pop_front #%d start\n", my_pop);
-#endif
         int retries = 0;
         const int max_retries = MAX_POP_RETRIES;
-        
+
         while (retries < max_retries) {
             std::size_t h = head.load(std::memory_order_acquire);
             std::size_t t = tail.load(std::memory_order_acquire);
-            
-#ifdef DEQUE_DEBUG
-            printf("[Deque] try_pop_front: head=%zu, tail=%zu\n", h, t);
-#endif
-            
+
             if (h == t) {
-#ifdef DEQUE_DEBUG
-                printf("[Deque] try_pop_front #%d: EMPTY\n", my_pop);
-#endif
-                return std::nullopt; // Empty
+                return std::nullopt;  // Empty
             }
-            
-            // Try to atomically extract the item from the slot at head position
-            T* expected = nullptr;
+
             T* item = buffer[h].data.load(std::memory_order_acquire);
-            
-#ifdef DEQUE_DEBUG
-            printf("[Deque] try_pop_front: slot[%zu] has item=%p\n", h, (void*)item);
-#endif
-            
-            // If slot is empty, continue to next iteration
+
             if (item == nullptr) {
+                // Slot not yet published by a concurrent push; give up the CPU briefly.
                 retries++;
-#ifdef DEQUE_DEBUG
-                printf("[Deque] try_pop_front: slot empty, retry %d\n", retries);
-#endif
                 std::this_thread::yield();
                 continue;
             }
-            
-            // Try to atomically take ownership of the item before advancing head
-            if (buffer[h].data.compare_exchange_weak(item, nullptr, 
-                                                    std::memory_order_acq_rel, 
+
+            // Reserve the item by clearing the slot, then advance head.
+            if (buffer[h].data.compare_exchange_weak(item, nullptr,
+                                                    std::memory_order_acq_rel,
                                                     std::memory_order_relaxed)) {
-#ifdef DEQUE_DEBUG
-                printf("[Deque] try_pop_front: got item from slot %zu\n", h);
-#endif
-                // We got the item, now try to advance head
                 std::size_t new_head = next(h);
-                if (head.compare_exchange_weak(h, new_head, 
-                                              std::memory_order_acq_rel, 
+                if (head.compare_exchange_weak(h, new_head,
+                                              std::memory_order_acq_rel,
                                               std::memory_order_relaxed)) {
-                    // Successfully advanced head and got item
                     std::optional<T> result = std::move(*item);
                     delete item;
-#ifdef DEQUE_DEBUG
-                    printf("[Deque] try_pop_front #%d SUCCESS\n", my_pop);
-#endif
                     return result;
                 } else {
-                    // Failed to advance head, but we took the item - put it back
-#ifdef DEQUE_DEBUG
-                    printf("[Deque] try_pop_front: failed to advance head, putting item back\n");
-#endif
+                    // Failed to advance head after we claimed the item; publish it
+                    // back so another consumer can drain this slot.
+                    // NOTE: this is the reinsert race flagged in the review — it can
+                    // let another popper see the republished item and CAS it away
+                    // before we retry. Superseded by a later reservation-based
+                    // rewrite; for now the behaviour is preserved.
                     buffer[h].data.store(item, std::memory_order_release);
                     retries++;
                     continue;
                 }
             }
-            
-            // Failed to get the item, retry
-#ifdef DEQUE_DEBUG
-            printf("[Deque] try_pop_front: CAS failed to get item\n");
-#endif
+            // Someone else stole the item between our load and our CAS.
             retries++;
         }
-        
-#ifdef DEQUE_DEBUG
-        printf("[Deque] try_pop_front #%d: MAX RETRIES EXCEEDED\n", my_pop);
-#endif
-        return std::nullopt; // Exceeded retries
+        return std::nullopt;  // Exceeded retries
     }
 
     std::optional<T> try_pop_back() {
