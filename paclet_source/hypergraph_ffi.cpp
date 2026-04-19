@@ -60,9 +60,13 @@ class LockFreeDebugQueue {
 public:
     // Push message (lock-free, called from worker threads)
     void push(const char* msg) {
-        // Limit queue size to prevent runaway memory use
-        if (count_.load(std::memory_order_relaxed) >= MAX_MESSAGES) {
-            return;  // Drop message
+        // Atomically reserve a slot. If the reservation would exceed MAX_MESSAGES,
+        // roll back and drop. The earlier check+increment pattern let N concurrent
+        // callers all pass the check and overshoot the cap.
+        size_t prev = count_.fetch_add(1, std::memory_order_relaxed);
+        if (prev >= MAX_MESSAGES) {
+            count_.fetch_sub(1, std::memory_order_relaxed);
+            return;
         }
 
         DebugNode* node = new DebugNode();
@@ -75,8 +79,6 @@ public:
             node->next = old_head;
         } while (!head_.compare_exchange_weak(old_head, node,
                     std::memory_order_release, std::memory_order_relaxed));
-
-        count_.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Drain all messages (called from main thread only)
