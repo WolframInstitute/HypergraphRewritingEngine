@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/rewriter.hpp"
 #include <set>
 #include <chrono>
 
@@ -186,4 +187,32 @@ TEST(Unified_ParallelEvolution, DifferentThreadCounts) {
                 << "Event count lower than single-threaded with " << threads << " threads";
         }
     }
+}
+
+// =============================================================================
+// Rewriter: stale input_state returns an empty result instead of aborting.
+// =============================================================================
+// A stale forwarded match can carry a state ID past num_states(); the
+// rewriter must degrade gracefully so callers can discard the match.
+
+TEST(Unified_Rewriter, StaleStateId_ReturnsEmptyResult) {
+    Hypergraph hg;
+    Rewriter rewriter(&hg);
+
+    std::vector<VertexId> verts = {0, 1};
+    EdgeId eid = hg.create_edge(verts.data(), 2);
+    hg.create_state({eid}, 0, /*canonical_hash=*/0, INVALID_ID);
+
+    RewriteRule rule = par_simple_rule();
+    VariableBinding binding;
+    EdgeId matched[1] = {eid};
+
+    StateId stale = hg.num_states();  // one past the last valid state
+    RewriteResult result = rewriter.apply(rule, stale, matched, 1, binding, 1);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.new_state, INVALID_ID);
+    EXPECT_EQ(result.raw_state, INVALID_ID);
+    EXPECT_EQ(result.event, INVALID_ID);
+    EXPECT_EQ(result.num_produced, 0);
 }

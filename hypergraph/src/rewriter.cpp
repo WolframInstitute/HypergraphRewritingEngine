@@ -14,12 +14,14 @@ RewriteResult Rewriter::apply(
 ) {
     RewriteResult result;
 
-    // Validate input_state
+    // Validate input_state. A stale forwarded match can reach here with a state ID
+    // beyond the current count. Return an empty result (success=false); callers
+    // already handle this (see execute_rewrite_task's `if (rr.new_state == INVALID_ID)`).
     uint32_t num_states = hg_->num_states();
     if (input_state >= num_states) {
-        DEBUG_LOG("ERROR: Rewriter::apply input_state=%u >= num_states=%u",
+        DEBUG_LOG("WARN: Rewriter::apply input_state=%u >= num_states=%u (stale match?)",
                   input_state, num_states);
-        abort();
+        return result;
     }
 
     // Get input state's edge set
