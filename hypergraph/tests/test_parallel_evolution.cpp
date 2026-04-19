@@ -216,3 +216,47 @@ TEST(Unified_Rewriter, StaleStateId_ReturnsEmptyResult) {
     EXPECT_EQ(result.event, INVALID_ID);
     EXPECT_EQ(result.num_produced, 0);
 }
+
+// =============================================================================
+// create_edge / RuleBuilder / PatternEdge: throw on fixed-bound overflow.
+// =============================================================================
+// These types hold fixed-size buffers of MAX_ARITY / MAX_PATTERN_EDGES.
+// Over-size input must raise std::length_error rather than silently truncate.
+
+TEST(Unified_Bounds, CreateEdge_Pointer_OverMaxArity_Throws) {
+    Hypergraph hg;
+    VertexId over[MAX_ARITY + 1] = {};
+    EXPECT_THROW(hg.create_edge(over, MAX_ARITY + 1), std::length_error);
+}
+
+TEST(Unified_Bounds, CreateEdge_InitList_OverMaxArity_Throws) {
+    Hypergraph hg;
+    EXPECT_THROW(
+        hg.create_edge({0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),
+        std::length_error);
+}
+
+TEST(Unified_Bounds, CreateEdge_AtMaxArity_Succeeds) {
+    Hypergraph hg;
+    VertexId at_max[MAX_ARITY] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+    EXPECT_NO_THROW(hg.create_edge(at_max, MAX_ARITY));
+}
+
+TEST(Unified_Bounds, PatternEdge_InitList_OverMaxArity_Throws) {
+    EXPECT_THROW(
+        (PatternEdge{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),
+        std::length_error);
+}
+
+TEST(Unified_Bounds, RuleBuilder_OverMaxPatternEdges_Throws) {
+    auto builder = make_rule(0);
+    for (int i = 0; i < MAX_PATTERN_EDGES; ++i) {
+        builder.lhs({0, 1});
+    }
+    EXPECT_THROW(builder.lhs({0, 1}), std::length_error);
+}
+
+TEST(Unified_Bounds, RuleBuilder_VectorOverload_OverMaxArity_Throws) {
+    std::vector<uint8_t> huge(MAX_ARITY + 1, 0);
+    EXPECT_THROW(make_rule(0).lhs(huge), std::length_error);
+}
