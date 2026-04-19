@@ -221,16 +221,24 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
 
     State& state = states_[state_id];
 
-    // If hash is already computed, return it
-    if (state.canonical_hash != 0) {
-        return state.canonical_hash;
+    // canonical_hash can be written (by this function) concurrently with reads
+    // elsewhere (e.g. event canonicalization, match forwarding). Use atomic_ref
+    // for the fast-path read and the publishing store so the concurrent access
+    // is not a formal data race. On 64-bit targets the underlying load/store
+    // are already single instructions, so this compiles to the same code plus
+    // the appropriate fences.
+    std::atomic_ref<uint64_t> atomic_hash(state.canonical_hash);
+    uint64_t cached = atomic_hash.load(std::memory_order_acquire);
+    if (cached != 0) {
+        return cached;
     }
 
     // Compute hash on-demand using hash dispatch
     auto [hash, cache] = compute_hash_with_cache_dispatch(state.edges);
 
-    // Cache the hash for future use
-    state.canonical_hash = hash;
+    // Publish with release; racing writers may all compute the same value and
+    // the final stored value is deterministic across threads.
+    atomic_hash.store(hash, std::memory_order_release);
     return hash;
 }
 
