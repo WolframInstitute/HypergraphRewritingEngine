@@ -388,14 +388,18 @@ class ParallelEvolutionEngine {
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
 
-    // Batched matching: collect all matches then spawn REWRITEs (vs eager spawning)
-    // Batching eliminates race conditions in match forwarding, but eager may have
-    // better cache locality for some workloads. When disabled with match forwarding,
-    // requires push-based forwarding to cover race windows.
-    bool batched_matching_{false};  // Disabled to test eager single-threaded
+    // Batched matching: collect all matches first, then spawn REWRITEs. The
+    // alternative (eager mode, the default) spawns REWRITEs as matches are
+    // discovered — match forwarding in eager mode relies on the push path to
+    // cover the race window between match discovery and child registration.
+    // Batching eliminates that window at the cost of deferred rewriting.
+    bool batched_matching_{false};
 
-    // Validation mode: compare forwarded+delta vs full matching
-    bool validate_match_forwarding_{false};  // Enabled for debugging
+    // Validation mode: on each MATCH task, also run full find_matches and
+    // compare — any forwarded-but-would-be-full match not in the seen set is
+    // counted as a forwarding bug. Off by default; flip on for diagnosis only
+    // (doubles the matching cost of every MATCH task).
+    bool validate_match_forwarding_{false};
     std::atomic<size_t> validation_mismatches_{0};
 
     // Uniform random mode: control flags for step-synchronized evolution
