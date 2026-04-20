@@ -550,25 +550,22 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
 ) {
     if (parent == INVALID_ID) return 0;
 
-    // Build ChildInfo (epoch will be set after push)
     ChildInfo info;
     info.child_state = child;
     info.num_consumed = num_consumed;
-    info.creation_step = child_step;  // Step at which child was created
-    info.registration_epoch = 0;  // Temporary, will update after push
+    info.creation_step = child_step;
     for (uint8_t i = 0; i < num_consumed; ++i) {
         info.consumed_edges[i] = consumed_edges[i];
     }
 
-    // Push child to list (for push_match_to_children if called recursively)
+    // Push child to list — allows push_match_to_children to walk siblings.
     LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
     children->push(info, hg_->arena());
 
-    // Get epoch (for tracking, though less critical now with batching)
+    // Bump global_epoch_ so epoch-retry readers in push_match_to_children and
+    // forward_existing_parent_matches_eager detect that a new child has
+    // registered and re-walk to pick up its forwarded matches.
     uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
-
-    // Store registration epoch for this child
-    state_registration_epoch_.insert_if_absent(child, epoch);
 
     // Track child's parent (for walking ancestor chain during forward)
     ParentInfo pi_init;
@@ -710,9 +707,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
     std::vector<MatchRecord>& batch
 ) {
     forward_matches_from_single_ancestor_impl(
-        ancestor, child, accumulated_consumed, total_consumed, step,
-        0,  // child_registration_epoch unused
-        batch);
+        ancestor, child, accumulated_consumed, total_consumed, step, batch);
 }
 
 void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
@@ -721,7 +716,6 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     const EdgeId* accumulated_consumed,
     uint8_t total_consumed,
     uint32_t /* step */,
-    uint64_t /* child_registration_epoch - unused */,
     std::vector<MatchRecord>& batch
 ) {
     auto result = state_matches_.lookup_waiting(ancestor);

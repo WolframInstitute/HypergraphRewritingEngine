@@ -279,7 +279,6 @@ struct ChildInfo {
     EdgeId consumed_edges[MAX_PATTERN_EDGES];
     uint8_t num_consumed;
     uint32_t creation_step{0};  // Step at which child was created
-    uint64_t registration_epoch{0};  // Epoch when child was registered
 
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
         for (uint8_t i = 0; i < num_edges; ++i) {
@@ -379,9 +378,6 @@ class ParallelEvolutionEngine {
 
     // child state → ParentInfo (for pull-based forwarding up the ancestor chain).
     StateKeyedMap<ParentInfo*> state_parent_;
-
-    // child state → registration epoch (for ordering match availability vs. registration).
-    StateKeyedMap<uint64_t> state_registration_epoch_;
 
     // Global epoch counter for ordering matches and registrations
     // Used to determine if push or pull should handle each (match, child) pair:
@@ -766,7 +762,7 @@ private:
     void forward_matches_from_single_ancestor_impl(
         StateId ancestor, StateId child,
         const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step, uint64_t child_registration_epoch,
+        uint32_t step,
         std::vector<MatchRecord>& batch
     );
 
