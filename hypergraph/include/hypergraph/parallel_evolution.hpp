@@ -345,46 +345,43 @@ class ParallelEvolutionEngine {
     // Rules
     std::vector<RewriteRule> rules_;
 
-    // Global match deduplication (lock-free)
-    // Use non-zero EMPTY/LOCKED keys to avoid conflicts with valid hash values
-    static constexpr uint64_t MATCH_MAP_EMPTY = 1ULL << 63;
-    static constexpr uint64_t MATCH_MAP_LOCKED = (1ULL << 63) | 1;
-    ConcurrentMap<uint64_t, bool, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED> seen_match_hashes_;
+    // ---------- ConcurrentMap sentinel conventions ----------
+    // Every lock-free map below is keyed by an identifier that fits in 32 bits
+    // (StateId, step count, or the low bits of a match hash). We pick EMPTY /
+    // LOCKED sentinels strictly above UINT32_MAX so they cannot collide with a
+    // legitimate key. Two sentinel pairs are enough:
+    //   - STATE_KEYED: for identifier-keyed maps (state IDs, step numbers).
+    //     Legitimate keys are ≤ UINT32_MAX, sentinels are at bit 33 so they
+    //     are guaranteed distinct.
+    //   - MATCH_HASH:  for seen_match_hashes_, whose keys are full 64-bit FNV
+    //     hashes. We use a pair at bit 63 — a 1-in-2^63 chance a legitimate
+    //     hash matches, accepted as in the prior scheme.
+    static constexpr uint64_t STATE_KEYED_EMPTY  = 1ULL << 33;
+    static constexpr uint64_t STATE_KEYED_LOCKED = (1ULL << 33) | 1;
+    static constexpr uint64_t MATCH_HASH_EMPTY   = 1ULL << 63;
+    static constexpr uint64_t MATCH_HASH_LOCKED  = (1ULL << 63) | 1;
 
-    // Track which raw states have been matched (lock-free)
-    // Prevents duplicate MATCH tasks for the same raw state
-    // Use uint64_t as key to avoid template issues with 32-bit StateId
-    // StateId is 32-bit, so we use keys outside that range for EMPTY/LOCKED
-    static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
-    static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) | 1;
-    ConcurrentMap<uint64_t, bool, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
+    template<typename V>
+    using StateKeyedMap = ConcurrentMap<uint64_t, V, STATE_KEYED_EMPTY, STATE_KEYED_LOCKED>;
 
-    // Per-state match storage for match forwarding
-    // Maps state -> list of matches found in that state
-    // Used to forward matches to child states
-    // Uses ConcurrentMap for thread-safe "get or create" semantics
-    static constexpr uint64_t MATCH_STATE_MAP_EMPTY = (1ULL << 62) + 100;
-    static constexpr uint64_t MATCH_STATE_MAP_LOCKED = (1ULL << 62) + 101;
-    ConcurrentMap<uint64_t, LockFreeList<MatchRecord>*, MATCH_STATE_MAP_EMPTY, MATCH_STATE_MAP_LOCKED> state_matches_;
+    // Global match deduplication (64-bit FNV hash keys).
+    ConcurrentMap<uint64_t, bool, MATCH_HASH_EMPTY, MATCH_HASH_LOCKED> seen_match_hashes_;
 
-    // Per-state children tracking for push-based match forwarding
-    // Maps parent state -> list of children (with their consumed edges)
-    // When parent finds a match, it pushes to all children where match is valid
-    static constexpr uint64_t CHILDREN_MAP_EMPTY = (1ULL << 62) + 200;
-    static constexpr uint64_t CHILDREN_MAP_LOCKED = (1ULL << 62) + 201;
-    ConcurrentMap<uint64_t, LockFreeList<ChildInfo>*, CHILDREN_MAP_EMPTY, CHILDREN_MAP_LOCKED> state_children_;
+    // Raw-state MATCH-task dedup: prevents spawning duplicate MATCH tasks for
+    // the same raw state.
+    StateKeyedMap<bool> matched_raw_states_;
 
-    // Per-state parent tracking for pull-based match forwarding from ancestors
-    // Maps child state -> parent info pointer (with consumed edges for validation)
-    static constexpr uint64_t PARENT_MAP_EMPTY = (1ULL << 62) + 300;
-    static constexpr uint64_t PARENT_MAP_LOCKED = (1ULL << 62) + 301;
-    ConcurrentMap<uint64_t, ParentInfo*, PARENT_MAP_EMPTY, PARENT_MAP_LOCKED> state_parent_;
+    // state → matches found in that state (for forwarding).
+    StateKeyedMap<LockFreeList<MatchRecord>*> state_matches_;
 
-    // Per-state registration epoch for epoch-based match forwarding
-    // Tracks when each state was registered as a child (for epoch comparison)
-    static constexpr uint64_t EPOCH_MAP_EMPTY = (1ULL << 62) + 400;
-    static constexpr uint64_t EPOCH_MAP_LOCKED = (1ULL << 62) + 401;
-    ConcurrentMap<uint64_t, uint64_t, EPOCH_MAP_EMPTY, EPOCH_MAP_LOCKED> state_registration_epoch_;
+    // parent state → children registered under it (for push-based forwarding).
+    StateKeyedMap<LockFreeList<ChildInfo>*> state_children_;
+
+    // child state → ParentInfo (for pull-based forwarding up the ancestor chain).
+    StateKeyedMap<ParentInfo*> state_parent_;
+
+    // child state → registration epoch (for ordering match availability vs. registration).
+    StateKeyedMap<uint64_t> state_registration_epoch_;
 
     // Global epoch counter for ordering matches and registrations
     // Used to determine if push or pull should handle each (match, child) pair:
@@ -454,15 +451,11 @@ class ParallelEvolutionEngine {
     // This focuses compute on discovering new states rather than all transition paths.
     bool explore_from_canonical_states_only_{false};
 
-    // Per-parent successor count tracking (for max_successor_states_per_parent)
-    static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
-    static constexpr uint64_t SUCCESSOR_MAP_LOCKED = (1ULL << 62) + 501;
-    ConcurrentMap<uint64_t, std::atomic<size_t>*, SUCCESSOR_MAP_EMPTY, SUCCESSOR_MAP_LOCKED> parent_successor_count_;
+    // Per-parent successor count (enforces max_successor_states_per_parent).
+    StateKeyedMap<std::atomic<size_t>*> parent_successor_count_;
 
-    // Per-step state count tracking (for max_states_per_step)
-    static constexpr uint64_t STEP_MAP_EMPTY = (1ULL << 62) + 600;
-    static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
-    ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
+    // Per-step state count (enforces max_states_per_step).
+    StateKeyedMap<std::atomic<size_t>*> states_per_step_;
 
     // Statistics (atomics for thread-safety)
     std::atomic<size_t> total_matches_found_{0};
