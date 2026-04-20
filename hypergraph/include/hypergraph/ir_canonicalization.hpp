@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
+#include <unordered_map>
 
 #include "types.hpp"
 #include "canonical_types.hpp"
@@ -45,25 +46,13 @@ private:
         uint8_t arity;
     };
 
-    // Precomputed adjacency for refinement.
-    //
-    // Vertex indexing: the canonicalizer works on a compact 0..num_vertices-1 index
-    // space, derived from the original VertexIds by sorting them. idx_to_orig is a
-    // sorted vector of the original VertexIds; to map original → index we do a
-    // binary search on idx_to_orig (O(log V)) instead of a hash-map lookup — faster
-    // and more cache-friendly for the typical V ≤ few hundred on the hot path.
+    // Precomputed adjacency for refinement
     struct HypergraphAdj {
         uint32_t num_vertices;
-        std::vector<std::vector<VertexOccurrence>> vertex_edges;  // index -> occurrences
+        std::vector<std::vector<VertexOccurrence>> vertex_edges; // vertex_index -> occurrences
         const std::vector<std::vector<VertexId>>* edges;
-        std::vector<VertexId> idx_to_orig;  // sorted ascending
-
-        uint32_t index_of(VertexId v) const {
-            auto it = std::lower_bound(idx_to_orig.begin(), idx_to_orig.end(), v);
-            // Caller guarantees v is present; asserting would add a branch in a hot
-            // loop. The invariant is maintained by build_adjacency.
-            return static_cast<uint32_t>(it - idx_to_orig.begin());
-        }
+        std::unordered_map<VertexId, uint32_t> orig_to_idx;
+        std::vector<VertexId> idx_to_orig;
     };
 
     HypergraphAdj build_adjacency(const std::vector<std::vector<VertexId>>& edges) const;
