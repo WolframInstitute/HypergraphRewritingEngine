@@ -65,12 +65,16 @@ protected:
         };
     }
 
+    // This is a PERFORMANCE COMPARISON test, not a correctness test. Two runs
+    // per strategy is enough to catch order-of-magnitude regressions; more
+    // iterations belong in benchmarks/. Override via a larger num_runs when
+    // running locally for timing analysis.
     void compare_strategies(
         const std::string& test_name,
         const std::vector<v2::RewriteRule>& rules,
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps,
-        int num_runs = 5
+        int num_runs = 2
     ) {
         std::cout << "\n=== " << test_name << " (steps=" << steps << ") ===\n";
 

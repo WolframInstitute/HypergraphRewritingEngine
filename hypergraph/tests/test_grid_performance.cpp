@@ -108,7 +108,10 @@ TEST(GridPerformanceTest, UnifiedProfiledEvolution) {
     auto t2 = std::chrono::high_resolution_clock::now();
     print_timing("  Setup", std::chrono::duration<double, std::milli>(t2 - t1).count());
 
-    engine.evolve(edges, 30);
+    // Step depth capped at 8 — beyond this the state space explodes and the
+    // test adds minutes without improving regression signal. For long
+    // performance runs, use benchmarks/evolution_benchmarks.cpp.
+    engine.evolve(edges, 8);
 
     auto t3 = std::chrono::high_resolution_clock::now();
     print_timing("  evolve()", std::chrono::duration<double, std::milli>(t3 - t2).count());

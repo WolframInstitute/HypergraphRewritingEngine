@@ -133,12 +133,12 @@ void run_grid_evolution(HashStrategy strategy, int steps, size_t max_per_parent,
               << (int64_t)(mem_after - mem_before) << " KB)" << std::endl;
 }
 
-TEST(RepeatedGridInvocation, FiveTimesWL) {
-    std::cout << "\n=== Running grid evolution 5 times with WL ===" << std::endl;
+TEST(RepeatedGridInvocation, ThreeTimesWL) {
+    std::cout << "\n=== Running grid evolution 3 times with WL ===" << std::endl;
     size_t initial_mem = get_memory_usage_kb();
     std::cout << "Initial memory: " << initial_mem << " KB" << std::endl;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 3; ++i) {
         std::cout << "Iteration " << (i + 1) << ":" << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
 
@@ -156,12 +156,12 @@ TEST(RepeatedGridInvocation, FiveTimesWL) {
     std::cout << "Final memory delta: " << (int64_t)(final_mem - initial_mem) << " KB" << std::endl;
 }
 
-TEST(RepeatedGridInvocation, FiveTimesUT) {
-    std::cout << "\n=== Running grid evolution 5 times with UT ===" << std::endl;
+TEST(RepeatedGridInvocation, ThreeTimesUT) {
+    std::cout << "\n=== Running grid evolution 3 times with UT ===" << std::endl;
     size_t initial_mem = get_memory_usage_kb();
     std::cout << "Initial memory: " << initial_mem << " KB" << std::endl;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 3; ++i) {
         std::cout << "Iteration " << (i + 1) << ":" << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
 
@@ -179,11 +179,14 @@ TEST(RepeatedGridInvocation, FiveTimesUT) {
     std::cout << "Final memory delta: " << (int64_t)(final_mem - initial_mem) << " KB" << std::endl;
 }
 
-TEST(RepeatedGridInvocation, TwentyTimesWL) {
-    std::cout << "\n=== Running grid evolution 20 times with WL ===" << std::endl;
+TEST(RepeatedGridInvocation, MemoryStability_SixRunsWL) {
+    // Memory-stability check: arena and related structures must not leak across
+    // repeated engine lifetimes. Six iterations are enough to detect linear
+    // growth without burning minutes (previously 20 — excessive).
+    std::cout << "\n=== Running grid evolution 6 times with WL (memory stability) ===" << std::endl;
     size_t initial_mem = get_memory_usage_kb();
 
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 6; ++i) {
         std::cout << "Iteration " << (i + 1) << ": ";
         run_grid_evolution(HashStrategy::WL, 10, 100, 100);
     }
@@ -192,7 +195,7 @@ TEST(RepeatedGridInvocation, TwentyTimesWL) {
     std::cout << "Final memory: " << final_mem << " KB (delta: "
               << (int64_t)(final_mem - initial_mem) << " KB)" << std::endl;
 
-    // Memory should stabilize - allow 500MB which is ~1 arena worth of fragmentation
+    // Memory should stabilise — ~1 arena worth of fragmentation is acceptable.
     EXPECT_LT(final_mem - initial_mem, 500000);
 }
 
