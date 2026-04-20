@@ -633,7 +633,15 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                                 compute_equilibrium = value;
                             }
                         }
-                    } catch (...) {
+                    } catch (const std::exception& e) {
+                        // An option's value failed to parse (wrong WXF type, out-of-range
+                        // narrowing, etc.). Skip the malformed value and continue — the
+                        // alternative is aborting the whole evolve call on a single bad
+                        // option, which breaks WL callers that pass forward-compatible
+                        // option sets the C++ side doesn't yet know about. Log into the
+                        // debug queue so the frontend can surface the skip.
+                        g_debug_queue.push(
+                            ("FFI: skipping malformed option '" + option_key + "': " + e.what()).c_str());
                         option_parser.skip_value();
                     }
                 });
