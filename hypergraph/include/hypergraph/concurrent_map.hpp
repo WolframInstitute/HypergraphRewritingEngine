@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <new>
 #include <optional>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -232,13 +233,62 @@ private:
         return static_cast<size_t>(h);
     }
 
+    // Tight CPU-friendly wait for a LOCKED slot to resolve. The LOCKED window
+    // is just two atomic stores (value, then key), so the expected wait is
+    // nanoseconds. We still back off to the scheduler after a burst of pauses
+    // so a preempted writer can make progress.
+    static K wait_for_locked_to_resolve(const std::atomic<K>& slot_key) {
+        constexpr int kPauseBurst = 32;
+        int pauses = 0;
+        while (true) {
+            K k = slot_key.load(std::memory_order_acquire);
+            if (k != LOCKED_KEY) return k;
+            #if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+            #elif defined(__aarch64__)
+            __asm__ volatile("yield" ::: "memory");
+            #endif
+            if (++pauses >= kPauseBurst) {
+                std::this_thread::yield();
+                pauses = 0;
+            }
+        }
+    }
+
     std::pair<V, bool> insert_into_table(Table* table, K key, V value, bool increment_count) {
         size_t h = hash(key);
         size_t idx = h & table->mask;
 
-        // Track LOCKED slots we encountered - need to check them for duplicate keys
-        size_t locked_slots[64];
+        // We track LOCKED slots encountered during probing so we can wait on
+        // them after claiming our slot — any one of them might be inserting
+        // the same key and we must not create a duplicate. Earlier code used
+        // a fixed 64-slot stack array and silently dropped overflow, which
+        // permitted rare duplicate inserts under pathological contention.
+        // Now we pivot to inline waiting once the stack buffer is full: we
+        // stop accumulating and instead block until the oldest LOCKED
+        // resolves, then drop it and make room for the next.
+        constexpr size_t kLockedBuf = 64;
+        size_t locked_slots[kLockedBuf];
         size_t num_locked = 0;
+
+        auto drain_oldest_locked = [&](size_t drop_count) {
+            // Wait for up to drop_count of the recorded LOCKED slots to resolve
+            // (starting with the oldest) and check each for our key.
+            for (size_t li = 0; li < drop_count; ++li) {
+                size_t ci = locked_slots[li];
+                K resolved = wait_for_locked_to_resolve(table->entries[ci].key);
+                if (resolved == key) {
+                    V existing = table->entries[ci].value.load(std::memory_order_acquire);
+                    return std::optional<V>{existing};
+                }
+            }
+            // Shift remaining entries down.
+            for (size_t li = drop_count; li < num_locked; ++li) {
+                locked_slots[li - drop_count] = locked_slots[li];
+            }
+            num_locked -= drop_count;
+            return std::optional<V>{};
+        };
 
         for (size_t probe = 0; probe < table->capacity; ++probe) {
             size_t i = (idx + probe) & table->mask;
@@ -247,40 +297,25 @@ private:
             K current_key = entry.key.load(std::memory_order_acquire);
 
             if (current_key == EMPTY_KEY) {
-                // Slot is empty, try to claim it with LOCKED sentinel
+                // Try to claim the slot with the LOCKED sentinel.
                 if (entry.key.compare_exchange_strong(
                         current_key, LOCKED_KEY,
                         std::memory_order_acq_rel,
                         std::memory_order_acquire)) {
 
-                    // Successfully claimed slot - but we may have skipped LOCKED slots
-                    // that are inserting the same key. Must wait for them to resolve.
-                    // Note: LOCKED state is very short-lived (just value+key writes), so
-                    // unbounded spin is safe here - if it takes "too long" something is broken.
-                    if (num_locked > 0) {
-                        for (size_t li = 0; li < num_locked; ++li) {
-                            size_t ci = locked_slots[li];
-                            K check_key;
-                            // Spin until LOCKED resolves (should be very fast - nanoseconds)
-                            do {
-                                check_key = table->entries[ci].key.load(std::memory_order_acquire);
-                                #if defined(__x86_64__) || defined(_M_X64)
-                                __builtin_ia32_pause();
-                                #elif defined(__aarch64__)
-                                __asm__ volatile("yield" ::: "memory");
-                                #endif
-                            } while (check_key == LOCKED_KEY);
-
-                            if (check_key == key) {
-                                // Duplicate found! Release our claimed slot
-                                entry.key.store(EMPTY_KEY, std::memory_order_release);
-                                V existing = table->entries[ci].value.load(std::memory_order_acquire);
-                                return {existing, false};
-                            }
+                    // Wait on every recorded LOCKED slot — any one of them may
+                    // be installing our key. If we find a duplicate, release
+                    // our reservation and return the existing entry.
+                    for (size_t li = 0; li < num_locked; ++li) {
+                        size_t ci = locked_slots[li];
+                        K resolved = wait_for_locked_to_resolve(table->entries[ci].key);
+                        if (resolved == key) {
+                            entry.key.store(EMPTY_KEY, std::memory_order_release);
+                            V existing = table->entries[ci].value.load(std::memory_order_acquire);
+                            return {existing, false};
                         }
                     }
 
-                    // No duplicate - proceed with insert
                     entry.value.store(value, std::memory_order_release);
                     entry.key.store(key, std::memory_order_release);
                     if (increment_count) {
@@ -288,28 +323,29 @@ private:
                     }
                     return {value, true};
                 }
-                // CAS failed, re-read key
+                // CAS failed; re-read the slot.
                 current_key = entry.key.load(std::memory_order_acquire);
             }
 
             if (current_key == LOCKED_KEY) {
-                // Slot is being written - remember it for later checking
-                if (num_locked < 64) {
-                    locked_slots[num_locked++] = i;
+                if (num_locked == kLockedBuf) {
+                    // Buffer full: inline-resolve half the oldest entries. If
+                    // any of them is our key, we're done — it's a duplicate.
+                    auto dup = drain_oldest_locked(kLockedBuf / 2);
+                    if (dup.has_value()) return {*dup, false};
                 }
+                locked_slots[num_locked++] = i;
                 continue;
             }
 
             if (current_key == key) {
-                // Key already exists - value is guaranteed to be set
                 V existing = entry.value.load(std::memory_order_acquire);
                 return {existing, false};
             }
-
-            // Collision with different key, continue probing
+            // Collision with a different key — keep probing.
         }
 
-        // Table is full (shouldn't happen with proper load factor management)
+        // Table is full (shouldn't happen under correct load-factor management).
         resize();
         return insert_if_absent(key, value);
     }
@@ -346,28 +382,18 @@ private:
             size_t i = (idx + probe) & table->mask;
             const Entry& entry = table->entries[i];
 
-            K current_key = entry.key.load(std::memory_order_acquire);
-
-            // Wait for LOCKED slots to resolve - they might be inserting our key
-            // MUST spin indefinitely - if we give up on a LOCKED slot that holds our key,
-            // we'd incorrectly return nullopt and cause duplicate insertions.
-            // LOCKED state is very brief (just value + key writes), so this is safe.
-            while (current_key == LOCKED_KEY) {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                __asm__ volatile("yield" ::: "memory");
-                #endif
-                current_key = entry.key.load(std::memory_order_acquire);
-            }
+            // Resolve LOCKED to a real key before comparing. If we skipped a
+            // LOCKED slot that was installing our key we'd incorrectly return
+            // nullopt and cause a duplicate insertion — hence we must wait.
+            K current_key = wait_for_locked_to_resolve(entry.key);
 
             if (current_key == key) {
                 return entry.value.load(std::memory_order_acquire);
             }
-
             if (current_key == EMPTY_KEY) {
                 return std::nullopt;
             }
+            // Different key — keep probing.
         }
 
         return std::nullopt;

@@ -848,6 +848,7 @@ private:
     void execute_rewrite_task(const MatchRecord& match, uint32_t step);
 
     // Pruning helpers
+    bool can_submit(StateId state, uint32_t step) const;  // shared submit_* / execute_* preamble
     bool can_create_states_at_step(uint32_t step) const;
     bool can_have_more_children(StateId parent) const;
     bool try_reserve_successor_slot(StateId parent);

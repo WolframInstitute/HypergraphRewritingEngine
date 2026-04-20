@@ -147,11 +147,15 @@ class Hypergraph {
     // edge correspondence when state_canonicalization_mode_ is None or Automatic.
     ConcurrentMap<uint64_t, StateId> event_canonical_state_map_;
 
-    // State canonicalization mode: controls how states are deduplicated
-    // None: tree mode - no deduplication, each state is unique
-    // Automatic: content-ordered hash (not yet implemented, behaves like Full)
-    // Full: isomorphism-invariant hash via WL/UT
-    // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
+    // State canonicalization mode: controls how states are deduplicated.
+    //   None       — no evolution-time dedup; each state_id is its own cell.
+    //   Automatic  — no evolution-time dedup (matches MultiwaySystem reference);
+    //                display-time grouping via content-ordered hash is computed
+    //                on demand at output time by compute_content_ordered_hash().
+    //   Full       — dedup via IR canonical hash (exact isomorphism — no false
+    //                positives, so the IR hash is used directly as the map key).
+    // atomic<> is load-bearing on ARM64: worker threads must see the value the
+    // main thread writes before the first state is created.
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
     // ==========================================================================
@@ -176,10 +180,6 @@ class Hypergraph {
     // Stats for bloom filter-based vertex hash reuse in compute_canonical_hash_incremental
     mutable std::atomic<size_t> bloom_reused_{0};
     mutable std::atomic<size_t> bloom_recomputed_{0};
-
-    // Flag to use shared tree vs exact canonicalization
-    // Enabled by default: WL hashing is O(V²×E) vs O(g!) factorial for exact canonicalization
-    bool use_shared_tree_{true};
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -621,21 +621,6 @@ public:
         return state_canonicalization_mode_.load(std::memory_order_acquire) != StateCanonicalizationMode::None;
     }
 
-    // Enable shared uniqueness tree for faster hashing with incremental computation
-    void enable_shared_tree() {
-        use_shared_tree_ = true;
-    }
-
-    // Disable shared uniqueness tree (use exact canonicalization)
-    void disable_shared_tree() {
-        use_shared_tree_ = false;
-    }
-
-    // Check if shared tree is enabled
-    bool shared_tree_enabled() const {
-        return use_shared_tree_;
-    }
-
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
     bool is_full_canonicalization() const {
         return state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::Full;
@@ -906,14 +891,12 @@ public:
     // Debug: Get raw edges as string
     std::string get_raw_edges_string(const SparseBitset& edges) const;
 
-    // Compute canonical hash using the selected hash strategy
-    // Uses globally cached vertex tree data for incremental computation
+    // Compute canonical hash using the selected hash strategy (WL / UT / iUT).
+    // Dispatches via hash_strategy_; uses globally cached vertex tree data for
+    // incremental computation where the strategy supports it. Note: this is
+    // the heuristic hash with known false-positive potential on symmetric
+    // graphs — for exact isomorphism use IRCanonicalizer directly.
     uint64_t compute_canonical_hash_shared(const SparseBitset& edges) const;
-
-    // Compute canonical hash using UniquenessTree (polynomial-time, approximate)
-    uint64_t compute_canonical_hash_wl(const SparseBitset& edges) {
-        return compute_canonical_hash_shared(edges);
-    }
 
     // Get or compute WL hash cache for a state (memoized)
     // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes

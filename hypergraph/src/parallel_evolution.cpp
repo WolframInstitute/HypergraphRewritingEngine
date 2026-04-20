@@ -997,33 +997,32 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
 // Task Submission
 // =============================================================================
 
-void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
-    if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
+// Shared gate — every submit_* and execute_* starts here. Centralises the
+// should-stop / step-limit / per-step-cap / per-parent-cap fast-fails that
+// used to be duplicated six ways.
+bool ParallelEvolutionEngine::can_submit(StateId state, uint32_t step) const {
+    if (should_stop_.load(std::memory_order_relaxed)) return false;
+    if (max_steps_ > 0 && step > max_steps_) return false;
+    if (!can_create_states_at_step(step + 1)) return false;
+    if (!can_have_more_children(state)) return false;
+    return true;
+}
 
+void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
+    if (!can_submit(state, step)) return;
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step]() {
             execute_match_task(state, step, MatchContext{});
         },
-        EvolutionJobType::MATCH
-    );
+        EvolutionJobType::MATCH);
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_match_task_with_context(
-    StateId state,
-    uint32_t step,
-    const MatchContext& ctx
-) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
-    if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
-
+    StateId state, uint32_t step, const MatchContext& ctx) {
+    if (!can_submit(state, step)) return;
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
@@ -1031,82 +1030,57 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
         [this, state, step, ctx]() {
             execute_match_task(state, step, ctx);
         },
-        EvolutionJobType::MATCH
-    );
+        EvolutionJobType::MATCH);
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
-    // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
-    if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(match.source_state)) return;
-
-    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index, step);
+    // execute_rewrite_task does the actual atomic slot reservation; this is
+    // the cheap pre-check.
+    if (!can_submit(match.source_state, step)) return;
+    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u",
+              match.source_state, match.rule_index, step);
 
     auto job = job_system::make_job<EvolutionJobType>(
         [this, match, step]() {
             execute_rewrite_task(match, step);
         },
-        EvolutionJobType::REWRITE
-    );
+        EvolutionJobType::REWRITE);
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
-
+    if (!can_submit(data.state, data.step)) return;
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() {
-            execute_scan_task(data);
-        },
-        EvolutionJobType::SCAN
-    );
-    // SCAN tasks use FIFO - start broadly, then depth-first via EXPAND
+        [this, data]() { execute_scan_task(data); },
+        EvolutionJobType::SCAN);
+    // SCAN uses FIFO — start broadly, then depth-first via EXPAND.
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
-
+    if (!can_submit(data.state, data.step)) return;
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() {
-            execute_expand_task(data);
-        },
-        EvolutionJobType::EXPAND
-    );
-    // LIFO scheduling: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|)
+        [this, data]() { execute_expand_task(data); },
+        EvolutionJobType::EXPAND);
+    // LIFO: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|).
     job_system_->submit(std::move(job), job_system::ScheduleMode::LIFO);
 }
 
 void ParallelEvolutionEngine::submit_sink_task(const ExpandTaskData& data) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
-
+    if (!can_submit(data.state, data.step)) return;
     DEBUG_LOG("SUBMIT_SINK state=%u rule=%u matched=%u step=%u",
               data.state, data.rule_index, data.num_matched, data.step);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() {
-            execute_sink_task(data);
-        },
-        EvolutionJobType::SINK
-    );
+        [this, data]() { execute_sink_task(data); },
+        EvolutionJobType::SINK);
     job_system_->submit(std::move(job));
 }
 
@@ -1132,60 +1106,45 @@ bool ParallelEvolutionEngine::can_have_more_children(StateId parent) const {
     return (*result)->load(std::memory_order_relaxed) < max_successor_states_per_parent_;
 }
 
-bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
-    if (max_successor_states_per_parent_ == 0) return true;
+namespace {
 
-    // Get or create atomic counter for this parent
-    uint64_t key = parent;
-    auto result = parent_successor_count_.lookup(key);
+// Atomically reserve a slot in a counter keyed by `key` in `map`, capped at
+// `limit`. Creates the counter on first use; races are absorbed via the
+// arena + insert_if_absent pattern. fetch_add / fetch_sub rollback is used
+// instead of a compare-exchange loop because the expected contention over
+// the cap boundary is low and the rollback is a single relaxed store.
+template<typename MapT>
+bool reserve_counted_slot(MapT& map, uint64_t key, size_t limit,
+                          ConcurrentHeterogeneousArena& arena) {
+    if (limit == 0) return true;
+
     std::atomic<size_t>* counter = nullptr;
-
-    if (result.has_value()) {
+    if (auto result = map.lookup(key); result.has_value()) {
         counter = *result;
     } else {
-        // Allocate new counter from arena
-        counter = hg_->arena().template create<std::atomic<size_t>>(0);
-        auto [existing, inserted] = parent_successor_count_.insert_if_absent(key, counter);
-        if (!inserted) {
-            counter = existing;  // Another thread beat us
-        }
+        counter = arena.template create<std::atomic<size_t>>(0);
+        auto [existing, inserted] = map.insert_if_absent(key, counter);
+        if (!inserted) counter = existing;
     }
 
-    // Try to increment, fail if at limit
     size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
-    if (old_val >= max_successor_states_per_parent_) {
-        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
+    if (old_val >= limit) {
+        counter->fetch_sub(1, std::memory_order_relaxed);
         return false;
     }
     return true;
 }
 
+}  // namespace
+
+bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
+    return reserve_counted_slot(parent_successor_count_, parent,
+                                max_successor_states_per_parent_, hg_->arena());
+}
+
 bool ParallelEvolutionEngine::try_reserve_step_slot(uint32_t step) {
-    if (max_states_per_step_ == 0) return true;  // Unlimited
-
-    // Get or create atomic counter for this step
-    uint64_t key = step;
-    auto result = states_per_step_.lookup(key);
-    std::atomic<size_t>* counter = nullptr;
-
-    if (result.has_value()) {
-        counter = *result;
-    } else {
-        // Allocate new counter from arena
-        counter = hg_->arena().template create<std::atomic<size_t>>(0);
-        auto [existing, inserted] = states_per_step_.insert_if_absent(key, counter);
-        if (!inserted) {
-            counter = existing;  // Another thread beat us
-        }
-    }
-
-    // Try to increment, fail if at limit
-    size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
-    if (old_val >= max_states_per_step_) {
-        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
-        return false;
-    }
-    return true;
+    return reserve_counted_slot(states_per_step_, step,
+                                max_states_per_step_, hg_->arena());
 }
 
 void ParallelEvolutionEngine::release_step_slot(uint32_t step) {

@@ -195,8 +195,13 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
     auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
 
-    // Also insert into event_canonical_state_map_ using the isomorphism-invariant hash
-    event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
+    // event_canonical_state_map_ is only consulted when event canonicalization
+    // is active (get_canonical_state_for_event). When it isn't, the insert was
+    // unconditional dead work — N concurrent state creations each doing a
+    // lock-free insert into a shared map they never read from. Gate it.
+    if (event_signature_keys_ != EVENT_SIG_NONE) {
+        event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
+    }
 
     // In Full mode, the map key is the IR canonical hash which is exact —
     // hash collisions are genuine isomorphisms, no verification needed
@@ -533,27 +538,11 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
-    // Use shared tree (WL/UT) if enabled — fast approximate hash for hot path
-    if (use_shared_tree_ && unified_tree_) {
-        return compute_canonical_hash_shared(edges);
-    }
-
-    // Fallback: exact canonical hash via IR (polynomial for low-symmetry graphs)
-    std::vector<std::vector<VertexId>> edge_vectors;
-
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    edges.for_each([&](EdgeId eid) {
-        const Edge& e = edges_[eid];
-        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
-    });
-
-    if (edge_vectors.empty()) {
-        return 0;
-    }
-
-    IRCanonicalizer ir;
-    return ir.compute_canonical_hash(edge_vectors);
+    // Dispatches to the currently configured strategy (WL / UT / iUT). IR is
+    // invoked separately — from create_or_get_canonical_state in Full mode and
+    // from find_edge_correspondence_dispatch when IR edge correspondence is
+    // needed — so it does not appear here.
+    return compute_canonical_hash_shared(edges);
 }
 
 std::string Hypergraph::get_canonical_form_string(const SparseBitset& edges) const {
@@ -617,98 +606,92 @@ uint64_t Hypergraph::compute_canonical_hash_shared(const SparseBitset& edges) co
 // Hash Cache Management
 // =============================================================================
 
+namespace {
+
+// Generic "CAS-publish a cache if not already set, return whichever wins" pattern.
+// Reused by the three strategy-specific cache getters below. SlotT holds an
+// std::atomic<Ptr*> field; accessor projects to it. Compute runs only on the
+// slow path; its return value is stored on the arena and publish-via-CAS
+// ensures a single winner and a stable read for all concurrent callers.
+template<typename SlotT, typename PtrT, typename Accessor, typename Compute>
+PtrT* cas_publish_cache(SlotT& slot, Accessor accessor, Compute compute,
+                        ConcurrentHeterogeneousArena& arena) {
+    auto& atomic_ptr = accessor(slot);
+    if (PtrT* cached = atomic_ptr.load(std::memory_order_acquire); cached) {
+        return cached;
+    }
+    PtrT* fresh = arena.create<PtrT>(compute());
+    PtrT* expected = nullptr;
+    if (atomic_ptr.compare_exchange_strong(expected, fresh,
+                                           std::memory_order_release,
+                                           std::memory_order_acquire)) {
+        return fresh;
+    }
+    // Another thread beat us; its pointer is the visible one.
+    return expected;
+}
+
+}  // namespace
+
 VertexHashCache Hypergraph::get_or_compute_wl_cache(StateId state_id) {
     WLHashCacheEntry& entry = wl_hash_cache_.get_or_default(state_id, arena_);
-
-    // Fast path: already computed
-    VertexHashCache* cached = entry.cache_ptr.load(std::memory_order_acquire);
-    if (cached) {
-        return *cached;
-    }
-
-    // Slow path: compute cache
     const State& state = get_state(state_id);
     EdgeVertexAccessorRaw vert_acc(this);
     EdgeArityAccessorRaw arity_acc(this);
 
-    auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
-        state.edges, vert_acc, arity_acc);
-
-    // Allocate cache on arena and copy data
-    VertexHashCache* new_cache = arena_.create<VertexHashCache>(cache);
-
-    // Try to set the pointer atomically
-    VertexHashCache* expected = nullptr;
-    if (entry.cache_ptr.compare_exchange_strong(expected, new_cache,
-                                                 std::memory_order_release,
-                                                 std::memory_order_acquire)) {
-        return *new_cache;
-    } else {
-        return *expected;
-    }
+    VertexHashCache* cache_ptr = cas_publish_cache<WLHashCacheEntry, VertexHashCache>(
+        entry,
+        [](WLHashCacheEntry& e) -> std::atomic<VertexHashCache*>& { return e.cache_ptr; },
+        [&] {
+            auto [hash, cache] = wl_hash_->compute_state_hash_with_cache(
+                state.edges, vert_acc, arity_acc);
+            (void)hash;
+            return cache;
+        },
+        arena_);
+    return *cache_ptr;
 }
 
 VertexHashCache Hypergraph::get_or_compute_ut_cache(StateId state_id) {
     StateIncrementalCache& entry = state_incremental_cache_.get_or_default(state_id, arena_);
-
-    // Fast path: already computed
-    StateIncrementalCacheData* cached = entry.data_ptr.load(std::memory_order_acquire);
-    if (cached) {
-        return cached->vertex_cache;
-    }
-
-    // Slow path: compute cache
     const State& state = get_state(state_id);
     EdgeVertexAccessorRaw vert_acc(this);
     EdgeArityAccessorRaw arity_acc(this);
 
-    auto [hash, cache] = incremental_tree_->compute_state_hash_with_cache(
-        state.edges, vert_acc, arity_acc);
-
-    // Allocate cache data on arena
-    StateIncrementalCacheData* new_data = arena_.create<StateIncrementalCacheData>();
-    new_data->vertex_cache = cache;
-
-    // Try to set the pointer atomically
-    StateIncrementalCacheData* expected = nullptr;
-    if (entry.data_ptr.compare_exchange_strong(expected, new_data,
-                                                std::memory_order_release,
-                                                std::memory_order_acquire)) {
-        return new_data->vertex_cache;
-    } else {
-        return expected->vertex_cache;
-    }
+    StateIncrementalCacheData* data = cas_publish_cache<StateIncrementalCache, StateIncrementalCacheData>(
+        entry,
+        [](StateIncrementalCache& e) -> std::atomic<StateIncrementalCacheData*>& { return e.data_ptr; },
+        [&] {
+            auto [hash, cache] = incremental_tree_->compute_state_hash_with_cache(
+                state.edges, vert_acc, arity_acc);
+            (void)hash;
+            StateIncrementalCacheData d;
+            d.vertex_cache = cache;
+            return d;
+        },
+        arena_);
+    return data->vertex_cache;
 }
 
 VertexHashCache Hypergraph::get_or_compute_ut_plain_cache(StateId state_id) {
+    // Reuses wl_hash_cache_ slot — WL and plain-UT are mutually exclusive at
+    // the hash_strategy_ level, so the slot never holds both kinds.
     WLHashCacheEntry& entry = wl_hash_cache_.get_or_default(state_id, arena_);
-
-    // Fast path: already computed
-    VertexHashCache* cached = entry.cache_ptr.load(std::memory_order_acquire);
-    if (cached) {
-        return *cached;
-    }
-
-    // Slow path: compute cache
     const State& state = get_state(state_id);
     EdgeVertexAccessorRaw vert_acc(this);
     EdgeArityAccessorRaw arity_acc(this);
 
-    auto [hash, cache] = unified_tree_->compute_state_hash_with_cache(
-        state.edges, vert_acc, arity_acc);
-
-    // Allocate cache on arena and copy data
-    VertexHashCache* new_cache = arena_.create<VertexHashCache>(cache);
-
-    // Try to set the pointer atomically
-    VertexHashCache* expected = nullptr;
-    if (entry.cache_ptr.compare_exchange_strong(expected, new_cache,
-                                                 std::memory_order_release,
-                                                 std::memory_order_acquire)) {
-        return *new_cache;
-    } else {
-        return *expected;
-    }
+    VertexHashCache* cache_ptr = cas_publish_cache<WLHashCacheEntry, VertexHashCache>(
+        entry,
+        [](WLHashCacheEntry& e) -> std::atomic<VertexHashCache*>& { return e.cache_ptr; },
+        [&] {
+            auto [hash, cache] = unified_tree_->compute_state_hash_with_cache(
+                state.edges, vert_acc, arity_acc);
+            (void)hash;
+            return cache;
+        },
+        arena_);
+    return *cache_ptr;
 }
 
 // =============================================================================
