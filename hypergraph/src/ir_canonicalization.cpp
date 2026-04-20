@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cassert>
 #include <map>
-#include <set>
 
 namespace hypergraph {
 
@@ -34,25 +33,29 @@ IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
     HypergraphAdj adj;
     adj.edges = &edges;
 
-    std::set<VertexId> verts;
+    // Collect unique vertices via vector + sort + unique. std::set was allocating
+    // a red-black node per insert; for V in the tens-to-hundreds range (typical
+    // for rewrite states) the linear-scan-then-sort path is both faster and
+    // noticeably more cache-friendly.
+    size_t upper_bound = 0;
+    for (const auto& edge : edges) upper_bound += edge.size();
+
+    adj.idx_to_orig.reserve(upper_bound);
     for (const auto& edge : edges) {
-        for (VertexId v : edge) verts.insert(v);
+        for (VertexId v : edge) adj.idx_to_orig.push_back(v);
     }
+    std::sort(adj.idx_to_orig.begin(), adj.idx_to_orig.end());
+    adj.idx_to_orig.erase(
+        std::unique(adj.idx_to_orig.begin(), adj.idx_to_orig.end()),
+        adj.idx_to_orig.end());
 
-    adj.num_vertices = static_cast<uint32_t>(verts.size());
-    adj.idx_to_orig.reserve(verts.size());
-    uint32_t idx = 0;
-    for (VertexId v : verts) {
-        adj.orig_to_idx[v] = idx;
-        adj.idx_to_orig.push_back(v);
-        ++idx;
-    }
-
+    adj.num_vertices = static_cast<uint32_t>(adj.idx_to_orig.size());
     adj.vertex_edges.resize(adj.num_vertices);
+
     for (uint32_t ei = 0; ei < edges.size(); ++ei) {
         uint8_t arity = static_cast<uint8_t>(edges[ei].size());
         for (uint8_t pos = 0; pos < arity; ++pos) {
-            uint32_t vi = adj.orig_to_idx[edges[ei][pos]];
+            uint32_t vi = adj.index_of(edges[ei][pos]);
             adj.vertex_edges[vi].push_back({ei, pos, arity});
         }
     }
@@ -134,7 +137,7 @@ bool IRCanonicalizer::refine(const HypergraphAdj& adj, IRPartition& pi) const {
                     const auto& edge = (*adj.edges)[occ.edge_idx];
                     for (uint8_t p = 0; p < edge.size(); ++p) {
                         if (p == occ.position) continue;
-                        uint32_t other_vi = adj.orig_to_idx.at(edge[p]);
+                        uint32_t other_vi = adj.index_of(edge[p]);
                         esig.push_back(pi.vertex_to_cell[other_vi]);
                     }
                     std::sort(esig.begin() + 2, esig.end());
@@ -235,7 +238,7 @@ std::vector<std::vector<VertexId>> IRCanonicalizer::apply_labeling(
         std::vector<VertexId> mapped;
         mapped.reserve(edge.size());
         for (VertexId v : edge) {
-            uint32_t vi = adj.orig_to_idx.at(v);
+            uint32_t vi = adj.index_of(v);
             mapped.push_back(static_cast<VertexId>(labeling[vi]));
         }
         result.push_back(std::move(mapped));
@@ -276,7 +279,7 @@ CanonicalizationResult IRCanonicalizer::build_result(
         me.orig_idx = ei;
         me.mapped.reserve(edges[ei].size());
         for (VertexId v : edges[ei]) {
-            uint32_t vi = adj.orig_to_idx.at(v);
+            uint32_t vi = adj.index_of(v);
             me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
         }
         mapped.push_back(std::move(me));
