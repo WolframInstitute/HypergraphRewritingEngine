@@ -45,99 +45,7 @@ void ParallelEvolutionEngine::evolve(
     const std::vector<std::vector<VertexId>>& initial_edges,
     size_t steps
 ) {
-    if (!hg_ || rules_.empty()) return;
-
-    max_steps_ = steps;
-    should_stop_.store(false, std::memory_order_relaxed);
-
-    // Propagate abort flag to hypergraph for long-running hash computations
-    hg_->set_abort_flag(&should_stop_);
-
-    // Create initial state
-    std::vector<EdgeId> edge_ids;
-    for (const auto& edge : initial_edges) {
-        EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
-        edge_ids.push_back(eid);
-
-        // Track max vertex ID to ensure fresh vertices don't collide
-        for (VertexId v : edge) {
-            hg_->reserve_vertices(v);
-        }
-    }
-
-    SparseBitset initial_edge_set;
-    for (EdgeId eid : edge_ids) {
-        initial_edge_set.set(eid, hg_->arena());
-    }
-
-    // For initial state, use incremental path with no parent (will compute from scratch)
-    // This also returns the cache to store for future incremental computation
-    auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
-        initial_edge_set,
-        INVALID_ID,  // No parent state
-        nullptr, 0,  // No consumed edges
-        edge_ids.data(), static_cast<uint8_t>(edge_ids.size())  // All edges are "produced"
-    );
-    auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
-        std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
-
-    // Store cache for the initial state
-    hg_->store_state_cache(raw_state, vertex_cache);
-
-    // Emit visualization event for initial state
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-    {
-        const auto& state_data = hg_->get_state(raw_state);
-        VIZ_EMIT_STATE_CREATED(
-            raw_state,                // state id
-            0,                        // parent state id (0 = none)
-            0,                        // generation (initial state is gen 0)
-            state_data.edges.count(), // edge count
-            0                         // vertex count (not tracked per-state)
-        );
-        // Emit hyperedge data for each edge in the initial state
-        uint32_t edge_idx = 0;
-        state_data.edges.for_each([&](EdgeId eid) {
-            const Edge& edge = hg_->get_edge(eid);
-            VIZ_EMIT_HYPEREDGE(raw_state, edge_idx++, edge.vertices, edge.arity);
-        });
-    }
-#endif
-
-    // Create genesis event if enabled
-    // This allows causal edges from initial state edges to be tracked
-    if (enable_genesis_events_) {
-        [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
-            raw_state,
-            edge_ids.data(),
-            static_cast<uint8_t>(edge_ids.size())
-        );
-
-        // Emit visualization event for the genesis event
-        // Genesis events are always canonical (unique by definition)
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-        VIZ_EMIT_REWRITE_APPLIED(
-            viz::VIZ_NO_SOURCE_STATE,  // source_state (none - genesis)
-            raw_state,      // target_state (initial state)
-            static_cast<RuleIndex>(-1),  // rule_index (none)
-            genesis_event,  // event_id (raw)
-            genesis_event,  // canonical_event_id (same as raw for genesis)
-            0,              // destroyed edges (none)
-            static_cast<uint8_t>(edge_ids.size())  // created edges
-        );
-#endif
-    }
-
-    // Mark initial state as matched (waiting version for correctness)
-    matched_raw_states_.insert_if_absent_waiting(raw_state, true);
-
-    // Submit MATCH task for initial state - this kicks off the dataflow
-    submit_match_task(raw_state, 1);
-
-    // Single synchronization point at the end
-    job_system_->wait_for_completion();
-
-    finalize_evolution();
+    evolve(std::vector<std::vector<std::vector<VertexId>>>{initial_edges}, steps);
 }
 
 void ParallelEvolutionEngine::evolve(
@@ -148,16 +56,14 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
-
-    // Propagate abort flag to hypergraph for long-running hash computations
     hg_->set_abort_flag(&should_stop_);
 
-    // Create all initial states - they will all be explored
     for (const auto& state_edges : initial_states) {
         create_and_register_initial_state(state_edges);
     }
 
-    // Single synchronization point at the end
+    // Single synchronisation point at the end — the dataflow cascade from
+    // MATCH → REWRITE → MATCH runs to completion without intermediate barriers.
     job_system_->wait_for_completion();
 
     finalize_evolution();
@@ -521,8 +427,8 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
 StateId ParallelEvolutionEngine::create_and_register_initial_state(
     const std::vector<std::vector<VertexId>>& edges
 ) {
-    // Create edges
     std::vector<EdgeId> edge_ids;
+    edge_ids.reserve(edges.size());
     for (const auto& edge : edges) {
         EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
         edge_ids.push_back(eid);
@@ -536,28 +442,42 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
         initial_edge_set.set(eid, hg_->arena());
     }
 
-    // Compute canonical hash
+    // Compute canonical hash for the initial state via the incremental path
+    // with no parent (full compute), returning the cache so the first child's
+    // incremental hash has something to reuse against.
     auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
-        initial_edge_set,
-        INVALID_ID,  // No parent state
-        nullptr, 0,  // No consumed edges
-        edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
-    );
+        initial_edge_set, INVALID_ID, nullptr, 0,
+        edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
-
-    // Store cache for the initial state
     hg_->store_state_cache(raw_state, vertex_cache);
 
-    // Create genesis event if enabled
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+    {
+        const auto& state_data = hg_->get_state(raw_state);
+        VIZ_EMIT_STATE_CREATED(raw_state, 0, 0,
+                               state_data.edges.count(), 0);
+        uint32_t edge_idx = 0;
+        state_data.edges.for_each([&](EdgeId eid) {
+            const Edge& edge = hg_->get_edge(eid);
+            VIZ_EMIT_HYPEREDGE(raw_state, edge_idx++, edge.vertices, edge.arity);
+        });
+    }
+#endif
+
     if (enable_genesis_events_) {
-        hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
+            raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+        VIZ_EMIT_REWRITE_APPLIED(
+            viz::VIZ_NO_SOURCE_STATE, raw_state,
+            static_cast<RuleIndex>(-1), genesis_event, genesis_event,
+            0, static_cast<uint8_t>(edge_ids.size()));
+#endif
     }
 
-    // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
     submit_match_task(raw_state, 1);
-
     return raw_state;
 }
 
