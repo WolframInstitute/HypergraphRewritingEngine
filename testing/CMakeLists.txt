@@ -154,9 +154,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
-    ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
-    ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp
@@ -197,14 +195,17 @@ create_test_executable(causal_tests
 )
 
 # =============================================================================
-# stress_tests - Determinism fuzzing and performance tests
+# stress_tests - Determinism fuzzing and memory-stability
 # =============================================================================
+# Performance-tracking tests (grid-profiling, UT-vs-iUT timing) moved to
+# benchmarks/evolution_benchmarks.cpp and benchmarks/uniqueness_tree_benchmarks.cpp
+# where the framework records per-commit/tree-hash results. The test binaries
+# are for correctness under contention (determinism fuzzing) and resource
+# stability (repeated invocation).
 create_test_executable(stress_tests
     main.cpp
     test_helpers.hpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
-    ../hypergraph/tests/test_ut_vs_utinc_performance.cpp
-    ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
 )
 
