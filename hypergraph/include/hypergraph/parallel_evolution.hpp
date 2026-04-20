@@ -610,95 +610,51 @@ public:
     // Each initial state is evolved from independently, exploring the full multiway system
     void evolve(const std::vector<std::vector<std::vector<VertexId>>>& initial_states, size_t steps);
 
-    // Evolve with abort callback - allows external abort control (e.g., from Mathematica)
-    // The abort_check callback is called from the main thread periodically (~50ms)
-    // If it returns true, evolution stops early and this function returns true (aborted)
-    // Returns false if evolution completed normally
+    // Evolve with abort callback — allows external abort control (e.g. from
+    // Mathematica). abort_check is polled from the main thread roughly every
+    // 50 ms; returning true requests a stop. The function returns true if
+    // evolution was aborted, false if it completed normally.
+    //
+    // The two overloads share a single implementation: a "setup" lambda
+    // creates the initial state(s) and submits the first MATCH task(s), then
+    // the common wait-with-abort / drain-pending-jobs / finalize dance runs.
+    // Previously these overloads were 58-line near-duplicates that had to be
+    // kept in sync by hand.
     template<typename AbortCheck>
     bool evolve_with_abort(const std::vector<std::vector<VertexId>>& initial_edges,
-                           size_t steps,
-                           AbortCheck&& abort_check) {
-        if (!hg_ || rules_.empty()) return false;
-
-        max_steps_ = steps;
-        should_stop_.store(false, std::memory_order_relaxed);
-
-        // Propagate abort flag to hypergraph for long-running hash computations
-        hg_->set_abort_flag(&should_stop_);
-
-        // Create initial state (same setup as evolve())
-        std::vector<EdgeId> edge_ids;
-        for (const auto& edge : initial_edges) {
-            EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
-            edge_ids.push_back(eid);
-            for (VertexId v : edge) {
-                hg_->reserve_vertices(v);
-            }
-        }
-
-        SparseBitset initial_edge_set;
-        for (EdgeId eid : edge_ids) {
-            initial_edge_set.set(eid, hg_->arena());
-        }
-
-        auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
-            initial_edge_set,
-            INVALID_ID,
-            nullptr, 0,
-            edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
-        );
-        auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
-            std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
-
-        hg_->store_state_cache(raw_state, vertex_cache);
-
-        if (enable_genesis_events_) {
-            hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
-        }
-
-        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
-        submit_match_task(raw_state, 1);
-
-        // Wait with abort checking - abort_check called from main thread
-        bool aborted = job_system_->wait_for_completion_with_abort([&]() {
-            if (abort_check()) {
-                request_stop();
+                           size_t steps, AbortCheck&& abort_check) {
+        return evolve_with_abort_impl(steps, std::forward<AbortCheck>(abort_check),
+            [&] {
+                if (rules_.empty()) return false;
+                create_and_register_initial_state(initial_edges);
                 return true;
-            }
-            return false;
-        });
-
-        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
-        // before returning. Jobs that passed the should_stop_ check are still running
-        // and accessing hg_. Returning early would cause use-after-free.
-        if (aborted) {
-            job_system_->wait_for_completion();
-        }
-
-        finalize_evolution();
-        return aborted;
+            });
     }
 
-    // Overload for multiple initial states
-    // Each initial state is evolved from independently, exploring the full multiway system
     template<typename AbortCheck>
     bool evolve_with_abort(const std::vector<std::vector<std::vector<VertexId>>>& initial_states,
-                           size_t steps,
-                           AbortCheck&& abort_check) {
-        if (!hg_ || rules_.empty() || initial_states.empty()) return false;
+                           size_t steps, AbortCheck&& abort_check) {
+        return evolve_with_abort_impl(steps, std::forward<AbortCheck>(abort_check),
+            [&] {
+                if (rules_.empty() || initial_states.empty()) return false;
+                for (const auto& state_edges : initial_states) {
+                    create_and_register_initial_state(state_edges);
+                }
+                return true;
+            });
+    }
+
+private:
+    template<typename AbortCheck, typename Setup>
+    bool evolve_with_abort_impl(size_t steps, AbortCheck&& abort_check, Setup&& setup) {
+        if (!hg_) return false;
 
         max_steps_ = steps;
         should_stop_.store(false, std::memory_order_relaxed);
-
-        // Propagate abort flag to hypergraph for long-running hash computations
         hg_->set_abort_flag(&should_stop_);
 
-        // Create all initial states - they will all be explored
-        for (const auto& state_edges : initial_states) {
-            create_and_register_initial_state(state_edges);
-        }
+        if (!setup()) return false;
 
-        // Wait with abort checking - abort_check called from main thread
         bool aborted = job_system_->wait_for_completion_with_abort([&]() {
             if (abort_check()) {
                 request_stop();
@@ -707,9 +663,9 @@ public:
             return false;
         });
 
-        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
-        // before returning. Jobs that passed the should_stop_ check are still running
-        // and accessing hg_. Returning early would cause use-after-free.
+        // Jobs that passed their should_stop_ check may still be in flight and
+        // touching hg_; we MUST wait for them to drain before returning, or
+        // the caller's hg_ destruction would be use-after-free.
         if (aborted) {
             job_system_->wait_for_completion();
         }
@@ -717,6 +673,8 @@ public:
         finalize_evolution();
         return aborted;
     }
+
+public:
 
     // =========================================================================
     // Uniform Random Evolution - Step-Synchronized
