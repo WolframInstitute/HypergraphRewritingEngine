@@ -18,19 +18,19 @@
 namespace hypergraph {
 
 // =============================================================================
-// Pattern Matching Tasks (HGMatch Dataflow Model)
+// Pattern Matching Tasks (HGMatch dataflow model)
 // =============================================================================
 //
-// Following v1's execution model:
-// - SCAN/EXPAND execute synchronously (recursive depth-first within single task)
-// - Only SINK→REWRITE spawns new jobs to the job system
-// - This is memory-efficient (bounded by O(pattern_edges * candidates))
+// SCAN → EXPAND* → SINK → REWRITE. SCAN and EXPAND execute synchronously
+// inside one task (depth-first recursive), keeping intermediate state bounded
+// by O(pattern_edges × candidates). Only SINK → REWRITE spawns new job-system
+// jobs, so the cascade does not blow up memory even on highly branching rules.
 //
 // Task types:
-// - SCAN: Find initial candidates via signature partition
-// - EXPAND: Extend partial match with next pattern edge
-// - SINK: Process complete match, spawn REWRITE task
-// - REWRITE: Apply rule, create new state, spawn next evolution step
+// - SCAN:    find initial candidates via signature partition
+// - EXPAND:  extend partial match with next pattern edge
+// - SINK:    complete match found; spawn REWRITE
+// - REWRITE: apply rule, create new state, spawn next MATCH
 
 // PartialMatch is defined in pattern.hpp
 

@@ -72,8 +72,7 @@ class CausalGraph {
     // The rendezvous pattern can cause both producer and consumer to add the same edge
     ConcurrentMap<uint64_t, bool> seen_causal_triples_;
 
-    // Deduplication map for causal event pairs: (producer << 32 | consumer) -> true
-    // Used for counting unique event pairs with causal relationships (v1 semantics)
+    // Deduplication map for unique causal event pairs: (producer << 32 | consumer) -> true
     ConcurrentMap<uint64_t, bool> seen_causal_event_pairs_;
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
@@ -104,7 +103,8 @@ class CausalGraph {
     ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> desc_;
     ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> anc_;
 
-    // Whether online TR is enabled (default: disabled for v1 compatibility)
+    // Online transitive reduction enabled? Off by default — opt in via
+    // ParallelEvolutionEngine::set_transitive_reduction(true).
     std::atomic<bool> transitive_reduction_enabled_{false};
 
     // Statistics for TR
@@ -115,7 +115,7 @@ class CausalGraph {
 
     // Statistics
     std::atomic<size_t> num_causal_edges_{0};        // Per-edge causal relationships
-    std::atomic<size_t> num_causal_event_pairs_{0};  // Unique event pairs (v1 semantics)
+    std::atomic<size_t> num_causal_event_pairs_{0};  // Unique (producer, consumer) event pairs
     std::atomic<size_t> num_branchial_edges_{0};
 
 public:
@@ -316,7 +316,8 @@ public:
         return num_causal_edges_.load(std::memory_order_relaxed);
     }
 
-    // Number of unique event pairs with causal relationships (v1 semantics)
+    // Number of unique (producer, consumer) event pairs with a causal edge
+    // between them (counts each pair once, not once per shared edge).
     size_t num_causal_event_pairs() const {
         return num_causal_event_pairs_.load(std::memory_order_relaxed);
     }

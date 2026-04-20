@@ -169,10 +169,10 @@ RewriteResult Rewriter::apply(
         hg_->add_edge_consumer(matched_edges[sorted_consumed[i].second], result.event);
     }
 
-    // Register for branchial tracking (checks overlap with other events from same state)
-    // Use the RAW input state ID for grouping (matching v1's behavior)
-    // Branchial edges only connect events from the SAME actual state, not just canonically equivalent
-    // Pass canonical_event_id to enable skipping branchial edges between equivalent events
+    // Register for branchial tracking. Uses the RAW input state ID for grouping
+    // (branchial edges only connect events that share the *actual* input state,
+    // not merely canonically equivalent input states). canonical_event_id is
+    // passed so pairs of canonically equivalent events are skipped.
     hg_->register_event_for_branchial(
         result.event, input_state, matched_edges, num_matched,
         event_result.canonical_event_id

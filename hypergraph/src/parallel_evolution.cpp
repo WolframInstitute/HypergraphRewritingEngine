@@ -1207,7 +1207,9 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             ctx.produced_edges[i] = rr.produced_edges[i];
         }
 
-        // Pruning: check exploration_probability (v1 style)
+        // Random pruning: skip exploration beyond this state with probability
+        // (1 - exploration_probability_). Short-circuits the match → rewrite
+        // cascade below but still accounts the state itself.
         if (!should_explore()) {
             return;
         }

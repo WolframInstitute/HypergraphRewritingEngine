@@ -415,9 +415,9 @@ class ParallelEvolutionEngine {
     // When false: uniform over ALL possible matches (slower, strictly uniform)
     bool early_terminate_on_reservoir_full_{false};
 
-    // Genesis events: create synthetic events for initial states that produce
-    // all initial edges. This enables causal edges from initial state to gen 1.
-    // Disabled by default to match v1 behavior.
+    // Genesis events: create a synthetic event for each initial state that
+    // "produces" all of that state's edges. Off by default; enable to propagate
+    // causal edges from the initial state into generation 1.
     bool enable_genesis_events_{false};
 
     // Task-based matching: use SCAN→EXPAND→SINK task decomposition (HGMatch model)
@@ -440,10 +440,11 @@ class ParallelEvolutionEngine {
     size_t max_states_{0};
     size_t max_events_{0};
 
-    // Pruning and random termination (v1 compatibility)
-    double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
-    size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
-    size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+    // Pruning and random termination. All three are off (= unlimited / always
+    // explore) by default; set via configuration for bounded exploration.
+    double exploration_probability_{1.0};          // P(explore new state); 1.0 = always
+    size_t max_successor_states_per_parent_{0};    // max children per parent state; 0 = unlimited
+    size_t max_states_per_step_{0};                // max new states per generation/step; 0 = unlimited
 
     // Exploration deduplication: only explore from canonical state representatives.
     // When enabled, states equivalent to already-seen states are created (with events)
@@ -497,9 +498,9 @@ public:
     void set_batched_matching(bool enable) { batched_matching_ = enable; }
     void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
 
-    // Enable online transitive reduction for causal edges (Goranci algorithm)
-    // When enabled, redundant causal edges are filtered out at insertion time.
-    // Disabled by default for v1 compatibility.
+    // Enable online transitive reduction for causal edges (Goranci algorithm).
+    // When enabled, redundant causal edges are filtered at insertion time.
+    // Disabled by default.
     void set_transitive_reduction(bool enable) {
         if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
     }
@@ -516,7 +517,7 @@ public:
     void set_task_based_matching(bool enable) { task_based_matching_ = enable; }
     bool task_based_matching() const { return task_based_matching_; }
 
-    // Pruning options (v1 compatibility)
+    // Pruning options
     void set_exploration_probability(double p) {
         exploration_probability_ = std::clamp(p, 0.0, 1.0);
     }
