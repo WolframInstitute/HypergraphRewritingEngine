@@ -224,6 +224,11 @@ private:
         }
     };
 
+    // Install a fresh block at the head of the chain. current_block_ is then
+    // re-synced from head_ so allocators always reach the most-recent block;
+    // previously this was an unconditional store that could leave
+    // current_block_ pointing at an *older* block if two threads raced to
+    // allocate, which silently wasted the newer block's capacity.
     void allocate_new_block() {
         Block* new_block = Block::create(block_capacity_);
 
@@ -235,7 +240,8 @@ private:
             std::memory_order_release,
             std::memory_order_acquire));
 
-        current_block_.store(new_block, std::memory_order_release);
+        current_block_.store(head_.load(std::memory_order_acquire),
+                             std::memory_order_release);
     }
 
     size_t block_capacity_;
@@ -551,6 +557,10 @@ private:
         DestructorNode* prev;
     };
 
+    // See ConcurrentArena<T>::allocate_new_block for the rationale: sync
+    // current_block_ from head_ after installing the new block so the last
+    // store always reflects the most-recent head rather than a racing
+    // thread's older block.
     void allocate_new_block() {
         Block* new_block = Block::create(block_size_);
 
@@ -562,7 +572,8 @@ private:
             std::memory_order_release,
             std::memory_order_acquire));
 
-        current_block_.store(new_block, std::memory_order_release);
+        current_block_.store(head_.load(std::memory_order_acquire),
+                             std::memory_order_release);
     }
 
     void register_destructor(void* obj, void (*destroy)(void*)) {
