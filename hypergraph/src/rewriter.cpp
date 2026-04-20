@@ -146,26 +146,27 @@ RewriteResult Rewriter::apply(
     // - Add P1→C second: Check Desc[P1] → C found → SKIP (correct!)
     // Wrong order would store P1→C before P2→C updates Desc[P1].
 
-    // Collect (producer_id, edge_index) pairs for sorting
-    std::vector<std::pair<EventId, uint8_t>> sorted_consumed;
-    sorted_consumed.reserve(num_matched);
+    // Collect (producer_id, edge_index) pairs for sorting. num_matched is
+    // bounded by MAX_PATTERN_EDGES, so a fixed stack array avoids the heap
+    // allocation per rewrite that a std::vector would cause.
+    std::pair<EventId, uint8_t> sorted_consumed[MAX_PATTERN_EDGES];
     for (uint8_t i = 0; i < num_matched; ++i) {
-        EventId producer = hg_->get_edge_producer(matched_edges[i]);
-        sorted_consumed.emplace_back(producer, i);
+        sorted_consumed[i] = {hg_->get_edge_producer(matched_edges[i]), i};
     }
 
-    // Sort by producer ID DESCENDING (newest producers first)
-    // INVALID_ID producers (initial edges with no producer) sort to end
-    std::sort(sorted_consumed.begin(), sorted_consumed.end(),
+    // Sort by producer ID DESCENDING (newest producers first). INVALID_ID
+    // producers (initial edges with no producer) sort to end so that they are
+    // processed last — we want Desc[] caches from newer producers to settle
+    // before we walk the initial edges.
+    std::sort(sorted_consumed, sorted_consumed + num_matched,
         [](const auto& a, const auto& b) {
             if (a.first == INVALID_ID) return false;
             if (b.first == INVALID_ID) return true;
             return a.first > b.first;
         });
 
-    // Add causal edges in sorted order
-    for (const auto& [producer, idx] : sorted_consumed) {
-        hg_->add_edge_consumer(matched_edges[idx], result.event);
+    for (uint8_t i = 0; i < num_matched; ++i) {
+        hg_->add_edge_consumer(matched_edges[sorted_consumed[i].second], result.event);
     }
 
     // Register for branchial tracking (checks overlap with other events from same state)
