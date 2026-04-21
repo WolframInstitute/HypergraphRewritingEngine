@@ -61,6 +61,15 @@ public:
     WLHash(const WLHash&) = delete;
     WLHash& operator=(const WLHash&) = delete;
 
+    // Abort plumbing: when the engine requests an early stop, long-running
+    // refinement loops check this flag between iterations and throw
+    // AbortedException rather than blocking an evolve_with_abort() for
+    // minutes while a large graph finishes colour-refining.
+    void set_abort_flag(std::atomic<bool>* flag) { abort_flag_ = flag; }
+    bool should_abort() const {
+        return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
+    }
+
     // =========================================================================
     // Edge Registration (called when edges are created)
     // =========================================================================
@@ -219,6 +228,7 @@ public:
         size_t iteration = 0;
 
         while (changed && iteration < MAX_REFINEMENT_DEPTH) {
+            if (should_abort()) throw AbortedException{};
             changed = false;
             ++iteration;
 
@@ -394,6 +404,7 @@ public:
         size_t iteration = 0;
 
         while (changed && iteration < MAX_REFINEMENT_DEPTH) {
+            if (should_abort()) throw AbortedException{};
             changed = false;
             ++iteration;
 
@@ -578,6 +589,7 @@ public:
         }
 
         while (num_active > 0 && iteration < MAX_REFINEMENT_DEPTH) {
+            if (should_abort()) throw AbortedException{};
             ++iteration;
             size_t next_num_active = 0;
 
@@ -833,6 +845,7 @@ public:
         }
 
         while (num_active > 0 && iteration < MAX_REFINEMENT_DEPTH) {
+            if (should_abort()) throw AbortedException{};
             ++iteration;
             size_t next_num_active = 0;
 
@@ -1043,6 +1056,7 @@ public:
 
 private:
     ConcurrentHeterogeneousArena* arena_;
+    std::atomic<bool>* abort_flag_{nullptr};
 
     // Per-vertex edge occurrences (global, grows as edges are added)
     SegmentedArray<LockFreeList<EdgeOccurrence>> vertices_;

@@ -742,9 +742,11 @@ public:
     // Set by evolution engine to allow early termination on user abort
     void set_abort_flag(std::atomic<bool>* flag) {
         abort_flag_ = flag;
-        // Also propagate to tree implementations
+        // Propagate to every hash implementation that runs long refinement
+        // loops — any of them can block an evolve_with_abort() without this.
         if (unified_tree_) unified_tree_->set_abort_flag(flag);
         if (incremental_tree_) incremental_tree_->set_abort_flag(flag);
+        if (wl_hash_) wl_hash_->set_abort_flag(flag);
     }
 
     bool should_abort() const {
