@@ -49,7 +49,6 @@ struct MatchRecord {
     StateId source_state;
     StateId canonical_source;  // Canonical state for deterministic deduplication
     uint64_t source_canonical_hash{0};  // Canonical hash of source state (deterministic)
-    uint64_t storage_epoch{0};  // Epoch when this match was stored (for ordering)
 
     // Hash for deduplication - uses source_state + matched edges + binding
     // MUST use source_state (raw state ID), NOT source_canonical_hash!
@@ -733,7 +732,7 @@ private:
     LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state);
 
     // Helper: Store a match for a state (for later forwarding)
-    uint64_t store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false);
+    void store_match_for_state(StateId state, const MatchRecord& match, bool with_fence = false);
 
     // Helper: Get or create the children list for a state (thread-safe)
     LockFreeList<ChildInfo>* get_or_create_state_children(StateId state);

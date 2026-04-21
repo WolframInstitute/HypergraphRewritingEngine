@@ -500,26 +500,24 @@ LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
     return inserted ? new_list : existing;
 }
 
-uint64_t ParallelEvolutionEngine::store_match_for_state(
+void ParallelEvolutionEngine::store_match_for_state(
     StateId state,
-    MatchRecord& match,
+    const MatchRecord& match,
     bool with_fence
 ) {
-    // Get epoch BEFORE storing (for ordering)
-    uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
-    match.storage_epoch = epoch;
+    // Bump global_epoch_ so the eager-mode retry detectors in
+    // push_match_to_children and forward_existing_parent_matches_eager
+    // observe that a forwarding-relevant change has happened.
+    global_epoch_.fetch_add(1, std::memory_order_acq_rel);
 
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
     list->push(match, hg_->arena());
 
-    // In non-batched (eager) mode, we need a fence after each store to ensure
-    // visibility before push_match_to_children runs. In batched mode, we use
-    // a single fence after all stores.
+    // In eager mode we need a fence after each store so push_match_to_children
+    // sees the new match; batched mode issues a single fence after all stores.
     if (with_fence) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
-
-    return epoch;
 }
 
 LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(StateId state) {
@@ -643,8 +641,8 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u epoch=%lu",
-                  parent, child_info.child_state, match.rule_index, h, step, match.storage_epoch);
+        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u",
+                  parent, child_info.child_state, match.rule_index, h, step);
 
         // Store match in child
         store_match_for_state(child_info.child_state, forwarded);
@@ -765,8 +763,8 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu epoch=%lu",
-                  ancestor, child, ancestor_match.rule_index, h, ancestor_match.storage_epoch);
+        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu",
+                  ancestor, child, ancestor_match.rule_index, h);
 
         // Add to batch
         batch.push_back(forwarded);
