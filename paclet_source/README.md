@@ -18,7 +18,7 @@ This paclet provides efficient hypergraph rewriting capabilities with parallel p
 ### Prerequisites
 
 - Mathematica 13.0 or later
-- C++ compiler with C++17 support
+- C++20-capable compiler (GCC 10+, Clang 12+, MSVC 19.29+)
 - CMake 3.14 or later
 
 ### Building the Library
@@ -29,7 +29,7 @@ This project supports building for multiple platforms: Linux (x86-64, ARM64), Wi
 
 **Required for all builds:**
 - CMake 3.14+
-- C++17 compatible compiler
+- C++20-capable compiler
 
 **Platform-specific cross-compilation toolchains (for multi-platform builds):**
 
@@ -180,8 +180,8 @@ The core function is `HGEvolve`, which performs multiway rewriting evolution:
 ```mathematica
 (* Define rules and initial state *)
 rules = {
-  {{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}},
-  {{x_, y_}} :> {{x, z}, {z, y}}
+  {{x, y, z}} -> {{x, y}, {y, z}, {z, x}},
+  {{x, y}} -> {{x, z}, {z, y}}
 };
 
 initialEdges = {{1, 2, 3}, {3, 4, 5}};
@@ -239,19 +239,67 @@ causalStructure = HGEvolve[rules, initialEdges, 3, "CausalGraphStructure"]
 
 ### Evolution Options
 
-`HGEvolve` supports various options:
+`HGEvolve` accepts the options below. Defaults shown in brackets; the complete
+list lives in `paclet/Kernel/HypergraphRewriting.wl` under `Options[HGEvolve]`.
 
-```mathematica
-HGEvolve[rules, initialEdges, steps, property,
-  "CanonicalizeStates" -> True,         (* Canonicalize states for isomorphism detection *)
-  "CanonicalizeEvents" -> False,        (* Canonicalize events *)
-  "CausalTransitiveReduction" -> True,  (* Remove transitive causal edges *)
-  "EarlyTermination" -> False,          (* Stop when a seen state is encountered *)
-  "PatchBasedMatching" -> False,        (* Use patch-based pattern matching *)
-  "FullCapture" -> True,                (* Capture all states including duplicates *)
-  "AspectRatio" -> 1/2                  (* Graph aspect ratio *)
-]
-```
+**Hashing and canonicalization**
+
+| Option | Values | Default | Purpose |
+|---|---|---|---|
+| `"HashStrategy"` | `"WL"`, `"UT"`, `"iUT"` | `"WL"` | Fast heuristic used for state hashing. WL = Weisfeiler-Leman, UT = uniqueness tree, iUT = incremental UT. Heuristics can false-positive on highly symmetric graphs. |
+| `"CanonicalizeStates"` | `None`, `Automatic`, `Full` | `None` | `None`: each raw state is its own cell. `Automatic`: no evolution-time dedup; content-ordered ID is computed at output time for display grouping. `Full`: exact isomorphism-based dedup via McKay-style IR canonicalization (no false positives). |
+| `"CanonicalizeEvents"` | `None`, `Full`, `Automatic`, or `{keys...}` | `None` | Event dedup by signature. Key list may contain `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
+
+**Causal / branchial output**
+
+| Option | Values | Default | Purpose |
+|---|---|---|---|
+| `"CausalTransitiveReduction"` | `True` / `False` | `True` | Filter redundant causal edges at insertion time (Goranci online TR). |
+| `"BranchialStep"` | `All`, `-1`, 1-based index, or `Automatic` | `Automatic` | Which step's branchial graph to return for `"BranchialGraph"` (`-1` = final) and for `"Evolution*Branchial*"` variants. |
+| `"EdgeDeduplication"` | `True` / `False` | `True` | One edge per event-pair vs one edge per shared hypergraph edge. |
+
+**Exploration bounds**
+
+| Option | Default | Purpose |
+|---|---|---|
+| `"MaxSuccessorStatesPerParent"` | `0` (unlimited) | Cap the branching factor. |
+| `"MaxStatesPerStep"` | `0` (unlimited) | Cap states created at each generation. |
+| `"ExplorationProbability"` | `1.0` | Per-state probability of exploring further. |
+| `"ExploreFromCanonicalStatesOnly"` | `False` | Only explore from canonical representatives; requires `"CanonicalizeStates" -> Full`. |
+
+**Uniform-random evolution** (reservoir-sampled match selection)
+
+| Option | Default | Purpose |
+|---|---|---|
+| `"UniformRandom"` | `False` | Use step-synchronised reservoir sampling over matches. |
+| `"MatchesPerStep"` | `0` | Matches to apply per step in uniform-random mode (`0` = all). |
+
+**Genesis / progress / debug**
+
+| Option | Default | Purpose |
+|---|---|---|
+| `"ShowGenesisEvents"` | `False` | Include synthetic genesis events that "produce" each initial edge. |
+| `"ShowProgress"` | `False` | Print per-step progress via WSTP (requires `HAVE_WSTP`). |
+| `"DebugFFI"` | `False` | Print FFI data flow before each call. |
+| `"AspectRatio"` | `None` | Graph aspect ratio for `*Graph` properties. |
+
+**Analyses** (all `False` by default; enable to compute additional per-state / per-timestep data; see WL source for full sub-options):
+
+- `"DimensionAnalysis"` — per-vertex Hausdorff dimension.
+- `"CurvatureAnalysis"` — Ollivier-Ricci / Wolfram-Ricci / dimension-gradient curvature.
+- `"GeodesicAnalysis"` — trace geodesic paths.
+- `"TopologicalAnalysis"` — K5 / K3,3 minor detection.
+- `"EntropyAnalysis"`, `"BranchialAnalysis"`, `"HilbertSpaceAnalysis"`, `"MultispaceAnalysis"`, `"BranchAlignment"`, `"EquilibriumAnalysis"`.
+
+**Initial conditions** (alternative to passing `initialEdges` directly):
+
+Set `"InitialCondition"` to `"Edges"` (default), `"Grid"`, `"Sprinkling"`, `"BrillLindquist"`, `"Poisson"`, or `"Uniform"`, and accompany with the per-condition parameters (`"GridWidth"`, `"GridHeight"`, `"SprinklingDensity"`, `"BrillLindquistMass1"`, `"BrillLindquistSeparation"`, etc.).
+
+**Topology** (wrap the graph on a non-flat surface):
+
+`"Topology" -> "Flat" | "Cylinder" | "Torus" | "Sphere" | "Klein" | "Mobius"` with `"MajorRadius"`, `"MinorRadius"`.
+
+Malformed or unknown options that fail to parse on the FFI side are skipped and recorded in the debug message queue rather than aborting the evolve call. Enable `"DebugFFI"` or drain `getDebugMessages[]` to surface the skips.
 
 ### Available Properties
 
@@ -290,7 +338,7 @@ HGEvolve[rules, initialEdges, steps, property,
 
 ```mathematica
 (* Binary splitting rule *)
-rules = {{{x_, y_}} :> {{x, z}, {z, y}}};
+rules = {{{x, y}} -> {{x, z}, {z, y}}};
 initialEdges = {{1, 2}};
 
 (* Evolve and visualize *)
@@ -301,7 +349,7 @@ HGEvolve[rules, initialEdges, 3, "StatesGraph"]
 
 ```mathematica
 (* Ternary to binary rule *)
-rules = {{{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}}};
+rules = {{{x, y, z}} -> {{x, y}, {y, z}, {z, x}}};
 initialEdges = {{1, 2, 3}};
 
 (* Get causal graph *)
@@ -312,8 +360,8 @@ HGEvolve[rules, initialEdges, 5, "CausalGraph"]
 
 ```mathematica
 rules = {
-  {{x_, y_, z_}} :> {{x, y}, {y, z}, {z, x}},
-  {{x_, y_}} :> {{x, z}, {z, y}}
+  {{x, y, z}} -> {{x, y}, {y, z}, {z, x}},
+  {{x, y}} -> {{x, z}, {z, y}}
 };
 initialEdges = {{1, 2, 3}, {2, 3, 4}};
 
@@ -331,10 +379,11 @@ HGEvolve[rules, initialEdges, 4, "EvolutionCausalBranchialGraph"]
 
 ### Optimization Tips
 
-- Enable `"EarlyTermination"` to stop evolution when cycles are detected
-- Disable `"CanonicalizeStates"` if isomorphism detection is not needed
-- Use structure properties (e.g., `"StatesGraphStructure"`) to avoid rendering overhead
-- For large evolutions, extract counts first (`"NumStates"`, `"NumEvents"`) before full data
+- Leave `"CanonicalizeStates"` at `None` (the default) when you don't need isomorphism-based deduplication. `Full` mode runs McKay-style IR canonicalization per new state and is only cheap on low-symmetry graphs.
+- Use structure properties (e.g. `"StatesGraphStructure"`) to get `Graph` objects without styled vertex rendering.
+- For large evolutions, request the count properties first (`"NumStates"`, `"NumEvents"`, `"NumCausalEdges"`, `"NumBranchialEdges"`) before pulling full state / event lists.
+- `"MaxStatesPerStep"` and `"MaxSuccessorStatesPerParent"` cap the multiway explosion; combine with `"ExplorationProbability"` for probabilistic thinning.
+- `"HashStrategy" -> "iUT"` reuses parent caches for incremental vertex hashing — faster than plain UT on evolutions with many child states.
 
 ### Memory Considerations
 
@@ -367,14 +416,14 @@ Common cross-compilation problems:
 If `HGEvolve` returns `$Failed`:
 
 1. **Check library loaded**: Look for "Library functions loaded successfully" message when loading paclet
-2. **Verify input format**: Rules must be in `lhs :> rhs` format, edges must be lists of integers
+2. **Verify input format**: Rules use `lhs -> rhs` (plain `Rule`, not `RuleDelayed`). Symbolic vertices are normalised to 0-based integers automatically; integer vertices are passed through. Edges are lists of vertices.
 3. **Check steps**: Steps must be a positive integer
 
 ### Build Issues
 
 Common build problems:
 
-1. **C++17 support**: Use GCC 7+, Clang 5+, or MSVC 2017+
+1. **C++20 support**: Use GCC 10+, Clang 12+, or MSVC 2019 16.11+.
 2. **CMake version**: Requires CMake 3.14 or later
 3. **Mathematica headers**: CMake must find Mathematica installation (set `MATHEMATICA_INSTALL_DIR` if needed)
 4. **Thread library**: On Linux, pthread must be available

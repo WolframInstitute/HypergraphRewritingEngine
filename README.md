@@ -8,24 +8,26 @@ This project is functional but under active development. No stable release has b
 
 ## Features
 
-- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction
-- **Parallel Pattern Matching**: Task-parallel pipeline with work-stealing scheduler
-- **Edge Signature Indexing**: Fast pattern matching via multi-level signature partitioning
-- **Incremental Rewriting**: Match reuse and patch-based matching around newly added edges
-- **Canonicalization**: Isomorphism-invariant state hashing via Weisfeiler-Leman refinement
-- **Lock-free Data Structures**: High-performance concurrent queues and hash maps
-- **Mathematica Paclet**: Full LibraryLink bindings with visualization functions
+- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction, single synchronisation point (no intra-evolution phase barriers).
+- **Parallel Pattern Matching**: SCAN → EXPAND → SINK dataflow pipeline with work-stealing scheduling.
+- **Edge Signature Indexing**: Fast candidate generation via multi-level signature partitioning.
+- **Incremental Match Forwarding**: Re-use parent-state matches in child states; only find new matches that involve newly produced edges.
+- **Canonicalization**: choice of fast heuristics (WL / UT / incremental UT) or exact McKay-style individualisation-refinement (IR) for isomorphism-correct deduplication.
+- **Lock-free Data Structures**: concurrent hash map, lock-free list, lock-free deque, thread-safe arena.
+- **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, and topology / initial-condition generators.
 
 ## Installation
 
 ### Mathematica Paclet
 
-Install the paclet directly from the releases:
+Install the paclet directly from a release `.paclet` file:
 
 ```mathematica
 PacletInstall["path/to/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
-<< WolframInstitute`HypergraphRewriteEngine`
+Needs["HypergraphRewriting`"]
 ```
+
+The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
 
 ### Building from Source
 
@@ -40,27 +42,32 @@ make -j32 paclet
 ### Mathematica
 
 ```mathematica
-(* Load paclet *)
-<< WolframInstitute`HypergraphRewriteEngine`
+Needs["HypergraphRewriting`"]
 
-(* Define rule and initial state *)
+(* Rules use symbolic vertices (normalised to numeric internally). *)
 rule = {{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, x}};
 init = {{1, 2}, {2, 3}, {3, 1}};
 
-(* Evolve and get results *)
+(* HGEvolve[rules, initialEdges, steps, property]. Passing a single rule is
+   supported; a list of rules is also supported. *)
 result = HGEvolve[rule, init, 5, "All"];
 
-(* Access data *)
-result["StateCount"]           (* Number of states *)
-result["EventCount"]           (* Number of events *)
-result["CausalEdges"]          (* Causal graph edges *)
-result["BranchialEdges"]       (* Branchial graph edges *)
+(* "All" returns an Association with these keys: *)
+result["NumStates"]      (* uint: number of states *)
+result["NumEvents"]      (* uint: number of events *)
+result["States"]         (* association State -> state edges *)
+result["Events"]         (* list of rewriting events *)
+result["CausalEdges"]    (* list of (producer, consumer) event pairs *)
+result["BranchialEdges"] (* list of event pairs sharing an input state *)
 
-(* Visualization *)
-HGStatePlot[result, 0]         (* Plot initial state *)
-HGCausalPlot[result]           (* Plot causal graph *)
-HGBranchialPlot[result]        (* Plot branchial graph *)
+(* Graph properties evaluate directly to Graph objects: *)
+HGEvolve[rule, init, 5, "StatesGraph"]
+HGEvolve[rule, init, 5, "CausalGraph"]
+HGEvolve[rule, init, 5, "BranchialGraph"]
+HGEvolve[rule, init, 5, "EvolutionCausalBranchialGraph"]
 ```
+
+See `paclet_source/README.md` for the full option list (hash strategy, canonicalisation modes, pruning limits, dimension / curvature / geodesic analyses, topology and initial-condition generators).
 
 ### C++ API
 
@@ -103,9 +110,9 @@ The paclet includes native libraries for:
 ## Build Requirements
 
 - C++20 compiler (GCC 10+, Clang 12+)
-- CMake 3.15+
+- CMake 3.14+
 - Google Test (automatically downloaded)
-- Mathematica 12+ (optional, for paclet)
+- Mathematica 13+ (optional, for paclet)
 
 ## Cross-Compilation
 
