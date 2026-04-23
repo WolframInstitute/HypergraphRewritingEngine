@@ -508,6 +508,61 @@ Every option accepted by `HGEvolve`, with its default and a one-line description
 - `"EvolutionBranchialGraphStructure"`
 - `"EvolutionCausalBranchialGraphStructure"`
 
+## Exported Functions Besides HGEvolve
+
+The paclet exports a range of companion functions: initial-condition generators, analysis routines, and plot helpers. Every signature and return-shape below is taken from `paclet/Kernel/HypergraphRewriting.wl`. In Mathematica, `?HG*` produces the same summaries from the attached `::usage` strings.
+
+### Initial condition generators
+
+All return an `Association` containing at least `"Edges"` (a list of pair-edges) and `"VertexCoordinates"` (an `Association` from `VertexId` to `{x, y}` or `{x, y, z}`). Functions that produce embedded 3D surfaces also return `"VertexCoordinates3D"`. Initial-condition results are first-class inputs to `HGEvolve` (via `HGEvolve[rules, icResult, steps, …]`) and can be converted to a `Graph` via `HGToGraph`.
+
+| Function | Signature | Returns (in addition to `"Edges"` + `"VertexCoordinates"`) |
+|---|---|---|
+| `HGGrid` | `HGGrid[width, height]` | — |
+| `HGGridWithHoles` | `HGGridWithHoles[width, height, holes]` — `holes` is a list of `{centerX, centerY, radius}` | — |
+| `HGCylinder` | `HGCylinder[resolution, height]` — wraps horizontally (theta direction), open vertically | `"VertexCoordinates3D"` |
+| `HGTorus` | `HGTorus[resolution]` — both theta and phi wrap | `"VertexCoordinates3D"` |
+| `HGSphere` | `HGSphere[resolution]` — UV-sampled | `"VertexCoordinates3D"` |
+| `HGKleinBottle` | `HGKleinBottle[resolution, height]` — theta wraps with z-flip (non-orientable) | — |
+| `HGMobiusStrip` | `HGMobiusStrip[resolution, width]` — theta wraps with z-flip, finite z | `"VertexCoordinates3D"` |
+| `HGMinkowskiSprinkling` | `HGMinkowskiSprinkling[n, opts]` — causal set by Poisson sprinkling of `n` points, connected by causal structure | `"SpacetimePoints"`, `"DimensionEstimate"` |
+| `HGBrillLindquist` | `HGBrillLindquist[n, {mass1, mass2}, separation, opts]` — discrete spacetime around two black holes; vertex density ∝ conformal factor ψ⁴ | `"HorizonCenters"` |
+| `HGPoissonDisk` | `HGPoissonDisk[n, minDistance, opts]` — blue-noise distribution with a minimum vertex separation | — |
+| `HGUniformRandom` | `HGUniformRandom[n, opts]` — uniform point cloud | — |
+
+`HGMinkowskiSprinkling` options: `"SpatialDim"`, `"TimeExtent"`, `"SpatialExtent"`, `"LightconeAngle"`, `"AlexandrovCutoff"`, `"TransitivityReduction"`, `"MaxEdgesPerVertex"` (defaults match the `"Sprinkling*"` options of `HGEvolve`).
+
+### Conversion
+
+| Function | Signature | Description |
+|---|---|---|
+| `HGToGraph` | `HGToGraph[icResult]`, `HGToGraph[edges]`, `HGToGraph[edges, coords]` | Convert an initial-condition `Association`, a raw edge list, or an edge list with coordinates into a Mathematica `Graph`. |
+
+### Analysis
+
+| Function | Signature | Description |
+|---|---|---|
+| `HGHausdorffAnalysis` | `HGHausdorffAnalysis[edges, opts]` | Compute local Hausdorff dimension per vertex on an unevolved edge list. Same options as `HGEvolve`'s `Dimension*` family. |
+| `HGBranchAlignment` | `HGBranchAlignment[edges, curvature]`, `HGBranchAlignment[evolutionResult, stateId]` | Curvature-weighted PCA embedding of a single state (used by the `Plot1D/2D/3D` helpers below). |
+| `HGAlignAllBranches` | `HGAlignAllBranches[evolutionResult, step]` | Align every branch at a given step into a shared PCA frame. |
+| `HGBranchAlignmentBatch` | `HGBranchAlignmentBatch[evolutionResult]` or `HGBranchAlignmentBatch[evolutionResult, curvatureMethod]` | PCA alignment for **every** state in an evolution, keyed by state id. Returns `<\|"PerState" -> …, "PerTimestep" -> …, "Global" -> …\|>`. `curvatureMethod` defaults to `"WolframRicci"`; `"OllivierRicci"` is the other supported choice. Requires the evolution to have been run with `"CurvatureAnalysis" -> True`. |
+
+### Plots
+
+Each plot takes the matching analysis result (or the whole evolution `Association` with the relevant analysis flags enabled) and produces a `Graphics` object.
+
+| Function | Signature | Description |
+|---|---|---|
+| `HGStateDimensionPlot` | `HGStateDimensionPlot[edges, opts]` | Single hypergraph with vertices coloured by local dimension. |
+| `HGTimestepUnionPlot` | `HGTimestepUnionPlot[evolutionResult, step, opts]` | Union of all states at `step`, dimension-coloured. |
+| `HGDimensionFilmstrip` | `HGDimensionFilmstrip[evolutionResult, opts]` | Grid of per-step `HGTimestepUnionPlot`s. |
+| `HGGeodesicPlot` | `HGGeodesicPlot[evolutionResult, stateId, opts]` | Geodesic paths overlaid on a state, dimension-coloured. Requires `"GeodesicAnalysis" -> True`. |
+| `HGGeodesicFilmstrip` | `HGGeodesicFilmstrip[evolutionResult, opts]` | List of lists of `HGGeodesicPlot`s, one sub-list per timestep. |
+| `HGLensingPlot` | `HGLensingPlot[evolutionResult, stateId, opts]` | Gravitational-lensing deflection-angle vs impact-parameter plot, with GR prediction overlaid (uses Brill-Lindquist horizon centers). |
+| `HGBranchAlignmentPlot1D` | `HGBranchAlignmentPlot1D[alignment, opts]` — `alignment` is a single state's result or the per-state association | Curvature vs vertex rank, ordered along PC1. |
+| `HGBranchAlignmentPlot2D` | `HGBranchAlignmentPlot2D[alignment, opts]` | PC1 vs PC2, coloured by curvature. |
+| `HGBranchAlignmentPlot3D` | `HGBranchAlignmentPlot3D[alignment, opts]` | PC1 vs PC2 vs PC3, coloured by curvature. |
+
 ## Examples
 
 ### Simple Rewriting
