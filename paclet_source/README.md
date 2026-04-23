@@ -301,6 +301,182 @@ Set `"InitialCondition"` to `"Edges"` (default), `"Grid"`, `"Sprinkling"`, `"Bri
 
 Malformed or unknown options that fail to parse on the FFI side are skipped and recorded in the debug message queue rather than aborting the evolve call. Enable `"DebugFFI"` or drain `getDebugMessages[]` to surface the skips.
 
+### Complete `Options[HGEvolve]` reference
+
+Every option accepted by `HGEvolve`, with its default and a one-line description. Kept in sync with `paclet/Kernel/HypergraphRewriting.wl`.
+
+**Core evolution**
+
+| Option | Default | Description |
+|---|---|---|
+| `"HashStrategy"` | `"WL"` | State hash algorithm: `"WL"` (Weisfeiler-Leman), `"UT"` (uniqueness tree), `"iUT"` (incremental UT). |
+| `"CanonicalizeStates"` | `None` | `None` / `Automatic` / `Full`. `Full` uses exact IR canonicalization for dedup. |
+| `"CanonicalizeEvents"` | `None` | `None` / `Full` / `Automatic` / `{keys...}`. Keys: `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
+| `"CausalTransitiveReduction"` | `True` | Online Goranci transitive reduction of causal edges. |
+| `"MaxSuccessorStatesPerParent"` | `0` | Cap children per parent; `0` = unlimited. |
+| `"MaxStatesPerStep"` | `0` | Cap states created per generation; `0` = unlimited. |
+| `"ExplorationProbability"` | `1.0` | Probability of exploring further from each new state. |
+| `"ExploreFromCanonicalStatesOnly"` | `False` | Only explore from canonical representatives (requires `"CanonicalizeStates" -> Full`). |
+| `"EdgeDeduplication"` | `True` | One edge per event pair vs one edge per shared hypergraph edge. |
+| `"BranchialStep"` | `Automatic` | Which step's branchial graph to return. `All`, `-1` (= final), or 1-based step. |
+
+**Uniform-random evolution**
+
+| Option | Default | Description |
+|---|---|---|
+| `"UniformRandom"` | `False` | Use step-synchronised reservoir sampling over matches. |
+| `"MatchesPerStep"` | `0` | Matches to apply per step in uniform-random mode; `0` = all. |
+
+**Output shape / progress / debug**
+
+| Option | Default | Description |
+|---|---|---|
+| `"ShowProgress"` | `False` | Print per-step progress to the frontend via WSTP. |
+| `"ShowGenesisEvents"` | `False` | Create synthetic genesis events for initial states. |
+| `"AspectRatio"` | `None` | Graph aspect ratio for `*Graph` properties. |
+| `"DebugFFI"` | `False` | Log FFI request/response metadata before each call. |
+| `"IncludeStateContents"` | `False` | Include full edge lists in returned state records. |
+| `"IncludeEventContents"` | `False` | Include full consumed/produced edge lists in returned event records. |
+| `"RandomSeed"` | `Automatic` | Seed for reproducible runs. |
+
+**Dimension analysis** (per-vertex Hausdorff dimension)
+
+| Option | Default | Description |
+|---|---|---|
+| `"DimensionAnalysis"` | `False` | Enable per-vertex Hausdorff dimension computation. |
+| `"DimensionFormula"` | `"LinearRegression"` | `"LinearRegression"` or `"DiscreteDerivative"`. |
+| `"DimensionRadius"` | `{1, 5}` | `{minR, maxR}` radii for dimension estimation. |
+| `"DimensionColorBy"` | `"Mean"` | `"Mean"`, `"Variance"`, `"Min"`, or `"Max"`. |
+| `"DimensionPalette"` | `"TemperatureMap"` | `ColorData` palette for dimension rendering. |
+| `"DimensionRange"` | `Automatic` | `{min, max}` or `Automatic` for color-scale range. |
+| `"DimensionPerVertex"` | `False` | Include per-vertex dimension data in each state record. |
+| `"DimensionTimestepAggregation"` | `False` | Include `PerTimestep` aggregation section. |
+
+**Geodesic analysis** (trace test particles)
+
+| Option | Default | Description |
+|---|---|---|
+| `"GeodesicAnalysis"` | `False` | Enable geodesic path tracing. |
+| `"GeodesicSources"` | `Automatic` | Source vertex list; `Automatic` = auto-select near high-dim regions. |
+| `"GeodesicMaxSteps"` | `50` | Maximum path length. |
+| `"GeodesicBundleWidth"` | `5` | Number of paths in each bundle. |
+| `"GeodesicFollowGradient"` | `False` | Follow dimension gradient vs random walk. |
+| `"GeodesicDimensionPercentile"` | `0.9` | Percentile threshold for auto-selecting sources near high-dim regions. |
+
+**Topological / particle analysis** (Robertson-Seymour defect detection)
+
+| Option | Default | Description |
+|---|---|---|
+| `"TopologicalAnalysis"` | `False` | Detect K5 / K3,3 minors (non-planarity). |
+| `"TopologicalCharge"` | `False` | Compute per-vertex topological charge. |
+| `"DetectK5Minors"` | `True` | Check for K5 minors. |
+| `"DetectK33Minors"` | `True` | Check for K3,3 bipartite minors. |
+| `"DetectDimensionSpikes"` | `True` | Flag vertices whose local dimension exceeds the spike threshold. |
+| `"DetectHighDegree"` | `True` | Flag high-degree vertices. |
+| `"DimensionSpikeThreshold"` | `1.5` | Multiplier above mean to flag a spike. |
+| `"DegreePercentile"` | `0.95` | Percentile for high-degree flagging (top 5% by default). |
+| `"ChargeRadius"` | `3.0` | Radius for local topological-charge computation. |
+| `"ChargePerVertex"` | `False` | Include per-vertex charge data in each state record. |
+| `"ChargeTimestepAggregation"` | `False` | Include `PerTimestep` aggregation section for charge. |
+
+**Curvature analysis** (Ollivier-Ricci, Wolfram-Ricci, dimension-gradient)
+
+| Option | Default | Description |
+|---|---|---|
+| `"CurvatureAnalysis"` | `False` | Enable per-vertex curvature computation. |
+| `"CurvatureMethod"` | `"All"` | `"OllivierRicci"`, `"WolframRicci"`, `"DimensionGradient"`, `"Both"`, or `"All"`. |
+| `"CurvaturePerVertex"` | `False` | Include per-vertex curvature data in each state record. |
+| `"CurvatureTimestepAggregation"` | `False` | Include `PerTimestep` aggregation section. |
+
+**Branch alignment** (curvature shape-space PCA)
+
+| Option | Default | Description |
+|---|---|---|
+| `"BranchAlignment"` | `False` | Compute PCA alignment across branches (requires `"CurvatureAnalysis" -> True`). |
+| `"BranchAlignmentMethod"` | `"WolframRicci"` | Which curvature to align on: `"WolframRicci"` or `"OllivierRicci"`. |
+
+**Entropy analysis**
+
+| Option | Default | Description |
+|---|---|---|
+| `"EntropyAnalysis"` | `False` | Enable graph entropy / information-measure computation. |
+| `"EntropyTimestepAggregation"` | `False` | Include `PerTimestep` aggregation section. |
+
+**Hilbert space analysis** (state bitvector inner products)
+
+| Option | Default | Description |
+|---|---|---|
+| `"HilbertSpaceAnalysis"` | `False` | Enable Hilbert-space analysis. |
+| `"HilbertStep"` | `-1` | Step to analyse; `-1` = final. |
+| `"HilbertScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"`. |
+
+**Branchial analysis** (distribution sharpness and branch entropy)
+
+| Option | Default | Description |
+|---|---|---|
+| `"BranchialAnalysis"` | `False` | Enable branchial analysis. |
+| `"BranchialScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"`. |
+| `"BranchialPerVertex"` | `False` | Include per-vertex sharpness data. |
+
+**Multispace analysis** (vertex/edge probabilities across branches)
+
+| Option | Default | Description |
+|---|---|---|
+| `"MultispaceAnalysis"` | `False` | Enable multispace analysis. |
+| `"MultispaceScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"`. |
+
+**Initial conditions**
+
+| Option | Default | Description |
+|---|---|---|
+| `"InitialCondition"` | `"Edges"` | `"Edges"`, `"Grid"`, `"Sprinkling"`, `"BrillLindquist"`, `"Poisson"`, or `"Uniform"`. |
+
+**Topology** (wrap graph on a non-flat surface)
+
+| Option | Default | Description |
+|---|---|---|
+| `"Topology"` | `"Flat"` | `"Flat"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, or `"Mobius"`. |
+| `"MajorRadius"` | `10.0` | Major radius for curved topologies. |
+| `"MinorRadius"` | `3.0` | Minor radius for torus. |
+
+**Grid initial condition**
+
+| Option | Default | Description |
+|---|---|---|
+| `"GridWidth"` | `10` | Grid width. |
+| `"GridHeight"` | `10` | Grid height. |
+| `"GridHoles"` | `{}` | List of `{x, y, radius}` for circular holes in the grid. |
+
+**Sprinkling / Minkowski initial condition**
+
+| Option | Default | Description |
+|---|---|---|
+| `"SprinklingDensity"` | `500` | Number of spacetime points to sprinkle. |
+| `"SprinklingSpatialDim"` | `2` | Spatial dimensionality: 1, 2, or 3. |
+| `"SprinklingTimeExtent"` | `10.0` | Time dimension extent. |
+| `"SprinklingSpatialExtent"` | `10.0` | Spatial dimension extent. |
+| `"SprinklingLightconeAngle"` | `1.0` | Speed of light (c = 1 default). |
+| `"SprinklingAlexandrovCutoff"` | `5.0` | Max proper-time separation between connected events. |
+| `"SprinklingTransitivityReduction"` | `True` | Remove redundant causal edges. |
+| `"SprinklingMaxEdgesPerVertex"` | `50` | Connectivity cap. |
+
+**Brill-Lindquist initial condition** (two-black-hole approximation)
+
+| Option | Default | Description |
+|---|---|---|
+| `"BrillLindquistMass1"` | `3.0` | Mass of first black hole. |
+| `"BrillLindquistMass2"` | `3.0` | Mass of second black hole. |
+| `"BrillLindquistSeparation"` | `10.0` | Distance between black holes. |
+| `"BrillLindquistBoxX"` | `{-15.0, 15.0}` | X domain. |
+| `"BrillLindquistBoxY"` | `{-15.0, 15.0}` | Y domain. |
+
+**Sampling**
+
+| Option | Default | Description |
+|---|---|---|
+| `"EdgeThreshold"` | `Automatic` | Max vertex separation for edge creation. |
+| `"PoissonMinDistance"` | `1.0` | Minimum separation for Poisson-disk sampling. |
+
 ### Available Properties
 
 **Data Properties:**
