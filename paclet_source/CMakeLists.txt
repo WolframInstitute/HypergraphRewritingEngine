@@ -85,7 +85,14 @@ if(Mathematica_INSTALL_DIR)
             message(STATUS "WSTP SDK not found for Linux - progress reporting disabled")
         endif()
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        # Honour CMAKE_OSX_ARCHITECTURES when present (native cross-arch builds,
+        # e.g. building an x86_64 dylib on an Apple-silicon host). Fall back to
+        # the host/processor when it is not set.
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+            set(WSTP_PLATFORM_DIR "MacOSX-x86-64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+            set(WSTP_PLATFORM_DIR "MacOSX-ARM64")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
             set(WSTP_PLATFORM_DIR "MacOSX-ARM64")
         else()
             set(WSTP_PLATFORM_DIR "MacOSX-x86-64")
@@ -94,6 +101,10 @@ if(Mathematica_INSTALL_DIR)
         if(EXISTS "${WSTP_INCLUDE_DIR}/wstp.h")
             target_include_directories(HypergraphRewriting PRIVATE ${WSTP_INCLUDE_DIR})
             target_compile_definitions(HypergraphRewriting PRIVATE HAVE_WSTP=1)
+            # Link against the WSTP static library for macOS.
+            # libWSTPi4.a additionally requires -framework Foundation,
+            # which is already added in the Darwin linker-settings block below.
+            target_link_libraries(HypergraphRewriting "${WSTP_INCLUDE_DIR}/libWSTPi4.a")
             message(STATUS "WSTP SDK found at ${WSTP_INCLUDE_DIR}")
         else()
             message(STATUS "WSTP SDK not found for macOS - progress reporting disabled")
@@ -200,8 +211,14 @@ endif()
 # Determine platform directory based on CMAKE_SYSTEM_NAME (set by toolchain)
 if(NOT DEFINED PLATFORM_DIR)
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        # macOS
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        # macOS - honour CMAKE_OSX_ARCHITECTURES for native cross-arch builds
+        # (e.g. an x86_64 dylib produced on Apple silicon) before falling back
+        # to the host processor.
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+            set(PLATFORM_DIR "MacOSX-x86-64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+            set(PLATFORM_DIR "MacOSX-ARM64")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
             set(PLATFORM_DIR "MacOSX-ARM64")
         else()
             set(PLATFORM_DIR "MacOSX-x86-64")

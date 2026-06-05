@@ -31,11 +31,38 @@ The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported cont
 
 ### Building from Source
 
+**One command, every platform this machine can target** (recommended). It
+auto-installs the cross-toolchains it needs, builds each platform library, and
+assembles the distributable archive:
+
 ```bash
-mkdir build_linux && cd build_linux
-cmake .. -DBUILD_MATHEMATICA_PACLET=ON
-make -j32 paclet
+./build_all_platforms.sh
 ```
+
+Outputs:
+
+| Artifact | Location |
+|----------|----------|
+| Per-platform loadable libraries | `paclet/LibraryResources/<Platform>/` |
+| Distributable archive | `paclet_archive/WolframInstitute__HypergraphRewriteEngine-<version>.paclet` |
+
+Platforms the current host architecture cannot target (e.g. Windows-ARM64 on
+macOS, which needs the Windows SDK) are reported as *skipped*, not failures —
+see [Cross-Compilation](#cross-compilation).
+
+**Single platform only** (just the library for the current machine):
+
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_MATHEMATICA_PACLET=ON
+make -j paclet                  # -> paclet/LibraryResources/<Platform>/
+make create_paclet_archive      # -> paclet_archive/*.paclet
+```
+
+The build auto-detects a Wolfram/Mathematica install
+(`/Applications/Wolfram.app`, `Mathematica.app`, or `Wolfram Engine.app`;
+their `~/Applications` equivalents; standard Linux/Windows locations). Override
+with `MATHEMATICA_HOME=/path/to/Wolfram/Contents` if it lives elsewhere.
 
 ## Usage
 
@@ -116,28 +143,37 @@ The paclet includes native libraries for:
 
 ## Cross-Compilation
 
-Build all 6 platforms from Linux:
+`./build_all_platforms.sh` builds every target the host can reach from a
+declarative toolchain *schema*. Each target lists the toolchain it needs and how
+to install it; the script auto-installs missing toolchains, skips targets the
+host architecture cannot support, and only fails on a genuine build error
+(`--no-install` to opt out of installs, `--help` for all options).
+
+What each host can build:
+
+| Target | Toolchain | macOS host | Linux host |
+|--------|-----------|:----------:|:----------:|
+| macOS x86-64 / ARM64 | Apple clang (native) / OSXCross | ✅ native | OSXCross |
+| Linux x86-64 / ARM64 | GCC cross (`messense` tap / `apt`) | ✅ auto | ✅ native + cross |
+| Windows x86-64 | MinGW-w64 (`brew` / `apt`) | ✅ auto | ✅ auto |
+| Windows ARM64 | Clang + Windows SDK + MSVC libs | ⏭️ skipped | ⏭️ skipped |
+
+Windows ARM64 needs the Windows SDK and MSVC import libraries, which only exist
+on a Windows/WSL host — it is skipped elsewhere rather than aborting the run.
+
+The toolchains are installed automatically, but for reference:
 
 ```bash
-./build_all_platforms.sh
-```
+# macOS (Homebrew)
+brew install mingw-w64
+brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu
+brew install messense/macos-cross-toolchains/aarch64-unknown-linux-gnu
 
-Required packages (Ubuntu/Debian):
-
-```bash
-sudo apt install \
-    cmake build-essential \
+# Linux (Ubuntu/Debian)
+sudo apt install cmake build-essential \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-    clang-22 lld-22
+    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 ```
-
-| Target | Toolchain |
-|--------|-----------|
-| Linux ARM64 | `gcc-aarch64-linux-gnu` |
-| Windows x86-64 | MinGW-w64 |
-| Windows ARM64 | Clang 22 + LLD |
-| macOS | [OSXCross](https://github.com/tpoechtrager/osxcross) |
 
 See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup.
 

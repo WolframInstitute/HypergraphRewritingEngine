@@ -1,6 +1,9 @@
 /build*/
 /compile_commands.json
 
+# Generated paclet archive (produced by `make create_paclet_archive`)
+/paclet_archive/
+
 # Benchmark results - exclude intermediate files
 /benchmark_results/*/*.csv
 /benchmark_results/*/per_benchmark/
