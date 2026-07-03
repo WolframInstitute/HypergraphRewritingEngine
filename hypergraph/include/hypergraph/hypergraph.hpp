@@ -145,12 +145,6 @@ class Hypergraph {
     //   false -> IR exact canonicalization (isomorphism-invariant)
     bool use_shared_tree_{true};
 
-    // Incremental WL: when on, a child's WL canonical hash (None/Automatic modes) is
-    // computed from the parent's cached WL history + the rewrite delta, instead of a
-    // full recomputation. Bit-identical to full WL, so dedup is unaffected. The epoch
-    // guards the per-worker history cache against StateId reuse across evolutions.
-    std::atomic<bool> incremental_wl_{false};
-    std::atomic<uint64_t> incremental_epoch_{0};
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -517,13 +511,6 @@ public:
         const EdgeId* incr_produced = nullptr, uint8_t incr_num_produced = 0
     );
 
-    // Enable/disable incremental WL for the child hash (None/Automatic modes). Bumps
-    // the history-cache epoch so stale per-worker histories are never reused.
-    void set_incremental_wl(bool on) {
-        incremental_wl_.store(on, std::memory_order_release);
-        if (on) incremental_epoch_.fetch_add(1, std::memory_order_acq_rel);
-    }
-    bool incremental_wl() const { return incremental_wl_.load(std::memory_order_acquire); }
 
     // Lookup existing canonical state by hash (waits for concurrent inserts)
     std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const {
@@ -831,13 +818,6 @@ public:
     // isomorphism-invariant key for event canonicalization.
     uint64_t compute_wl_hash(const SparseBitset& edges) const;
 
-    // Incremental WL child hash from the parent's cached history + the rewrite delta.
-    // Bit-identical to compute_wl_hash(child_edges). Falls back to full WL if the
-    // parent's edges are unavailable.
-    uint64_t compute_wl_hash_incremental(
-        const SparseBitset& child_edges, StateId parent,
-        const EdgeId* consumed, uint8_t num_consumed,
-        const EdgeId* produced, uint8_t num_produced) const;
 
     // Find edge correspondence between two isomorphic states. Uses IR in Full
     // canonicalization mode, WL subtree hashes otherwise.

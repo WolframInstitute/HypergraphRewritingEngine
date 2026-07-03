@@ -158,7 +158,6 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_blackhole_idempotent.cpp
     ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
-    ../hypergraph/tests/test_incremental_wl.cpp
     ../hypergraph/tests/test_reference_oracle.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp

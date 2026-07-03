@@ -2,7 +2,6 @@
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
-#include "hypergraph/wl_history_cache.hpp"
 #include <thread>
 
 namespace hypergraph {
@@ -160,14 +159,8 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     StateId new_sid = create_state(std::move(edge_set), step, 0, parent_event);
     const SparseBitset& edges = get_state(new_sid).edges;
 
-    // WL canonical hash for None/Automatic modes — incrementally from the parent's
-    // cached history when enabled (bit-identical to the full WL, so dedup is unchanged).
+    // WL canonical hash for None/Automatic modes.
     auto wl_child = [&]() -> uint64_t {
-        if (incremental_wl_.load(std::memory_order_acquire) && incr_parent != INVALID_ID
-            && use_shared_tree_ && wl_hash_) {
-            return compute_wl_hash_incremental(edges, incr_parent, incr_consumed, incr_num_consumed,
-                                               incr_produced, incr_num_produced);
-        }
         return compute_canonical_hash(edges);
     };
 
@@ -536,25 +529,6 @@ uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
     return wl_hash_->compute_state_hash_with_cache(edges, vert_acc, arity_acc).first;
 }
 
-uint64_t Hypergraph::compute_wl_hash_incremental(
-    const SparseBitset& child_edges, StateId parent,
-    const EdgeId* consumed, uint8_t num_consumed,
-    const EdgeId* produced, uint8_t num_produced) const {
-    if (!wl_hash_ || parent == INVALID_ID || parent >= num_states())
-        return compute_wl_hash(child_edges);
-    EdgeVertexAccessorRaw vert_acc(this);
-    EdgeArityAccessorRaw arity_acc(this);
-    // Per-worker history cache: build (once) the parent's WL history, reuse for all
-    // its children; the epoch guards against StateId reuse across evolutions.
-    uint64_t epoch = incremental_epoch_.load(std::memory_order_acquire);
-    auto& cache = worker_history_cache();
-    auto& hist = cache.get_or_build(epoch, *wl_hash_, parent,
-                                    get_state(parent).edges, vert_acc, arity_acc);
-    // ext_parent (if the child needs more rounds) allocates into the parent's slot arena.
-    PersistTarget redirect(cache.arena_of(epoch, parent));
-    return wl_hash_->compute_state_hash_incremental(child_edges, vert_acc, arity_acc, hist,
-                                                    consumed, num_consumed, produced, num_produced);
-}
 
 // =============================================================================
 // Edge Correspondence Dispatch

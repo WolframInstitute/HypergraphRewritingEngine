@@ -278,17 +278,6 @@ public:
     // =========================================================================
     // Persistent (per-worker arena) — the history outlives the task that built it.
     using HistOcc = std::pair<EdgeId, uint8_t>;
-    struct WLHistory {
-        int maxid = -1;
-        PVec<char> present;                    // by id
-        PVec<PVec<HistOcc>> adj;               // by id: (edge, pos)
-        PVec<PVec<uint64_t>> rounds;           // rounds[r][id]
-        PVec<VertexId> verts;                  // present ids, sorted
-        int fixp = 0;
-        uint64_t vsum = 0, esum = 0;
-        size_t num_edges = 0;
-        bool valid = false;
-    };
 
     // id-indexed init colour: FNV, degree, sorted (arity,pos) — matches the dense path.
     // OccVec is any vector of (edge,pos) (PVec history or SVec overlay).
@@ -321,127 +310,7 @@ public:
         return d;
     }
 
-    // Full WL recording the per-round colouring into a WLHistory. Returns {hash, history}.
-    template<typename VA, typename AA>
-    std::pair<uint64_t, WLHistory> compute_state_hash_and_history(
-            const SparseBitset& edges, const VA& ev, const AA& ea) const {
-        WLHistory H;
-        if (edges.empty()) return {0, H};
-        int maxid = 0;
-        edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e]; for (uint8_t i=0;i<a;++i) if ((int)vs[i]>maxid) maxid=(int)vs[i]; });
-        H.maxid = maxid; H.present.assign(maxid + 1, 0); H.adj.assign(maxid + 1, {});
-        edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e];
-            for (uint8_t p=0;p<a;++p){ int v=(int)vs[p]; if(!H.present[v]){H.present[v]=1; H.verts.push_back(vs[p]);} H.adj[v].push_back({e,p}); } });
-        std::sort(H.verts.begin(), H.verts.end());
-        SVec<uint64_t> cur, nxt, nb, dscratch;                 // transient work buffers
-        cur.assign(maxid + 1, 0); nxt.assign(maxid + 1, 0);
-        for (VertexId v : H.verts) cur[v] = wl_init_id(H.adj[v], ea);
-        H.rounds.emplace_back(cur.begin(), cur.end());         // snapshot -> persistent
-        int prev = wl_distinct_id(cur, H.verts, dscratch), iter = 0, fixp = 0;
-        while ((size_t)iter < MAX_REFINEMENT_DEPTH) { ++iter;
-            for (VertexId v : H.verts) nxt[v] = wl_refine_id(v, H.adj[v], ev, ea, nb, [&](int u){ return cur[u]; });
-            for (VertexId v : H.verts) cur[v] = nxt[v];
-            H.rounds.emplace_back(cur.begin(), cur.end()); fixp = iter;
-            int d = wl_distinct_id(cur, H.verts, dscratch); if (d == prev) break; prev = d;
-        }
-        H.fixp = fixp; H.valid = true;
-        uint64_t vsum = 0; for (VertexId v : H.verts) vsum += mix64(cur[v]);
-        uint64_t esum = 0; size_t m = 0;
-        edges.for_each([&](EdgeId e){ ++m; uint8_t a=ea[e]; const VertexId* vs=ev[e]; uint64_t eh=FNV_OFFSET; eh=fnv_combine(eh,a); for (uint8_t i=0;i<a;++i) eh=fnv_combine(eh,cur[vs[i]]); esum += mix64(eh); });
-        H.vsum = vsum; H.esum = esum; H.num_edges = m;
-        uint64_t h = FNV_OFFSET; h=fnv_combine(h,H.verts.size()); h=fnv_combine(h,m); h=fnv_combine(h,vsum); h=fnv_combine(h,esum);
-        return {h, std::move(H)};
-    }
 
-    // Incremental child hash from a parent's WLHistory + the rewrite delta (the
-    // consumed/produced edge ids). Bit-identical to compute_state_hash_with_cache on
-    // child_edges. Detects the child's own fixpoint round and lazily extends the
-    // parent history (P by ref) when the child needs more rounds -> always correct.
-    // Transient work uses the per-worker scratch arena.
-    template<typename VA, typename AA>
-    uint64_t compute_state_hash_incremental(
-            const SparseBitset& child_edges, const VA& ev, const AA& ea, WLHistory& P,
-            const EdgeId* consumed, uint8_t num_consumed,
-            const EdgeId* produced, uint8_t num_produced) const {
-        if (!P.valid) return compute_state_hash_with_cache(child_edges, ev, ea).first;
-        SUSet<EdgeId> cons, prod;
-        for (uint8_t i=0;i<num_consumed;++i) cons.insert(consumed[i]);
-        for (uint8_t i=0;i<num_produced;++i) prod.insert(produced[i]);
-        auto ppres = [&](int v){ return v>=0 && v<=P.maxid && P.present[v]; };
-
-        SUSet<int> affected;
-        for (uint8_t i=0;i<num_consumed;++i){ uint8_t a=ea[consumed[i]]; const VertexId* vs=ev[consumed[i]]; for(uint8_t k=0;k<a;++k) affected.insert((int)vs[k]); }
-        for (uint8_t i=0;i<num_produced;++i){ uint8_t a=ea[produced[i]]; const VertexId* vs=ev[produced[i]]; for(uint8_t k=0;k<a;++k) affected.insert((int)vs[k]); }
-        // Child adjacency overlay for the O(delta) affected ids (worker scratch). The
-        // parent's adjacency (P.adj, persistent PVec) is read directly for everything
-        // else; with_adj() dispatches to whichever, so no full child adjacency is built.
-        SUMap<int, SVec<HistOcc>> oadj;
-        for (int id : affected){ SVec<HistOcc> lst;
-            if (ppres(id)) for (auto& o : P.adj[id]) if (!cons.count(o.first)) lst.push_back(o);
-            for (uint8_t i=0;i<num_produced;++i){ EdgeId e=produced[i]; uint8_t a=ea[e]; const VertexId* vs=ev[e]; for(uint8_t p=0;p<a;++p) if ((int)vs[p]==id) lst.push_back({e,p}); }
-            oadj.emplace(id, std::move(lst));
-        }
-        auto with_adj = [&](int id, auto&& fn){ auto it=oadj.find(id); if(it!=oadj.end()){ fn(it->second); return; } if(ppres(id)){ fn(P.adj[id]); return; } SVec<HistOcc> empty; fn(empty); };
-        auto cpres = [&](int id){ auto it=oadj.find(id); if(it!=oadj.end()) return !it->second.empty(); return ppres(id); };
-        auto isnew = [&](int id){ return !ppres(id) && cpres(id); };
-        SVec<int> cverts; { SUSet<int> seen;
-            child_edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e]; for(uint8_t k=0;k<a;++k){ int v=(int)vs[k]; if(seen.insert(v).second) cverts.push_back(v);} }); }
-
-        SVec<uint64_t> nb, dscr;
-        // lazy parent extension: parent colours past its fixpoint are well-defined; the
-        // new rounds are cached persistently (PVec) alongside the rest of the history.
-        auto ext_parent = [&](int r){
-            while ((int)P.rounds.size() <= r){
-                int pr = (int)P.rounds.size()-1;
-                PVec<uint64_t> nx = P.rounds[pr];
-                for (VertexId v : P.verts) nx[v] = wl_refine_id(v, P.adj[v], ev, ea, nb, [&](int u){ return P.rounds[pr][u]; });
-                P.rounds.push_back(std::move(nx));
-            }
-        };
-        auto pcol = [&](int r,int id)->uint64_t{ ext_parent(r); return ppres(id) ? P.rounds[r][id] : 0; };
-        SVec<SUMap<int,uint64_t>> ov; ov.emplace_back();
-        auto ccol = [&](int r,int id)->uint64_t{ if (r<(int)ov.size()){ auto it=ov[r].find(id); if(it!=ov[r].end()) return it->second; } return pcol(r,id); };
-        auto child_distinct = [&](int r)->int{ dscr.clear(); for(int id:cverts) dscr.push_back(ccol(r,id));
-            std::sort(dscr.begin(),dscr.end()); int d=0; for(size_t i=0;i<dscr.size();++i) if(i==0||dscr[i]!=dscr[i-1])++d; return d; };
-
-        SUSet<int> changed;
-        for (int id : affected) if (cpres(id)){ with_adj(id, [&](const auto& occ){ ov[0].emplace(id, wl_init_id(occ, ea)); }); changed.insert(id); }
-        int prev = child_distinct(0), Rc = 0;
-        for (int r=1; (size_t)r<=MAX_REFINEMENT_DEPTH; ++r){
-            if ((int)ov.size()<=r) ov.emplace_back();
-            SUSet<int> recompute = changed;
-            for (int id : changed) with_adj(id, [&](const auto& occ){ for (auto& o : occ){ uint8_t a=ea[o.first]; const VertexId* vs=ev[o.first]; for(uint8_t k=0;k<a;++k) recompute.insert((int)vs[k]); } });
-            SUSet<int> nchanged;
-            for (int id : recompute){ uint64_t val=0; with_adj(id, [&](const auto& occ){ val = wl_refine_id(id, occ, ev, ea, nb, [&](int u){ return ccol(r-1,u); }); });
-                ov[r].emplace(id, val); uint64_t pv = ppres(id) ? pcol(r,id) : (val+1); if (val!=pv) nchanged.insert(id); }
-            changed.swap(nchanged);
-            int d = child_distinct(r); Rc = r; if (d==prev) break; prev = d;
-        }
-        auto cf = [&](int id){ return ccol(Rc,id); };
-        size_t mchild = P.num_edges - num_consumed + num_produced;
-
-        if (Rc == P.fixp){   // O(delta) commutative patch from the parent's stored components
-            uint64_t vsum = P.vsum, esum = P.esum; SVec<int> cchg;
-            for (auto& kv : ov[Rc]){ int id=kv.first; uint64_t c=kv.second;
-                if (isnew(id)){ vsum += mix64(c); cchg.push_back(id); }
-                else { uint64_t pf=P.rounds[Rc][id]; if (c!=pf){ vsum += mix64(c)-mix64(pf); cchg.push_back(id);} } }
-            SUSet<int> rm;
-            for (uint8_t i=0;i<num_consumed;++i){ uint8_t a=ea[consumed[i]]; const VertexId* vs=ev[consumed[i]]; for(uint8_t k=0;k<a;++k){ int v=(int)vs[k]; if (ppres(v)&&!cpres(v)&&rm.insert(v).second) vsum -= mix64(P.rounds[Rc][v]); } }
-            auto ceh = [&](EdgeId e){ uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,cf(vs[i])); return h; };
-            auto peh = [&](EdgeId e){ uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,P.rounds[Rc][vs[i]]); return h; };
-            for (uint8_t i=0;i<num_consumed;++i) esum -= mix64(peh(consumed[i]));
-            for (uint8_t i=0;i<num_produced;++i) esum += mix64(ceh(produced[i]));
-            SUSet<EdgeId> patched;
-            for (int id : cchg) with_adj(id, [&](const auto& occ){ for (auto& o : occ){ EdgeId e=o.first; if (prod.count(e)) continue; if (!patched.insert(e).second) continue; esum += mix64(ceh(e)) - mix64(peh(e)); } });
-            int nnew=0,nrem=0; for (int id:affected){ if(isnew(id))++nnew; if(ppres(id)&&!cpres(id))++nrem; }
-            size_t nchild = P.verts.size()+nnew-nrem;
-            uint64_t h=FNV_OFFSET; h=fnv_combine(h,nchild); h=fnv_combine(h,mchild); h=fnv_combine(h,vsum); h=fnv_combine(h,esum); return h;
-        }
-        // Rc != P.fixp: full commutative rebuild from child colours at the child fixpoint
-        uint64_t vsum=0; for(int id:cverts) vsum += mix64(cf(id));
-        uint64_t esum=0; size_t mc=0; child_edges.for_each([&](EdgeId e){ ++mc; uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,cf(vs[i])); esum += mix64(h); });
-        uint64_t h=FNV_OFFSET; h=fnv_combine(h,cverts.size()); h=fnv_combine(h,mc); h=fnv_combine(h,vsum); h=fnv_combine(h,esum); return h;
-    }
 
     // =========================================================================
     // Edge Correspondence (O(E) algorithm)
