@@ -12,7 +12,7 @@ This project is functional but under active development. No stable release has b
 - **Parallel Pattern Matching**: SCAN → EXPAND → SINK dataflow pipeline with work-stealing scheduling.
 - **Edge Signature Indexing**: Fast candidate generation via multi-level signature partitioning.
 - **Incremental Match Forwarding**: Re-use parent-state matches in child states; only find new matches that involve newly produced edges.
-- **Canonicalization**: choice of fast heuristics (WL / UT / incremental UT) or exact McKay-style individualisation-refinement (IR) for isomorphism-correct deduplication.
+- **Canonicalization**: a fast Weisfeiler-Leman (WL) heuristic or exact McKay-style individualisation-refinement (IR) for isomorphism-correct deduplication.
 - **Lock-free Data Structures**: concurrent hash map, lock-free list, lock-free deque, thread-safe arena.
 - **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, and topology / initial-condition generators.
 
