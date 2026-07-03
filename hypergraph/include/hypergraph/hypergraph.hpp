@@ -708,6 +708,9 @@ public:
     // Set by evolution engine to allow early termination on user abort
     void set_abort_flag(std::atomic<bool>* flag) {
         abort_flag_ = flag;
+        // Propagate to the WL hash so its colour-refinement loop can break out of
+        // a long convergence promptly when evolve_with_abort() requests a stop.
+        if (wl_hash_) wl_hash_->set_abort_flag(flag);
     }
 
     bool should_abort() const {

@@ -61,6 +61,14 @@ public:
     WLHash(const WLHash&) = delete;
     WLHash& operator=(const WLHash&) = delete;
 
+    // Abort support: the evolution engine points this at its stop flag so a long
+    // colour-refinement loop can bail out promptly on user abort.
+    void set_abort_flag(std::atomic<bool>* flag) { abort_flag_ = flag; }
+    bool should_abort() const {
+        return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
+    }
+    std::atomic<bool>* abort_flag_{nullptr};
+
     // =========================================================================
     // State Canonical Hash Computation
     // =========================================================================
@@ -217,6 +225,7 @@ public:
 
         while (iteration < MAX_REFINEMENT_DEPTH) {
             ++iteration;
+            if (should_abort()) throw AbortedException{};
 
             for (size_t i = 0; i < num_vertices; ++i) {
                 uint64_t h = current[i];
