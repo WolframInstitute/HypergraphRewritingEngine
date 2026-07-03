@@ -21,7 +21,7 @@ if(EXISTS "/mnt/c/Program Files/Wolfram Research/Wolfram")
     endforeach()
 endif()
 
-# Also check for Mathematica installations
+# Also check for Wolfram Language installations under the legacy install directory
 if(NOT WOLFRAMSCRIPT_FOUND AND EXISTS "/mnt/c/Program Files/Wolfram Research/Mathematica")
     file(GLOB MATHEMATICA_VERSIONS "/mnt/c/Program Files/Wolfram Research/Mathematica/*")
     foreach(VERSION_DIR ${MATHEMATICA_VERSIONS})
@@ -29,7 +29,7 @@ if(NOT WOLFRAMSCRIPT_FOUND AND EXISTS "/mnt/c/Program Files/Wolfram Research/Mat
             set(WOLFRAMSCRIPT_EXECUTABLE "${VERSION_DIR}/wolframscript.exe")
             set(WOLFRAMSCRIPT_FOUND TRUE)
             get_filename_component(VERSION_NAME ${VERSION_DIR} NAME)
-            message(STATUS "Found WolframScript in Mathematica ${VERSION_NAME}: ${WOLFRAMSCRIPT_EXECUTABLE}")
+            message(STATUS "Found WolframScript in Wolfram Language ${VERSION_NAME}: ${WOLFRAMSCRIPT_EXECUTABLE}")
             break()
         endif()
     endforeach()
@@ -81,10 +81,10 @@ else()
 endif()
 
 # Make paclet build flag available to tests
-if(BUILD_MATHEMATICA_PACLET)
-    add_compile_definitions(BUILD_MATHEMATICA_PACLET=1)
+if(BUILD_WOLFRAM_LANGUAGE_PACLET)
+    add_compile_definitions(BUILD_WOLFRAM_LANGUAGE_PACLET=1)
 else()
-    add_compile_definitions(BUILD_MATHEMATICA_PACLET=0)
+    add_compile_definitions(BUILD_WOLFRAM_LANGUAGE_PACLET=0)
 endif()
 
 # Detect WSL environment for paclet path handling
@@ -131,7 +131,7 @@ function(create_test_executable TARGET_NAME)
         target_link_options(${TARGET_NAME} PRIVATE -static-libgcc -static-libstdc++)
     endif()
 
-    if(BUILD_MATHEMATICA_PACLET)
+    if(BUILD_WOLFRAM_LANGUAGE_PACLET)
         add_dependencies(${TARGET_NAME} paclet)
     endif()
 
@@ -151,11 +151,15 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_parallel_evolution.cpp
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
+    ../hypergraph/tests/test_sampling_reproducibility.cpp
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
+    ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
+    ../hypergraph/tests/test_incremental_wl.cpp
+    ../hypergraph/tests/test_reference_oracle.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp
     # Paclet tests
@@ -182,6 +186,7 @@ create_test_executable(evolution_tests
     ../hypergraph/tests/test_parallel_evolution.cpp
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
+    ../hypergraph/tests/test_sampling_reproducibility.cpp
 )
 
 # =============================================================================
@@ -195,17 +200,13 @@ create_test_executable(causal_tests
 )
 
 # =============================================================================
-# stress_tests - Determinism fuzzing and memory-stability
+# stress_tests - Determinism fuzzing and performance tests
 # =============================================================================
-# Performance-tracking tests (grid-profiling, UT-vs-iUT timing) moved to
-# benchmarks/evolution_benchmarks.cpp and benchmarks/uniqueness_tree_benchmarks.cpp
-# where the framework records per-commit/tree-hash results. The test binaries
-# are for correctness under contention (determinism fuzzing) and resource
-# stability (repeated invocation).
 create_test_executable(stress_tests
     main.cpp
     test_helpers.hpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
 )
 

@@ -1,0 +1,26 @@
+#pragma once
+
+#include "hg_gpu/edge_signature.hpp"
+#include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/types.hpp"
+
+#include <cstdint>
+#include <vector>
+
+namespace hg_gpu {
+
+// Upload an initial-state edge list to the engine and create state 0 from
+// those edges. Returns the new StateId.
+//
+// Host-side: builds vertex/edge buffers in pinned host memory (or just plain
+// host memory + cudaMemcpy), uploads in one shot, then launches a kernel
+// that populates the signature and vertex-inverted indices for the new
+// edges.
+//
+// All edges land in edge_pool[0..n) and vertex tuples in vertex_pool
+// starting at offset 0 (cumulative). Vertex IDs are taken at face value;
+// vertex_high_water is set to (max(VertexId in input) + 1).
+StateId upload_initial_state(EngineState&                          engine,
+                             const std::vector<std::vector<VertexId>>& initial_edges);
+
+}  // namespace hg_gpu

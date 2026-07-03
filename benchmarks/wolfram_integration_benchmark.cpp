@@ -130,9 +130,9 @@ std::string extract_last_line(const std::string& output) {
 }
 
 /**
- * Convert Mathematica scientific notation (*^) to standard (e)
+ * Convert Wolfram Language scientific notation (*^) to standard (e)
  */
-std::string convert_mathematica_notation(std::string str) {
+std::string convert_wolfram_language_notation(std::string str) {
     size_t star_pos;
     while ((star_pos = str.find("*^")) != std::string::npos) {
         str.replace(star_pos, 2, "e");
@@ -154,7 +154,7 @@ double run_wolfram_timed(const std::string& hg_code) {
 
     std::string output = execute_wolfram_code(full_code, "");
     std::string last_line = extract_last_line(output);
-    last_line = convert_mathematica_notation(last_line);
+    last_line = convert_wolfram_language_notation(last_line);
 
     double seconds = std::stod(last_line);
     return seconds * 1000000.0;  // Convert to microseconds
@@ -183,7 +183,7 @@ std::vector<double> run_wolfram_timed_list(const std::string& hg_code) {
     }
 
     std::string list_content = last_line.substr(open_brace + 1, close_brace - open_brace - 1);
-    list_content = convert_mathematica_notation(list_content);
+    list_content = convert_wolfram_language_notation(list_content);
 
     // Parse comma-separated numbers
     std::vector<double> timings;

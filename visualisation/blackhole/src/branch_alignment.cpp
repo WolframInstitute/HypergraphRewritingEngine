@@ -73,7 +73,7 @@ std::vector<Vec3> compute_spectral_embedding(
     float shift_value = 0.0f;
 
     if (laplacian_type == LaplacianType::Unnormalized) {
-        // Unnormalized Laplacian: L = D - A (matches Mathematica's SpectralEmbedding)
+        // Unnormalized Laplacian: L = D - A (matches the Wolfram Language's SpectralEmbedding)
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = 0; j < n; ++j) {
                 if (i == j) {

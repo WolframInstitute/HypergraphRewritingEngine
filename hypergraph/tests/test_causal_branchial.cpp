@@ -421,10 +421,10 @@ TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
 }
 
 // =============================================================================
-// UniquenessTree Integration Tests
+// Canonical Hash Integration Tests
 // =============================================================================
 
-TEST(Unified_UniquenessTree, CanonicalHash_EmptyState) {
+TEST(Unified_CanonicalHash, CanonicalHash_EmptyState) {
     Hypergraph hg;
     SparseBitset empty_edges;
 
@@ -432,7 +432,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_EmptyState) {
     EXPECT_EQ(hash, 0u);
 }
 
-TEST(Unified_UniquenessTree, CanonicalHash_SingleEdge) {
+TEST(Unified_CanonicalHash, CanonicalHash_SingleEdge) {
     Hypergraph hg;
 
     VertexId v0 = hg.alloc_vertex();
@@ -446,7 +446,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_SingleEdge) {
     EXPECT_NE(hash, 0u);  // Should produce non-zero hash
 }
 
-TEST(Unified_UniquenessTree, CanonicalHash_IsomorphicStates) {
+TEST(Unified_CanonicalHash, CanonicalHash_IsomorphicStates) {
     Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
@@ -485,7 +485,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_IsomorphicStates) {
     EXPECT_EQ(hash1, hash2);
 }
 
-TEST(Unified_UniquenessTree, CanonicalHash_NonIsomorphicStates) {
+TEST(Unified_CanonicalHash, CanonicalHash_NonIsomorphicStates) {
     Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
@@ -525,7 +525,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_NonIsomorphicStates) {
     EXPECT_NE(triangle_hash, path_hash);
 }
 
-TEST(Unified_UniquenessTree, CanonicalHash_SelfLoop) {
+TEST(Unified_CanonicalHash, CanonicalHash_SelfLoop) {
     Hypergraph hg;
 
     // State 1: Self-loop at vertex 0
@@ -549,7 +549,7 @@ TEST(Unified_UniquenessTree, CanonicalHash_SelfLoop) {
     EXPECT_EQ(hash1, hash2);
 }
 
-TEST(Unified_UniquenessTree, CanonicalInfo_VertexClasses) {
+TEST(Unified_CanonicalHash, CanonicalInfo_VertexClasses) {
     Hypergraph hg;
 
     // Create a star graph: center vertex 0 connected to 1, 2, 3
@@ -615,7 +615,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     uint64_t hash1 = hg.compute_canonical_hash(state1_edges);
 
     auto [canonical1, raw1, was_new1] = hg.create_or_get_canonical_state(
-        std::move(state1_edges), hash1, 0, INVALID_ID);
+        std::move(state1_edges), 0, INVALID_ID);
     EXPECT_TRUE(was_new1);
 
     // Create second state: isomorphic single edge {2, 3}
@@ -630,7 +630,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     EXPECT_EQ(hash1, hash2);  // States should be isomorphic
 
     auto [canonical2, raw2, was_new2] = hg.create_or_get_canonical_state(
-        std::move(state2_edges), hash2, 0, INVALID_ID);
+        std::move(state2_edges), 0, INVALID_ID);
     EXPECT_FALSE(was_new2);  // Should find existing canonical state
     EXPECT_EQ(canonical1, canonical2);
 
@@ -641,7 +641,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     out1_edges.set(out_e0, hg.arena());
     uint64_t out_hash1 = hg.compute_canonical_hash(out1_edges);
     auto [out_canonical1, out_raw1, out_new1] = hg.create_or_get_canonical_state(
-        std::move(out1_edges), out_hash1, 1, canonical1);
+        std::move(out1_edges), 1, canonical1);
 
     VertexId v5 = hg.alloc_vertex();
     EdgeId out_e1 = hg.create_edge({v3, v5});
@@ -649,7 +649,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     out2_edges.set(out_e1, hg.arena());
     uint64_t out_hash2 = hg.compute_canonical_hash(out2_edges);
     auto [out_canonical2, out_raw2, out_new2] = hg.create_or_get_canonical_state(
-        std::move(out2_edges), out_hash2, 1, canonical2);
+        std::move(out2_edges), 1, canonical2);
 
     EXPECT_EQ(out_canonical1, out_canonical2);  // Output states should also be canonical equivalent
 
@@ -696,7 +696,7 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
     uint64_t hash = hg.compute_canonical_hash(state_edges);
 
     auto [canonical, raw, was_new] = hg.create_or_get_canonical_state(
-        std::move(state_edges), hash, 0, INVALID_ID);
+        std::move(state_edges), 0, INVALID_ID);
 
     // Create output states
     VertexId v3 = hg.alloc_vertex();
@@ -706,7 +706,7 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
     out1_edges.set(e1, hg.arena());  // Keep e1
     uint64_t out_hash1 = hg.compute_canonical_hash(out1_edges);
     auto [out1, out_raw1, _1] = hg.create_or_get_canonical_state(
-        std::move(out1_edges), out_hash1, 1, canonical);
+        std::move(out1_edges), 1, canonical);
 
     VertexId v4 = hg.alloc_vertex();
     EdgeId out_e1 = hg.create_edge({v2, v4});
@@ -715,7 +715,7 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
     out2_edges.set(out_e1, hg.arena());
     uint64_t out_hash2 = hg.compute_canonical_hash(out2_edges);
     auto [out2, out_raw2, _2] = hg.create_or_get_canonical_state(
-        std::move(out2_edges), out_hash2, 1, canonical);
+        std::move(out2_edges), 1, canonical);
 
     // Event 1: consumes e0
     VariableBinding empty_binding;
@@ -745,7 +745,7 @@ TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
     state_edges.set(e0, hg.arena());
     uint64_t hash = hg.compute_canonical_hash(state_edges);
     auto [canonical, raw, _] = hg.create_or_get_canonical_state(
-        std::move(state_edges), hash, 0, INVALID_ID);
+        std::move(state_edges), 0, INVALID_ID);
 
     // Create output state
     VertexId v2 = hg.alloc_vertex();
@@ -754,7 +754,7 @@ TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
     out_edges.set(out_e, hg.arena());
     uint64_t out_hash = hg.compute_canonical_hash(out_edges);
     auto [out_canonical, out_raw, __] = hg.create_or_get_canonical_state(
-        std::move(out_edges), out_hash, 1, canonical);
+        std::move(out_edges), 1, canonical);
 
     // Event 1: rule 0
     VariableBinding empty_binding;
@@ -781,7 +781,7 @@ TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
     state_edges.set(e0, hg.arena());
     uint64_t hash = hg.compute_canonical_hash(state_edges);
     auto [canonical, raw, _] = hg.create_or_get_canonical_state(
-        std::move(state_edges), hash, 0, INVALID_ID);
+        std::move(state_edges), 0, INVALID_ID);
 
     VertexId v2 = hg.alloc_vertex();
     EdgeId out_e = hg.create_edge({v1, v2});
@@ -789,7 +789,7 @@ TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
     out_edges.set(out_e, hg.arena());
     uint64_t out_hash = hg.compute_canonical_hash(out_edges);
     auto [out_canonical, out_raw, __] = hg.create_or_get_canonical_state(
-        std::move(out_edges), out_hash, 1, canonical);
+        std::move(out_edges), 1, canonical);
 
     // Create two identical events
     VariableBinding empty_binding;

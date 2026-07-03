@@ -1,14 +1,14 @@
-# Find Mathematica using our custom finder module
+# Find the Wolfram Language using our custom finder module
 # This handles Windows, Linux, macOS, and WSL automatically
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
 
 # Allow manual override via cache variable
-set(MATHEMATICA_INSTALL_DIR "" CACHE PATH "Path to Mathematica installation directory")
+set(WOLFRAM_LANGUAGE_INSTALL_DIR "" CACHE PATH "Path to Wolfram Language installation directory")
 
-find_package(Mathematica REQUIRED)
+find_package(WolframLanguage REQUIRED)
 
-if(NOT Mathematica_FOUND)
-    message(FATAL_ERROR "Mathematica not found. Set MATHEMATICA_INSTALL_DIR or MATHEMATICA_HOME environment variable.")
+if(NOT WolframLanguage_FOUND)
+    message(FATAL_ERROR "Wolfram Language not found. Set WOLFRAM_LANGUAGE_INSTALL_DIR or WOLFRAM_LANGUAGE_HOME environment variable.")
     return()
 endif()
 
@@ -31,8 +31,8 @@ set(SOURCES
 add_library(HypergraphRewriting SHARED ${SOURCES})
 
 # Link against our existing targets
-# Note: Mathematica libraries are NOT needed at link time for LibraryLink
-# LibraryLink is header-only - Mathematica loads our library and calls our exports
+# Note: Wolfram Language libraries are NOT needed at link time for LibraryLink
+# LibraryLink is header-only - the Wolfram Language loads our library and calls our exports
 # Note: viz_blackhole is NOT linked - we compile the needed sources directly above
 # to avoid requiring BUILD_VISUALIZATION=ON
 target_link_libraries(HypergraphRewriting
@@ -42,7 +42,7 @@ target_link_libraries(HypergraphRewriting
 
 # Include directories
 target_include_directories(HypergraphRewriting PRIVATE
-    ${Mathematica_INCLUDE_DIRS}
+    ${WolframLanguage_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/hypergraph/include
     ${CMAKE_SOURCE_DIR}/job_system/include
     ${CMAKE_SOURCE_DIR}/lockfree_deque/include
@@ -51,14 +51,14 @@ target_include_directories(HypergraphRewriting PRIVATE
 
 # WSTP SDK for progress reporting via proper WSTP protocol
 # WSTP is platform-specific - select the correct SDK based on target system
-if(Mathematica_INSTALL_DIR)
+if(WolframLanguage_INSTALL_DIR)
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM|aarch64")
             set(WSTP_PLATFORM_DIR "Windows-ARM64")
         else()
             set(WSTP_PLATFORM_DIR "Windows-x86-64")
         endif()
-        set(WSTP_INCLUDE_DIR "${Mathematica_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
+        set(WSTP_INCLUDE_DIR "${WolframLanguage_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
         if(EXISTS "${WSTP_INCLUDE_DIR}/wstp.h")
             target_include_directories(HypergraphRewriting PRIVATE ${WSTP_INCLUDE_DIR})
             target_compile_definitions(HypergraphRewriting PRIVATE HAVE_WSTP=1)
@@ -74,7 +74,7 @@ if(Mathematica_INSTALL_DIR)
         else()
             set(WSTP_PLATFORM_DIR "Linux-x86-64")
         endif()
-        set(WSTP_INCLUDE_DIR "${Mathematica_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
+        set(WSTP_INCLUDE_DIR "${WolframLanguage_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
         if(EXISTS "${WSTP_INCLUDE_DIR}/wstp.h")
             target_include_directories(HypergraphRewriting PRIVATE ${WSTP_INCLUDE_DIR})
             target_compile_definitions(HypergraphRewriting PRIVATE HAVE_WSTP=1)
@@ -90,7 +90,7 @@ if(Mathematica_INSTALL_DIR)
         else()
             set(WSTP_PLATFORM_DIR "MacOSX-x86-64")
         endif()
-        set(WSTP_INCLUDE_DIR "${Mathematica_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
+        set(WSTP_INCLUDE_DIR "${WolframLanguage_INSTALL_DIR}/SystemFiles/Links/WSTP/DeveloperKit/${WSTP_PLATFORM_DIR}/CompilerAdditions")
         if(EXISTS "${WSTP_INCLUDE_DIR}/wstp.h")
             target_include_directories(HypergraphRewriting PRIVATE ${WSTP_INCLUDE_DIR})
             target_compile_definitions(HypergraphRewriting PRIVATE HAVE_WSTP=1)
@@ -236,8 +236,8 @@ set_target_properties(HypergraphRewriting PROPERTIES
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
 
 # Custom target to create paclet archive
-# Requires wolframscript to be available (found by FindMathematica.cmake)
-if(Mathematica_WOLFRAMSCRIPT)
+# Requires wolframscript to be available (found by FindWolframLanguage.cmake)
+if(WolframLanguage_WOLFRAMSCRIPT)
     # Paclet distribution directory (contains only distribution files, no build sources)
     set(PACLET_DIST_DIR "${CMAKE_SOURCE_DIR}/paclet")
 
@@ -260,7 +260,7 @@ if(Mathematica_WOLFRAMSCRIPT)
             # Copy paclet source to Windows temp directory
             COMMAND ${CMAKE_COMMAND} -E copy_directory "${PACLET_DIST_DIR}" /mnt/c/Temp/paclet_build
             # Run PacletBuild on Windows filesystem (builds documentation + creates archive)
-            COMMAND "${Mathematica_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "C:\\Temp\\paclet_build" "C:\\Temp\\paclet_output"
+            COMMAND "${WolframLanguage_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "C:\\Temp\\paclet_build" "C:\\Temp\\paclet_output"
             # Copy resulting .paclet file to paclet_archive (only .paclet files)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different /mnt/c/Temp/paclet_output/${PACLET_ARCHIVE_NAME}-${PROJECT_VERSION}.paclet "${CMAKE_SOURCE_DIR}/paclet_archive/"
             DEPENDS HypergraphRewriting
@@ -272,7 +272,7 @@ if(Mathematica_WOLFRAMSCRIPT)
     else()
         # Native Windows/Linux/macOS: Run PacletBuild directly
         add_custom_target(create_paclet_archive
-            COMMAND "${Mathematica_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "${PACLET_DIST_DIR}" "${CMAKE_SOURCE_DIR}/paclet_archive"
+            COMMAND "${WolframLanguage_WOLFRAMSCRIPT}" "${CMAKE_CURRENT_SOURCE_DIR}/build_paclet.wls" "${PACLET_DIST_DIR}" "${CMAKE_SOURCE_DIR}/paclet_archive"
             DEPENDS HypergraphRewriting
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Building paclet archive with documentation"
@@ -287,11 +287,11 @@ endif()
 # Add convenience target to build just the paclet library
 add_custom_target(paclet
     DEPENDS HypergraphRewriting
-    COMMENT "Building Mathematica paclet library"
+    COMMENT "Building Wolfram Language paclet library"
 )
 
 message(STATUS "Paclet targets:")
-message(STATUS "  paclet - Build the Mathematica paclet library")
+message(STATUS "  paclet - Build the Wolfram Language paclet library")
 message(STATUS "  create_paclet_archive - Build documentation and create paclet archive (requires wolframscript)")
 
 # Print paclet-specific configuration

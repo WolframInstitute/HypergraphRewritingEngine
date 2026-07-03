@@ -105,11 +105,53 @@ inline int executeWolframScript(const std::string& code) {
         return std::system(cmd.c_str());
     }
 #else
-    // Native Linux or Windows - use simple quoting
+    // Native Linux (including a Linux binary under WSL invoking a Windows
+    // wolframscript.exe). Write the code to a temp file and run it with -file: passing
+    // WL code that contains double quotes via -code "<...>" breaks shell quoting.
+    // wslpath -w converts the Linux temp path to a Windows path for a Windows
+    // wolframscript.exe; on a native install (no wslpath) the Linux path is used.
     std::string wolfram_path = getWolframScriptPath();
-    std::string cmd = "\"" + wolfram_path + "\" -code \"" + code + "\"";
-    return std::system(cmd.c_str());
+    std::string tmp = "/tmp/wolfram_test_" + std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count()) + ".wl";
+    {
+        std::ofstream f(tmp);
+        f << code << std::endl;
+    }
+    std::string cmd = "\"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
+                    + "' 2>/dev/null || echo '" + tmp + "')\"";
+    int result = std::system(cmd.c_str());
+    std::remove(tmp.c_str());
+    return result;
 #endif
+}
+
+/**
+ * Run WL code and capture its combined stdout+stderr. Prefer this over the exit code
+ * for integration checks: a Windows wolframscript.exe invoked from WSL frequently
+ * exits with a benign "license error" at shutdown (non-zero exit) even after the
+ * script's own Exit[0], so the exit status is not a reliable pass/fail signal --
+ * assert on a success marker the script prints instead.
+ */
+inline std::string executeWolframScriptCapture(const std::string& code) {
+    std::string wolfram_path = getWolframScriptPath();
+    std::string tmp = "/tmp/wolfram_test_" + std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count()) + ".wl";
+    {
+        std::ofstream f(tmp);
+        f << code << std::endl;
+    }
+    std::string cmd = "\"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
+                    + "' 2>/dev/null || echo '" + tmp + "')\" 2>&1";
+    std::string output;
+    if (FILE* pipe = popen(cmd.c_str(), "r")) {
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) output += buf;
+        pclose(pipe);
+    }
+    std::remove(tmp.c_str());
+    return output;
 }
 
 } // namespace test_utils

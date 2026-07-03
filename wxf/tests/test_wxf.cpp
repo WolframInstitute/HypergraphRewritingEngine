@@ -290,12 +290,12 @@ TEST_F(WXFTest, Association) {
 }
 
 TEST_F(WXFTest, AssociationWithArbitraryKeys) {
-    // Test Mathematica-generated WXF with complex arbitrary keys
-    std::vector<uint8_t> mathematica_wxf = {
+    // Test Wolfram Language-generated WXF with complex arbitrary keys
+    std::vector<uint8_t> wolfram_language_wxf = {
         56, 58, 65, 1, 45, 65, 2, 45, 102, 3, 115, 4, 76, 105, 115, 116, 67, 1, 67, 2, 102, 1, 115, 8, 71, 108, 111, 98, 97, 108, 96, 102, 102, 1, 115, 8, 71, 108, 111, 98, 97, 108, 96, 103, 115, 8, 71, 108, 111, 98, 97, 108, 96, 104, 65, 1, 45, 67, 1, 67, 2, 45, 67, 2, 67, 3, 67, 45
     };
 
-    wxf::Parser parser(mathematica_wxf);
+    wxf::Parser parser(wolfram_language_wxf);
     parser.skip_header();
 
     int outer_count = 0;
@@ -576,7 +576,7 @@ TEST_F(WXFTest, VerifyTestInfrastructureDetectsFailures) {
 
 #if WOLFRAMSCRIPT_AVAILABLE
 TEST_F(WXFTest, WolframGeneratedData) {
-    // Test with hardcoded Mathematica-generated WXF data
+    // Test with hardcoded Wolfram Language-generated WXF data
     std::string mathWxfHex = "383a41042d730b476c6f62616c60696e743843d62d730c476c6f62616c60696e7436346915cd5b072d730f476c6f62616c60706f73697469766543642d730b476c6f62616c607a65726f4300";
 
     std::vector<uint8_t> mathWxfBytes;

@@ -59,7 +59,7 @@ public:
     // Truncated BFS - only explores up to max_radius (faster for local dimension)
     std::vector<int> distances_from_truncated(VertexId source, int max_radius) const;
 
-    // Compute graph radius (minimum eccentricity) - matches Mathematica's GraphRadius[]
+    // Compute graph radius (minimum eccentricity) - matches the Wolfram Language's GraphRadius[]
     // This is the eccentricity of the graph's center vertex
     int graph_radius() const;
 

@@ -135,6 +135,21 @@ struct RewriteRule {
     uint8_t num_rhs_vars;                  // Total variables in RHS (includes new)
     uint8_t num_new_vars;                  // Variables in RHS but not LHS
 
+    // Join order for matching the LHS edges: a permutation of [0, num_lhs_edges).
+    // match_order[k] is the original LHS edge index to match at join depth k. Chosen
+    // (compute_match_order) so each edge shares a variable with the already-matched
+    // prefix (connected join -> bound variables prune candidates, avoiding
+    // cartesian-product blowup), seeded from the most self-constrained edge. Defaults
+    // to identity (declaration order) until computed. Same matches, better search.
+    uint8_t match_order[MAX_PATTERN_EDGES];
+
+    // Per-rule precomputed matching data, indexed by ORIGINAL LHS edge index (the
+    // same index space as lhs[]; match_order maps into it). Filled once by
+    // compute_var_counts so per-task matching reads these instead of re-running the
+    // recursive Bell-number set-partition enumeration in from_pattern per task.
+    EdgeSignature lhs_sig[MAX_PATTERN_EDGES];
+    CompatibleSignatureCache lhs_cache[MAX_PATTERN_EDGES];
+
     // Default constructor
     RewriteRule()
         : index(0)
@@ -143,7 +158,9 @@ struct RewriteRule {
         , num_lhs_vars(0)
         , num_rhs_vars(0)
         , num_new_vars(0)
-    {}
+    {
+        for (uint8_t i = 0; i < MAX_PATTERN_EDGES; ++i) match_order[i] = i;
+    }
 
     // Get mask of all LHS variables
     uint32_t lhs_var_mask() const {
@@ -192,6 +209,70 @@ struct RewriteRule {
         num_lhs_vars = static_cast<uint8_t>(__builtin_popcount(lhs_mask));
         num_rhs_vars = static_cast<uint8_t>(__builtin_popcount(rhs_mask));
         num_new_vars = static_cast<uint8_t>(__builtin_popcount(new_mask));
+
+        compute_match_order();
+
+        // Precompute per-edge signature + compatible-signature cache once, so match
+        // tasks never repeat the from_pattern Bell enumeration. Indexed by original
+        // LHS edge index (see lhs_sig / lhs_cache).
+        for (uint8_t i = 0; i < num_lhs_edges; ++i) {
+            lhs_sig[i] = lhs[i].signature();
+            lhs_cache[i] = CompatibleSignatureCache::from_pattern(lhs_sig[i]);
+        }
+    }
+
+    // Static self-constraint score for one LHS edge: higher => fewer candidate data
+    // edges expected => better to match earlier. Repeated variables within the edge
+    // (self-joins like {x,x}) are strongly constraining; being connected to more
+    // other edges is weakly constraining.
+    int edge_constraint_score(uint8_t e) const {
+        int score = 0;
+        for (uint8_t i = 0; i < lhs[e].arity; ++i)
+            for (uint8_t j = static_cast<uint8_t>(i + 1); j < lhs[e].arity; ++j)
+                if (lhs[e].var_at(i) == lhs[e].var_at(j)) score += 100;
+        for (uint8_t o = 0; o < num_lhs_edges; ++o)
+            if (o != e && lhs_edges_connected(e, o)) score += 1;
+        return score;
+    }
+
+    // Choose a connected, constraint-seeded join order over the LHS edges. Same set
+    // of matches as any order; the point is to bind variables early so later edges
+    // draw from few candidates instead of the whole state (avoids O(product) blowup
+    // for multi-edge rules). Deterministic (ties break to the lower edge index).
+    void compute_match_order() {
+        for (uint8_t i = 0; i < MAX_PATTERN_EDGES; ++i) match_order[i] = i;
+        if (num_lhs_edges <= 1) return;
+
+        bool used[MAX_PATTERN_EDGES] = {};
+
+        // Seed with the most self-constrained edge.
+        uint8_t first = 0;
+        int best = -1;
+        for (uint8_t e = 0; e < num_lhs_edges; ++e) {
+            int s = edge_constraint_score(e);
+            if (s > best) { best = s; first = e; }
+        }
+        match_order[0] = first;
+        used[first] = true;
+        uint32_t bound = lhs[first].var_mask();
+
+        // Greedily append the unmatched edge sharing the most variables with the
+        // bound prefix; tie-break by self-constraint, then lower index.
+        for (uint8_t pos = 1; pos < num_lhs_edges; ++pos) {
+            uint8_t pick = 0;
+            int pick_shared = -1, pick_self = -1;
+            for (uint8_t e = 0; e < num_lhs_edges; ++e) {
+                if (used[e]) continue;
+                int shared = __builtin_popcount(lhs[e].var_mask() & bound);
+                int self = edge_constraint_score(e);
+                if (shared > pick_shared || (shared == pick_shared && self > pick_self)) {
+                    pick = e; pick_shared = shared; pick_self = self;
+                }
+            }
+            match_order[pos] = pick;
+            used[pick] = true;
+            bound |= lhs[pick].var_mask();
+        }
     }
 };
 
@@ -368,41 +449,6 @@ struct PartialMatch {
     // Check if complete (with rule parameter for backwards compatibility)
     bool is_complete(const RewriteRule& rule) const {
         return num_matched == rule.num_lhs_edges;
-    }
-
-    // Which pattern edge index we need to match next (in match order)
-    uint8_t next_match_order_idx() const {
-        return num_matched;
-    }
-
-    // Which pattern edge (original index) we need to match next
-    uint8_t next_pattern_edge_idx() const {
-        return match_order[num_matched];
-    }
-
-    // Simple sequential next pattern index (ignores match_order)
-    uint8_t next_pattern_idx() const {
-        // Find first unmatched pattern index
-        bool matched_flags[MAX_PATTERN_EDGES] = {};
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            uint8_t pidx = match_order[i];
-            if (pidx < MAX_PATTERN_EDGES) {
-                matched_flags[pidx] = true;
-            }
-        }
-        for (uint8_t i = 0; i < num_pattern_edges; ++i) {
-            if (!matched_flags[i]) return i;
-        }
-        return num_pattern_edges;
-    }
-
-    // Get signature needed for next pattern edge
-    EdgeSignature next_needed_signature(const RewriteRule& rule) const {
-        if (num_matched >= rule.num_lhs_edges) {
-            return EdgeSignature{};  // No more edges needed
-        }
-        uint8_t pattern_idx = match_order[num_matched];
-        return rule.lhs[pattern_idx].signature();
     }
 
     // Add an edge match (for simple sequential matching)

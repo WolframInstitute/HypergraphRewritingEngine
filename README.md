@@ -1,6 +1,6 @@
 # Hypergraph Rewriting Engine
 
-A high-performance implementation of multiway hypergraph rewriting with Mathematica integration.
+A high-performance implementation of multiway hypergraph rewriting with Wolfram Language integration.
 
 ## Status
 
@@ -8,66 +8,59 @@ This project is functional but under active development. No stable release has b
 
 ## Features
 
-- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction, single synchronisation point (no intra-evolution phase barriers).
-- **Parallel Pattern Matching**: SCAN → EXPAND → SINK dataflow pipeline with work-stealing scheduling.
-- **Edge Signature Indexing**: Fast candidate generation via multi-level signature partitioning.
-- **Incremental Match Forwarding**: Re-use parent-state matches in child states; only find new matches that involve newly produced edges.
-- **Canonicalization**: choice of fast heuristics (WL / UT / incremental UT) or exact McKay-style individualisation-refinement (IR) for isomorphism-correct deduplication.
-- **Lock-free Data Structures**: concurrent hash map, lock-free list, lock-free deque, thread-safe arena.
-- **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, and topology / initial-condition generators.
+- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction
+- **Parallel Pattern Matching**: Task-parallel pipeline with work-stealing scheduler
+- **Edge Signature Indexing**: Fast pattern matching via multi-level signature partitioning
+- **Incremental Rewriting**: Match reuse and patch-based matching around newly added edges
+- **Canonicalization**: Isomorphism-invariant state hashing via Weisfeiler-Leman refinement
+- **Lock-free Data Structures**: High-performance concurrent queues and hash maps
+- **Wolfram Language Paclet**: Full LibraryLink bindings with visualization functions
 
 ## Installation
 
-### Mathematica Paclet
+### Wolfram Language Paclet
 
-Install the paclet directly from a release `.paclet` file:
+Install the paclet directly from the releases:
 
-```mathematica
+```wl
 PacletInstall["path/to/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
-Needs["HypergraphRewriting`"]
+<< WolframInstitute`HypergraphRewriteEngine`
 ```
-
-The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
 
 ### Building from Source
 
 ```bash
 mkdir build_linux && cd build_linux
-cmake .. -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j32 paclet
 ```
 
 ## Usage
 
-### Mathematica
+### Wolfram Language
 
-```mathematica
-Needs["HypergraphRewriting`"]
+```wl
+(* Load paclet *)
+<< WolframInstitute`HypergraphRewriteEngine`
 
-(* Rules use symbolic vertices (normalised to numeric internally). *)
+(* Define rule and initial state *)
 rule = {{x, y}, {y, z}} -> {{x, y}, {y, z}, {z, x}};
 init = {{1, 2}, {2, 3}, {3, 1}};
 
-(* HGEvolve[rules, initialEdges, steps, property]. Passing a single rule is
-   supported; a list of rules is also supported. *)
+(* Evolve and get results *)
 result = HGEvolve[rule, init, 5, "All"];
 
-(* "All" returns an Association with these keys: *)
-result["NumStates"]      (* uint: number of states *)
-result["NumEvents"]      (* uint: number of events *)
-result["States"]         (* association State -> state edges *)
-result["Events"]         (* list of rewriting events *)
-result["CausalEdges"]    (* list of (producer, consumer) event pairs *)
-result["BranchialEdges"] (* list of event pairs sharing an input state *)
+(* Access data *)
+result["StateCount"]           (* Number of states *)
+result["EventCount"]           (* Number of events *)
+result["CausalEdges"]          (* Causal graph edges *)
+result["BranchialEdges"]       (* Branchial graph edges *)
 
-(* Graph properties evaluate directly to Graph objects: *)
-HGEvolve[rule, init, 5, "StatesGraph"]
-HGEvolve[rule, init, 5, "CausalGraph"]
-HGEvolve[rule, init, 5, "BranchialGraph"]
-HGEvolve[rule, init, 5, "EvolutionCausalBranchialGraph"]
+(* Visualization *)
+HGStatePlot[result, 0]         (* Plot initial state *)
+HGCausalPlot[result]           (* Plot causal graph *)
+HGBranchialPlot[result]        (* Plot branchial graph *)
 ```
-
-See `paclet_source/README.md` for the full option list (hash strategy, canonicalisation modes, pruning limits, dimension / curvature / geodesic analyses, topology and initial-condition generators).
 
 ### C++ API
 
@@ -110,9 +103,9 @@ The paclet includes native libraries for:
 ## Build Requirements
 
 - C++20 compiler (GCC 10+, Clang 12+)
-- CMake 3.14+
+- CMake 3.15+
 - Google Test (automatically downloaded)
-- Mathematica 13+ (optional, for paclet)
+- Wolfram Language 12+ (optional, for paclet)
 
 ## Cross-Compilation
 
@@ -159,7 +152,7 @@ visualisation/           3D visualization (Vulkan)
   blackhole/               Physics analysis
   scene/                   Rendering pipeline
 
-paclet/                  Mathematica paclet
+paclet/                  Wolfram Language paclet
 paclet_source/           LibraryLink FFI
 ```
 

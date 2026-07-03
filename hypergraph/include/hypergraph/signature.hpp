@@ -300,23 +300,6 @@ inline void enumerate_compatible_signatures(
     );
 }
 
-// Count compatible signatures (useful for matching order estimation)
-inline uint32_t count_compatible_signatures(const EdgeSignature& pattern_sig) {
-    // Bell number B(n) where n = number of distinct variables in pattern
-    // For small n (up to MAX_ARITY = 16), we can precompute
-
-    // First, find number of distinct pattern variables
-    uint8_t num_distinct = pattern_sig.num_distinct();
-
-    // Bell numbers B(0) to B(16)
-    static const uint32_t bell[] = {
-        1, 1, 2, 5, 15, 52, 203, 877, 4140, 21147,
-        115975, 678570, 4213597, 27644437, 190899322, 1382958545, 0  // B(16) overflows uint32
-    };
-
-    return num_distinct < 16 ? bell[num_distinct] : UINT32_MAX;
-}
-
 // =============================================================================
 // CompatibleSignatureCache
 // =============================================================================

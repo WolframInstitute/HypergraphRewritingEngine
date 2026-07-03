@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -100,38 +101,40 @@ public:
         , count_valid_(true)
     {}
 
-    // Move constructor - takes ownership of the other's data
+    // Move constructor - takes ownership of the other's data (single-owner
+    // context: relaxed atomic access)
     SparseBitset(SparseBitset&& other) noexcept
         : entries_(other.entries_)
         , num_entries_(other.num_entries_)
         , capacity_(other.capacity_)
-        , count_cached_(other.count_cached_)
-        , count_valid_(other.count_valid_)
+        , count_cached_(other.count_cached_.load(std::memory_order_relaxed))
+        , count_valid_(other.count_valid_.load(std::memory_order_relaxed))
     {
         // Clear the source to prevent aliasing
         other.entries_ = nullptr;
         other.num_entries_ = 0;
         other.capacity_ = 0;
-        other.count_cached_ = 0;
-        other.count_valid_ = true;
+        other.count_cached_.store(0, std::memory_order_relaxed);
+        other.count_valid_.store(true, std::memory_order_relaxed);
     }
 
-    // Move assignment - takes ownership of the other's data
+    // Move assignment - takes ownership of the other's data (single-owner
+    // context: relaxed atomic access)
     SparseBitset& operator=(SparseBitset&& other) noexcept {
         if (this != &other) {
             // Take over other's data
             entries_ = other.entries_;
             num_entries_ = other.num_entries_;
             capacity_ = other.capacity_;
-            count_cached_ = other.count_cached_;
-            count_valid_ = other.count_valid_;
+            count_cached_.store(other.count_cached_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            count_valid_.store(other.count_valid_.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
             // Clear the source to prevent aliasing
             other.entries_ = nullptr;
             other.num_entries_ = 0;
             other.capacity_ = 0;
-            other.count_cached_ = 0;
-            other.count_valid_ = true;
+            other.count_cached_.store(0, std::memory_order_relaxed);
+            other.count_valid_.store(true, std::memory_order_relaxed);
         }
         return *this;
     }
@@ -178,17 +181,21 @@ public:
         }
     }
 
-    // Number of set bits
+    // Number of set bits. The lazy cache fill is safe under concurrent const
+    // readers: a bitset is only shared between threads once its contents are
+    // immutable, so racing fills compute the same total (idempotent). The cached
+    // value is stored before the valid flag (release) so a reader that observes
+    // valid (acquire) also observes the value.
     size_t count() const {
-        if (count_valid_) {
-            return count_cached_;
+        if (count_valid_.load(std::memory_order_acquire)) {
+            return count_cached_.load(std::memory_order_relaxed);
         }
         size_t total = 0;
         for (size_t i = 0; i < num_entries_; ++i) {
             total += entries_[i].chunk->popcount();
         }
-        count_cached_ = total;
-        count_valid_ = true;
+        count_cached_.store(total, std::memory_order_relaxed);
+        count_valid_.store(true, std::memory_order_release);
         return total;
     }
 
@@ -339,14 +346,16 @@ private:
     }
 
     void invalidate_count() {
-        count_valid_ = false;
+        count_valid_.store(false, std::memory_order_relaxed);
     }
 
     ChunkEntry* entries_;
     size_t num_entries_;
     size_t capacity_;
-    mutable size_t count_cached_;
-    mutable bool count_valid_;
+    // Atomic so concurrent const readers can fill the cache without a data race
+    // (single-owner mutation paths use relaxed ops; see count()).
+    mutable std::atomic<size_t> count_cached_;
+    mutable std::atomic<bool> count_valid_;
 };
 
 }  // namespace hypergraph

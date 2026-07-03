@@ -198,7 +198,6 @@ static void print_to_frontend(WolframLibraryData libData, const std::string& mes
  *     "Rules" -> <"Rule1" -> {{lhs edges}, {rhs edges}}, ...>,
  *     "Steps" -> integer,
  *     "Options" -> Association[...,
- *       "HashStrategy" -> "iUT"|"UT"|"WL",
  *       "CanonicalizeStates" -> None|Automatic|Full,
  *       ...]
  *   ]
@@ -252,7 +251,6 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         size_t max_states_per_step = 0;
         double exploration_probability = 1.0;
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
-        std::string hash_strategy = "iUT";  // Default: IncrementalUniquenessTree
         // ir_verification and return_canonical_states are derived from state_canon_mode == Full
         bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
         size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
@@ -342,6 +340,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Data selection flags - which components to include in output
         // By default all are included for backward compatibility
         bool include_states = true;
+        bool include_canonical_hashes = false;  // Emit per-state IR canonical hash (CanonicalHash); stable across runs, for cross-run fusion
         bool include_events = true;
         bool include_events_minimal = false;  // Minimal event data: Id, InputState, OutputState only
         bool include_causal_edges = true;
@@ -464,8 +463,6 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                             sprinkling_spatial_extent = static_cast<float>(option_parser.read<double>());
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
-                        } else if (option_key == "HashStrategy") {
-                            hash_strategy = option_parser.read<std::string>();
                         } else if (option_key == "CurvatureMethod") {
                             curvature_method = option_parser.read<std::string>();
                         } else if (option_key == "CurvaturePerVertex") {
@@ -480,6 +477,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         } else if (option_key == "EdgeDeduplication") {
                             std::string symbol = option_parser.read<std::string>();
                             edge_deduplication = (symbol == "True");
+                        } else if (option_key == "IncludeCanonicalHashes") {
+                            std::string symbol = option_parser.read<std::string>();
+                            include_canonical_hashes = (symbol == "True");
                         } else if (option_key == "RequestedData") {
                             // Parse list of data component names
                             // When specified, only include requested components
@@ -633,15 +633,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                                 compute_equilibrium = value;
                             }
                         }
-                    } catch (const std::exception& e) {
-                        // An option's value failed to parse (wrong WXF type, out-of-range
-                        // narrowing, etc.). Skip the malformed value and continue — the
-                        // alternative is aborting the whole evolve call on a single bad
-                        // option, which breaks WL callers that pass forward-compatible
-                        // option sets the C++ side doesn't yet know about. Log into the
-                        // debug queue so the frontend can surface the skip.
-                        g_debug_queue.push(
-                            ("FFI: skipping malformed option '" + option_key + "': " + e.what()).c_str());
+                    } catch (...) {
                         option_parser.skip_value();
                     }
                 });
@@ -745,14 +737,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         // Create hypergraph
         hypergraph::Hypergraph hg;
 
-        // Set hash strategy
-        if (hash_strategy == "WL") {
-            hg.set_hash_strategy(hypergraph::HashStrategy::WL);
-        } else if (hash_strategy == "UT") {
-            hg.set_hash_strategy(hypergraph::HashStrategy::UniquenessTree);
-        } else {
-            hg.set_hash_strategy(hypergraph::HashStrategy::IncrementalUniquenessTree);
-        }
+        // The hot-path state hash is always Weisfeiler-Leman; exact IR
+        // canonicalization is selected via CanonicalizeStates -> Full.
 
         // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
         const bool full_canonicalization = (state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
@@ -890,7 +876,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         });
 #endif
 
-        // Run evolution with abort checking - allows user to cancel via Mathematica's Abort[]
+        // Run evolution with abort checking - allows user to cancel via the Wolfram Language's Abort[]
         // Progress is reported from the abort callback (runs on main thread every ~50ms)
 #ifdef HAVE_WSTP
         bool was_aborted = false;
@@ -2173,6 +2159,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
                 state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
                 state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
+                if (include_canonical_hashes) {
+                    // IR canonical hash (the value the dedup map is keyed on): identical for isomorphic
+                    // states within and across runs. Reinterpreted to int64 (bijective, so equality and
+                    // grouping are preserved); a hash with the top bit set surfaces as a negative integer.
+                    state_assoc.push_back({wxf::WXFValue("CanonicalHash"), wxf::WXFValue(static_cast<int64_t>(state.canonical_hash))});
+                }
 
                 states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_assoc)});
             }
@@ -2633,7 +2625,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             // EdgeDeduplication=True: one edge per raw (producer, consumer) pair
             // EdgeDeduplication=False: N edges for N shared hyperedges
             // Note: Our causal graph stores one CausalEdge per (producer, consumer, hyperedge) triple
-            // IMPORTANT: Each edge must have unique data or Mathematica's Graph[] will deduplicate!
+            // IMPORTANT: Each edge must have unique data or the Wolfram Language's Graph[] will deduplicate!
             auto add_causal_edges = [&]() {
                 // First pass: count CausalEdges per raw (producer, consumer) pair
                 std::map<std::pair<hypergraph::EventId, hypergraph::EventId>, size_t> pair_counts;
@@ -2654,7 +2646,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         wxf::WXFValueAssociation causal_data;
                         causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(from)});
                         causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(to)});
-                        // Add unique index to prevent Mathematica Graph[] deduplication
+                        // Add unique index to prevent the Wolfram Language Graph[] deduplication
                         if (num_edges > 1) {
                             causal_data.push_back({wxf::WXFValue("EdgeIndex"), wxf::WXFValue(static_cast<int64_t>(k))});
                         }

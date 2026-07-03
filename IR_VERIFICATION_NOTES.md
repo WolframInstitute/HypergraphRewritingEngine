@@ -1,5 +1,22 @@
 # IR Canonicalization
 
+## Why IR is the preferred hash
+
+IR (McKay-style individualization-refinement) is the **only** canonicalization strategy that is unconditionally safe for state deduplication. The alternatives have known correctness limitations:
+
+| Strategy | False negatives | False positives | Use as dedup key? |
+|---|---|---|---|
+| **IR** | **None** | **None** | **Yes — preferred default** |
+| UT (Gorard) | None | Likely none, unproven | Yes, but completeness unverified |
+| WL (1-WL) | None | Yes (rare, structured graphs) | **Only with collision verification** |
+| iWL / iUT | Inherits parent | Inherits parent | Same caveats as their non-incremental forms |
+
+The deduplication invariant requires `hash(G1) == hash(G2)` iff `G1 ≅ G2`. False positives merge non-isomorphic states — a correctness break that corrupts the multiway graph. WL is known to produce false positives on highly symmetric graphs (Cai-Fürer-Immerman constructions, strongly regular graphs, certain Cayley graphs); UT's polynomial-completeness claim is from Gorard 2016 and lacks peer-reviewed consensus.
+
+IR's individualization-refinement is exact: for low-symmetry graphs (the common rewriting case), partition refinement reaches a discrete partition without backtracking and runs in O(V²·E). For high-symmetry graphs, automorphism-group-bounded backtracking explores a small tree. This is the same algorithm class used by nauty, bliss, and traces.
+
+WL and UT remain available as configurable options for users who can tolerate their failure modes (e.g. running with `CanonicalizeStates -> None` purely for display, or accepting their false-positive rate for exploration). The CPU `HashStrategy` enum still exposes them. The GPU implementation (see `gpu/ARCHITECTURE.md`) defaults to IR for the same reason.
+
 ## User-Facing Options
 
 Only two canonicalization options exist:

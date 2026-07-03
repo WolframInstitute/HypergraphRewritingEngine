@@ -1160,21 +1160,32 @@ public:
                 continue;
             }
 
-            // Check and run dependencies if needed
-            auto dep_it = dependencies_.find(name);
-            if (dep_it != dependencies_.end()) {
-                for (const std::string& dep_name : dep_it->second) {
-                    if (!ReferenceDataLoader::instance().has_reference_data(dep_name)) {
-                        run_reference_benchmark(dep_name, output_dir);
+            // Run the benchmark, plus any reference dependencies it needs. A
+            // benchmark that fails -- most commonly a Wolfram-comparative one whose
+            // reference data cannot be produced in this environment (no wolframscript
+            // / incomplete reference) -- is SKIPPED with a warning rather than
+            // aborting the whole suite, so the engine-only benchmarks still complete
+            // and produce results.
+            try {
+                auto dep_it = dependencies_.find(name);
+                if (dep_it != dependencies_.end()) {
+                    for (const std::string& dep_name : dep_it->second) {
+                        if (!ReferenceDataLoader::instance().has_reference_data(dep_name)) {
+                            run_reference_benchmark(dep_name, output_dir);
+                        }
                     }
                 }
+
+                printf("[ RUN      ] %s\n", name.c_str());
+                get_context().set_benchmark(name);
+
+                // Run the benchmark function (will collect results internally)
+                func();
+            } catch (const std::exception& e) {
+                printf("[  SKIPPED ] %s: %s\n", name.c_str(), e.what());
+                current_results_.clear();
+                continue;
             }
-
-            printf("[ RUN      ] %s\n", name.c_str());
-            get_context().set_benchmark(name);
-
-            // Run the benchmark function (will collect results internally)
-            func();
 
             // Results are stored in current_results_ during benchmark execution
             for (const auto& result : current_results_) {

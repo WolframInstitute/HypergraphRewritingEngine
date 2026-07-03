@@ -18,7 +18,7 @@ if(EXISTS "/mnt/c/Program Files/Wolfram Research/Wolfram")
     endforeach()
 endif()
 
-# Also check for Mathematica installations
+# Also check for Wolfram Language installations under the legacy install directory
 if(NOT WOLFRAMSCRIPT_FOUND AND EXISTS "/mnt/c/Program Files/Wolfram Research/Mathematica")
     file(GLOB MATHEMATICA_VERSIONS "/mnt/c/Program Files/Wolfram Research/Mathematica/*")
     foreach(VERSION_DIR ${MATHEMATICA_VERSIONS})
@@ -26,7 +26,7 @@ if(NOT WOLFRAMSCRIPT_FOUND AND EXISTS "/mnt/c/Program Files/Wolfram Research/Mat
             set(WOLFRAMSCRIPT_EXECUTABLE "${VERSION_DIR}/wolframscript.exe")
             set(WOLFRAMSCRIPT_FOUND TRUE)
             get_filename_component(VERSION_NAME ${VERSION_DIR} NAME)
-            message(STATUS "Found WolframScript in Mathematica ${VERSION_NAME}: ${WOLFRAMSCRIPT_EXECUTABLE}")
+            message(STATUS "Found WolframScript in Wolfram Language ${VERSION_NAME}: ${WOLFRAMSCRIPT_EXECUTABLE}")
             break()
         endif()
     endforeach()
@@ -89,7 +89,7 @@ target_link_libraries(benchmark_suite PRIVATE benchmark_framework wxf)
 
 # Define WOLFRAMSCRIPT_AVAILABLE for conditional compilation
 # Only enable if both WolframScript AND paclet are available
-if(WOLFRAMSCRIPT_FOUND AND BUILD_MATHEMATICA_PACLET)
+if(WOLFRAMSCRIPT_FOUND AND BUILD_WOLFRAM_LANGUAGE_PACLET)
     string(REPLACE "\\" "\\\\" ESCAPED_WOLFRAMSCRIPT_PATH "${WOLFRAMSCRIPT_EXECUTABLE}")
     target_compile_definitions(benchmark_suite PRIVATE
         WOLFRAMSCRIPT_EXECUTABLE="${ESCAPED_WOLFRAMSCRIPT_PATH}"
@@ -109,7 +109,7 @@ if(MINGW)
     target_link_options(benchmark_suite PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
-if(BUILD_MATHEMATICA_PACLET)
+if(BUILD_WOLFRAM_LANGUAGE_PACLET)
     add_dependencies(benchmark_suite paclet)
 endif()
 

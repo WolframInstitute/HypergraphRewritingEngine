@@ -18,9 +18,9 @@ namespace v2 = hypergraph;
 // =============================================================================
 // Black Hole Simulation - Idempotent Rule Tests
 // =============================================================================
-// Tests idempotent rules (4 edges -> 4 edges) on varying initial state sizes.
-// Compares UT, UT-Inc, WL hash strategies with ByState and ByStateAndEdges modes.
-// All methods should produce identical state/event/causal/branchial counts.
+// Tests idempotent rules (4 edges -> 4 edges) on varying initial state sizes
+// across ByState and ByStateAndEdges event modes, checking that multi-threaded
+// evolution produces deterministic state/event/causal/branchial counts.
 
 class BlackHoleIdempotentTest : public ::testing::Test {
 protected:
@@ -30,8 +30,6 @@ protected:
         size_t num_causal;
         size_t num_branchial;
         double time_ms;
-        size_t reused;
-        size_t recomputed;
     };
 
     // Generate a random connected hypergraph with the given number of 2-edges
@@ -68,13 +66,10 @@ protected:
         const std::vector<v2::RewriteRule>& rules,
         const std::vector<std::vector<v2::VertexId>>& initial,
         size_t steps,
-        v2::HashStrategy hash_strategy,
         v2::EventSignatureKeys event_keys
     ) {
         auto hg = std::make_unique<v2::Hypergraph>();
-        hg->set_hash_strategy(hash_strategy);
         hg->set_event_signature_keys(event_keys);
-        hg->reset_incremental_tree_stats();
 
         v2::ParallelEvolutionEngine engine(hg.get(), 0);  // Use all threads
         for (const auto& rule : rules) {
@@ -86,27 +81,14 @@ protected:
         auto end = std::chrono::high_resolution_clock::now();
 
         double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
-        auto [reused, recomputed] = hg->incremental_tree_stats();
 
         return {
             engine.num_canonical_states(),
             engine.num_events(),
             engine.num_causal_edges(),
             engine.num_branchial_edges(),
-            time_ms,
-            reused,
-            recomputed
+            time_ms
         };
-    }
-
-    const char* hash_strategy_name(v2::HashStrategy s) {
-        switch (s) {
-            case v2::HashStrategy::UniquenessTree: return "UT";
-            case v2::HashStrategy::IncrementalUniquenessTree: return "UT-Inc";
-            case v2::HashStrategy::WL: return "WL";
-            case v2::HashStrategy::IncrementalWL: return "WL-Inc";
-            default: return "?";
-        }
     }
 
     const char* event_keys_name(v2::EventSignatureKeys k) {
@@ -134,12 +116,6 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::HashStrategy> strategies = {
-        v2::HashStrategy::UniquenessTree,
-        v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL,
-        v2::HashStrategy::IncrementalWL
-    };
     std::vector<v2::EventSignatureKeys> modes = {
         v2::EVENT_SIG_FULL,
         v2::EVENT_SIG_AUTOMATIC
@@ -157,62 +133,43 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
 
         std::cout << "=== Initial state: " << num_edges << " edges ===\n";
         std::cout << std::setw(10) << "Mode"
-                  << std::setw(8) << "Hash"
                   << std::setw(10) << "States"
                   << std::setw(10) << "Events"
                   << std::setw(10) << "Causal"
                   << std::setw(12) << "Branchial"
                   << std::setw(12) << "Time(ms)"
-                  << std::setw(10) << "Reuse%"
                   << "\n";
-        std::cout << std::string(82, '-') << "\n";
+        std::cout << std::string(74, '-') << "\n";
 
-        // Check consistency within each event mode (hash strategies should match)
-        bool all_match = true;
+        // Multi-threaded evolution must be deterministic run-to-run.
+        bool deterministic = true;
 
         for (auto mode : modes) {
-            RunResult mode_reference;
-            bool have_mode_reference = false;
+            RunResult first = run_evolution({rule}, initial, steps, mode);
+            RunResult second = run_evolution({rule}, initial, steps, mode);
 
-            for (auto strategy : strategies) {
-                auto result = run_evolution({rule}, initial, steps, strategy, mode);
+            std::cout << std::fixed << std::setprecision(2);
+            std::cout << std::setw(10) << event_keys_name(mode)
+                      << std::setw(10) << first.num_states
+                      << std::setw(10) << first.num_events
+                      << std::setw(10) << first.num_causal
+                      << std::setw(12) << first.num_branchial
+                      << std::setw(12) << first.time_ms
+                      << "\n";
 
-                double reuse_pct = (result.reused + result.recomputed > 0)
-                    ? 100.0 * result.reused / (result.reused + result.recomputed)
-                    : 0.0;
-
-                std::cout << std::fixed << std::setprecision(2);
-                std::cout << std::setw(10) << event_keys_name(mode)
-                          << std::setw(8) << hash_strategy_name(strategy)
-                          << std::setw(10) << result.num_states
-                          << std::setw(10) << result.num_events
-                          << std::setw(10) << result.num_causal
-                          << std::setw(12) << result.num_branchial
-                          << std::setw(12) << result.time_ms
-                          << std::setw(9) << std::setprecision(1) << reuse_pct << "%"
-                          << "\n";
-
-                // Check consistency within this event mode
-                if (!have_mode_reference) {
-                    mode_reference = result;
-                    have_mode_reference = true;
-                } else {
-                    if (result.num_states != mode_reference.num_states ||
-                        result.num_events != mode_reference.num_events ||
-                        result.num_causal != mode_reference.num_causal ||
-                        result.num_branchial != mode_reference.num_branchial) {
-                        std::cout << "  ^ MISMATCH with " << hash_strategy_name(strategies[0]) << "\n";
-                        all_match = false;
-                    }
-                }
+            if (first.num_states != second.num_states ||
+                first.num_events != second.num_events ||
+                first.num_causal != second.num_causal ||
+                first.num_branchial != second.num_branchial) {
+                std::cout << "  ^ NON-DETERMINISTIC across runs\n";
+                deterministic = false;
             }
         }
 
         std::cout << "\n";
 
-        // Verify all hash strategies produce same results within each event mode
-        EXPECT_TRUE(all_match)
-            << "Hash strategies produce different results for " << num_edges << " edges";
+        EXPECT_TRUE(deterministic)
+            << "Non-deterministic counts for " << num_edges << " edges";
     }
 }
 
@@ -229,12 +186,6 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::HashStrategy> strategies = {
-        v2::HashStrategy::UniquenessTree,
-        v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL,
-        v2::HashStrategy::IncrementalWL
-    };
     std::vector<v2::EventSignatureKeys> modes = {
         v2::EVENT_SIG_FULL,
         v2::EVENT_SIG_AUTOMATIC
@@ -252,59 +203,43 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
 
         std::cout << "=== Initial state: " << num_edges << " edges ===\n";
         std::cout << std::setw(10) << "Mode"
-                  << std::setw(8) << "Hash"
                   << std::setw(10) << "States"
                   << std::setw(10) << "Events"
                   << std::setw(10) << "Causal"
                   << std::setw(12) << "Branchial"
                   << std::setw(12) << "Time(ms)"
-                  << std::setw(10) << "Reuse%"
                   << "\n";
-        std::cout << std::string(82, '-') << "\n";
+        std::cout << std::string(74, '-') << "\n";
 
-        bool all_match = true;
+        // Multi-threaded evolution must be deterministic run-to-run.
+        bool deterministic = true;
 
         for (auto mode : modes) {
-            RunResult mode_reference;
-            bool have_mode_reference = false;
+            RunResult first = run_evolution({rule}, initial, steps, mode);
+            RunResult second = run_evolution({rule}, initial, steps, mode);
 
-            for (auto strategy : strategies) {
-                auto result = run_evolution({rule}, initial, steps, strategy, mode);
+            std::cout << std::fixed << std::setprecision(2);
+            std::cout << std::setw(10) << event_keys_name(mode)
+                      << std::setw(10) << first.num_states
+                      << std::setw(10) << first.num_events
+                      << std::setw(10) << first.num_causal
+                      << std::setw(12) << first.num_branchial
+                      << std::setw(12) << first.time_ms
+                      << "\n";
 
-                double reuse_pct = (result.reused + result.recomputed > 0)
-                    ? 100.0 * result.reused / (result.reused + result.recomputed)
-                    : 0.0;
-
-                std::cout << std::fixed << std::setprecision(2);
-                std::cout << std::setw(10) << event_keys_name(mode)
-                          << std::setw(8) << hash_strategy_name(strategy)
-                          << std::setw(10) << result.num_states
-                          << std::setw(10) << result.num_events
-                          << std::setw(10) << result.num_causal
-                          << std::setw(12) << result.num_branchial
-                          << std::setw(12) << result.time_ms
-                          << std::setw(9) << std::setprecision(1) << reuse_pct << "%"
-                          << "\n";
-
-                if (!have_mode_reference) {
-                    mode_reference = result;
-                    have_mode_reference = true;
-                } else {
-                    if (result.num_states != mode_reference.num_states ||
-                        result.num_events != mode_reference.num_events ||
-                        result.num_causal != mode_reference.num_causal ||
-                        result.num_branchial != mode_reference.num_branchial) {
-                        std::cout << "  ^ MISMATCH with " << hash_strategy_name(strategies[0]) << "\n";
-                        all_match = false;
-                    }
-                }
+            if (first.num_states != second.num_states ||
+                first.num_events != second.num_events ||
+                first.num_causal != second.num_causal ||
+                first.num_branchial != second.num_branchial) {
+                std::cout << "  ^ NON-DETERMINISTIC across runs\n";
+                deterministic = false;
             }
         }
 
         std::cout << "\n";
 
-        EXPECT_TRUE(all_match)
-            << "Hash strategies produce different results for " << num_edges << " edges";
+        EXPECT_TRUE(deterministic)
+            << "Non-deterministic counts for " << num_edges << " edges";
     }
 }
 
@@ -329,51 +264,41 @@ TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
 
     auto initial = generate_random_graph(num_edges, seed);
 
-    std::vector<v2::HashStrategy> strategies = {
-        v2::HashStrategy::UniquenessTree,
-        v2::HashStrategy::IncrementalUniquenessTree,
-        v2::HashStrategy::WL,
-        v2::HashStrategy::IncrementalWL
-    };
-
     std::cout << "\n=== Detailed Timing: 100 edges, black hole rule ===\n";
     std::cout << "Rule: {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}\n";
     std::cout << "Averaging over " << num_runs << " runs\n\n";
 
+    std::cout << std::setw(18) << "Event mode"
+              << std::setw(12) << "Avg(ms)"
+              << std::setw(12) << "Min(ms)"
+              << std::setw(12) << "Max(ms)"
+              << std::setw(10) << "States"
+              << std::setw(10) << "Events"
+              << "\n";
+    std::cout << std::string(74, '-') << "\n";
+
     for (auto mode : {v2::EVENT_SIG_FULL,
                       v2::EVENT_SIG_AUTOMATIC}) {
-        std::cout << "Event mode: " << event_keys_name(mode) << "\n";
-        std::cout << std::setw(10) << "Strategy"
-                  << std::setw(12) << "Avg(ms)"
-                  << std::setw(12) << "Min(ms)"
-                  << std::setw(12) << "Max(ms)"
-                  << std::setw(10) << "States"
-                  << std::setw(10) << "Events"
-                  << "\n";
-        std::cout << std::string(66, '-') << "\n";
+        double total = 0, min_t = 1e9, max_t = 0;
+        RunResult last;
 
-        for (auto strategy : strategies) {
-            double total = 0, min_t = 1e9, max_t = 0;
-            RunResult last;
-
-            for (int i = 0; i < num_runs; ++i) {
-                last = run_evolution({rule}, initial, steps, strategy, mode);
-                total += last.time_ms;
-                min_t = std::min(min_t, last.time_ms);
-                max_t = std::max(max_t, last.time_ms);
-            }
-
-            std::cout << std::fixed << std::setprecision(2);
-            std::cout << std::setw(10) << hash_strategy_name(strategy)
-                      << std::setw(12) << (total / num_runs)
-                      << std::setw(12) << min_t
-                      << std::setw(12) << max_t
-                      << std::setw(10) << last.num_states
-                      << std::setw(10) << last.num_events
-                      << "\n";
+        for (int i = 0; i < num_runs; ++i) {
+            last = run_evolution({rule}, initial, steps, mode);
+            total += last.time_ms;
+            min_t = std::min(min_t, last.time_ms);
+            max_t = std::max(max_t, last.time_ms);
         }
-        std::cout << "\n";
+
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << std::setw(18) << event_keys_name(mode)
+                  << std::setw(12) << (total / num_runs)
+                  << std::setw(12) << min_t
+                  << std::setw(12) << max_t
+                  << std::setw(10) << last.num_states
+                  << std::setw(10) << last.num_events
+                  << "\n";
     }
+    std::cout << "\n";
 }
 
 // WL-only test with 2 steps for black hole simulation
@@ -418,7 +343,7 @@ TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
         auto initial = generate_random_graph(num_edges, seed);
 
         for (auto mode : modes) {
-            auto result = run_evolution({rule}, initial, steps, v2::HashStrategy::WL, mode);
+            auto result = run_evolution({rule}, initial, steps, mode);
 
             std::cout << std::fixed << std::setprecision(2);
             std::cout << std::setw(8) << num_edges

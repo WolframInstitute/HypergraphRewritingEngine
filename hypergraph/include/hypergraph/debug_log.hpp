@@ -14,7 +14,7 @@ namespace debug {
 // The callback receives a formatted string (no newline at end)
 using DebugCallback = void (*)(const char* message);
 
-// Global debug callback - set by FFI layer to route to Mathematica
+// Global debug callback - set by FFI layer to route to the Wolfram Language
 // When null, DEBUG_LOG uses printf (for standalone C++ usage)
 inline std::atomic<DebugCallback> g_debug_callback{nullptr};
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -20,7 +21,6 @@ using EdgeId = uint32_t;
 using StateId = uint32_t;
 using EventId = uint32_t;
 using MatchId = uint32_t;
-using EquivClassId = uint32_t;
 using RuleIndex = uint16_t;
 
 constexpr uint32_t INVALID_ID = UINT32_MAX;
@@ -82,8 +82,7 @@ struct VariableBinding {
 // Edge
 // =============================================================================
 // Represents a hyperedge in the hypergraph.
-// Immutable after creation except for equiv_class (atomic update for Level 2).
-// Allocated from arena.
+// Immutable after creation. Allocated from arena.
 
 struct Edge {
     EdgeId id;
@@ -91,7 +90,6 @@ struct Edge {
     uint8_t arity;
     EventId creator_event;   // INVALID_ID for initial edges
     uint32_t step;
-    std::atomic<EquivClassId> equiv_class;  // Updated when correspondence found
 
     Edge(EdgeId id_, VertexId* verts, uint8_t arity_, EventId creator, uint32_t step_)
         : id(id_)
@@ -99,7 +97,6 @@ struct Edge {
         , arity(arity_)
         , creator_event(creator)
         , step(step_)
-        , equiv_class(id_)  // Initially each edge is its own equivalence class
     {}
 
     // Default constructor for array allocation
@@ -109,42 +106,6 @@ struct Edge {
         , arity(0)
         , creator_event(INVALID_ID)
         , step(0)
-        , equiv_class(INVALID_ID)
-    {}
-};
-
-// =============================================================================
-// Match
-// =============================================================================
-// Represents a complete pattern match. Immutable after creation.
-// Allocated from arena.
-
-struct Match {
-    MatchId id;
-    RuleIndex rule_index;
-    EdgeId* matched_edges;   // Arena-allocated array
-    uint8_t num_edges;
-    VariableBinding binding;
-    StateId origin_state;    // Where first discovered
-
-    Match(MatchId id_, RuleIndex rule, EdgeId* edges, uint8_t n_edges,
-          const VariableBinding& bind, StateId origin)
-        : id(id_)
-        , rule_index(rule)
-        , matched_edges(edges)
-        , num_edges(n_edges)
-        , binding(bind)
-        , origin_state(origin)
-    {}
-
-    // Default constructor for array allocation
-    Match()
-        : id(INVALID_ID)
-        , rule_index(0)
-        , matched_edges(nullptr)
-        , num_edges(0)
-        , binding()
-        , origin_state(INVALID_ID)
     {}
 };
 
@@ -213,7 +174,7 @@ struct State {
     StateId id;
     SparseBitset edges;       // Which edges are present in this state
     uint32_t step;
-    uint64_t canonical_hash;  // Computed via uniqueness tree
+    uint64_t canonical_hash;  // Isomorphism-invariant canonical hash
     EventId parent_event;     // Event that created this, INVALID_ID for initial
     StateId canonical_id;     // Canonical representative (cached, set on creation)
 
@@ -278,8 +239,6 @@ struct GlobalCounters {
     std::atomic<EdgeId> next_edge{0};
     std::atomic<StateId> next_state{0};
     std::atomic<EventId> next_event{0};
-    std::atomic<MatchId> next_match{0};
-    std::atomic<EquivClassId> next_equiv_class{0};
 
     VertexId alloc_vertex() {
         return next_vertex.fetch_add(1, std::memory_order_relaxed);
@@ -299,21 +258,11 @@ struct GlobalCounters {
         return next_event.fetch_add(1, std::memory_order_release);
     }
 
-    MatchId alloc_match() {
-        return next_match.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    EquivClassId alloc_equiv_class() {
-        return next_equiv_class.fetch_add(1, std::memory_order_relaxed);
-    }
-
     void reset() {
         next_vertex.store(0, std::memory_order_relaxed);
         next_edge.store(0, std::memory_order_relaxed);
         next_state.store(0, std::memory_order_relaxed);
         next_event.store(0, std::memory_order_relaxed);
-        next_match.store(0, std::memory_order_relaxed);
-        next_equiv_class.store(0, std::memory_order_relaxed);
     }
 };
 
@@ -390,7 +339,7 @@ struct StateBranchialInfo {
 //    - Controls state BOOKKEEPING - which states are considered equivalent
 //    - None: Pure tree mode, each state is unique (no equivalence checking)
 //    - Automatic: Content hash (fast, not isomorphism-invariant)
-//    - Full: Isomorphism-invariant hash (WL/UT)
+//    - Full: Isomorphism-invariant hash (WL approximate / IR exact)
 //    - Affects: num_canonical_states(), get_canonical_state(), was_new_state
 //
 // 2. EventSignatureKeys (Hypergraph):
@@ -445,7 +394,7 @@ constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
 enum class StateCanonicalizationMode : uint8_t {
     None,       // Tree mode: no deduplication, each state is unique
     Automatic,  // Content-ordered hash: hash(edge_contents) - fast but not isomorphism-invariant
-    Full        // Isomorphism-invariant hash: WL/UT - detects isomorphic states
+    Full        // Isomorphism-invariant hash: WL approximate / IR exact - detects isomorphic states
 };
 
 // =============================================================================
@@ -515,8 +464,8 @@ struct SubtreeBloomFilter {
 // =============================================================================
 // VertexHashCache: Cached vertex subtree hashes for a state
 // =============================================================================
-// Used by both uniqueness tree and WL implementations
-// Now includes subtree bloom filters for O(1) dirty detection
+// Used by the WL hash implementation
+// Includes subtree bloom filters for O(1) dirty detection
 
 struct VertexHashCache {
     // The hash for each vertex in the state
@@ -531,8 +480,12 @@ struct VertexHashCache {
     VertexHashCache() : vertices(nullptr), hashes(nullptr), subtree_filters(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
 
     uint64_t lookup(VertexId v) const {
-        for (uint32_t i = 0; i < count; ++i) {
-            if (vertices[i] == v) return hashes[i];
+        // vertices[] is built sorted ascending (WL hash builds it from a sorted,
+        // deduplicated vertex list), so binary-search for v and read the parallel
+        // hashes[] slot at the same index. Returns 0 when v is absent.
+        const VertexId* pos = std::lower_bound(vertices, vertices + count, v);
+        if (pos != vertices + count && *pos == v) {
+            return hashes[pos - vertices];
         }
         return 0;
     }
@@ -603,12 +556,6 @@ inline uint64_t fnv_hash(uint64_t h, uint64_t value) {
     return h;
 }
 
-// Combine a raw integer value with mixing for better avalanche
-// Use this when the value is a small raw integer (e.g., vertex ID)
-inline uint64_t fnv_hash_raw(uint64_t h, uint64_t raw_value) {
-    return fnv_hash(h, mix64(raw_value));
-}
-
 struct EventSignature {
     uint64_t input_state_hash;
     uint64_t output_state_hash;
@@ -623,31 +570,6 @@ struct EventSignature {
         h = fnv_hash(h, produced_edges_sig);
         return h;
     }
-};
-
-// =============================================================================
-// StateIncrementalCache: Cached data for incremental hash computation
-// =============================================================================
-// Stores per-state vertex hash cache to enable incremental computation.
-// When computing a child state's hash, we can reuse unchanged vertex hashes
-// from the parent state.
-//
-// Also stores a pointer to cached adjacency (arena-allocated) to avoid
-// rebuilding adjacency for each child state.
-//
-// Uses atomic pointer for thread-safe initialization without torn writes.
-
-struct StateIncrementalCacheData {
-    VertexHashCache vertex_cache;
-    void* adjacency_ptr;  // Pointer to arena-allocated adjacency map (type-erased)
-
-    StateIncrementalCacheData() : vertex_cache(), adjacency_ptr(nullptr) {}
-};
-
-struct StateIncrementalCache {
-    std::atomic<StateIncrementalCacheData*> data_ptr{nullptr};
-
-    StateIncrementalCache() = default;
 };
 
 }  // namespace hypergraph

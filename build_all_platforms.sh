@@ -106,7 +106,7 @@ if $BUILD_LINUX; then
     # Always configure to ensure correct build settings
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_MATHEMATICA_PACLET=ON \
+        -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
         || { echo -e "${RED}Linux CMake configuration failed${NC}"; exit 1; }
 
     make -j"$BUILD_JOBS" paclet \
@@ -131,7 +131,7 @@ if $BUILD_LINUX; then
             -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/linux-cross.cmake \
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
             || { echo -e "${RED}Linux ARM64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
@@ -157,7 +157,7 @@ if $BUILD_WINDOWS; then
         cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
             || { echo -e "${RED}Windows CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
@@ -184,7 +184,7 @@ if $BUILD_WINDOWS; then
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DWINDOWS_COMPILER=clang \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
             || { echo -e "${RED}Windows ARM64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
@@ -218,7 +218,7 @@ if $BUILD_MACOS; then
             -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
             -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
             || { echo -e "${RED}macOS x86_64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \
@@ -245,7 +245,7 @@ if $BUILD_MACOS; then
             -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
             -DCMAKE_SYSTEM_PROCESSOR=arm64 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_MATHEMATICA_PACLET=ON \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
             || { echo -e "${RED}macOS ARM64 CMake configuration failed${NC}"; exit 1; }
 
         make -j"$BUILD_JOBS" paclet \

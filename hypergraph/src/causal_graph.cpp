@@ -1,6 +1,7 @@
 // causal_graph.cpp - Implementation of CausalGraph class
 
 #include "hypergraph/causal_graph.hpp"
+#include "hypergraph/scratch_alloc.hpp"
 
 namespace hypergraph {
 
@@ -9,29 +10,11 @@ namespace hypergraph {
 // =============================================================================
 
 EdgeCausalInfo* CausalGraph::get_or_create_edge_producer(EdgeId edge) {
-    uint64_t key = edge;
-
-    auto result = edge_producers_.lookup(key);
-    if (result.has_value()) {
-        return *result;
-    }
-
-    auto* new_info = arena_->template create<EdgeCausalInfo>();
-    auto [existing, inserted] = edge_producers_.insert_if_absent(key, new_info);
-    return inserted ? new_info : existing;
+    return &edge_producers_.get_or_default(edge, *arena_);
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(EdgeId edge) {
-    uint64_t key = edge;
-
-    auto result = edge_consumers_.lookup(key);
-    if (result.has_value()) {
-        return *result;
-    }
-
-    auto* new_list = arena_->template create<LockFreeList<EventId>>();
-    auto [existing, inserted] = edge_consumers_.insert_if_absent(key, new_list);
-    return inserted ? new_list : existing;
+    return &edge_consumers_.get_or_default(edge, *arena_);
 }
 
 CausalGraph::DescAncSet* CausalGraph::get_or_create_desc(EventId event) {
@@ -82,6 +65,19 @@ LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
     return inserted ? new_list : existing;
 }
 
+LockFreeList<EventId>* CausalGraph::get_or_create_state_edge_events(StateId state, EdgeId edge) {
+    uint64_t key = (static_cast<uint64_t>(state) << 32) | edge;
+
+    auto result = state_edge_events_.lookup(key);
+    if (result.has_value()) {
+        return *result;
+    }
+
+    auto* new_list = arena_->template create<LockFreeList<EventId>>();
+    auto [existing, inserted] = state_edge_events_.insert_if_absent(key, new_list);
+    return inserted ? new_list : existing;
+}
+
 bool CausalGraph::set_edge_producer(EdgeId edge, EventId producer) {
     EdgeCausalInfo* info = get_or_create_edge_producer(edge);
     LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
@@ -115,24 +111,16 @@ void CausalGraph::add_edge_consumer(EdgeId edge, EventId consumer) {
 }
 
 EventId CausalGraph::get_edge_producer(EdgeId edge) const {
-    auto result = edge_producers_.lookup(edge);
-    if (!result.has_value()) return INVALID_ID;
-    return (*result)->producer.load(std::memory_order_acquire);
+    // get() returns null for an edge whose producer slot has not been materialized
+    // (out of range, or its segment not yet installed) -- such an edge has no producer.
+    const EdgeCausalInfo* info = edge_producers_.get(edge);
+    if (!info) return INVALID_ID;
+    return info->producer.load(std::memory_order_acquire);
 }
 
 // =============================================================================
 // Branchial Tracking
 // =============================================================================
-
-void CausalGraph::register_event_from_state(
-    EventId event,
-    StateId input_state,
-    [[maybe_unused]] const EdgeId* consumed_edges,
-    [[maybe_unused]] uint8_t num_consumed
-) {
-    LockFreeList<EventId>* list = get_or_create_state_events(input_state);
-    list->push(event, *arena_);
-}
 
 // =============================================================================
 // Graph Access
@@ -184,14 +172,16 @@ void CausalGraph::update_transitive_closure(EventId producer, EventId consumer) 
     DescAncSet* desc_consumer = get_or_create_desc(consumer);
     DescAncSet* anc_producer = get_or_create_anc(producer);
 
-    std::vector<EventId> ancestors_to_update;
+    // Worker-local scratch (built during event creation, contents fold into the
+    // persistent Desc/Anc sets, then discarded) -> per-worker arena, no heap.
+    SVec<EventId> ancestors_to_update;
     ancestors_to_update.reserve(1 + anc_producer->size());
     ancestors_to_update.push_back(producer);
     anc_producer->for_each([&](uint64_t id, bool) {
         ancestors_to_update.push_back(static_cast<EventId>(id));
     });
 
-    std::vector<EventId> descendants_to_add;
+    SVec<EventId> descendants_to_add;
     descendants_to_add.reserve(1 + desc_consumer->size());
     descendants_to_add.push_back(consumer);
     desc_consumer->for_each([&](uint64_t id, bool) {
@@ -240,20 +230,6 @@ std::vector<BranchialEdge> CausalGraph::get_branchial_edges() const {
         result.push_back(e);
     });
     return result;
-}
-
-EdgeId CausalGraph::find_shared_edge(
-    const EdgeId* edges1, uint8_t n1,
-    const EdgeId* edges2, uint8_t n2
-) {
-    for (uint8_t i = 0; i < n1; ++i) {
-        for (uint8_t j = 0; j < n2; ++j) {
-            if (edges1[i] == edges2[j]) {
-                return edges1[i];
-            }
-        }
-    }
-    return INVALID_ID;
 }
 
 }  // namespace hypergraph

@@ -278,7 +278,7 @@ int SimpleGraph::eccentricity(VertexId v) const {
 
 int SimpleGraph::graph_radius() const {
     // GraphRadius = minimum eccentricity over all vertices
-    // This matches Mathematica's GraphRadius[graph]
+    // This matches the Wolfram Language's GraphRadius[graph]
     if (vertices_.empty()) return 0;
 
     int min_ecc = std::numeric_limits<int>::max();

@@ -17,6 +17,7 @@
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "hypergraph.hpp"
+#include "hypergraph/scratch_alloc.hpp"
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
 #include "rewriter.hpp"
@@ -49,6 +50,7 @@ struct MatchRecord {
     StateId source_state;
     StateId canonical_source;  // Canonical state for deterministic deduplication
     uint64_t source_canonical_hash{0};  // Canonical hash of source state (deterministic)
+    uint64_t storage_epoch{0};  // Epoch when this match was stored (for ordering)
 
     // Hash for deduplication - uses source_state + matched edges + binding
     // MUST use source_state (raw state ID), NOT source_canonical_hash!
@@ -228,7 +230,6 @@ struct ExpandTaskData {
     StateId state{INVALID_ID};              // State being matched
     uint16_t rule_index{0};                 // Rule being matched
     uint8_t num_pattern_edges{0};           // Total edges in pattern
-    uint8_t next_pattern_idx{0};            // Which pattern edge to match next (0-based)
     EdgeId matched_edges[MAX_PATTERN_EDGES]{};  // Data edges matched so far
     uint8_t match_order[MAX_PATTERN_EDGES]{};   // Pattern indices in match order
     uint8_t num_matched{0};                 // Number of edges matched
@@ -246,18 +247,6 @@ struct ExpandTaskData {
             if (matched_edges[i] == eid) return true;
         }
         return false;
-    }
-
-    // Get next pattern index to match (first unmatched)
-    uint8_t get_next_pattern_idx() const {
-        uint32_t matched_mask = 0;
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            matched_mask |= (1u << match_order[i]);
-        }
-        for (uint8_t idx = 0; idx < num_pattern_edges; ++idx) {
-            if (!(matched_mask & (1u << idx))) return idx;
-        }
-        return num_pattern_edges;  // All matched
     }
 
     // Convert matched edges to pattern order
@@ -278,6 +267,7 @@ struct ChildInfo {
     EdgeId consumed_edges[MAX_PATTERN_EDGES];
     uint8_t num_consumed;
     uint32_t creation_step{0};  // Step at which child was created
+    uint64_t registration_epoch{0};  // Epoch when child was registered
 
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
         for (uint8_t i = 0; i < num_edges; ++i) {
@@ -343,40 +333,40 @@ class ParallelEvolutionEngine {
     // Rules
     std::vector<RewriteRule> rules_;
 
-    // ---------- ConcurrentMap sentinel conventions ----------
-    // Every lock-free map below is keyed by an identifier that fits in 32 bits
-    // (StateId, step count, or the low bits of a match hash). We pick EMPTY /
-    // LOCKED sentinels strictly above UINT32_MAX so they cannot collide with a
-    // legitimate key. Two sentinel pairs are enough:
-    //   - STATE_KEYED: for identifier-keyed maps (state IDs, step numbers).
-    //     Legitimate keys are ≤ UINT32_MAX, sentinels are at bit 33 so they
-    //     are guaranteed distinct.
-    //   - MATCH_HASH:  for seen_match_hashes_, whose keys are full 64-bit FNV
-    //     hashes. We use a pair at bit 63 — a 1-in-2^63 chance a legitimate
-    //     hash matches, accepted as in the prior scheme.
-    static constexpr uint64_t STATE_KEYED_EMPTY  = 1ULL << 33;
-    static constexpr uint64_t STATE_KEYED_LOCKED = (1ULL << 33) | 1;
-    static constexpr uint64_t MATCH_HASH_EMPTY   = 1ULL << 63;
-    static constexpr uint64_t MATCH_HASH_LOCKED  = (1ULL << 63) | 1;
+    // Global match deduplication (lock-free)
+    // Use non-zero EMPTY/LOCKED keys to avoid conflicts with valid hash values
+    static constexpr uint64_t MATCH_MAP_EMPTY = 1ULL << 63;
+    static constexpr uint64_t MATCH_MAP_LOCKED = (1ULL << 63) | 1;
+    ConcurrentMap<uint64_t, bool, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED> seen_match_hashes_;
 
-    template<typename V>
-    using StateKeyedMap = ConcurrentMap<uint64_t, V, STATE_KEYED_EMPTY, STATE_KEYED_LOCKED>;
+    // Track which raw states have been matched (lock-free)
+    // Prevents duplicate MATCH tasks for the same raw state
+    // Use uint64_t as key to avoid template issues with 32-bit StateId
+    // StateId is 32-bit, so we use keys outside that range for EMPTY/LOCKED
+    static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
+    static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) | 1;
+    ConcurrentMap<uint64_t, bool, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
 
-    // Global match deduplication (64-bit FNV hash keys).
-    ConcurrentMap<uint64_t, bool, MATCH_HASH_EMPTY, MATCH_HASH_LOCKED> seen_match_hashes_;
+    // Per-state match storage for match forwarding
+    // Maps state -> list of matches found in that state
+    // Used to forward matches to child states
+    // Uses ConcurrentMap for thread-safe "get or create" semantics
+    static constexpr uint64_t MATCH_STATE_MAP_EMPTY = (1ULL << 62) + 100;
+    static constexpr uint64_t MATCH_STATE_MAP_LOCKED = (1ULL << 62) + 101;
+    ConcurrentMap<uint64_t, LockFreeList<MatchRecord>*, MATCH_STATE_MAP_EMPTY, MATCH_STATE_MAP_LOCKED> state_matches_;
 
-    // Raw-state MATCH-task dedup: prevents spawning duplicate MATCH tasks for
-    // the same raw state.
-    StateKeyedMap<bool> matched_raw_states_;
+    // Per-state children tracking for push-based match forwarding
+    // Maps parent state -> list of children (with their consumed edges)
+    // When parent finds a match, it pushes to all children where match is valid
+    static constexpr uint64_t CHILDREN_MAP_EMPTY = (1ULL << 62) + 200;
+    static constexpr uint64_t CHILDREN_MAP_LOCKED = (1ULL << 62) + 201;
+    ConcurrentMap<uint64_t, LockFreeList<ChildInfo>*, CHILDREN_MAP_EMPTY, CHILDREN_MAP_LOCKED> state_children_;
 
-    // state → matches found in that state (for forwarding).
-    StateKeyedMap<LockFreeList<MatchRecord>*> state_matches_;
-
-    // parent state → children registered under it (for push-based forwarding).
-    StateKeyedMap<LockFreeList<ChildInfo>*> state_children_;
-
-    // child state → ParentInfo (for pull-based forwarding up the ancestor chain).
-    StateKeyedMap<ParentInfo*> state_parent_;
+    // Per-state parent tracking for pull-based match forwarding from ancestors
+    // Maps child state -> parent info pointer (with consumed edges for validation)
+    static constexpr uint64_t PARENT_MAP_EMPTY = (1ULL << 62) + 300;
+    static constexpr uint64_t PARENT_MAP_LOCKED = (1ULL << 62) + 301;
+    ConcurrentMap<uint64_t, ParentInfo*, PARENT_MAP_EMPTY, PARENT_MAP_LOCKED> state_parent_;
 
     // Global epoch counter for ordering matches and registrations
     // Used to determine if push or pull should handle each (match, child) pair:
@@ -387,17 +377,13 @@ class ParallelEvolutionEngine {
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
 
-    // Batched matching: collect all matches first, then spawn REWRITEs. The
-    // alternative (eager mode, the default) spawns REWRITEs as matches are
-    // discovered — match forwarding in eager mode relies on the push path to
-    // cover the race window between match discovery and child registration.
-    // Batching eliminates that window at the cost of deferred rewriting.
-    bool batched_matching_{false};
+    // Batched matching: collect all matches then spawn REWRITEs (vs eager spawning)
+    // Batching eliminates race conditions in match forwarding, but eager may have
+    // better cache locality for some workloads. When disabled with match forwarding,
+    // requires push-based forwarding to cover race windows.
+    bool batched_matching_{false};  // false: submit each match eagerly; true: batch per step
 
-    // Validation mode: on each MATCH task, also run full find_matches and
-    // compare — any forwarded-but-would-be-full match not in the seen set is
-    // counted as a forwarding bug. Off by default; flip on for diagnosis only
-    // (doubles the matching cost of every MATCH task).
+    // Validation mode: cross-check forwarded+delta matches against a full scan
     bool validate_match_forwarding_{false};
     std::atomic<size_t> validation_mismatches_{0};
 
@@ -414,9 +400,9 @@ class ParallelEvolutionEngine {
     // When false: uniform over ALL possible matches (slower, strictly uniform)
     bool early_terminate_on_reservoir_full_{false};
 
-    // Genesis events: create a synthetic event for each initial state that
-    // "produces" all of that state's edges. Off by default; enable to propagate
-    // causal edges from the initial state into generation 1.
+    // Genesis events: create synthetic events for initial states that produce
+    // all initial edges. This enables causal edges from initial state to gen 1.
+    // Disabled by default.
     bool enable_genesis_events_{false};
 
     // Task-based matching: use SCAN→EXPAND→SINK task decomposition (HGMatch model)
@@ -439,11 +425,15 @@ class ParallelEvolutionEngine {
     size_t max_states_{0};
     size_t max_events_{0};
 
-    // Pruning and random termination. All three are off (= unlimited / always
-    // explore) by default; set via configuration for bounded exploration.
-    double exploration_probability_{1.0};          // P(explore new state); 1.0 = always
-    size_t max_successor_states_per_parent_{0};    // max children per parent state; 0 = unlimited
-    size_t max_states_per_step_{0};                // max new states per generation/step; 0 = unlimited
+    // Pruning and random termination
+    double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
+    size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
+    size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+    uint64_t random_seed_{0};                      // Sampling RNG seed (0 = random_device each run)
+    // Bumped at the start of every dataflow evolve() so each run re-seeds its
+    // per-thread sampling RNGs from random_seed_, making repeated same-seed runs
+    // draw identical exploration/shuffle streams.
+    mutable std::atomic<uint64_t> sampling_generation_{0};
 
     // Exploration deduplication: only explore from canonical state representatives.
     // When enabled, states equivalent to already-seen states are created (with events)
@@ -451,18 +441,20 @@ class ParallelEvolutionEngine {
     // This focuses compute on discovering new states rather than all transition paths.
     bool explore_from_canonical_states_only_{false};
 
-    // Per-parent successor count (enforces max_successor_states_per_parent).
-    StateKeyedMap<std::atomic<size_t>*> parent_successor_count_;
+    // Per-parent successor count tracking (for max_successor_states_per_parent)
+    static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
+    static constexpr uint64_t SUCCESSOR_MAP_LOCKED = (1ULL << 62) + 501;
+    ConcurrentMap<uint64_t, std::atomic<size_t>*, SUCCESSOR_MAP_EMPTY, SUCCESSOR_MAP_LOCKED> parent_successor_count_;
 
-    // Per-step state count (enforces max_states_per_step).
-    StateKeyedMap<std::atomic<size_t>*> states_per_step_;
+    // Per-step state count tracking (for max_states_per_step)
+    static constexpr uint64_t STEP_MAP_EMPTY = (1ULL << 62) + 600;
+    static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
+    ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
 
     // Statistics (atomics for thread-safety)
     std::atomic<size_t> total_matches_found_{0};
     std::atomic<size_t> total_rewrites_{0};
-    std::atomic<size_t> total_new_states_{0};
     std::atomic<size_t> total_events_{0};
-    std::atomic<size_t> forwarded_matches_{0};
     std::atomic<size_t> rejected_duplicates_{0};
 
     // Evolution statistics
@@ -497,9 +489,8 @@ public:
     void set_batched_matching(bool enable) { batched_matching_ = enable; }
     void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
 
-    // Enable online transitive reduction for causal edges (Goranci algorithm).
-    // When enabled, redundant causal edges are filtered at insertion time.
-    // Disabled by default.
+    // Enable online transitive reduction for causal edges (Goranci algorithm)
+    // When enabled, redundant causal edges are filtered out at insertion time.
     void set_transitive_reduction(bool enable) {
         if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
     }
@@ -516,7 +507,23 @@ public:
     void set_task_based_matching(bool enable) { task_based_matching_ = enable; }
     bool task_based_matching() const { return task_based_matching_; }
 
-    // Pruning options
+    // Pruning options.
+    //
+    // Sampling / determinism contract:
+    //  - Hard caps (max_successor_states_per_parent, max_states_per_step) bound the
+    //    number of states kept DETERMINISTICALLY (atomic counters). WHICH states are
+    //    kept when a cap binds is scheduling-order dependent, so the retained subset
+    //    can differ run-to-run even though the count is capped.
+    //  - exploration_probability and the uniform-random evolve path are Monte-Carlo
+    //    sampling of the multiway system. Both draw from RNGs seeded from
+    //    random_seed_: 0 (default) draws a fresh random_device seed each run (every
+    //    run differs); set_random_seed(nonzero) fixes the seed so BOTH the
+    //    ExplorationProbability draw and the uniform-random path are reproducible
+    //    run-to-run with a single thread. With multiple threads each thread's stream
+    //    is still deterministic, but job scheduling perturbs which successor gets
+    //    which draw, so multi-thread runs are not bit-reproducible.
+    //  - Rule application order is shuffled per task for fairness, but that is
+    //    order-only and does NOT change the canonical result.
     void set_exploration_probability(double p) {
         exploration_probability_ = std::clamp(p, 0.0, 1.0);
     }
@@ -525,6 +532,12 @@ public:
     }
     void set_max_states_per_step(size_t max) {
         max_states_per_step_ = max;
+    }
+    // Seed for the sampling RNGs (both the ExplorationProbability draw and the
+    // uniform-random evolve path). 0 (default) draws a fresh random_device seed each
+    // run; nonzero makes the sample reproducible run-to-run on a single thread.
+    void set_random_seed(uint64_t seed) {
+        random_seed_ = seed;
     }
     void set_early_terminate_on_reservoir_full(bool enable) {
         early_terminate_on_reservoir_full_ = enable;
@@ -610,51 +623,50 @@ public:
     // Each initial state is evolved from independently, exploring the full multiway system
     void evolve(const std::vector<std::vector<std::vector<VertexId>>>& initial_states, size_t steps);
 
-    // Evolve with abort callback — allows external abort control (e.g. from
-    // Mathematica). abort_check is polled from the main thread roughly every
-    // 50 ms; returning true requests a stop. The function returns true if
-    // evolution was aborted, false if it completed normally.
-    //
-    // The two overloads share a single implementation: a "setup" lambda
-    // creates the initial state(s) and submits the first MATCH task(s), then
-    // the common wait-with-abort / drain-pending-jobs / finalize dance runs.
-    // Previously these overloads were 58-line near-duplicates that had to be
-    // kept in sync by hand.
+    // Evolve with abort callback - allows external abort control (e.g., from the Wolfram Language)
+    // The abort_check callback is called from the main thread periodically (~50ms)
+    // If it returns true, evolution stops early and this function returns true (aborted)
+    // Returns false if evolution completed normally
     template<typename AbortCheck>
     bool evolve_with_abort(const std::vector<std::vector<VertexId>>& initial_edges,
-                           size_t steps, AbortCheck&& abort_check) {
-        return evolve_with_abort_impl(steps, std::forward<AbortCheck>(abort_check),
-            [&] {
-                if (rules_.empty()) return false;
-                create_and_register_initial_state(initial_edges);
-                return true;
-            });
-    }
-
-    template<typename AbortCheck>
-    bool evolve_with_abort(const std::vector<std::vector<std::vector<VertexId>>>& initial_states,
-                           size_t steps, AbortCheck&& abort_check) {
-        return evolve_with_abort_impl(steps, std::forward<AbortCheck>(abort_check),
-            [&] {
-                if (rules_.empty() || initial_states.empty()) return false;
-                for (const auto& state_edges : initial_states) {
-                    create_and_register_initial_state(state_edges);
-                }
-                return true;
-            });
-    }
-
-private:
-    template<typename AbortCheck, typename Setup>
-    bool evolve_with_abort_impl(size_t steps, AbortCheck&& abort_check, Setup&& setup) {
-        if (!hg_) return false;
+                           size_t steps,
+                           AbortCheck&& abort_check) {
+        if (!hg_ || rules_.empty()) return false;
 
         max_steps_ = steps;
         should_stop_.store(false, std::memory_order_relaxed);
+        // New run: re-seed the per-thread sampling RNGs from random_seed_.
+        sampling_generation_.fetch_add(1, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
         hg_->set_abort_flag(&should_stop_);
 
-        if (!setup()) return false;
+        // Create initial state (same setup as evolve())
+        std::vector<EdgeId> edge_ids;
+        for (const auto& edge : initial_edges) {
+            EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+            edge_ids.push_back(eid);
+            for (VertexId v : edge) {
+                hg_->reserve_vertices(v);
+            }
+        }
 
+        SparseBitset initial_edge_set;
+        for (EdgeId eid : edge_ids) {
+            initial_edge_set.set(eid, hg_->arena());
+        }
+
+        auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
+            std::move(initial_edge_set), 0, INVALID_ID);
+
+        if (enable_genesis_events_) {
+            hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        }
+
+        matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+        submit_match_task(raw_state, 1);
+
+        // Wait with abort checking - abort_check called from main thread
         bool aborted = job_system_->wait_for_completion_with_abort([&]() {
             if (abort_check()) {
                 request_stop();
@@ -663,9 +675,9 @@ private:
             return false;
         });
 
-        // Jobs that passed their should_stop_ check may still be in flight and
-        // touching hg_; we MUST wait for them to drain before returning, or
-        // the caller's hg_ destruction would be use-after-free.
+        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
+        // before returning. Jobs that passed the should_stop_ check are still running
+        // and accessing hg_. Returning early would cause use-after-free.
         if (aborted) {
             job_system_->wait_for_completion();
         }
@@ -674,7 +686,46 @@ private:
         return aborted;
     }
 
-public:
+    // Overload for multiple initial states
+    // Each initial state is evolved from independently, exploring the full multiway system
+    template<typename AbortCheck>
+    bool evolve_with_abort(const std::vector<std::vector<std::vector<VertexId>>>& initial_states,
+                           size_t steps,
+                           AbortCheck&& abort_check) {
+        if (!hg_ || rules_.empty() || initial_states.empty()) return false;
+
+        max_steps_ = steps;
+        should_stop_.store(false, std::memory_order_relaxed);
+        // New run: re-seed the per-thread sampling RNGs from random_seed_.
+        sampling_generation_.fetch_add(1, std::memory_order_relaxed);
+
+        // Propagate abort flag to hypergraph for long-running hash computations
+        hg_->set_abort_flag(&should_stop_);
+
+        // Create all initial states - they will all be explored
+        for (const auto& state_edges : initial_states) {
+            create_and_register_initial_state(state_edges);
+        }
+
+        // Wait with abort checking - abort_check called from main thread
+        bool aborted = job_system_->wait_for_completion_with_abort([&]() {
+            if (abort_check()) {
+                request_stop();
+                return true;
+            }
+            return false;
+        });
+
+        // CRITICAL: If aborted, we must still wait for all executing jobs to finish
+        // before returning. Jobs that passed the should_stop_ check are still running
+        // and accessing hg_. Returning early would cause use-after-free.
+        if (aborted) {
+            job_system_->wait_for_completion();
+        }
+
+        finalize_evolution();
+        return aborted;
+    }
 
     // =========================================================================
     // Uniform Random Evolution - Step-Synchronized
@@ -732,7 +783,7 @@ private:
     LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state);
 
     // Helper: Store a match for a state (for later forwarding)
-    void store_match_for_state(StateId state, const MatchRecord& match, bool with_fence = false);
+    uint64_t store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false);
 
     // Helper: Get or create the children list for a state (thread-safe)
     LockFreeList<ChildInfo>* get_or_create_state_children(StateId state);
@@ -747,26 +798,30 @@ private:
 
     void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step);
 
+    // Diagnostic: record when a forwarded match had been flagged as missing during
+    // validation (validate_match_forwarding_), meaning it arrived after the check.
+    void note_late_arrival(uint64_t match_hash);
+
     // Helper: Forward existing parent matches to a newly created child
     void forward_existing_parent_matches(
         StateId parent, StateId child,
         const EdgeId* consumed_edges, uint8_t num_consumed,
         uint32_t step,
-        std::vector<MatchRecord>& batch
+        SVec<MatchRecord>& batch
     );
 
     void forward_matches_from_single_ancestor(
         StateId ancestor, StateId child,
         const EdgeId* accumulated_consumed, uint8_t total_consumed,
         uint32_t step,
-        std::vector<MatchRecord>& batch
+        SVec<MatchRecord>& batch
     );
 
     void forward_matches_from_single_ancestor_impl(
         StateId ancestor, StateId child,
         const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step,
-        std::vector<MatchRecord>& batch
+        uint32_t step, uint64_t child_registration_epoch,
+        SVec<MatchRecord>& batch
     );
 
     // EAGER MODE: Forward existing parent matches with retry loop
@@ -799,7 +854,6 @@ private:
     void execute_rewrite_task(const MatchRecord& match, uint32_t step);
 
     // Pruning helpers
-    bool can_submit(StateId state, uint32_t step) const;  // shared submit_* / execute_* preamble
     bool can_create_states_at_step(uint32_t step) const;
     bool can_have_more_children(StateId parent) const;
     bool try_reserve_successor_slot(StateId parent);
@@ -807,8 +861,13 @@ private:
     void release_step_slot(uint32_t step);
     bool should_explore();
 
+    // Per-thread sampling RNG used by should_explore() and get_shuffled_rule_indices().
+    // Re-seeds from random_seed_ (mixed with the thread id) whenever the run's
+    // sampling_generation_ advances; random_seed_==0 draws a fresh random_device seed.
+    std::mt19937& sampling_rng() const;
+
     // Bias mitigation: returns rule indices in shuffled order
-    std::vector<uint16_t> get_shuffled_rule_indices() const;
+    SVec<uint16_t> get_shuffled_rule_indices() const;
 };
 
 }  // namespace hypergraph

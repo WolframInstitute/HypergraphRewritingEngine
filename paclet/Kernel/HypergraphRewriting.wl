@@ -81,7 +81,6 @@ HGToGraph[edges] converts an edge list to a Graph.
 HGToGraph[edges, coords] converts edges with vertex coordinates to a Graph."
 
 Options[HGEvolve] = {
-  "HashStrategy" -> "WL",
   "CanonicalizeStates" -> None,  (* None, Automatic, Full *)
   "CanonicalizeEvents" -> None,  (* None, Full, Automatic, or {keys...} *)
   "CausalTransitiveReduction" -> True,
@@ -94,6 +93,7 @@ Options[HGEvolve] = {
   "AspectRatio" -> None,
   "DebugFFI" -> False,
   "IncludeStateContents" -> False,
+  "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
   "IncludeEventContents" -> False,
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
@@ -890,7 +890,6 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   dimensionRadius = OptionValue["DimensionRadius"];
 
   options = <|
-    "HashStrategy" -> OptionValue["HashStrategy"],
     "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
     "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
@@ -902,6 +901,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "ShowGenesisEvents" -> OptionValue["ShowGenesisEvents"],
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
     "EdgeDeduplication" -> OptionValue["EdgeDeduplication"],
+    "IncludeCanonicalHashes" -> OptionValue["IncludeCanonicalHashes"],
     "RequestedData" -> requiredData,
     "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
     (* Dimension analysis - compute in C++ instead of WL round-trips *)

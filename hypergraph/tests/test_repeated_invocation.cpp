@@ -94,13 +94,20 @@ static RewriteRule blackhole_rule() {
         .build();
 }
 
+// Deterministic result of one grid evolution. num_canonical_states / num_events are
+// invariant across runs (thread scheduling + pruning only affect the RAW exploration,
+// hence arena bytes vary, but the CANONICAL result does not).
+struct GridResult {
+    uint32_t canonical_states;
+    uint32_t events;
+};
+
 // Mimics exactly what performRewriting does with the user's exact parameters
-void run_grid_evolution(HashStrategy strategy, int steps, size_t max_per_parent, size_t max_per_step) {
-    size_t mem_before = get_memory_usage_kb();
+GridResult run_grid_evolution(int steps, size_t max_per_parent, size_t max_per_step) {
+    GridResult result{};
     {
     // Create hypergraph (local, destroyed at end)
     Hypergraph hg;
-    hg.set_hash_strategy(strategy);
     // CanonicalizeEvents -> False means no event canonicalization
     hg.set_event_signature_keys(EVENT_SIG_NONE);
 
@@ -118,31 +125,23 @@ void run_grid_evolution(HashStrategy strategy, int steps, size_t max_per_parent,
     // Run evolution
     engine.evolve(edges, steps);
 
-    // Access results (like FFI does)
-    uint32_t num_states = hg.num_states();
-    uint32_t num_events = hg.num_events();
-
-    // Debug: show arena memory usage
-    size_t arena_bytes = hg.arena().bytes_allocated();
-    std::cout << "  States: " << num_states << ", Events: " << num_events
-              << ", Arena: " << (arena_bytes / 1024) << " KB" << std::endl;
+    result.canonical_states = engine.num_canonical_states();
+    result.events = engine.num_events();
     } // hg and engine destroyed here
 
-    size_t mem_after = get_memory_usage_kb();
-    std::cout << "  After destruction: " << mem_after << " KB (retained: "
-              << (int64_t)(mem_after - mem_before) << " KB)" << std::endl;
+    return result;
 }
 
-TEST(RepeatedGridInvocation, ThreeTimesWL) {
-    std::cout << "\n=== Running grid evolution 3 times with WL ===" << std::endl;
+TEST(RepeatedGridInvocation, FiveTimesWL) {
+    std::cout << "\n=== Running grid evolution 5 times with WL ===" << std::endl;
     size_t initial_mem = get_memory_usage_kb();
     std::cout << "Initial memory: " << initial_mem << " KB" << std::endl;
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 5; ++i) {
         std::cout << "Iteration " << (i + 1) << ":" << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
 
-        run_grid_evolution(HashStrategy::WL, 10, 100, 100);
+        run_grid_evolution(10, 100, 100);
 
         auto end = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(end - start).count();
@@ -156,53 +155,32 @@ TEST(RepeatedGridInvocation, ThreeTimesWL) {
     std::cout << "Final memory delta: " << (int64_t)(final_mem - initial_mem) << " KB" << std::endl;
 }
 
-TEST(RepeatedGridInvocation, ThreeTimesUT) {
-    std::cout << "\n=== Running grid evolution 3 times with UT ===" << std::endl;
+TEST(RepeatedGridInvocation, TwentyTimesWL) {
+    // The deterministic invariant is the CANONICAL result: repeated invocations must
+    // reproduce it exactly (parallel scheduling + pruning perturb only the raw
+    // exploration, hence arena bytes vary but the canonical counts do not). RSS is an
+    // inherently non-deterministic coarse leak guard, kept loose so it never flakes
+    // while still catching a real per-invocation arena leak.
     size_t initial_mem = get_memory_usage_kb();
-    std::cout << "Initial memory: " << initial_mem << " KB" << std::endl;
+    GridResult baseline = run_grid_evolution(10, 100, 100);
+    EXPECT_GT(baseline.canonical_states, 0u);
 
-    for (int i = 0; i < 3; ++i) {
-        std::cout << "Iteration " << (i + 1) << ":" << std::endl;
-        auto start = std::chrono::high_resolution_clock::now();
-
-        run_grid_evolution(HashStrategy::UniquenessTree, 10, 100, 100);
-
-        auto end = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(end - start).count();
-
-        size_t current_mem = get_memory_usage_kb();
-        std::cout << "  Time: " << ms << " ms, Memory: " << current_mem
-                  << " KB (delta: " << (int64_t)(current_mem - initial_mem) << " KB)" << std::endl;
+    for (int i = 1; i < 20; ++i) {
+        GridResult r = run_grid_evolution(10, 100, 100);
+        EXPECT_EQ(r.canonical_states, baseline.canonical_states) << "run " << i << " canonical states diverged";
+        EXPECT_EQ(r.events, baseline.events) << "run " << i << " events diverged";
     }
 
     size_t final_mem = get_memory_usage_kb();
-    std::cout << "Final memory delta: " << (int64_t)(final_mem - initial_mem) << " KB" << std::endl;
-}
-
-TEST(RepeatedGridInvocation, MemoryStability_SixRunsWL) {
-    // Memory-stability check: arena and related structures must not leak across
-    // repeated engine lifetimes. Six iterations are enough to detect linear
-    // growth without burning minutes (previously 20 — excessive).
-    std::cout << "\n=== Running grid evolution 6 times with WL (memory stability) ===" << std::endl;
-    size_t initial_mem = get_memory_usage_kb();
-
-    for (int i = 0; i < 6; ++i) {
-        std::cout << "Iteration " << (i + 1) << ": ";
-        run_grid_evolution(HashStrategy::WL, 10, 100, 100);
-    }
-
-    size_t final_mem = get_memory_usage_kb();
-    std::cout << "Final memory: " << final_mem << " KB (delta: "
-              << (int64_t)(final_mem - initial_mem) << " KB)" << std::endl;
-
-    // Memory should stabilise — ~1 arena worth of fragmentation is acceptable.
-    EXPECT_LT(final_mem - initial_mem, 500000);
+    // A real per-invocation leak would retain ~1 arena/run (~46 MB x 19 ~= 870 MB);
+    // bounded allocator fragmentation stays far below. Signed (RSS may end lower).
+    EXPECT_LT((int64_t)final_mem - (int64_t)initial_mem, (int64_t)500000)
+        << "RSS grew " << ((int64_t)final_mem - (int64_t)initial_mem) << " KB across 20 runs";
 }
 
 // Test abort functionality
-void run_grid_evolution_with_abort(HashStrategy strategy, int steps, size_t max_per_parent, size_t max_per_step, bool abort_early) {
+void run_grid_evolution_with_abort(int steps, size_t max_per_parent, size_t max_per_step, bool abort_early) {
     Hypergraph hg;
-    hg.set_hash_strategy(strategy);
     hg.set_event_signature_keys(EVENT_SIG_NONE);
 
     ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
@@ -240,27 +218,14 @@ TEST(RepeatedGridInvocation, AbortTestWL) {
     std::cout << "\n=== Testing abort functionality (WL) ===" << std::endl;
 
     std::cout << "Run 1 (no abort):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::WL, 10, 100, 100, false);
+    run_grid_evolution_with_abort(10, 100, 100, false);
 
     std::cout << "Run 2 (abort after 500ms):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::WL, 10, 100, 100, true);
+    run_grid_evolution_with_abort(10, 100, 100, true);
 
     std::cout << "Run 3 (no abort again):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::WL, 10, 100, 100, false);
+    run_grid_evolution_with_abort(10, 100, 100, false);
 
     std::cout << "Run 4 (abort after 500ms):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::WL, 10, 100, 100, true);
-}
-
-TEST(RepeatedGridInvocation, AbortTestUT) {
-    std::cout << "\n=== Testing abort functionality (UniquenessTree) ===" << std::endl;
-
-    std::cout << "Run 1 (no abort):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::UniquenessTree, 10, 100, 100, false);
-
-    std::cout << "Run 2 (abort after 500ms):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::UniquenessTree, 10, 100, 100, true);
-
-    std::cout << "Run 3 (no abort again):" << std::endl;
-    run_grid_evolution_with_abort(HashStrategy::UniquenessTree, 10, 100, 100, false);
+    run_grid_evolution_with_abort(10, 100, 100, true);
 }

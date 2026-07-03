@@ -3,8 +3,12 @@
 #include "hypergraph/parallel_evolution.hpp"
 
 #include <algorithm>
+#include <array>
+#include <functional>
+#include <limits>
 #include <numeric>
 #include <random>
+#include <thread>
 #include <unordered_set>
 
 namespace hypergraph {
@@ -19,6 +23,9 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     , num_threads_(num_threads > 0 ? num_threads : std::thread::hardware_concurrency())
 {
     job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(num_threads_);
+    // Recycle each worker's scratch arena after every job — temporaries allocated
+    // during a task are reclaimed in bulk, keeping malloc off the hot path.
+    job_system_->set_on_job_complete([] { worker_scratch().reset(); });
     job_system_->start();
 }
 
@@ -45,7 +52,91 @@ void ParallelEvolutionEngine::evolve(
     const std::vector<std::vector<VertexId>>& initial_edges,
     size_t steps
 ) {
-    evolve(std::vector<std::vector<std::vector<VertexId>>>{initial_edges}, steps);
+    if (!hg_ || rules_.empty()) return;
+
+    max_steps_ = steps;
+    should_stop_.store(false, std::memory_order_relaxed);
+    // New run: re-seed the per-thread sampling RNGs from random_seed_.
+    sampling_generation_.fetch_add(1, std::memory_order_relaxed);
+
+    // Propagate abort flag to hypergraph for long-running hash computations
+    hg_->set_abort_flag(&should_stop_);
+
+    // Create initial state
+    std::vector<EdgeId> edge_ids;
+    for (const auto& edge : initial_edges) {
+        EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+        edge_ids.push_back(eid);
+
+        // Track max vertex ID to ensure fresh vertices don't collide
+        for (VertexId v : edge) {
+            hg_->reserve_vertices(v);
+        }
+    }
+
+    SparseBitset initial_edge_set;
+    for (EdgeId eid : edge_ids) {
+        initial_edge_set.set(eid, hg_->arena());
+    }
+
+    // Create or get the canonical state (canonical hash computed inside, mode-aware).
+    auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
+        std::move(initial_edge_set), 0, INVALID_ID);
+
+    // Emit visualization event for initial state
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+    {
+        const auto& state_data = hg_->get_state(raw_state);
+        VIZ_EMIT_STATE_CREATED(
+            raw_state,                // state id
+            0,                        // parent state id (0 = none)
+            0,                        // generation (initial state is gen 0)
+            state_data.edges.count(), // edge count
+            0                         // vertex count (not tracked per-state)
+        );
+        // Emit hyperedge data for each edge in the initial state
+        uint32_t edge_idx = 0;
+        state_data.edges.for_each([&](EdgeId eid) {
+            const Edge& edge = hg_->get_edge(eid);
+            VIZ_EMIT_HYPEREDGE(raw_state, edge_idx++, edge.vertices, edge.arity);
+        });
+    }
+#endif
+
+    // Create genesis event if enabled
+    // This allows causal edges from initial state edges to be tracked
+    if (enable_genesis_events_) {
+        [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
+            raw_state,
+            edge_ids.data(),
+            static_cast<uint8_t>(edge_ids.size())
+        );
+
+        // Emit visualization event for the genesis event
+        // Genesis events are always canonical (unique by definition)
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+        VIZ_EMIT_REWRITE_APPLIED(
+            viz::VIZ_NO_SOURCE_STATE,  // source_state (none - genesis)
+            raw_state,      // target_state (initial state)
+            static_cast<RuleIndex>(-1),  // rule_index (none)
+            genesis_event,  // event_id (raw)
+            genesis_event,  // canonical_event_id (same as raw for genesis)
+            0,              // destroyed edges (none)
+            static_cast<uint8_t>(edge_ids.size())  // created edges
+        );
+#endif
+    }
+
+    // Mark initial state as matched (waiting version for correctness)
+    matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+
+    // Submit MATCH task for initial state - this kicks off the dataflow
+    submit_match_task(raw_state, 1);
+
+    // Single synchronization point at the end
+    job_system_->wait_for_completion();
+
+    finalize_evolution();
 }
 
 void ParallelEvolutionEngine::evolve(
@@ -56,14 +147,18 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
+    // New run: re-seed the per-thread sampling RNGs from random_seed_.
+    sampling_generation_.fetch_add(1, std::memory_order_relaxed);
+
+    // Propagate abort flag to hypergraph for long-running hash computations
     hg_->set_abort_flag(&should_stop_);
 
+    // Create all initial states - they will all be explored
     for (const auto& state_edges : initial_states) {
         create_and_register_initial_state(state_edges);
     }
 
-    // Single synchronisation point at the end — the dataflow cascade from
-    // MATCH → REWRITE → MATCH runs to completion without intermediate barriers.
+    // Single synchronization point at the end
     job_system_->wait_for_completion();
 
     finalize_evolution();
@@ -80,6 +175,17 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 ) {
     if (!hg_ || rules_.empty()) return;
 
+    // Orchestrator-owned buffers (the maps/vectors below) draw from this per-call
+    // arena instead of the system allocator: redirecting THIS (main) thread's
+    // persistent target routes every PVec/PUMap allocation into orch_arena, which is
+    // bulk-freed when the function returns. Worker threads keep their own persistent
+    // target and are unaffected. The redirect covers rewriter_.apply too: on this path
+    // the child hash uses the full WL / IR hash (worker_scratch + hg_->arena), never
+    // worker_persistent (incremental WL is off by default here and self-scopes its own
+    // PersistTarget when enabled), so orch_arena never captures hash state.
+    ConcurrentHeterogeneousArena orch_arena;
+    PersistTarget orch_target(orch_arena);
+
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     hg_->set_abort_flag(&should_stop_);
@@ -88,31 +194,35 @@ void ParallelEvolutionEngine::evolve_uniform_random(
     StateId initial_state = create_initial_state_only(initial_edges);
     if (initial_state == INVALID_ID) return;
 
+    // Tracing for pruning / reservoir-sampling work; compile with
+    // -DHG_TRACE_UNIFORM_RANDOM to enable. Off by default in all builds.
+#ifdef HG_TRACE_UNIFORM_RANDOM
     fprintf(stderr, "[uniform_random] Initial: arena=%zu bytes, edges=%u, states=%u\n",
             hg_->arena().bytes_allocated(), hg_->num_edges(), hg_->num_states());
+#endif
 
-    std::vector<StateId> current_states;
+    PVec<StateId> current_states;
     current_states.push_back(initial_state);
 
-    std::vector<MatchRecord> step_matches;
+    PVec<MatchRecord> step_matches;
     step_matches.reserve(matches_per_step * 10);
 
-    std::vector<StateId> next_states;
+    PVec<StateId> next_states;
     next_states.reserve(matches_per_step);
 
-    // Thread-local RNG seeded once (avoid repeated random_device calls)
-    std::random_device rd;
-    std::mt19937 rng(rd());
+    // Sampling RNG seeded once. random_seed_==0 draws a fresh random_device seed
+    // (every run differs); a nonzero seed makes the Monte-Carlo sample reproducible.
+    std::mt19937 rng(random_seed_ ? random_seed_ : std::random_device{}());
 
     auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
     auto get_signature = [this](EdgeId eid) -> const EdgeSignature& { return hg_->edge_signature(eid); };
 
-    size_t total_rewrites_applied = 0;
-    size_t total_states_created = 0;
+    [[maybe_unused]] size_t total_rewrites_applied = 0;
+    [[maybe_unused]] size_t total_states_created = 0;
 
     // Match forwarding data structures
     // state_matches: matches found for each state in current frontier (cleared each step)
-    std::unordered_map<StateId, std::vector<MatchRecord>> state_matches;
+    PUMap<StateId, PVec<MatchRecord>> state_matches;
 
     // Child creation info for match forwarding
     struct ChildInfo {
@@ -122,22 +232,30 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         EdgeId new_edges[16];
         uint8_t num_new;
     };
-    std::unordered_map<StateId, ChildInfo> child_info;
-    std::unordered_map<StateId, ChildInfo> next_child_info;
+    PUMap<StateId, ChildInfo> child_info;
+    PUMap<StateId, ChildInfo> next_child_info;
+
+    // Per-step match buffers, hoisted so their capacity is reused across steps
+    // (cleared at the top of each step) instead of being reallocated every step.
+    PUMap<StateId, PVec<MatchRecord>> next_state_matches;
+    // job_outputs stays std:: — its inner vectors are push_back'd by WORKER threads,
+    // which must not touch the orchestrator's persistent target.
+    std::vector<std::vector<MatchRecord>> job_outputs;
 
     for (size_t step = 1; step <= steps && !current_states.empty(); ++step) {
         if (should_stop_.load(std::memory_order_relaxed)) break;
 
         step_matches.clear();
 
-        // Prepare per-state match storage for this step
-        std::unordered_map<StateId, std::vector<MatchRecord>> next_state_matches;
+        // Prepare per-state match storage for this step (reuse hoisted capacity).
+        next_state_matches.clear();
 
         const size_t num_jobs = current_states.size() * rules_.size();
         const size_t max_matches_per_job = std::max(size_t(16), (matches_per_step + num_jobs - 1) / num_jobs);
 
-        std::vector<std::vector<MatchRecord>> job_outputs(num_jobs);
+        job_outputs.resize(num_jobs);
         for (auto& v : job_outputs) {
+            v.clear();
             v.reserve(std::min(max_matches_per_job, size_t(100)));
         }
 
@@ -156,7 +274,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
             bool has_parent = (ci_it != child_info.end());
 
             // Get parent's matches if available
-            const std::vector<MatchRecord>* parent_matches = nullptr;
+            const PVec<MatchRecord>* parent_matches = nullptr;
             const ChildInfo* ci = nullptr;
             if (has_parent) {
                 ci = &ci_it->second;
@@ -171,9 +289,15 @@ void ParallelEvolutionEngine::evolve_uniform_random(
                 uint64_t job_seed = step_seed ^ (job_idx * 0x9e3779b97f4a7c15ULL);
                 job_idx++;
 
-                // Copy data needed for forwarding (avoid dangling pointers in lambda)
-                std::vector<MatchRecord> forwarded_matches;
-                std::vector<EdgeId> new_edge_list;
+                // Copy data needed for forwarding (avoid dangling pointers in lambda).
+                // Built + filled on the main thread (data lives in orch_arena); moved
+                // into the job closure, which only READS it. orch_arena outlives all
+                // jobs (wait_for_completion precedes its destruction).
+                PVec<MatchRecord> forwarded_matches;
+                // Bounded by ci->num_new (<= MAX_PATTERN_EDGES): a stack buffer copied by
+                // value into the job closure, so no per-job heap allocation is needed.
+                std::array<EdgeId, MAX_PATTERN_EDGES> new_edge_list{};
+                uint8_t new_edge_count = 0;
 
                 if (parent_matches && ci) {
                     // Forward parent matches for this rule, filtering consumed edges
@@ -203,7 +327,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
                     // Collect new edges for delta matching
                     for (uint8_t i = 0; i < ci->num_new; ++i) {
-                        new_edge_list.push_back(ci->new_edges[i]);
+                        new_edge_list[new_edge_count++] = ci->new_edges[i];
                     }
                 }
 
@@ -211,7 +335,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
                     [this, output, &get_edge, &get_signature,
                      state, canonical, canonical_hash, r, max_matches_per_job, job_seed,
                      forwarded = std::move(forwarded_matches),
-                     new_edges = std::move(new_edge_list),
+                     new_edges = new_edge_list, new_edge_count,
                      has_parent]() {
                         if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -255,12 +379,12 @@ void ParallelEvolutionEngine::evolve_uniform_random(
                             }
 
                             // Delta match: only search for matches involving new edges
-                            if (!new_edges.empty()) {
+                            if (new_edge_count > 0) {
                                 find_delta_matches(
                                     rules_[r], r, state, s.edges,
                                     hg_->signature_index(), hg_->inverted_index(),
                                     get_edge, get_signature, on_match,
-                                    new_edges.data(), static_cast<uint8_t>(new_edges.size())
+                                    new_edges.data(), new_edge_count
                                 );
                             }
                         } else {
@@ -293,7 +417,9 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         }
 
         if (step_matches.empty()) {
+#ifdef HG_TRACE_UNIFORM_RANDOM
             fprintf(stderr, "[uniform_random] Step %zu: no matches, stopping\n", step);
+#endif
             break;
         }
 
@@ -304,7 +430,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         next_states.clear();
         next_child_info.clear();
         size_t matches_tried = 0;
-        size_t duplicates_rejected = 0;
+        [[maybe_unused]] size_t duplicates_rejected = 0;
         size_t target_states = (matches_per_step == 0) ? SIZE_MAX : matches_per_step;
         size_t max_attempts = target_states * 5;
 
@@ -346,8 +472,10 @@ void ParallelEvolutionEngine::evolve_uniform_random(
             }
         }
 
+#ifdef HG_TRACE_UNIFORM_RANDOM
         fprintf(stderr, "[uniform_random] Step %zu: %zu matches, tried %zu, accepted %zu (dup %zu), forwarding %zu\n",
                 step, step_matches.size(), matches_tried, next_states.size(), duplicates_rejected, next_child_info.size());
+#endif
 
         // Move to next step
         current_states.swap(next_states);
@@ -355,9 +483,11 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         child_info.swap(next_child_info);
     }
 
+#ifdef HG_TRACE_UNIFORM_RANDOM
     fprintf(stderr, "[uniform_random] Complete: %zu steps, %zu rewrites, %zu states, arena=%.2f MB\n",
             steps, total_rewrites_applied, total_states_created,
             hg_->arena().bytes_allocated() / (1024.0 * 1024.0));
+#endif
 
     finalize_evolution();
 }
@@ -400,18 +530,9 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
         initial_edge_set.set(eid, hg_->arena());
     }
 
-    // Compute canonical hash
-    auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
-        initial_edge_set,
-        INVALID_ID,  // No parent state
-        nullptr, 0,  // No consumed edges
-        edge_ids.data(), static_cast<uint8_t>(edge_ids.size())
-    );
+    // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
-        std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
-
-    // Store cache for the initial state
-    hg_->store_state_cache(raw_state, vertex_cache);
+        std::move(initial_edge_set), 0, INVALID_ID);
 
     // Create genesis event if enabled
     if (enable_genesis_events_) {
@@ -427,8 +548,8 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
 StateId ParallelEvolutionEngine::create_and_register_initial_state(
     const std::vector<std::vector<VertexId>>& edges
 ) {
+    // Create edges
     std::vector<EdgeId> edge_ids;
-    edge_ids.reserve(edges.size());
     for (const auto& edge : edges) {
         EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
         edge_ids.push_back(eid);
@@ -442,42 +563,19 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
         initial_edge_set.set(eid, hg_->arena());
     }
 
-    // Compute canonical hash for the initial state via the incremental path
-    // with no parent (full compute), returning the cache so the first child's
-    // incremental hash has something to reuse against.
-    auto [canonical_hash, vertex_cache] = hg_->compute_canonical_hash_incremental(
-        initial_edge_set, INVALID_ID, nullptr, 0,
-        edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+    // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
-        std::move(initial_edge_set), canonical_hash, 0, INVALID_ID);
-    hg_->store_state_cache(raw_state, vertex_cache);
+        std::move(initial_edge_set), 0, INVALID_ID);
 
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-    {
-        const auto& state_data = hg_->get_state(raw_state);
-        VIZ_EMIT_STATE_CREATED(raw_state, 0, 0,
-                               state_data.edges.count(), 0);
-        uint32_t edge_idx = 0;
-        state_data.edges.for_each([&](EdgeId eid) {
-            const Edge& edge = hg_->get_edge(eid);
-            VIZ_EMIT_HYPEREDGE(raw_state, edge_idx++, edge.vertices, edge.arity);
-        });
-    }
-#endif
-
+    // Create genesis event if enabled
     if (enable_genesis_events_) {
-        [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
-            raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
-#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
-        VIZ_EMIT_REWRITE_APPLIED(
-            viz::VIZ_NO_SOURCE_STATE, raw_state,
-            static_cast<RuleIndex>(-1), genesis_event, genesis_event,
-            0, static_cast<uint8_t>(edge_ids.size()));
-#endif
+        hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
     }
 
+    // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
     submit_match_task(raw_state, 1);
+
     return raw_state;
 }
 
@@ -500,24 +598,28 @@ LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
     return inserted ? new_list : existing;
 }
 
-void ParallelEvolutionEngine::store_match_for_state(
+uint64_t ParallelEvolutionEngine::store_match_for_state(
     StateId state,
-    const MatchRecord& match,
+    MatchRecord& match,
     bool with_fence
 ) {
-    // Bump global_epoch_ so the eager-mode retry detectors in
-    // push_match_to_children and forward_existing_parent_matches_eager
-    // observe that a forwarding-relevant change has happened.
-    global_epoch_.fetch_add(1, std::memory_order_acq_rel);
-
+    // Publish the match, THEN bump the rendezvous epoch. Pulls re-walk their
+    // ancestor chain while global_epoch_ keeps changing; pushing before the bump
+    // guarantees that a pull woken by this bump also observes the pushed match.
+    // (Bumping first opens a window where the pull re-reads the list before the
+    // push lands, sees no further epoch change, and quiesces without the match.)
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
+    match.storage_epoch = global_epoch_.load(std::memory_order_relaxed);  // debug stamp only
     list->push(match, hg_->arena());
 
-    // In eager mode we need a fence after each store so push_match_to_children
-    // sees the new match; batched mode issues a single fence after all stores.
+    // In non-batched (eager) mode, we need a fence after each store to ensure
+    // visibility before push_match_to_children runs. In batched mode, we use
+    // a single fence after all stores.
     if (with_fence) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
+
+    return global_epoch_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(StateId state) {
@@ -548,24 +650,28 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
 ) {
     if (parent == INVALID_ID) return 0;
 
+    // Build ChildInfo (epoch will be set after push)
     ChildInfo info;
     info.child_state = child;
     info.num_consumed = num_consumed;
-    info.creation_step = child_step;
+    info.creation_step = child_step;  // Step at which child was created
+    info.registration_epoch = 0;  // Temporary, will update after push
     for (uint8_t i = 0; i < num_consumed; ++i) {
         info.consumed_edges[i] = consumed_edges[i];
     }
 
-    // Push child to list — allows push_match_to_children to walk siblings.
-    LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
-    children->push(info, hg_->arena());
-
-    // Bump global_epoch_ so epoch-retry readers in push_match_to_children and
-    // forward_existing_parent_matches_eager detect that a new child has
-    // registered and re-walk to pick up its forwarded matches.
-    uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
-
-    // Track child's parent (for walking ancestor chain during forward)
+    // Publish the child's parent link (ancestor-chain data for pulls) BEFORE the
+    // child becomes visible in the parent's children list. Ordering invariant: the
+    // pull's ancestor walk treats an absent state_parent_ entry as "reached a root"
+    // and stops. Once the child is push-visible below, a forwarded match can create a
+    // GRANDCHILD on another worker whose pull walks up through this child; if this
+    // link were published after the push (as a later step), that walk could find the
+    // link absent, silently truncate, and permanently miss every match stored only in
+    // higher ancestors (pulled matches are not re-stored in descendants and pushes
+    // are one-shot at discovery). Publishing the link first makes "absent" mean
+    // "root" -- every reachable ancestor's link is visible to any walk that can
+    // reach it (the insert happens-before the child's visibility, which
+    // happens-before any descendant's existence).
     ParentInfo pi_init;
     pi_init.parent_state = parent;
     pi_init.num_consumed = num_consumed;
@@ -575,7 +681,23 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
     ParentInfo* parent_info = hg_->arena().template create<ParentInfo>(pi_init);
     state_parent_.insert_if_absent(child, parent_info);
 
+    // Now make the child push-visible (for push_match_to_children, incl. recursive)
+    LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
+    children->push(info, hg_->arena());
+
+    // Bump the rendezvous epoch (pushers retry their child scan on epoch change)
+    uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
+
     return epoch;
+}
+
+void ParallelEvolutionEngine::note_late_arrival(uint64_t match_hash) {
+    if (validate_match_forwarding_) {
+        auto missing = missing_match_hashes_.lookup(match_hash);
+        if (missing.has_value()) {
+            late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }
 
 void ParallelEvolutionEngine::push_match_to_children(
@@ -631,18 +753,13 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         }
 
         // Check if this was a "missing" match that arrived late via push
-        if (validate_match_forwarding_) {
-            auto missing = missing_match_hashes_.lookup(h);
-            if (missing.has_value()) {
-                late_arrivals_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        note_late_arrival(h);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u",
-                  parent, child_info.child_state, match.rule_index, h, step);
+        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u epoch=%lu",
+                  parent, child_info.child_state, match.rule_index, h, step, match.storage_epoch);
 
         // Store match in child
         store_match_for_state(child_info.child_state, forwarded);
@@ -666,7 +783,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches(
     const EdgeId* consumed_edges,
     uint8_t num_consumed,
     uint32_t step,
-    std::vector<MatchRecord>& batch
+    SVec<MatchRecord>& batch
 ) {
     // Accumulate all consumed edges along the path from child to ancestors
     EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];
@@ -702,10 +819,12 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
     const EdgeId* accumulated_consumed,
     uint8_t total_consumed,
     uint32_t step,
-    std::vector<MatchRecord>& batch
+    SVec<MatchRecord>& batch
 ) {
     forward_matches_from_single_ancestor_impl(
-        ancestor, child, accumulated_consumed, total_consumed, step, batch);
+        ancestor, child, accumulated_consumed, total_consumed, step,
+        0,  // child_registration_epoch unused
+        batch);
 }
 
 void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
@@ -713,8 +832,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     StateId child,
     const EdgeId* accumulated_consumed,
     uint8_t total_consumed,
-    uint32_t /* step */,
-    std::vector<MatchRecord>& batch
+    uint32_t step,
+    uint64_t /* child_registration_epoch - unused */,
+    SVec<MatchRecord>& batch
 ) {
     auto result = state_matches_.lookup_waiting(ancestor);
     if (!result.has_value()) return;  // Ancestor has no matches yet
@@ -753,18 +873,22 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         }
 
         // Check if this was a "missing" match that arrived late via forward_existing
-        if (validate_match_forwarding_) {
-            auto missing = missing_match_hashes_.lookup(h);
-            if (missing.has_value()) {
-                late_arrivals_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        note_late_arrival(h);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu",
-                  ancestor, child, ancestor_match.rule_index, h);
+        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu epoch=%lu",
+                  ancestor, child, ancestor_match.rule_index, h, ancestor_match.storage_epoch);
+
+        // CLAIM-WINNER OWNS THE MATCH AT THIS NODE (same invariant as the eager
+        // pull): store the copy and propagate to this child's own children, exactly
+        // as the push side does when it wins. A pull that claims the hash without
+        // this leaves already-registered grandchildren uncovered (the racing push
+        // sees the hash taken and skips its store+recursion). The rewrite itself is
+        // submitted by the caller's batch phase.
+        store_match_for_state(child, forwarded, true);
+        push_match_to_children(child, forwarded, step);
 
         // Add to batch
         batch.push_back(forwarded);
@@ -852,7 +976,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
     if (!result.has_value()) return;
 
     // Build consumed set once for O(1) amortized overlap checks
-    std::unordered_set<EdgeId> consumed_set(accumulated_consumed, accumulated_consumed + total_consumed);
+    SUSet<EdgeId> consumed_set(accumulated_consumed, accumulated_consumed + total_consumed);
 
     LockFreeList<MatchRecord>* ancestor_matches = *result;
     ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
@@ -885,18 +1009,24 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         }
 
         // Check if this was a "missing" match that arrived late
-        if (validate_match_forwarding_) {
-            auto missing = missing_match_hashes_.lookup(h);
-            if (missing.has_value()) {
-                late_arrivals_.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        note_late_arrival(h);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
         DEBUG_LOG("FWD_EAGER ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
                   ancestor, child, ancestor_match.rule_index, h, step);
+
+        // CLAIM-WINNER OWNS THE MATCH AT THIS NODE: store the copy and propagate to
+        // this child's own children, exactly as the push side does when it wins the
+        // claim. Without this, a pull that wins the (match, child) claim races the
+        // ancestor's push out of its store+recursion (the push sees the hash taken
+        // and returns), so a GRANDCHILD whose pull already completed is covered by
+        // nobody and the transition is permanently lost. Symmetric ownership makes
+        // the coverage inductive: every claim winner re-establishes the invariant
+        // one level down.
+        store_match_for_state(child, forwarded, true);
+        push_match_to_children(child, forwarded, step);
 
         // EAGER: Immediately spawn REWRITE task
         if (!uniform_random_mode_) {
@@ -909,32 +1039,33 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
 // Task Submission
 // =============================================================================
 
-// Shared gate — every submit_* and execute_* starts here. Centralises the
-// should-stop / step-limit / per-step-cap / per-parent-cap fast-fails that
-// used to be duplicated six ways.
-bool ParallelEvolutionEngine::can_submit(StateId state, uint32_t step) const {
-    if (should_stop_.load(std::memory_order_relaxed)) return false;
-    if (max_steps_ > 0 && step > max_steps_) return false;
-    if (!can_create_states_at_step(step + 1)) return false;
-    if (!can_have_more_children(state)) return false;
-    return true;
-}
-
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
-    if (!can_submit(state, step)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && step > max_steps_) return;
+    if (!can_create_states_at_step(step + 1)) return;
+    if (!can_have_more_children(state)) return;
+
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step]() {
             execute_match_task(state, step, MatchContext{});
         },
-        EvolutionJobType::MATCH);
+        EvolutionJobType::MATCH
+    );
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_match_task_with_context(
-    StateId state, uint32_t step, const MatchContext& ctx) {
-    if (!can_submit(state, step)) return;
+    StateId state,
+    uint32_t step,
+    const MatchContext& ctx
+) {
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && step > max_steps_) return;
+    if (!can_create_states_at_step(step + 1)) return;
+    if (!can_have_more_children(state)) return;
+
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
@@ -942,57 +1073,82 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
         [this, state, step, ctx]() {
             execute_match_task(state, step, ctx);
         },
-        EvolutionJobType::MATCH);
+        EvolutionJobType::MATCH
+    );
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
-    // execute_rewrite_task does the actual atomic slot reservation; this is
-    // the cheap pre-check.
-    if (!can_submit(match.source_state, step)) return;
-    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u",
-              match.source_state, match.rule_index, step);
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && step > max_steps_) return;
+    // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
+    if (!can_create_states_at_step(step + 1)) return;
+    if (!can_have_more_children(match.source_state)) return;
+
+    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index, step);
 
     auto job = job_system::make_job<EvolutionJobType>(
         [this, match, step]() {
             execute_rewrite_task(match, step);
         },
-        EvolutionJobType::REWRITE);
+        EvolutionJobType::REWRITE
+    );
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
-    if (!can_submit(data.state, data.step)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (!can_create_states_at_step(data.step + 1)) return;
+    if (!can_have_more_children(data.state)) return;
+
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() { execute_scan_task(data); },
-        EvolutionJobType::SCAN);
-    // SCAN uses FIFO — start broadly, then depth-first via EXPAND.
+        [this, data]() {
+            execute_scan_task(data);
+        },
+        EvolutionJobType::SCAN
+    );
+    // SCAN tasks use FIFO - start broadly, then depth-first via EXPAND
     job_system_->submit(std::move(job));
 }
 
 void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
-    if (!can_submit(data.state, data.step)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (!can_create_states_at_step(data.step + 1)) return;
+    if (!can_have_more_children(data.state)) return;
+
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() { execute_expand_task(data); },
-        EvolutionJobType::EXPAND);
-    // LIFO: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|).
+        [this, data]() {
+            execute_expand_task(data);
+        },
+        EvolutionJobType::EXPAND
+    );
+    // LIFO scheduling: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|)
     job_system_->submit(std::move(job), job_system::ScheduleMode::LIFO);
 }
 
 void ParallelEvolutionEngine::submit_sink_task(const ExpandTaskData& data) {
-    if (!can_submit(data.state, data.step)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (!can_create_states_at_step(data.step + 1)) return;
+    if (!can_have_more_children(data.state)) return;
+
     DEBUG_LOG("SUBMIT_SINK state=%u rule=%u matched=%u step=%u",
               data.state, data.rule_index, data.num_matched, data.step);
 
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() { execute_sink_task(data); },
-        EvolutionJobType::SINK);
+        [this, data]() {
+            execute_sink_task(data);
+        },
+        EvolutionJobType::SINK
+    );
     job_system_->submit(std::move(job));
 }
 
@@ -1018,45 +1174,60 @@ bool ParallelEvolutionEngine::can_have_more_children(StateId parent) const {
     return (*result)->load(std::memory_order_relaxed) < max_successor_states_per_parent_;
 }
 
-namespace {
+bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
+    if (max_successor_states_per_parent_ == 0) return true;
 
-// Atomically reserve a slot in a counter keyed by `key` in `map`, capped at
-// `limit`. Creates the counter on first use; races are absorbed via the
-// arena + insert_if_absent pattern. fetch_add / fetch_sub rollback is used
-// instead of a compare-exchange loop because the expected contention over
-// the cap boundary is low and the rollback is a single relaxed store.
-template<typename MapT>
-bool reserve_counted_slot(MapT& map, uint64_t key, size_t limit,
-                          ConcurrentHeterogeneousArena& arena) {
-    if (limit == 0) return true;
-
+    // Get or create atomic counter for this parent
+    uint64_t key = parent;
+    auto result = parent_successor_count_.lookup(key);
     std::atomic<size_t>* counter = nullptr;
-    if (auto result = map.lookup(key); result.has_value()) {
+
+    if (result.has_value()) {
         counter = *result;
     } else {
-        counter = arena.template create<std::atomic<size_t>>(0);
-        auto [existing, inserted] = map.insert_if_absent(key, counter);
-        if (!inserted) counter = existing;
+        // Allocate new counter from arena
+        counter = hg_->arena().template create<std::atomic<size_t>>(0);
+        auto [existing, inserted] = parent_successor_count_.insert_if_absent(key, counter);
+        if (!inserted) {
+            counter = existing;  // Another thread beat us
+        }
     }
 
+    // Try to increment, fail if at limit
     size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
-    if (old_val >= limit) {
-        counter->fetch_sub(1, std::memory_order_relaxed);
+    if (old_val >= max_successor_states_per_parent_) {
+        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
         return false;
     }
     return true;
 }
 
-}  // namespace
-
-bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
-    return reserve_counted_slot(parent_successor_count_, parent,
-                                max_successor_states_per_parent_, hg_->arena());
-}
-
 bool ParallelEvolutionEngine::try_reserve_step_slot(uint32_t step) {
-    return reserve_counted_slot(states_per_step_, step,
-                                max_states_per_step_, hg_->arena());
+    if (max_states_per_step_ == 0) return true;  // Unlimited
+
+    // Get or create atomic counter for this step
+    uint64_t key = step;
+    auto result = states_per_step_.lookup(key);
+    std::atomic<size_t>* counter = nullptr;
+
+    if (result.has_value()) {
+        counter = *result;
+    } else {
+        // Allocate new counter from arena
+        counter = hg_->arena().template create<std::atomic<size_t>>(0);
+        auto [existing, inserted] = states_per_step_.insert_if_absent(key, counter);
+        if (!inserted) {
+            counter = existing;  // Another thread beat us
+        }
+    }
+
+    // Try to increment, fail if at limit
+    size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
+    if (old_val >= max_states_per_step_) {
+        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
+        return false;
+    }
+    return true;
 }
 
 void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
@@ -1068,24 +1239,36 @@ void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
     }
 }
 
+std::mt19937& ParallelEvolutionEngine::sampling_rng() const {
+    thread_local std::mt19937 rng;
+    thread_local uint64_t seen_gen = std::numeric_limits<uint64_t>::max();
+    uint64_t gen = sampling_generation_.load(std::memory_order_relaxed);
+    if (seen_gen != gen) {
+        uint64_t s = random_seed_
+            ? (random_seed_ ^ (0x9e3779b97f4a7c15ULL *
+                 static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()))))
+            : static_cast<uint64_t>(std::random_device{}());
+        rng.seed(static_cast<std::mt19937::result_type>(s));
+        seen_gen = gen;
+    }
+    return rng;
+}
+
 bool ParallelEvolutionEngine::should_explore() {
     if (exploration_probability_ >= 1.0) return true;
     if (exploration_probability_ <= 0.0) return false;
 
-    // Thread-local random number generation
-    thread_local std::mt19937 rng(std::random_device{}());
+    auto& rng = sampling_rng();
     thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
 
     return dist(rng) < exploration_probability_;
 }
 
-std::vector<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
-    std::vector<uint16_t> indices(rules_.size());
+SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
+    SVec<uint16_t> indices(rules_.size());
     std::iota(indices.begin(), indices.end(), 0);
 
-    // Thread-local random number generation for shuffling
-    thread_local std::mt19937 rng(std::random_device{}());
-    std::shuffle(indices.begin(), indices.end(), rng);
+    std::shuffle(indices.begin(), indices.end(), sampling_rng());
 
     return indices;
 }
@@ -1141,9 +1324,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     total_rewrites_.fetch_add(1, std::memory_order_relaxed);
     total_events_.fetch_add(1, std::memory_order_relaxed);
 
-    if (rr.was_new_state) {
-        total_new_states_.fetch_add(1, std::memory_order_relaxed);
-    } else {
+    if (!rr.was_new_state) {
         // Duplicate state - release the reserved slot (only count unique states)
         release_step_slot(step + 1);
     }
@@ -1199,9 +1380,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             ctx.produced_edges[i] = rr.produced_edges[i];
         }
 
-        // Random pruning: skip exploration beyond this state with probability
-        // (1 - exploration_probability_). Short-circuits the match → rewrite
-        // cascade below but still accounts the state itself.
+        // Pruning: check exploration_probability (v1 style)
         if (!should_explore()) {
             return;
         }
@@ -1261,7 +1440,7 @@ void ParallelEvolutionEngine::execute_match_task(
     };
 
     // Batched matching: collect all matches first, then spawn REWRITEs
-    std::vector<MatchRecord> batch;
+    SVec<MatchRecord> batch;
     batch.reserve(32);
     size_t delta_start = 0;  // Index where delta (discovered) matches start
 
@@ -1497,13 +1676,8 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         return hg_->edge_signature(eid);
     };
 
-    // Pre-compute pattern signatures
-    EdgeSignature pattern_sigs[MAX_PATTERN_EDGES];
-    CompatibleSignatureCache sig_caches[MAX_PATTERN_EDGES];
-    for (uint8_t i = 0; i < rule.num_lhs_edges; ++i) {
-        pattern_sigs[i] = rule.lhs[i].signature();
-        sig_caches[i] = CompatibleSignatureCache::from_pattern(pattern_sigs[i]);
-    }
+    // Per-edge pattern signatures and compatible-signature caches are precomputed
+    // once on the rule (rule.lhs_sig / rule.lhs_cache); read them here.
 
     if (data.is_delta) {
         // Delta matching: start from produced edges
@@ -1520,7 +1694,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 
                 // Check signature compatibility
                 const EdgeSignature& data_sig = get_signature(produced);
-                if (!signature_compatible(data_sig, pattern_sigs[pos])) continue;
+                if (!signature_compatible(data_sig, rule.lhs_sig[pos])) continue;
 
                 // Validate candidate
                 VariableBinding binding;
@@ -1531,7 +1705,6 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.state = data.state;
                 expand_data.rule_index = data.rule_index;
                 expand_data.num_pattern_edges = rule.num_lhs_edges;
-                expand_data.next_pattern_idx = 0;
                 expand_data.matched_edges[0] = produced;
                 expand_data.match_order[0] = pos;
                 expand_data.num_matched = 1;
@@ -1548,10 +1721,11 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
             }
         }
     } else {
-        // Full matching: start from first pattern edge
-        const PatternEdge& first_edge = rule.lhs[0];
-        const EdgeSignature& first_sig = pattern_sigs[0];
-        const CompatibleSignatureCache& first_cache = sig_caches[0];
+        // Full matching: seed with the rule's most-constrained edge (match_order[0]).
+        const uint8_t first_pidx = rule.match_order[0];
+        const PatternEdge& first_edge = rule.lhs[first_pidx];
+        const EdgeSignature& first_sig = rule.lhs_sig[first_pidx];
+        const CompatibleSignatureCache& first_cache = rule.lhs_cache[first_pidx];
 
         // Generate candidates for first edge
         generate_candidates(
@@ -1571,9 +1745,8 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.state = data.state;
                 expand_data.rule_index = data.rule_index;
                 expand_data.num_pattern_edges = rule.num_lhs_edges;
-                expand_data.next_pattern_idx = 1;
                 expand_data.matched_edges[0] = candidate;
-                expand_data.match_order[0] = 0;
+                expand_data.match_order[0] = first_pidx;
                 expand_data.num_matched = 1;
                 expand_data.binding = binding;
                 expand_data.step = data.step;
@@ -1624,13 +1797,22 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         return hg_->edge_signature(eid);
     };
 
-    // Get next pattern edge to match
-    uint8_t pattern_idx = data.get_next_pattern_idx();
+    // Next pattern edge in the rule's optimized join order, skipping edges already
+    // matched (the seed may be an arbitrary position for delta matching).
+    uint32_t matched_mask = 0;
+    for (uint8_t i = 0; i < data.num_matched; ++i) {
+        matched_mask |= (1u << data.match_order[i]);
+    }
+    uint8_t pattern_idx = rule.num_lhs_edges;
+    for (uint8_t k = 0; k < rule.num_lhs_edges; ++k) {
+        uint8_t pidx = rule.match_order[k];
+        if (!(matched_mask & (1u << pidx))) { pattern_idx = pidx; break; }
+    }
     if (pattern_idx >= rule.num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = rule.lhs[pattern_idx];
-    EdgeSignature pattern_sig = pattern_edge.signature();
-    CompatibleSignatureCache sig_cache = CompatibleSignatureCache::from_pattern(pattern_sig);
+    const EdgeSignature& pattern_sig = rule.lhs_sig[pattern_idx];
+    const CompatibleSignatureCache& sig_cache = rule.lhs_cache[pattern_idx];
 
     // Generate candidates
     generate_candidates(

@@ -264,78 +264,106 @@ TEST(LockFreeDequeMultiThreaded, MixedOperations) {
     EXPECT_EQ(total_pushed.load() - total_popped.load(), remaining);
 }
 
-TEST(LockFreeDequeStress, HighContention) {
-    lockfree::Deque<int> deque(8192); // Larger capacity for stress test
-    const int num_threads = 4; // Reduced thread count
-    const int duration_ms = 50; // Reasonable duration for testing
-    std::atomic<bool> stop{false};
-    std::atomic<int> operations{0};
-    
-    std::vector<std::thread> threads;
-    
-    for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&deque, &stop, &operations, t]() {
-            std::mt19937 gen(t);
-            std::uniform_int_distribution<> op_dist(0, 3);
-            std::uniform_int_distribution<> val_dist(0, 100);
-            
-            while (!stop.load()) {
-                int op = op_dist(gen);
-                switch (op) {
-                    case 0:
-                        if (deque.try_push_front(val_dist(gen))) {
-                            operations.fetch_add(1);
-                        }
-                        break;
-                    case 1:
-                        if (deque.try_push_back(val_dist(gen))) {
-                            operations.fetch_add(1);
-                        }
-                        break;
-                    case 2:
-                        if (deque.try_pop_front()) {
-                            operations.fetch_add(1);
-                        }
-                        break;
-                    case 3:
-                        if (deque.try_pop_back()) {
-                            operations.fetch_add(1);
-                        }
-                        break;
+// High-contention stress with a strict conservation invariant (zero tolerance):
+// after draining, what remains must equal pushed minus popped, with nothing lost or
+// duplicated. Run across small/wrapping and large capacities.
+TEST(LockFreeDequeStress, HighContentionConserves) {
+    for (std::size_t cap : {std::size_t(4), std::size_t(64), std::size_t(8192)}) {
+        lockfree::Deque<int> deque(cap);
+        const int num_threads = 8;
+        const int duration_ms = 50;
+        std::atomic<bool> stop{false};
+        std::atomic<long> pushed{0};
+        std::atomic<long> popped{0};
+
+        std::vector<std::thread> threads;
+        for (int t = 0; t < num_threads; ++t) {
+            threads.emplace_back([&deque, &stop, &pushed, &popped, t]() {
+                std::mt19937 gen(t + 1);
+                std::uniform_int_distribution<> op_dist(0, 3);
+                while (!stop.load(std::memory_order_relaxed)) {
+                    switch (op_dist(gen)) {
+                        case 0: if (deque.try_push_front(t)) pushed.fetch_add(1); break;
+                        case 1: if (deque.try_push_back(t)) pushed.fetch_add(1); break;
+                        case 2: if (deque.try_pop_front()) popped.fetch_add(1); break;
+                        case 3: if (deque.try_pop_back()) popped.fetch_add(1); break;
+                    }
                 }
-                std::this_thread::yield(); // Add yield to reduce contention
-            }
-        });
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(duration_ms));
-    stop.store(true);
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    std::cout << "Completed " << operations.load() 
-              << " operations in " << duration_ms << "ms" 
-              << " (" << operations.load() / (duration_ms / 1000.0) 
-              << " ops/sec)" << std::endl;
-    
-    // Clean up any remaining items from both ends
-    int cleanup_count = 0;
-    for (int i = 0; i < 10000; ++i) {
-        bool found_front = deque.try_pop_front().has_value();
-        bool found_back = deque.try_pop_back().has_value();
-        if (found_front) cleanup_count++;
-        if (found_back) cleanup_count++;
-        if (!found_front && !found_back) {
-            break;
+            });
         }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(duration_ms));
+        stop.store(true);
+        for (auto& thread : threads) thread.join();
+
+        long remaining = 0;
+        while (deque.try_pop_front()) remaining++;
+        EXPECT_EQ(pushed.load() - popped.load(), remaining);
+        EXPECT_TRUE(deque.empty());
     }
-    
-    std::cout << "Cleaned up " << cleanup_count << " remaining items" << std::endl;
-    
-    // Accept a larger number of remaining items due to retry limits in extreme contention
-    EXPECT_LT(cleanup_count, 500);
+}
+
+// Identity-tracking MPMC fuzz: every produced id must be popped exactly once -- no
+// loss, no duplication -- across small (wrapping) and large capacities. A watchdog
+// guards against a hang if a regression loses items.
+TEST(LockFreeDequeFuzz, MPMCNoLossNoDuplicate) {
+    for (std::size_t cap : {std::size_t(4), std::size_t(16), std::size_t(1024)}) {
+        const int P = 6, C = 6, K = 4000;
+        const int total = P * K;
+        lockfree::Deque<int> deque(cap);
+        std::vector<std::atomic<int>> seen(total);
+        for (auto& s : seen) s.store(0, std::memory_order_relaxed);
+        std::atomic<int> pushed{0}, popped{0};
+        std::atomic<int> duplicates{0}, out_of_range{0}, stuck{0};
+
+        std::vector<std::thread> threads;
+        // producers: each owns a disjoint id range, pushed randomly to either end
+        for (int p = 0; p < P; ++p) {
+            threads.emplace_back([&, p]() {
+                std::mt19937 gen(p + 1);
+                for (int i = 0; i < K; ++i) {
+                    int id = p * K + i;
+                    while (!((gen() & 1) ? deque.try_push_back(id) : deque.try_push_front(id))) {
+                        std::this_thread::yield();
+                    }
+                    pushed.fetch_add(1);
+                }
+            });
+        }
+        // consumers: pop from either end until everything is drained
+        for (int c = 0; c < C; ++c) {
+            threads.emplace_back([&, c]() {
+                std::mt19937 gen(1000 + c);
+                long idle = 0;
+                while (popped.load(std::memory_order_acquire) < total) {
+                    auto v = (gen() & 1) ? deque.try_pop_front() : deque.try_pop_back();
+                    if (v) {
+                        idle = 0;
+                        int id = *v;
+                        if (id < 0 || id >= total) { out_of_range.fetch_add(1); continue; }
+                        if (seen[id].fetch_add(1) != 0) duplicates.fetch_add(1);
+                        popped.fetch_add(1);
+                    } else if (++idle > 200000000L) {
+                        stuck.fetch_add(1);
+                        break;  // watchdog: a correct deque never starves here
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        for (auto& thread : threads) thread.join();
+
+        EXPECT_EQ(stuck.load(), 0) << "consumer starved at capacity " << cap;
+        EXPECT_EQ(pushed.load(), total);
+        EXPECT_EQ(popped.load(), total);
+        EXPECT_EQ(duplicates.load(), 0);
+        EXPECT_EQ(out_of_range.load(), 0);
+        EXPECT_TRUE(deque.empty());
+        int missing = 0;
+        for (int i = 0; i < total; ++i) if (seen[i].load() != 1) ++missing;
+        EXPECT_EQ(missing, 0) << "items lost at capacity " << cap;
+    }
 }
 
 class LockFreeDequeWithStrings : public ::testing::Test {

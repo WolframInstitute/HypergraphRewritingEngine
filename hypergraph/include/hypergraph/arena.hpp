@@ -224,11 +224,6 @@ private:
         }
     };
 
-    // Install a fresh block at the head of the chain. current_block_ is then
-    // re-synced from head_ so allocators always reach the most-recent block;
-    // previously this was an unconditional store that could leave
-    // current_block_ pointing at an *older* block if two threads raced to
-    // allocate, which silently wasted the newer block's capacity.
     void allocate_new_block() {
         Block* new_block = Block::create(block_capacity_);
 
@@ -240,8 +235,7 @@ private:
             std::memory_order_release,
             std::memory_order_acquire));
 
-        current_block_.store(head_.load(std::memory_order_acquire),
-                             std::memory_order_release);
+        current_block_.store(new_block, std::memory_order_release);
     }
 
     size_t block_capacity_;
@@ -425,8 +419,14 @@ class ConcurrentHeterogeneousArena {
 public:
     static constexpr size_t DEFAULT_BLOCK_SIZE = 1024 * 1024;  // 1 MB
 
-    explicit ConcurrentHeterogeneousArena(size_t block_size = DEFAULT_BLOCK_SIZE)
+    // recycle_blocks enables reset()-based block reuse. It is ONLY safe when the
+    // arena is used single-threaded (a per-worker scratch arena); leave it false for
+    // the shared global arena, where a concurrent reuse would zero a block another
+    // thread is allocating from.
+    explicit ConcurrentHeterogeneousArena(size_t block_size = DEFAULT_BLOCK_SIZE,
+                                          bool recycle_blocks = false)
         : block_size_(block_size)
+        , recycle_(recycle_blocks)
         , destructor_head_(nullptr) {
         allocate_new_block();
     }
@@ -497,7 +497,7 @@ public:
                 continue;
             }
 
-            allocate_new_block();
+            advance_block();
         }
     }
 
@@ -534,9 +534,41 @@ public:
         return total;
     }
 
+    // Stack-discipline checkpoint into a recycling scratch arena. mark() captures the
+    // current position; release(m) rewinds to it, reclaiming everything allocated
+    // since (the blocks stay chained and are recycled on the next advance). LIFO
+    // only, single-threaded — for bounding per-call/per-recursion scratch high-water.
+    // Does NOT run destructors, so only use for trivially-destructible scratch.
+    struct Marker { void* blk; size_t off; };
+    Marker mark() {
+        Block* b = current_block_.load(std::memory_order_relaxed);
+        return { b, b->offset.load(std::memory_order_relaxed) };
+    }
+    void release(Marker m) {
+        Block* b = static_cast<Block*>(m.blk);
+        b->offset.store(m.off, std::memory_order_relaxed);
+        current_block_.store(b, std::memory_order_relaxed);
+    }
+
+    // Reset for reuse WITHOUT freeing blocks — recycles a scratch arena between
+    // tasks. Single-threaded: only the owning thread may call this, and only while
+    // no other thread allocates from this arena (e.g. a per-worker scratch arena
+    // between tasks). Runs+clears registered destructors, zeroes every block, and
+    // restarts allocation from the first block.
+    void reset() {
+        DestructorNode* node = destructor_head_.load(std::memory_order_relaxed);
+        while (node) { node->destroy(node->object); node = node->prev; }
+        destructor_head_.store(nullptr, std::memory_order_relaxed);
+        Block* b = head_.load(std::memory_order_relaxed);
+        Block* first = b;
+        while (b) { b->offset.store(0, std::memory_order_relaxed); first = b; b = b->prev; }
+        current_block_.store(first, std::memory_order_relaxed);
+    }
+
 private:
     struct Block {
-        Block* prev;
+        Block* prev;   // older block (allocation order, newest->oldest via head_)
+        Block* next;   // newer block; lets reset() walk forward to recycle blocks
         size_t capacity;
         std::atomic<size_t> offset;
         alignas(std::max_align_t) char data[];
@@ -545,6 +577,7 @@ private:
             void* mem = ::operator new(sizeof(Block) + data_capacity);
             Block* block = static_cast<Block*>(mem);
             block->prev = nullptr;
+            block->next = nullptr;
             block->capacity = data_capacity;
             block->offset.store(0, std::memory_order_relaxed);
             return block;
@@ -557,10 +590,6 @@ private:
         DestructorNode* prev;
     };
 
-    // See ConcurrentArena<T>::allocate_new_block for the rationale: sync
-    // current_block_ from head_ after installing the new block so the last
-    // store always reflects the most-recent head rather than a racing
-    // thread's older block.
     void allocate_new_block() {
         Block* new_block = Block::create(block_size_);
 
@@ -572,8 +601,28 @@ private:
             std::memory_order_release,
             std::memory_order_acquire));
 
-        current_block_.store(head_.load(std::memory_order_acquire),
-                             std::memory_order_release);
+        // Forward link (older -> newer). Only ever READ single-threaded after reset()
+        // to recycle blocks, so the plain store is fine alongside the lock-free path.
+        if (old_head) old_head->next = new_block;
+
+        current_block_.store(new_block, std::memory_order_release);
+    }
+
+    // Advance to the next block when the current one is full: recycle an
+    // already-allocated successor (populated after a reset()) if present, else grow.
+    // The recycle branch is only reached single-threaded (a per-worker scratch arena
+    // refilling after reset); the global concurrent arena's current_block_ is always
+    // the head (next == nullptr), so it always grows, preserving prior behaviour.
+    void advance_block() {
+        if (recycle_) {
+            Block* cur = current_block_.load(std::memory_order_relaxed);
+            if (Block* nxt = cur->next) {            // single-threaded: safe to reuse
+                nxt->offset.store(0, std::memory_order_relaxed);
+                current_block_.store(nxt, std::memory_order_relaxed);
+                return;
+            }
+        }
+        allocate_new_block();
     }
 
     void register_destructor(void* obj, void (*destroy)(void*)) {
@@ -592,10 +641,21 @@ private:
     }
 
     size_t block_size_;
+    bool recycle_;
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;
 };
+
+// Per-worker scratch arena: thread-local, recycled via reset() between tasks. The
+// foundation of the allocation architecture — hot-path temporaries draw from here
+// and are reclaimed in bulk by reset() instead of touching the global allocator on
+// every call. One instance per thread ⇒ no contention, never freed mid-task.
+inline ConcurrentHeterogeneousArena& worker_scratch() {
+    static thread_local ConcurrentHeterogeneousArena scratch(
+        ConcurrentHeterogeneousArena::DEFAULT_BLOCK_SIZE, /*recycle_blocks=*/true);
+    return scratch;
+}
 
 // =============================================================================
 // ArenaVector<T>: Vector that allocates from ConcurrentHeterogeneousArena

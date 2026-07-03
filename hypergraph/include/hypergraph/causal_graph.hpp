@@ -40,18 +40,14 @@ namespace hypergraph {
 //         Arena-allocated, freed in bulk at end of evolution.
 
 class CausalGraph {
-    // Per-edge producer tracking (set once when edge created)
-    // Use ConcurrentMap for thread-safe "get or create" semantics
-    // Key: EdgeId (as uint64_t), Value: pointer to EdgeCausalInfo
-    static constexpr uint64_t EDGE_PROD_MAP_EMPTY = 1ULL << 62;
-    static constexpr uint64_t EDGE_PROD_MAP_LOCKED = (1ULL << 62) + 1;
-    ConcurrentMap<uint64_t, EdgeCausalInfo*, EDGE_PROD_MAP_EMPTY, EDGE_PROD_MAP_LOCKED> edge_producers_;
+    // Per-edge producer tracking (set once when edge created). Edge ids are dense and
+    // sequential, so a direct-indexed array beats a hash map: no hashing, no per-edge
+    // heap node, contiguous storage. get_or_default(edge) lazily materializes the slot
+    // (default producer == INVALID_ID); the reader-visible size grows with it.
+    SegmentedArray<EdgeCausalInfo> edge_producers_;
 
-    // Per-edge consumer lists (appended when edge consumed)
-    // Use ConcurrentMap for thread-safe "get or create" semantics
-    static constexpr uint64_t EDGE_CONS_MAP_EMPTY = (1ULL << 62) + 2;
-    static constexpr uint64_t EDGE_CONS_MAP_LOCKED = (1ULL << 62) + 3;
-    ConcurrentMap<uint64_t, LockFreeList<EventId>*, EDGE_CONS_MAP_EMPTY, EDGE_CONS_MAP_LOCKED> edge_consumers_;
+    // Per-edge consumer lists (appended when edge consumed), likewise indexed by edge id.
+    SegmentedArray<LockFreeList<EventId>> edge_consumers_;
 
     // Per-state event lists for branchial tracking
     // Maps StateId -> list of events that have this state as input
@@ -61,6 +57,15 @@ class CausalGraph {
     static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
     static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) + 1;
     ConcurrentMap<uint64_t, LockFreeList<EventId>*, STATE_MAP_EMPTY, STATE_MAP_LOCKED> state_events_;
+
+    // Per-(input state, consumed edge) inverted index: the events that consumed a
+    // given edge at a given input state. Two events at the same input state are
+    // branchially related iff they consumed a common edge, so scanning this bucket
+    // finds all co-consumers in O(bucket size) instead of an O(events^2) pairwise
+    // scan of the whole state's event list. Key = (state << 32) | edge.
+    static constexpr uint64_t STATE_EDGE_MAP_EMPTY = (1ULL << 62) + 8;
+    static constexpr uint64_t STATE_EDGE_MAP_LOCKED = (1ULL << 62) + 9;
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*, STATE_EDGE_MAP_EMPTY, STATE_EDGE_MAP_LOCKED> state_edge_events_;
 
     // Causal edges (producer -> consumer)
     LockFreeList<CausalEdge> causal_edges_;
@@ -72,7 +77,8 @@ class CausalGraph {
     // The rendezvous pattern can cause both producer and consumer to add the same edge
     ConcurrentMap<uint64_t, bool> seen_causal_triples_;
 
-    // Deduplication map for unique causal event pairs: (producer << 32 | consumer) -> true
+    // Deduplication map for causal event pairs: (producer << 32 | consumer) -> true
+    // Counts unique event pairs that have a causal relationship.
     ConcurrentMap<uint64_t, bool> seen_causal_event_pairs_;
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
@@ -103,8 +109,7 @@ class CausalGraph {
     ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> desc_;
     ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> anc_;
 
-    // Online transitive reduction enabled? Off by default — opt in via
-    // ParallelEvolutionEngine::set_transitive_reduction(true).
+    // Whether online transitive reduction is enabled (the FFI turns this on by default).
     std::atomic<bool> transitive_reduction_enabled_{false};
 
     // Statistics for TR
@@ -115,7 +120,7 @@ class CausalGraph {
 
     // Statistics
     std::atomic<size_t> num_causal_edges_{0};        // Per-edge causal relationships
-    std::atomic<size_t> num_causal_event_pairs_{0};  // Unique (producer, consumer) event pairs
+    std::atomic<size_t> num_causal_event_pairs_{0};  // Unique event pairs with a causal relationship
     std::atomic<size_t> num_branchial_edges_{0};
 
 public:
@@ -159,6 +164,9 @@ public:
     // Get or create the event list for a state (thread-safe)
     LockFreeList<EventId>* get_or_create_state_events(StateId state);
 
+    // Get or create the co-consumer list for a (state, consumed edge) bucket
+    LockFreeList<EventId>* get_or_create_state_edge_events(StateId state, EdgeId edge);
+
     // Called when an edge is produced by an event
     bool set_edge_producer(EdgeId edge, EventId producer);
 
@@ -172,15 +180,6 @@ public:
     // Branchial Tracking
     // =========================================================================
 
-    // Called when an event is created from a state
-    // Checks for branchial relationships with other events from the same state
-    void register_event_from_state(
-        EventId event,
-        StateId input_state,
-        const EdgeId* consumed_edges,
-        uint8_t num_consumed
-    );
-
     // More detailed branchial check with access to event data
     //
     // Thread-safety: Uses "add first, check all, deduplicate on insert" pattern.
@@ -192,94 +191,35 @@ public:
         StateId input_state,
         const EdgeId* consumed_edges,
         uint8_t num_consumed,
-        GetEventConsumedEdges&& get_consumed
+        GetEventConsumedEdges&& /* get_consumed - unused: the index identifies
+                                   co-consumers directly, no per-event edge lookup */
     ) {
-        // Get or create the event list for this state (thread-safe)
-        LockFreeList<EventId>* list = get_or_create_state_events(input_state);
+        // The full per-state event list is exposed to the FFI via for_each_state_events;
+        // branchial detection uses the per-consumed-edge inverted index below.
+        get_or_create_state_events(input_state)->push(event, *arena_);
 
-        // Add self to state's event list FIRST (before checking)
-        list->push(event, *arena_);
-
-        // Check for branchial relationships with ALL events in the list
-        // Both sides of a pair may try to add the edge - deduplication handles it
-        list->for_each([&](EventId other_event) {
-            if (other_event == event) return;  // Skip self
-
-            // Get other event's consumed edges
-            const EdgeId* other_consumed;
-            uint8_t other_num_consumed;
-            get_consumed(other_event, other_consumed, other_num_consumed);
-
-            // Check for overlap
-            EdgeId shared = find_shared_edge(
-                consumed_edges, num_consumed,
-                other_consumed, other_num_consumed
-            );
-
-            if (shared != INVALID_ID) {
-                // Use ordered pair as key for deduplication
+        // Inverted index: for each consumed edge, publish this event into that edge's
+        // co-consumer bucket, then scan the same bucket. Per bucket this is
+        // "add first, then check", so both events of a pair see each other (whichever
+        // scans the shared bucket second finds the first); seen_branchial_pairs_
+        // dedups the double add. Work is proportional to the actual number of
+        // co-consumers, replacing the O(events^2) pairwise scan of the whole state's
+        // event list (one bucket lookup per consumed edge, not two).
+        for (uint8_t i = 0; i < num_consumed; ++i) {
+            EdgeId shared = consumed_edges[i];
+            LockFreeList<EventId>* bucket = get_or_create_state_edge_events(input_state, shared);
+            bucket->push(event, *arena_);
+            bucket->for_each([&](EventId other_event) {
+                if (other_event == event) return;  // Skip self
                 EventId e1 = std::min(event, other_event);
                 EventId e2 = std::max(event, other_event);
                 uint64_t key = (uint64_t(e1) << 32) | e2;
-
                 auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(key, true);
                 if (inserted) {
                     add_branchial_edge(e1, e2, shared);
                 }
-            }
-        });
-    }
-
-    // Version with canonical event checking and edge equivalence
-    // - skip_if_same_canonical: callback(e1, e2) returns true if events are canonically equivalent
-    // - edges_equivalent: callback(e1, e2) returns true if edges are equivalent (in same class)
-    template<typename GetEventConsumedEdges, typename SameCanonicalEvent, typename EdgesEquivalent>
-    void register_event_from_state_with_canonicalization(
-        EventId event,
-        StateId input_state,
-        const EdgeId* consumed_edges,
-        uint8_t num_consumed,
-        GetEventConsumedEdges&& get_consumed,
-        SameCanonicalEvent&& same_canonical,
-        EdgesEquivalent&& edges_equivalent
-    ) {
-        // Get or create the event list for this state (thread-safe)
-        LockFreeList<EventId>* list = get_or_create_state_events(input_state);
-
-        // Add self to state's event list FIRST (before checking)
-        list->push(event, *arena_);
-
-        // Check for branchial relationships with ALL events in the list
-        list->for_each([&](EventId other_event) {
-            if (other_event == event) return;  // Skip self
-
-            // Skip if events are canonically equivalent (same canonical event)
-            if (same_canonical(event, other_event)) return;
-
-            // Get other event's consumed edges
-            const EdgeId* other_consumed;
-            uint8_t other_num_consumed;
-            get_consumed(other_event, other_consumed, other_num_consumed);
-
-            // Check for overlap using edge equivalence
-            EdgeId shared = find_shared_edge_with_equivalence(
-                consumed_edges, num_consumed,
-                other_consumed, other_num_consumed,
-                edges_equivalent
-            );
-
-            if (shared != INVALID_ID) {
-                // Use ordered pair as key for deduplication
-                EventId e1 = std::min(event, other_event);
-                EventId e2 = std::max(event, other_event);
-                uint64_t key = (uint64_t(e1) << 32) | e2;
-
-                auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(key, true);
-                if (inserted) {
-                    add_branchial_edge(e1, e2, shared);
-                }
-            }
-        });
+            });
+        }
     }
 
     // =========================================================================
@@ -316,8 +256,7 @@ public:
         return num_causal_edges_.load(std::memory_order_relaxed);
     }
 
-    // Number of unique (producer, consumer) event pairs with a causal edge
-    // between them (counts each pair once, not once per shared edge).
+    // Number of unique event pairs with a causal relationship.
     size_t num_causal_event_pairs() const {
         return num_causal_event_pairs_.load(std::memory_order_relaxed);
     }
@@ -351,30 +290,6 @@ public:
         });
     }
 
-private:
-    // Find first shared edge between two edge sets (O(n*m) but sets are small)
-    static EdgeId find_shared_edge(
-        const EdgeId* edges1, uint8_t n1,
-        const EdgeId* edges2, uint8_t n2
-    );
-
-    // Find first shared edge using edge equivalence (O(n*m) but sets are small)
-    // Two edges are considered "shared" if they are equivalent (same canonical class)
-    template<typename EdgesEquivalent>
-    static EdgeId find_shared_edge_with_equivalence(
-        const EdgeId* edges1, uint8_t n1,
-        const EdgeId* edges2, uint8_t n2,
-        EdgesEquivalent&& edges_equivalent
-    ) {
-        for (uint8_t i = 0; i < n1; ++i) {
-            for (uint8_t j = 0; j < n2; ++j) {
-                if (edges_equivalent(edges1[i], edges2[j])) {
-                    return edges1[i];
-                }
-            }
-        }
-        return INVALID_ID;
-    }
 };
 
 }  // namespace hypergraph

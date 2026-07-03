@@ -142,7 +142,7 @@ struct BranchAlignmentResult {
 
 // Laplacian type for spectral embedding
 enum class LaplacianType {
-    Unnormalized,  // L = D - A (matches Mathematica's SpectralEmbedding)
+    Unnormalized,  // L = D - A (matches the Wolfram Language's SpectralEmbedding)
     Normalized     // L = I - D^{-1/2} A D^{-1/2}
 };
 
@@ -153,7 +153,7 @@ std::vector<Vec3> compute_spectral_embedding(
     const SimpleGraph& graph,
     int num_dimensions = 3,
     int num_iterations = 100,  // Power iteration iterations
-    LaplacianType laplacian_type = LaplacianType::Unnormalized  // Default matches Mathematica
+    LaplacianType laplacian_type = LaplacianType::Unnormalized  // Default matches the Wolfram Language
 );
 
 // =============================================================================

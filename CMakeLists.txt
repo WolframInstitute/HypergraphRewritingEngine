@@ -122,9 +122,9 @@ if(BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
 
-# Optional: Build Mathematica paclet if Mathematica is found
-option(BUILD_MATHEMATICA_PACLET "Build Mathematica paclet library" ON)
-if(BUILD_MATHEMATICA_PACLET)
+# Optional: Build Wolfram Language paclet if the Wolfram Language is found
+option(BUILD_WOLFRAM_LANGUAGE_PACLET "Build Wolfram Language paclet library" ON)
+if(BUILD_WOLFRAM_LANGUAGE_PACLET)
     add_subdirectory(paclet_source)
 endif()
 

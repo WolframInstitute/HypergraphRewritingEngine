@@ -99,7 +99,7 @@ This will build for all platforms where toolchains are available.
 **Native Linux:**
 ```bash
 mkdir build_linux && cd build_linux
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -107,7 +107,7 @@ make -j$(nproc) paclet
 ```bash
 # WSL can build Linux binaries natively
 mkdir build_linux && cd build_linux
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -118,7 +118,7 @@ make -j$(nproc) paclet
 docker run --rm -v $(pwd):/src -w /src ubuntu:22.04 bash -c "
   apt update && apt install -y cmake g++ make &&
   mkdir -p build_linux && cd build_linux &&
-  cmake .. -DBUILD_MATHEMATICA_PACLET=ON &&
+  cmake .. -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON &&
   make -j paclet
 "
 ```
@@ -135,7 +135,7 @@ mkdir build_windows && cd build_windows
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -149,7 +149,7 @@ mkdir build_windows && cd build_windows
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(sysctl -n hw.ncpu) paclet
 ```
 
@@ -160,7 +160,7 @@ cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
   -DWINDOWS_COMPILER=clang \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -168,7 +168,7 @@ make -j$(nproc) paclet
 ```powershell
 mkdir build_windows
 cd build_windows
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 cmake --build . --config Release --target paclet
 ```
 
@@ -177,7 +177,7 @@ cmake --build . --config Release --target paclet
 **Native macOS:**
 ```bash
 mkdir build_macos && cd build_macos
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(sysctl -n hw.ncpu) paclet
 ```
 
@@ -274,7 +274,7 @@ mkdir build_macos && cd build_macos
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 
 make -j$(nproc) paclet
 ```
@@ -357,22 +357,22 @@ Each toolchain:
 - Supports multiple architectures (x86_64, ARM64)
 - Provides clear error messages with installation instructions
 
-## Mathematica/Wolfram Integration
+## Wolfram Language Integration
 
-The build system automatically finds Mathematica/Wolfram installations:
+The build system automatically finds Wolfram Language installations:
 
 **Manual Override:**
 ```bash
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
-  -DMATHEMATICA_INSTALL_DIR="/path/to/Mathematica"
+  -DWOLFRAM_LANGUAGE_INSTALL_DIR="/path/to/Wolfram"
 ```
 
 **WSL Users:**
 ```bash
-# Automatically detects Windows Mathematica
+# Automatically detects Windows Wolfram Language
 cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
-  -DMATHEMATICA_INSTALL_DIR="/mnt/c/Program Files/Wolfram Research/Mathematica/13.3"
+  -DWOLFRAM_LANGUAGE_INSTALL_DIR="/mnt/c/Program Files/Wolfram Research/Wolfram/14.1"
 ```
 
 ## Output Locations

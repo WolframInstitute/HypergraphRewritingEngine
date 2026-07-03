@@ -855,7 +855,7 @@ enum class HighlightMode {
     Ball   // Single vertex + ball neighborhood (for Dimension/Curvature Ball)
 };
 
-// Mathematica ColorData[1,...] palette for distance-based shell coloring
+// Wolfram Language ColorData[1,...] palette for distance-based shell coloring
 static std::tuple<float, float, float> shell_color(int dist) {
     switch (dist) {
         case 0: return {0.37f, 0.51f, 0.71f};  // Blue (center/path)

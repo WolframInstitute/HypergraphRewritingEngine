@@ -16,8 +16,6 @@
 #include "segmented_array.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
-#include "uniqueness_tree.hpp"
-#include "incremental_uniqueness_tree.hpp"
 #include "wl_hash.hpp"
 #include "concurrent_map.hpp"
 
@@ -27,20 +25,9 @@
 namespace hypergraph {
 
 // =============================================================================
-// HashStrategy: Controls which hashing algorithm to use
-// =============================================================================
-
-enum class HashStrategy {
-    UniquenessTree,            // True Gorard-style uniqueness trees (BFS tree structure)
-    IncrementalUniquenessTree, // Incremental version that caches subtree hashes
-    WL,                        // Weisfeiler-Lehman style iterative refinement
-    IncrementalWL              // Incremental WL that reuses parent vertex hashes
-};
-
-// =============================================================================
 // DirectAdjacencyWithArity: wraps a raw adjacency map (vertex -> list of
 // (edge, position)) to provide for_each_adjacent and for_each_occurrence
-// interfaces expected by tree-hash computations.
+// interfaces expected by the WL hash computation.
 // =============================================================================
 template<typename AdjacencyMapT, typename ArityAccessor>
 class DirectAdjacencyWithArity {
@@ -110,28 +97,11 @@ class Hypergraph {
     // Event storage
     SegmentedArray<Event> events_;
 
-    // Match storage
-    SegmentedArray<Match> matches_;
-
     // Pattern matching indices
     PatternMatchingIndex match_index_;
 
     // Per-state child tracking for match cascading
     SegmentedArray<LockFreeList<StateId>> state_children_;
-
-    // Per-state match lists
-    SegmentedArray<LockFreeList<MatchId>> state_matches_;
-
-    // Per-state incremental cache for IncrementalUniquenessTree strategy
-    SegmentedArray<StateIncrementalCache> state_incremental_cache_;
-
-    // Per-state WL hash cache (atomic pointer to VertexHashCache)
-    // Used to memoize compute_state_hash_with_cache for canonical states
-    // Uses atomic pointer for thread-safe initialization without torn writes
-    struct WLHashCacheEntry {
-        std::atomic<VertexHashCache*> cache_ptr{nullptr};
-    };
-    SegmentedArray<WLHashCacheEntry> wl_hash_cache_;
 
     // Causal and branchial graph
     CausalGraph causal_graph_;
@@ -142,20 +112,16 @@ class Hypergraph {
 
     // Event canonicalization state map: always keyed by isomorphism-invariant hash
     // Unlike canonical_state_map_ (keyed differently based on state_canonicalization_mode_),
-    // this map is ALWAYS keyed by canonical_hash (WL/UT) regardless of state mode.
+    // this map is ALWAYS keyed by canonical_hash (WL/IR) regardless of state mode.
     // Used by event signature computation to find canonical representatives for
     // edge correspondence when state_canonicalization_mode_ is None or Automatic.
     ConcurrentMap<uint64_t, StateId> event_canonical_state_map_;
 
-    // State canonicalization mode: controls how states are deduplicated.
-    //   None       — no evolution-time dedup; each state_id is its own cell.
-    //   Automatic  — no evolution-time dedup (matches MultiwaySystem reference);
-    //                display-time grouping via content-ordered hash is computed
-    //                on demand at output time by compute_content_ordered_hash().
-    //   Full       — dedup via IR canonical hash (exact isomorphism — no false
-    //                positives, so the IR hash is used directly as the map key).
-    // atomic<> is load-bearing on ARM64: worker threads must see the value the
-    // main thread writes before the first state is created.
+    // State canonicalization mode: controls how states are deduplicated
+    // None: tree mode - no deduplication, each state is unique
+    // Automatic: content-ordered hash (not yet implemented, behaves like Full)
+    // Full: isomorphism-invariant hash via WL approximate or IR exact
+    // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
     // ==========================================================================
@@ -171,15 +137,20 @@ class Hypergraph {
     // state_edges.contains(edge_id) to get per-state adjacency without copying.
     SegmentedArray<LockFreeList<EdgeOccurrence>> vertex_adjacency_;
 
-    // Hash strategy implementations
-    std::unique_ptr<UniquenessTree> unified_tree_;                 // Gorard-style uniqueness trees
-    std::unique_ptr<IncrementalUniquenessTree> incremental_tree_;  // Incremental version
-    std::unique_ptr<WLHash> wl_hash_;                                     // Weisfeiler-Lehman hashing
-    HashStrategy hash_strategy_{HashStrategy::WL}; // Weisfeiler-Lehman hashing (default)
+    // Weisfeiler-Leman hash implementation (fast approximate state hash)
+    std::unique_ptr<WLHash> wl_hash_;
 
-    // Stats for bloom filter-based vertex hash reuse in compute_canonical_hash_incremental
-    mutable std::atomic<size_t> bloom_reused_{0};
-    mutable std::atomic<size_t> bloom_recomputed_{0};
+    // Selects the algorithm for compute_canonical_hash:
+    //   true  -> WL approximate hash (fast hot path)
+    //   false -> IR exact canonicalization (isomorphism-invariant)
+    bool use_shared_tree_{true};
+
+    // Incremental WL: when on, a child's WL canonical hash (None/Automatic modes) is
+    // computed from the parent's cached WL history + the rewrite delta, instead of a
+    // full recomputation. Bit-identical to full WL, so dedup is unaffected. The epoch
+    // guards the per-worker history cache against StateId reuse across evolutions.
+    std::atomic<bool> incremental_wl_{false};
+    std::atomic<uint64_t> incremental_epoch_{0};
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -198,9 +169,7 @@ class Hypergraph {
 
 public:
     Hypergraph()
-        : unified_tree_(std::make_unique<UniquenessTree>(&arena_))
-        , incremental_tree_(std::make_unique<IncrementalUniquenessTree>(&arena_))
-        , wl_hash_(std::make_unique<WLHash>(&arena_))
+        : wl_hash_(std::make_unique<WLHash>(&arena_))
     {
         causal_graph_.set_arena(&arena_);
     }
@@ -279,9 +248,9 @@ public:
     }
 
     // =========================================================================
-    // Edge Accessors for UniquenessTree
+    // Edge Accessors for the WL hash
     // =========================================================================
-    // These provide the interface needed by UniquenessTree::compute()
+    // These provide the interface needed by WLHash::compute_state_hash*()
 
     // Get vertex array for an edge (returns pointer to vertices)
     const VertexId* edge_vertices(EdgeId eid) const {
@@ -298,7 +267,7 @@ public:
         return edge_signatures_[eid];
     }
 
-    // Lightweight accessor for UniquenessTree that provides pointer indexing
+    // Lightweight accessor for the WL hash that provides pointer indexing
     // Returns pointer to edge's inline vertex array - no copying or allocation
     class EdgeVertexAccessorRaw {
         const Hypergraph* hg_;
@@ -345,7 +314,7 @@ public:
     }
 
     // Iterate over edges containing vertex v that are also in state_edges
-    // This is the key operation for tree hash computation without copying adjacency
+    // This is the key operation for the WL hash computation without copying adjacency
     template<typename F>
     void for_each_adjacent_edge_in_state(
         VertexId v,
@@ -371,7 +340,7 @@ public:
 
     // Adjacency provider wrapper for use with hash strategies
     // This wraps the global adjacency index into an object that can be passed
-    // to IncrementalUniquenessTree's external adjacency methods
+    // to the incremental WL hash's adjacency queries
     class GlobalAdjacencyProvider {
         const Hypergraph* hg_;
     public:
@@ -534,12 +503,27 @@ public:
     // Thread safety: Fully linearizable. We create the state first, then try to
     // insert into the canonical map. If another thread wins, we return their state
     // (the created state becomes "wasted" but this is correct).
+    // canonical_hash is computed internally (mode-aware): the exact IR hash in Full
+    // mode (reused as both identity and dedup key), the fast WL hash otherwise.
+    // The optional incr_* delta (parent state + consumed/produced edges) lets the WL
+    // hash be computed incrementally from the parent's cached history when
+    // incremental WL is enabled; it is bit-identical, so dedup is unaffected.
     CanonicalStateResult create_or_get_canonical_state(
         SparseBitset&& edge_set,
-        uint64_t canonical_hash,
         uint32_t step = 0,
-        EventId parent_event = INVALID_ID
+        EventId parent_event = INVALID_ID,
+        StateId incr_parent = INVALID_ID,
+        const EdgeId* incr_consumed = nullptr, uint8_t incr_num_consumed = 0,
+        const EdgeId* incr_produced = nullptr, uint8_t incr_num_produced = 0
     );
+
+    // Enable/disable incremental WL for the child hash (None/Automatic modes). Bumps
+    // the history-cache epoch so stale per-worker histories are never reused.
+    void set_incremental_wl(bool on) {
+        incremental_wl_.store(on, std::memory_order_release);
+        if (on) incremental_epoch_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    bool incremental_wl() const { return incremental_wl_.load(std::memory_order_acquire); }
 
     // Lookup existing canonical state by hash (waits for concurrent inserts)
     std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const {
@@ -564,7 +548,7 @@ public:
     }
 
     // Get the canonical state for event canonicalization purposes.
-    // Always uses the isomorphism-invariant hash (WL/UT) to find the canonical
+    // Always uses the isomorphism-invariant hash (WL/IR) to find the canonical
     // representative, regardless of state_canonicalization_mode_.
     // This is needed for computing edge correspondence when state mode is None.
     StateId get_canonical_state_for_event(StateId raw_state) const {
@@ -610,15 +594,19 @@ public:
         return state_canonicalization_mode_.load(std::memory_order_acquire);
     }
 
-    // Legacy setter for backward compatibility
-    void set_state_canonicalization(bool enabled) {
-        state_canonicalization_mode_.store(
-            enabled ? StateCanonicalizationMode::Full : StateCanonicalizationMode::None,
-            std::memory_order_release);
+    // Select the WL approximate hash for compute_canonical_hash (fast hot path)
+    void enable_shared_tree() {
+        use_shared_tree_ = true;
     }
 
-    bool state_canonicalization_enabled() const {
-        return state_canonicalization_mode_.load(std::memory_order_acquire) != StateCanonicalizationMode::None;
+    // Select IR exact canonicalization for compute_canonical_hash
+    void disable_shared_tree() {
+        use_shared_tree_ = false;
+    }
+
+    // Whether compute_canonical_hash uses the WL approximate hash
+    bool shared_tree_enabled() const {
+        return use_shared_tree_;
     }
 
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
@@ -729,64 +717,14 @@ public:
         return event_signature_keys_;
     }
 
-    // Hash strategy (UniquenessTree vs WL)
-    void set_hash_strategy(HashStrategy strategy) {
-        hash_strategy_ = strategy;
-    }
-
-    HashStrategy hash_strategy() const {
-        return hash_strategy_;
-    }
-
-    // Abort flag for long-running operations (e.g., tree hash computation)
+    // Abort flag for long-running operations (e.g., canonical hash computation)
     // Set by evolution engine to allow early termination on user abort
     void set_abort_flag(std::atomic<bool>* flag) {
         abort_flag_ = flag;
-        // Propagate to every hash implementation that runs long refinement
-        // loops — any of them can block an evolve_with_abort() without this.
-        if (unified_tree_) unified_tree_->set_abort_flag(flag);
-        if (incremental_tree_) incremental_tree_->set_abort_flag(flag);
-        if (wl_hash_) wl_hash_->set_abort_flag(flag);
     }
 
     bool should_abort() const {
         return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
-    }
-
-    // =========================================================================
-    // Match Management
-    // =========================================================================
-
-    // Register a new match
-    MatchId register_match(
-        RuleIndex rule_index,
-        const EdgeId* matched_edges,
-        uint8_t num_edges,
-        const VariableBinding& binding,
-        StateId origin_state
-    );
-
-    // Get match by ID
-    const Match& get_match(MatchId mid) const {
-        return matches_[mid];
-    }
-
-    Match& get_match(MatchId mid) {
-        return matches_[mid];
-    }
-
-    // Iterate over matches in a state
-    template<typename Visitor>
-    void for_each_match(StateId sid, Visitor&& visit) const {
-        if (sid >= state_matches_.size()) return;
-        state_matches_[sid].for_each([&](MatchId mid) {
-            visit(mid);
-        });
-    }
-
-    // Number of matches
-    uint32_t num_matches() const {
-        return counters_.next_match.load(std::memory_order_relaxed);
     }
 
     // =========================================================================
@@ -882,87 +820,32 @@ public:
     // Fast but not isomorphism-invariant.
     uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
 
-    // Compute canonical hash using exact canonicalization (isomorphism-invariant)
-    // Uses factorial-time algorithm for correctness, but fast for small graphs
-    // If shared_tree is enabled, uses faster uniqueness tree hashing instead
+    // Compute canonical hash (isomorphism-invariant).
+    // With the WL hash enabled (use_shared_tree_), uses the fast approximate hash;
+    // otherwise falls back to IR exact canonicalization.
     uint64_t compute_canonical_hash(const SparseBitset& edges) const;
 
-    // Debug: Get canonical form as string
-    std::string get_canonical_form_string(const SparseBitset& edges) const;
+    // Compute the Weisfeiler-Leman approximate canonical hash for a set of
+    // edges. This is the fast hot-path hash backing compute_canonical_hash (in
+    // WL mode), the per-state canonical_hash recorded during evolution, and the
+    // isomorphism-invariant key for event canonicalization.
+    uint64_t compute_wl_hash(const SparseBitset& edges) const;
 
-    // Debug: Get raw edges as string
-    std::string get_raw_edges_string(const SparseBitset& edges) const;
+    // Incremental WL child hash from the parent's cached history + the rewrite delta.
+    // Bit-identical to compute_wl_hash(child_edges). Falls back to full WL if the
+    // parent's edges are unavailable.
+    uint64_t compute_wl_hash_incremental(
+        const SparseBitset& child_edges, StateId parent,
+        const EdgeId* consumed, uint8_t num_consumed,
+        const EdgeId* produced, uint8_t num_produced) const;
 
-    // Compute canonical hash using the selected hash strategy (WL / UT / iUT).
-    // Dispatches via hash_strategy_; uses globally cached vertex tree data for
-    // incremental computation where the strategy supports it. Note: this is
-    // the heuristic hash with known false-positive potential on symmetric
-    // graphs — for exact isomorphism use IRCanonicalizer directly.
-    uint64_t compute_canonical_hash_shared(const SparseBitset& edges) const;
-
-    // Get or compute WL hash cache for a state (memoized)
-    // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
-    VertexHashCache get_or_compute_wl_cache(StateId state_id);
-
-    // Get or compute UT-Inc hash cache for a state (memoized)
-    // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
-    VertexHashCache get_or_compute_ut_cache(StateId state_id);
-
-    // Get or compute plain UT hash cache for a state (memoized)
-    // Thread-safe: uses atomic pointer with compare-exchange to prevent torn writes
-    // Reuses wl_hash_cache_ since WL and UT are mutually exclusive
-    VertexHashCache get_or_compute_ut_plain_cache(StateId state_id);
-
-    // =========================================================================
-    // Unified Hash Strategy Dispatch Helpers
-    // =========================================================================
-    // These methods provide a single interface regardless of which hash strategy
-    // is active, eliminating the need for repeated if/else dispatch chains.
-
-    // Compute hash with cache using the active hash strategy
-    // Returns {hash, vertex_cache} pair
-    std::pair<uint64_t, VertexHashCache> compute_hash_with_cache_dispatch(
-        const SparseBitset& edges
-    ) const;
-
-    // Get or compute hash cache for a state using the active hash strategy
-    // Thread-safe: memoizes the result per state
-    VertexHashCache get_or_compute_hash_cache_dispatch(StateId state_id);
-
-    // Find edge correspondence between two isomorphic states using active strategy
-    // Returns mapping from state1 edges to state2 edges
+    // Find edge correspondence between two isomorphic states. Uses IR in Full
+    // canonicalization mode, WL subtree hashes otherwise.
+    // Returns mapping from state1 edges to state2 edges.
     EdgeCorrespondence find_edge_correspondence_dispatch(
         const SparseBitset& state1_edges,
         const SparseBitset& state2_edges
     ) const;
-
-    // =========================================================================
-    // Incremental Hash Computation
-    // =========================================================================
-    // These methods enable O(delta) hash computation for child states by
-    // reusing parent state's vertex hash cache.
-
-    // Compute canonical hash incrementally using parent state's cache
-    // Returns (hash, cache_for_new_state)
-    std::pair<uint64_t, VertexHashCache> compute_canonical_hash_incremental(
-        const SparseBitset& new_edges,
-        StateId parent_state,
-        const EdgeId* consumed_edges, uint8_t num_consumed,
-        const EdgeId* produced_edges, uint8_t num_produced
-    );
-
-    // Store computed cache for a state (call after creating state)
-    // Thread-safe: uses compare-exchange on atomic pointer to ensure only one thread writes.
-    void store_state_cache(StateId state, const VertexHashCache& cache);
-
-    // Get number of stored caches (for debugging/profiling)
-    size_t num_stored_caches() const;
-
-    // Get incremental tree stats (for profiling)
-    // Returns stats from bloom filter reuse path + incremental tree fallback path
-    std::pair<size_t, size_t> incremental_tree_stats() const;
-
-    void reset_incremental_tree_stats();
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const {

@@ -728,7 +728,7 @@ TEST(Unified_Integration, SingleStepEvolution) {
     initial_edges.set(e2, hg.arena());
     uint64_t initial_hash = hg.compute_canonical_hash(initial_edges);
     auto [initial, raw_initial, was_new] = hg.create_or_get_canonical_state(
-        std::move(initial_edges), initial_hash, 0, INVALID_ID);
+        std::move(initial_edges), 0, INVALID_ID);
 
     // Rule: {x, y}, {y, z} → {x, z}
     RewriteRule rule = make_rule(0)

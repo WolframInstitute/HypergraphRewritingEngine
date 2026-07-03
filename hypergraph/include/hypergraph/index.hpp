@@ -276,20 +276,54 @@ public:
     ) const {
         if (count == 0) return;
 
-        // Just use first vertex's list - the edge vertex check is O(arity) anyway
-        // No need to find smallest list since we're not doing O(n) membership scans
-        VertexId first_v = vertices[0];
-        auto result = vertex_to_edges_.lookup(first_v);
-        if (!result.has_value()) return;
+        // Seed the scan from the bound vertex with the SHORTEST occurrence list.
+        // The yielded set (edges in state containing ALL bound vertices) is the same
+        // whichever bound vertex's list is walked; only the walk length differs. The
+        // inverted index is global and append-only over the whole evolution, so a hub
+        // vertex owns a huge occurrence list; seeding from the rarest bound vertex
+        // avoids a near-full-history scan per query.
+        //
+        // If any bound vertex has no occurrence list at all, it appears in no edge, so
+        // the intersection is empty and we can stop.
+        constexpr uint32_t PROBE_CAP = 64;  // bounds probe cost; long lists clamp here
 
-        // Iterate through first vertex's edge list
-        for_each_edge(first_v, state_edges, [&](EdgeId eid) {
-            // Check if edge contains all required vertices by examining edge data directly
-            // This is O(arity * count) instead of O(edges_per_vertex * count)
+        uint8_t seed_idx = 0;
+        const LockFreeList<EdgeId>* seed_list = nullptr;
+        uint32_t seed_len = UINT32_MAX;
+
+        for (uint8_t i = 0; i < count; ++i) {
+            auto result = vertex_to_edges_.lookup(vertices[i]);
+            if (!result.has_value()) return;  // vertex occurs nowhere -> empty intersection
+            const LockFreeList<EdgeId>* list = result.value();
+
+            // Probe length only far enough to decide whether this list beats the
+            // current best, capped so a hub list is never fully walked just to measure
+            // it. Total probing is O(count * min(shortest_len, PROBE_CAP)).
+            uint32_t bound = seed_len < PROBE_CAP ? seed_len : PROBE_CAP;
+            uint32_t len = 0;
+            list->for_each_while([&](EdgeId) {
+                ++len;
+                return len < bound;
+            });
+
+            if (seed_list == nullptr || len < seed_len) {
+                seed_len = len;
+                seed_idx = i;
+                seed_list = list;
+            }
+        }
+
+        // Iterate the seed vertex's edge list; keep edges present in state that also
+        // contain every OTHER bound vertex. This is O(arity * count) per edge instead
+        // of an O(edges_per_vertex * count) list membership scan.
+        seed_list->for_each([&](EdgeId eid) {
+            if (!state_edges.contains(eid)) return;
+
             const auto& edge = get_edge(eid);
             bool contains_all = true;
 
-            for (uint8_t i = 1; i < count && contains_all; ++i) {  // Skip first, already in list
+            for (uint8_t i = 0; i < count && contains_all; ++i) {
+                if (i == seed_idx) continue;  // seed vertex is present by construction
                 VertexId required_v = vertices[i];
                 bool found = false;
                 for (uint8_t j = 0; j < edge.arity && !found; ++j) {

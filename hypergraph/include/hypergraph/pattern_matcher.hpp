@@ -18,19 +18,19 @@
 namespace hypergraph {
 
 // =============================================================================
-// Pattern Matching Tasks (HGMatch dataflow model)
+// Pattern Matching Tasks (HGMatch Dataflow Model)
 // =============================================================================
 //
-// SCAN → EXPAND* → SINK → REWRITE. SCAN and EXPAND execute synchronously
-// inside one task (depth-first recursive), keeping intermediate state bounded
-// by O(pattern_edges × candidates). Only SINK → REWRITE spawns new job-system
-// jobs, so the cascade does not blow up memory even on highly branching rules.
+// Following v1's execution model:
+// - SCAN/EXPAND execute synchronously (recursive depth-first within single task)
+// - Only SINK→REWRITE spawns new jobs to the job system
+// - This is memory-efficient (bounded by O(pattern_edges * candidates))
 //
 // Task types:
-// - SCAN:    find initial candidates via signature partition
-// - EXPAND:  extend partial match with next pattern edge
-// - SINK:    complete match found; spawn REWRITE
-// - REWRITE: apply rule, create new state, spawn next MATCH
+// - SCAN: Find initial candidates via signature partition
+// - EXPAND: Extend partial match with next pattern edge
+// - SINK: Process complete match, spawn REWRITE task
+// - REWRITE: Apply rule, create new state, spawn next evolution step
 
 // PartialMatch is defined in pattern.hpp
 
@@ -61,29 +61,6 @@ inline bool validate_candidate(
         }
     }
     return true;
-}
-
-// Check if two bindings are consistent (no conflicting variable values)
-inline bool bindings_consistent(const VariableBinding& a, const VariableBinding& b) {
-    uint32_t common = a.bound_mask & b.bound_mask;
-    while (common) {
-        uint8_t var = __builtin_ctz(common);
-        if (a.get(var) != b.get(var)) return false;
-        common &= common - 1;
-    }
-    return true;
-}
-
-// Merge two consistent bindings
-inline VariableBinding merge_bindings(const VariableBinding& a, const VariableBinding& b) {
-    VariableBinding merged = a;
-    uint32_t to_add = b.bound_mask & ~a.bound_mask;
-    while (to_add) {
-        uint8_t var = __builtin_ctz(to_add);
-        merged.bind(var, b.get(var));
-        to_add &= to_add - 1;
-    }
-    return merged;
 }
 
 // =============================================================================
@@ -156,10 +133,12 @@ struct PatternMatchingContext {
         , on_match(callback)
         , match_dedup(nullptr)
     {
-        // Pre-compute pattern signatures and compatible signature caches
+        // Copy the rule's precomputed per-edge signatures and compatible-signature
+        // caches (built once in RewriteRule::compute_var_counts) rather than rerunning
+        // the from_pattern Bell enumeration here.
         for (uint8_t i = 0; i < r->num_lhs_edges; ++i) {
-            pattern_sigs[i] = r->lhs[i].signature();
-            sig_caches[i] = CompatibleSignatureCache::from_pattern(pattern_sigs[i]);
+            pattern_sigs[i] = r->lhs_sig[i];
+            sig_caches[i] = r->lhs_cache[i];
         }
     }
 };
@@ -277,8 +256,8 @@ void expand_match(
         return;
     }
 
-    // Get next pattern edge to match
-    uint8_t pattern_idx = partial.next_pattern_idx();
+    // Next pattern edge to match, in the rule's optimized join order.
+    uint8_t pattern_idx = ctx.rule->match_order[partial.num_matched];
     if (pattern_idx >= ctx.rule->num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_idx];
@@ -326,10 +305,11 @@ void scan_pattern(
 ) {
     if (ctx.rule->num_lhs_edges == 0) return;
 
-    // Start with first pattern edge (could optimize with matching order)
-    const PatternEdge& first_edge = ctx.rule->lhs[0];
-    const EdgeSignature& first_sig = ctx.pattern_sigs[0];
-    const CompatibleSignatureCache& first_cache = ctx.sig_caches[0];
+    // Seed the join with the rule's most-constrained edge (match_order[0]).
+    const uint8_t first_pidx = ctx.rule->match_order[0];
+    const PatternEdge& first_edge = ctx.rule->lhs[first_pidx];
+    const EdgeSignature& first_sig = ctx.pattern_sigs[first_pidx];
+    const CompatibleSignatureCache& first_cache = ctx.sig_caches[first_pidx];
 
     // Generate candidates for first edge
     generate_candidates(
@@ -351,7 +331,7 @@ void scan_pattern(
             // Create initial partial match
             PartialMatch partial;
             partial.num_pattern_edges = ctx.rule->num_lhs_edges;
-            partial.add_match(0, candidate, binding);
+            partial.add_match(first_pidx, candidate, binding);
 
             // Single-edge pattern: complete match
             if (ctx.rule->num_lhs_edges == 1) {
@@ -446,34 +426,6 @@ void find_matches(
                  sig_index, inv_index, get_edge, compute_signature,
                  std::forward<MatchCallback>(on_match),
                  should_terminate, matches_found, max_matches, match_dedup);
-}
-
-// Find all matches for multiple rules
-template<typename EdgeAccessor, typename MatchCallback>
-void find_all_matches(
-    const RewriteRule* rules,
-    uint16_t num_rules,
-    StateId state_id,
-    const SparseBitset& state_edges,
-    const SignatureIndex& sig_index,
-    const InvertedVertexIndex& inv_index,
-    EdgeAccessor get_edge,
-    MatchCallback&& on_match,
-    std::atomic<bool>* should_terminate = nullptr,
-    std::atomic<size_t>* matches_found = nullptr,
-    size_t max_matches = SIZE_MAX,
-    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
-) {
-    for (uint16_t r = 0; r < num_rules; ++r) {
-        if (should_terminate && should_terminate->load()) break;
-
-        find_matches(
-            rules[r], r, state_id, state_edges,
-            sig_index, inv_index, get_edge,
-            std::forward<MatchCallback>(on_match),
-            should_terminate, matches_found, max_matches, match_dedup
-        );
-    }
 }
 
 // =============================================================================

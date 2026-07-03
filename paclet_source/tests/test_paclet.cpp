@@ -4,7 +4,7 @@
 /**
  * Paclet Integration Tests
  *
- * These tests verify that the Mathematica paclet works end-to-end,
+ * These tests verify that the Wolfram Language paclet works end-to-end,
  * testing the full pipeline: WXF serialization → FFI → hypergraph evolution → WXF deserialization
  */
 
@@ -23,7 +23,7 @@ protected:
 // PACLET INTEGRATION TESTS
 // ============================================================================
 
-#if BUILD_MATHEMATICA_PACLET && WOLFRAMSCRIPT_AVAILABLE
+#if BUILD_WOLFRAM_LANGUAGE_PACLET && WOLFRAMSCRIPT_AVAILABLE
 
 TEST_F(PacletTest, TestPacletRoundTrip) {
     // Test the actual paclet using the correct method from CLAUDE.md
@@ -69,16 +69,24 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
                       "Print[\"HGEvolve completed\"]; "
                       "Print[\"Result: \", result]; "
                       "Print[\"Result type: \", Head[result]]; "
-                      "If[AssociationQ[result], Print[\"Success! Got Debug association with keys: \", Keys[result]; Exit[0]], Print[\"Failed! Expected Debug association but got: \", result; Exit[1]]]";
+                      "If[AssociationQ[result], Print[\"PACLET_TEST_OK keys: \", Keys[result]], Print[\"PACLET_TEST_FAIL: \", result]]";
 
-    int result = test_utils::executeWolframScript(code);
-    EXPECT_EQ(0, result) << "Paclet basic functionality test failed - HGEvolve function not found";
+    // Assert on a printed success marker, not the process exit code: a Windows
+    // wolframscript.exe invoked from WSL exits with a benign license error at
+    // shutdown, so the exit status is unreliable. The marker is printed only after
+    // HGEvolve returns a valid Debug association.
+    std::string out = test_utils::executeWolframScriptCapture(code);
+    EXPECT_NE(out.find("PACLET_TEST_OK"), std::string::npos)
+        << "Paclet basic functionality test failed - HGEvolve did not return a Debug "
+           "association. WolframScript output:\n" << out;
+    EXPECT_EQ(out.find("PACLET_TEST_FAIL"), std::string::npos)
+        << "HGEvolve returned a non-association result. WolframScript output:\n" << out;
 }
 
 #else
 
 TEST_F(PacletTest, SkipPacletTests) {
-    GTEST_SKIP() << "Paclet tests require BUILD_MATHEMATICA_PACLET and WOLFRAMSCRIPT_AVAILABLE";
+    GTEST_SKIP() << "Paclet tests require BUILD_WOLFRAM_LANGUAGE_PACLET and WOLFRAMSCRIPT_AVAILABLE";
 }
 
-#endif // BUILD_MATHEMATICA_PACLET && WOLFRAMSCRIPT_AVAILABLE
+#endif // BUILD_WOLFRAM_LANGUAGE_PACLET && WOLFRAMSCRIPT_AVAILABLE

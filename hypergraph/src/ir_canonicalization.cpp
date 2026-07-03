@@ -5,6 +5,13 @@
 #include <map>
 #include <set>
 
+// Profiling counters compile in only under IR_CANON_PROFILE (see ir_canonicalization.hpp).
+#ifdef IR_CANON_PROFILE
+#define IR_PROF(stmt) stmt
+#else
+#define IR_PROF(stmt)
+#endif
+
 namespace hypergraph {
 
 // =============================================================================
@@ -30,11 +37,11 @@ size_t IRPartition::first_non_singleton() const {
 // =============================================================================
 
 IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
-    const std::vector<std::vector<VertexId>>& edges) const {
+    const SVec<SVec<VertexId>>& edges) const {
     HypergraphAdj adj;
     adj.edges = &edges;
 
-    std::set<VertexId> verts;
+    SSet<VertexId> verts;
     for (const auto& edge : edges) {
         for (VertexId v : edge) verts.insert(v);
     }
@@ -49,11 +56,14 @@ IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
     }
 
     adj.vertex_edges.resize(adj.num_vertices);
+    adj.edges_idx.resize(edges.size());
     for (uint32_t ei = 0; ei < edges.size(); ++ei) {
         uint8_t arity = static_cast<uint8_t>(edges[ei].size());
+        adj.edges_idx[ei].reserve(arity);
         for (uint8_t pos = 0; pos < arity; ++pos) {
             uint32_t vi = adj.orig_to_idx[edges[ei][pos]];
             adj.vertex_edges[vi].push_back({ei, pos, arity});
+            adj.edges_idx[ei].push_back(vi);
         }
     }
 
@@ -68,18 +78,10 @@ IRPartition IRCanonicalizer::initial_partition(const HypergraphAdj& adj) const {
     IRPartition pi;
     pi.vertex_to_cell.resize(adj.num_vertices);
 
-    // Initially all vertices in one cell (no coloring for original vertices)
-    // The refinement step will separate them based on structure
-    std::vector<uint32_t> all;
-    all.reserve(adj.num_vertices);
-    for (uint32_t i = 0; i < adj.num_vertices; ++i) {
-        all.push_back(i);
-    }
-
     // Initial refinement: group by degree signature
     // (sorted list of (arity, position) pairs for all occurrences)
-    using DegreeSig = std::vector<std::pair<uint8_t, uint8_t>>;
-    std::map<DegreeSig, std::vector<uint32_t>> sig_groups;
+    using DegreeSig = SVec<std::pair<uint8_t, uint8_t>>;
+    SMap<DegreeSig, SVec<uint32_t>> sig_groups;
 
     for (uint32_t vi = 0; vi < adj.num_vertices; ++vi) {
         DegreeSig sig;
@@ -108,60 +110,148 @@ IRPartition IRCanonicalizer::initial_partition(const HypergraphAdj& adj) const {
 
 bool IRCanonicalizer::refine(const HypergraphAdj& adj, IRPartition& pi) const {
     bool changed = false;
-    bool any_split = true;
+    const uint32_t n = adj.num_vertices;
+    const size_t num_edges = adj.edges_idx.size();
 
-    while (any_split) {
-        any_split = false;
+    // Position of each vertex within its current cell, for O(1) swap-removal.
+    SVec<uint32_t> pos_in_cell(n);
+    for (uint32_t ci = 0; ci < pi.cells.size(); ++ci)
+        for (uint32_t j = 0; j < pi.cells[ci].size(); ++j)
+            pos_in_cell[pi.cells[ci][j]] = j;
 
-        for (size_t ci = 0; ci < pi.cells.size(); ++ci) {
-            if (pi.cells[ci].size() <= 1) continue;
+    // Splitter worklist (cell indices), processed lowest-index first. Index order
+    // is structurally determined, so refinement stays equivariant under vertex
+    // relabeling. Refining a cell C by a splitter S only inspects vertices that
+    // share an edge with S, so a split costs O(boundary), not O(|C|); keeping the
+    // largest piece at C's index (below) bounds total work to ~O(E log n).
+    SSet<uint32_t> worklist;
+    for (uint32_t ci = 0; ci < pi.cells.size(); ++ci) worklist.insert(ci);
 
-            // For each vertex, compute signature based on co-occurrence with
-            // vertices in each cell across all edges.
-            // Signature: for each edge containing this vertex, collect
-            //   (arity, position, sorted cell indices of other vertices)
-            using EdgeSig = std::vector<uint32_t>; // (arity, position, cells of co-vertices...)
-            std::map<std::vector<EdgeSig>, std::vector<uint32_t>> sig_to_verts;
+    // Reusable scratch (no per-splitter allocation).
+    SVec<uint32_t> inc_edges;
+    SVec<uint32_t> edge_epoch(num_edges, 0);
+    uint32_t epoch = 0;
+    SVec<uint32_t> touched;               // vertices sharing an S-incident edge
+    SVec<uint8_t> on_touched(n, 0);
+    SVec<SVec<uint64_t>> vsig(n);   // per-vertex signature w.r.t. S (cleared after use)
 
-            for (uint32_t vi : pi.cells[ci]) {
-                std::vector<EdgeSig> vertex_sig;
+    while (!worklist.empty()) {
+        uint32_t S = *worklist.begin();
+        worklist.erase(worklist.begin());
+        IR_PROF(++last_stats_.refine_pops;)
 
-                for (const auto& occ : adj.vertex_edges[vi]) {
-                    EdgeSig esig;
-                    esig.push_back(occ.arity);
-                    esig.push_back(occ.position);
-
-                    const auto& edge = (*adj.edges)[occ.edge_idx];
-                    for (uint8_t p = 0; p < edge.size(); ++p) {
-                        if (p == occ.position) continue;
-                        uint32_t other_vi = adj.orig_to_idx.at(edge[p]);
-                        esig.push_back(pi.vertex_to_cell[other_vi]);
-                    }
-                    std::sort(esig.begin() + 2, esig.end());
-                    vertex_sig.push_back(std::move(esig));
+        // Edges incident to S, deduplicated via an epoch stamp.
+        ++epoch;
+        inc_edges.clear();
+        for (uint32_t s : pi.cells[S])
+            for (const auto& occ : adj.vertex_edges[s])
+                if (edge_epoch[occ.edge_idx] != epoch) {
+                    edge_epoch[occ.edge_idx] = epoch;
+                    inc_edges.push_back(occ.edge_idx);
                 }
-                std::sort(vertex_sig.begin(), vertex_sig.end());
-                sig_to_verts[vertex_sig].push_back(vi);
+        if (inc_edges.empty()) continue;
+
+        // Signature of each touched vertex w.r.t. S: one uint64 per incident edge,
+        // bits 56-63 = arity, 48-55 = the vertex's position, 0-47 = bitmask of the
+        // positions occupied by S-vertices. Exact for arity <= 48.
+        touched.clear();
+        for (uint32_t e_idx : inc_edges) {
+            const auto& edge = adj.edges_idx[e_idx];
+            uint32_t arity = static_cast<uint32_t>(edge.size());
+            uint64_t spos = 0;
+            for (uint32_t p = 0; p < arity && p < 48; ++p)
+                if (pi.vertex_to_cell[edge[p]] == S) spos |= (uint64_t(1) << p);
+            for (uint32_t pu = 0; pu < arity; ++pu) {
+                uint32_t u = edge[pu];
+                uint64_t key = (uint64_t(arity & 0xFF) << 56) | (uint64_t(pu & 0xFF) << 48) | spos;
+                if (!on_touched[u]) { on_touched[u] = 1; touched.push_back(u); }
+                vsig[u].push_back(key);
+            }
+        }
+        for (uint32_t u : touched) std::sort(vsig[u].begin(), vsig[u].end());
+
+        // Order touched vertices by (cell, signature); both keys are structural.
+        std::sort(touched.begin(), touched.end(), [&](uint32_t a, uint32_t b) {
+            uint32_t ca = pi.vertex_to_cell[a], cb = pi.vertex_to_cell[b];
+            if (ca != cb) return ca < cb;
+            return vsig[a] < vsig[b];
+        });
+
+        // Each cell's touched vertices form a contiguous run; split that cell.
+        size_t i = 0;
+        while (i < touched.size()) {
+            uint32_t C = pi.vertex_to_cell[touched[i]];
+            size_t j = i;
+            while (j < touched.size() && pi.vertex_to_cell[touched[j]] == C) ++j;
+
+            size_t adjacent = j - i;
+            size_t leftover = pi.cells[C].size() - adjacent;
+            size_t num_groups = 0;
+            for (size_t k = i; k < j;) {
+                size_t m = k;
+                while (m < j && vsig[touched[m]] == vsig[touched[k]]) ++m;
+                ++num_groups;
+                k = m;
             }
 
-            if (sig_to_verts.size() > 1) {
-                any_split = true;
+            if (num_groups + (leftover > 0 ? 1 : 0) > 1) {
                 changed = true;
-
-                auto it = sig_to_verts.begin();
-                pi.cells[ci] = it->second;
-                for (uint32_t v : pi.cells[ci]) {
-                    pi.vertex_to_cell[v] = static_cast<uint32_t>(ci);
+                // Remove the adjacent vertices from C (O(1) each); C keeps leftover.
+                for (size_t k = i; k < j; ++k) {
+                    uint32_t u = touched[k];
+                    uint32_t p = pos_in_cell[u];
+                    uint32_t last = pi.cells[C].back();
+                    pi.cells[C][p] = last;
+                    pos_in_cell[last] = p;
+                    pi.cells[C].pop_back();
                 }
-                ++it;
-                for (; it != sig_to_verts.end(); ++it) {
-                    uint32_t new_ci = static_cast<uint32_t>(pi.cells.size());
-                    for (uint32_t v : it->second) {
-                        pi.vertex_to_cell[v] = new_ci;
+                // Adjacent groups, in signature order.
+                SVec<SVec<uint32_t>> grp;
+                for (size_t k = i; k < j;) {
+                    size_t m = k;
+                    SVec<uint32_t> g;
+                    while (m < j && vsig[touched[m]] == vsig[touched[k]]) { g.push_back(touched[m]); ++m; }
+                    grp.push_back(std::move(g));
+                    k = m;
+                }
+                // Keep the largest piece at index C; the rest get new indices and are
+                // queued. The kept piece retains C's id, so vertices referencing it
+                // are unaffected and need no re-refinement.
+                size_t kept_sz = pi.cells[C].size();  // leftover (0 if none)
+                int kept = -1;
+                for (size_t g = 0; g < grp.size(); ++g)
+                    if (grp[g].size() > kept_sz) { kept_sz = grp[g].size(); kept = static_cast<int>(g); }
+
+                SVec<SVec<uint32_t>> to_queue;
+                if (kept >= 0) {
+                    if (!pi.cells[C].empty()) to_queue.push_back(std::move(pi.cells[C]));
+                    pi.cells[C] = std::move(grp[kept]);
+                    for (uint32_t t = 0; t < pi.cells[C].size(); ++t) {
+                        pos_in_cell[pi.cells[C][t]] = t;
+                        pi.vertex_to_cell[pi.cells[C][t]] = C;
                     }
-                    pi.cells.push_back(it->second);
+                    for (size_t g = 0; g < grp.size(); ++g)
+                        if (static_cast<int>(g) != kept) to_queue.push_back(std::move(grp[g]));
+                } else {
+                    for (size_t g = 0; g < grp.size(); ++g)
+                        to_queue.push_back(std::move(grp[g]));
+                }
+                for (auto& verts : to_queue) {
+                    uint32_t new_ci = static_cast<uint32_t>(pi.cells.size());
+                    for (uint32_t t = 0; t < verts.size(); ++t) {
+                        pos_in_cell[verts[t]] = t;
+                        pi.vertex_to_cell[verts[t]] = new_ci;
+                    }
+                    pi.cells.push_back(std::move(verts));
+                    worklist.insert(new_ci);
                 }
             }
+
+            for (size_t k = i; k < j; ++k) {
+                vsig[touched[k]].clear();
+                on_touched[touched[k]] = 0;
+            }
+            i = j;
         }
     }
 
@@ -183,7 +273,7 @@ IRPartition IRCanonicalizer::individualize(
             result.cells.push_back({v});
             result.vertex_to_cell[v] = static_cast<uint32_t>(result.cells.size() - 1);
 
-            std::vector<uint32_t> rest;
+            SVec<uint32_t> rest;
             for (uint32_t u : pi.cells[i]) {
                 if (u != v) rest.push_back(u);
             }
@@ -210,8 +300,8 @@ IRPartition IRCanonicalizer::individualize(
 // Extract Labeling
 // =============================================================================
 
-std::vector<uint32_t> IRCanonicalizer::extract_labeling(const IRPartition& pi) const {
-    std::vector<uint32_t> labeling(pi.vertex_to_cell.size());
+SVec<uint32_t> IRCanonicalizer::extract_labeling(const IRPartition& pi) const {
+    SVec<uint32_t> labeling(pi.vertex_to_cell.size());
     uint32_t label = 0;
     for (const auto& cell : pi.cells) {
         assert(cell.size() == 1);
@@ -224,15 +314,15 @@ std::vector<uint32_t> IRCanonicalizer::extract_labeling(const IRPartition& pi) c
 // Apply Labeling (produce sorted canonical edge list)
 // =============================================================================
 
-std::vector<std::vector<VertexId>> IRCanonicalizer::apply_labeling(
-    const std::vector<std::vector<VertexId>>& edges,
+SVec<SVec<VertexId>> IRCanonicalizer::apply_labeling(
+    const SVec<SVec<VertexId>>& edges,
     const HypergraphAdj& adj,
-    const std::vector<uint32_t>& labeling) const {
-    std::vector<std::vector<VertexId>> result;
+    const SVec<uint32_t>& labeling) const {
+    SVec<SVec<VertexId>> result;
     result.reserve(edges.size());
 
     for (const auto& edge : edges) {
-        std::vector<VertexId> mapped;
+        SVec<VertexId> mapped;
         mapped.reserve(edge.size());
         for (VertexId v : edge) {
             uint32_t vi = adj.orig_to_idx.at(v);
@@ -249,9 +339,9 @@ std::vector<std::vector<VertexId>> IRCanonicalizer::apply_labeling(
 // =============================================================================
 
 CanonicalizationResult IRCanonicalizer::build_result(
-    const std::vector<std::vector<VertexId>>& edges,
+    const SVec<SVec<VertexId>>& edges,
     const HypergraphAdj& adj,
-    const std::vector<uint32_t>& labeling) const {
+    const SVec<uint32_t>& labeling) const {
     CanonicalizationResult result;
     result.canonical_form.vertex_count = static_cast<VertexId>(adj.num_vertices);
 
@@ -264,12 +354,15 @@ CanonicalizationResult IRCanonicalizer::build_result(
         result.vertex_mapping.canonical_to_original[canonical_v] = orig_v;
     }
 
-    // Map and sort edges, tracking original indices
+    // Transient sort scratch: the collection of mapped edges draws from the per-worker
+    // scratch arena (reclaimed by the caller's mark/release). Each MappedEdge::mapped is
+    // heap because it is moved into the returned heap CanonicalForm::edges below and
+    // becomes the result's edge storage, so it must outlive the scratch reclaim.
     struct MappedEdge {
         std::vector<VertexId> mapped;
         size_t orig_idx;
     };
-    std::vector<MappedEdge> mapped;
+    SVec<MappedEdge> mapped;
     mapped.reserve(edges.size());
     for (size_t ei = 0; ei < edges.size(); ++ei) {
         MappedEdge me;
@@ -299,33 +392,90 @@ CanonicalizationResult IRCanonicalizer::build_result(
 // Main Entry Points
 // =============================================================================
 
-CanonicalizationResult IRCanonicalizer::canonicalize_edges(
-    const std::vector<std::vector<VertexId>>& edges) const {
-    if (edges.empty()) {
-        CanonicalizationResult result;
-        result.canonical_form.vertex_count = 0;
-        return result;
-    }
-
-    HypergraphAdj adj = build_adjacency(edges);
+bool IRCanonicalizer::find_canonical_labeling(
+    const SVec<SVec<VertexId>>& edges,
+    HypergraphAdj& adj,
+    SVec<uint32_t>& labeling) const {
+    IR_PROF(last_stats_ = Stats{};)
+    // All IR scratch (adjacency, partitions, search state) draws from the per-worker
+    // scratch arena; the caller's mark/release reclaims it in bulk, so canonicalization
+    // hits no heap allocator on its hot path. adj and labeling live on that scratch, so
+    // the caller must hold the mark until it has consumed them.
+    adj = build_adjacency(edges);
+    IR_PROF(last_stats_.num_vertices = adj.num_vertices;)
     IRPartition pi = initial_partition(adj);
     refine(adj, pi);
+    IR_PROF(last_stats_.discrete_after_initial_refine = pi.is_discrete();)
 
     if (pi.is_discrete()) {
-        auto labeling = extract_labeling(pi);
-        return build_result(edges, adj, labeling);
+        labeling = extract_labeling(pi);
+        return true;
     }
 
-    // Backtracking search for lexicographically smallest canonical form
+    // Backtracking search for the lexicographically smallest canonical form,
+    // with nauty-style automorphism orbit pruning. Leaves whose canonical form
+    // equals the first leaf's yield an automorphism (sigma = this^-1 . first);
+    // at each node, target-cell vertices lying in an already-explored orbit
+    // (under the automorphisms that fix the current individualization path) are
+    // skipped. This collapses the search on high-automorphism states (cycles,
+    // regular/symmetric graphs) from O(cell) branches to O(orbits) without
+    // changing the resulting canonical form.
     struct SearchState {
         const IRCanonicalizer* self;
         const HypergraphAdj* adj;
-        const std::vector<std::vector<VertexId>>* edges;
-        std::vector<uint32_t> best_labeling;
-        std::vector<std::vector<VertexId>> best_canonical;
+        const SVec<SVec<VertexId>>* edges;
+        uint32_t n = 0;
+
+        SVec<uint32_t> best_labeling;
+        SVec<SVec<VertexId>> best_canonical;
         bool has_best = false;
 
+        SVec<uint32_t> first_labeling;
+        SVec<SVec<VertexId>> first_canonical;
+        bool has_first = false;
+
+        SVec<SVec<uint32_t>> generators;  // automorphisms over vertex indices
+        SVec<uint32_t> path;              // individualized vertices on this branch
+        SVec<uint32_t> uf;               // union-find scratch for orbits
+
+        uint32_t find(uint32_t x) {
+            while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; }
+            return x;
+        }
+
+        // Mark every target-cell vertex in v's orbit (under the generators that
+        // fix the current path) as covered, so automorphic siblings are skipped.
+        void cover_orbit(const SVec<uint32_t>& cell, uint32_t v,
+                         SVec<char>& covered) {
+            for (uint32_t i = 0; i < n; ++i) uf[i] = i;
+            for (const auto& g : generators) {
+                bool fixes_path = true;
+                for (uint32_t p : path) if (g[p] != p) { fixes_path = false; break; }
+                if (!fixes_path) continue;
+                for (uint32_t i = 0; i < n; ++i) {
+                    uint32_t a = find(i), b = find(g[i]);
+                    if (a != b) uf[a] = b;
+                }
+            }
+            uint32_t rv = find(v);
+            for (uint32_t w : cell) if (find(w) == rv) covered[w] = 1;
+        }
+
+        // Derive the automorphism relating this same-canonical leaf to the first.
+        void record_automorphism(const SVec<uint32_t>& labeling) {
+            SVec<uint32_t> this_inv(n);
+            for (uint32_t vi = 0; vi < n; ++vi) this_inv[labeling[vi]] = vi;
+            SVec<uint32_t> sigma(n);
+            bool identity = true;
+            for (uint32_t u = 0; u < n; ++u) {
+                sigma[u] = this_inv[first_labeling[u]];
+                if (sigma[u] != u) identity = false;
+            }
+            if (!identity) generators.push_back(std::move(sigma));
+        }
+
         void search(IRPartition pi) {
+            IR_PROF(++self->last_stats_.search_nodes;)
             self->refine(*adj, pi);
 
             if (pi.is_discrete()) {
@@ -333,9 +483,16 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
                 auto canonical = self->apply_labeling(*edges, *adj, labeling);
 
                 if (!has_best || canonical < best_canonical) {
-                    best_labeling = std::move(labeling);
-                    best_canonical = std::move(canonical);
+                    best_labeling = labeling;
+                    best_canonical = canonical;
                     has_best = true;
+                }
+                if (!has_first) {
+                    first_labeling = std::move(labeling);
+                    first_canonical = std::move(canonical);
+                    has_first = true;
+                } else if (canonical == first_canonical) {
+                    record_automorphism(labeling);
                 }
                 return;
             }
@@ -343,12 +500,17 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
             size_t target = pi.first_non_singleton();
             if (target >= pi.cells.size()) return;
 
-            std::vector<uint32_t> target_verts = pi.cells[target];
-            std::sort(target_verts.begin(), target_verts.end());
+            SVec<uint32_t> cell = pi.cells[target];
+            std::sort(cell.begin(), cell.end());
 
-            for (uint32_t v : target_verts) {
-                auto child_pi = self->individualize(pi, target, v);
-                search(std::move(child_pi));
+            IR_PROF(++self->last_stats_.individualizations;)
+            SVec<char> covered(n, 0);
+            for (uint32_t v : cell) {
+                if (covered[v]) continue;
+                path.push_back(v);
+                search(self->individualize(pi, target, v));
+                path.pop_back();
+                cover_orbit(cell, v, covered);
             }
         }
     };
@@ -357,15 +519,38 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
     state.self = this;
     state.adj = &adj;
     state.edges = &edges;
+    state.n = adj.num_vertices;
+    state.uf.resize(adj.num_vertices);
     state.search(pi);
 
-    if (!state.has_best) {
+    if (!state.has_best) return false;
+    labeling = std::move(state.best_labeling);
+    return true;
+}
+
+CanonicalizationResult IRCanonicalizer::canonicalize_edges(
+    const SVec<SVec<VertexId>>& edges) const {
+    if (edges.empty()) {
         CanonicalizationResult result;
         result.canonical_form.vertex_count = 0;
         return result;
     }
 
-    return build_result(edges, adj, state.best_labeling);
+    // Canonicalization scratch draws from the per-worker scratch arena; one
+    // mark/release reclaims it in bulk. The returned result is heap (caller owns).
+    auto scratch_mark = worker_scratch().mark();
+    HypergraphAdj adj;
+    SVec<uint32_t> labeling;
+    if (!find_canonical_labeling(edges, adj, labeling)) {
+        worker_scratch().release(scratch_mark);
+        CanonicalizationResult result;
+        result.canonical_form.vertex_count = 0;
+        return result;
+    }
+
+    auto result = build_result(edges, adj, labeling);
+    worker_scratch().release(scratch_mark);
+    return result;
 }
 
 bool IRCanonicalizer::are_isomorphic(
@@ -380,52 +565,60 @@ bool IRCanonicalizer::are_isomorphic(
 }
 
 uint64_t IRCanonicalizer::compute_canonical_hash(
-    const std::vector<std::vector<VertexId>>& edges) const {
+    const SVec<SVec<VertexId>>& edges) const {
     if (edges.empty()) return 0;
 
-    auto result = canonicalize_edges(edges);
+    // Hash-only path: the canonical labeling fully determines the hash, so hash the
+    // canonical edge ordering directly and skip build_result -- the CanonicalizationResult
+    // it would materialize (per-edge maps and vectors) is never read here. This is the
+    // per-state hot path; the mark/release reclaims all scratch in bulk.
+    auto scratch_mark = worker_scratch().mark();
+    HypergraphAdj adj;
+    SVec<uint32_t> labeling;
+    bool ok = find_canonical_labeling(edges, adj, labeling);
 
     uint64_t hash = 14695981039346656037ULL;
     constexpr uint64_t prime = 1099511628211ULL;
 
-    hash ^= static_cast<uint64_t>(result.canonical_form.vertex_count);
+    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
     hash *= prime;
 
-    for (const auto& edge : result.canonical_form.edges) {
-        for (auto vertex : edge) {
-            hash ^= static_cast<uint64_t>(vertex);
+    if (ok) {
+        SVec<SVec<VertexId>> canonical = apply_labeling(edges, adj, labeling);
+        for (const auto& edge : canonical) {
+            for (auto vertex : edge) {
+                hash ^= static_cast<uint64_t>(vertex);
+                hash *= prime;
+            }
+            hash ^= 0xDEADBEEF;
             hash *= prime;
         }
-        hash ^= 0xDEADBEEF;
-        hash *= prime;
     }
 
+    worker_scratch().release(scratch_mark);
     return hash;
 }
 
-EdgeCorrespondence IRCanonicalizer::find_edge_correspondence(
-    const std::vector<std::vector<VertexId>>& edges1,
-    const std::vector<std::vector<VertexId>>& edges2) const {
-    EdgeCorrespondence result;
-
-    if (edges1.size() != edges2.size()) return result;
-
-    auto r1 = canonicalize_edges(edges1);
-    auto r2 = canonicalize_edges(edges2);
-
-    if (r1.canonical_form != r2.canonical_form) return result;
-
-    result.count = static_cast<uint32_t>(edges1.size());
-    result.state1_edges = new EdgeId[result.count];
-    result.state2_edges = new EdgeId[result.count];
-
-    for (uint32_t ci = 0; ci < result.count; ++ci) {
-        result.state1_edges[ci] = static_cast<EdgeId>(r1.vertex_mapping.canonical_edge_to_original[ci]);
-        result.state2_edges[ci] = static_cast<EdgeId>(r2.vertex_mapping.canonical_edge_to_original[ci]);
-    }
-
-    result.valid = true;
+// Convenience overloads (tests/tools): copy a heap edge list into the per-worker
+// scratch arena, run the scratch-backed path, then reclaim the copy.
+CanonicalizationResult IRCanonicalizer::canonicalize_edges(
+    const std::vector<std::vector<VertexId>>& edges) const {
+    auto mk = worker_scratch().mark();
+    SVec<SVec<VertexId>> s; s.reserve(edges.size());
+    for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
+    auto result = canonicalize_edges(s);
+    worker_scratch().release(mk);
     return result;
+}
+
+uint64_t IRCanonicalizer::compute_canonical_hash(
+    const std::vector<std::vector<VertexId>>& edges) const {
+    auto mk = worker_scratch().mark();
+    SVec<SVec<VertexId>> s; s.reserve(edges.size());
+    for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
+    auto h = compute_canonical_hash(s);
+    worker_scratch().release(mk);
+    return h;
 }
 
 }  // namespace hypergraph

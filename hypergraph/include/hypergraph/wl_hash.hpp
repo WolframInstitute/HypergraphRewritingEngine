@@ -10,6 +10,7 @@
 #include "types.hpp"
 #include "bitset.hpp"
 #include "arena.hpp"
+#include "scratch_alloc.hpp"
 #include "segmented_array.hpp"
 #include "concurrent_map.hpp"
 #include "lock_free_list.hpp"
@@ -20,8 +21,7 @@ namespace hypergraph {
 // WLHash: Weisfeiler-Lehman style hashing for hypergraph isomorphism
 // =============================================================================
 //
-// This implements WL (color refinement) style hashing, NOT uniqueness trees.
-// For true Gorard-style uniqueness trees, see uniqueness_tree.hpp.
+// This implements WL (color refinement) style hashing.
 //
 // WL hashing works by:
 // 1. Assigning initial colors based on vertex degree/position structure
@@ -31,7 +31,7 @@ namespace hypergraph {
 // Key characteristics:
 // - Iterative message passing (all vertices update simultaneously)
 // - Polynomial time: O(V^2) per iteration, typically O(log V) iterations
-// - May not distinguish all non-isomorphic graphs (weaker than uniqueness trees)
+// - Approximate: may not distinguish all non-isomorphic graphs (false-positive collisions)
 //
 // Thread safety:
 // - Edge registration: Lock-free via LockFreeList
@@ -61,216 +61,13 @@ public:
     WLHash(const WLHash&) = delete;
     WLHash& operator=(const WLHash&) = delete;
 
-    // Abort plumbing: when the engine requests an early stop, long-running
-    // refinement loops check this flag between iterations and throw
-    // AbortedException rather than blocking an evolve_with_abort() for
-    // minutes while a large graph finishes colour-refining.
-    void set_abort_flag(std::atomic<bool>* flag) { abort_flag_ = flag; }
-    bool should_abort() const {
-        return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
-    }
-
-    // =========================================================================
-    // Edge Registration (called when edges are created)
-    // =========================================================================
-
-    // Register a new edge, updating vertex neighborhoods
-    // Thread-safe: can be called concurrently
-    void register_edge(EdgeId edge_id, const VertexId* vertices, uint8_t arity) {
-        // Ensure vertex storage is large enough
-        for (uint8_t i = 0; i < arity; ++i) {
-            ensure_vertex_capacity(vertices[i]);
-        }
-
-        // Add edge occurrence to each vertex's neighborhood
-        for (uint8_t i = 0; i < arity; ++i) {
-            add_edge_to_vertex(vertices[i], edge_id, i, arity);
-        }
-    }
-
     // =========================================================================
     // State Canonical Hash Computation
     // =========================================================================
 
-    // Compute canonical hash for a state (set of edges)
-    // This is the full computation from scratch
-    // Uses accessors that can dynamically extend for thread-safety
-    template<typename VertexAccessor, typename ArityAccessor>
-    uint64_t compute_state_hash(
-        const SparseBitset& state_edges,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        if (state_edges.empty()) {
-            return 0;
-        }
-
-        // Collect vertices and track max for dense index optimization
-        ArenaVector<VertexId> vertices(*arena_);
-        VertexId max_vertex = 0;
-        VertexId min_vertex = UINT32_MAX;
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                vertices.push_back(verts[i]);
-                if (verts[i] > max_vertex) max_vertex = verts[i];
-                if (verts[i] < min_vertex) min_vertex = verts[i];
-            }
-        });
-
-        // Remove duplicates
-        std::sort(vertices.begin(), vertices.end());
-        auto new_end = std::unique(vertices.begin(), vertices.end());
-        vertices.resize(new_end - vertices.begin());
-
-        if (vertices.size() == 0) {
-            return 0;
-        }
-
-        const size_t num_vertices = vertices.size();
-        const VertexId range = max_vertex - min_vertex + 1;
-
-        // Always use arena-allocated dense array for O(1) lookup without hash overhead
-        ArenaVector<size_t> vertex_index(*arena_, range);
-        vertex_index.resize(range);
-        for (size_t i = 0; i < range; ++i) {
-            vertex_index[i] = SIZE_MAX;
-        }
-        for (size_t i = 0; i < num_vertices; ++i) {
-            vertex_index[vertices[i] - min_vertex] = i;
-        }
-
-        // Direct array lookup - no hash overhead
-        auto get_vertex_idx = [&](VertexId v) -> size_t {
-            return vertex_index[v - min_vertex];
-        };
-
-        // Count total edge occurrences for pre-allocation
-        size_t total_occurrences = 0;
-        state_edges.for_each([&](EdgeId eid) {
-            total_occurrences += edge_arities[eid];
-        });
-
-        // Arena-allocate flat adjacency structure
-        // filtered_occ_data: flat array of (arity, pos) pairs
-        // vertex_to_edges_data: flat array of (edge_id, pos) pairs
-        // offsets: start index for each vertex
-        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(*arena_, total_occurrences);
-        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(*arena_, total_occurrences);
-        ArenaVector<uint32_t> occ_counts(*arena_, num_vertices);
-        occ_counts.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
-
-        // First pass: count occurrences per vertex
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                occ_counts[idx]++;
-            }
-        });
-
-        // Compute offsets (prefix sum)
-        ArenaVector<uint32_t> occ_offsets(*arena_, num_vertices + 1);
-        occ_offsets.resize(num_vertices + 1);
-        occ_offsets[0] = 0;
-        for (size_t i = 0; i < num_vertices; ++i) {
-            occ_offsets[i + 1] = occ_offsets[i] + occ_counts[i];
-        }
-
-        // Reset counts for second pass
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
-
-        // Second pass: fill adjacency data
-        filtered_occ_data.resize(total_occurrences);
-        vertex_to_edges_data.resize(total_occurrences);
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                size_t pos = occ_offsets[idx] + occ_counts[idx];
-                filtered_occ_data[pos] = {arity, i};
-                vertex_to_edges_data[pos] = {eid, i};
-                occ_counts[idx]++;
-            }
-        });
-
-        // Sort each vertex's occurrences for canonical form
-        for (size_t i = 0; i < num_vertices; ++i) {
-            auto begin = filtered_occ_data.begin() + occ_offsets[i];
-            auto end = filtered_occ_data.begin() + occ_offsets[i + 1];
-            insertion_sort(begin, end);
-        }
-
-        // Initial structural signatures
-        ArenaVector<uint64_t> current(*arena_, num_vertices);
-        current.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) {
-            uint64_t h = FNV_OFFSET;
-            size_t count = occ_offsets[i + 1] - occ_offsets[i];
-            h = fnv_combine(h, count);  // degree
-            for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                h = fnv_combine(h, filtered_occ_data[j].first);   // arity
-                h = fnv_combine(h, filtered_occ_data[j].second);  // pos
-            }
-            current[i] = h;
-        }
-
-        // WL refinement - terminate when no colors change
-        ArenaVector<uint64_t> next(*arena_, num_vertices);
-        next.resize(num_vertices);
-        ArenaVector<uint64_t> neighbor_hashes(*arena_);
-        bool changed = true;
-        size_t iteration = 0;
-
-        while (changed && iteration < MAX_REFINEMENT_DEPTH) {
-            if (should_abort()) throw AbortedException{};
-            changed = false;
-            ++iteration;
-
-            for (size_t i = 0; i < num_vertices; ++i) {
-                uint64_t h = current[i];
-                neighbor_hashes.clear();
-
-                for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                    EdgeId eid = vertex_to_edges_data[j].first;
-                    uint8_t my_pos = vertex_to_edges_data[j].second;
-                    uint8_t arity = edge_arities[eid];
-                    const VertexId* verts = edge_vertices[eid];
-
-                    for (uint8_t k = 0; k < arity; ++k) {
-                        if (k != my_pos) {
-                            size_t neighbor_idx = get_vertex_idx(verts[k]);
-                            neighbor_hashes.push_back(fnv_combine(current[neighbor_idx], k));
-                        }
-                    }
-                }
-
-                insertion_sort(neighbor_hashes.begin(), neighbor_hashes.end());
-                for (size_t j = 0; j < neighbor_hashes.size(); ++j) {
-                    h = fnv_combine(h, neighbor_hashes[j]);
-                }
-
-                if (h != current[i]) changed = true;
-                next[i] = h;
-            }
-
-            std::swap(current, next);
-        }
-
-        // Build canonical hash from vertex and edge structure
-        return build_canonical_hash_dense(current, vertices, min_vertex,
-                                          vertex_index,
-                                          state_edges, edge_vertices, edge_arities);
-    }
-
-    // Compute state hash with caching of vertex hashes
-    // Returns both the hash and a cache that can be used for child states
-    // Uses arena allocation for all temporary storage (consistent with compute_state_hash)
+    // Compute the canonical state hash, also returning the per-vertex
+    // subtree-hash cache. The cache feeds edge-correspondence recovery between
+    // isomorphic states. Uses arena allocation for all temporary storage.
     template<typename VertexAccessor, typename ArityAccessor>
     std::pair<uint64_t, VertexHashCache> compute_state_hash_with_cache(
         const SparseBitset& state_edges,
@@ -283,8 +80,10 @@ public:
             return {0, cache};
         }
 
+        auto _wl_mark = worker_scratch().mark();
+
         // Collect vertices and track min/max for dense index optimization
-        ArenaVector<VertexId> vertices(*arena_);
+        ArenaVector<VertexId> vertices(worker_scratch());
         VertexId max_vertex = 0;
         VertexId min_vertex = UINT32_MAX;
 
@@ -304,6 +103,7 @@ public:
         vertices.resize(new_end - vertices.begin());
 
         if (vertices.size() == 0) {
+            worker_scratch().release(_wl_mark);
             return {0, cache};
         }
 
@@ -312,11 +112,8 @@ public:
 
         // Always use arena-allocated dense array for O(1) lookup without hash overhead
         // 1M vertices = 8MB which is acceptable for performance
-        ArenaVector<size_t> vertex_index(*arena_, range);
+        ArenaVector<size_t> vertex_index(worker_scratch(), range);
         vertex_index.resize(range);
-        for (size_t i = 0; i < range; ++i) {
-            vertex_index[i] = SIZE_MAX;
-        }
         for (size_t i = 0; i < num_vertices; ++i) {
             vertex_index[vertices[i] - min_vertex] = i;
         }
@@ -333,9 +130,9 @@ public:
         });
 
         // Arena-allocate flat adjacency structure
-        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(*arena_, total_occurrences);
-        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(*arena_, total_occurrences);
-        ArenaVector<uint32_t> occ_counts(*arena_, num_vertices);
+        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(worker_scratch(), total_occurrences);
+        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(worker_scratch(), total_occurrences);
+        ArenaVector<uint32_t> occ_counts(worker_scratch(), num_vertices);
         occ_counts.resize(num_vertices);
         for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
 
@@ -350,7 +147,7 @@ public:
         });
 
         // Compute offsets (prefix sum)
-        ArenaVector<uint32_t> occ_offsets(*arena_, num_vertices + 1);
+        ArenaVector<uint32_t> occ_offsets(worker_scratch(), num_vertices + 1);
         occ_offsets.resize(num_vertices + 1);
         occ_offsets[0] = 0;
         for (size_t i = 0; i < num_vertices; ++i) {
@@ -383,7 +180,7 @@ public:
         }
 
         // Initial structural signatures
-        ArenaVector<uint64_t> current(*arena_, num_vertices);
+        ArenaVector<uint64_t> current(worker_scratch(), num_vertices);
         current.resize(num_vertices);
         for (size_t i = 0; i < num_vertices; ++i) {
             uint64_t h = FNV_OFFSET;
@@ -396,16 +193,29 @@ public:
             current[i] = h;
         }
 
-        // WL refinement - terminate when no colors change
-        ArenaVector<uint64_t> next(*arena_, num_vertices);
+        // WL refinement - stop when the colour PARTITION stabilises. With content
+        // hashing the per-vertex values re-hash every round (they never "stop
+        // changing"), but 1-WL's partition is monotone: once the number of
+        // distinct colours stops growing it equals the coarsest equitable
+        // partition that any further round would give. MAX_REFINEMENT_DEPTH is a
+        // safety backstop only.
+        ArenaVector<uint64_t> next(worker_scratch(), num_vertices);
         next.resize(num_vertices);
-        ArenaVector<uint64_t> neighbor_hashes(*arena_);
-        bool changed = true;
+        ArenaVector<uint64_t> neighbor_hashes(worker_scratch());
+        ArenaVector<uint64_t> distinct_scratch(worker_scratch(), num_vertices);
+        auto count_distinct = [&]() -> size_t {
+            distinct_scratch.clear();
+            for (size_t i = 0; i < num_vertices; ++i) distinct_scratch.push_back(current[i]);
+            std::sort(distinct_scratch.begin(), distinct_scratch.end());
+            size_t d = 0;
+            for (size_t i = 0; i < num_vertices; ++i)
+                if (i == 0 || distinct_scratch[i] != distinct_scratch[i - 1]) ++d;
+            return d;
+        };
+        size_t prev_distinct = count_distinct();
         size_t iteration = 0;
 
-        while (changed && iteration < MAX_REFINEMENT_DEPTH) {
-            if (should_abort()) throw AbortedException{};
-            changed = false;
+        while (iteration < MAX_REFINEMENT_DEPTH) {
             ++iteration;
 
             for (size_t i = 0; i < num_vertices; ++i) {
@@ -431,11 +241,14 @@ public:
                     h = fnv_combine(h, neighbor_hashes[j]);
                 }
 
-                if (h != current[i]) changed = true;
                 next[i] = h;
             }
 
             std::swap(current, next);
+
+            size_t d = count_distinct();
+            if (d == prev_distinct) break;   // partition stabilised
+            prev_distinct = d;
         }
 
         // Build vertex hash cache (vertices already sorted)
@@ -452,472 +265,182 @@ public:
                                                    vertex_index,
                                                    state_edges, edge_vertices, edge_arities);
 
+        worker_scratch().release(_wl_mark);
         return {hash, cache};
     }
 
-    // Compute state hash incrementally from parent's cached hashes
-    // Only recomputes hashes for vertices affected by removed/added edges
-    template<typename VertexAccessor, typename ArityAccessor>
+    // =========================================================================
+    // Incremental WL (B1/B2): parent per-round colour history + O(delta) child
+    // update, bit-identical to compute_state_hash_with_cache. The history is heap
+    // (it outlives the task — cached per-worker); transient work buffers use the
+    // per-worker scratch arena. Colours are keyed by vertex id so they stay valid
+    // across a parent->child rewrite.
+    // =========================================================================
+    // Persistent (per-worker arena) — the history outlives the task that built it.
+    using HistOcc = std::pair<EdgeId, uint8_t>;
+    struct WLHistory {
+        int maxid = -1;
+        PVec<char> present;                    // by id
+        PVec<PVec<HistOcc>> adj;               // by id: (edge, pos)
+        PVec<PVec<uint64_t>> rounds;           // rounds[r][id]
+        PVec<VertexId> verts;                  // present ids, sorted
+        int fixp = 0;
+        uint64_t vsum = 0, esum = 0;
+        size_t num_edges = 0;
+        bool valid = false;
+    };
+
+    // id-indexed init colour: FNV, degree, sorted (arity,pos) — matches the dense path.
+    // OccVec is any vector of (edge,pos) (PVec history or SVec overlay).
+    template<typename OccVec, typename AA>
+    uint64_t wl_init_id(const OccVec& occ, const AA& ea) const {
+        SVec<std::pair<uint8_t, uint8_t>> ap; ap.reserve(occ.size());
+        for (auto& o : occ) ap.push_back({ea[o.first], o.second});
+        std::sort(ap.begin(), ap.end());
+        uint64_t h = FNV_OFFSET; h = fnv_combine(h, occ.size());
+        for (auto& p : ap) { h = fnv_combine(h, p.first); h = fnv_combine(h, p.second); }
+        return h;
+    }
+    // id-indexed refine: fold sorted fnv_combine(colour[neighbor], k) onto colour[v].
+    // col is a callable id -> current colour; nb is a reusable scratch buffer.
+    template<typename OccVec, typename VA, typename AA, typename Col>
+    uint64_t wl_refine_id(int v, const OccVec& occ,
+                          const VA& ev, const AA& ea, SVec<uint64_t>& nb, Col&& col) const {
+        uint64_t h = col(v); nb.clear();
+        for (auto& o : occ) { uint8_t a = ea[o.first]; const VertexId* vs = ev[o.first];
+            for (uint8_t k = 0; k < a; ++k) if (k != o.second) nb.push_back(fnv_combine(col((int)vs[k]), k)); }
+        std::sort(nb.begin(), nb.end());
+        for (uint64_t x : nb) h = fnv_combine(h, x);
+        return h;
+    }
+    template<typename ColVec, typename VertVec>
+    static int wl_distinct_id(const ColVec& col, const VertVec& verts, SVec<uint64_t>& scratch) {
+        scratch.clear(); for (VertexId v : verts) scratch.push_back(col[v]);
+        std::sort(scratch.begin(), scratch.end());
+        int d = 0; for (size_t i = 0; i < scratch.size(); ++i) if (i == 0 || scratch[i] != scratch[i - 1]) ++d;
+        return d;
+    }
+
+    // Full WL recording the per-round colouring into a WLHistory. Returns {hash, history}.
+    template<typename VA, typename AA>
+    std::pair<uint64_t, WLHistory> compute_state_hash_and_history(
+            const SparseBitset& edges, const VA& ev, const AA& ea) const {
+        WLHistory H;
+        if (edges.empty()) return {0, H};
+        int maxid = 0;
+        edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e]; for (uint8_t i=0;i<a;++i) if ((int)vs[i]>maxid) maxid=(int)vs[i]; });
+        H.maxid = maxid; H.present.assign(maxid + 1, 0); H.adj.assign(maxid + 1, {});
+        edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e];
+            for (uint8_t p=0;p<a;++p){ int v=(int)vs[p]; if(!H.present[v]){H.present[v]=1; H.verts.push_back(vs[p]);} H.adj[v].push_back({e,p}); } });
+        std::sort(H.verts.begin(), H.verts.end());
+        SVec<uint64_t> cur, nxt, nb, dscratch;                 // transient work buffers
+        cur.assign(maxid + 1, 0); nxt.assign(maxid + 1, 0);
+        for (VertexId v : H.verts) cur[v] = wl_init_id(H.adj[v], ea);
+        H.rounds.emplace_back(cur.begin(), cur.end());         // snapshot -> persistent
+        int prev = wl_distinct_id(cur, H.verts, dscratch), iter = 0, fixp = 0;
+        while ((size_t)iter < MAX_REFINEMENT_DEPTH) { ++iter;
+            for (VertexId v : H.verts) nxt[v] = wl_refine_id(v, H.adj[v], ev, ea, nb, [&](int u){ return cur[u]; });
+            for (VertexId v : H.verts) cur[v] = nxt[v];
+            H.rounds.emplace_back(cur.begin(), cur.end()); fixp = iter;
+            int d = wl_distinct_id(cur, H.verts, dscratch); if (d == prev) break; prev = d;
+        }
+        H.fixp = fixp; H.valid = true;
+        uint64_t vsum = 0; for (VertexId v : H.verts) vsum += mix64(cur[v]);
+        uint64_t esum = 0; size_t m = 0;
+        edges.for_each([&](EdgeId e){ ++m; uint8_t a=ea[e]; const VertexId* vs=ev[e]; uint64_t eh=FNV_OFFSET; eh=fnv_combine(eh,a); for (uint8_t i=0;i<a;++i) eh=fnv_combine(eh,cur[vs[i]]); esum += mix64(eh); });
+        H.vsum = vsum; H.esum = esum; H.num_edges = m;
+        uint64_t h = FNV_OFFSET; h=fnv_combine(h,H.verts.size()); h=fnv_combine(h,m); h=fnv_combine(h,vsum); h=fnv_combine(h,esum);
+        return {h, std::move(H)};
+    }
+
+    // Incremental child hash from a parent's WLHistory + the rewrite delta (the
+    // consumed/produced edge ids). Bit-identical to compute_state_hash_with_cache on
+    // child_edges. Detects the child's own fixpoint round and lazily extends the
+    // parent history (P by ref) when the child needs more rounds -> always correct.
+    // Transient work uses the per-worker scratch arena.
+    template<typename VA, typename AA>
     uint64_t compute_state_hash_incremental(
-        const SparseBitset& state_edges,
-        const VertexHashCache& parent_cache,
-        const EdgeId* removed_edges, uint8_t num_removed,
-        const EdgeId* added_edges, uint8_t num_added,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        if (state_edges.empty()) {
-            return 0;
+            const SparseBitset& child_edges, const VA& ev, const AA& ea, WLHistory& P,
+            const EdgeId* consumed, uint8_t num_consumed,
+            const EdgeId* produced, uint8_t num_produced) const {
+        if (!P.valid) return compute_state_hash_with_cache(child_edges, ev, ea).first;
+        SUSet<EdgeId> cons, prod;
+        for (uint8_t i=0;i<num_consumed;++i) cons.insert(consumed[i]);
+        for (uint8_t i=0;i<num_produced;++i) prod.insert(produced[i]);
+        auto ppres = [&](int v){ return v>=0 && v<=P.maxid && P.present[v]; };
+
+        SUSet<int> affected;
+        for (uint8_t i=0;i<num_consumed;++i){ uint8_t a=ea[consumed[i]]; const VertexId* vs=ev[consumed[i]]; for(uint8_t k=0;k<a;++k) affected.insert((int)vs[k]); }
+        for (uint8_t i=0;i<num_produced;++i){ uint8_t a=ea[produced[i]]; const VertexId* vs=ev[produced[i]]; for(uint8_t k=0;k<a;++k) affected.insert((int)vs[k]); }
+        // Child adjacency overlay for the O(delta) affected ids (worker scratch). The
+        // parent's adjacency (P.adj, persistent PVec) is read directly for everything
+        // else; with_adj() dispatches to whichever, so no full child adjacency is built.
+        SUMap<int, SVec<HistOcc>> oadj;
+        for (int id : affected){ SVec<HistOcc> lst;
+            if (ppres(id)) for (auto& o : P.adj[id]) if (!cons.count(o.first)) lst.push_back(o);
+            for (uint8_t i=0;i<num_produced;++i){ EdgeId e=produced[i]; uint8_t a=ea[e]; const VertexId* vs=ev[e]; for(uint8_t p=0;p<a;++p) if ((int)vs[p]==id) lst.push_back({e,p}); }
+            oadj.emplace(id, std::move(lst));
         }
+        auto with_adj = [&](int id, auto&& fn){ auto it=oadj.find(id); if(it!=oadj.end()){ fn(it->second); return; } if(ppres(id)){ fn(P.adj[id]); return; } SVec<HistOcc> empty; fn(empty); };
+        auto cpres = [&](int id){ auto it=oadj.find(id); if(it!=oadj.end()) return !it->second.empty(); return ppres(id); };
+        auto isnew = [&](int id){ return !ppres(id) && cpres(id); };
+        SVec<int> cverts; { SUSet<int> seen;
+            child_edges.for_each([&](EdgeId e){ uint8_t a=ea[e]; const VertexId* vs=ev[e]; for(uint8_t k=0;k<a;++k){ int v=(int)vs[k]; if(seen.insert(v).second) cverts.push_back(v);} }); }
 
-        // Find affected vertices (those incident to removed or added edges)
-        std::vector<VertexId> affected_vertices;
-
-        for (uint8_t i = 0; i < num_removed; ++i) {
-            EdgeId eid = removed_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
+        SVec<uint64_t> nb, dscr;
+        // lazy parent extension: parent colours past its fixpoint are well-defined; the
+        // new rounds are cached persistently (PVec) alongside the rest of the history.
+        auto ext_parent = [&](int r){
+            while ((int)P.rounds.size() <= r){
+                int pr = (int)P.rounds.size()-1;
+                PVec<uint64_t> nx = P.rounds[pr];
+                for (VertexId v : P.verts) nx[v] = wl_refine_id(v, P.adj[v], ev, ea, nb, [&](int u){ return P.rounds[pr][u]; });
+                P.rounds.push_back(std::move(nx));
             }
-        }
-
-        for (uint8_t i = 0; i < num_added; ++i) {
-            EdgeId eid = added_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
-            }
-        }
-
-        std::sort(affected_vertices.begin(), affected_vertices.end());
-        affected_vertices.erase(std::unique(affected_vertices.begin(), affected_vertices.end()),
-                               affected_vertices.end());
-
-        // If many vertices affected, fall back to full computation
-        // (incremental becomes less beneficial with larger delta)
-        if (affected_vertices.size() > parent_cache.count / 2) {
-            return compute_state_hash(state_edges, edge_vertices, edge_arities);
-        }
-
-        // Collect all vertices in the new state
-        std::vector<VertexId> vertices;
-        VertexId max_vertex = 0;
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                vertices.push_back(verts[i]);
-                if (verts[i] > max_vertex) max_vertex = verts[i];
-            }
-        });
-
-        std::sort(vertices.begin(), vertices.end());
-        vertices.erase(std::unique(vertices.begin(), vertices.end()), vertices.end());
-
-        if (vertices.empty()) {
-            return 0;
-        }
-
-        // Build vertex index
-        std::vector<size_t> vertex_index(max_vertex + 1, SIZE_MAX);
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            vertex_index[vertices[i]] = i;
-        }
-
-        // Mark which vertices are affected
-        std::vector<bool> is_affected(vertices.size(), false);
-        for (VertexId v : affected_vertices) {
-            if (v <= max_vertex && vertex_index[v] != SIZE_MAX) {
-                is_affected[vertex_index[v]] = true;
-            }
-        }
-
-        // Build adjacency
-        std::vector<std::vector<std::pair<uint8_t, uint8_t>>> filtered_occ(vertices.size());
-        std::vector<std::vector<std::pair<EdgeId, uint8_t>>> vertex_to_edges(vertices.size());
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = vertex_index[verts[i]];
-                filtered_occ[idx].emplace_back(arity, i);
-                vertex_to_edges[idx].emplace_back(eid, i);
-            }
-        });
-
-        // Initialize hashes - ALWAYS compute initial hash from current state's structure
-        // NOTE: We cannot use parent's cached FINAL hashes as INITIAL hashes here.
-        // Parent cache contains hashes after N refinement iterations, but we need
-        // iteration-0 hashes (degree + edge positions) for correct WL refinement.
-        std::vector<uint64_t> current(vertices.size());
-
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            // Compute initial hash for this vertex based on current state's structure
-            auto& occ = filtered_occ[i];
-            insertion_sort(occ.begin(), occ.end());
-
-            uint64_t h = FNV_OFFSET;
-            h = fnv_combine(h, occ.size());
-            for (const auto& [arity, pos] : occ) {
-                h = fnv_combine(h, arity);
-                h = fnv_combine(h, pos);
-            }
-            current[i] = h;
-        }
-
-        // WL refinement with active vertex tracking
-        std::vector<uint64_t> next(vertices.size());
-        std::vector<uint64_t> neighbor_hashes;
-        size_t iteration = 0;
-
-        // NOTE: We must mark ALL vertices as active, not just affected ones.
-        // WL requires all vertices to refine synchronously - a vertex's iteration-N
-        // hash depends on neighbors' iteration-(N-1) hashes. If we only refine
-        // affected vertices first, they get "ahead" of unaffected vertices, breaking
-        // the synchronization and producing incorrect hashes.
-        std::vector<bool> active(vertices.size(), true);
-        std::vector<bool> next_active(vertices.size(), false);
-
-        // Count active for early termination check
-        size_t num_active = 0;
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            if (active[i]) ++num_active;
-        }
-
-        while (num_active > 0 && iteration < MAX_REFINEMENT_DEPTH) {
-            if (should_abort()) throw AbortedException{};
-            ++iteration;
-            size_t next_num_active = 0;
-
-            for (size_t i = 0; i < vertices.size(); ++i) {
-                if (!active[i]) {
-                    // Vertex not active - keep current hash
-                    next[i] = current[i];
-                    continue;
-                }
-
-                // Active vertex - recompute hash
-                uint64_t h = current[i];
-                neighbor_hashes.clear();
-
-                for (const auto& [eid, my_pos] : vertex_to_edges[i]) {
-                    uint8_t arity = edge_arities[eid];
-                    const VertexId* verts = edge_vertices[eid];
-
-                    for (uint8_t k = 0; k < arity; ++k) {
-                        if (k != my_pos) {
-                            size_t neighbor_idx = vertex_index[verts[k]];
-                            neighbor_hashes.push_back(fnv_combine(current[neighbor_idx], k));
-                        }
-                    }
-                }
-
-                insertion_sort(neighbor_hashes.begin(), neighbor_hashes.end());
-                for (uint64_t nh : neighbor_hashes) {
-                    h = fnv_combine(h, nh);
-                }
-
-                next[i] = h;
-
-                // If hash changed, mark neighbors as active for next iteration
-                if (h != current[i]) {
-                    for (const auto& [eid, my_pos] : vertex_to_edges[i]) {
-                        uint8_t arity = edge_arities[eid];
-                        const VertexId* verts = edge_vertices[eid];
-                        for (uint8_t k = 0; k < arity; ++k) {
-                            if (k != my_pos) {
-                                size_t neighbor_idx = vertex_index[verts[k]];
-                                if (!next_active[neighbor_idx]) {
-                                    next_active[neighbor_idx] = true;
-                                    ++next_num_active;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            std::swap(current, next);
-            std::swap(active, next_active);
-            std::fill(next_active.begin(), next_active.end(), false);
-            num_active = next_num_active;
-        }
-
-        return build_canonical_hash(current, vertices, vertex_index, state_edges,
-                                   edge_vertices, edge_arities);
-    }
-
-    // Compute state hash incrementally with cache for children to use
-    // Returns both hash and cache (similar to compute_state_hash_with_cache)
-    template<typename VertexAccessor, typename ArityAccessor>
-    std::pair<uint64_t, VertexHashCache> compute_state_hash_incremental_with_cache(
-        const SparseBitset& state_edges,
-        const VertexHashCache& parent_cache,
-        const EdgeId* removed_edges, uint8_t num_removed,
-        const EdgeId* added_edges, uint8_t num_added,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        VertexHashCache cache;
-
-        if (state_edges.empty()) {
-            return {0, cache};
-        }
-
-        // Find affected vertices (those incident to removed or added edges)
-        ArenaVector<VertexId> affected_vertices(*arena_);
-
-        for (uint8_t i = 0; i < num_removed; ++i) {
-            EdgeId eid = removed_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
-            }
-        }
-
-        for (uint8_t i = 0; i < num_added; ++i) {
-            EdgeId eid = added_edges[i];
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t j = 0; j < arity; ++j) {
-                affected_vertices.push_back(verts[j]);
-            }
-        }
-
-        std::sort(affected_vertices.begin(), affected_vertices.end());
-        auto new_end = std::unique(affected_vertices.begin(), affected_vertices.end());
-        affected_vertices.resize(new_end - affected_vertices.begin());
-
-        // If many vertices affected, fall back to full computation
-        if (affected_vertices.size() > parent_cache.count / 2) {
-            return compute_state_hash_with_cache(state_edges, edge_vertices, edge_arities);
-        }
-
-        // Collect all vertices in the new state
-        ArenaVector<VertexId> vertices(*arena_);
-        VertexId max_vertex = 0;
-        VertexId min_vertex = UINT32_MAX;
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                vertices.push_back(verts[i]);
-                if (verts[i] > max_vertex) max_vertex = verts[i];
-                if (verts[i] < min_vertex) min_vertex = verts[i];
-            }
-        });
-
-        std::sort(vertices.begin(), vertices.end());
-        auto vert_end = std::unique(vertices.begin(), vertices.end());
-        vertices.resize(vert_end - vertices.begin());
-
-        if (vertices.empty()) {
-            return {0, cache};
-        }
-
-        const size_t num_vertices = vertices.size();
-        const VertexId range = max_vertex - min_vertex + 1;
-
-        // Build vertex index (dense)
-        ArenaVector<size_t> vertex_index(*arena_, range);
-        vertex_index.resize(range);
-        for (size_t i = 0; i < range; ++i) {
-            vertex_index[i] = SIZE_MAX;
-        }
-        for (size_t i = 0; i < num_vertices; ++i) {
-            vertex_index[vertices[i] - min_vertex] = i;
-        }
-
-        auto get_vertex_idx = [&](VertexId v) -> size_t {
-            return vertex_index[v - min_vertex];
         };
+        auto pcol = [&](int r,int id)->uint64_t{ ext_parent(r); return ppres(id) ? P.rounds[r][id] : 0; };
+        SVec<SUMap<int,uint64_t>> ov; ov.emplace_back();
+        auto ccol = [&](int r,int id)->uint64_t{ if (r<(int)ov.size()){ auto it=ov[r].find(id); if(it!=ov[r].end()) return it->second; } return pcol(r,id); };
+        auto child_distinct = [&](int r)->int{ dscr.clear(); for(int id:cverts) dscr.push_back(ccol(r,id));
+            std::sort(dscr.begin(),dscr.end()); int d=0; for(size_t i=0;i<dscr.size();++i) if(i==0||dscr[i]!=dscr[i-1])++d; return d; };
 
-        // Mark which vertices are affected
-        ArenaVector<bool> is_affected(*arena_, num_vertices);
-        is_affected.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) is_affected[i] = false;
-        for (VertexId v : affected_vertices) {
-            if (v >= min_vertex && v <= max_vertex && vertex_index[v - min_vertex] != SIZE_MAX) {
-                is_affected[vertex_index[v - min_vertex]] = true;
-            }
+        SUSet<int> changed;
+        for (int id : affected) if (cpres(id)){ with_adj(id, [&](const auto& occ){ ov[0].emplace(id, wl_init_id(occ, ea)); }); changed.insert(id); }
+        int prev = child_distinct(0), Rc = 0;
+        for (int r=1; (size_t)r<=MAX_REFINEMENT_DEPTH; ++r){
+            if ((int)ov.size()<=r) ov.emplace_back();
+            SUSet<int> recompute = changed;
+            for (int id : changed) with_adj(id, [&](const auto& occ){ for (auto& o : occ){ uint8_t a=ea[o.first]; const VertexId* vs=ev[o.first]; for(uint8_t k=0;k<a;++k) recompute.insert((int)vs[k]); } });
+            SUSet<int> nchanged;
+            for (int id : recompute){ uint64_t val=0; with_adj(id, [&](const auto& occ){ val = wl_refine_id(id, occ, ev, ea, nb, [&](int u){ return ccol(r-1,u); }); });
+                ov[r].emplace(id, val); uint64_t pv = ppres(id) ? pcol(r,id) : (val+1); if (val!=pv) nchanged.insert(id); }
+            changed.swap(nchanged);
+            int d = child_distinct(r); Rc = r; if (d==prev) break; prev = d;
         }
+        auto cf = [&](int id){ return ccol(Rc,id); };
+        size_t mchild = P.num_edges - num_consumed + num_produced;
 
-        // Count occurrences for adjacency building
-        size_t total_occurrences = 0;
-        state_edges.for_each([&](EdgeId eid) {
-            total_occurrences += edge_arities[eid];
-        });
-
-        // Build flat adjacency structure
-        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(*arena_, total_occurrences);
-        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(*arena_, total_occurrences);
-        ArenaVector<uint32_t> occ_counts(*arena_, num_vertices);
-        occ_counts.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                occ_counts[idx]++;
-            }
-        });
-
-        ArenaVector<uint32_t> occ_offsets(*arena_, num_vertices + 1);
-        occ_offsets.resize(num_vertices + 1);
-        occ_offsets[0] = 0;
-        for (size_t i = 0; i < num_vertices; ++i) {
-            occ_offsets[i + 1] = occ_offsets[i] + occ_counts[i];
+        if (Rc == P.fixp){   // O(delta) commutative patch from the parent's stored components
+            uint64_t vsum = P.vsum, esum = P.esum; SVec<int> cchg;
+            for (auto& kv : ov[Rc]){ int id=kv.first; uint64_t c=kv.second;
+                if (isnew(id)){ vsum += mix64(c); cchg.push_back(id); }
+                else { uint64_t pf=P.rounds[Rc][id]; if (c!=pf){ vsum += mix64(c)-mix64(pf); cchg.push_back(id);} } }
+            SUSet<int> rm;
+            for (uint8_t i=0;i<num_consumed;++i){ uint8_t a=ea[consumed[i]]; const VertexId* vs=ev[consumed[i]]; for(uint8_t k=0;k<a;++k){ int v=(int)vs[k]; if (ppres(v)&&!cpres(v)&&rm.insert(v).second) vsum -= mix64(P.rounds[Rc][v]); } }
+            auto ceh = [&](EdgeId e){ uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,cf(vs[i])); return h; };
+            auto peh = [&](EdgeId e){ uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,P.rounds[Rc][vs[i]]); return h; };
+            for (uint8_t i=0;i<num_consumed;++i) esum -= mix64(peh(consumed[i]));
+            for (uint8_t i=0;i<num_produced;++i) esum += mix64(ceh(produced[i]));
+            SUSet<EdgeId> patched;
+            for (int id : cchg) with_adj(id, [&](const auto& occ){ for (auto& o : occ){ EdgeId e=o.first; if (prod.count(e)) continue; if (!patched.insert(e).second) continue; esum += mix64(ceh(e)) - mix64(peh(e)); } });
+            int nnew=0,nrem=0; for (int id:affected){ if(isnew(id))++nnew; if(ppres(id)&&!cpres(id))++nrem; }
+            size_t nchild = P.verts.size()+nnew-nrem;
+            uint64_t h=FNV_OFFSET; h=fnv_combine(h,nchild); h=fnv_combine(h,mchild); h=fnv_combine(h,vsum); h=fnv_combine(h,esum); return h;
         }
-
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
-
-        filtered_occ_data.resize(total_occurrences);
-        vertex_to_edges_data.resize(total_occurrences);
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                size_t pos = occ_offsets[idx] + occ_counts[idx];
-                filtered_occ_data[pos] = {arity, i};
-                vertex_to_edges_data[pos] = {eid, i};
-                occ_counts[idx]++;
-            }
-        });
-
-        for (size_t i = 0; i < num_vertices; ++i) {
-            auto begin = filtered_occ_data.begin() + occ_offsets[i];
-            auto end = filtered_occ_data.begin() + occ_offsets[i + 1];
-            insertion_sort(begin, end);
-        }
-
-        // Initialize hashes - ALWAYS compute initial hash from current state's structure
-        // NOTE: We cannot use parent's cached FINAL hashes as INITIAL hashes here.
-        // Parent cache contains hashes after N refinement iterations, but we need
-        // iteration-0 hashes (degree + edge positions) for correct WL refinement.
-        // The incremental benefit comes from the active vertex tracking in refinement,
-        // not from reusing parent's final hashes as initial values.
-        ArenaVector<uint64_t> current(*arena_, num_vertices);
-        current.resize(num_vertices);
-
-        for (size_t i = 0; i < num_vertices; ++i) {
-            // Compute initial hash for this vertex based on current state's structure
-            uint64_t h = FNV_OFFSET;
-            size_t count = occ_offsets[i + 1] - occ_offsets[i];
-            h = fnv_combine(h, count);
-            for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                h = fnv_combine(h, filtered_occ_data[j].first);
-                h = fnv_combine(h, filtered_occ_data[j].second);
-            }
-            current[i] = h;
-        }
-
-        // WL refinement with active vertex tracking
-        ArenaVector<uint64_t> next(*arena_, num_vertices);
-        next.resize(num_vertices);
-        ArenaVector<uint64_t> neighbor_hashes(*arena_);
-        size_t iteration = 0;
-
-        // NOTE: We must mark ALL vertices as active, not just affected ones.
-        // WL requires all vertices to refine synchronously - a vertex's iteration-N
-        // hash depends on neighbors' iteration-(N-1) hashes. If we only refine
-        // affected vertices first, they get "ahead" of unaffected vertices, breaking
-        // the synchronization and producing incorrect hashes.
-        ArenaVector<bool> active(*arena_, num_vertices);
-        active.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) active[i] = true;
-
-        ArenaVector<bool> next_active(*arena_, num_vertices);
-        next_active.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) next_active[i] = false;
-
-        size_t num_active = 0;
-        for (size_t i = 0; i < num_vertices; ++i) {
-            if (active[i]) ++num_active;
-        }
-
-        while (num_active > 0 && iteration < MAX_REFINEMENT_DEPTH) {
-            if (should_abort()) throw AbortedException{};
-            ++iteration;
-            size_t next_num_active = 0;
-
-            for (size_t i = 0; i < num_vertices; ++i) {
-                if (!active[i]) {
-                    next[i] = current[i];
-                    continue;
-                }
-
-                uint64_t h = current[i];
-                neighbor_hashes.clear();
-
-                for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                    EdgeId eid = vertex_to_edges_data[j].first;
-                    uint8_t my_pos = vertex_to_edges_data[j].second;
-                    uint8_t arity = edge_arities[eid];
-                    const VertexId* verts = edge_vertices[eid];
-
-                    for (uint8_t k = 0; k < arity; ++k) {
-                        if (k != my_pos) {
-                            size_t neighbor_idx = get_vertex_idx(verts[k]);
-                            neighbor_hashes.push_back(fnv_combine(current[neighbor_idx], k));
-                        }
-                    }
-                }
-
-                insertion_sort(neighbor_hashes.begin(), neighbor_hashes.end());
-                for (uint64_t nh : neighbor_hashes) {
-                    h = fnv_combine(h, nh);
-                }
-
-                next[i] = h;
-
-                if (h != current[i]) {
-                    for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                        EdgeId eid = vertex_to_edges_data[j].first;
-                        uint8_t my_pos = vertex_to_edges_data[j].second;
-                        uint8_t arity = edge_arities[eid];
-                        const VertexId* verts = edge_vertices[eid];
-                        for (uint8_t k = 0; k < arity; ++k) {
-                            if (k != my_pos) {
-                                size_t neighbor_idx = get_vertex_idx(verts[k]);
-                                if (!next_active[neighbor_idx]) {
-                                    next_active[neighbor_idx] = true;
-                                    ++next_num_active;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            std::swap(current, next);
-            std::swap(active, next_active);
-            for (size_t i = 0; i < num_vertices; ++i) next_active[i] = false;
-            num_active = next_num_active;
-        }
-
-        // Build cache for children
-        cache.count = static_cast<uint32_t>(num_vertices);
-        cache.vertices = arena_->allocate_array<VertexId>(cache.count);
-        cache.hashes = arena_->allocate_array<uint64_t>(cache.count);
-
-        for (size_t i = 0; i < num_vertices; ++i) {
-            cache.vertices[i] = vertices[i];
-            cache.hashes[i] = current[i];
-        }
-
-        uint64_t hash = build_canonical_hash_dense(current, vertices, min_vertex, vertex_index,
-                                                    state_edges, edge_vertices, edge_arities);
-
-        return {hash, cache};
+        // Rc != P.fixp: full commutative rebuild from child colours at the child fixpoint
+        uint64_t vsum=0; for(int id:cverts) vsum += mix64(cf(id));
+        uint64_t esum=0; size_t mc=0; child_edges.for_each([&](EdgeId e){ ++mc; uint64_t h=FNV_OFFSET; h=fnv_combine(h,ea[e]); const VertexId* vs=ev[e]; for(uint8_t i=0;i<ea[e];++i) h=fnv_combine(h,cf(vs[i])); esum += mix64(h); });
+        uint64_t h=FNV_OFFSET; h=fnv_combine(h,cverts.size()); h=fnv_combine(h,mc); h=fnv_combine(h,vsum); h=fnv_combine(h,esum); return h;
     }
 
     // =========================================================================
@@ -952,7 +475,7 @@ public:
         // Build edge signature -> list of edges map for state2
         // Edge signature = tuple of vertex subtree hashes (in order)
         // Multiple edges can have the same signature (automorphic edges)
-        std::unordered_map<uint64_t, std::vector<EdgeId>> edge2_by_sig;
+        SUMap<uint64_t, SVec<EdgeId>> edge2_by_sig;   // worker-local scratch
 
         state2_edges.for_each([&](EdgeId eid) {
             uint8_t arity = edge_arities[eid];
@@ -963,7 +486,7 @@ public:
         });
 
         // Collect edges from state1
-        std::vector<EdgeId> edges1;
+        SVec<EdgeId> edges1;
         state1_edges.for_each([&](EdgeId eid) {
             edges1.push_back(eid);
         });
@@ -982,7 +505,7 @@ public:
         result.state2_edges = arena_->allocate_array<EdgeId>(result.count);
 
         // Track which edges from state2 have been used
-        std::unordered_map<uint64_t, size_t> sig_next_idx;  // For automorphic edges, track next available
+        SUMap<uint64_t, size_t> sig_next_idx;  // automorphic edges: next available (worker scratch)
 
         // Find correspondence for each edge in state1
         for (size_t i = 0; i < edges1.size(); ++i) {
@@ -1048,21 +571,8 @@ public:
         return sig;
     }
 
-    // =========================================================================
-    // Statistics
-    // =========================================================================
-
-    size_t num_vertices() const { return vertices_.size(); }
-
 private:
     ConcurrentHeterogeneousArena* arena_;
-    std::atomic<bool>* abort_flag_{nullptr};
-
-    // Per-vertex edge occurrences (global, grows as edges are added)
-    SegmentedArray<LockFreeList<EdgeOccurrence>> vertices_;
-
-    // Version counters for invalidation (incremented on edge addition)
-    SegmentedArray<std::atomic<uint32_t>> vertex_versions_;
 
     // =========================================================================
     // Internal Helpers
@@ -1087,87 +597,21 @@ private:
         }
     }
 
-    void ensure_vertex_capacity(VertexId vertex) {
-        vertices_.get_or_default(vertex, *arena_);
-        vertex_versions_.get_or_default(vertex, *arena_);
+    // splitmix64 finaliser — strong avalanche so a multiset SUM of these is a
+    // collision-resistant order-independent hash.
+    static uint64_t mix64(uint64_t z) {
+        z += 0x9e3779b97f4a7c15ull;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+        return z ^ (z >> 31);
     }
 
-    void add_edge_to_vertex(VertexId vertex, EdgeId edge, uint8_t position, uint8_t arity) {
-        EdgeOccurrence occ(edge, position, arity);
-        vertices_[vertex].push(occ, *arena_);
-        vertex_versions_[vertex].fetch_add(1, std::memory_order_release);
-    }
-
-    // Build canonical hash from vertex hashes and edge structure
-    template<typename VertexAccessor, typename ArityAccessor>
-    uint64_t build_canonical_hash(
-        const std::vector<uint64_t>& vertex_hashes,
-        const std::vector<VertexId>& vertices,
-        const std::vector<size_t>& vertex_index,
-        const SparseBitset& state_edges,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        // Sort vertices by hash for canonical ordering
-        std::vector<std::pair<uint64_t, size_t>> sorted_hashes;
-        sorted_hashes.reserve(vertices.size());
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            sorted_hashes.emplace_back(vertex_hashes[i], i);
-        }
-        std::sort(sorted_hashes.begin(), sorted_hashes.end());
-
-        uint64_t hash = FNV_OFFSET;
-
-        // Hash vertex equivalence class structure
-        uint64_t prev_hash = 0;
-        uint32_t class_count = 0;
-        for (size_t i = 0; i < sorted_hashes.size(); ++i) {
-            uint64_t vh = sorted_hashes[i].first;
-            if (vh != prev_hash && class_count > 0) {
-                hash = fnv_combine(hash, prev_hash);
-                hash = fnv_combine(hash, class_count);
-                class_count = 0;
-            }
-            prev_hash = vh;
-            ++class_count;
-        }
-        if (class_count > 0) {
-            hash = fnv_combine(hash, prev_hash);
-            hash = fnv_combine(hash, class_count);
-        }
-
-        // Build and sort canonical edge representations
-        std::vector<std::vector<uint64_t>> canonical_edges;
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-
-            std::vector<uint64_t> edge_rep;
-            edge_rep.reserve(arity);
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = vertex_index[verts[i]];
-                edge_rep.push_back(vertex_hashes[idx]);
-            }
-            // DO NOT sort - vertex order matters for directed hyperedges
-            canonical_edges.push_back(std::move(edge_rep));
-        });
-
-        // Sort edges for canonical ordering
-        std::sort(canonical_edges.begin(), canonical_edges.end());
-
-        // Hash edge structure
-        for (const auto& edge : canonical_edges) {
-            hash = fnv_combine(hash, edge.size());
-            for (uint64_t vh : edge) {
-                hash = fnv_combine(hash, vh);
-            }
-        }
-
-        return hash;
-    }
-
-    // Arena-based version for optimized compute_state_hash with dense index
+    // Canonical state hash as a COMMUTATIVE multiset combine of per-vertex colours
+    // and per-edge hashes. Order-independent => no sort needed to canonicalise, and
+    // an incremental update can patch only the changed vertex/edge contributions
+    // (O(delta)). Discrimination equals the sorted form (both are functions of the
+    // colour multiset + edge-hash multiset). Optionally outputs the running sums +
+    // edge count so callers can patch incrementally.
     template<typename VertexAccessor, typename ArityAccessor>
     uint64_t build_canonical_hash_dense(
         const ArenaVector<uint64_t>& vertex_hashes,
@@ -1176,133 +620,28 @@ private:
         const ArenaVector<size_t>& vertex_index,
         const SparseBitset& state_edges,
         const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
+        const ArityAccessor& edge_arities,
+        uint64_t* out_vsum = nullptr, uint64_t* out_esum = nullptr, size_t* out_m = nullptr
     ) const {
-        // Direct array lookup - no hash overhead
-        auto get_vertex_idx = [&](VertexId v) -> size_t {
-            return vertex_index[v - min_vertex];
-        };
-
-        // Sort vertices by hash for canonical ordering
-        ArenaVector<std::pair<uint64_t, size_t>> sorted_hashes(*arena_, vertices.size());
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            sorted_hashes.push_back({vertex_hashes[i], i});
-        }
-        std::sort(sorted_hashes.begin(), sorted_hashes.end());
-
-        uint64_t hash = FNV_OFFSET;
-
-        // Hash vertex equivalence class structure
-        uint64_t prev_hash = 0;
-        uint32_t class_count = 0;
-        for (size_t i = 0; i < sorted_hashes.size(); ++i) {
-            uint64_t vh = sorted_hashes[i].first;
-            if (vh != prev_hash && class_count > 0) {
-                hash = fnv_combine(hash, prev_hash);
-                hash = fnv_combine(hash, class_count);
-                class_count = 0;
-            }
-            prev_hash = vh;
-            ++class_count;
-        }
-        if (class_count > 0) {
-            hash = fnv_combine(hash, prev_hash);
-            hash = fnv_combine(hash, class_count);
-        }
-
-        // Build canonical edge hashes (just the hash, not full representation)
-        ArenaVector<uint64_t> edge_hashes(*arena_);
-
+        uint64_t vsum = 0;
+        for (size_t i = 0; i < vertices.size(); ++i) vsum += mix64(vertex_hashes[i]);
+        uint64_t esum = 0; size_t m = 0;
         state_edges.for_each([&](EdgeId eid) {
+            ++m;
             uint8_t arity = edge_arities[eid];
             const VertexId* verts = edge_vertices[eid];
-
-            // Compute edge hash directly without storing full representation
-            uint64_t edge_hash = FNV_OFFSET;
-            edge_hash = fnv_combine(edge_hash, arity);
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                edge_hash = fnv_combine(edge_hash, vertex_hashes[idx]);
-            }
-            edge_hashes.push_back(edge_hash);
+            uint64_t eh = FNV_OFFSET; eh = fnv_combine(eh, arity);
+            for (uint8_t i = 0; i < arity; ++i) eh = fnv_combine(eh, vertex_hashes[vertex_index[verts[i] - min_vertex]]);
+            esum += mix64(eh);
         });
-
-        // Sort edge hashes for canonical ordering
-        std::sort(edge_hashes.begin(), edge_hashes.end());
-
-        // Hash edge structure
-        hash = fnv_combine(hash, edge_hashes.size());
-        for (size_t i = 0; i < edge_hashes.size(); ++i) {
-            hash = fnv_combine(hash, edge_hashes[i]);
-        }
-
-        return hash;
-    }
-
-    // Arena-based version for optimized compute_state_hash (legacy, uses sparse index)
-    template<typename VertexAccessor, typename ArityAccessor>
-    uint64_t build_canonical_hash_arena(
-        const ArenaVector<uint64_t>& vertex_hashes,
-        const ArenaVector<VertexId>& vertices,
-        const std::unordered_map<VertexId, size_t>& vertex_index,
-        const SparseBitset& state_edges,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        // Sort vertices by hash for canonical ordering
-        ArenaVector<std::pair<uint64_t, size_t>> sorted_hashes(*arena_, vertices.size());
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            sorted_hashes.push_back({vertex_hashes[i], i});
-        }
-        std::sort(sorted_hashes.begin(), sorted_hashes.end());
-
+        if (out_vsum) *out_vsum = vsum;
+        if (out_esum) *out_esum = esum;
+        if (out_m) *out_m = m;
         uint64_t hash = FNV_OFFSET;
-
-        // Hash vertex equivalence class structure
-        uint64_t prev_hash = 0;
-        uint32_t class_count = 0;
-        for (size_t i = 0; i < sorted_hashes.size(); ++i) {
-            uint64_t vh = sorted_hashes[i].first;
-            if (vh != prev_hash && class_count > 0) {
-                hash = fnv_combine(hash, prev_hash);
-                hash = fnv_combine(hash, class_count);
-                class_count = 0;
-            }
-            prev_hash = vh;
-            ++class_count;
-        }
-        if (class_count > 0) {
-            hash = fnv_combine(hash, prev_hash);
-            hash = fnv_combine(hash, class_count);
-        }
-
-        // Build canonical edge hashes (just the hash, not full representation)
-        ArenaVector<uint64_t> edge_hashes(*arena_);
-
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-
-            // Compute edge hash directly without storing full representation
-            uint64_t edge_hash = FNV_OFFSET;
-            edge_hash = fnv_combine(edge_hash, arity);
-            for (uint8_t i = 0; i < arity; ++i) {
-                auto it = vertex_index.find(verts[i]);
-                size_t idx = it->second;
-                edge_hash = fnv_combine(edge_hash, vertex_hashes[idx]);
-            }
-            edge_hashes.push_back(edge_hash);
-        });
-
-        // Sort edge hashes for canonical ordering
-        std::sort(edge_hashes.begin(), edge_hashes.end());
-
-        // Hash edge structure
-        hash = fnv_combine(hash, edge_hashes.size());
-        for (size_t i = 0; i < edge_hashes.size(); ++i) {
-            hash = fnv_combine(hash, edge_hashes[i]);
-        }
-
+        hash = fnv_combine(hash, vertices.size());
+        hash = fnv_combine(hash, m);
+        hash = fnv_combine(hash, vsum);
+        hash = fnv_combine(hash, esum);
         return hash;
     }
 
@@ -1332,8 +671,8 @@ private:
         const VertexAccessor& edge_vertices,
         const ArityAccessor& edge_arities
     ) const {
-        // Collect individual edge signatures
-        std::vector<uint64_t> edge_sigs;
+        // Collect individual edge signatures (worker-local scratch)
+        SVec<uint64_t> edge_sigs;
         edge_sigs.reserve(count);
 
         for (uint8_t i = 0; i < count; ++i) {

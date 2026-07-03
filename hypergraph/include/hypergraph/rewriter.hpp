@@ -72,35 +72,6 @@ public:
         const VariableBinding& binding,
         uint32_t output_step = 0
     );
-
-    // Apply a registered match
-    RewriteResult apply(
-        const RewriteRule& rule,
-        StateId input_state,
-        const Match& match,
-        uint32_t output_step = 0
-    ) {
-        return apply(
-            rule,
-            input_state,
-            match.matched_edges,
-            match.num_edges,
-            match.binding,
-            output_step
-        );
-    }
-
-    // Apply match by ID
-    RewriteResult apply_match(
-        const RewriteRule* rules,
-        StateId input_state,
-        MatchId match_id,
-        uint32_t output_step = 0
-    ) {
-        const Match& match = hg_->get_match(match_id);
-        const RewriteRule& rule = rules[match.rule_index];
-        return apply(rule, input_state, match, output_step);
-    }
 };
 
 // =============================================================================
