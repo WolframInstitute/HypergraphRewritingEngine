@@ -12,7 +12,7 @@ namespace hypergraph {
 // Constants
 // =============================================================================
 
-constexpr uint8_t MAX_PATTERN_EDGES = 16;
+using hgcommon::MAX_PATTERN_EDGES;
 // MAX_VARS is defined in types.hpp
 
 // =============================================================================

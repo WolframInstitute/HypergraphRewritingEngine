@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "bitset.hpp"
+#include "hgcommon/core.hpp"
 
 namespace hypergraph {
 
@@ -16,14 +17,13 @@ namespace hypergraph {
 // All IDs are uint32_t: 4 billion sufficient, less cache pressure than uint64.
 // Allocated via atomic fetch_add from global counters.
 
-using VertexId = uint32_t;
-using EdgeId = uint32_t;
-using StateId = uint32_t;
-using EventId = uint32_t;
-using MatchId = uint32_t;
-using RuleIndex = uint16_t;
-
-constexpr uint32_t INVALID_ID = UINT32_MAX;
+using hgcommon::VertexId;
+using hgcommon::EdgeId;
+using hgcommon::StateId;
+using hgcommon::EventId;
+using hgcommon::MatchId;
+using hgcommon::INVALID_ID;
+using RuleIndex = uint16_t;  // host-only width (the GPU port uses a 32-bit RuleId)
 
 // =============================================================================
 // AbortedException
@@ -41,7 +41,7 @@ struct AbortedException : std::exception {
 // Fixed-size inline array for pattern matching bindings.
 // No heap allocation.
 
-constexpr uint8_t MAX_VARS = 32;
+using hgcommon::MAX_VARS;
 
 struct VariableBinding {
     VertexId bindings[MAX_VARS];
@@ -534,27 +534,10 @@ struct EdgeCorrespondence {
 // EventSignature: Signature for event deduplication
 // =============================================================================
 
-constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
-constexpr uint64_t FNV_PRIME = 0x100000001b3ULL;
-
-// Mix a raw integer value for better avalanche (MurmurHash3 finalizer)
-// Use this when hashing small raw integers like vertex IDs
-inline uint64_t mix64(uint64_t x) {
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-}
-
-// Combine a pre-hashed value into an accumulator (FNV-1a style)
-// Use this when the value is already well-distributed (e.g., another hash)
-inline uint64_t fnv_hash(uint64_t h, uint64_t value) {
-    h ^= value;
-    h *= FNV_PRIME;
-    return h;
-}
+using hgcommon::FNV_OFFSET;
+using hgcommon::FNV_PRIME;
+using hgcommon::mix64;
+using hgcommon::fnv_hash;
 
 struct EventSignature {
     uint64_t input_state_hash;

@@ -11,7 +11,7 @@ namespace hypergraph {
 // Constants
 // =============================================================================
 
-constexpr uint8_t MAX_ARITY = 16;
+using hgcommon::MAX_ARITY;
 
 // =============================================================================
 // EdgeSignature

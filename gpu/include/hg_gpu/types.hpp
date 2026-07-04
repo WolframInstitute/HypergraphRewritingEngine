@@ -1,17 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include "hgcommon/core.hpp"
 
 namespace hg_gpu {
 
-using VertexId = uint32_t;
-using EdgeId   = uint32_t;
-using StateId  = uint32_t;
-using EventId  = uint32_t;
-using MatchId  = uint32_t;
-using RuleId   = uint32_t;
-
-constexpr uint32_t INVALID_ID = 0xFFFFFFFFu;
+using hgcommon::VertexId;
+using hgcommon::EdgeId;
+using hgcommon::StateId;
+using hgcommon::EventId;
+using hgcommon::MatchId;
+using hgcommon::INVALID_ID;
+using RuleId = uint32_t;  // GPU-local width (host engine uses a 16-bit RuleIndex)
 
 // =============================================================================
 // Storage layout — Edge, State edge CSR, Pools
@@ -38,9 +38,9 @@ constexpr uint32_t INVALID_ID = 0xFFFFFFFFu;
 //     because new edges (via edge_pool.claim_n) always have IDs greater
 //     than any parent edge.
 
-constexpr uint32_t kMaxArity         = 16;   // matches CPU MAX_ARITY
-constexpr uint32_t kMaxPatternEdges  = 16;   // matches CPU MAX_PATTERN_EDGES
-constexpr uint32_t kMaxVars          = 32;   // matches CPU MAX_VARS
+constexpr uint32_t kMaxArity         = hgcommon::MAX_ARITY;
+constexpr uint32_t kMaxPatternEdges  = hgcommon::MAX_PATTERN_EDGES;
+constexpr uint32_t kMaxVars          = hgcommon::MAX_VARS;
 constexpr uint32_t kMaxConsumedBits  = 1024; // per-match consumed bitmap width
 constexpr uint32_t kMaxConsumedWords = kMaxConsumedBits / 32;
 
