@@ -203,6 +203,33 @@ void Engine::reset() { impl_->reset(); }
 const EngineConfig& Engine::config() const { return impl_->cfg_; }
 EvolveResult Engine::run(const EvolveInput& in) { return impl_->run(in); }
 
+namespace {
+// Fill each state's dedup key with a unique value so NONE of them merge —
+// the GPU equivalent of the CPU's None mode (map_key = state id, no iso-dedup).
+__global__ void k_fill_unique_keys(uint32_t lo, uint32_t hi, uint64_t* out) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t n = hi - lo;
+    if (tid >= n) return;
+    out[tid] = static_cast<uint64_t>(lo + tid) + 1u;  // unique, nonzero
+}
+
+// Per-state dedup keys by canonicalization mode, mirroring the CPU's
+// create_or_get_canonical_state map_key: None -> unique (tree mode, no dedup),
+// Full -> exact IR canonical hash. Automatic (content-ordered) is B2b -> IR for now.
+void compute_state_dedup_keys(EngineState& engine, uint32_t lo, uint32_t hi,
+                              uint64_t* out, CanonicalizationMode mode) {
+    if (hi <= lo) return;
+    if (mode == CanonicalizationMode::None) {
+        uint32_t n = hi - lo;
+        int b = 64, g = static_cast<int>((n + b - 1) / b);
+        k_fill_unique_keys<<<g, b>>>(lo, hi, out);
+        cudaDeviceSynchronize();
+        return;
+    }
+    compute_state_ir_hashes_range(engine, lo, hi, out);
+}
+}  // namespace
+
 EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // Reset device state from any prior run().
     reset();
@@ -282,7 +309,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // Seed frontier with state 0 (the initial state).
     // Hash state 0 (always). The initial state is never coin-flipped — it
     // always enters the frontier so step 0 has something to match.
-    compute_state_ir_hashes_range(engine, 0, 1, d_state_hashes);
+    compute_state_dedup_keys(engine, 0, 1, d_state_hashes, in.canonicalization);
     if (in.explore_from_canonical_states_only) {
         uint32_t one = 0;
         check(cudaMemcpy(d_next_count, &one, sizeof(uint32_t), cudaMemcpyHostToDevice),
@@ -341,8 +368,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         if (state_after <= state_before) break;
 
         // (3) WL-hash only the new states. Writes into d_state_hashes[lo..hi).
-        compute_state_ir_hashes_range(engine, state_before, state_after,
-                                      d_state_hashes + state_before);
+        compute_state_dedup_keys(engine, state_before, state_after,
+                                 d_state_hashes + state_before, in.canonicalization);
         auto t3 = std::chrono::steady_clock::now();
         t_hash += std::chrono::duration<double, std::milli>(t3 - t2).count();
 
