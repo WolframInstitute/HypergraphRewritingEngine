@@ -172,7 +172,7 @@ public:
 
         uint64_t hash = hgcommon::wl_canonical_hash(
             ea.data(), eoff.data(), ev.data(),
-            static_cast<uint32_t>(n_edges), static_cast<uint32_t>(num_vertices), MAX_REFINEMENT_DEPTH,
+            static_cast<uint32_t>(n_edges), static_cast<uint32_t>(num_vertices), hgcommon::WL_MAX_REFINE_ITERS,
             cur.data(), nxt.data(), occ_off.data(), occ_edge.data(), occ_pos.data(),
             nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), cache.hashes);
 

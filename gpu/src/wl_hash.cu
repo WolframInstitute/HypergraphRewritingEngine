@@ -99,7 +99,7 @@ __device__ uint64_t wl_hash_state_device(DeviceState ds, StateId sid) {
     uint64_t nbr[kOccCap];
 
     return hgcommon::wl_canonical_hash(
-        ea, eoff, ev, n_edges, n_verts, kMaxWlRefineIters,
+        ea, eoff, ev, n_edges, n_verts, hgcommon::WL_MAX_REFINE_ITERS,
         cur, nxt, occ_off, occ_edge, occ_pos, nbr, kOccCap, dscr, nullptr);
 }
 

@@ -15,6 +15,9 @@
 
 namespace hgcommon {
 
+// Max WL colour-refinement rounds (shared so CPU and GPU stop identically).
+constexpr uint32_t WL_MAX_REFINE_ITERS = 100;
+
 // Insertion sort — small n, no std:: on device.
 HG_HD inline void wl_isort(uint64_t* a, uint32_t n) {
     for (uint32_t i = 1; i < n; ++i) {
