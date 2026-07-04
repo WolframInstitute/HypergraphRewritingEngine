@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "hgcommon/wl_core.hpp"
 #include <cstddef>
 #include <algorithm>
 #include <vector>
@@ -131,148 +132,49 @@ public:
             return vertex_index[v - min_vertex];
         };
 
-        // Count total edge occurrences for pre-allocation
-        size_t total_occurrences = 0;
-        state_edges.for_each([&](EdgeId eid) {
-            total_occurrences += edge_arities[eid];
-        });
+        // Flatten to local-index edges (local index = sorted-vertex position) and
+        // hash with the shared hgcommon WL core — ONE implementation shared with
+        // the GPU port, so their WL hashes are identical by construction.
+        size_t n_edges = 0, total_occ = 0;
+        state_edges.for_each([&](EdgeId eid){ ++n_edges; total_occ += edge_arities[eid]; });
 
-        // Arena-allocate flat adjacency structure
-        ArenaVector<std::pair<uint8_t, uint8_t>> filtered_occ_data(worker_scratch(), total_occurrences);
-        ArenaVector<std::pair<EdgeId, uint8_t>> vertex_to_edges_data(worker_scratch(), total_occurrences);
-        ArenaVector<uint32_t> occ_counts(worker_scratch(), num_vertices);
-        occ_counts.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
-
-        // First pass: count occurrences per vertex
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                occ_counts[idx]++;
-            }
-        });
-
-        // Compute offsets (prefix sum)
-        ArenaVector<uint32_t> occ_offsets(worker_scratch(), num_vertices + 1);
-        occ_offsets.resize(num_vertices + 1);
-        occ_offsets[0] = 0;
-        for (size_t i = 0; i < num_vertices; ++i) {
-            occ_offsets[i + 1] = occ_offsets[i] + occ_counts[i];
+        ArenaVector<uint8_t>  ea(worker_scratch(), n_edges);         ea.resize(n_edges);
+        ArenaVector<uint32_t> eoff(worker_scratch(), n_edges);       eoff.resize(n_edges);
+        ArenaVector<uint32_t> ev(worker_scratch(), total_occ);       ev.resize(total_occ);
+        {
+            size_t e = 0, off = 0;
+            state_edges.for_each([&](EdgeId eid){
+                uint8_t arity = edge_arities[eid];
+                const VertexId* verts = edge_vertices[eid];
+                eoff[e] = static_cast<uint32_t>(off);
+                ea[e]   = arity;
+                for (uint8_t i = 0; i < arity; ++i)
+                    ev[off++] = static_cast<uint32_t>(get_vertex_idx(verts[i]));
+                ++e;
+            });
         }
 
-        // Reset counts for second pass
-        for (size_t i = 0; i < num_vertices; ++i) occ_counts[i] = 0;
+        // Core scratch (transient, per-worker arena).
+        size_t nbr_cap = total_occ ? total_occ : 1;
+        ArenaVector<uint64_t> cur(worker_scratch(), num_vertices);        cur.resize(num_vertices);
+        ArenaVector<uint64_t> nxt(worker_scratch(), num_vertices);        nxt.resize(num_vertices);
+        ArenaVector<uint64_t> dscr(worker_scratch(), num_vertices);       dscr.resize(num_vertices);
+        ArenaVector<uint32_t> occ_off(worker_scratch(), num_vertices + 1); occ_off.resize(num_vertices + 1);
+        ArenaVector<uint32_t> occ_edge(worker_scratch(), total_occ);      occ_edge.resize(total_occ);
+        ArenaVector<uint8_t>  occ_pos(worker_scratch(), total_occ);       occ_pos.resize(total_occ);
+        ArenaVector<uint64_t> nbr(worker_scratch(), nbr_cap);             nbr.resize(nbr_cap);
 
-        // Second pass: fill adjacency data
-        filtered_occ_data.resize(total_occurrences);
-        vertex_to_edges_data.resize(total_occurrences);
-        state_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-            for (uint8_t i = 0; i < arity; ++i) {
-                size_t idx = get_vertex_idx(verts[i]);
-                size_t pos = occ_offsets[idx] + occ_counts[idx];
-                filtered_occ_data[pos] = {arity, i};
-                vertex_to_edges_data[pos] = {eid, i};
-                occ_counts[idx]++;
-            }
-        });
-
-        // Sort each vertex's occurrences for canonical form
-        for (size_t i = 0; i < num_vertices; ++i) {
-            auto begin = filtered_occ_data.begin() + occ_offsets[i];
-            auto end = filtered_occ_data.begin() + occ_offsets[i + 1];
-            insertion_sort(begin, end);
-        }
-
-        // Initial structural signatures
-        ArenaVector<uint64_t> current(worker_scratch(), num_vertices);
-        current.resize(num_vertices);
-        for (size_t i = 0; i < num_vertices; ++i) {
-            uint64_t h = FNV_OFFSET;
-            size_t count = occ_offsets[i + 1] - occ_offsets[i];
-            h = fnv_combine(h, count);  // degree
-            for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                h = fnv_combine(h, filtered_occ_data[j].first);   // arity
-                h = fnv_combine(h, filtered_occ_data[j].second);  // pos
-            }
-            current[i] = h;
-        }
-
-        // WL refinement - stop when the colour PARTITION stabilises. With content
-        // hashing the per-vertex values re-hash every round (they never "stop
-        // changing"), but 1-WL's partition is monotone: once the number of
-        // distinct colours stops growing it equals the coarsest equitable
-        // partition that any further round would give. MAX_REFINEMENT_DEPTH is a
-        // safety backstop only.
-        ArenaVector<uint64_t> next(worker_scratch(), num_vertices);
-        next.resize(num_vertices);
-        ArenaVector<uint64_t> neighbor_hashes(worker_scratch());
-        ArenaVector<uint64_t> distinct_scratch(worker_scratch(), num_vertices);
-        auto count_distinct = [&]() -> size_t {
-            distinct_scratch.clear();
-            for (size_t i = 0; i < num_vertices; ++i) distinct_scratch.push_back(current[i]);
-            std::sort(distinct_scratch.begin(), distinct_scratch.end());
-            size_t d = 0;
-            for (size_t i = 0; i < num_vertices; ++i)
-                if (i == 0 || distinct_scratch[i] != distinct_scratch[i - 1]) ++d;
-            return d;
-        };
-        size_t prev_distinct = count_distinct();
-        size_t iteration = 0;
-
-        while (iteration < MAX_REFINEMENT_DEPTH) {
-            ++iteration;
-            if (should_abort()) throw AbortedException{};
-
-            for (size_t i = 0; i < num_vertices; ++i) {
-                uint64_t h = current[i];
-                neighbor_hashes.clear();
-
-                for (size_t j = occ_offsets[i]; j < occ_offsets[i + 1]; ++j) {
-                    EdgeId eid = vertex_to_edges_data[j].first;
-                    uint8_t my_pos = vertex_to_edges_data[j].second;
-                    uint8_t arity = edge_arities[eid];
-                    const VertexId* verts = edge_vertices[eid];
-
-                    for (uint8_t k = 0; k < arity; ++k) {
-                        if (k != my_pos) {
-                            size_t neighbor_idx = get_vertex_idx(verts[k]);
-                            neighbor_hashes.push_back(fnv_combine(current[neighbor_idx], k));
-                        }
-                    }
-                }
-
-                insertion_sort(neighbor_hashes.begin(), neighbor_hashes.end());
-                for (size_t j = 0; j < neighbor_hashes.size(); ++j) {
-                    h = fnv_combine(h, neighbor_hashes[j]);
-                }
-
-                next[i] = h;
-            }
-
-            std::swap(current, next);
-
-            size_t d = count_distinct();
-            if (d == prev_distinct) break;   // partition stabilised
-            prev_distinct = d;
-        }
-
-        // Build vertex hash cache (vertices already sorted)
+        // Final per-vertex colours land directly in the cache.
         cache.count = static_cast<uint32_t>(num_vertices);
         cache.vertices = arena_->allocate_array<VertexId>(cache.count);
-        cache.hashes = arena_->allocate_array<uint64_t>(cache.count);
+        cache.hashes   = arena_->allocate_array<uint64_t>(cache.count);
+        for (size_t i = 0; i < num_vertices; ++i) cache.vertices[i] = vertices[i];
 
-        for (size_t i = 0; i < num_vertices; ++i) {
-            cache.vertices[i] = vertices[i];
-            cache.hashes[i] = current[i];
-        }
-
-        uint64_t hash = build_canonical_hash_dense(current, vertices, min_vertex,
-                                                   vertex_index,
-                                                   state_edges, edge_vertices, edge_arities);
+        uint64_t hash = hgcommon::wl_canonical_hash(
+            ea.data(), eoff.data(), ev.data(),
+            static_cast<uint32_t>(n_edges), static_cast<uint32_t>(num_vertices), MAX_REFINEMENT_DEPTH,
+            cur.data(), nxt.data(), occ_off.data(), occ_edge.data(), occ_pos.data(),
+            nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), cache.hashes);
 
         worker_scratch().release(_wl_mark);
         return {hash, cache};
