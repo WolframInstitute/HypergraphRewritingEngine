@@ -44,4 +44,11 @@ void compute_state_wl_hashes_range(const EngineState& engine,
                                    uint32_t lo, uint32_t hi,
                                    uint64_t* out_hashes_device);
 
+
+// Content-ordered (non-isomorphic) hash per state, for
+// CanonicalizationMode::Automatic — groups states by literal edge content.
+void compute_state_content_hashes_range(const EngineState& engine,
+                                        uint32_t lo, uint32_t hi,
+                                        uint64_t* out_hashes_device);
+
 }  // namespace hg_gpu

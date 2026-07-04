@@ -160,4 +160,51 @@ uint64_t compute_state_wl_hash_host(const EngineState& engine, StateId sid) {
     return h;
 }
 
+
+// ---------------------------------------------------------------------------
+// Content-ordered (non-isomorphic) hash for CanonicalizationMode::Automatic.
+// Mirrors CPU compute_content_ordered_hash: edge count, then per edge (edge-id
+// order — the CSR is sorted by edge id) arity + ACTUAL vertex ids + a sentinel.
+__device__ uint64_t content_hash_state_device(DeviceState ds, StateId sid) {
+    if (sid >= ds.max_states) return 0;
+    StateEdgeSlice sl = ds.state_edge_slices[sid];
+    uint32_t live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    uint32_t ne = 0;
+    for (uint32_t k = 0; k < sl.count; ++k) {
+        EdgeId eid = ds.state_edge_ids[sl.offset + k];
+        if (eid < live && eid < ds.edge_pool.capacity) ++ne;
+    }
+    uint64_t h = hgcommon::fnv_hash(hgcommon::FNV_OFFSET, hgcommon::mix64(ne));
+    for (uint32_t k = 0; k < sl.count; ++k) {
+        EdgeId eid = ds.state_edge_ids[sl.offset + k];
+        if (eid >= live || eid >= ds.edge_pool.capacity) continue;
+        const Edge& e = ds.edge_pool.at(eid);
+        h = hgcommon::fnv_hash(h, hgcommon::mix64(static_cast<uint64_t>(e.arity)));
+        for (uint8_t i = 0; i < e.arity; ++i)
+            h = hgcommon::fnv_hash(h, hgcommon::mix64(
+                    static_cast<uint64_t>(ds.vertex_pool.at(e.vertex_offset + i))));
+        h = hgcommon::fnv_hash(h, 0xDEADBEEFCAFEBABEull);
+    }
+    return h;
+}
+
+namespace {
+__global__ void k_content_hash_range(DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t n = hi - lo;
+    if (tid >= n) return;
+    out[tid] = content_hash_state_device(ds, lo + tid);
+}
+}  // namespace
+
+void compute_state_content_hashes_range(const EngineState& engine,
+                                        uint32_t lo, uint32_t hi,
+                                        uint64_t* out_hashes_device) {
+    if (hi <= lo) return;
+    uint32_t n = hi - lo;
+    int block = 64, grid = (int)((n + block - 1) / block);
+    k_content_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device);
+    check(cudaDeviceSynchronize(), "k_content_hash_range sync");
+}
+
 }  // namespace hg_gpu

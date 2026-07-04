@@ -1,4 +1,5 @@
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/initial_upload.hpp"
@@ -215,7 +216,7 @@ __global__ void k_fill_unique_keys(uint32_t lo, uint32_t hi, uint64_t* out) {
 
 // Per-state dedup keys by canonicalization mode, mirroring the CPU's
 // create_or_get_canonical_state map_key: None -> unique (tree mode, no dedup),
-// Full -> exact IR canonical hash. Automatic (content-ordered) is B2b -> IR for now.
+// Full -> exact IR canonical hash; Automatic -> content-ordered (non-iso) hash.
 void compute_state_dedup_keys(EngineState& engine, uint32_t lo, uint32_t hi,
                               uint64_t* out, CanonicalizationMode mode) {
     if (hi <= lo) return;
@@ -224,6 +225,10 @@ void compute_state_dedup_keys(EngineState& engine, uint32_t lo, uint32_t hi,
         int b = 64, g = static_cast<int>((n + b - 1) / b);
         k_fill_unique_keys<<<g, b>>>(lo, hi, out);
         cudaDeviceSynchronize();
+        return;
+    }
+    if (mode == CanonicalizationMode::Automatic) {
+        compute_state_content_hashes_range(engine, lo, hi, out);
         return;
     }
     compute_state_ir_hashes_range(engine, lo, hi, out);
