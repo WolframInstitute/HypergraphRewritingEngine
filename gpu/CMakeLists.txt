@@ -12,6 +12,7 @@ add_library(hg_gpu STATIC
     src/match.cu
     src/rewrite.cu
     src/wl_hash.cu
+    src/ir_host_fallback.cpp
 )
 
 set_property(TARGET hg_gpu PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
@@ -22,6 +23,9 @@ target_include_directories(hg_gpu
 )
 
 target_compile_features(hg_gpu PUBLIC cxx_std_17)
+target_link_libraries(hg_gpu PUBLIC hypergraph)
+target_include_directories(hg_gpu PUBLIC ${CMAKE_SOURCE_DIR}/hypergraph/include)
+
 
 target_compile_options(hg_gpu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
