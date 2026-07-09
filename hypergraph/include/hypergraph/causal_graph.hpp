@@ -94,8 +94,21 @@ class CausalGraph {
     //   - For all a ∈ {p} ∪ Anc[p]: Desc[a] ∪= {c} ∪ Desc[c]
     //   - For all d ∈ {c} ∪ Desc[c]: Anc[d] ∪= {p} ∪ Anc[p]
     //
-    // Thread-safety: Uses concurrent sets with atomic operations.
-    // Some redundant edges may slip through in races, but no duplicates.
+    // Thread-safety: concurrent sets with atomic operations. The reduction is
+    // exact -- a redundant edge is never emitted, at any thread count. Two
+    // invariants established by the rewriter guarantee it:
+    //   1. An edge's producer is set while the edge is still private to the
+    //      rewrite that created it, before the state holding it is enqueued for
+    //      rewriting. So no consumer can observe an edge whose producer is unset,
+    //      and every causal edge is created by add_edge_consumer.
+    //   2. All in-edges of an event are added by that event's own thread, in
+    //      descending producer-event-id order. Event ids are monotonic and a
+    //      producer's event is created before its consumer's, so descending id is
+    //      reverse topological order: when p reaches x and both produce edges
+    //      consumed by c, x->c is added before p->c, placing c in Desc[p] so the
+    //      p->c redundancy check finds it.
+    // Ancestors of an event have completed their own causal registration before it
+    // runs, so the Desc lookup backing the check reads a settled closure.
 
     // Desc[u] = all events reachable from u (transitive closure)
     // Anc[u] = all events that can reach u (transitive closure)
