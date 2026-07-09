@@ -31,7 +31,10 @@ struct Workload {
     hg_gpu::CanonicalizationMode canon_mode = hg_gpu::CanonicalizationMode::Full;
     hg_gpu::EventCanonicalizationMode event_canon_mode = hg_gpu::EventCanonicalizationMode::None;
     bool transitive_reduction = true;
-    bool explore_from_canonical_states_only = true;
+    // Reference semantics (reference/MultiwayReference.wl): every state is
+    // expanded. The engine reproduces the reference exactly on this path
+    // (wolfram_canonical_steps5: states=302, events=1174, causal(TR)=1332).
+    bool explore_from_canonical_states_only = false;
 };
 
 // Result normalized for cross-engine comparison. States compare by

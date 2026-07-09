@@ -108,9 +108,14 @@ __device__ __forceinline__ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
+// `dedup` selects the exploration semantics. True: only the first state of each
+// canonical hash enters the frontier (explore_from_canonical_states_only). False:
+// every new state is explored, so `map` is unused and must not be consulted --
+// deduplicating against a scratch map would silently drop states on collision.
 __global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
                                    const uint64_t* hashes,
                                    DedupMap::DeviceView map,
+                                   bool dedup,
                                    StateId* out_ids, uint32_t* out_count,
                                    uint32_t out_cap,
                                    uint32_t explore_threshold_u32,
@@ -120,9 +125,11 @@ __global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
     uint32_t n = hi - lo;
     if (tid >= n) return;
     StateId sid = lo + tid;
-    uint64_t h  = hashes[tid];
-    auto r = map.insert_if_absent(h == 0 ? 1 : h, sid);
-    if (!r.inserted) return;
+    if (dedup) {
+        uint64_t h = hashes[tid];
+        auto r = map.insert_if_absent(h == 0 ? 1 : h, sid);
+        if (!r.inserted) return;
+    }
 
     // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
     // (the threshold encoding for probability 1.0); skip the hash work
@@ -320,6 +327,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         check(cudaMemcpy(d_next_count, &one, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "seed count");
         k_dedup_and_append<<<1, 1>>>(0, 1, d_state_hashes, canonical_map.view(),
+                                     /*dedup=*/true,
                                      d_frontier, d_next_count, cfg.max_states,
                                      0xFFFFFFFFu, 0ull, 0u);
         check(cudaDeviceSynchronize(), "seed dedup sync");
@@ -386,24 +394,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         int block = 128;
         int grid  = (int)((n_new + block - 1) / block);
 
-        if (in.explore_from_canonical_states_only) {
-            k_dedup_and_append<<<grid, block>>>(state_before, state_after,
-                                                d_state_hashes + state_before,
-                                                canonical_map.view(),
-                                                d_next_frontier, d_next_count,
-                                                cfg.max_states,
-                                                explore_threshold_u32,
-                                                resolved_seed, step);
-        } else {
-            DedupMap dummy(32);
-            k_dedup_and_append<<<grid, block>>>(state_before, state_after,
-                                                d_state_hashes + state_before,
-                                                dummy.view(),
-                                                d_next_frontier, d_next_count,
-                                                cfg.max_states,
-                                                explore_threshold_u32,
-                                                resolved_seed, step);
-        }
+        k_dedup_and_append<<<grid, block>>>(state_before, state_after,
+                                            d_state_hashes + state_before,
+                                            canonical_map.view(),
+                                            in.explore_from_canonical_states_only,
+                                            d_next_frontier, d_next_count,
+                                            cfg.max_states,
+                                            explore_threshold_u32,
+                                            resolved_seed, step);
         check(cudaDeviceSynchronize(), "dedup sync");
 
         check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
