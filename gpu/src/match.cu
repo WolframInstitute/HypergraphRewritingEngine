@@ -109,6 +109,17 @@ __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
 // than the pattern's signature). For each candidate: filter exact compat,
 // arity, in-state, not-consumed; bind vars (saving/restoring on backtrack);
 // recurse; emit on full match.
+// Candidate enumeration is adaptive on state size. Multiway states are small
+// (tens of edges) while the signature and vertex-inverted indices are global
+// across the whole evolution, so their buckets grow with total edge count and
+// walking them costs O(evolution) per state. At or below this slice length,
+// candidates come straight from the state's own CSR slice: O(|state|) work,
+// each edge exactly once (no dedup buffer), state membership free. Above it
+// (single huge states, the visualiser regime) the global indices win and the
+// pivot/signature machinery is used. The two paths are strictly either/or:
+// running both would enumerate a candidate twice and emit duplicate matches.
+constexpr uint32_t kSliceScanMaxEdges = 256;
+
 __global__ void k_match_one_state(DeviceState ds,
                                   const DeviceRule* rules,
                                   uint32_t          num_rules,
@@ -174,7 +185,12 @@ __global__ void k_match_one_state(DeviceState ds,
         // At depth 0 (no bindings yet): seed from signature_index. At depth
         // ≥ 1 with a bound pivot_var: seed from vertex_inverted_index with
         // per-iteration dedup (see k_match_batch comment).
-        if (depth > 0 && pe.pivot_var != kNoPivotVar) {
+        StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
+        if (depth > 0 && sl_.count <= kSliceScanMaxEdges) {
+            for (uint32_t i = 0; i < sl_.count; ++i) {
+                try_candidate(ds.state_edge_ids[sl_.offset + i]);
+            }
+        } else if (depth > 0 && pe.pivot_var != kNoPivotVar) {
             VertexId pivot_vert = pm.var_binding[pe.pivot_var];
             // Per-iteration "seen" buffer for duplicate suppression; 256
             // keeps high-degree vertices in evolved states on the fast path.
@@ -367,7 +383,12 @@ __global__ void k_match_batch(DeviceState      ds,
             //     we emit duplicate match records.
             //   - Fallback (rare, disconnected LHS): fall back to the
             //     signature_index walk.
-            if (pe.pivot_var != kNoPivotVar) {
+            StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
+            if (sl_.count <= kSliceScanMaxEdges) {
+                for (uint32_t i = 0; i < sl_.count; ++i) {
+                    try_candidate(ds.state_edge_ids[sl_.offset + i]);
+                }
+            } else if (pe.pivot_var != kNoPivotVar) {
                 VertexId pivot_vert = pm.var_binding[pe.pivot_var];
                 // Bounded "seen" buffer for duplicate suppression; 256
                 // covers high-degree vertices in typical evolved Wolfram
@@ -416,19 +437,27 @@ __global__ void k_match_batch(DeviceState      ds,
         recurse(recurse, 1);
     };
 
-    // Stride over pattern_edge_0 candidates across the block's threads.
-    // Every thread walks the same signature buckets but only acts on
-    // candidates whose seen-index matches its threadIdx.
-    uint32_t cand_seen = 0;
-    for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
-        ds.signature_index.list.for_each(
-            static_cast<uint32_t>(pe0.compat_sig_hashes[s]) & ds.signature_index.mask,
-            [&] (EdgeId cand) {
-                if ((cand_seen % blockDim.x) == threadIdx.x) {
-                    run_dfs_from_root(cand);
-                }
-                ++cand_seen;
-            });
+    // Stride pattern_edge_0 candidates across the block's threads. Small
+    // states index their slice directly (each thread takes every 32nd edge);
+    // the signature-bucket walk covers large states, where every thread
+    // traverses the bucket but only acts on its own stripe.
+    StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
+    if (sl0.count <= kSliceScanMaxEdges) {
+        for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
+            run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
+        }
+    } else {
+        uint32_t cand_seen = 0;
+        for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
+            ds.signature_index.list.for_each(
+                static_cast<uint32_t>(pe0.compat_sig_hashes[s]) & ds.signature_index.mask,
+                [&] (EdgeId cand) {
+                    if ((cand_seen % blockDim.x) == threadIdx.x) {
+                        run_dfs_from_root(cand);
+                    }
+                    ++cand_seen;
+                });
+        }
     }
 }
 
