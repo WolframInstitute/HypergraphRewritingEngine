@@ -127,10 +127,11 @@ need paired-mean measurement, not single samples.
 - **4 (memory):** GPU side DONE. Only FFI surfacing remains, BLOCKED on item 8.
 - **7 (GPU parity features):** exploration_probability alignment DONE. The rest —
   event canonicalization (`canonical_id`), reservoir/`MaxStatesPerStep`,
-  multi-initial-state, genesis events — are each real features requiring exact
-  CPU-semantic matching (e.g. cross-initial-state vertex namespaces) verified via
-  the differential; multi-hour each, deferred to focused sessions rather than
-  started half-done.
+  genesis events remain — each a real feature requiring exact CPU-semantic
+  matching verified via the differential; deferred to focused sessions.
+  **Multi-initial-state DONE** (commit adds it): `EvolveInput::initial_states`,
+  22/22 differential incl. distinct-root and iso-root-full workloads. (Quotient
+  iso-root seed-dedup differs CPU-vs-GPU; documented, not asserted.)
 - **8, 9 (shared front-end, process-isolation binary):** large multi-session
   architecture.
 - **10 (paper):** BLOCKED on a quiet machine for final low-variance benchmarks;
