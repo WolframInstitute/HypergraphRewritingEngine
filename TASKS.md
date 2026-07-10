@@ -83,11 +83,18 @@ need paired-mean measurement, not single samples.
      once per canonical state at its claim — P(explored) tracks p (27%/49%),
      matching the GPU's per-deduped-state flip. Isolation gtest added
      (`ExplorationProbabilityIsPerCanonicalState`).
-7. **Remaining GPU parity items**: event canonicalization (GPU reports
-   `canonical_id = INVALID`), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`,
-   multi-initial-state, genesis events. The `exploration_probability` coin-placement discrepancy
-   (item 6) is RESOLVED — both engines now sample once per canonical state
-   (commit 04b0407).
+7. **Remaining GPU parity items.**
+   - [x] `exploration_probability` coin-placement (item 6) — both engines now
+     sample once per canonical state (commit 04b0407).
+   - [x] Multi-initial-state (commit c1845d6): `EvolveInput::initial_states`;
+     22/22 differential incl. distinct-root and iso-root-full workloads. (Quotient
+     iso-root seed-dedup differs CPU-vs-GPU; documented, not asserted.)
+   - [ ] Event canonicalization (GPU reports `canonical_id = INVALID`; the
+     differential compares by structural event key, so this is a completeness gap,
+     not a correctness one), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`
+     (device-side reservoir), genesis events — each a real feature needing exact
+     CPU-semantic matching verified via the differential; deferred to focused
+     sessions.
 
 ## Interface / longer-term
 
