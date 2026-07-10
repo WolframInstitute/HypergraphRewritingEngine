@@ -611,6 +611,76 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
     return result;
 }
 
+uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
+    const SVec<SVec<VertexId>>& edges,
+    std::vector<uint32_t>& out_edge_class) const {
+    out_edge_class.assign(edges.size(), 0u);
+    if (edges.empty()) return 0;
+
+    auto scratch_mark = worker_scratch().mark();
+    HypergraphAdj adj;
+    SVec<uint32_t> labeling;
+    bool ok = find_canonical_labeling(edges, adj, labeling);
+
+    uint64_t hash = 14695981039346656037ULL;
+    constexpr uint64_t prime = 1099511628211ULL;
+
+    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
+    hash *= prime;
+
+    if (ok) {
+        // Relabel each edge, then order by canonical content. The hash consumes the
+        // same sequence compute_canonical_hash does, so both agree bit for bit.
+        struct MappedEdge {
+            std::vector<VertexId> mapped;
+            size_t orig_idx;
+        };
+        std::vector<MappedEdge> mapped;
+        mapped.reserve(edges.size());
+        for (size_t ei = 0; ei < edges.size(); ++ei) {
+            MappedEdge me;
+            me.orig_idx = ei;
+            me.mapped.reserve(edges[ei].size());
+            for (VertexId v : edges[ei]) {
+                uint32_t vi = adj.orig_to_idx.at(v);
+                me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
+            }
+            mapped.push_back(std::move(me));
+        }
+        std::sort(mapped.begin(), mapped.end(),
+                  [](const MappedEdge& a, const MappedEdge& b) { return a.mapped < b.mapped; });
+
+        for (const auto& me : mapped) {
+            for (auto vertex : me.mapped) {
+                hash ^= static_cast<uint64_t>(vertex);
+                hash *= prime;
+            }
+            hash ^= 0xDEADBEEF;
+            hash *= prime;
+        }
+
+        uint32_t cls = 0;
+        for (size_t i = 0; i < mapped.size(); ++i) {
+            if (i > 0 && mapped[i].mapped != mapped[i - 1].mapped) ++cls;
+            out_edge_class[mapped[i].orig_idx] = cls;
+        }
+    }
+
+    worker_scratch().release(scratch_mark);
+    return hash;
+}
+
+uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
+    const std::vector<std::vector<VertexId>>& edges,
+    std::vector<uint32_t>& out_edge_class) const {
+    auto mk = worker_scratch().mark();
+    SVec<SVec<VertexId>> s; s.reserve(edges.size());
+    for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
+    auto h = compute_canonical_hash_with_edge_map(s, out_edge_class);
+    worker_scratch().release(mk);
+    return h;
+}
+
 uint64_t IRCanonicalizer::compute_canonical_hash(
     const std::vector<std::vector<VertexId>>& edges) const {
     auto mk = worker_scratch().mark();

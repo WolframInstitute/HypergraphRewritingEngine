@@ -33,11 +33,32 @@ public:
     CanonicalizationResult canonicalize_edges(const SVec<SVec<VertexId>>& edges) const;
     uint64_t compute_canonical_hash(const SVec<SVec<VertexId>>& edges) const;
 
+    // Canonical hash, plus for each input edge the index of its canonical edge
+    // CONTENT class: edges that canonicalize to the same vertex tuple share a class,
+    // numbered by the canonical (sorted) order of those tuples. Content classes
+    // rather than per-edge slots because a state is a multiset: among duplicate
+    // edges the slot each one lands in depends on input order, the class does not.
+    //
+    // The class is invariant under vertex relabeling and edge reordering exactly
+    // when the state's automorphism group is trivial. With a nontrivial Aut several
+    // labelings reach the same canonical form and differ by an automorphism, which
+    // permutes edges between classes, so an individual edge's class is defined only
+    // up to that action. Callers that must identify edges across two labelings of
+    // the same state (for example accumulating per-edge data over the parents that
+    // merge into one canonical state) need edge ORBITS under Aut, not these classes.
+    // The hash is fully invariant regardless.
+    uint64_t compute_canonical_hash_with_edge_map(
+        const SVec<SVec<VertexId>>& edges,
+        std::vector<uint32_t>& out_edge_class) const;
+
     // Convenience overloads (tests/tools): adapt a heap edge list into scratch.
     CanonicalizationResult canonicalize_edges(
         const std::vector<std::vector<VertexId>>& edges) const;
     uint64_t compute_canonical_hash(
         const std::vector<std::vector<VertexId>>& edges) const;
+    uint64_t compute_canonical_hash_with_edge_map(
+        const std::vector<std::vector<VertexId>>& edges,
+        std::vector<uint32_t>& out_edge_class) const;
 
     bool are_isomorphic(
         const std::vector<std::vector<VertexId>>& edges1,
