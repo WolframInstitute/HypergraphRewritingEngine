@@ -20,12 +20,26 @@ need paired-mean measurement, not single samples.
    the hub-edge `edge_consumers` head contention: striped sub-heads per key, or
    warp-aggregated pushes (`__match_any_sync` leader links a pre-chained
    segment, one CAS per warp-group). Measure paired.
-3. **Deep pruned runs**: per-step overhead (~4 launches + syncs + D2H ≈
-   50-100 µs) dominates when frontiers are narrow over many steps (reservoir-
-   capped runs, 10^4+ steps). Decide CUDA graphs vs persistent kernels: graphs
-   amortize launch cost with no TDR exposure; whether that approaches
-   persistent-kernel throughput is the open question. The reservoir sampler's
-   per-step host logic forces the round-trip, so this pairs with item 6.
+3. **Deep pruned runs** (analysis deepened; measured floor):
+   - Barrier floor measured (job tmp barrier.cu, loaded box so upper-bound):
+     4 launch+sync + 1 D2H = **154 us/step** (1 launch+sync+D2H = 61 us). That is
+     **1.5 s per 10k steps, 15 s per 100k** of pure barrier, independent of how
+     little real work a step does. So level-sync bites exactly when per-step work
+     falls below ~150 us — i.e. reservoir-capped narrow-frontier runs over 10^4+
+     steps, where each step matches/rewrites a handful of states in microseconds.
+   - Breakdown: ~137 us is the 4 launch+sync, ~17 us the D2H. The D2H exists to
+     read frontier_count so the host decides whether to continue and how to size
+     the next launch — so the loop CONTROL, not just the launches, forces the
+     round-trip.
+   - Options: (a) CUDA graphs capture the 4-kernel step and replay at ~1-2 us,
+     killing launch cost with no TDR exposure, but dynamic per-step grid sizes
+     need graph updates or device-side launch, and the frontier-count D2H remains
+     unless control moves device-side; (b) persistent kernel / device-resident
+     step loop eliminates both launches and D2H (loop condition checked on device)
+     but is exactly what WDDM TDR kills — needs chunked/cooperative design.
+     Device-side frontier management is the common prerequisite. Pairs with item 6
+     (the reservoir sampler's per-step host logic is part of what forces the D2H).
+   - Decision + implementation is the remaining large piece.
 
 ## Robustness / API
 
