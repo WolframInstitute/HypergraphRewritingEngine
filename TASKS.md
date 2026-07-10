@@ -86,9 +86,12 @@ need paired-mean measurement, not single samples.
 7. **Remaining GPU parity items.**
    - [x] `exploration_probability` coin-placement (item 6) — both engines now
      sample once per canonical state (commit 04b0407).
-   - [x] Multi-initial-state (commit c1845d6): `EvolveInput::initial_states`;
-     22/22 differential incl. distinct-root and iso-root-full workloads. (Quotient
-     iso-root seed-dedup differs CPU-vs-GPU; documented, not asserted.)
+   - [x] Multi-initial-state (commits c1845d6, 9d60702): `initial_states` on both
+     engines; `quotient_initial_states` option (default false = every provided
+     root is a distinct entry point, reference MultiwaySystem semantics, CPU==GPU;
+     true = isomorphic roots collapse). Validated against the reference oracle
+     across the full single/multi initial x single/multi rule 2x2 at depth 3
+     (exact states+events, commit be61341); 24/24 differential.
    - [ ] Event canonicalization (GPU reports `canonical_id = INVALID`; the
      differential compares by structural event key, so this is a completeness gap,
      not a correctness one), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`
@@ -154,8 +157,8 @@ all-remotes push discipline (post-commit hook).
 - `master` is the only branch (plus a local-only `gpu-rewrite` safety copy);
   deployed on both remotes. Every commit auto-pushes to `local` + `origin` via a
   `.git/hooks/post-commit` hook (re-install on the laptop; it is not tracked).
-- Gates: `gpu_differential_tests` 20/20, `hg_gpu_tests` 77/77, `all_tests`
-  171/171 (`PacletTest` needs a Wolfram paclet build absent from the Linux
+- Gates: `gpu_differential_tests` 24/24, `hg_gpu_tests` 77/77, `all_tests`
+  172/172 (`PacletTest` needs a Wolfram paclet build absent from the Linux
   configuration).
 - `explore_from_canonical_states_only` is the quotient mode: expand each
   canonical state once at its shortest depth; deterministic on both engines;
