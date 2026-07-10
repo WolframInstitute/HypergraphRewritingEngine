@@ -18,6 +18,10 @@ struct RewriteRule {
 struct EvolveInput {
     std::vector<RewriteRule> rules;
     std::vector<std::vector<VertexId>> initial_state;
+    // Multiple initial states (multiway with several roots). When non-empty this
+    // takes precedence over initial_state. Each becomes a separate root state;
+    // isomorphic roots merge under explore_from_canonical_states_only.
+    std::vector<std::vector<std::vector<VertexId>>> initial_states;
     uint32_t num_steps = 0;
     // Canonicalization is always McKay individualization-refinement (IR):
     // only IR is correct on graphs with non-trivial automorphism.

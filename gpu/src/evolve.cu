@@ -264,9 +264,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
 
     // Lazy index maintenance: skip index inserts until some state exceeds the
     // slice-scan threshold (the match kernels never read the indices below it).
-    engine.set_maintain_indices(
-        in.initial_state.size() > engine.config_slice_scan_max_edges());
-    upload_initial_state(engine, in.initial_state);
+    // Normalize to a list of initial states (plural takes precedence).
+    const std::vector<std::vector<std::vector<VertexId>>> roots =
+        !in.initial_states.empty()
+            ? in.initial_states
+            : std::vector<std::vector<std::vector<VertexId>>>{in.initial_state};
+    size_t max_root_edges = 0;
+    for (const auto& r : roots) max_root_edges = std::max(max_root_edges, r.size());
+    engine.set_maintain_indices(max_root_edges > engine.config_slice_scan_max_edges());
+    const uint32_t num_roots = upload_initial_states(engine, roots);
 
     // Upload rules. Resize the device-side rules buffer if this run has more
     // rules than any prior run. Re-upload every run so the caller can pass a
@@ -326,25 +332,37 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         if (resolved_seed == 0) resolved_seed = 0xA5A5A5A5A5A5A5A5ull;
     }
 
-    // Seed frontier with state 0 (the initial state).
-    // Hash state 0 (always). The initial state is never coin-flipped — it
-    // always enters the frontier so step 0 has something to match.
-    compute_state_dedup_keys(engine, 0, 1, d_state_hashes, in.canonicalization);
+    // Seed the frontier with the initial (root) states 0..num_roots-1. Roots are
+    // never coin-flipped — they always enter the frontier so step 0 has work.
+    compute_state_dedup_keys(engine, 0, num_roots, d_state_hashes, in.canonicalization);
     if (in.explore_from_canonical_states_only) {
-        uint32_t one = 0;
-        check(cudaMemcpy(d_next_count, &one, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        uint32_t zero32c = 0;
+        check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "seed count");
-        k_dedup_and_append<<<1, 1>>>(0, 1, d_state_hashes, canonical_map.view(),
+        // Dedup-append all roots (isomorphic roots collapse).
+        k_dedup_and_append<<<1, num_roots>>>(0, num_roots, d_state_hashes, canonical_map.view(),
                                      /*dedup=*/true,
                                      d_frontier, d_next_count, cfg.max_states,
                                      0xFFFFFFFFu, 0ull, 0u);
         check(cudaDeviceSynchronize(), "seed dedup sync");
     } else {
-        StateId zero = 0;
-        check(cudaMemcpy(d_frontier, &zero, sizeof(StateId), cudaMemcpyHostToDevice),
+        std::vector<StateId> root_ids(num_roots);
+        for (uint32_t i = 0; i < num_roots; ++i) root_ids[i] = i;
+        check(cudaMemcpy(d_frontier, root_ids.data(), sizeof(StateId) * num_roots,
+                         cudaMemcpyHostToDevice),
               "seed frontier");
     }
-    uint32_t frontier_count = (engine.num_states_host() > 0) ? 1u : 0u;
+    // Initial frontier size: unique roots after dedup (explore-from-canonical), or
+    // all roots (full multiway).
+    uint32_t frontier_count = 0;
+    if (num_roots > 0) {
+        if (in.explore_from_canonical_states_only) {
+            check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
+                             cudaMemcpyDeviceToHost), "read seed count");
+        } else {
+            frontier_count = num_roots;
+        }
+    }
 
     const bool dbg = std::getenv("HG_GPU_DBG_TIME") != nullptr;
     double t_match = 0, t_rewrite = 0, t_hash = 0, t_dedup = 0;

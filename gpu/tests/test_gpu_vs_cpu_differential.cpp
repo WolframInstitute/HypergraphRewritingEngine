@@ -27,6 +27,9 @@ struct Workload {
     std::string name;
     std::vector<hg_gpu::RewriteRule> rules;
     std::vector<std::vector<hg_gpu::VertexId>> initial_state;
+    // Multiple initial states (multiway with several roots). Takes precedence
+    // over initial_state when non-empty.
+    std::vector<std::vector<std::vector<hg_gpu::VertexId>>> initial_states;
     uint32_t num_steps = 0;
     hg_gpu::CanonicalizationMode canon_mode = hg_gpu::CanonicalizationMode::Full;
     hg_gpu::EventCanonicalizationMode event_canon_mode = hg_gpu::EventCanonicalizationMode::None;
@@ -125,7 +128,17 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_transitive_reduction(w.transitive_reduction);
     engine.set_explore_from_canonical_states_only(w.explore_from_canonical_states_only);
 
-    engine.evolve(w.initial_state, w.num_steps);
+    if (!w.initial_states.empty()) {
+        std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
+        for (const auto& r : w.initial_states) {
+            std::vector<std::vector<hypergraph::VertexId>> st;
+            for (const auto& e : r) st.emplace_back(e.begin(), e.end());
+            roots.push_back(std::move(st));
+        }
+        engine.evolve(roots, w.num_steps);
+    } else {
+        engine.evolve(w.initial_state, w.num_steps);
+    }
 
     if (false /* diag off */) {
         std::printf("[diag %s] cpu_num_states=%u cpu_num_events=%u\n",
@@ -212,6 +225,7 @@ NormalizedResult run_gpu(const Workload& w) {
     hg_gpu::EvolveInput in;
     in.rules                  = w.rules;
     in.initial_state          = w.initial_state;
+    in.initial_states         = w.initial_states;
     in.num_steps              = w.num_steps;
     in.canonicalization       = w.canon_mode;
     in.event_canonicalization = w.event_canon_mode;
@@ -413,6 +427,27 @@ std::vector<Workload> build_corpus() {
         .canon_mode = hg_gpu::CanonicalizationMode::None,
     };
     ws.push_back(none_mode);
+
+    // Multiple initial states: two structurally distinct roots evolved together.
+    ws.push_back({
+        .name = "multi_initial_two_roots",
+        .rules = {rule({{0,1}}, {{0,2},{2,1}})},
+        .initial_state = {},
+        .initial_states = { V{{0u,1u}}, V{{2u,3u},{3u,4u}} },
+        .num_steps = 3,
+    });
+    // Two isomorphic roots under full multiway: neither engine dedups roots, so
+    // both are expanded and the (canonicalised) results agree. (Under quotient the
+    // engines differ on whether isomorphic roots collapse at seed — the CPU seeds
+    // all provided roots, the GPU dedups them; that seed-dedup semantics gap is
+    // deliberately not asserted here.)
+    ws.push_back({
+        .name = "multi_initial_iso_roots_full",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
+        .initial_state = {},
+        .initial_states = { V{{0u,1u},{0u,2u}}, V{{5u,6u},{5u,7u}} },
+        .num_steps = 3,
+    });
 
     // Chunked launches: 3 blocks per match/rewrite launch forces the kernels to
     // run in many consecutive chunks, cross-checking the watchdog-bounding path
