@@ -251,6 +251,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         size_t max_states_per_step = 0;
         double exploration_probability = 1.0;
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
+        bool quotient_initial_states = false;             // Collapse isomorphic initial states
         // ir_verification and return_canonical_states are derived from state_canon_mode == Full
         bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
         size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
@@ -570,6 +571,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                                 show_progress = value;
                             } else if (option_key == "CausalTransitiveReduction") {
                                 causal_transitive_reduction = value;
+                            } else if (option_key == "QuotientInitialStates") {
+                                quotient_initial_states = value;
                             } else if (option_key == "ExploreFromCanonicalStatesOnly") {
                                 // Exploration deduplication: only explore from canonical states
                                 // Requires CanonicalizeStates -> Full to have any effect
@@ -768,6 +771,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         engine.set_max_states_per_step(max_states_per_step);
         engine.set_genesis_events(show_genesis_events);
         engine.set_explore_from_canonical_states_only(explore_from_canonical_states_only);
+        engine.set_quotient_initial_states(quotient_initial_states);
 
         // Convert rules to unified format
         uint16_t rule_index = 0;

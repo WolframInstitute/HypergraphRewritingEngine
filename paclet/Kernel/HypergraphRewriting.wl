@@ -88,6 +88,8 @@ Options[HGEvolve] = {
   "MaxStatesPerStep" -> 0,
   "ExplorationProbability" -> 1.0,
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
+  "QuotientInitialStates" -> False,  (* True: isomorphic initial states collapse to one canonical root (needs ExploreFromCanonicalStatesOnly). False (default): each provided initial state is a distinct entry point, matching MultiwaySystem. *)
+  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]); GPU via the paclet is not yet wired -- falls back to CPU with a message. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "AspectRatio" -> None,
@@ -273,6 +275,8 @@ computeRequiredData[prop_String, includeStateContents_, includeEventContents_, c
 
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
+HGEvolve::gpudev = "TargetDevice -> \"GPU\" is not yet available through the paclet; evaluating on the CPU. (Wiring the GPU backend through the FFI is a separate task.)";
+HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -877,6 +881,13 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   (* Build options *)
+  (* TargetDevice: CPU (default) runs here; GPU is not yet wired through the paclet
+     and falls back to CPU with a message. *)
+  Switch[OptionValue["TargetDevice"],
+    "CPU", Null,
+    "GPU", Message[HGEvolve::gpudev],
+    _, Message[HGEvolve::baddev, OptionValue["TargetDevice"]]
+  ];
   aspectRatio = OptionValue["AspectRatio"];
   (* Convert BranchialStep: All -> 0, positive for 1-based step, negative for from-end *)
   (* EvolutionCausalBranchialGraph defaults to All, BranchialGraph defaults to -1 (final step) *)
@@ -897,6 +908,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
     "ExplorationProbability" -> OptionValue["ExplorationProbability"],
     "ExploreFromCanonicalStatesOnly" -> OptionValue["ExploreFromCanonicalStatesOnly"],
+    "QuotientInitialStates" -> OptionValue["QuotientInitialStates"],
     "ShowProgress" -> OptionValue["ShowProgress"],
     "ShowGenesisEvents" -> OptionValue["ShowGenesisEvents"],
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
