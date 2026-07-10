@@ -83,6 +83,16 @@ struct DeviceState {
     // Flags
     bool tr_enabled;
 
+    // Index maintenance is lazy. Small states are matched by scanning their own
+    // CSR slice, so the signature and vertex-inverted indices are read only once
+    // some state exceeds slice_scan_max_edges. Until then inserts are skipped;
+    // the rewrite kernel raises *needs_indices when it publishes a larger state,
+    // and the host rebuilds both indices from the edge pool before the next
+    // match launch, then keeps them maintained.
+    uint32_t  slice_scan_max_edges;
+    uint32_t  maintain_indices;   // 0/1, host-set, read per launch
+    uint32_t* needs_indices;      // device flag, raised by the rewrite kernel
+
     // Error channel: kernels record overflow reasons here instead of silently
     // bailing on partial work. Host inspects after every kernel sync.
     DeviceErrors::DeviceView errors;
@@ -109,6 +119,7 @@ public:
         , desc_set_(cfg.tr_desc_slots)
         , anc_set_(cfg.tr_anc_slots)
     {
+        slice_scan_max_edges_ = cfg.slice_scan_max_edges;
         check(cudaMalloc(&state_edge_slices_,
               sizeof(StateEdgeSlice) * cfg_.max_states),
               "EngineState state_edge_slices alloc");
@@ -118,6 +129,7 @@ public:
         check(cudaMalloc(&state_edge_ids_counter_, sizeof(uint32_t)),
               "EngineState state_edge_ids_counter alloc");
         check(cudaMalloc(&state_count_,       sizeof(uint32_t)), "EngineState state_count alloc");
+        check(cudaMalloc(&needs_indices_,     sizeof(uint32_t)), "EngineState needs_indices alloc");
         check(cudaMalloc(&vertex_high_water_, sizeof(uint32_t)), "EngineState vertex_high_water alloc");
         check(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
               "EngineState edge_producer alloc");
@@ -163,6 +175,9 @@ public:
         d.desc_set                = desc_set_.view();
         d.anc_set                 = anc_set_.view();
         d.tr_enabled              = tr_enabled_;
+        d.slice_scan_max_edges    = slice_scan_max_edges_;
+        d.maintain_indices        = maintain_indices_ ? 1u : 0u;
+        d.needs_indices           = needs_indices_;
         d.errors                  = errors_.view();
         return d;
     }
@@ -185,6 +200,16 @@ public:
 
     void set_tr_enabled(bool enabled) { tr_enabled_ = enabled; }
 
+    uint32_t config_slice_scan_max_edges() const { return slice_scan_max_edges_; }
+    void set_maintain_indices(bool on) { maintain_indices_ = on; }
+    bool maintain_indices() const { return maintain_indices_; }
+    bool needs_indices_host() const {
+        uint32_t v = 0;
+        check(cudaMemcpy(&v, needs_indices_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+              "EngineState needs_indices read");
+        return v != 0;
+    }
+
     void clear() {
         check(cudaMemset(state_edge_slices_, 0,
               sizeof(StateEdgeSlice) * cfg_.max_states),
@@ -192,6 +217,7 @@ public:
         check(cudaMemset(state_edge_ids_counter_, 0, sizeof(uint32_t)),
               "EngineState clear state_edge_ids_counter");
         check(cudaMemset(state_count_,       0, sizeof(uint32_t)), "EngineState clear state_count");
+        check(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
         check(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
         // edge_producer init to INVALID_ID (0xFF bytes).
         check(cudaMemset(edge_producer_, 0xFF, sizeof(EventId) * cfg_.max_edges),
@@ -349,6 +375,9 @@ private:
     ConcurrentMap<uint64_t, uint32_t>  anc_set_;
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
+    uint32_t slice_scan_max_edges_ = 256;
+    bool maintain_indices_ = true;
+    uint32_t* needs_indices_ = nullptr;
 
 public:
     // Host readers for tests / EvolveResult population.

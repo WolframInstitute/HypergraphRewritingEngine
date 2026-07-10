@@ -125,10 +125,25 @@ StateId upload_initial_state(EngineState& engine,
     // 4. Populate indices via kernel.
     int block = 128;
     int grid  = (int)((n + block - 1) / block);
-    k_init_indices<<<grid, block>>>(ds, n);
+    if (engine.maintain_indices()) {
+        k_init_indices<<<grid, block>>>(ds, n);
+    }
     check(cudaDeviceSynchronize(), "k_init_indices sync");
 
     return 0u;
+}
+
+
+// Bulk (re)build of the signature and vertex-inverted indices from the edge
+// pool. Runs once when lazy index maintenance flips on: edges created while
+// maintenance was off are absent from the indices, and incremental inserts
+// resume after this call, so every edge appears in its buckets exactly once.
+void rebuild_indices(EngineState& engine, uint32_t num_edges) {
+    if (num_edges == 0) return;
+    int block = 128;
+    int grid  = (int)((num_edges + block - 1) / block);
+    k_init_indices<<<grid, block>>>(engine.device(), num_edges);
+    check(cudaDeviceSynchronize(), "rebuild_indices sync");
 }
 
 }  // namespace hg_gpu

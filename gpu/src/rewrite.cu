@@ -372,17 +372,22 @@ __global__ void k_rewrite(DeviceState              ds,
         ne.step          = step;
         ds.edge_pool.at(new_eid) = ne;
 
-        // signature_index.insert / vertex_inverted_index.insert push into
-        // LockFreeLists whose node pools may be full. Record softly — this
+        // Indices are maintained only once some state has exceeded the slice-scan
+        // threshold; below it the match kernels never read them, and skipping the
+        // inserts avoids heavy CAS contention on hub-vertex and shared-signature
+        // bucket heads. signature_index.insert / vertex_inverted_index.insert push
+        // into LockFreeLists whose node pools may be full. Record softly — this
         // causes match-candidate misses, not memory corruption.
-        if (ds.signature_index.insert(new_eid, ne.signature) == INVALID_ID) {
-            ds.errors.record(ErrorKind::kSigIndexNodes);
-        }
-        for (uint8_t i = 0; i < re.arity; ++i) {
-            VertexId v = binding[re.vars[i]];
-            if (v >= ds.vertex_inverted_index.list.num_keys) continue;
-            if (ds.vertex_inverted_index.insert(v, new_eid) == INVALID_ID) {
-                ds.errors.record(ErrorKind::kInvIndexNodes);
+        if (ds.maintain_indices) {
+            if (ds.signature_index.insert(new_eid, ne.signature) == INVALID_ID) {
+                ds.errors.record(ErrorKind::kSigIndexNodes);
+            }
+            for (uint8_t i = 0; i < re.arity; ++i) {
+                VertexId v = binding[re.vars[i]];
+                if (v >= ds.vertex_inverted_index.list.num_keys) continue;
+                if (ds.vertex_inverted_index.insert(v, new_eid) == INVALID_ID) {
+                    ds.errors.record(ErrorKind::kInvIndexNodes);
+                }
             }
         }
 
@@ -430,6 +435,11 @@ __global__ void k_rewrite(DeviceState              ds,
     // invariant, but clamp defensively.
     StateEdgeSlice sl{new_slice_offset, cursor};
     ds.state_edge_slices[new_sid] = sl;
+    // A state larger than the slice-scan threshold will be matched through the
+    // indices, so raise the rebuild flag if they are not being maintained yet.
+    if (!ds.maintain_indices && cursor > ds.slice_scan_max_edges) {
+        atomicExch(ds.needs_indices, 1u);
+    }
 
     // 7. Write the Event record.
     DeviceEvent& ev = ds.event_pool.at(my_event);

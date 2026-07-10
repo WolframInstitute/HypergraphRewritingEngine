@@ -52,6 +52,11 @@ struct EvolveInput {
     // non-zero value for reproducible runs.
     float    exploration_probability = 1.0f;
     uint64_t exploration_seed        = 0;
+
+    // Override for EngineConfig::slice_scan_max_edges (0 keeps the default).
+    // Tests set a tiny value to force the index-backed match path and the
+    // lazy index rebuild on small workloads.
+    uint32_t slice_scan_max_edges = 0;
 };
 
 struct CanonicalState {
@@ -118,6 +123,10 @@ struct EngineConfig {
     uint32_t sig_index_pool       = 1u << 16;   // shared LockFreeList node capacity
     uint32_t canonical_map_slots  = 1u << 14;   // capacity 4× expected dedup'd states
     uint32_t match_dedup_slots    = 1u << 16;
+    // States at or below this edge count are matched by scanning their own CSR
+    // slice; the global indices are only consulted (and therefore maintained)
+    // once some state exceeds it. See DeviceState::slice_scan_max_edges.
+    uint32_t slice_scan_max_edges = 256;
     uint32_t event_canon_slots    = 1u << 16;
 
     // Event / causal / branchial sizing.

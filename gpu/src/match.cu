@@ -118,7 +118,8 @@ __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
 // (single huge states, the visualiser regime) the global indices win and the
 // pivot/signature machinery is used. The two paths are strictly either/or:
 // running both would enumerate a candidate twice and emit duplicate matches.
-constexpr uint32_t kSliceScanMaxEdges = 256;
+// The threshold lives in DeviceState::slice_scan_max_edges (EngineConfig knob),
+// and also gates lazy index maintenance: below it the indices are never read.
 
 __global__ void k_match_one_state(DeviceState ds,
                                   const DeviceRule* rules,
@@ -186,7 +187,7 @@ __global__ void k_match_one_state(DeviceState ds,
         // ≥ 1 with a bound pivot_var: seed from vertex_inverted_index with
         // per-iteration dedup (see k_match_batch comment).
         StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
-        if (depth > 0 && sl_.count <= kSliceScanMaxEdges) {
+        if (sl_.count <= ds.slice_scan_max_edges) {
             for (uint32_t i = 0; i < sl_.count; ++i) {
                 try_candidate(ds.state_edge_ids[sl_.offset + i]);
             }
@@ -384,7 +385,7 @@ __global__ void k_match_batch(DeviceState      ds,
             //   - Fallback (rare, disconnected LHS): fall back to the
             //     signature_index walk.
             StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
-            if (sl_.count <= kSliceScanMaxEdges) {
+            if (sl_.count <= ds.slice_scan_max_edges) {
                 for (uint32_t i = 0; i < sl_.count; ++i) {
                     try_candidate(ds.state_edge_ids[sl_.offset + i]);
                 }
@@ -442,7 +443,7 @@ __global__ void k_match_batch(DeviceState      ds,
     // the signature-bucket walk covers large states, where every thread
     // traverses the bucket but only acts on its own stripe.
     StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
-    if (sl0.count <= kSliceScanMaxEdges) {
+    if (sl0.count <= ds.slice_scan_max_edges) {
         for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
             run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
         }

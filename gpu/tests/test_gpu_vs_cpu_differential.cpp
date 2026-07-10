@@ -35,6 +35,10 @@ struct Workload {
     // expanded. The engine reproduces the reference exactly on this path
     // (wolfram_canonical_steps5: states=302, events=1174, causal(TR)=1332).
     bool explore_from_canonical_states_only = false;
+    // Forwarded to EvolveInput::slice_scan_max_edges (0 keeps the default).
+    // A tiny value forces the index-backed match path and the lazy index
+    // rebuild on small workloads, cross-checking that regime against the CPU.
+    uint32_t slice_scan_max_edges = 0;
 };
 
 // Result normalized for cross-engine comparison. States compare by
@@ -210,6 +214,7 @@ NormalizedResult run_gpu(const Workload& w) {
     in.event_canonicalization = w.event_canon_mode;
     in.transitive_reduction   = w.transitive_reduction;
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
+    in.slice_scan_max_edges = w.slice_scan_max_edges;
 
     auto result = hg_gpu::evolve(in);
 
@@ -453,6 +458,27 @@ std::vector<Workload> build_corpus() {
         .initial_state = V{{0u,1u},{0u,1u}},
         .num_steps = 3,
         .explore_from_canonical_states_only = true,
+    });
+
+    // Force the index-backed match regime on a small workload: threshold 2 means
+    // the step-1 children (4 edges) exceed it, flipping lazy index maintenance to
+    // a mid-run rebuild, and every later state matches through the indices.
+    ws.push_back({
+        .name = "index_regime_wolfram_steps5",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
+        .initial_state = V{{0u,1u},{0u,2u}},
+        .num_steps = 5,
+        .slice_scan_max_edges = 2,
+    });
+    ws.push_back({
+        .name = "index_regime_all_three_triangle",
+        .rules = {rule({{0,1}}, {{0,2},{2,1}}),
+                  rule({{0,1}}, {{1,0}}),
+                  rule({{0,1},{1,2}}, {{0,2}})},
+        .initial_state = V{{0u,1u},{1u,2u},{2u,0u}},
+        .num_steps = 3,
+        .explore_from_canonical_states_only = true,
+        .slice_scan_max_edges = 2,
     });
 
     return ws;

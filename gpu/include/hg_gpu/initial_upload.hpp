@@ -20,6 +20,10 @@ namespace hg_gpu {
 // All edges land in edge_pool[0..n) and vertex tuples in vertex_pool
 // starting at offset 0 (cumulative). Vertex IDs are taken at face value;
 // vertex_high_water is set to (max(VertexId in input) + 1).
+// Bulk (re)build of the signature and vertex-inverted indices from the edge
+// pool; used when lazy index maintenance turns on mid-run.
+void rebuild_indices(EngineState& engine, uint32_t num_edges);
+
 StateId upload_initial_state(EngineState&                          engine,
                              const std::vector<std::vector<VertexId>>& initial_edges);
 

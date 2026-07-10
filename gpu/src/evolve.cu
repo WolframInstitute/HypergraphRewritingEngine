@@ -73,6 +73,8 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.sig_index_pool         = expected_edges * 2u;
     cfg.inverted_pool          = expected_edges * 4u;
 
+    if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
+
     uint32_t expected_events   = expected_states;
     cfg.max_events             = expected_events;
     cfg.max_causal_edges       = expected_events * 8u;
@@ -258,6 +260,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     double t_init = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_init_start).count();
 
+    // Lazy index maintenance: skip index inserts until some state exceeds the
+    // slice-scan threshold (the match kernels never read the indices below it).
+    engine.set_maintain_indices(
+        in.initial_state.size() > engine.config_slice_scan_max_edges());
     upload_initial_state(engine, in.initial_state);
 
     // Upload rules. Resize the device-side rules buffer if this run has more
@@ -406,6 +412,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
 
         check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
                          cudaMemcpyDeviceToHost), "read next_count");
+
+        // First state above the slice-scan threshold: build the indices it will
+        // be matched through, then maintain them incrementally.
+        if (!engine.maintain_indices() && engine.needs_indices_host()) {
+            rebuild_indices(engine, engine.num_edges_host());
+            engine.set_maintain_indices(true);
+        }
         auto t4 = std::chrono::steady_clock::now();
         t_dedup += std::chrono::duration<double, std::milli>(t4 - t3).count();
 
