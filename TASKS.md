@@ -29,10 +29,18 @@ need paired-mean measurement, not single samples.
 
 ## Robustness / API
 
-4. **VRAM cap + partial results.** `grow_config_for` doubles capacities
-   unboundedly on overflow retry; it must cap at free VRAM and return the
-   partial result with `OverflowWarning`s. Verify the warnings surface through
-   the paclet FFI to the notebook end-to-end.
+4. **VRAM cap + partial results.**
+   - [x] GPU-side robustness (commit 2241b82): `evolve()` grow-and-retry now
+     catches a device-out-of-memory throw from an engine at the grown config,
+     tags it `kDeviceOutOfMemory` in the warning trail, and returns the last
+     completed attempt's partial result. Capacity overflow within a run already
+     dropped-and-warned (S5.6). Never crashes; always returns a flagged partial.
+     (Mechanism verified by inspection; normal path confirmed clean; a live-OOM
+     runtime test is skipped to avoid a 17 GB transient allocation.)
+   - [ ] Surface the warnings through the paclet FFI to the notebook —
+     **blocked on item 8**: the FFI (`paclet_source/hypergraph_ffi.cpp`) has no
+     GPU path yet, so there is nothing to surface through until the GPU backend
+     is wired in.
 5. **Watchdog safety.** Per-step kernels are bounded today; depth-9+ launches
    grow. Chunk launches so no single kernel approaches the WDDM TDR budget
    (~2 s when the GPU drives a display).
@@ -63,11 +71,12 @@ need paired-mean measurement, not single samples.
 11. **GPU IR host-fallback flag**: `compute_state_ir_hashes_range` can report
     per-state fallback (overflow / non-discrete) but no caller consumes it —
     wire it to a host-side exact-IR pass or remove it.
-12. **`gpu/ARCHITECTURE.md` drift**: §3-4 describe the persistent-kernel
-    no-phase streaming design in the present tense; the implementation is a
-    level-synchronised step loop (which item 3 may or may not change). §10's
-    differential-test sketch predates the current 19-workload corpus with
-    quotient and forced-index-regime coverage. Rewrite to describe the code.
+12. [x] **`gpu/ARCHITECTURE.md` drift** (commit 2241b82): §3-5 now describe the
+    actual host-driven level-synchronised step loop, with the persistent-kernel
+    streaming design explicitly marked as the M7 target for deep pruned runs.
+    §10.5 scoreboard is 19/19 with quotient + forced-index-regime workloads;
+    stale 11/12 / open-`wolfram_canonical_steps5` claims removed; tweak log
+    carries the 2026-07-10 entries.
 
 ## Current state (for orientation)
 
