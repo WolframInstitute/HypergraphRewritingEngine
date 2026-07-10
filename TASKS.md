@@ -47,9 +47,13 @@ need paired-mean measurement, not single samples.
      **blocked on item 8**: the FFI (`paclet_source/hypergraph_ffi.cpp`) has no
      GPU path yet, so there is nothing to surface through until the GPU backend
      is wired in.
-5. **Watchdog safety.** Per-step kernels are bounded today; depth-9+ launches
-   grow. Chunk launches so no single kernel approaches the WDDM TDR budget
-   (~2 s when the GPU drives a display).
+5. [x] **Watchdog safety** (commit dc1b30b): `EngineConfig::max_blocks_per_launch`
+   (EvolveInput override, 0 = single launch) splits the match/rewrite grids into
+   consecutive synced chunks, bounding any single kernel's duration below the TDR
+   budget. Verified identical to a single launch at caps 3/4/64; a chunked_launch
+   differential workload keeps it CPU-cross-checked (20/20). The right cap value
+   depends on the target's TDR budget, left to the deployment (not measured here —
+   TDR probing forbidden).
 
 ## Correctness audits
 
@@ -59,21 +63,17 @@ need paired-mean measurement, not single samples.
      (`test_sampling_reproducibility.cpp::ReservoirUniformWithinStratum`). The
      equal per-stratum cap makes the scheme stratified by design (each state
      fairly represented regardless of branching factor), not flat-uniform.
-   - [ ] **Finding (moved to item 7):** `set_exploration_probability` places the
-     coin flip PER TRANSITION on the CPU (before the quotient claim,
-     `parallel_evolution.cpp:1426`), so a canonical state reached by N transitions
-     survives with prob 1-(1-p)^N; the GPU flips it once per deduped state
-     (`k_dedup_and_append`), i.e. prob p. Both are valid subsampling but they are
-     different semantics — a CPU/GPU parity gap. Not fixed blind: pruning compounds
-     down depth, which masks a clean before/after measurement, so the fix needs a
-     single-step high-in-degree isolation test first. Node-sampling once per
-     canonical state (matching the GPU) is the principled target.
+   - [x] **Fixed** (commit 04b0407): `set_exploration_probability` flipped the coin
+     PER TRANSITION under quotient mode, biasing high-in-degree canonical states
+     (6-cycle child explored 84%/99% at p=0.25/0.5, matching 1-(1-p)^6). Now flips
+     once per canonical state at its claim — P(explored) tracks p (27%/49%),
+     matching the GPU's per-deduped-state flip. Isolation gtest added
+     (`ExplorationProbabilityIsPerCanonicalState`).
 7. **Remaining GPU parity items**: event canonicalization (GPU reports
    `canonical_id = INVALID`), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`,
-   multi-initial-state, genesis events, and the `exploration_probability`
-   coin-placement discrepancy from item 6 (CPU per-transition vs GPU per-state) —
-   align both to per-canonical-state node sampling, with a single-step
-   high-in-degree isolation test as the gate.
+   multi-initial-state, genesis events. The `exploration_probability` coin-placement discrepancy
+   (item 6) is RESOLVED — both engines now sample once per canonical state
+   (commit 04b0407).
 
 ## Interface / longer-term
 
