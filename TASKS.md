@@ -29,7 +29,7 @@ need paired-mean measurement, not single samples.
 
 ## Robustness / API
 
-4. **VRAM cap + partial results.**
+4. **VRAM cap + partial results.** (GPU-side done; only FFI surfacing remains, blocked on item 8)
    - [x] GPU-side robustness (commit 2241b82): `evolve()` grow-and-retry now
      catches a device-out-of-memory throw from an engine at the grown config,
      tags it `kDeviceOutOfMemory` in the warning trail, and returns the last
@@ -37,6 +37,12 @@ need paired-mean measurement, not single samples.
      dropped-and-warned (S5.6). Never crashes; always returns a flagged partial.
      (Mechanism verified by inspection; normal path confirmed clean; a live-OOM
      runtime test is skipped to avoid a 17 GB transient allocation.)
+   - [x] User-settable device-memory cap (commit db9694d):
+     `EvolveInput::max_device_memory_bytes`, default 90% of total VRAM.
+     `estimated_device_bytes(cfg)` + `fit_config_to_cap` shrink an over-provisioned
+     initial config and stop grow-and-retry before the cap; a capped run returns a
+     flagged partial (verified: 128 MB cap on depth-7 → 15568-state partial, no
+     crash). Never allocates past the caller's ceiling.
    - [ ] Surface the warnings through the paclet FFI to the notebook —
      **blocked on item 8**: the FFI (`paclet_source/hypergraph_ffi.cpp`) has no
      GPU path yet, so there is nothing to surface through until the GPU backend
