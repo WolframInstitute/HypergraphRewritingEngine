@@ -1071,7 +1071,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
         const uint32_t d = pending[i].second;
         if (s == INVALID_ID) continue;
         if (!hg_->try_lower_explore_depth(s, d)) continue;
-        if (d < budget && hg_->try_claim_expanded(s)) {
+        if (d < budget && hg_->try_claim_expanded(s) && should_explore()) {
             submit_match_task(s, d + 1);  // a canonical state is its own representative
         }
         if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
@@ -1422,11 +1422,6 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             ctx.produced_edges[i] = rr.produced_edges[i];
         }
 
-        // Pruning: check exploration_probability (v1 style)
-        if (!should_explore()) {
-            return;
-        }
-
         // Quotient exploration: record the canonical transition, then relax the child's
         // depth. Expansion is driven by relaxation, so a state is matched once, at the
         // shortest depth that reaches it, whatever order the paths arrive in. The claim is
@@ -1441,19 +1436,32 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
             const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
             if (step < budget && hg_->try_claim_expanded(rr.new_state)) {
-                if (enable_match_forwarding_) {
-                    register_child_with_parent(
-                        match.source_state, rr.raw_state,
-                        match.matched_edges, match.num_edges,
-                        step);
-                }
-                if (uniform_random_mode_ && pending_new_states_simple_) {
-                    pending_new_states_simple_->push(rr.raw_state, hg_->arena());
-                } else {
-                    submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                // Exploration-probability pruning: flip the coin ONCE per canonical
+                // state, at its first (shortest-depth) claim, so a state reached by N
+                // transitions is kept with probability p, not 1-(1-p)^N. Matches the
+                // GPU, which flips once per deduped state. A pruned state stays
+                // claimed, so no later transition re-flips for it.
+                if (should_explore()) {
+                    if (enable_match_forwarding_) {
+                        register_child_with_parent(
+                            match.source_state, rr.raw_state,
+                            match.matched_edges, match.num_edges,
+                            step);
+                    }
+                    if (uniform_random_mode_ && pending_new_states_simple_) {
+                        pending_new_states_simple_->push(rr.raw_state, hg_->arena());
+                    } else {
+                        submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                    }
                 }
             }
             propagate_explore_depth(rr.new_state, step);
+            return;
+        }
+
+        // Exploration-probability pruning: full multiway expands every raw state,
+        // so one coin flip per raw state is one per state.
+        if (!should_explore()) {
             return;
         }
 

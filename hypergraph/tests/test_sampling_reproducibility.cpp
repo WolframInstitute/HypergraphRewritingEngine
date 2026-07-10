@@ -188,3 +188,46 @@ TEST(SamplingReproducibility, ReservoirUniformWithinStratum) {
         << "within-stratum reservoir selection is non-uniform; chi-square=" << chisq
         << " for df=" << (M - 1);
 }
+
+// exploration_probability=p must keep each CANONICAL state with probability p
+// (node sampling), independent of how many transitions reach it. On a symmetric
+// N-cycle, a pendant-adding rule makes all N single-edge rewrites produce one
+// canonical child (in-degree N). Under quotient exploration, P(child explored)
+// is p if the coin is flipped once per canonical state, or 1-(1-p)^N if it is
+// flipped per transition (the bias this guards against). Explored means the
+// child was expanded, i.e. some state exists at step 2.
+TEST(SamplingReproducibility, ExplorationProbabilityIsPerCanonicalState) {
+    constexpr int N = 6;
+    constexpr int R = 400;
+    RewriteRule rule = make_rule(0).lhs({0,1}).rhs({0,1}).rhs({1,2}).build();
+    std::vector<std::vector<VertexId>> cyc;
+    for (int i = 0; i < N; ++i)
+        cyc.push_back({static_cast<VertexId>(i), static_cast<VertexId>((i + 1) % N)});
+
+    for (double p : {0.25, 0.5}) {
+        int explored = 0;
+        for (int seed = 1; seed <= R; ++seed) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine e(&hg, 1);
+            e.set_explore_from_canonical_states_only(true);
+            e.set_exploration_probability(p);
+            e.set_random_seed(static_cast<uint64_t>(seed));
+            e.add_rule(rule);
+            e.evolve(cyc, 2);
+            bool has_step2 = false;
+            for (uint32_t s = 0; s < hg.num_states(); ++s) {
+                if (hg.get_state(s).id != INVALID_ID && hg.get_state(s).step == 2) {
+                    has_step2 = true; break;
+                }
+            }
+            if (has_step2) ++explored;
+        }
+        double frac = static_cast<double>(explored) / R;
+        // Per-state expectation p; per-transition would be ~0.82 (p=.25) / ~0.98
+        // (p=.5). A 0.12 tolerance separates the two hypotheses comfortably.
+        EXPECT_NEAR(frac, p, 0.12)
+            << "exploration_probability is not per-canonical-state at p=" << p
+            << " (observed " << frac << "); a per-transition coin would bias high";
+    }
+}
