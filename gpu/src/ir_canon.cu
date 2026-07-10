@@ -304,15 +304,13 @@ __device__ uint64_t canonical_hash_from_labeling(const IRBlock& blk,
     return h;
 }
 
-__device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid, uint8_t* needs_host) {
+__device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid) {
     __shared__ IRBlock blk;
 
     if (threadIdx.x == 0) {
         build_block(blk, ds, sid);
     }
     __syncthreads();
-
-    if (threadIdx.x == 0 && needs_host) *needs_host = 0;
 
     if (blk.overflow_flag) {
         // State larger than the IRBlock fast-path bounds (kMaxIRVerts /
@@ -329,7 +327,6 @@ __device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid, uint8_t
         // global-memory IRBlock variant will eventually let us run the
         // exact IR fast path on arbitrarily large states.)
         if (threadIdx.x != 0) return 0;
-        if (needs_host) *needs_host = 1;
         return wl_hash_state_device(ds, sid);
     }
     if (blk.n_edges == 0) return 0;
@@ -367,7 +364,6 @@ __device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid, uint8_t
     uint32_t labelling[kMaxIRVerts];
     bool discrete = extract_labeling(blk, labelling);
     if (!discrete) {
-        if (needs_host) *needs_host = 1;
         // Non-discrete outcome — 1-WL refinement didn't fully separate the
         // vertex set. Emit the sorted-colour-multiset hash, which is
         // isomorphism-invariant (1-WL is iso-invariant) and therefore safe
@@ -390,12 +386,11 @@ __device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid, uint8_t
 }
 
 __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
-                                 uint64_t* out, uint8_t* needs_host_out) {
+                                 uint64_t* out) {
     uint32_t bid = blockIdx.x;
     if (lo + bid >= hi) return;
     StateId sid = lo + bid;
-    uint8_t* nh = needs_host_out ? &needs_host_out[bid] : nullptr;
-    uint64_t h = ir_canonical_hash_state(ds, sid, nh);
+    uint64_t h = ir_canonical_hash_state(ds, sid);
     if (threadIdx.x == 0) out[bid] = h;
 }
 
@@ -410,11 +405,10 @@ void check(cudaError_t err, const char* what) {
 
 void compute_state_ir_hashes_range(const EngineState& engine,
                                    uint32_t lo, uint32_t hi,
-                                   uint64_t* out_hashes_device,
-                                   uint8_t* needs_host_device) {
+                                   uint64_t* out_hashes_device) {
     if (hi <= lo) return;
     uint32_t n = hi - lo;
-    k_ir_canon_range<<<n, 32>>>(engine.device(), lo, hi, out_hashes_device, needs_host_device);
+    k_ir_canon_range<<<n, 32>>>(engine.device(), lo, hi, out_hashes_device);
     check(cudaDeviceSynchronize(), "k_ir_canon_range sync");
 }
 

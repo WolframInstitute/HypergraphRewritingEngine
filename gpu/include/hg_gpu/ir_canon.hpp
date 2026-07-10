@@ -1,17 +1,10 @@
 #pragma once
-#include <vector>
 #include <cstdint>
 
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/types.hpp"
 
-#include <cstdint>
-
 namespace hg_gpu {
-
-// Exact IR canonical hash computed on the HOST via the CPU IRCanonicalizer —
-// used for states where the GPU IR kernel falls back (non-discrete/oversize).
-uint64_t ir_host_canonical_hash(const std::vector<std::vector<uint32_t>>& edges);
 
 // McKay-style individualization-refinement (IR) canonicalization of a state's
 // edge list, on GPU. Mirrors hypergraph/src/ir_canonicalization.cpp semantics:
@@ -42,7 +35,6 @@ uint64_t compute_state_ir_hash_host(const EngineState& engine, StateId sid);
 
 void compute_state_ir_hashes_range(const EngineState& engine,
                                    uint32_t lo, uint32_t hi,
-                                   uint64_t* out_hashes_device,
-                                   uint8_t* needs_host_device = nullptr);
+                                   uint64_t* out_hashes_device);
 
 }  // namespace hg_gpu
