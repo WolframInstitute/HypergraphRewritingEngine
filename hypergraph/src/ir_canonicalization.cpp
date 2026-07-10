@@ -1,4 +1,5 @@
 #include "hypergraph/ir_canonicalization.hpp"
+#include <functional>
 
 #include <algorithm>
 #include <cassert>
@@ -395,7 +396,8 @@ CanonicalizationResult IRCanonicalizer::build_result(
 bool IRCanonicalizer::find_canonical_labeling(
     const SVec<SVec<VertexId>>& edges,
     HypergraphAdj& adj,
-    SVec<uint32_t>& labeling) const {
+    SVec<uint32_t>& labeling,
+    SVec<SVec<uint32_t>>* out_generators) const {
     IR_PROF(last_stats_ = Stats{};)
     // All IR scratch (adjacency, partitions, search state) draws from the per-worker
     // scratch arena; the caller's mark/release reclaims it in bulk, so canonicalization
@@ -525,6 +527,7 @@ bool IRCanonicalizer::find_canonical_labeling(
 
     if (!state.has_best) return false;
     labeling = std::move(state.best_labeling);
+    if (out_generators) *out_generators = std::move(state.generators);
     return true;
 }
 
@@ -668,6 +671,94 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
 
     worker_scratch().release(scratch_mark);
     return hash;
+}
+
+uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
+    const SVec<SVec<VertexId>>& edges,
+    std::vector<uint32_t>& out_edge_orbit) const {
+    out_edge_orbit.assign(edges.size(), 0u);
+    if (edges.empty()) return 0;
+
+    auto scratch_mark = worker_scratch().mark();
+    HypergraphAdj adj;
+    SVec<uint32_t> labeling;
+    SVec<SVec<uint32_t>> generators;
+    bool ok = find_canonical_labeling(edges, adj, labeling, &generators);
+
+    uint64_t hash = 14695981039346656037ULL;
+    constexpr uint64_t prime = 1099511628211ULL;
+    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
+    hash *= prime;
+
+    if (ok) {
+        const uint32_t n = adj.num_vertices;
+
+        // Canonical content of each edge, and the canonically ordered distinct contents.
+        std::vector<std::vector<VertexId>> mapped(edges.size());
+        for (size_t ei = 0; ei < edges.size(); ++ei) {
+            mapped[ei].reserve(edges[ei].size());
+            for (VertexId v : edges[ei])
+                mapped[ei].push_back(static_cast<VertexId>(labeling[adj.orig_to_idx.at(v)]));
+        }
+        std::vector<std::vector<VertexId>> sorted_edges = mapped;
+        std::sort(sorted_edges.begin(), sorted_edges.end());
+        for (const auto& e : sorted_edges) {
+            for (auto vertex : e) { hash ^= static_cast<uint64_t>(vertex); hash *= prime; }
+            hash ^= 0xDEADBEEF; hash *= prime;
+        }
+
+        std::vector<std::vector<VertexId>> uniq = sorted_edges;
+        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+        auto class_of = [&](const std::vector<VertexId>& c) -> uint32_t {
+            return static_cast<uint32_t>(
+                std::lower_bound(uniq.begin(), uniq.end(), c) - uniq.begin());
+        };
+
+        // Union content classes that an automorphism of the canonical form identifies.
+        // A generator sigma permutes vertex indices; tau = labeling . sigma . labeling^-1
+        // is the corresponding automorphism of the canonical form.
+        std::vector<uint32_t> uf(uniq.size());
+        for (size_t i = 0; i < uf.size(); ++i) uf[i] = static_cast<uint32_t>(i);
+        std::function<uint32_t(uint32_t)> find = [&](uint32_t x) {
+            while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; }
+            return x;
+        };
+        std::vector<uint32_t> tau(n);
+        for (const auto& sigma : generators) {
+            for (uint32_t u = 0; u < n; ++u) tau[labeling[u]] = labeling[sigma[u]];
+            for (uint32_t c = 0; c < uniq.size(); ++c) {
+                std::vector<VertexId> img;
+                img.reserve(uniq[c].size());
+                for (VertexId v : uniq[c]) img.push_back(static_cast<VertexId>(tau[v]));
+                uint32_t d = class_of(img);
+                uint32_t a = find(c), b = find(d);
+                if (a != b) uf[a] = b;
+            }
+        }
+
+        // Number orbits by the canonical order of their smallest content class.
+        std::map<uint32_t, uint32_t> root_to_orbit;
+        for (uint32_t c = 0; c < uniq.size(); ++c) root_to_orbit.emplace(find(c), 0u);
+        uint32_t next = 0;
+        for (auto& kv : root_to_orbit) kv.second = next++;
+
+        for (size_t ei = 0; ei < edges.size(); ++ei)
+            out_edge_orbit[ei] = root_to_orbit[find(class_of(mapped[ei]))];
+    }
+
+    worker_scratch().release(scratch_mark);
+    return hash;
+}
+
+uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
+    const std::vector<std::vector<VertexId>>& edges,
+    std::vector<uint32_t>& out_edge_orbit) const {
+    auto mk = worker_scratch().mark();
+    SVec<SVec<VertexId>> s; s.reserve(edges.size());
+    for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
+    auto h = compute_canonical_hash_with_edge_orbits(s, out_edge_orbit);
+    worker_scratch().release(mk);
+    return h;
 }
 
 uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(

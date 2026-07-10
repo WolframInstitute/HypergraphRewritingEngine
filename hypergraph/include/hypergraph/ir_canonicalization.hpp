@@ -51,6 +51,21 @@ public:
         const SVec<SVec<VertexId>>& edges,
         std::vector<uint32_t>& out_edge_class) const;
 
+    // Canonical hash, plus for each input edge the id of its canonical edge ORBIT
+    // under the state's automorphism group. Unlike the content class above, the orbit
+    // is invariant under vertex relabeling and edge reordering even when Aut is
+    // nontrivial, because it quotients out exactly the automorphism action that
+    // permutes edges between content classes. This is the identification to use when
+    // accumulating per-edge data across the several labelings by which distinct
+    // parents reach one canonical state. Orbits are numbered by the canonical order
+    // of their smallest content class, so the numbering is itself invariant.
+    uint64_t compute_canonical_hash_with_edge_orbits(
+        const SVec<SVec<VertexId>>& edges,
+        std::vector<uint32_t>& out_edge_orbit) const;
+    uint64_t compute_canonical_hash_with_edge_orbits(
+        const std::vector<std::vector<VertexId>>& edges,
+        std::vector<uint32_t>& out_edge_orbit) const;
+
     // Convenience overloads (tests/tools): adapt a heap edge list into scratch.
     CanonicalizationResult canonicalize_edges(
         const std::vector<std::vector<VertexId>>& edges) const;
@@ -122,10 +137,14 @@ private:
     // mark spanning their use). Returns false only for the degenerate no-labeling case.
     // Shared by canonicalize_edges (which builds the full result) and
     // compute_canonical_hash (which hashes the ordering, skipping result materialization).
+    // out_generators, when non-null, receives the automorphism generators the search
+    // already discovers for orbit pruning (permutations of vertex indices). Empty when
+    // refinement alone is discrete, which means the automorphism group is trivial.
     bool find_canonical_labeling(
         const SVec<SVec<VertexId>>& edges,
         HypergraphAdj& adj,
-        SVec<uint32_t>& labeling) const;
+        SVec<uint32_t>& labeling,
+        SVec<SVec<uint32_t>>* out_generators = nullptr) const;
 };
 
 }  // namespace hypergraph
