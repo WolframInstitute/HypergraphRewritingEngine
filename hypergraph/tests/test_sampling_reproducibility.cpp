@@ -136,3 +136,55 @@ TEST(SamplingReproducibility, MultiThreadExplorationBounded) {
     EXPECT_LT(r.canonical_states, 2000u)
         << "Multi-threaded exploration must remain bounded";
 }
+
+// Unbiasedness: the whole point of reservoir sampling is a UNIFORM subsample,
+// which the reproducibility/boundedness tests above do not check. Within a single
+// (state, rule) stratum, evolve_uniform_random keeps k of M matches; each match
+// must be selected with probability k/M. Initial state = M disconnected edges; the
+// rule matches any single edge and appends a fresh edge to its second vertex, so
+// each match extends a distinct component and the produced state names the chosen
+// match (its appended edge is {odd-vertex, fresh}). Over many seeds each component
+// should be chosen ~equally; a chi-square well above its d.o.f. would signal bias.
+TEST(SamplingReproducibility, ReservoirUniformWithinStratum) {
+    constexpr int M = 20;      // matches available
+    constexpr int k = 5;       // reservoir size
+    constexpr int R = 3000;    // seeds
+    RewriteRule rule = make_rule(0).lhs({0,1}).rhs({0,1}).rhs({1,2}).build();
+    std::vector<std::vector<VertexId>> init;
+    for (int i = 0; i < M; ++i)
+        init.push_back({static_cast<VertexId>(2*i), static_cast<VertexId>(2*i + 1)});
+
+    std::array<long, M> freq{};
+    long total = 0;
+    for (int seed = 1; seed <= R; ++seed) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, 1);
+        e.set_random_seed(static_cast<uint64_t>(seed));
+        e.add_rule(rule);
+        e.evolve_uniform_random(init, 1, static_cast<size_t>(k));
+        for (uint32_t s = 0; s < hg.num_states(); ++s) {
+            if (hg.get_state(s).id == INVALID_ID || hg.get_state(s).step != 1) continue;
+            hg.get_state(s).edges.for_each([&](EdgeId eid) {
+                const auto& ed = hg.get_edge(eid);
+                if (ed.arity == 2 && (ed.vertices[0] % 2 == 1)) {  // appended {odd, fresh}
+                    int comp = (ed.vertices[0] - 1) / 2;
+                    if (comp >= 0 && comp < M) { freq[comp]++; total++; }
+                }
+            });
+        }
+    }
+    EXPECT_EQ(total, static_cast<long>(R) * k)
+        << "reservoir must pick exactly k matches per step";
+    const double expected = static_cast<double>(R) * k / M;
+    double chisq = 0;
+    for (int i = 0; i < M; ++i) {
+        double d = freq[i] - expected;
+        chisq += d * d / expected;
+    }
+    // df = M-1 = 19; chi-square ~ df under the null. 2x df is a generous bound
+    // (p < ~0.001 of a false positive at this threshold with a correct sampler).
+    EXPECT_LT(chisq, 2.0 * (M - 1))
+        << "within-stratum reservoir selection is non-uniform; chi-square=" << chisq
+        << " for df=" << (M - 1);
+}
