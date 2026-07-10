@@ -114,12 +114,40 @@ need paired-mean measurement, not single samples.
     stale 11/12 / open-`wolfram_canonical_steps5` claims removed; tweak log
     carries the 2026-07-10 entries.
 
+## Status of the remaining open items (why each is not [x])
+
+- **1, 2 (core-rewrite attribution, causal/branchial contention):** BLOCKED on
+  the Windows-host Nsight Compute profiler and paired-mean benchmarks on a quiet
+  machine. Bisection is exhausted; the next step is hardware counters, which this
+  (headless, noisy, no-Windows-Nsight) environment cannot provide. TDR probing is
+  forbidden.
+- **3 (deep pruned runs):** analysis DONE (154 us/step barrier floor measured, the
+  crossover characterised, options laid out). The CUDA-graphs-vs-persistent-kernel
+  decision and its device-side-frontier implementation are a large focused effort.
+- **4 (memory):** GPU side DONE. Only FFI surfacing remains, BLOCKED on item 8.
+- **7 (GPU parity features):** exploration_probability alignment DONE. The rest —
+  event canonicalization (`canonical_id`), reservoir/`MaxStatesPerStep`,
+  multi-initial-state, genesis events — are each real features requiring exact
+  CPU-semantic matching (e.g. cross-initial-state vertex namespaces) verified via
+  the differential; multi-hour each, deferred to focused sessions rather than
+  started half-done.
+- **8, 9 (shared front-end, process-isolation binary):** large multi-session
+  architecture.
+- **10 (paper):** BLOCKED on a quiet machine for final low-variance benchmarks;
+  the results content is ready (rough numbers recorded).
+
+Everything that is a bounded, verifiable, unblocked unit of work has been
+completed this session: items 4 (GPU), 5, 6, 11, 12, the exploration_probability
+correctness fix, the reservoir uniformity test, the item-3 measurement, and the
+all-remotes push discipline (post-commit hook).
+
 ## Current state (for orientation)
 
 - `master` is the only branch (plus a local-only `gpu-rewrite` safety copy);
-  deployed on both remotes.
-- Gates: `gpu_differential_tests` 19/19, `hg_gpu_tests` 77/77, `all_tests`
-  169/169 (`PacletTest` needs a Wolfram paclet build absent from the Linux
+  deployed on both remotes. Every commit auto-pushes to `local` + `origin` via a
+  `.git/hooks/post-commit` hook (re-install on the laptop; it is not tracked).
+- Gates: `gpu_differential_tests` 20/20, `hg_gpu_tests` 77/77, `all_tests`
+  171/171 (`PacletTest` needs a Wolfram paclet build absent from the Linux
   configuration).
 - `explore_from_canonical_states_only` is the quotient mode: expand each
   canonical state once at its shortest depth; deterministic on both engines;
