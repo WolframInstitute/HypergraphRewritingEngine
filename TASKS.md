@@ -92,6 +92,9 @@ need paired-mean measurement, not single samples.
      true = isomorphic roots collapse). Validated against the reference oracle
      across the full single/multi initial x single/multi rule 2x2 at depth 3
      (exact states+events, commit be61341); 24/24 differential.
+   - [x] WL surfacing (commit 33568a7): `QuotientInitialStates` option threaded
+     through the paclet FFI to the CPU engine; FFI compiles, WL parses. (End-to-end
+     round-trip needs a Windows DLL rebuild.)
    - [ ] Event canonicalization (GPU reports `canonical_id = INVALID`; the
      differential compares by structural event key, so this is a completeness gap,
      not a correctness one), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`
@@ -104,6 +107,15 @@ need paired-mean measurement, not single samples.
 8. **Shared front-end**: common `RewriteRule`/`EvolveInput`/`EvolveResult` with
    a Backend{CPU,GPU} selector routed through the paclet FFI; match-forwarding
    port to the GPU.
+   - [x] `TargetDevice -> "CPU"|"GPU"` option added to the paclet (commit 33568a7),
+     mirroring NetTrain[]. CPU runs; GPU issues HGEvolve::gpudev and falls back to
+     CPU. The option is a drop-in once the backend is wired.
+   - [ ] The actual GPU routing: link hg_gpu into the paclet FFI, construct a GPU
+     EvolveInput from the parsed options, run hg_gpu::evolve, and marshal its
+     EvolveResult into the paclet's WXF output format. Non-trivial because the
+     deployed paclet is a Windows CUDA DLL (cross-compile) and the output
+     marshaling must match the CPU path exactly. This also unblocks item 4's FFI
+     warning surfacing.
 9. **Process-isolation binary**: standalone WXF-output executable replacing the
    paclet DLL (clean aborts by process kill, crash isolation from the notebook
    front end, removes abort plumbing).
