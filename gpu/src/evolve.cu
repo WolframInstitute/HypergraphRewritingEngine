@@ -617,11 +617,92 @@ static void log_winning_config(const EngineConfig& initial,
 #undef LOG_FIELD
 }
 
+// Scale a config's growable capacity fields down proportionally so its estimated
+// footprint fits within `cap` bytes, leaving a floor under each so a minimal run
+// is still possible. Bucket counts (power-of-two) and fixed control words are
+// left alone. A run under the shrunk config that needs more will overflow and
+// return a partial result, which is the intended "constrain to memory" behaviour.
+void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
+    uint64_t est = estimated_device_bytes(cfg);
+    if (cap == 0 || est <= cap) return;
+    double r = static_cast<double>(cap) / static_cast<double>(est);
+    auto sc = [&](uint32_t& f, uint32_t floor) {
+        uint64_t v = static_cast<uint64_t>(static_cast<double>(f) * r);
+        f = static_cast<uint32_t>(v < floor ? floor : v);
+    };
+    sc(cfg.max_edges, 1u<<12);            sc(cfg.max_vertices, 1u<<12);
+    sc(cfg.max_vertex_slots, 1u<<14);     sc(cfg.max_states, 1u<<10);
+    sc(cfg.max_state_edge_total, 1u<<16); sc(cfg.sig_index_pool, 1u<<12);
+    sc(cfg.inverted_pool, 1u<<12);        sc(cfg.max_events, 1u<<10);
+    sc(cfg.max_causal_edges, 1u<<12);     sc(cfg.max_branchial_edges, 1u<<12);
+    sc(cfg.causal_triple_slots, 1u<<12);  sc(cfg.causal_pair_slots, 1u<<12);
+    sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
+    sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_desc_nodes, 1u<<12);
+    sc(cfg.tr_anc_nodes, 1u<<12);         sc(cfg.tr_desc_slots, 1u<<12);
+    sc(cfg.tr_anc_slots, 1u<<12);         sc(cfg.canonical_map_slots, 1u<<12);
+}
+
+uint64_t estimated_device_bytes(const EngineConfig& cfg) {
+    // Sum the pools EngineState allocates. Element sizes: Edge 24; DeviceEvent
+    // ~160; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
+    // is sizeof(value)+4 rounded up; a ConcurrentMap slot is sizeof(K)+sizeof(V).
+    // A 4-byte id is the unit for most index/id pools. Approximate — a 15%
+    // headroom covers the small frontier/hash scratch buffers and allocation
+    // granularity, so the estimate errs high (refusing borderline growth).
+    auto u64 = [](uint32_t v) { return static_cast<uint64_t>(v); };
+    uint64_t b = 0;
+    b += u64(cfg.max_vertex_slots)    * 4;          // vertex_pool
+    b += u64(cfg.max_edges)           * 24;         // edge_pool (Edge)
+    b += u64(cfg.max_edges)           * 4;          // edge_producer
+    b += u64(cfg.max_states)          * 8;          // state_edge_slices
+    b += u64(cfg.max_state_edge_total)* 4;          // state_edge_ids
+    b += u64(cfg.sig_index_buckets)   * 4 + u64(cfg.sig_index_pool) * 8;   // signature index
+    b += u64(cfg.max_vertices)        * 4 + u64(cfg.inverted_pool)  * 8;   // vertex inverted index
+    b += u64(cfg.max_events)          * 160;        // event_pool (DeviceEvent)
+    b += u64(cfg.max_causal_edges)    * 12;         // causal_edge_pool
+    b += u64(cfg.max_branchial_edges) * 12;         // branchial_edge_pool
+    b += u64(cfg.max_edges)           * 4 + u64(cfg.edge_consumer_nodes)   * 8;   // edge_consumers
+    b += u64(cfg.branchial_index_buckets) * 4 + u64(cfg.branchial_index_nodes) * 16; // branchial index
+    b += u64(cfg.causal_triple_slots) * 12;
+    b += u64(cfg.causal_pair_slots)   * 12;
+    b += u64(cfg.branchial_pair_slots)* 12;
+    b += u64(cfg.max_events)          * 8  + u64(cfg.tr_desc_nodes) * 8;   // desc_list
+    b += u64(cfg.max_events)          * 8  + u64(cfg.tr_anc_nodes)  * 8;   // anc_list
+    b += u64(cfg.tr_desc_slots)       * 12;
+    b += u64(cfg.tr_anc_slots)        * 12;
+    b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
+    b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
+    b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
+    b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + d_state_hashes
+    return b + b / 6;   // ~17% headroom
+}
+
 EvolveResult evolve(const EvolveInput& in) {
     constexpr int kMaxRetries = 6;  // up to 64× capacity growth
     EngineConfig initial_cfg = config_from_input(in);
     EngineConfig cfg = initial_cfg;
     std::vector<OverflowWarning> trail;
+
+    // Resolve the device-memory ceiling: explicit request, else 90% of total VRAM.
+    uint64_t mem_cap = in.max_device_memory_bytes;
+    if (mem_cap == 0) {
+        size_t freeB = 0, totalB = 0;
+        if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess) {
+            mem_cap = static_cast<uint64_t>(static_cast<double>(totalB) * 0.90);
+        }
+        cudaGetLastError();  // clear any sticky status from the query
+    }
+    // Shrink the initial config to the ceiling if config_from_input over-provisioned
+    // past it; the loop below then never grows back over the cap.
+    if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
+        fit_config_to_cap(cfg, mem_cap);
+        initial_cfg = cfg;
+        std::fprintf(stderr,
+            "hg_gpu::evolve: initial config exceeded the memory cap (%llu MB) — "
+            "scaled pools down to ~%llu MB; result may be partial.\n",
+            (unsigned long long)(mem_cap >> 20),
+            (unsigned long long)(estimated_device_bytes(cfg) >> 20));
+    }
 
     // Best partial result seen so far: an attempt that overflowed still returns
     // whatever it computed, and if the next, larger engine no longer fits in
@@ -679,6 +760,24 @@ EvolveResult evolve(const EvolveInput& in) {
         for (auto& w : result.warnings) trail.push_back(std::move(w));
 
         if (!any_retryable || attempt == kMaxRetries) {
+            result.warnings = std::move(trail);
+            return result;
+        }
+
+        // Would the grown config exceed the memory ceiling? If so, stop here and
+        // return the best partial rather than pushing toward a real device OOM.
+        if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
+            trail.push_back(OverflowWarning{
+                ErrorKind::kDeviceOutOfMemory,
+                static_cast<uint32_t>(estimated_device_bytes(cfg) >> 20),
+                "grown config (~" + std::to_string(estimated_device_bytes(cfg) >> 20) +
+                " MB) would exceed the device memory cap (" +
+                std::to_string(mem_cap >> 20) + " MB); returning partial result"});
+            std::fprintf(stderr,
+                "hg_gpu::evolve: next config (~%llu MB) would exceed the memory cap "
+                "(%llu MB) — returning the partial result.\n",
+                (unsigned long long)(estimated_device_bytes(cfg) >> 20),
+                (unsigned long long)(mem_cap >> 20));
             result.warnings = std::move(trail);
             return result;
         }

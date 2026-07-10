@@ -57,6 +57,14 @@ struct EvolveInput {
     // Tests set a tiny value to force the index-backed match path and the
     // lazy index rebuild on small workloads.
     uint32_t slice_scan_max_edges = 0;
+
+    // Hard ceiling on device memory the engine may allocate, in bytes. The
+    // one-shot evolve() stops its grow-and-retry before a config's estimated
+    // footprint would exceed this, returning the best partial result so far with
+    // a kDeviceOutOfMemory warning rather than pushing the GPU to a real OOM.
+    // 0 (default) resolves to 90% of total device memory at run start. Ignored by
+    // the direct Engine(cfg) path, which allocates exactly what its cfg asks for.
+    uint64_t max_device_memory_bytes = 0;
 };
 
 struct CanonicalState {
@@ -197,6 +205,11 @@ class EngineState;  // forward decl
 // pre-dedup state-blow-up for the worst step. Auto-tuner (M9) will
 // replace this heuristic with cached per-device best-fit values.
 EngineConfig config_from_input(const EvolveInput& input);
+
+// Conservative estimate of the device memory an engine built from `cfg` will
+// allocate, in bytes. Used to enforce EvolveInput::max_device_memory_bytes
+// before construction. Monotonic in every capacity field.
+uint64_t estimated_device_bytes(const EngineConfig& cfg);
 
 class Engine {
 public:
