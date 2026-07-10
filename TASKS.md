@@ -74,9 +74,11 @@ need paired-mean measurement, not single samples.
     a 24-workload corpus), exact online transitive reduction, GPU speedups
     (depth 7 ~834 -> 252 ms; depth 8 373 s -> ~5.5 s). Final benchmarks need a
     quiet machine; current numbers are rough.
-11. **GPU IR host-fallback flag**: `compute_state_ir_hashes_range` can report
-    per-state fallback (overflow / non-discrete) but no caller consumes it —
-    wire it to a host-side exact-IR pass or remove it.
+11. [x] **GPU IR host-fallback flag** (commit removes it): the unwired
+    `needs_host` flag, `ir_host_fallback.cpp`, and the `hg_gpu -> hypergraph`
+    PUBLIC link it forced are all removed. The non-discrete IR fallback gap is
+    tracked under S3.5 (GPU-native IR backtrack), the correct fix, not a host
+    round-trip.
 12. [x] **`gpu/ARCHITECTURE.md` drift** (commit 2241b82): §3-5 now describe the
     actual host-driven level-synchronised step loop, with the persistent-kernel
     streaming design explicitly marked as the M7 target for deep pruned runs.
