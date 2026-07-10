@@ -130,6 +130,12 @@ void ParallelEvolutionEngine::evolve(
     // Mark initial state as matched (waiting version for correctness)
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
 
+    // Under quotient exploration the initial state sits at depth zero and is expanded here.
+    if (explore_from_canonical_states_only_) {
+        hg_->try_lower_explore_depth(canonical_state, 0);
+        hg_->try_claim_expanded(canonical_state);
+    }
+
     // Submit MATCH task for initial state - this kicks off the dataflow
     submit_match_task(raw_state, 1);
 
@@ -574,6 +580,13 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
 
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+
+    // Under quotient exploration every initial state sits at depth zero.
+    if (explore_from_canonical_states_only_) {
+        hg_->try_lower_explore_depth(canonical_state, 0);
+        hg_->try_claim_expanded(canonical_state);
+    }
+
     submit_match_task(raw_state, 1);
 
     return raw_state;
@@ -1039,6 +1052,35 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
 // Task Submission
 // =============================================================================
 
+void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, uint32_t depth) {
+    // Depth strictly decreases on every accepted relaxation and is bounded below by zero,
+    // so this terminates. Matching still runs at most once per canonical state, because
+    // the claim is separate from the depth.
+    const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
+    if (!kids) return;
+
+    const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
+
+    // The worklist draws from the per-worker scratch arena and is reclaimed in bulk. It is
+    // walked as a queue with a cursor, which is the breadth-first order relaxation wants.
+    auto mark = worker_scratch().mark();
+    ArenaVector<std::pair<StateId, uint32_t>> pending(worker_scratch(), 16);
+    kids->for_each([&](StateId child) { pending.emplace_back(child, depth + 1); });
+    for (size_t i = 0; i < pending.size(); ++i) {
+        const StateId s = pending[i].first;
+        const uint32_t d = pending[i].second;
+        if (s == INVALID_ID) continue;
+        if (!hg_->try_lower_explore_depth(s, d)) continue;
+        if (d < budget && hg_->try_claim_expanded(s)) {
+            submit_match_task(s, d + 1);  // a canonical state is its own representative
+        }
+        if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
+            more->for_each([&](StateId child) { pending.emplace_back(child, d + 1); });
+        }
+    }
+    worker_scratch().release(mark);
+}
+
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (max_steps_ > 0 && step > max_steps_) return;
@@ -1385,8 +1427,33 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             return;
         }
 
-        // Exploration deduplication: only explore from canonical representatives
-        if (explore_from_canonical_states_only_ && !rr.was_new_state) {
+        // Quotient exploration: record the canonical transition, then relax the child's
+        // depth. Expansion is driven by relaxation, so a state is matched once, at the
+        // shortest depth that reaches it, whatever order the paths arrive in. The claim is
+        // taken here rather than inside the walk so the expansion still carries this
+        // rewrite's match context, which is what lets forwarding skip a full rematch.
+        if (explore_from_canonical_states_only_) {
+            const StateId parent_canonical = hg_->get_canonical_state(match.source_state);
+            canon_children_.get_or_default(parent_canonical, hg_->arena())
+                           .push(rr.new_state, hg_->arena());
+
+            if (!hg_->try_lower_explore_depth(rr.new_state, step)) return;
+
+            const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
+            if (step < budget && hg_->try_claim_expanded(rr.new_state)) {
+                if (enable_match_forwarding_) {
+                    register_child_with_parent(
+                        match.source_state, rr.raw_state,
+                        match.matched_edges, match.num_edges,
+                        step);
+                }
+                if (uniform_random_mode_ && pending_new_states_simple_) {
+                    pending_new_states_simple_->push(rr.raw_state, hg_->arena());
+                } else {
+                    submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                }
+            }
+            propagate_explore_depth(rr.new_state, step);
             return;
         }
 

@@ -210,6 +210,29 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     return {new_sid, new_sid, true};
 }
 
+bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
+    if (canonical_id == INVALID_ID) return false;
+    std::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
+    uint32_t cur = known.load(std::memory_order_acquire);
+    while (depth < cur) {
+        if (known.compare_exchange_weak(cur, depth,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Hypergraph::try_claim_expanded(StateId canonical_id) {
+    if (canonical_id == INVALID_ID) return false;
+    std::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
+    uint32_t expected = 0;
+    return flag.compare_exchange_strong(expected, 1,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_acquire);
+}
+
 uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     if (state_id == INVALID_ID) return 0;
 

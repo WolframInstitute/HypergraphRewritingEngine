@@ -177,6 +177,12 @@ struct State {
     uint64_t canonical_hash;  // Isomorphism-invariant canonical hash
     EventId parent_event;     // Event that created this, INVALID_ID for initial
     StateId canonical_id;     // Canonical representative (cached, set on creation)
+    // Quotient exploration (explore_from_canonical_states_only). explore_depth is the
+    // shortest path length known to reach this canonical state, INVALID_ID until first
+    // relaxed; expanded records that its matches have been computed, which happens once.
+    // Both are reached through std::atomic_ref, never assigned directly after creation.
+    uint32_t explore_depth;
+    uint32_t expanded;
 
     State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
           uint64_t hash, EventId parent, StateId canonical = INVALID_ID)
@@ -186,6 +192,8 @@ struct State {
         , canonical_hash(hash)
         , parent_event(parent)
         , canonical_id(canonical == INVALID_ID ? id_ : canonical)
+        , explore_depth(INVALID_ID)
+        , expanded(0)
     {}
 
     // Default constructor
@@ -196,6 +204,8 @@ struct State {
         , canonical_hash(0)
         , parent_event(INVALID_ID)
         , canonical_id(INVALID_ID)
+        , explore_depth(INVALID_ID)
+        , expanded(0)
     {}
 
     // Move constructor
@@ -206,6 +216,8 @@ struct State {
         , canonical_hash(other.canonical_hash)
         , parent_event(other.parent_event)
         , canonical_id(other.canonical_id)
+        , explore_depth(other.explore_depth)
+        , expanded(other.expanded)
     {
         other.id = INVALID_ID;
     }
@@ -219,6 +231,8 @@ struct State {
             canonical_hash = other.canonical_hash;
             parent_event = other.parent_event;
             canonical_id = other.canonical_id;
+            explore_depth = other.explore_depth;
+            expanded = other.expanded;
             other.id = INVALID_ID;
         }
         return *this;

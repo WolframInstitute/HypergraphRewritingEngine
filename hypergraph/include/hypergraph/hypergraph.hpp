@@ -558,6 +558,15 @@ public:
     // state hashes regardless of whether state_canonicalization_mode_ is None.
     uint64_t get_or_compute_canonical_hash(StateId state_id);
 
+    // Quotient exploration support. try_lower_explore_depth records a shorter path to a
+    // canonical state, returning true only when it improved on what was known. Depth is a
+    // shortest-path label, a property of the graph, so the set of states reachable within
+    // the step budget does not depend on the order paths are found. try_claim_expanded
+    // succeeds exactly once per canonical state, so its matches are computed once and the
+    // matches-per-instance it records are well defined.
+    bool try_lower_explore_depth(StateId canonical_id, uint32_t depth);
+    bool try_claim_expanded(StateId canonical_id);
+
     // Number of unique canonical states
     // Uses count_unique() for accurate counting after evolution completes,
     // handling the case where ConcurrentMap may have duplicate keys due to

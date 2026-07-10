@@ -866,6 +866,18 @@ private:
     // sampling_generation_ advances; random_seed_==0 draws a fresh random_device seed.
     std::mt19937& sampling_rng() const;
 
+    // Quotient exploration: canonical transitions discovered so far, parent canonical
+    // state to child canonical state. Relaxing a state's depth walks these to push the
+    // improvement to its descendants, which needs no re-matching because matches do not
+    // depend on depth.
+    SegmentedArray<LockFreeList<StateId>> canon_children_;
+
+    // Push a depth improvement to the descendants of a canonical state. The state itself
+    // has already been relaxed by the caller, which owns the match context needed to
+    // expand it with forwarding; descendants are reached without one, and reaching them
+    // at all is rare.
+    void propagate_explore_depth(StateId canonical_state, uint32_t depth);
+
     // Bias mitigation: returns rule indices in shuffled order
     SVec<uint16_t> get_shuffled_rule_indices() const;
 };
