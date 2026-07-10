@@ -463,6 +463,17 @@ std::vector<Workload> build_corpus() {
         .quotient_initial_states = true,
     });
 
+    // Multi-initial x multi-rule under full multiway: the combined corner of the
+    // single/multi initial x single/multi rule space, validated against the
+    // reference oracle (2init x 2rule: states=28, eventsNone=144 at depth 3).
+    ws.push_back({
+        .name = "multi_init_multi_rule",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}}), rule({{0,1}}, {{1,0}})},
+        .initial_state = {},
+        .initial_states = { V{{0u,1u},{0u,2u}}, V{{0u,1u},{1u,2u}} },
+        .num_steps = 3,
+    });
+
     // Chunked launches: 3 blocks per match/rewrite launch forces the kernels to
     // run in many consecutive chunks, cross-checking the watchdog-bounding path
     // against the CPU (results must be identical to a single launch).

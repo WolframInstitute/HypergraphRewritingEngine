@@ -177,7 +177,8 @@ Options[MultiwayEvolve] = {
   "EventCanonicalization" -> "None",           (* "None" | "States" (=Full) | "Automatic" *)
   "EventEdgeIdentity" -> "Positional",         (* "Positional" (MultiwaySystem) | "Canonical" (IR merge) *)
   "TransitiveReduction" -> True,
-  "FullCapture" -> True
+  "FullCapture" -> True,
+  "Roots" -> None                              (* None: single `init`. A list of edge-lists: seed each as a distinct root. *)
 };
 
 (* Event-canonicalization conventions (see reference/CANONICALIZATION.md):
@@ -244,7 +245,8 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
     ]
   ] /@ rules0;
 
-  freshCounter = If[init === {}, 1, Max[Flatten[init]] + 1];
+  freshCounter = With[{allInit = If[OptionValue["Roots"] === None, {init}, OptionValue["Roots"]]},
+    If[Flatten[allInit] === {}, 1, Max[Flatten[allInit]] + 1]];
 
   (* create a state node from an instance list {{contents, producerEvent}, ...}.
      With FullCapture, every output is its own node (the multiway forest of raw
@@ -262,10 +264,14 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
     ]
   ];
 
-  (* genesis: the single initial state (producer 0 = uncaused) *)
+  (* genesis: seed the initial state(s). Each provided root is a distinct entry
+     point (reference MultiwaySystem semantics); under state canonicalization
+     isomorphic roots merge iff FullCapture is off. *)
   currentStep = 0;
-  mkState[{#, 0} & /@ init];
-  frontier = {1};
+  With[{roots = If[OptionValue["Roots"] === None, {init}, OptionValue["Roots"]]},
+    (mkState[{#, 0} & /@ #]) & /@ roots
+  ];
+  frontier = Range[sidCounter];
 
   Do[
     currentStep = stepNum;
