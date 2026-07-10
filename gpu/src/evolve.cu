@@ -112,6 +112,24 @@ __device__ __forceinline__ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
+// Seed the initial roots. Every root's hash is inserted into the canonical map so
+// that later children isomorphic to a root deduplicate against it. All roots are
+// appended to the frontier, unless quotient_roots is set, in which case only the
+// first of each canonical class is (isomorphic roots collapse). Default (false)
+// matches the reference MultiwaySystem semantics: provided roots are distinct
+// entry points even when isomorphic.
+__global__ void k_seed_roots(uint32_t num_roots, const uint64_t* hashes,
+                             DedupMap::DeviceView map, bool quotient_roots,
+                             StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_roots) return;
+    uint64_t h = hashes[tid]; if (h == 0) h = 1;
+    auto r = map.insert_if_absent(h, tid);
+    if (quotient_roots && !r.inserted) return;
+    uint32_t pos = atomicAdd(out_count, 1u);
+    if (pos < out_cap) out_ids[pos] = tid;
+}
+
 // `dedup` selects the exploration semantics. True: only the first state of each
 // canonical hash enters the frontier (explore_from_canonical_states_only). False:
 // every new state is explored, so `map` is unused and must not be consulted --
@@ -339,12 +357,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         uint32_t zero32c = 0;
         check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "seed count");
-        // Dedup-append all roots (isomorphic roots collapse).
-        k_dedup_and_append<<<1, num_roots>>>(0, num_roots, d_state_hashes, canonical_map.view(),
-                                     /*dedup=*/true,
-                                     d_frontier, d_next_count, cfg.max_states,
-                                     0xFFFFFFFFu, 0ull, 0u);
-        check(cudaDeviceSynchronize(), "seed dedup sync");
+        // Insert every root into the canonical map (children dedup against roots)
+        // and seed the frontier; roots collapse only when quotient_initial_states.
+        int b = 64, g = static_cast<int>((num_roots + b - 1) / b);
+        k_seed_roots<<<g, b>>>(num_roots, d_state_hashes, canonical_map.view(),
+                               in.quotient_initial_states,
+                               d_frontier, d_next_count, cfg.max_states);
+        check(cudaDeviceSynchronize(), "seed roots sync");
     } else {
         std::vector<StateId> root_ids(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) root_ids[i] = i;

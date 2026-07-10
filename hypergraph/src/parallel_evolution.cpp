@@ -581,13 +581,20 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
 
-    // Under quotient exploration every initial state sits at depth zero.
+    // Under quotient exploration every initial state sits at depth zero. The claim
+    // succeeds for the first root of each canonical class; when quotienting the
+    // initial states, isomorphic later roots are not expanded (they collapse into
+    // the first). Default keeps every provided root as a distinct entry point.
+    bool expand_root = true;
     if (explore_from_canonical_states_only_) {
         hg_->try_lower_explore_depth(canonical_state, 0);
-        hg_->try_claim_expanded(canonical_state);
+        bool first = hg_->try_claim_expanded(canonical_state);
+        if (quotient_initial_states_) expand_root = first;
     }
 
-    submit_match_task(raw_state, 1);
+    if (expand_root) {
+        submit_match_task(raw_state, 1);
+    }
 
     return raw_state;
 }

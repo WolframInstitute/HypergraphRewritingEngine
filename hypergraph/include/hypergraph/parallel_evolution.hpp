@@ -440,6 +440,7 @@ class ParallelEvolutionEngine {
     // but MATCH tasks are not spawned - we don't explore further from them.
     // This focuses compute on discovering new states rather than all transition paths.
     bool explore_from_canonical_states_only_{false};
+    bool quotient_initial_states_{false};
 
     // Per-parent successor count tracking (for max_successor_states_per_parent)
     static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
@@ -555,6 +556,12 @@ public:
     // StateCanonicalizationMode::Full. Default false: expand every provenance,
     // the reference/MultiwayReference.wl semantics with exact online causal and
     // branchial tracking.
+    // When true, isomorphic initial states collapse to one canonical root under
+    // explore_from_canonical_states_only. Default false: each provided initial
+    // state is a distinct entry point (reference MultiwaySystem semantics).
+    void set_quotient_initial_states(bool enable) { quotient_initial_states_ = enable; }
+    bool quotient_initial_states() const { return quotient_initial_states_; }
+
     void set_explore_from_canonical_states_only(bool enable) {
         explore_from_canonical_states_only_ = enable;
     }

@@ -22,6 +22,11 @@ struct EvolveInput {
     // takes precedence over initial_state. Each becomes a separate root state;
     // isomorphic roots merge under explore_from_canonical_states_only.
     std::vector<std::vector<std::vector<VertexId>>> initial_states;
+
+    // When true, isomorphic initial states collapse to one canonical root under
+    // explore_from_canonical_states_only. Default false: every provided root is a
+    // distinct entry point (reference MultiwaySystem semantics), matching the CPU.
+    bool quotient_initial_states = false;
     uint32_t num_steps = 0;
     // Canonicalization is always McKay individualization-refinement (IR):
     // only IR is correct on graphs with non-trivial automorphism.
