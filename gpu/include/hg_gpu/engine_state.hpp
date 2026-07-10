@@ -61,7 +61,10 @@ struct DeviceState {
     typename LockFreeList<EventId>::DeviceView edge_consumers;
     // Per-state event list (LockFreeList keyed by raw StateId) — used by
     // branchial scan to find prior sibling events from the same input state
-    typename LockFreeList<EventId>::DeviceView state_events;
+    // Branchial co-consumer index: bucket = hash(state, edge) & (num_keys - 1),
+    // entry packs (event << 32 | edge). Bucket collisions across states are
+    // disambiguated by the input-state check in register_branchial.
+    typename LockFreeList<uint64_t>::DeviceView branchial_index;
 
     // Dedup maps. causal_triple_dedup ensures exactly one CausalEdge record
     // per (p, c, shared_edge) triple (preserves multiplicity across distinct
@@ -110,7 +113,7 @@ public:
         , causal_edge_pool_(cfg.max_causal_edges)
         , branchial_edge_pool_(cfg.max_branchial_edges)
         , edge_consumers_(cfg.max_edges, cfg.edge_consumer_nodes)
-        , state_events_(cfg.max_states, cfg.state_event_nodes)
+        , branchial_index_(cfg.branchial_index_buckets, cfg.branchial_index_nodes)
         , causal_triple_dedup_(cfg.causal_triple_slots)
         , causal_pair_dedup_(cfg.causal_pair_slots)
         , branchial_pair_dedup_(cfg.branchial_pair_slots)
@@ -166,7 +169,7 @@ public:
         d.branchial_edge_pool     = branchial_edge_pool_.view();
         d.edge_producer           = edge_producer_;
         d.edge_consumers          = edge_consumers_.view();
-        d.state_events            = state_events_.view();
+        d.branchial_index         = branchial_index_.view();
         d.causal_triple_dedup     = causal_triple_dedup_.view();
         d.causal_pair_dedup       = causal_pair_dedup_.view();
         d.branchial_pair_dedup    = branchial_pair_dedup_.view();
@@ -230,7 +233,7 @@ public:
         causal_edge_pool_.reset();
         branchial_edge_pool_.reset();
         edge_consumers_.clear();
-        state_events_.clear();
+        branchial_index_.clear();
         causal_triple_dedup_.clear();
         causal_pair_dedup_.clear();
         branchial_pair_dedup_.clear();
@@ -365,7 +368,7 @@ private:
     Pool<DeviceBranchialEdge>          branchial_edge_pool_;
     EventId*                           edge_producer_ = nullptr;
     LockFreeList<EventId>              edge_consumers_;
-    LockFreeList<EventId>              state_events_;
+    LockFreeList<uint64_t>             branchial_index_;
     ConcurrentMap<uint64_t, uint32_t>  causal_triple_dedup_;
     ConcurrentMap<uint64_t, uint32_t>  causal_pair_dedup_;
     ConcurrentMap<uint64_t, uint32_t>  branchial_pair_dedup_;

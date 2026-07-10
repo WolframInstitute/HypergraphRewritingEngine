@@ -83,7 +83,8 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.causal_pair_slots      = expected_events * 8u;
     cfg.branchial_pair_slots   = expected_events * 16u;
     cfg.edge_consumer_nodes    = expected_edges * 4u;
-    cfg.state_event_nodes      = expected_events * 4u;
+    cfg.branchial_index_buckets = 1u << 20;
+    cfg.branchial_index_nodes   = expected_events * 4u;
     cfg.tr_desc_nodes          = expected_events * 16u;
     cfg.tr_anc_nodes           = expected_events * 16u;
     cfg.tr_desc_slots          = expected_events * 16u;
@@ -515,7 +516,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             dbl(cfg.max_states);
             dbl(cfg.max_state_edge_total);
             dbl(cfg.canonical_map_slots);
-            dbl(cfg.state_event_nodes);
             return true;
         case ErrorKind::kEventPoolFull:
             dbl(cfg.max_events);
@@ -545,7 +545,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kDescSetFull:         dbl(cfg.tr_desc_slots);        return true;
         case ErrorKind::kAncSetFull:          dbl(cfg.tr_anc_slots);         return true;
         case ErrorKind::kEdgeConsumerNodes:   dbl(cfg.edge_consumer_nodes);  return true;
-        case ErrorKind::kStateEventNodes:     dbl(cfg.state_event_nodes);    return true;
+        case ErrorKind::kBranchialIndexNodes: dbl(cfg.branchial_index_nodes); return true;
         case ErrorKind::kDescListNodes:       dbl(cfg.tr_desc_nodes);        return true;
         case ErrorKind::kAncListNodes:        dbl(cfg.tr_anc_nodes);         return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
@@ -608,7 +608,8 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(causal_pair_slots);
     LOG_FIELD(branchial_pair_slots);
     LOG_FIELD(edge_consumer_nodes);
-    LOG_FIELD(state_event_nodes);
+    LOG_FIELD(branchial_index_buckets);
+    LOG_FIELD(branchial_index_nodes);
     LOG_FIELD(tr_desc_nodes);
     LOG_FIELD(tr_anc_nodes);
     LOG_FIELD(tr_desc_slots);

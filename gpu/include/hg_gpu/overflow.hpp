@@ -33,7 +33,7 @@ enum class ErrorKind : uint32_t {
     kDescSetFull         = 10,
     kAncSetFull          = 11,
     kEdgeConsumerNodes   = 12,
-    kStateEventNodes     = 13,
+    kBranchialIndexNodes = 20,
     kDescListNodes       = 14,
     kAncListNodes        = 15,
     kSigIndexNodes       = 16,
@@ -58,7 +58,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kDescSetFull:         return "desc_set";
         case ErrorKind::kAncSetFull:          return "anc_set";
         case ErrorKind::kEdgeConsumerNodes:   return "edge_consumers (node pool)";
-        case ErrorKind::kStateEventNodes:     return "state_events (node pool)";
+        case ErrorKind::kBranchialIndexNodes: return "branchial_index (node pool)";
         case ErrorKind::kDescListNodes:       return "desc_list (node pool)";
         case ErrorKind::kAncListNodes:        return "anc_list (node pool)";
         case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";

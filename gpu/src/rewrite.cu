@@ -200,28 +200,39 @@ __device__ void register_as_consumer(DeviceState ds, EventId my_event, EdgeId ei
 // Branchial scan: register this event to its input state's event list, then
 // walk prior events and create a branchial edge for any pair sharing a
 // consumed edge.
+// Branchial edges connect sibling events of the same input state whose consumed
+// edge sets overlap. Co-consumers are found through a per-(state, edge) index
+// rather than a pairwise scan over all siblings, mirroring the CPU's
+// state_edge_events_ design: each consumed edge is pushed then its bucket is
+// walked, and push-then-scan guarantees that of any co-consuming pair at least
+// one sees the other. Buckets are hashed, so an entry can belong to another
+// state that consumed the same edge id (shared CSR edges) or to a colliding
+// (state, edge) pair; matching the edge and then the other event's input state
+// filters both, at one 4-byte read per candidate instead of scanning every
+// sibling's consumed array. Pair-level dedup in try_add_branchial_edge keeps a
+// pair sharing several edges single.
 __device__ void register_branchial(DeviceState ds, EventId my_event, StateId input_state,
                                    const EdgeId* my_consumed, uint8_t my_num_consumed) {
-    if (ds.state_events.push(input_state, my_event) == INVALID_ID) {
-        ds.errors.record(ErrorKind::kStateEventNodes);
-        // Continue — siblings still scan our event via their own pushes
-        // (best-effort branchial coverage).
-    }
-    ds.state_events.for_each(input_state, [&](EventId other) {
-        if (other == my_event) return;
-        // Check shared consumed edge. We need `other`'s consumed list; read
-        // it from the event_pool.
-        const DeviceEvent& oev = ds.event_pool.at(other);
-        for (uint8_t i = 0; i < my_num_consumed; ++i) {
-            EdgeId mine = my_consumed[i];
-            for (uint8_t j = 0; j < oev.num_consumed; ++j) {
-                if (oev.consumed_edges[j] == mine) {
-                    try_add_branchial_edge(ds, my_event, other, mine);
-                    return;  // one shared edge is enough per (us, other) pair
-                }
-            }
+    for (uint8_t i = 0; i < my_num_consumed; ++i) {
+        EdgeId mine = my_consumed[i];
+        if (mine == INVALID_ID) continue;
+        uint64_t h = (static_cast<uint64_t>(input_state) << 32) | mine;
+        h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
+        uint32_t bucket = static_cast<uint32_t>(h) & (ds.branchial_index.num_keys - 1u);
+        uint64_t entry  = (static_cast<uint64_t>(my_event) << 32) | mine;
+        if (ds.branchial_index.push(bucket, entry) == INVALID_ID) {
+            ds.errors.record(ErrorKind::kBranchialIndexNodes);
+            // Continue — co-consumers that pushed successfully still see us
+            // when they walk (best-effort coverage, mirrors the old paths).
         }
-    });
+        ds.branchial_index.for_each(bucket, [&](uint64_t other_entry) {
+            if (static_cast<EdgeId>(other_entry) != mine) return;
+            EventId other = static_cast<EventId>(other_entry >> 32);
+            if (other == my_event) return;
+            if (ds.event_pool.at(other).input_state != input_state) return;
+            try_add_branchial_edge(ds, my_event, other, mine);
+        });
+    }
 }
 
 __global__ void k_rewrite(DeviceState              ds,

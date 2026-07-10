@@ -137,7 +137,11 @@ struct EngineConfig {
     uint32_t causal_pair_slots    = 1u << 18;   // dedup map for (p,c) pairs
     uint32_t branchial_pair_slots = 1u << 19;
     uint32_t edge_consumer_nodes  = 1u << 18;   // LockFreeList node pool
-    uint32_t state_event_nodes    = 1u << 17;
+    // Branchial co-consumer index: buckets hashed by (state, consumed edge),
+    // entries pack (event, edge). Sized like edge_consumer_nodes: one entry
+    // per consumed-edge registration.
+    uint32_t branchial_index_buckets = 1u << 16;  // power of two
+    uint32_t branchial_index_nodes   = 1u << 18;
 
     // Transitive-reduction sizing. Desc[e] and Anc[e] per event.
     uint32_t tr_desc_nodes  = 1u << 20;
