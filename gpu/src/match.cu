@@ -176,14 +176,16 @@ __global__ void k_match_one_state(DeviceState ds,
         // per-iteration dedup (see k_match_batch comment).
         if (depth > 0 && pe.pivot_var != kNoPivotVar) {
             VertexId pivot_vert = pm.var_binding[pe.pivot_var];
-            // Per-iteration "seen" buffer for duplicate suppression. Bumped
-            // to 256 so high-degree vertices in evolved states (typically
-            // 50–200 incident edges) stay on the fast path. On overflow we
-            // fall back to the signature_index walk, which is exact (each
-            // edge appears in its bucket exactly once, no dedup needed) —
-            // so falling back is correct, just slower per candidate. We
-            // do NOT record an error for fallback: it's a graceful
-            // degradation, not a correctness issue.
+            // Per-iteration "seen" buffer for duplicate suppression; 256
+            // keeps high-degree vertices in evolved states on the fast path.
+            // Candidates are collected FIRST and tried only if the buffer
+            // holds them all: exactly one of the two enumerators ever calls
+            // try_candidate, because a candidate tried during collection
+            // would be tried again by the signature walk after an overflow,
+            // emitting duplicate match records (and the bucket order under
+            // concurrent inserts would make the duplicate count vary run to
+            // run). The signature walk is exact on its own: each edge
+            // appears in its bucket exactly once, no dedup needed.
             constexpr uint32_t kMaxIncidentSeen = 256;
             EdgeId   seen[kMaxIncidentSeen];
             uint32_t n_seen = 0;
@@ -197,7 +199,6 @@ __global__ void k_match_one_state(DeviceState ds,
                     }
                     if (n_seen >= kMaxIncidentSeen) { overflowed = true; return; }
                     seen[n_seen++] = cand;
-                    try_candidate(cand);
                 });
             if (overflowed) {
                 for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
@@ -205,6 +206,8 @@ __global__ void k_match_one_state(DeviceState ds,
                         static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
                         try_candidate);
                 }
+            } else {
+                for (uint32_t i = 0; i < n_seen; ++i) try_candidate(seen[i]);
             }
         } else {
             for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
@@ -366,12 +369,15 @@ __global__ void k_match_batch(DeviceState      ds,
             //     signature_index walk.
             if (pe.pivot_var != kNoPivotVar) {
                 VertexId pivot_vert = pm.var_binding[pe.pivot_var];
-                // Bounded "seen" buffer for duplicate suppression. 256
+                // Bounded "seen" buffer for duplicate suppression; 256
                 // covers high-degree vertices in typical evolved Wolfram
-                // states. On overflow we fall back to the signature_index
-                // walk — exact (each edge in its bucket exactly once) and
-                // not a correctness issue, just a slower per-candidate
-                // path. We do NOT report this as an error.
+                // states. Collect first, then try: exactly one of the two
+                // enumerators ever calls try_candidate, because a candidate
+                // tried during collection would be tried again by the
+                // signature walk after an overflow, emitting duplicate
+                // match records with a count that varies with concurrent
+                // bucket-insertion order. The signature walk is exact on
+                // its own: each edge appears in its bucket exactly once.
                 constexpr uint32_t kMaxIncidentSeen = 256;
                 EdgeId   seen[kMaxIncidentSeen];
                 uint32_t n_seen = 0;
@@ -388,7 +394,6 @@ __global__ void k_match_batch(DeviceState      ds,
                             return;
                         }
                         seen[n_seen++] = cand;
-                        try_candidate(cand);
                     });
                 if (overflowed) {
                     for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
@@ -396,6 +401,8 @@ __global__ void k_match_batch(DeviceState      ds,
                             static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
                             try_candidate);
                     }
+                } else {
+                    for (uint32_t i = 0; i < n_seen; ++i) try_candidate(seen[i]);
                 }
             } else {
                 for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {

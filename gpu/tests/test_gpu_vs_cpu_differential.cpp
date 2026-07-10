@@ -437,6 +437,15 @@ std::vector<Workload> build_corpus() {
         .num_steps = 3,
         .explore_from_canonical_states_only = true,
     });
+    // Depth 6 pushes hub-vertex inverted-index buckets past the match kernel's
+    // 256-entry seen buffer, exercising the signature-walk overflow path.
+    ws.push_back({
+        .name = "quotient_wolfram_steps6",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
+        .initial_state = V{{0u,1u},{0u,2u}},
+        .num_steps = 6,
+        .explore_from_canonical_states_only = true,
+    });
     ws.push_back({
         .name = "quotient_dupe_dedup",
         .rules = {rule({{0,1}}, {{0,1},{0,1}}),
