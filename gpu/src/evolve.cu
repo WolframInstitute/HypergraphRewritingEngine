@@ -74,6 +74,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.inverted_pool          = expected_edges * 4u;
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
+    if (in.max_blocks_per_launch) cfg.max_blocks_per_launch = in.max_blocks_per_launch;
 
     uint32_t expected_events   = expected_states;
     cfg.max_events             = expected_events;

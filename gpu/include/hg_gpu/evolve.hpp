@@ -58,6 +58,9 @@ struct EvolveInput {
     // lazy index rebuild on small workloads.
     uint32_t slice_scan_max_edges = 0;
 
+    // Override for EngineConfig::max_blocks_per_launch (0 keeps the default).
+    uint32_t max_blocks_per_launch = 0;
+
     // Hard ceiling on device memory the engine may allocate, in bytes. The
     // one-shot evolve() stops its grow-and-retry before a config's estimated
     // footprint would exceed this, returning the best partial result so far with
@@ -135,6 +138,14 @@ struct EngineConfig {
     // slice; the global indices are only consulted (and therefore maintained)
     // once some state exceeds it. See DeviceState::slice_scan_max_edges.
     uint32_t slice_scan_max_edges = 256;
+
+    // Cap on the number of blocks per match/rewrite kernel launch. When a step's
+    // grid exceeds this, the launch is split into consecutive chunks with a sync
+    // between, bounding any single kernel's duration so a very deep/wide step
+    // cannot trip the display driver's watchdog (WDDM TDR, ~2 s). 0 = no limit
+    // (single launch). Tune to the target GPU's TDR budget; current workloads
+    // (match a few ms, rewrite ~100 ms at depth 8) are far below it.
+    uint32_t max_blocks_per_launch = 0;
     uint32_t event_canon_slots    = 1u << 16;
 
     // Event / causal / branchial sizing.

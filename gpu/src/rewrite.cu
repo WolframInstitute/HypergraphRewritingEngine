@@ -239,8 +239,9 @@ __global__ void k_rewrite(DeviceState              ds,
                           const DeviceRule*        rules,
                           const MatchRecord*       matches,
                           uint32_t                 num_matches,
-                          uint32_t                 step) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+                          uint32_t                 step,
+                          uint32_t                 tid_offset) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x + tid_offset;
     if (tid >= num_matches) return;
 
     const MatchRecord& m = matches[tid];
@@ -562,9 +563,19 @@ void run_rewrite_kernel_with_nosync(EngineState&             engine,
                                     uint32_t                 step) {
     if (num_matches == 0) return;
     int block = 64;
-    int grid  = (int)((num_matches + block - 1) / block);
-    k_rewrite<<<grid, block>>>(engine.device(), d_rules, matches.view().data,
-                               num_matches, step);
+    uint32_t grid = (num_matches + block - 1) / block;
+    uint32_t cap  = engine.config().max_blocks_per_launch;
+    if (cap == 0 || grid <= cap) {
+        k_rewrite<<<grid, block>>>(engine.device(), d_rules, matches.view().data,
+                                   num_matches, step, 0u);
+    } else {
+        for (uint32_t off = 0; off < grid; off += cap) {
+            uint32_t n = (grid - off < cap) ? (grid - off) : cap;
+            k_rewrite<<<n, block>>>(engine.device(), d_rules, matches.view().data,
+                                    num_matches, step, off * (uint32_t)block);
+            check(cudaDeviceSynchronize(), "k_rewrite chunk sync");
+        }
+    }
     check(cudaDeviceSynchronize(), "k_rewrite sync");
 }
 

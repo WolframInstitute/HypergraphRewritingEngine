@@ -39,6 +39,9 @@ struct Workload {
     // A tiny value forces the index-backed match path and the lazy index
     // rebuild on small workloads, cross-checking that regime against the CPU.
     uint32_t slice_scan_max_edges = 0;
+    // Forwarded to EvolveInput::max_blocks_per_launch (0 = single launch). A
+    // small value forces the match/rewrite kernels to run in chunks.
+    uint32_t max_blocks_per_launch = 0;
 };
 
 // Result normalized for cross-engine comparison. States compare by
@@ -215,6 +218,7 @@ NormalizedResult run_gpu(const Workload& w) {
     in.transitive_reduction   = w.transitive_reduction;
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
     in.slice_scan_max_edges = w.slice_scan_max_edges;
+    in.max_blocks_per_launch = w.max_blocks_per_launch;
 
     auto result = hg_gpu::evolve(in);
 
@@ -409,6 +413,17 @@ std::vector<Workload> build_corpus() {
         .canon_mode = hg_gpu::CanonicalizationMode::None,
     };
     ws.push_back(none_mode);
+
+    // Chunked launches: 3 blocks per match/rewrite launch forces the kernels to
+    // run in many consecutive chunks, cross-checking the watchdog-bounding path
+    // against the CPU (results must be identical to a single launch).
+    ws.push_back({
+        .name = "chunked_launch_wolfram_steps4",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
+        .initial_state = V{{0u,1u},{0u,2u}},
+        .num_steps = 4,
+        .max_blocks_per_launch = 3,
+    });
 
     // Quotient exploration (explore_from_canonical_states_only): each canonical
     // state is expanded once, at its shortest depth. The CPU reaches that via

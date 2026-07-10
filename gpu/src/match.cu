@@ -269,8 +269,9 @@ __global__ void k_match_batch(DeviceState      ds,
                               uint32_t          num_rules,
                               const StateId*    state_ids,
                               uint32_t          num_state_ids,
-                              typename Pool<MatchRecord>::DeviceView out) {
-    uint32_t bid = blockIdx.x;
+                              typename Pool<MatchRecord>::DeviceView out,
+                              uint32_t          bid_offset) {
+    uint32_t bid = blockIdx.x + bid_offset;
     uint32_t total = num_rules * num_state_ids;
     if (bid >= total) return;
 
@@ -601,8 +602,18 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
     // pattern-edge-0 candidate enumeration.
     uint32_t grid  = num_rules * num_state_ids;
     int      block = static_cast<int>(kMatchBlockThreads);
-    k_match_batch<<<grid, block>>>(engine.device(), d_rules, num_rules,
-                                   d_state_ids, num_state_ids, out_matches.view());
+    uint32_t cap   = engine.config().max_blocks_per_launch;
+    if (cap == 0 || grid <= cap) {
+        k_match_batch<<<grid, block>>>(engine.device(), d_rules, num_rules,
+                                       d_state_ids, num_state_ids, out_matches.view(), 0u);
+    } else {
+        for (uint32_t off = 0; off < grid; off += cap) {
+            uint32_t n = (grid - off < cap) ? (grid - off) : cap;
+            k_match_batch<<<n, block>>>(engine.device(), d_rules, num_rules,
+                                        d_state_ids, num_state_ids, out_matches.view(), off);
+            check(cudaDeviceSynchronize(), "k_match_batch chunk sync");
+        }
+    }
     check(cudaDeviceSynchronize(), "k_match_batch sync");
 }
 
