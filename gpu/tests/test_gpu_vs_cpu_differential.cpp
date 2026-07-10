@@ -170,7 +170,13 @@ NormalizedResult run_cpu(const Workload& w) {
         uint64_t ih = state_hash_by_id.count(ev.input_state)  ? state_hash_by_id[ev.input_state]  : 0ULL;
         uint64_t oh = state_hash_by_id.count(ev.output_state) ? state_hash_by_id[ev.output_state] : 0ULL;
         uint32_t step = hg.get_state(ev.output_state).step;
-        uint64_t ek = event_key(ih, oh, ev.rule_index, step);
+        // Quotient mode compares transitions without the step: each canonical state
+        // is expanded once, so (input, output, rule) determines the step within a
+        // run, but WHICH depth the CPU's dataflow claims a state at is arrival-
+        // dependent, while the GPU's level-synchronised loop always claims at the
+        // minimum. The step-less multiset is the canonical transition multiset.
+        uint64_t ek = event_key(ih, oh, ev.rule_index,
+                                w.explore_from_canonical_states_only ? 0u : step);
         event_key_by_id[eid] = ek;
         out.event_keys.insert(ek);
     }
@@ -234,7 +240,8 @@ NormalizedResult run_gpu(const Workload& w) {
     for (const auto& ev : result.events) {
         uint64_t ih = state_hash_by_id.count(ev.input_state)  ? state_hash_by_id[ev.input_state]  : 0ULL;
         uint64_t oh = state_hash_by_id.count(ev.output_state) ? state_hash_by_id[ev.output_state] : 0ULL;
-        uint64_t ek = event_key(ih, oh, ev.rule, ev.step);
+        uint64_t ek = event_key(ih, oh, ev.rule,
+                                w.explore_from_canonical_states_only ? 0u : ev.step);
         event_key_by_id[ev.id] = ek;
         out.event_keys.insert(ek);
     }
@@ -268,14 +275,21 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
         << "Workload: " << w.name
         << " event multisets differ; cpu=" << cpu.event_keys.size()
         << " gpu=" << gpu.event_keys.size();
-    EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys)
-        << "Workload: " << w.name
-        << " causal multisets differ; cpu=" << cpu.causal_edge_keys.size()
-        << " gpu=" << gpu.causal_edge_keys.size();
-    EXPECT_EQ(cpu.branchial_edge_keys, gpu.branchial_edge_keys)
-        << "Workload: " << w.name
-        << " branchial multisets differ; cpu=" << cpu.branchial_edge_keys.size()
-        << " gpu=" << gpu.branchial_edge_keys.size();
+    // Quotient mode records only the expanded representative's causal/branchial
+    // edges, and which raw representative carries them is a claim race on the CPU.
+    // Exact causal and branchial multisets are reconstructed offline from the
+    // skeleton (tools/quotient_reconstruction_probe.cpp), so the online sets are
+    // not a cross-engine invariant in this mode.
+    if (!w.explore_from_canonical_states_only) {
+        EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys)
+            << "Workload: " << w.name
+            << " causal multisets differ; cpu=" << cpu.causal_edge_keys.size()
+            << " gpu=" << gpu.causal_edge_keys.size();
+        EXPECT_EQ(cpu.branchial_edge_keys, gpu.branchial_edge_keys)
+            << "Workload: " << w.name
+            << " branchial multisets differ; cpu=" << cpu.branchial_edge_keys.size()
+            << " gpu=" << gpu.branchial_edge_keys.size();
+    }
 }
 
 // =============================================================================
@@ -374,17 +388,6 @@ std::vector<Workload> build_corpus() {
         .initial_state = V{{0u,1u},{0u,2u}},
         .num_steps = 3,
     });
-    // KNOWN FAIL — this 5-step Wolfram canonical workload is the only
-    // failing differential test. At step 5 the state graph has enough
-    // symmetry that 1-WL refinement leaves a non-discrete partition;
-    // the GPU IR kernel's fast path then falls back to the
-    // sorted-colour-multiset hash (1-WL invariant) which has
-    // false-positive collisions where the CPU's exact IRCanonicalizer
-    // keeps states distinct. Closes when S3.5 (individualisation-
-    // refinement backtrack on GPU) lands. Until then the assertion
-    // failure is expected.
-    //   See: gpu/src/ir_canon.cu (non-discrete fallback comment)
-    //        gpu/ARCHITECTURE.md §10.5 "Differential test scoreboard"
     ws.push_back({
         .name = "wolfram_canonical_steps5",
         .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
@@ -401,6 +404,47 @@ std::vector<Workload> build_corpus() {
         .canon_mode = hg_gpu::CanonicalizationMode::None,
     };
     ws.push_back(none_mode);
+
+    // Quotient exploration (explore_from_canonical_states_only): each canonical
+    // state is expanded once, at its shortest depth. The CPU reaches that via
+    // depth relaxation over its dataflow; the GPU's level-synchronised step loop
+    // gives it by construction. Compared on canonical states and the step-less
+    // transition multiset; causal/branchial are reconstructed offline in this
+    // mode. The multi-rule workloads put loops in the multiway states graph,
+    // which is where first-discovery ordering used to diverge.
+    ws.push_back({
+        .name = "quotient_wolfram_steps5",
+        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
+        .initial_state = V{{0u,1u},{0u,2u}},
+        .num_steps = 5,
+        .explore_from_canonical_states_only = true,
+    });
+    ws.push_back({
+        .name = "quotient_all_three_triangle",
+        .rules = {rule({{0,1}}, {{0,2},{2,1}}),
+                  rule({{0,1}}, {{1,0}}),
+                  rule({{0,1},{1,2}}, {{0,2}})},
+        .initial_state = V{{0u,1u},{1u,2u},{2u,0u}},
+        .num_steps = 3,
+        .explore_from_canonical_states_only = true,
+    });
+    ws.push_back({
+        .name = "quotient_all_three_two_edges",
+        .rules = {rule({{0,1}}, {{0,2},{2,1}}),
+                  rule({{0,1}}, {{1,0}}),
+                  rule({{0,1},{1,2}}, {{0,2}})},
+        .initial_state = V{{0u,1u},{0u,2u}},
+        .num_steps = 3,
+        .explore_from_canonical_states_only = true,
+    });
+    ws.push_back({
+        .name = "quotient_dupe_dedup",
+        .rules = {rule({{0,1}}, {{0,1},{0,1}}),
+                  rule({{0,1},{0,1}}, {{0,1}})},
+        .initial_state = V{{0u,1u},{0u,1u}},
+        .num_steps = 3,
+        .explore_from_canonical_states_only = true,
+    });
 
     return ws;
 }

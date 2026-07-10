@@ -363,10 +363,13 @@ struct StateBranchialInfo {
 //
 // 3. explore_from_canonical_states_only (ParallelEvolutionEngine):
 //    - Controls EXPLORATION - which states to explore from
-//    - false: Explore all states (default multiway behavior)
-//    - true: Only explore from first canonical representative (deduplication)
+//    - false: Expand every provenance (reference semantics, exact online
+//      causal/branchial)
+//    - true: Quotient exploration - expand each canonical state once, at its
+//      shortest depth (lock-free depth relaxation); deterministic; causal and
+//      branchial multisets of the full expansion are reconstructed offline
+//      from the skeleton (tools/quotient_reconstruction_probe.cpp)
 //    - Requires StateCanonicalizationMode::Full to have any effect
-//    - States/events are still created, just MATCH tasks are not spawned
 //
 // Common configurations:
 // - Pure tree: State=None, Event=None, Explore=false

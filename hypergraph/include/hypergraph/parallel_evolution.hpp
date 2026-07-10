@@ -543,6 +543,18 @@ public:
         early_terminate_on_reservoir_full_ = enable;
     }
 
+    // Quotient exploration: expand each canonical state exactly once, at the
+    // shortest depth that reaches it (maintained by lock-free depth relaxation
+    // over the canonical transitions), so a run costs the canonical closure
+    // rather than the provenance count. Deterministic: the expanded set and the
+    // (input, output, rule) transition multiset depend only on the graph, not on
+    // scheduling or rule order. Causal/branchial edges are recorded only for the
+    // expanded representatives; the full expansion's exact multisets are
+    // reconstructed offline from this skeleton together with per-state
+    // multiplicities (tools/quotient_reconstruction_probe.cpp). Requires
+    // StateCanonicalizationMode::Full. Default false: expand every provenance,
+    // the reference/MultiwayReference.wl semantics with exact online causal and
+    // branchial tracking.
     void set_explore_from_canonical_states_only(bool enable) {
         explore_from_canonical_states_only_ = enable;
     }

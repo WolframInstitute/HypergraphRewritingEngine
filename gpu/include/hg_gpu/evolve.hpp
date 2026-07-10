@@ -24,13 +24,15 @@ struct EvolveInput {
     CanonicalizationMode      canonicalization     = CanonicalizationMode::Full;
     EventCanonicalizationMode event_canonicalization = EventCanonicalizationMode::None;
     bool transitive_reduction = true;
-    // When true, exploration only branches from canonical state
-    // representatives (duplicates of already-seen states are not
-    // re-explored). Matches the CPU
-    // ParallelEvolutionEngine::set_explore_from_canonical_states_only
-    // option; CPU default is false, but GPU defaults to true for bounded
-    // state growth on deep evolutions until the CPU's match-forwarding
-    // compensation is ported (see M5.6 proper / M6.7 discussion).
+    // Quotient exploration: expand each canonical state exactly once, at its
+    // shortest depth, so the run costs the canonical closure rather than the
+    // provenance count. The level-synchronised step loop gives the shortest
+    // depth by construction. Canonical states and the (input, output, rule)
+    // transition multiset match the CPU engine's quotient mode; exact causal
+    // and branchial multisets of the full expansion are reconstructed offline
+    // from this skeleton (tools/quotient_reconstruction_probe.cpp). False
+    // expands every provenance, the reference/MultiwayReference.wl semantics.
+    // GPU defaults to true for bounded state growth on deep evolutions.
     bool explore_from_canonical_states_only = true;
 
     // Stochastic exploration pruning. Each newly-deduped state at the end
