@@ -623,9 +623,27 @@ EvolveResult evolve(const EvolveInput& in) {
     EngineConfig cfg = initial_cfg;
     std::vector<OverflowWarning> trail;
 
+    // Best partial result seen so far: an attempt that overflowed still returns
+    // whatever it computed, and if the next, larger engine no longer fits in
+    // device memory that partial is what the caller gets, never an exception.
+    EvolveResult best;
+
     for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
-        Engine engine(cfg);
-        EvolveResult result = engine.run(in);
+        EvolveResult result;
+        try {
+            Engine engine(cfg);
+            result = engine.run(in);
+        } catch (const std::exception& e) {
+            trail.push_back(OverflowWarning{
+                ErrorKind::kDeviceOutOfMemory, 1u,
+                std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
+            std::fprintf(stderr,
+                "hg_gpu::evolve: engine at the grown size no longer fits in device "
+                "memory (%s) — returning the last completed attempt's partial result.\n",
+                e.what());
+            best.warnings = std::move(trail);
+            return best;
+        }
 
         // No overflow this attempt: success — return with the cumulative
         // trail (which is empty on the first-attempt-clean path).
@@ -664,6 +682,8 @@ EvolveResult evolve(const EvolveInput& in) {
             result.warnings = std::move(trail);
             return result;
         }
+
+        best = std::move(result);
 
         std::fprintf(stderr,
             "hg_gpu::evolve: overflow on %s — growing relevant config and "

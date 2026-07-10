@@ -40,6 +40,7 @@ enum class ErrorKind : uint32_t {
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
     kScratchOverflow     = 19,   // bounded local scratch (TR closure, WL)
+    kDeviceOutOfMemory   = 21,   // host-side: an engine of the grown size no longer fits in VRAM
     kCount
 };
 
@@ -65,6 +66,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
+        case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         default:                              return "unknown";
     }
 }

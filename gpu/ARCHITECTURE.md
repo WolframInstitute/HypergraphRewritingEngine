@@ -52,7 +52,26 @@ The workload character that drives the architecture:
 
 ## 3. Architecture overview
 
-The whole evolution runs as **multiple persistent CUDA kernels on independent streams, communicating via lock-free queues, with no inter-phase global synchronization**. Conceptually it mirrors the CPU `ParallelEvolutionEngine`+`JobSystem`: a fixed pool of workers pulls heterogeneous tasks from queues, produces follow-up tasks, and the system terminates when every queue is empty and every worker is idle.
+The evolution is a **host-driven step loop**: each step launches four bounded
+kernel phases — match (`k_match_batch`, one block per (frontier state, rule)),
+rewrite (`k_rewrite`, one thread per match: create edges/vertices, build the
+child CSR slice, write the event, register causal and branchial edges inline),
+canonical hashing over the new states (WL or exact IR per the canonicalization
+mode), and dedup-and-append (`k_dedup_and_append`, first writer per canonical
+hash wins the frontier slot). One device synchronization per phase; frontier
+counts round-trip to the host between steps. The loop is level-synchronised
+BFS, which is also what makes quotient exploration expand each canonical state
+at its shortest depth by construction.
+
+This shape amortises its per-step overhead (~4 launches + syncs + D2H,
+~50-100 µs) whenever frontiers are wide; it is the wrong shape for deep,
+narrow runs (10^4+ steps under pruning), where the per-step cost dominates.
+The persistent-kernel streaming design below is the candidate replacement for
+that regime (M7); whether CUDA graphs — which amortise launch cost with no
+resident kernel and no watchdog exposure — get close enough instead is an open
+decision (TASKS.md item 3). Nothing below this paragraph in §3-§5 is
+implemented; it is the target design, kept because its data structures
+(queues, termination detection) are what M7 would build.
 
 **Target (persistent-kernel streaming — M7 design):**
 
@@ -97,9 +116,9 @@ CUDA Graphs is *not* used for the inner loop (would impose phase structure). It 
 
 ---
 
-## 4. Concurrency model (no-phase streaming)
+## 4. Concurrency model (no-phase streaming — M7 target, not implemented)
 
-This is the load-bearing design choice. Restated:
+The load-bearing design choice for the M7 target. Restated:
 
 > Evolution does **not** proceed in synchronized phases (e.g. "first all step-N matches, then all step-N rewrites, then all step-N causal edges"). Instead, work flows freely through the pipeline; any worker on any kernel processes its next available task whenever upstream produces one.
 
@@ -117,7 +136,14 @@ Mechanism:
 
 ---
 
-## 5. Kernel roles & decomposition
+## 5. Kernel roles & decomposition (M7 target)
+
+The implemented kernels are `k_match_batch` / `k_match_one_state` (match.cu),
+`k_rewrite` (rewrite.cu, which also does event/causal/branchial registration
+inline), the WL / IR canonical hash kernels (wl_hash.cu, ir_canon.cu),
+`k_dedup_and_append` (evolve.cu) and `k_init_indices` (initial_upload.cu, also
+the bulk rebuild for lazy index maintenance). The decomposition below is how
+those roles would split under persistent-kernel streaming.
 
 ### 5.1 `MatchKernel` (warp-centric DFS, the heart)
 
@@ -255,7 +281,7 @@ GPU IR canonicalization (mirrors the CPU `IRCanonicalizer` in `hypergraph/src/ir
 Per-state block layout (see `gpu/src/ir_canon.cu`):
 - Shared-memory `IRBlock` holds the state's packed edge list, vertex list, per-vertex occurrence CSR, current/next colour arrays, and a per-thread scratch buffer sized for `kMaxIROccs` neighbour-signature entries.
 - Scratch bounds: `kMaxIRVerts=128`, `kMaxIREdges=128`, `kMaxIROccs=256`. Cover typical evolution states up to ≈ 100 vertices / 100 edges. **When a state doesn't fit** (large initial states like n=1000, or deep evolutions that accumulate), the kernel silently **falls back to `wl_hash_state_device`** — 1-WL sorted-colour-multiset hash directly on the CSR slice, iso-invariant but weaker than exact IR. No error is recorded for this path; it's a planned graceful degradation.
-- The slow-path IR backtrack is S3.5 (pending); closes the `wolfram_canonical_steps5` differential fail.
+- The slow-path IR backtrack is S3.5 (pending). It is **not** required for the current differential corpus (`wolfram_canonical_steps5` passes — its historical failure was a dedup-scratch-map bug, not IR discrimination), but the non-discrete fallback to a 1-WL multiset hash remains a latent correctness gap on states where 1-WL is strictly weaker than IR (Cai-Fürer-Immerman, strongly regular). Closing S3.5 removes that gap.
 - A global-memory `IRBlock` variant is the eventual fix for fast-path oversize states (so we get exact IR even on n=1000-class workloads); deferred until after the differential close.
 
 The `HashStrategy` enum / `set_hash_strategy` surface is gone from the public `EvolveInput`. `gpu/src/wl_hash.cu` is retained specifically as the IR fast-path's oversize-state fallback — it is NOT user-selectable.
@@ -345,18 +371,18 @@ GPU `run_gpu()` initially returns empty results — every test fails until each 
 
 ---
 
-## 10.5 Current implementation status (2026-04-23)
+## 10.5 Current implementation status (2026-07-10)
 
 High-level snapshot of what's done vs what's planned. Detailed sub-task granularity lives in the TaskList; this is the living overview.
 
-### Shipped (on the `gpu-rewrite` branch; commits `62adafe`, `1a5e880`, `5060cd2` pushed to local bare)
+### Shipped (on `master`)
 
 - **M1 — Foundation.** `gpu/` scaffold, headers, CMake, differential-test harness, initial determinism-fuzzed workload corpus.
 - **M2 — Primitives.** Atomic counter pool, open-addressing concurrent hash table (EMPTY/LOCKED CAS), MPMC ring buffer, append-only segmented pool, lock-free per-key list, termination detector, warp-cooperative helpers, memory-ordering audit. Each with unit + concurrency stress tests.
 - **M3 — Indices.** Signature index (bucketed), vertex inverted index, edge-signature computation on device. "Candidate gen matches CPU" differential test passes.
 - **M4 — Match pipeline.** PartialMatch device layout, CHSBuildKernel (signature-partitioned candidates), warp-centric DFS MatchKernel, connectivity-filter + intersection-constraint Match-and-Filter, Wolfram non-distinct binding, one-to-one edge consumption. "Matches identical to CPU" passes.
 - **M5 — Rewrite + dedup.** RewriteKernel with fresh vertex / edge allocators, first-cut GPU WL hash (now repurposed as IR's oversize-state fallback), device-side HashDedupKernel, full pipeline wire-up, "states match CPU through dedup" passes.
-- **M6 — Events.** EventRegisterKernel (inline in rewrite kernel today), producer-side + consumer-side causal rendezvous, branchial scan, online transitive reduction with multiplicity preservation on the (producer, consumer) pair. Event/causal/branchial differential test passes on 11/12 workloads.
+- **M6 — Events.** Event/causal/branchial registration inline in `k_rewrite`: producer/consumer causal rendezvous, branchial co-consumers via a per-(state, edge) index, online transitive reduction with multiplicity preservation on the (producer, consumer) pair. Event/causal/branchial differential passes on all reference-mode workloads.
 - **Stream 1 — HGMatch via inverted-index** (2026-04-22, commit `5060cd2`). Match kernel depth ≥ 1 uses `vertex_inverted_index[binding[pivot_var]]` instead of the global signature walk. LHS connectivity-ordered schedule on the host. 200–250× match-kernel speedup. (The canonical "we built the data structures; now use them" fix.)
 - **Stream 2 — CSR per-state edges.** Replaced the O(`max_states` × `max_edges`) dense bitset with `state_edge_slices` + flat `state_edge_ids`. Unblocks large workloads that previously OOM'd or crashed. Binary-search `state_contains`. Sortedness invariant preserved by rewrite (produced edges' IDs always > parent's). In working tree, pending commit.
 - **Stream 3 — IR-only canonicalization.** `HashStrategy` enum removed. New `gpu/src/ir_canon.cu` kernel implements the IR fast path (1-WL refinement + discreteness check + canonical labelling + lex-sort + FNV). Falls back to WL multiset hash on oversize states. In working tree, pending commit.
@@ -368,54 +394,18 @@ High-level snapshot of what's done vs what's planned. Detailed sub-task granular
 
 ### Differential test scoreboard
 
-- 11 / 12 workloads pass bit-identical equivalence-class comparison (canonical states, event multiset, causal multiset, branchial multiset).
-- **Failing:** `wolfram_canonical_steps5`. Root cause: at 5-step depth the state graph has enough symmetry that 1-WL fails to fully discriminate, and the GPU IR kernel's backtrack fallback (S3.5) isn't written yet — so GPU falls back to 1-WL multiset hash, which has false-positive collisions on the CPU IR's finer partition. Closing this is the `wolfram_canonical_steps5` pass criterion for S3.5.
-
-### Bench numbers (RTX 4090, Engine reuse, warmup 1, measure 1)
-
-| Workload | CPU ms | GPU ms | Speedup | Final states | Events | Causal | Branchial |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| n10_s1 | 0.89 | 1.54 | 0.58× | 5 | 8 | 0 | 4 |
-| n10_s3 | 7.41 | 6.29 | 1.18× | 258 | 664 | 676 | 2288 |
-| n50_s1 | 30.43 | 4.76 | **6.39×** | 7 | 132 | 0 | 522 |
-| n50_s3 | 1143.45 | 88.93 | **12.86×** | 650 | 9 916 | 2 970 | 52 034 |
-| n1000_s1 | 1 485 | 849 | **1.75×** | 63 | 15 136 | 0 | 435 728 |
-
-Interpretation: GPU wins from n10_s3 up. n10_s1 is kernel-launch-overhead-bound (one state with eight events — nothing to parallelise over). Large (n ≥ 200) × deep (s ≥ 3) sweeps run but weren't included in the latest measured row set because the CPU-side multithreaded evolution ALSO takes minutes on those workloads — not a GPU regression, but not a useful comparison until we have compute budget for a full overnight sweep.
-
-Per-kernel decomposition for n1000_s1 (HG_GPU_DBG_TIME=1):
-- init 15 ms (once per Engine, amortised across run()s)
-- match 4 ms (was 944 ms pre-Stream-1)
-- rewrite 89 ms
-- IR hash 23 ms
-- dedup < 1 ms
-- state-readback 570 ms (biggest residual cost — `all_state_edges_host` bulk-copies the whole edge pool + vertex pool + slice table; only matters for benchmarks that verify output)
-
-### Pending
-
-Immediate:
-- **S3.5** Individualisation-refinement backtrack on GPU → closes the last differential fail.
-- **S3.3b** Warp-parallelise IR refinement (currently thread 0 only within the block).
-- **Stream 2/3/4/5 commit** once the user approves the split.
-
-Next quarter of work (roughly in priority order):
-- **M7.x** Persistent kernels + independent CUDA streams + backpressure. Kills the per-step host↔device sync overhead.
-- **M9.x** Auto-tuning cache: per-device best-fit `EngineConfig` cached next to the binary, first-run sweep to populate, cache load + application on subsequent runs.
-- **M10.4** Full benchmark-sweep comparison report (CSV + charts) once streaming is in and the last differential fail closes.
-- **Global-memory `IRBlock` variant** so large-state IR is exact rather than falling back to 1-WL.
-- **M4.9** Match dedup table on GPU (minor; the rewrite-side dedup collapses most duplicates already).
-- **M6.6** Event canonicalisation (Full mode) on GPU.
-- **M6.8** Reservoir sampling for width-limited evolutions (user flagged the CPU side needs a correctness review first).
-- **M11.x** FFI / paclet bridge so Wolfram Language can call this engine.
-
-### Known limitations
-
-- **Match kernel is one-block-per-(state × rule)** with 32-thread cooperation on pattern-edge-0 candidates. DFS beyond depth 0 is per-thread. Warp-cooperative DFS (G2Miner style) is a future optimisation.
-- **IR fast-path is single-thread within the block** (thread 0 does refinement). S3.3b.
-- **State-edge readback via `all_state_edges_host`** is O(total live edges) memcpy. Fine for small workloads, expensive on deep n=1000 evolutions. Users who only need the canonical hash set can stay on-device.
-- **Oversize states fall back to 1-WL** (soft accuracy loss, not correctness). Will be a hard correctness loss on adversarial symmetric graphs until S3.5 and/or the global-memory IRBlock lands.
-
----
+- **19 / 19 workloads pass** bit-identical equivalence-class comparison
+  (canonical states, event multiset, and — in reference mode — causal and
+  branchial multisets), stable across repeated runs.
+- Corpus: the reference-semantics Wolfram / multi-rule / self-loop / mixed-arity
+  set, plus 5 quotient-exploration workloads (canonical states + step-less
+  transition multiset; causal/branchial reconstructed offline by
+  `tools/quotient_reconstruction_probe.cpp`) and 2 forced-index-regime
+  workloads (`slice_scan_max_edges = 2`) that exercise the lazy-index mid-run
+  rebuild against the CPU.
+- **No open failures.** `wolfram_canonical_steps5` (the historical failure) was
+  never the GPU IR kernel — root cause was the explore-all path deduplicating
+  against a 32-slot scratch map (fixed, commit line in §12). It passes.
 
 ## 11. Build order (matches the task graph)
 
@@ -463,3 +453,9 @@ Each milestone ends with: differential tests green, no warnings, no memory error
 - **2026-04-30** — S5.6 (architectural correction to Stream 5): GPU engine no longer throws on capacity overflow. Added `gpu/include/hg_gpu/overflow.hpp` (CUDA-free, exports `ErrorKind` and the new `OverflowWarning {kind, count, context}` POD). `EvolveResult` gains a `std::vector<OverflowWarning> warnings` field. `DeviceErrors::collect_warnings_into(vec, context)` drains the device counters into the vector and clears for the next sync. `Engine::run()` now never throws on capacity overflow — kernels keep running on whatever budget they have, partial result is returned with overflow tagged in `warnings`. Free `evolve()` rewrote its retry loop to inspect the warnings list (no try/catch on `PoolOverflow`); cumulative warning trail returned in the final result. Reason: the user's view that errors are for programmer mistakes only — runtime resource limits should yield partial results plus warnings, not crashes. Closes the philosophical hole the original Stream 5 left.
 - **2026-04-30** — S5.4: `log_winning_config()` in `evolve.cu` prints the `EngineConfig` fields that were grown beyond their initial values when grow-and-retry succeeds. Format is stable so users can grep it and copy values into an explicit `Engine(cfg)` construction to skip the retry loop on the next call. Feeds the M9 auto-tune cache when that lands.
 - **2026-04-30** — S6.1: GPU `ExplorationProbability` pruning. `EvolveInput` gains `exploration_probability` (float, 1.0 default) and `exploration_seed` (uint64_t, 0 = non-deterministic). The coin flip lives in `k_dedup_and_append`: a freshly-deduped state is admitted to the next-step frontier with probability ≈ `threshold/2^32`, where the per-(seed, step, sid) draw is a `splitmix64` mix. Mirrors CPU `ParallelEvolutionEngine::should_explore()` semantics — the state and its event are still recorded; only expansion from the new state is suppressed. Fast-path (`p == 1.0`) skips the hash work entirely so existing deterministic workloads pay zero overhead. Six unit tests in `gpu/tests/test_exploration_probability.cu` cover baseline parity, full suppression, intermediate shrinking, same-seed determinism, different-seed divergence, and out-of-range clamping. Closes the first feature-parity gap in the CPU pruning option set; `MaxStatesPerStep` and `MaxSuccessorStatesPerParent` remain pending as separate streams.
+
+- **2026-07-10** — Quotient exploration respecified. `explore_from_canonical_states_only` now expands each canonical state exactly once at its shortest depth. On the GPU the level-synchronised BFS gives shortest depth by construction; on the CPU it is lock-free depth relaxation. Deterministic on both. Exact causal/branchial multisets of the full expansion are reconstructed offline from the skeleton plus per-orbit multiplicities (`tools/quotient_reconstruction_probe.cpp`, validated on 24 workloads). Reason: the old "expand each state once" was ill-defined under an asynchronous frontier (which representative won depended on scheduling + a `random_device`-seeded rule shuffle), so the mode silently explored a scheduling-dependent subgraph.
+- **2026-07-10** — Match kernel: two fixes. (1) Correctness — the seen-buffer overflow path tried candidates while collecting them AND re-tried them all via the signature walk, emitting duplicate matches with a scheduling-dependent count (4659–4686 vs the true 3866 at depth 6). Now collect-then-try: exactly one enumerator ever fires. (2) Perf — small states (≤ `slice_scan_max_edges`, default 256) enumerate candidates from their own CSR slice instead of the global signature / inverted indices, whose buckets grow with the whole evolution. Match phase at depth 7: ~190 ms → ~4 ms.
+- **2026-07-10** — Lazy index maintenance. The signature and vertex-inverted indices are only maintained once some state exceeds `slice_scan_max_edges`; below it the match kernels never read them, so the per-edge inserts were pure hub-bucket CAS contention. Inserts start off, the rewrite kernel raises a device flag when it publishes a larger state, the host bulk-rebuilds via `k_init_indices` once and maintains from there. Depth 8: 11.75 s → 5.25 s.
+- **2026-07-10** — Branchial co-consumers via a per-(state, edge) hashed index (mirrors the CPU's `state_edge_events_`), replacing the O(siblings²) pairwise consumed-array scan. The now-dead `state_events` list and its config/error-kind were removed.
+- **2026-07-10** — `evolve()` grow-and-retry is device-OOM-safe: if an engine at the grown config no longer fits in VRAM, the constructor/run throw is caught, tagged `kDeviceOutOfMemory` in the warning trail, and the last completed attempt's partial result is returned. Capacity limits never surface as an exception to the caller.
