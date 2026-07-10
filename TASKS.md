@@ -53,13 +53,27 @@ need paired-mean measurement, not single samples.
 
 ## Correctness audits
 
-6. **Pruning / reservoir sampling.** Verify uniform-random reservoir sampling
-   is unbiased and reproducible under both `explore_from_canonical_states_only`
-   settings, on both engines. The GPU `exploration_probability` path has never
-   been differentially tested against the CPU's.
+6. **Pruning / reservoir sampling.** (audited)
+   - [x] `evolve_uniform_random` reservoir sampling is uniform within a
+     (state,rule) stratum — chi-square test added
+     (`test_sampling_reproducibility.cpp::ReservoirUniformWithinStratum`). The
+     equal per-stratum cap makes the scheme stratified by design (each state
+     fairly represented regardless of branching factor), not flat-uniform.
+   - [ ] **Finding (moved to item 7):** `set_exploration_probability` places the
+     coin flip PER TRANSITION on the CPU (before the quotient claim,
+     `parallel_evolution.cpp:1426`), so a canonical state reached by N transitions
+     survives with prob 1-(1-p)^N; the GPU flips it once per deduped state
+     (`k_dedup_and_append`), i.e. prob p. Both are valid subsampling but they are
+     different semantics — a CPU/GPU parity gap. Not fixed blind: pruning compounds
+     down depth, which masks a clean before/after measurement, so the fix needs a
+     single-step high-in-degree isolation test first. Node-sampling once per
+     canonical state (matching the GPU) is the principled target.
 7. **Remaining GPU parity items**: event canonicalization (GPU reports
    `canonical_id = INVALID`), `MaxStatesPerStep` / `MaxSuccessorStatesPerParent`,
-   multi-initial-state, genesis events.
+   multi-initial-state, genesis events, and the `exploration_probability`
+   coin-placement discrepancy from item 6 (CPU per-transition vs GPU per-state) —
+   align both to per-canonical-state node sampling, with a single-step
+   high-in-degree isolation test as the gate.
 
 ## Interface / longer-term
 
