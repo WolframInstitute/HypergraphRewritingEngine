@@ -481,6 +481,12 @@ public:
 
     void add_rule(const RewriteRule& rule) {
         rules_.push_back(rule);
+        // Finalize the rule's matching data at the single point of registration:
+        // join order plus the per-edge signature / compatible-signature caches the
+        // matcher reads (lhs_sig / lhs_cache). A hand-built RewriteRule need only
+        // populate lhs/rhs and the edge counts; compute_var_counts derives the rest
+        // from them. Idempotent for callers that already computed it.
+        rules_.back().compute_var_counts();
     }
 
     void set_max_steps(size_t max) { max_steps_ = max; }
