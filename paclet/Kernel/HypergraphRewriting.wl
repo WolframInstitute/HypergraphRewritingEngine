@@ -298,14 +298,25 @@ hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
   True
 ];
 
-hgSockReadN[device_, n_] := Module[{buf, chunk},
+(* Return exactly n bytes from the worker socket. The payload is handed to
+   BinaryDeserialize untouched -- the only work here is reassembling the stream
+   into one contiguous ByteArray (SocketReadMessage returns arbitrary chunks),
+   done with a single Join, and returned without a further copy when the frame
+   aligns exactly (the common case, since it is one response per request). *)
+hgSockReadN[device_, n_] := Module[{buf, chunks, got, chunk, all},
   buf = $hgWorkerBuf[device];
-  While[Length[buf] < n,
+  If[Length[buf] >= n,
+    $hgWorkerBuf[device] = Drop[buf, n];
+    Return[Take[buf, n]]];
+  chunks = {buf}; got = Length[buf];
+  While[got < n,
     chunk = SocketReadMessage[$hgWorkerSock[device]];
     If[chunk === EndOfFile || !ByteArrayQ[chunk], Return[$Failed]];
-    buf = Join[buf, chunk]];
-  $hgWorkerBuf[device] = Drop[buf, n];
-  Take[buf, n]
+    AppendTo[chunks, chunk]; got += Length[chunk]];
+  all = Join @@ chunks;
+  If[got === n,
+    $hgWorkerBuf[device] = ByteArray[{}]; all,          (* exact: no extra copy *)
+    $hgWorkerBuf[device] = Drop[all, n]; Take[all, n]]
 ];
 
 hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{hdr, len, out},
