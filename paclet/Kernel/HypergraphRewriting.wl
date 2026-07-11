@@ -262,7 +262,6 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
    is left behind. *)
 $hgWorkerProc = <||>;     (* device -> ProcessObject *)
 $hgWorkerSock = <||>;     (* device -> SocketObject *)
-$hgWorkerBuf = <||>;      (* device -> leftover ByteArray from SocketReadMessage *)
 $hgWorkerBroken = <||>;   (* device -> True once found unavailable *)
 
 hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 256, 8]]], bytes];
@@ -273,7 +272,6 @@ hgWorkerKill[device_] := (
   Quiet[If[MatchQ[$hgWorkerProc[device], _ProcessObject], KillProcess[$hgWorkerProc[device]]]];
   $hgWorkerProc = KeyDrop[$hgWorkerProc, device];
   $hgWorkerSock = KeyDrop[$hgWorkerSock, device];
-  $hgWorkerBuf = KeyDrop[$hgWorkerBuf, device];
 );
 
 hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
@@ -294,32 +292,29 @@ hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
   If[!IntegerQ[port], Quiet[KillProcess[proc]]; Return[$Failed]];
   sock = TimeConstrained[SocketConnect["127.0.0.1:" <> ToString[port]], 10, $Failed];
   If[Head[sock] =!= SocketObject, Quiet[KillProcess[proc]]; Return[$Failed]];
-  $hgWorkerProc[device] = proc; $hgWorkerSock[device] = sock; $hgWorkerBuf[device] = ByteArray[{}];
+  $hgWorkerProc[device] = proc; $hgWorkerSock[device] = sock;
   True
 ];
 
-(* Return exactly n bytes from the worker socket. The payload is handed to
-   BinaryDeserialize untouched -- the only work here is reassembling the stream
-   into one contiguous ByteArray (SocketReadMessage returns arbitrary chunks),
-   done with a single Join, and returned without a further copy when the frame
-   aligns exactly (the common case, since it is one response per request). *)
-hgSockReadN[device_, n_] := Module[{buf, chunks, got, chunk, all},
-  buf = $hgWorkerBuf[device];
-  If[Length[buf] >= n,
-    $hgWorkerBuf[device] = Drop[buf, n];
-    Return[Take[buf, n]]];
-  chunks = {buf}; got = Length[buf];
-  While[got < n,
-    chunk = SocketReadMessage[$hgWorkerSock[device]];
-    If[chunk === EndOfFile || !ByteArrayQ[chunk], Return[$Failed]];
-    AppendTo[chunks, chunk]; got += Length[chunk]];
-  all = Join @@ chunks;
-  If[got === n,
-    $hgWorkerBuf[device] = ByteArray[{}]; all,          (* exact: no extra copy *)
-    $hgWorkerBuf[device] = Drop[all, n]; Take[all, n]]
+(* Read one length-prefixed response frame ([8-byte little-endian length][payload])
+   and return the payload ByteArray straight for BinaryDeserialize -- no encoding
+   or per-byte transform. Reassembly is O(n): the arbitrary-sized SocketReadMessage
+   chunks are appended to an O(1)-append DynamicArray and Join'd once. Strict
+   request/response (one full response read before the next request is sent) means
+   no bytes spill past the frame, so no leftover buffer is needed. Returns $Failed
+   on a dead socket, or an empty ByteArray if the engine flagged the job as errored
+   (a zero-length reply). *)
+hgReadFrame[sock_] := Module[{ds = CreateDataStructure["DynamicArray"], got = 0, len = -1, chunk},
+  While[len < 0 || got < 8 + len,
+    chunk = SocketReadMessage[sock];
+    If[!ByteArrayQ[chunk], Return[$Failed]];
+    ds["Append", chunk]; got += Length[chunk];
+    If[len < 0 && got >= 8,
+      len = FromDigits[Reverse[Normal[Take[Join @@ Normal[ds], 8]]], 256]]];
+  If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]
 ];
 
-hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{hdr, len, out},
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
   If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
   If[Head[$hgWorkerSock[device]] =!= SocketObject
       || Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
@@ -328,13 +323,11 @@ hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{hdr, len, out},
   ];
   If[Quiet[BinaryWrite[$hgWorkerSock[device], hgFrame[wxfBytes]]] === $Failed,
     hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
-  hdr = hgSockReadN[device, 8];
-  If[hdr === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
-  len = FromDigits[Reverse[Normal[hdr]], 256];
-  If[len == 0, Return[$Failed]];  (* engine reported this job errored *)
-  out = hgSockReadN[device, len];
-  If[out === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
-  out
+  payload = hgReadFrame[$hgWorkerSock[device]];
+  Which[
+    payload === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; $Failed,
+    Length[payload] == 0, $Failed,   (* engine flagged this job; worker still alive *)
+    True, payload]
 ];
 
 (* Route a serialized job to the engine: the persistent socket worker (GPU binary
