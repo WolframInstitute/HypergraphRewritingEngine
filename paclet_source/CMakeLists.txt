@@ -13,9 +13,9 @@ if(NOT WolframLanguage_FOUND)
 endif()
 
 # Source files - relative to LibraryResources directory
-set(SOURCES
-    hypergraph_ffi.cpp
-    # Blackhole analysis sources (compiled without layout dependency)
+# Blackhole analysis sources, compiled directly (without the layout dependency)
+# into both the DLL and the standalone binary.
+set(BLACKHOLE_SOURCES
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/hausdorff_analysis.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/bh_initial_condition.cpp
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/geodesic_analysis.cpp
@@ -27,8 +27,41 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branch_alignment.cpp
 )
 
+set(SOURCES hypergraph_ffi.cpp ${BLACKHOLE_SOURCES})
+
 # Create the library
 add_library(HypergraphRewriting SHARED ${SOURCES})
+
+# =============================================================================
+# Standalone process-isolation binary (WXF over stdin/stdout).
+# Reuses the exact marshaling of hypergraph_ffi.cpp via run_rewriting_core, but
+# compiled with HG_STANDALONE_BINARY so no Wolfram SDK is pulled in. This is the
+# deployment path that supersedes the LibraryLink DLL: abort = process kill,
+# crashes are isolated from the notebook. See docs/BINARY_ISOLATION.md.
+add_executable(hg_evolve
+    hg_evolve_main.cpp
+    hypergraph_ffi.cpp
+    ${BLACKHOLE_SOURCES}
+)
+target_compile_definitions(hg_evolve PRIVATE HG_STANDALONE_BINARY)
+target_include_directories(hg_evolve PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/hypergraph/include
+    ${CMAKE_SOURCE_DIR}/job_system/include
+    ${CMAKE_SOURCE_DIR}/lockfree_deque/include
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
+)
+target_link_libraries(hg_evolve hypergraph wxf)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # The LibraryLink helper functions compile out under HG_STANDALONE_BINARY,
+    # leaving some static helpers unused in this translation unit.
+    target_compile_options(hg_evolve PRIVATE -O3 -Wno-unused-function)
+endif()
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_target_properties(hg_evolve PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    find_package(Threads REQUIRED)
+    target_link_libraries(hg_evolve Threads::Threads)
+endif()
 
 # Link against our existing targets
 # Note: Wolfram Language libraries are NOT needed at link time for LibraryLink
@@ -229,6 +262,11 @@ endif()
 # Set output directory to paclet LibraryResources platform directory
 set_target_properties(HypergraphRewriting PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+)
+
+# The standalone binary ships alongside the DLL in the same platform directory.
+set_target_properties(hg_evolve PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
 )
 

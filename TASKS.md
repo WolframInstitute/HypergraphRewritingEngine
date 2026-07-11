@@ -110,15 +110,34 @@ need paired-mean measurement, not single samples.
    - [x] `TargetDevice -> "CPU"|"GPU"` option added to the paclet (commit 33568a7),
      mirroring NetTrain[]. CPU runs; GPU issues HGEvolve::gpudev and falls back to
      CPU. The option is a drop-in once the backend is wired.
-   - [ ] The actual GPU routing: link hg_gpu into the paclet FFI, construct a GPU
-     EvolveInput from the parsed options, run hg_gpu::evolve, and marshal its
-     EvolveResult into the paclet's WXF output format. Non-trivial because the
-     deployed paclet is a Windows CUDA DLL (cross-compile) and the output
-     marshaling must match the CPU path exactly. This also unblocks item 4's FFI
-     warning surfacing.
-9. **Process-isolation binary**: standalone WXF-output executable replacing the
-   paclet DLL (clean aborts by process kill, crash isolation from the notebook
-   front end, removes abort plumbing).
+   - [ ] The actual GPU routing: build the standalone binary (item 9) with `nvcc`
+     and route `TargetDevice -> "GPU"` to `hg_gpu::evolve`, marshaling its
+     EvolveResult through the same WXF output as the CPU path. The Windows-CUDA
+     cross-compile is a solved problem (WSL2 interop to `nvcc.exe` + MSVC `cl.exe`
+     via `wslpath -w`, per `symbolic_dynamics/.../NeuralLearnability/build_gpu.sh`);
+     since the binary is a plain `.exe`, linking CUDA is trivial (no CUDA-in-DLL).
+9. **Process-isolation binary** (CPU path DONE): standalone WXF-over-stdio
+   executable that supersedes the LibraryLink DLL — abort is a process kill,
+   crashes are isolated from the notebook, and the engine's cooperative-abort
+   plumbing is removed.
+   - [x] `hg_evolve` (`paclet_source/hg_evolve_main.cpp`): reads the WXF job on
+     stdin, writes the WXF result on stdout, progress on stderr. Shares the FFI
+     marshaling via `run_rewriting_core` (`hg_core.hpp`); built with
+     `HG_STANDALONE_BINARY` so it needs no Wolfram SDK. See docs/BINARY_ISOLATION.md.
+   - [x] `HGEvolve` routes through the binary when present via `RunProcess` +
+     ISO8859-1 stdout decode (NeuralLearnability's pattern), else the in-process
+     DLL. Validated end-to-end: `reference/verify_paclet.wls` golden 6/6 through
+     the Windows binary.
+   - [x] Cooperative abort removed from the engine: `evolve_with_abort` (both
+     overloads) and the dead `abort_flag_`/`set_abort_flag`/`should_abort`
+     machinery (`hypergraph.hpp`, `wl_hash.hpp`) are gone; `should_stop_` remains
+     as the `max_states`/`max_events` limit flag (and the viz GUI stop button via
+     `request_stop`). HAVE_WSTP progress path removed from the FFI.
+   - [x] Latent bug fixed along the way: `add_rule` never called
+     `compute_var_counts`, so hand-built FFI rules carried uninitialized
+     `lhs_sig`/`lhs_cache`; the DLL got lucky zeros, the binary exposed it (0
+     matches). `add_rule` now finalizes each rule at registration.
+   - [ ] GPU device selection (item 8): `nvcc`-built variant + `TargetDevice`.
 10. **Paper refresh**: quotient exploration + offline multiplicity
     reconstruction (exact causal and branchial from the skeleton, validated on
     a 24-workload corpus), exact online transitive reduction, GPU speedups

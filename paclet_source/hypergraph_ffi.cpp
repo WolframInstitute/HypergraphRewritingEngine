@@ -1,19 +1,22 @@
+#ifndef HG_STANDALONE_BINARY
 #include "WolframLibrary.h"
 #include "WolframNumericArrayLibrary.h"
-#ifdef HAVE_WSTP
-#include "wstp.h"
-#endif
+#endif  // HG_STANDALONE_BINARY
 #include <vector>
 #include <set>
 #include <map>
 #include <unordered_set>
 #include <cstring>
+#include <cstdio>
 #include <unordered_map>
 #include <chrono>
 #include <sstream>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <functional>
+
+#include "hg_core.hpp"
 
 // Include unified engine headers
 #include "hypergraph/hypergraph.hpp"
@@ -40,82 +43,6 @@
 
 using namespace hypergraph;
 
-// =============================================================================
-// Lock-Free Debug Message Queue (MPSC - Multiple Producer, Single Consumer)
-// =============================================================================
-// Worker threads push messages (lock-free), main thread drains via atomic swap.
-
-namespace {
-
-struct DebugNode {
-    char message[256];  // Fixed-size to avoid allocation in hot path
-    DebugNode* next;
-};
-
-class LockFreeDebugQueue {
-    std::atomic<DebugNode*> head_{nullptr};
-    std::atomic<size_t> count_{0};
-    static constexpr size_t MAX_MESSAGES = 10000;
-
-public:
-    // Push message (lock-free, called from worker threads)
-    void push(const char* msg) {
-        // Atomically reserve a slot. If the reservation would exceed MAX_MESSAGES,
-        // roll back and drop. The earlier check+increment pattern let N concurrent
-        // callers all pass the check and overshoot the cap.
-        size_t prev = count_.fetch_add(1, std::memory_order_relaxed);
-        if (prev >= MAX_MESSAGES) {
-            count_.fetch_sub(1, std::memory_order_relaxed);
-            return;
-        }
-
-        DebugNode* node = new DebugNode();
-        strncpy(node->message, msg, sizeof(node->message) - 1);
-        node->message[sizeof(node->message) - 1] = '\0';
-
-        // Lock-free prepend to list
-        DebugNode* old_head = head_.load(std::memory_order_relaxed);
-        do {
-            node->next = old_head;
-        } while (!head_.compare_exchange_weak(old_head, node,
-                    std::memory_order_release, std::memory_order_relaxed));
-    }
-
-    // Drain all messages (called from main thread only)
-    // Returns messages in reverse order (oldest first after reversal)
-    std::vector<std::string> drain() {
-        // Atomically swap head with nullptr
-        DebugNode* list = head_.exchange(nullptr, std::memory_order_acquire);
-        count_.store(0, std::memory_order_relaxed);
-
-        // Collect and reverse (list is newest-first, we want oldest-first)
-        std::vector<std::string> messages;
-        while (list) {
-            messages.emplace_back(list->message);
-            DebugNode* next = list->next;
-            delete list;
-            list = next;
-        }
-        std::reverse(messages.begin(), messages.end());
-        return messages;
-    }
-
-    // Clear without returning (for cleanup)
-    void clear() {
-        DebugNode* list = head_.exchange(nullptr, std::memory_order_relaxed);
-        count_.store(0, std::memory_order_relaxed);
-        while (list) {
-            DebugNode* next = list->next;
-            delete list;
-            list = next;
-        }
-    }
-};
-
-// Global instance
-LockFreeDebugQueue g_debug_queue;
-
-}  // anonymous namespace
 
 // WXF Helper Functions using comprehensive wxf library
 namespace ffi_helpers {
@@ -159,36 +86,21 @@ namespace ffi_helpers {
     }
 }
 
+// The core reports progress and checks for abort through the HostBridge; these
+// wrappers make an empty callback a no-op / never-abort.
+static inline void core_progress(const HostBridge& host, const std::string& message) {
+    if (host.progress) host.progress(message);
+}
+
+#ifndef HG_STANDALONE_BINARY
 // Error handling
 static void handle_error(WolframLibraryData libData, const char* message) {
     if (libData && libData->Message) {
         libData->Message(message);
     }
 }
+#endif  // HG_STANDALONE_BINARY
 
-#ifdef HAVE_WSTP
-// Mutex for WSTP calls (not thread-safe)
-static std::mutex wstp_mutex;
-
-// Progress reporting via WSTP - sends Print[] to frontend
-static void print_to_frontend(WolframLibraryData libData, const std::string& message) {
-    if (!libData) return;
-
-    std::lock_guard<std::mutex> lock(wstp_mutex);
-    WSLINK link = libData->getWSLINK(libData);
-    if (!link) return;
-
-    WSPutFunction(link, "EvaluatePacket", 1);
-    WSPutFunction(link, "Print", 1);
-    WSPutString(link, message.c_str());
-    libData->processWSLINK(link);
-
-    int pkt = WSNextPacket(link);
-    if (pkt == RETURNPKT) {
-        WSNewPacket(link);
-    }
-}
-#endif
 
 /**
  * Perform multiway rewriting evolution
@@ -206,33 +118,9 @@ static void print_to_frontend(WolframLibraryData libData, const std::string& mes
  * When CanonicalizeStates is Full, states are deduplicated and edges are
  * IR-canonicalized (vertices relabeled to 0..n-1, edges sorted).
  */
-EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
+                                        const HostBridge& host) {
     try {
-        if (argc != 1) {
-            handle_error(libData, "performRewriting expects 1 argument: WXF ByteArray data");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-
-        // Get WXF data as ByteArray (MNumericArray)
-        MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
-
-        // Get array properties
-        mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
-        if (rank != 1) {
-            handle_error(libData, "WXF ByteArray must be 1-dimensional");
-            return LIBRARY_FUNCTION_ERROR;
-        }
-
-        const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
-        mint wxf_size = dims[0];
-
-        // Get raw byte data
-        void* raw_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(wxf_array);
-        const uint8_t* wxf_byte_data = static_cast<const uint8_t*>(raw_data);
-
-        // Convert to vector
-        std::vector<uint8_t> wxf_bytes(wxf_byte_data, wxf_byte_data + wxf_size);
-
         // Parse WXF input
         wxf::Parser parser(wxf_bytes);
         parser.skip_header();
@@ -643,8 +531,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                         // option, which breaks WL callers that pass forward-compatible
                         // option sets the C++ side doesn't yet know about. Log into the
                         // debug queue so the frontend can surface the skip.
-                        g_debug_queue.push(
-                            ("FFI: skipping malformed option '" + option_key + "': " + e.what()).c_str());
+                        core_progress(host,
+                            "FFI: skipping malformed option '" + option_key + "': " + e.what());
                         option_parser.skip_value();
                     }
                 });
@@ -686,15 +574,13 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             initial_states_raw.clear();
             initial_states_raw.push_back(sprinkling_edges);
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Generated Minkowski sprinkling with "
                     << sprinkling.points.size() << " points, "
                     << sprinkling_edges.size() << " edges";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // Generate grid initial condition if requested
@@ -724,25 +610,21 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             initial_states_raw.clear();
             initial_states_raw.push_back(grid_edges);
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Generated " << grid_width << "x" << grid_height
                     << " grid with " << grid.vertex_count() << " vertices, "
                     << grid_edges.size() << " edges";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         if (initial_states_raw.empty()) {
-            handle_error(libData, "No initial states provided");
-            return LIBRARY_FUNCTION_ERROR;
+            throw std::runtime_error("No initial states provided");
         }
 
         if (parsed_rules_raw.empty()) {
-            handle_error(libData, "No valid rules found");
-            return LIBRARY_FUNCTION_ERROR;
+            throw std::runtime_error("No valid rules found");
         }
 
         // Create hypergraph
@@ -868,155 +750,36 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             }
         }
 
-        // Run evolution with progress reporting from main thread
-        // NOTE: All WSTP calls happen on the main thread to avoid thread-safety issues
-        // The abort_check callback runs every ~50ms, which is frequent enough for progress
-#ifdef HAVE_WSTP
+        // Run the evolution. Abort is a process kill by the parent, so there is
+        // no cooperative abort; progress (when requested) is reported through the
+        // host bridge.
+        if (show_progress) {
+            core_progress(host, "HGEvolve: Starting evolution...");
+        }
         auto evolution_start = std::chrono::steady_clock::now();
-        auto last_progress_report = evolution_start;
-        size_t last_states = 0, last_events = 0;
-        size_t last_causal = 0, last_branchial = 0;
-
-        if (show_progress) {
-            print_to_frontend(libData, "HGEvolve: Starting evolution...");
-        }
-
-        // Set up debug callback to route DEBUG_LOG to our queue
-        // Messages are drained and printed from the main thread in the abort callback
-        debug::set_debug_callback([](const char* msg) {
-            g_debug_queue.push(msg);
-        });
-#endif
-
-        // Run evolution with abort checking - allows user to cancel via the Wolfram Language's Abort[]
-        // Progress is reported from the abort callback (runs on main thread every ~50ms)
-#ifdef HAVE_WSTP
-        bool was_aborted = false;
 
         if (uniform_random) {
-            // Use uniform random mode (reservoir sampling) - same as blackhole_viz --uniform-random
-            if (show_progress) {
-                print_to_frontend(libData, "Using uniform random mode (reservoir sampling)");
-            }
             if (!initial_states.empty()) {
-                engine.evolve_uniform_random(
-                    initial_states[0],  // Single initial state edges
-                    static_cast<size_t>(steps),
-                    matches_per_step
-                );
+                engine.evolve_uniform_random(initial_states[0],
+                                             static_cast<size_t>(steps),
+                                             matches_per_step);
             }
         } else {
-            // Standard parallel evolution
-            was_aborted = engine.evolve_with_abort(
-            initial_states,
-            static_cast<size_t>(steps),
-            [&]() {
-                bool should_abort = libData->AbortQ();
-
-                // Drain debug messages and print them (from main thread)
-                if (show_progress) {
-                    auto debug_messages = g_debug_queue.drain();
-                    for (const auto& msg : debug_messages) {
-                        print_to_frontend(libData, msg);
-                    }
-                }
-
-                // Print progress every ~500ms (callback runs every ~50ms)
-                if (show_progress && !should_abort) {
-                    auto now = std::chrono::steady_clock::now();
-                    auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_report).count();
-
-                    if (since_last >= 500) {
-                        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - evolution_start).count();
-
-                        size_t cur_states = hg.num_canonical_states();
-                        size_t cur_events = hg.num_events();
-                        size_t cur_causal = hg.num_causal_event_pairs();  // v1 semantics
-                        size_t cur_branchial = hg.num_branchial_edges();
-
-                        // Calculate rates
-                        double state_rate = (since_last > 0) ? (cur_states - last_states) * 1000.0 / since_last : 0;
-                        double event_rate = (since_last > 0) ? (cur_events - last_events) * 1000.0 / since_last : 0;
-                        double causal_rate = (since_last > 0) ? (cur_causal - last_causal) * 1000.0 / since_last : 0;
-                        double branchial_rate = (since_last > 0) ? (cur_branchial - last_branchial) * 1000.0 / since_last : 0;
-
-                        size_t pending = engine.pending_jobs();
-                        size_t executing = engine.executing_jobs();
-
-                        std::ostringstream oss;
-                        oss << "[" << elapsed_ms << "ms] "
-                            << "States: " << cur_states << " (" << static_cast<int>(state_rate) << "/s), "
-                            << "Events: " << cur_events << " (" << static_cast<int>(event_rate) << "/s), "
-                            << "Causal: " << cur_causal << " (" << static_cast<int>(causal_rate) << "/s), "
-                            << "Branchial: " << cur_branchial << " (" << static_cast<int>(branchial_rate) << "/s)"
-                            << " | Jobs: " << pending << " pending, " << executing << " executing";
-
-                        print_to_frontend(libData, oss.str());
-
-                        last_progress_report = now;
-                        last_states = cur_states;
-                        last_events = cur_events;
-                        last_causal = cur_causal;
-                        last_branchial = cur_branchial;
-                    }
-                }
-
-                return should_abort;
-            }
-        );
-        }  // end else (standard evolution)
-#else
-        bool was_aborted = false;
-        if (uniform_random) {
-            if (!initial_states.empty()) {
-                engine.evolve_uniform_random(
-                    initial_states[0],
-                    static_cast<size_t>(steps),
-                    matches_per_step
-                );
-            }
-        } else {
-            was_aborted = engine.evolve_with_abort(
-                initial_states,
-                static_cast<size_t>(steps),
-                [libData]() { return libData->AbortQ(); }
-            );
-        }
-#endif
-
-#ifdef HAVE_WSTP
-        // Clear debug callback and drain any remaining messages
-        debug::clear_debug_callback();
-        if (show_progress) {
-            auto final_debug_messages = g_debug_queue.drain();
-            for (const auto& msg : final_debug_messages) {
-                print_to_frontend(libData, msg);
-            }
-        } else {
-            g_debug_queue.clear();  // Discard if not showing progress
+            engine.evolve(initial_states, static_cast<size_t>(steps));
         }
 
         if (show_progress) {
-            auto evolution_end = std::chrono::steady_clock::now();
-            auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(evolution_end - evolution_start).count();
+            auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - evolution_start).count();
             std::ostringstream oss;
-            if (was_aborted) {
-                oss << "HGEvolve: ABORTED after " << evolution_ms << "ms. ";
-            } else {
-                oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. ";
-            }
-            oss << "States: " << hg.num_canonical_states() << ", "
+            oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. "
+                << "States: " << hg.num_canonical_states() << ", "
                 << "Events: " << hg.num_events() << ", "
-                << "Causal: " << hg.num_causal_event_pairs() << ", "  // v1 semantics
+                << "Causal: " << hg.num_causal_event_pairs() << ", "
                 << "Branchial: " << hg.num_branchial_edges();
-            print_to_frontend(libData, oss.str());
-            if (!was_aborted) {
-                print_to_frontend(libData, "HGEvolve: Starting serialization...");
-            }
+            core_progress(host, oss.str());
+            core_progress(host, "HGEvolve: Starting serialization...");
         }
-#else
-        (void)was_aborted;  // Suppress unused variable warning when WSTP not available
-#endif
 
         // =========================================================================
         // Dimension Analysis (if requested)
@@ -1032,11 +795,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         float global_dim_max = std::numeric_limits<float>::lowest();
 
         if (compute_dimensions) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Computing dimension analysis...");
+                core_progress(host,"HGEvolve: Computing dimension analysis...");
             }
-#endif
             // Create job system for parallel dimension computation
             job_system::JobSystem<int> dim_js(std::thread::hardware_concurrency());
             dim_js.start();
@@ -1093,14 +854,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
             dim_js.wait_for_completion();
             dim_js.shutdown();
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Dimension analysis complete. Analyzed "
                     << state_dimension_stats.size() << " states";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // ==========================================================================
@@ -1117,11 +876,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, bh::VertexId> state_geodesic_lensing_center;
 
         if (compute_geodesics) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Computing geodesic analysis...");
+                core_progress(host,"HGEvolve: Computing geodesic analysis...");
             }
-#endif
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
@@ -1189,14 +946,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
             }
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Geodesic analysis complete. Analyzed "
                     << state_geodesic_paths.size() << " states";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // ==========================================================================
@@ -1216,11 +971,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, uint32_t> topological_state_to_step;  // State ID -> timestep for aggregation
 
         if (detect_particles) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Detecting topological defects...");
+                core_progress(host,"HGEvolve: Detecting topological defects...");
             }
-#endif
             uint32_t num_states = hg.num_states();
 
             for (uint32_t sid = 0; sid < num_states; ++sid) {
@@ -1280,14 +1033,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                 }
             }
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Particle detection complete. Analyzed "
                     << state_defects.size() << " states";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // ==========================================================================
@@ -1327,11 +1078,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, uint32_t> curvature_state_to_step;  // State ID -> timestep for aggregation
 
         if (compute_curvature) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Computing curvature analysis...");
+                core_progress(host,"HGEvolve: Computing curvature analysis...");
             }
-#endif
             // Create job system for parallel curvature computation
             job_system::JobSystem<int> curv_js(std::thread::hardware_concurrency());
             curv_js.start();
@@ -1418,14 +1167,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
             curv_js.wait_for_completion();
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Curvature analysis complete. Analyzed "
                     << state_ollivier_ricci.size() << " states";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // ==========================================================================
@@ -1439,11 +1186,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::unordered_map<uint32_t, uint32_t> entropy_state_to_step;  // State ID -> timestep for aggregation
 
         if (compute_entropy) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Computing entropy analysis...");
+                core_progress(host,"HGEvolve: Computing entropy analysis...");
             }
-#endif
             // Create job system for parallel entropy computation
             job_system::JobSystem<int> ent_js(std::thread::hardware_concurrency());
             ent_js.start();
@@ -1514,14 +1259,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
             ent_js.wait_for_completion();
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Entropy analysis complete. Analyzed "
                     << state_degree_entropy.size() << " states";
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // ==========================================================================
@@ -1556,11 +1299,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::map<uint32_t, MultispaceTimestepData> multispace_per_timestep;
 
         if (compute_hilbert_space || compute_branchial || compute_multispace || compute_equilibrium) {
-#ifdef HAVE_WSTP
             if (show_progress) {
-                print_to_frontend(libData, "HGEvolve: Building branchial structures...");
+                core_progress(host,"HGEvolve: Building branchial structures...");
             }
-#endif
             // Build BranchState structures from the hypergraph
             std::vector<bh::BranchState> branch_states;
             uint32_t num_states = hg.num_states();
@@ -1602,11 +1343,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                 // Hilbert Space Analysis
                 if (compute_hilbert_space) {
-#ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolve: Computing Hilbert space analysis...");
+                        core_progress(host,"HGEvolve: Computing Hilbert space analysis...");
                     }
-#endif
                     // Create job system for parallel Hilbert space computation
                     job_system::JobSystem<int> hilbert_js(std::thread::hardware_concurrency());
                     hilbert_js.start();
@@ -1698,11 +1437,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // Per-timestep Hilbert analysis (if scope is "PerTimestep" or "Both")
                     bool include_per_timestep_hilbert = (hilbert_scope == "PerTimestep" || hilbert_scope == "Both");
                     if (include_per_timestep_hilbert) {
-#ifdef HAVE_WSTP
                         if (show_progress) {
-                            print_to_frontend(libData, "HGEvolve: Computing per-timestep Hilbert space analysis...");
+                            core_progress(host,"HGEvolve: Computing per-timestep Hilbert space analysis...");
                         }
-#endif
                         // Create job system for parallel per-timestep Hilbert computation
                         job_system::JobSystem<int> step_hilbert_js(std::thread::hardware_concurrency());
                         step_hilbert_js.start();
@@ -1799,11 +1536,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                 // Branchial Analysis (distribution sharpness, branch entropy)
                 if (compute_branchial) {
-#ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolve: Computing branchial analysis...");
+                        core_progress(host,"HGEvolve: Computing branchial analysis...");
                     }
-#endif
                     // Create job system for parallel branchial computation
                     job_system::JobSystem<int> branchial_js(std::thread::hardware_concurrency());
                     branchial_js.start();
@@ -1814,11 +1549,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // Per-timestep branchial analysis (if scope is "PerTimestep" or "Both")
                     bool include_per_timestep_branchial = (branchial_scope == "PerTimestep" || branchial_scope == "Both");
                     if (include_per_timestep_branchial) {
-#ifdef HAVE_WSTP
                         if (show_progress) {
-                            print_to_frontend(libData, "HGEvolve: Computing per-timestep branchial analysis...");
+                            core_progress(host,"HGEvolve: Computing per-timestep branchial analysis...");
                         }
-#endif
                         // Group branch_states by timestep
                         std::unordered_map<uint32_t, std::vector<bh::BranchState>> states_by_step;
                         for (const auto& bs : branch_states) {
@@ -1840,11 +1573,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                 // Multispace Analysis (vertex/edge probabilities across branches)
                 if (compute_multispace) {
-#ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolve: Computing multispace analysis...");
+                        core_progress(host,"HGEvolve: Computing multispace analysis...");
                     }
-#endif
                     // Compute vertex probabilities (how often each vertex appears across branches)
                     std::unordered_map<bh::VertexId, int> vertex_counts;
                     std::map<std::pair<uint32_t, uint32_t>, int> edge_counts;
@@ -1890,11 +1621,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     // Per-timestep multispace analysis (if scope is "PerTimestep" or "Both")
                     bool include_per_timestep_multispace = (multispace_scope == "PerTimestep" || multispace_scope == "Both");
                     if (include_per_timestep_multispace) {
-#ifdef HAVE_WSTP
                         if (show_progress) {
-                            print_to_frontend(libData, "HGEvolve: Computing per-timestep multispace analysis...");
+                            core_progress(host,"HGEvolve: Computing per-timestep multispace analysis...");
                         }
-#endif
                         // Group branch_states by timestep
                         std::unordered_map<uint32_t, std::vector<const bh::BranchState*>> states_by_step;
                         for (const auto& bs : branch_states) {
@@ -1952,11 +1681,9 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
                 // Equilibrium Analysis
                 if (compute_equilibrium) {
-#ifdef HAVE_WSTP
                     if (show_progress) {
-                        print_to_frontend(libData, "HGEvolve: Computing equilibrium analysis...");
+                        core_progress(host,"HGEvolve: Computing equilibrium analysis...");
                     }
-#endif
                     bh::EquilibriumConfig eq_config;
                     eq_config.stability_window = equilibrium_window;
                     eq_config.equilibrium_threshold = equilibrium_threshold;
@@ -2051,7 +1778,6 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     has_equilibrium_data = !equilibrium_result.history.empty();
                 }
 
-#ifdef HAVE_WSTP
             if (show_progress) {
                 std::ostringstream oss;
                 oss << "HGEvolve: Branchial analyses complete.";
@@ -2068,9 +1794,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
                     oss << " Equilibrium: " << equilibrium_result.history.size() << " steps, "
                         << (equilibrium_result.is_equilibrated ? "EQUILIBRATED" : "not equilibrated") << ".";
                 }
-                print_to_frontend(libData, oss.str());
+                core_progress(host,oss.str());
             }
-#endif
         }
 
         // Build WXF output - only include requested data components
@@ -4088,35 +3813,57 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         // Write final association
         wxf_writer.write(wxf::WXFValue(full_result));
-        const auto& wxf_data = wxf_writer.data();
+        std::vector<uint8_t> wxf_data = wxf_writer.data();
 
-        // Create output ByteArray
-        mint wxf_dims[1] = {static_cast<mint>(wxf_data.size())};
+        if (show_progress) {
+            core_progress(host, "HGEvolve: Serialization complete.");
+        }
+
+        return wxf_data;
+
+    } catch (const wxf::TypeError& e) {
+        throw std::runtime_error(std::string("WXF TypeError: ") + e.what());
+    }
+}
+
+#ifndef HG_STANDALONE_BINARY
+
+// LibraryLink fallback adapter: unwrap the WXF ByteArray argument, run the core,
+// wrap the result ByteArray. The standalone binary is the primary path; this is
+// an in-process fallback with no progress or abort (abort is a process kill).
+EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, MArgument *argv, MArgument res) {
+    if (argc != 1) {
+        handle_error(libData, "performRewriting expects 1 argument: WXF ByteArray data");
+        return LIBRARY_FUNCTION_ERROR;
+    }
+    try {
+        MNumericArray wxf_array = MArgument_getMNumericArray(argv[0]);
+        mint rank = libData->numericarrayLibraryFunctions->MNumericArray_getRank(wxf_array);
+        if (rank != 1) {
+            handle_error(libData, "WXF ByteArray must be 1-dimensional");
+            return LIBRARY_FUNCTION_ERROR;
+        }
+        const mint* dims = libData->numericarrayLibraryFunctions->MNumericArray_getDimensions(wxf_array);
+        mint wxf_size = dims[0];
+        void* raw_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(wxf_array);
+        const uint8_t* wxf_byte_data = static_cast<const uint8_t*>(raw_data);
+        std::vector<uint8_t> wxf_bytes(wxf_byte_data, wxf_byte_data + wxf_size);
+
+        HostBridge host;
+
+        std::vector<uint8_t> out = run_rewriting_core(wxf_bytes, host);
+
+        mint out_dims[1] = {static_cast<mint>(out.size())};
         MNumericArray result_array;
-        int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, wxf_dims, &result_array);
+        int err = libData->numericarrayLibraryFunctions->MNumericArray_new(MNumericArray_Type_UBit8, 1, out_dims, &result_array);
         if (err != LIBRARY_NO_ERROR) {
             return err;
         }
-
-        // Copy byte data
         void* result_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array);
-        uint8_t* byte_result_data = static_cast<uint8_t*>(result_data);
-        std::memcpy(byte_result_data, wxf_data.data(), wxf_data.size());
-
-#ifdef HAVE_WSTP
-        if (show_progress) {
-            print_to_frontend(libData, "HGEvolve: Serialization complete.");
-        }
-#endif
-
+        std::memcpy(result_data, out.data(), out.size());
         MArgument_setMNumericArray(res, result_array);
         return LIBRARY_NO_ERROR;
 
-    } catch (const wxf::TypeError& e) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "WXF TypeError: %.200s", e.what());
-        handle_error(libData, err_msg);
-        return LIBRARY_FUNCTION_ERROR;
     } catch (const std::exception& e) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "HGEvolve error: %.200s", e.what());
@@ -4935,3 +4682,5 @@ EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData /* libData *
 
 EXTERN_C DLLEXPORT void WolframLibrary_uninitialize(WolframLibraryData /* libData */) {
 }
+
+#endif  // HG_STANDALONE_BINARY

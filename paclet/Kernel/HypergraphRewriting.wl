@@ -212,6 +212,42 @@ If[$HypergraphLibrary =!= $Failed,
     {LibraryDataType[ByteArray]}, LibraryDataType[ByteArray]];
 ];
 
+(* Standalone process-isolation engine binary, shipped beside the DLL. It reads
+   the WXF job on stdin and writes the WXF result on stdout (progress on stderr).
+   When present it supersedes the LibraryLink call: an abort is a process kill
+   and a crash cannot take down the kernel. See docs/BINARY_ISOLATION.md. *)
+$HypergraphEngineBinary = Module[{exeName, pacletRoot, exePath},
+  exeName = If[StringMatchQ[$SystemID, "Windows*"], "hg_evolve.exe", "hg_evolve"];
+  pacletRoot = DirectoryName[$InputFileName, 2];
+  exePath = FileNameJoin[{pacletRoot, "LibraryResources", $SystemID, exeName}];
+  Quiet[FindFile[exePath]]
+];
+
+(* Run the engine binary on the WXF job fed to its stdin, and collect the WXF
+   result from its stdout. Progress/diagnostics arrive on stderr. stdout carries
+   raw bytes; RunProcess returns them as a string decoded one byte per character,
+   recovered with ToCharacterCode[..., "ISO8859-1"]. *)
+hgRunEngineBinary[wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
+  proc = RunProcess[{$HypergraphEngineBinary}, All, wxfBytes, ProcessEnvironment -> <||>];
+  If[!AssociationQ[proc],
+    Message[HGEvolve::enginefail, "spawn"]; Return[$Failed]];
+  stderr = proc["StandardError"];
+  If[StringQ[stderr] && StringTrim[stderr] =!= "",
+    Message[HGEvolve::enginemsg, StringTrim[stderr]]];
+  outStr = proc["StandardOutput"];
+  If[proc["ExitCode"] =!= 0 || !StringQ[outStr] || outStr === "",
+    Message[HGEvolve::enginefail, proc["ExitCode"]]; Return[$Failed]];
+  ByteArray[ToCharacterCode[outStr, "ISO8859-1"]]
+];
+
+(* Route a serialized job to the engine: the standalone binary when it is
+   present, otherwise the in-process LibraryLink function. *)
+hgCallEngine[wxfBytes_] := If[
+  StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
+  hgRunEngineBinary[wxfBytes],
+  performRewriting[wxfBytes]
+];
+
 (* ============================================================================ *)
 (* Property -> Required Data Mapping *)
 (* ============================================================================ *)
@@ -277,6 +313,8 @@ HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States,
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 HGEvolve::gpudev = "TargetDevice -> \"GPU\" is not yet available through the paclet; evaluating on the CPU. (Wiring the GPU backend through the FFI is a separate task.)";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
+HGEvolve::enginemsg = "Engine binary reported: `1`";
+HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -991,9 +1029,9 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "Options" -> options
   |>;
 
-  (* Call FFI *)
+  (* Run the engine (standalone binary if present, else the in-process DLL) *)
   wxfBytes = BinarySerialize[inputData];
-  resultBytes = performRewriting[wxfBytes];
+  resultBytes = hgCallEngine[wxfBytes];
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
 
