@@ -246,15 +246,55 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
   ByteArray[ToCharacterCode[outStr, "ISO8859-1"]]
 ];
 
-(* Route a serialized job to the engine: the GPU binary for TargetDevice -> "GPU"
-   when present, otherwise the CPU binary, otherwise the in-process LibraryLink. *)
-hgCallEngine[wxfBytes_, targetDevice_:"CPU"] := Which[
-  targetDevice === "GPU" && hgGpuBinaryAvailableQ[],
-    hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes],
-  StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
-    hgRunEngineBinary[$HypergraphEngineBinary, wxfBytes],
-  True,
-    performRewriting[wxfBytes]
+(* Persistent worker: keep an engine binary alive in --serve mode and stream
+   length-prefixed WXF jobs to it, so expensive per-process setup -- the GPU CUDA
+   context (~0.7 s) above all -- is paid once and amortised across calls. Each
+   frame is an 8-byte little-endian length followed by the payload, both
+   directions; a zero-length reply means that job errored. If the worker cannot
+   be driven in the current front end (some do not connect a writable stdin to
+   StartProcess), it is marked broken once and every call falls back to the
+   one-shot RunProcess path -- correct everywhere, just without amortisation. *)
+$hgWorkers = <||>;        (* device -> live ProcessObject *)
+$hgWorkerBroken = <||>;   (* device -> True once found undrivable *)
+
+hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 256, 8]]], bytes];
+hgWorkerExe[device_] := If[device === "GPU", $HypergraphEngineBinaryGPU, $HypergraphEngineBinary];
+
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{exe, proc, sout, len, out},
+  If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
+  proc = Lookup[$hgWorkers, device, Null];
+  If[proc === Null || Quiet[ProcessStatus[proc]] =!= "Running",
+    exe = hgWorkerExe[device];
+    If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
+    proc = StartProcess[{exe, "--serve"}];
+    $hgWorkers[device] = proc
+  ];
+  sout = ProcessConnection[proc, "StandardOutput"];
+  BinaryWrite[proc, hgFrame[wxfBytes]];
+  len = TimeConstrained[BinaryRead[sout, "UnsignedInteger64", ByteOrdering -> -1], 120, $Failed];
+  If[!IntegerQ[len] || len == 0,
+    $hgWorkerBroken[device] = True;
+    Quiet[KillProcess[proc]]; $hgWorkers = KeyDrop[$hgWorkers, device];
+    Return[$Failed]
+  ];
+  out = BinaryReadList[sout, "Byte", len];
+  If[!ListQ[out] || Length[out] =!= len, Return[$Failed]];
+  ByteArray[out]
+];
+
+(* Route a serialized job to the engine: the persistent worker (GPU binary for
+   TargetDevice -> "GPU", else CPU binary) when drivable, otherwise a one-shot
+   RunProcess of the same binary, otherwise the in-process LibraryLink. *)
+hgCallEngine[wxfBytes_, targetDevice_:"CPU"] := Module[{dev, r},
+  dev = If[targetDevice === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"];
+  r = hgWorkerTry[dev, wxfBytes];
+  If[ByteArrayQ[r], Return[r]];
+  Which[
+    dev === "GPU", hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes],
+    StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
+      hgRunEngineBinary[$HypergraphEngineBinary, wxfBytes],
+    True, performRewriting[wxfBytes]
+  ]
 ];
 
 (* ============================================================================ *)

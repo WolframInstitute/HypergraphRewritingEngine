@@ -57,6 +57,32 @@ The input/output WXF associations are **byte-identical** to what the LibraryLink
   then close stdin, read progress lines from stderr, read the result from stdout,
   `KillProcess[proc]` to abort.
 
+## Overhead vs the in-process DLL
+
+The WXF serialize/deserialize is not new — the DLL path was also WXF-in/WXF-out —
+and both build a fresh engine per call. The binary adds only: process spawn, the
+pipe + `ISO8859-1` decode, and (GPU) a fresh CUDA context per process. Measured
+(Linux, RTX 4090): a CPU one-shot call is ~7 ms (of which the net penalty vs the
+DLL is ~1 ms — spawn + decode; the rest is the shared 32-thread engine); a GPU
+one-shot call is **~700 ms, essentially all CUDA context creation** in the fresh
+process. For CPU that is noise; for GPU it is the one real cost.
+
+## Worker mode
+
+`hg_evolve[_gpu] --serve` stays alive and processes a stream of **length-prefixed**
+jobs: each request/response frame is `[8-byte little-endian length][payload]`, a
+zero-length reply means that job errored, and stdin EOF ends the loop. The CUDA
+context (and any warm caches) are created on the first job and reused, so warm
+GPU calls drop from ~700 ms to **~28 ms** (measured; `tools/hg_serve_probe.py`).
+
+The WL front end keeps a persistent per-device worker (`hgWorkerTry`) and streams
+frames to it. Some front ends do not connect a writable stdin to `StartProcess`
+(wolframscript's command-line kernel is one — the child sees immediate EOF); when
+the worker cannot be driven it is marked broken once and every call falls back to
+the one-shot `RunProcess` path, so results are correct everywhere and merely
+un-amortised where the worker is unavailable. Abort still kills the process;
+crash isolation still holds (the worker is a separate process).
+
 ## GPU backend
 
 `TargetDevice -> "GPU"` selects a second binary, `hg_evolve_gpu`, built with the
