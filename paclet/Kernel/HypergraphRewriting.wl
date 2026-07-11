@@ -246,45 +246,89 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
   ByteArray[ToCharacterCode[outStr, "ISO8859-1"]]
 ];
 
-(* Persistent worker: keep an engine binary alive in --serve mode and stream
-   length-prefixed WXF jobs to it, so expensive per-process setup -- the GPU CUDA
-   context (~0.7 s) above all -- is paid once and amortised across calls. Each
-   frame is an 8-byte little-endian length followed by the payload, both
-   directions; a zero-length reply means that job errored. If the worker cannot
-   be driven in the current front end (some do not connect a writable stdin to
-   StartProcess), it is marked broken once and every call falls back to the
-   one-shot RunProcess path -- correct everywhere, just without amortisation. *)
-$hgWorkers = <||>;        (* device -> live ProcessObject *)
-$hgWorkerBroken = <||>;   (* device -> True once found undrivable *)
+(* Persistent worker: keep an engine binary alive in --serve-socket mode and
+   stream length-prefixed WXF jobs to it over a loopback TCP socket, so expensive
+   per-process setup -- the GPU CUDA context (~0.7 s) above all -- is paid once
+   and amortised across calls. A socket rather than the process pipe because
+   Wolfram's StartProcess drops BinaryWrite to stdin, truncates WriteString at
+   NUL, and does not surface a running child's stdout; SocketConnect +
+   BinaryWrite/SocketReadMessage are NUL-safe. The worker publishes its
+   OS-assigned port to a temp file (race-free); the WL side polls it, connects,
+   then frames jobs ([8-byte little-endian length][payload] both directions; a
+   zero-length reply means that job errored). Any transport failure marks the
+   device broken and every call falls back to the one-shot RunProcess path --
+   correct everywhere, amortised where the socket worker is available. When the
+   kernel exits its socket closes and the worker's serve loop ends, so no process
+   is left behind. *)
+$hgWorkerProc = <||>;     (* device -> ProcessObject *)
+$hgWorkerSock = <||>;     (* device -> SocketObject *)
+$hgWorkerBuf = <||>;      (* device -> leftover ByteArray from SocketReadMessage *)
+$hgWorkerBroken = <||>;   (* device -> True once found unavailable *)
 
 hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 256, 8]]], bytes];
 hgWorkerExe[device_] := If[device === "GPU", $HypergraphEngineBinaryGPU, $HypergraphEngineBinary];
 
-hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{exe, proc, sout, len, out},
-  If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
-  proc = Lookup[$hgWorkers, device, Null];
-  If[proc === Null || Quiet[ProcessStatus[proc]] =!= "Running",
-    exe = hgWorkerExe[device];
-    If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
-    proc = StartProcess[{exe, "--serve"}];
-    $hgWorkers[device] = proc
-  ];
-  sout = ProcessConnection[proc, "StandardOutput"];
-  BinaryWrite[proc, hgFrame[wxfBytes]];
-  len = TimeConstrained[BinaryRead[sout, "UnsignedInteger64", ByteOrdering -> -1], 120, $Failed];
-  If[!IntegerQ[len] || len == 0,
-    $hgWorkerBroken[device] = True;
-    Quiet[KillProcess[proc]]; $hgWorkers = KeyDrop[$hgWorkers, device];
-    Return[$Failed]
-  ];
-  out = BinaryReadList[sout, "Byte", len];
-  If[!ListQ[out] || Length[out] =!= len, Return[$Failed]];
-  ByteArray[out]
+hgWorkerKill[device_] := (
+  Quiet[If[Head[$hgWorkerSock[device]] === SocketObject, Close[$hgWorkerSock[device]]]];
+  Quiet[If[MatchQ[$hgWorkerProc[device], _ProcessObject], KillProcess[$hgWorkerProc[device]]]];
+  $hgWorkerProc = KeyDrop[$hgWorkerProc, device];
+  $hgWorkerSock = KeyDrop[$hgWorkerSock, device];
+  $hgWorkerBuf = KeyDrop[$hgWorkerBuf, device];
+);
+
+hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
+  exe = hgWorkerExe[device];
+  If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
+  portfile = FileNameJoin[{$TemporaryDirectory, "hgport-" <> ToString[$ProcessID] <>
+    "-" <> device <> "-" <> IntegerString[RandomInteger[10^12]] <> ".txt"}];
+  Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
+  proc = StartProcess[{exe, "--serve-socket", portfile}];
+  port = Null;
+  Do[
+    If[FileExistsQ[portfile],
+      port = Quiet[ToExpression[StringTrim[Import[portfile, "String"]]]];
+      If[IntegerQ[port], Break[]]];
+    Pause[0.02],
+    250];  (* poll up to ~5 s for the OS-assigned port *)
+  Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
+  If[!IntegerQ[port], Quiet[KillProcess[proc]]; Return[$Failed]];
+  sock = TimeConstrained[SocketConnect["127.0.0.1:" <> ToString[port]], 10, $Failed];
+  If[Head[sock] =!= SocketObject, Quiet[KillProcess[proc]]; Return[$Failed]];
+  $hgWorkerProc[device] = proc; $hgWorkerSock[device] = sock; $hgWorkerBuf[device] = ByteArray[{}];
+  True
 ];
 
-(* Route a serialized job to the engine: the persistent worker (GPU binary for
-   TargetDevice -> "GPU", else CPU binary) when drivable, otherwise a one-shot
-   RunProcess of the same binary, otherwise the in-process LibraryLink. *)
+hgSockReadN[device_, n_] := Module[{buf, chunk},
+  buf = $hgWorkerBuf[device];
+  While[Length[buf] < n,
+    chunk = SocketReadMessage[$hgWorkerSock[device]];
+    If[chunk === EndOfFile || !ByteArrayQ[chunk], Return[$Failed]];
+    buf = Join[buf, chunk]];
+  $hgWorkerBuf[device] = Drop[buf, n];
+  Take[buf, n]
+];
+
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{hdr, len, out},
+  If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
+  If[Head[$hgWorkerSock[device]] =!= SocketObject
+      || Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
+    hgWorkerKill[device];
+    If[hgWorkerStart[device] =!= True, $hgWorkerBroken[device] = True; Return[$Failed]]
+  ];
+  If[Quiet[BinaryWrite[$hgWorkerSock[device], hgFrame[wxfBytes]]] === $Failed,
+    hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
+  hdr = hgSockReadN[device, 8];
+  If[hdr === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
+  len = FromDigits[Reverse[Normal[hdr]], 256];
+  If[len == 0, Return[$Failed]];  (* engine reported this job errored *)
+  out = hgSockReadN[device, len];
+  If[out === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
+  out
+];
+
+(* Route a serialized job to the engine: the persistent socket worker (GPU binary
+   for TargetDevice -> "GPU", else CPU binary) when available, otherwise a
+   one-shot RunProcess of the same binary, otherwise the in-process LibraryLink. *)
 hgCallEngine[wxfBytes_, targetDevice_:"CPU"] := Module[{dev, r},
   dev = If[targetDevice === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"];
   r = hgWorkerTry[dev, wxfBytes];

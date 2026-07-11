@@ -61,6 +61,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_target_properties(hg_evolve PROPERTIES POSITION_INDEPENDENT_CODE ON)
     find_package(Threads REQUIRED)
     target_link_libraries(hg_evolve Threads::Threads)
+else()
+    target_link_libraries(hg_evolve ws2_32)  # winsock for --serve-socket
 endif()
 
 # GPU-enabled binary: same FFI marshaling, plus the GPU backend. Built only when
@@ -92,6 +94,8 @@ if(TARGET hg_gpu)
         set_target_properties(hg_evolve_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
         find_package(Threads REQUIRED)
         target_link_libraries(hg_evolve_gpu Threads::Threads)
+    else()
+        target_link_libraries(hg_evolve_gpu ws2_32)  # winsock for --serve-socket
     endif()
 endif()
 
