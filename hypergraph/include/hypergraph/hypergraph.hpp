@@ -152,9 +152,6 @@ class Hypergraph {
     std::atomic<uint32_t> canonical_event_count_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
 
-    // Abort flag for long-running hash computations (set by evolution engine)
-    std::atomic<bool>* abort_flag_{nullptr};
-
     // Genesis state: the empty state (no edges) from which all initial states originate
     // Created lazily on first call to get_or_create_genesis_state()
     // Uses lock-free initialization: 0=uninit, 1=in_progress, 2=done
@@ -713,18 +710,6 @@ public:
         return event_signature_keys_;
     }
 
-    // Abort flag for long-running operations (e.g., canonical hash computation)
-    // Set by evolution engine to allow early termination on user abort
-    void set_abort_flag(std::atomic<bool>* flag) {
-        abort_flag_ = flag;
-        // Propagate to the WL hash so its colour-refinement loop can break out of
-        // a long convergence promptly when evolve_with_abort() requests a stop.
-        if (wl_hash_) wl_hash_->set_abort_flag(flag);
-    }
-
-    bool should_abort() const {
-        return abort_flag_ && abort_flag_->load(std::memory_order_relaxed);
-    }
 
     // =========================================================================
     // Index Access

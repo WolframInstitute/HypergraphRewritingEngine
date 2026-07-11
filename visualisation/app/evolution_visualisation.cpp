@@ -263,10 +263,9 @@ private:
         // that "produce" all initial edges, enabling causal tracking from gen 0
         engine.set_genesis_events(true);
 
-        // Run evolution with abort callback so we can stop early
-        engine.evolve_with_abort(initial, steps, [this]() {
-            return stop_requested_.load(std::memory_order_relaxed);
-        });
+        // Run the evolution. The GUI stop button calls engine.request_stop(),
+        // which raises the engine's stop flag; running tasks honor it and unwind.
+        engine.evolve(initial, steps);
 
         // Update stats
         num_states_ = engine.num_states();

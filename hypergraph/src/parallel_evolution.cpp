@@ -37,11 +37,6 @@ ParallelEvolutionEngine::~ParallelEvolutionEngine() {
         job_system_->wait_for_completion();
         job_system_->shutdown();
     }
-    // CRITICAL: Clear abort flag pointer in hg_ before should_stop_ is destroyed
-    // Otherwise hg_ and its trees hold a dangling pointer
-    if (hg_) {
-        hg_->set_abort_flag(nullptr);
-    }
 }
 
 // =============================================================================
@@ -58,9 +53,6 @@ void ParallelEvolutionEngine::evolve(
     should_stop_.store(false, std::memory_order_relaxed);
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
-
-    // Propagate abort flag to hypergraph for long-running hash computations
-    hg_->set_abort_flag(&should_stop_);
 
     // Create initial state
     std::vector<EdgeId> edge_ids;
@@ -156,9 +148,6 @@ void ParallelEvolutionEngine::evolve(
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
-    // Propagate abort flag to hypergraph for long-running hash computations
-    hg_->set_abort_flag(&should_stop_);
-
     // Create all initial states - they will all be explored
     for (const auto& state_edges : initial_states) {
         create_and_register_initial_state(state_edges);
@@ -194,7 +183,6 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
-    hg_->set_abort_flag(&should_stop_);
 
     // Create initial state
     StateId initial_state = create_initial_state_only(initial_edges);
