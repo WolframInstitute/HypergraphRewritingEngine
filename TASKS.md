@@ -110,12 +110,23 @@ need paired-mean measurement, not single samples.
    - [x] `TargetDevice -> "CPU"|"GPU"` option added to the paclet (commit 33568a7),
      mirroring NetTrain[]. CPU runs; GPU issues HGEvolve::gpudev and falls back to
      CPU. The option is a drop-in once the backend is wired.
-   - [ ] The actual GPU routing: build the standalone binary (item 9) with `nvcc`
-     and route `TargetDevice -> "GPU"` to `hg_gpu::evolve`, marshaling its
-     EvolveResult through the same WXF output as the CPU path. The Windows-CUDA
-     cross-compile is a solved problem (WSL2 interop to `nvcc.exe` + MSVC `cl.exe`
-     via `wslpath -w`, per `symbolic_dynamics/.../NeuralLearnability/build_gpu.sh`);
-     since the binary is a plain `.exe`, linking CUDA is trivial (no CUDA-in-DLL).
+   - [x] GPU routing done and validated on Linux: `hg_evolve_gpu`
+     (`paclet_source/hg_gpu_backend.cpp`, guarded by `HG_GPU_BACKEND`) builds a
+     `hg_gpu::EvolveInput` from the parsed job, runs `hg_gpu::evolve`, and marshals
+     the `EvolveResult` into the SAME WXF the CPU path emits. The GPU is a raw
+     per-provenance space; the marshaler recomputes the host IR canonical hash per
+     state, groups into canonical classes (one State per class, as the CPU FFI
+     does), keeps events raw (so multiplicity/counts match), dedups causal by
+     (from,to), and derives Step/IsInitial from events. `TargetDevice -> "GPU"`
+     selects the exe in the paclet WL. Validated: the 6-workload golden subset
+     (single/multi-rule, self-loops, hyperedge) matches the CPU golden exactly
+     through the Linux GPU binary (`reference/verify_paclet_gpu.wls` +
+     `reference/golden_corpus.wl`).
+   - [ ] Windows GPU binary: `hg_evolve_gpu.exe` needs the whole stack built with
+     MSVC `cl.exe` + `nvcc` (the CUDA lib is MSVC-ABI, cannot link into the MinGW
+     CPU binary) — a native MSVC build, not the MinGW cross. Until it exists,
+     `TargetDevice -> "GPU"` on Windows falls back to CPU with `HGEvolve::gpudev`
+     and `verify_paclet_gpu.wls` SKIPs there. The Linux binary proves the routing.
 9. **Process-isolation binary** (CPU path DONE): standalone WXF-over-stdio
    executable that supersedes the LibraryLink DLL — abort is a process kill,
    crashes are isolated from the notebook, and the engine's cooperative-abort
@@ -137,7 +148,8 @@ need paired-mean measurement, not single samples.
      `compute_var_counts`, so hand-built FFI rules carried uninitialized
      `lhs_sig`/`lhs_cache`; the DLL got lucky zeros, the binary exposed it (0
      matches). `add_rule` now finalizes each rule at registration.
-   - [ ] GPU device selection (item 8): `nvcc`-built variant + `TargetDevice`.
+   - [x] GPU device selection (item 8): `hg_evolve_gpu` (nvcc-built) + `TargetDevice
+     -> "GPU"` WL routing; Linux-validated. Windows `.exe` (MSVC build) pending.
 10. **Paper refresh**: quotient exploration + offline multiplicity
     reconstruction (exact causal and branchial from the skeleton, validated on
     a 24-workload corpus), exact online transitive reduction, GPU speedups

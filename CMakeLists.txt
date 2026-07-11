@@ -125,13 +125,8 @@ if(BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
 
-# Optional: Build Wolfram Language paclet if the Wolfram Language is found
-option(BUILD_WOLFRAM_LANGUAGE_PACLET "Build Wolfram Language paclet library" ON)
-if(BUILD_WOLFRAM_LANGUAGE_PACLET)
-    add_subdirectory(paclet_source)
-endif()
-
-# Optional: Build GPU acceleration (requires CUDA)
+# Optional: Build GPU acceleration (requires CUDA). Added before the paclet so
+# the paclet's optional GPU binary (hg_evolve_gpu) can link the hg_gpu target.
 option(BUILD_GPU "Build GPU-accelerated evolution engine" OFF)
 if(BUILD_GPU)
     include(CheckLanguage)
@@ -144,6 +139,12 @@ if(BUILD_GPU)
     else()
         message(WARNING "CUDA not found - GPU support disabled")
     endif()
+endif()
+
+# Optional: Build Wolfram Language paclet if the Wolfram Language is found
+option(BUILD_WOLFRAM_LANGUAGE_PACLET "Build Wolfram Language paclet library" ON)
+if(BUILD_WOLFRAM_LANGUAGE_PACLET)
+    add_subdirectory(paclet_source)
 endif()
 
 # Optional: Build interactive visualization

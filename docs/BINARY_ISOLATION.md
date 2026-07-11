@@ -57,9 +57,32 @@ The input/output WXF associations are **byte-identical** to what the LibraryLink
   then close stdin, read progress lines from stderr, read the result from stdout,
   `KillProcess[proc]` to abort.
 
+## GPU backend
+
+`TargetDevice -> "GPU"` selects a second binary, `hg_evolve_gpu`, built with the
+CUDA backend (`HG_GPU_BACKEND`, links `hg_gpu`). It reads/writes the SAME WXF as
+the CPU binary; the WL front end picks it when present, else falls back to the
+CPU binary (message `HGEvolve::gpudev`). Two binaries rather than one keep CUDA
+out of the CPU-only deployment (mirrors NeuralLearnability's `sweep`/`sweep_gpu`).
+
+- `paclet_source/hg_gpu_backend.cpp` (`run_gpu_evolution`) builds a
+  `hg_gpu::EvolveInput` from the parsed job, runs `hg_gpu::evolve`, and marshals
+  the `EvolveResult` into the CPU-identical WXF association.
+- The GPU result is a raw per-provenance space; the CPU FFI emits a
+  canonical-class space. The marshaler bridges them host-side: recompute the
+  host IR canonical hash (`hypergraph::IRCanonicalizer`) per GPU state, group
+  into classes and emit one `States` entry per class; keep `Events` raw (so
+  multiplicity and counts match the CPU); dedup `CausalEdges` by `(from,to)`;
+  leave `BranchialEdges` undeduped; derive `Step`/`IsInitial` from the events.
+- Validated: the golden corpus (`reference/golden_corpus.wl`,
+  `reference/verify_paclet_gpu.wls`) matches the CPU golden exactly through the
+  Linux GPU binary.
+
 ## Build
 
-`nvcc.exe` (Windows CUDA toolkit) + MSVC `cl.exe` via WSL2 interop for the
-Windows GPU exe; native `nvcc`/`g++` for Linux; the existing MinGW/clang cross
-toolchains for CPU-only targets. Path translation with `wslpath -w`, exactly as
-`NeuralLearnability/build_gpu.sh` does.
+Native `nvcc`/`g++` for the Linux GPU binary (same ABI, links `hg_gpu` directly);
+the MinGW/clang cross toolchains for the CPU-only targets. The **Windows** GPU
+binary needs the whole stack built with MSVC `cl.exe` + `nvcc.exe` (the CUDA lib
+is MSVC-ABI and cannot link into a MinGW binary) via WSL2 interop with
+`wslpath -w`, as `NeuralLearnability/build_gpu.sh` does for its single-file exe —
+still to be wired for this multi-target project.

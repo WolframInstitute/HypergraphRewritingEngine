@@ -17,6 +17,7 @@
 #include <functional>
 
 #include "hg_core.hpp"
+#include "hg_gpu_backend.hpp"
 
 // Include unified engine headers
 #include "hypergraph/hypergraph.hpp"
@@ -626,6 +627,38 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (parsed_rules_raw.empty()) {
             throw std::runtime_error("No valid rules found");
         }
+
+#ifdef HG_GPU_BACKEND
+        // GPU binary: route the parsed job to hg_gpu::evolve and marshal its
+        // result into the same WXF output. The blackhole analysis sections below
+        // are CPU-only and are not produced by the GPU backend.
+        {
+            GpuJob job{
+                parsed_rules_raw,
+                initial_states_raw,
+                steps,
+                (event_signature_keys == hypergraph::EVENT_SIG_NONE) ? 0 : 1,
+                causal_transitive_reduction,
+                explore_from_canonical_states_only,
+                quotient_initial_states,
+                exploration_probability,
+                0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
+                include_states,
+                include_events || include_events_minimal,
+                include_causal_edges,
+                include_branchial_edges,
+                include_canonical_hashes,
+            };
+            if (show_progress) {
+                core_progress(host, "HGEvolve: Starting GPU evolution...");
+            }
+            std::vector<uint8_t> out = run_gpu_evolution(job, host);
+            if (show_progress) {
+                core_progress(host, "HGEvolve: GPU evolution complete.");
+            }
+            return out;
+        }
+#endif
 
         // Create hypergraph
         hypergraph::Hypergraph hg;

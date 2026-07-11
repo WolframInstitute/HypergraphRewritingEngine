@@ -216,19 +216,25 @@ If[$HypergraphLibrary =!= $Failed,
    the WXF job on stdin and writes the WXF result on stdout (progress on stderr).
    When present it supersedes the LibraryLink call: an abort is a process kill
    and a crash cannot take down the kernel. See docs/BINARY_ISOLATION.md. *)
-$HypergraphEngineBinary = Module[{exeName, pacletRoot, exePath},
-  exeName = If[StringMatchQ[$SystemID, "Windows*"], "hg_evolve.exe", "hg_evolve"];
+hgFindEngineBinary[base_String] := Module[{exeName, pacletRoot, exePath},
+  exeName = If[StringMatchQ[$SystemID, "Windows*"], base <> ".exe", base];
   pacletRoot = DirectoryName[$InputFileName, 2];
   exePath = FileNameJoin[{pacletRoot, "LibraryResources", $SystemID, exeName}];
   Quiet[FindFile[exePath]]
 ];
+$HypergraphEngineBinary = hgFindEngineBinary["hg_evolve"];
+(* GPU variant, built with the CUDA backend. Selected by TargetDevice -> "GPU":
+   it always runs hg_gpu::evolve and marshals through the same WXF path as the
+   CPU binary. *)
+$HypergraphEngineBinaryGPU = hgFindEngineBinary["hg_evolve_gpu"];
+hgGpuBinaryAvailableQ[] := StringQ[$HypergraphEngineBinaryGPU] && FileExistsQ[$HypergraphEngineBinaryGPU];
 
-(* Run the engine binary on the WXF job fed to its stdin, and collect the WXF
+(* Run an engine binary on the WXF job fed to its stdin, and collect the WXF
    result from its stdout. Progress/diagnostics arrive on stderr. stdout carries
    raw bytes; RunProcess returns them as a string decoded one byte per character,
    recovered with ToCharacterCode[..., "ISO8859-1"]. *)
-hgRunEngineBinary[wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
-  proc = RunProcess[{$HypergraphEngineBinary}, All, wxfBytes, ProcessEnvironment -> <||>];
+hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
+  proc = RunProcess[{exe}, All, wxfBytes, ProcessEnvironment -> <||>];
   If[!AssociationQ[proc],
     Message[HGEvolve::enginefail, "spawn"]; Return[$Failed]];
   stderr = proc["StandardError"];
@@ -240,12 +246,15 @@ hgRunEngineBinary[wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
   ByteArray[ToCharacterCode[outStr, "ISO8859-1"]]
 ];
 
-(* Route a serialized job to the engine: the standalone binary when it is
-   present, otherwise the in-process LibraryLink function. *)
-hgCallEngine[wxfBytes_] := If[
+(* Route a serialized job to the engine: the GPU binary for TargetDevice -> "GPU"
+   when present, otherwise the CPU binary, otherwise the in-process LibraryLink. *)
+hgCallEngine[wxfBytes_, targetDevice_:"CPU"] := Which[
+  targetDevice === "GPU" && hgGpuBinaryAvailableQ[],
+    hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes],
   StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
-  hgRunEngineBinary[wxfBytes],
-  performRewriting[wxfBytes]
+    hgRunEngineBinary[$HypergraphEngineBinary, wxfBytes],
+  True,
+    performRewriting[wxfBytes]
 ];
 
 (* ============================================================================ *)
@@ -311,7 +320,7 @@ computeRequiredData[prop_String, includeStateContents_, includeEventContents_, c
 
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, DimensionData, GeodesicData, TopologicalData, CurvatureData, EntropyData, HilbertSpaceData, BranchialData, MultispaceData, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
-HGEvolve::gpudev = "TargetDevice -> \"GPU\" is not yet available through the paclet; evaluating on the CPU. (Wiring the GPU backend through the FFI is a separate task.)";
+HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (hg_evolve_gpu) is present for `1`; evaluating on the CPU. Build the paclet with BUILD_GPU to include it.";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
@@ -919,11 +928,11 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   (* Build options *)
-  (* TargetDevice: CPU (default) runs here; GPU is not yet wired through the paclet
-     and falls back to CPU with a message. *)
+  (* TargetDevice: "CPU" runs the CPU binary; "GPU" runs the GPU binary when it is
+     present (built with the CUDA backend), else falls back to CPU with a message. *)
   Switch[OptionValue["TargetDevice"],
     "CPU", Null,
-    "GPU", Message[HGEvolve::gpudev],
+    "GPU", If[!hgGpuBinaryAvailableQ[], Message[HGEvolve::gpudev, $SystemID]],
     _, Message[HGEvolve::baddev, OptionValue["TargetDevice"]]
   ];
   aspectRatio = OptionValue["AspectRatio"];
@@ -1031,7 +1040,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
 
   (* Run the engine (standalone binary if present, else the in-process DLL) *)
   wxfBytes = BinarySerialize[inputData];
-  resultBytes = hgCallEngine[wxfBytes];
+  resultBytes = hgCallEngine[wxfBytes, OptionValue["TargetDevice"]];
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
 

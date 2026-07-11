@@ -63,6 +63,38 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_link_libraries(hg_evolve Threads::Threads)
 endif()
 
+# GPU-enabled binary: same FFI marshaling, plus the GPU backend. Built only when
+# BUILD_GPU produced the hg_gpu target. TargetDevice -> "GPU" in the paclet
+# selects this exe; it always runs hg_gpu::evolve and marshals the result
+# through the same WXF path as the CPU binary. See docs/BINARY_ISOLATION.md.
+if(TARGET hg_gpu)
+    add_executable(hg_evolve_gpu
+        hg_evolve_main.cpp
+        hypergraph_ffi.cpp
+        hg_gpu_backend.cpp
+        ${BLACKHOLE_SOURCES}
+    )
+    target_compile_definitions(hg_evolve_gpu PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND)
+    target_include_directories(hg_evolve_gpu PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/hypergraph/include
+        ${CMAKE_SOURCE_DIR}/job_system/include
+        ${CMAKE_SOURCE_DIR}/lockfree_deque/include
+        ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
+        ${CMAKE_SOURCE_DIR}/gpu/include
+        ${CMAKE_SOURCE_DIR}/common/include
+    )
+    target_link_libraries(hg_evolve_gpu hg_gpu hypergraph wxf)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(hg_evolve_gpu PRIVATE -O3 -Wno-unused-function)
+    endif()
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        set_target_properties(hg_evolve_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        find_package(Threads REQUIRED)
+        target_link_libraries(hg_evolve_gpu Threads::Threads)
+    endif()
+endif()
+
 # Link against our existing targets
 # Note: Wolfram Language libraries are NOT needed at link time for LibraryLink
 # LibraryLink is header-only - the Wolfram Language loads our library and calls our exports
@@ -269,6 +301,11 @@ set_target_properties(HypergraphRewriting PROPERTIES
 set_target_properties(hg_evolve PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
 )
+if(TARGET hg_evolve_gpu)
+    set_target_properties(hg_evolve_gpu PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+    )
+endif()
 
 # Create platform directory if it doesn't exist
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
