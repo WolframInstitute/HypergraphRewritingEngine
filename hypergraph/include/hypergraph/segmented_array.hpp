@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "hgcommon/portable_intrinsics.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -78,11 +79,7 @@ public:
 
     // CPU relaxation hint for bounded spin-wait loops.
     static void cpu_relax() {
-        #if defined(__x86_64__) || defined(_M_X64)
-        __builtin_ia32_pause();
-        #elif defined(__aarch64__)
-        __asm__ volatile("yield" ::: "memory");
-        #endif
+        hgcommon::cpu_relax();
     }
 
     // Access element by index - O(1)

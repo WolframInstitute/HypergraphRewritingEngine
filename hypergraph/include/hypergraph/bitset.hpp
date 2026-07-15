@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "hgcommon/portable_intrinsics.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -68,7 +69,7 @@ public:
         size_t popcount() const {
             size_t count = 0;
             for (size_t i = 0; i < WORDS_PER_CHUNK; ++i) {
-                count += __builtin_popcountll(words[i]);
+                count += hgcommon::popcount64(words[i]);
             }
             return count;
         }
@@ -78,7 +79,7 @@ public:
             for (size_t w = 0; w < WORDS_PER_CHUNK; ++w) {
                 uint64_t word = words[w];
                 while (word) {
-                    size_t bit = __builtin_ctzll(word);
+                    size_t bit = hgcommon::ctz64(word);
                     f(static_cast<uint32_t>(base_id + w * 64 + bit));
                     word &= word - 1;  // Clear lowest set bit
                 }

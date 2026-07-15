@@ -1,6 +1,7 @@
 // rewriter.cpp - Implementation of Rewriter class
 
 #include "hypergraph/rewriter.hpp"
+#include "hgcommon/portable_intrinsics.hpp"
 
 namespace hypergraph {
 
@@ -50,7 +51,7 @@ RewriteResult Rewriter::apply(
 
     uint32_t new_var_mask = rule.new_var_mask();
     while (new_var_mask) {
-        uint8_t var = __builtin_ctz(new_var_mask);
+        uint8_t var = hgcommon::ctz(new_var_mask);
         fresh_vertex_map[var] = hg_->alloc_vertex();
         new_var_mask &= new_var_mask - 1;
     }

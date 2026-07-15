@@ -5,6 +5,18 @@
 
 namespace wxf {
 
+// Portable 64-bit byte swap for the (cold) big-endian serialization path.
+static inline uint64_t wxf_bswap64(uint64_t x) {
+#if defined(__GNUC__) || defined(__clang__)
+    return wxf_bswap64(x);
+#else
+    x = ((x & 0x00000000FFFFFFFFull) << 32) | ((x & 0xFFFFFFFF00000000ull) >> 32);
+    x = ((x & 0x0000FFFF0000FFFFull) << 16) | ((x & 0xFFFF0000FFFF0000ull) >> 16);
+    x = ((x & 0x00FF00FF00FF00FFull) <<  8) | ((x & 0xFF00FF00FF00FF00ull) >>  8);
+    return x;
+#endif
+}
+
 // Parser implementation
 
 uint8_t Parser::read_byte() {
@@ -128,7 +140,7 @@ double Parser::read_real64() {
     if (!is_little_endian) {
         uint64_t temp;
         std::memcpy(&temp, &value, 8);
-        temp = __builtin_bswap64(temp);
+        temp = wxf_bswap64(temp);
         std::memcpy(&value, &temp, 8);
     }
 
@@ -447,7 +459,7 @@ void Writer::write_real64(double value) {
     bool is_little_endian = (*reinterpret_cast<uint8_t*>(&endian_test) == 1);
 
     if (!is_little_endian) {
-        bits = __builtin_bswap64(bits);
+        bits = wxf_bswap64(bits);
     }
 
     for (int i = 0; i < 8; i++) {

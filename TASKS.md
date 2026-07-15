@@ -185,9 +185,13 @@ need paired-mean measurement, not single samples.
       `segmented_array.hpp:82-84` (already x86 `__builtin_ia32_pause` / ARM
       `__asm__("yield")`) → MSVC `_mm_pause()` / `YieldProcessor()`.
     - `__builtin_bswap64`: `wxf.cpp:131,450` → `_byteswap_uint64`.
-    - `#pragma GCC diagnostic`: `wxf.hpp:81-116` → wrap in `#if defined(__GNUC__)`.
-    Then a native MSVC + nvcc CMake config for the whole stack. GPU marshaling +
-    routing + WL are already Linux-validated (item 8); this is purely the toolchain.
+    - `#pragma GCC diagnostic`: already `__GNUC__`-guarded in `wxf.hpp`, no change.
+    - [x] DONE (commit): the intrinsics above are abstracted; the GCC/Clang builds
+      take the same `__builtin_*` path and are byte-identical (all gates + golden
+      green), with the MSVC branch added.
+    - [ ] REMAINING: a native MSVC + nvcc CMake config for the whole stack, driven
+      via WSL2 interop. GPU marshaling + routing + WL are already Linux-validated
+      (item 8); this is the last toolchain step.
 
 14. **macOS CI (recurring gap: nothing exercises the macOS paclet).** The code
     cross-compiles to macOS via osxcross (clang accepts `__builtin_*`, so item 13

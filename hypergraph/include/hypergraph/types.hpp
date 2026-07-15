@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
 #include <stdexcept>
 
@@ -74,7 +75,7 @@ struct VariableBinding {
     }
 
     uint8_t count() const {
-        return static_cast<uint8_t>(__builtin_popcount(bound_mask));
+        return static_cast<uint8_t>(hgcommon::popcount(bound_mask));
     }
 };
 

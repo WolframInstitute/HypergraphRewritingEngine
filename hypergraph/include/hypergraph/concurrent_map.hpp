@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "hgcommon/portable_intrinsics.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -264,11 +265,7 @@ private:
                             // Spin until LOCKED resolves (should be very fast - nanoseconds)
                             do {
                                 check_key = table->entries[ci].key.load(std::memory_order_acquire);
-                                #if defined(__x86_64__) || defined(_M_X64)
-                                __builtin_ia32_pause();
-                                #elif defined(__aarch64__)
-                                __asm__ volatile("yield" ::: "memory");
-                                #endif
+                                hgcommon::cpu_relax();
                             } while (check_key == LOCKED_KEY);
 
                             if (check_key == key) {
@@ -353,11 +350,7 @@ private:
             // we'd incorrectly return nullopt and cause duplicate insertions.
             // LOCKED state is very brief (just value + key writes), so this is safe.
             while (current_key == LOCKED_KEY) {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                __asm__ volatile("yield" ::: "memory");
-                #endif
+                hgcommon::cpu_relax();
                 current_key = entry.key.load(std::memory_order_acquire);
             }
 

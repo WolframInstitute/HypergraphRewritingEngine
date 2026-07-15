@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
 
 #include "types.hpp"
@@ -78,7 +79,7 @@ struct PatternEdge {
 
     // Count distinct variables
     uint8_t num_distinct_vars() const {
-        return static_cast<uint8_t>(__builtin_popcount(var_mask()));
+        return static_cast<uint8_t>(hgcommon::popcount(var_mask()));
     }
 
     // Check if variable appears in this edge
@@ -206,9 +207,9 @@ struct RewriteRule {
         uint32_t rhs_mask = rhs_var_mask();
         uint32_t new_mask = rhs_mask & ~lhs_mask;
 
-        num_lhs_vars = static_cast<uint8_t>(__builtin_popcount(lhs_mask));
-        num_rhs_vars = static_cast<uint8_t>(__builtin_popcount(rhs_mask));
-        num_new_vars = static_cast<uint8_t>(__builtin_popcount(new_mask));
+        num_lhs_vars = static_cast<uint8_t>(hgcommon::popcount(lhs_mask));
+        num_rhs_vars = static_cast<uint8_t>(hgcommon::popcount(rhs_mask));
+        num_new_vars = static_cast<uint8_t>(hgcommon::popcount(new_mask));
 
         compute_match_order();
 
@@ -263,7 +264,7 @@ struct RewriteRule {
             int pick_shared = -1, pick_self = -1;
             for (uint8_t e = 0; e < num_lhs_edges; ++e) {
                 if (used[e]) continue;
-                int shared = __builtin_popcount(lhs[e].var_mask() & bound);
+                int shared = hgcommon::popcount(lhs[e].var_mask() & bound);
                 int self = edge_constraint_score(e);
                 if (shared > pick_shared || (shared == pick_shared && self > pick_self)) {
                     pick = e; pick_shared = shared; pick_self = self;
