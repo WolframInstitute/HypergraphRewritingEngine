@@ -209,6 +209,45 @@ need paired-mean measurement, not single samples.
     The same workflow can add ubuntu (all_tests + GPU gates on a GPU runner) and
     windows-CPU legs; Windows-GPU CI needs a self-hosted GPU runner + item 13.
 
+## Correctness (open)
+
+15. **Quotient exploration completeness gap on non-productive / mixed rulesets.**
+    `explore_from_canonical_states_only` can leave a discovered canonical state
+    unexpanded, and therefore miss every state reachable only through it. Surfaced
+    by the offline-reconstruction corpus: 2 of 24 workloads have an incomplete
+    quotient skeleton (mAllThree over a triangle finds all 13 states but leaves one
+    it discovered at depth 2 unexpanded, ~10 matches/instance missing; the two-edge
+    init discovers only 9 of 17 states). The reconstruction itself is exact wherever
+    the skeleton is complete, so this is a defect of the exploration, not the
+    propagation (`tools/quotient_reconstruction_probe.cpp` detects and reports it).
+    - **Root cause.** Expansion (computing a state's matches, which produces its
+      children) is triggered at a state's FIRST creation, gated on the arrival
+      depth being within the step budget. A later rewrite that reaches the same
+      state is treated as a duplicate: it records the transition and relaxes the
+      shortest depth, but does not re-run the expansion decision. Loops (which only
+      non-productive / mixed rules create, since productive rules grow the edge
+      count so each state occurs at one depth) let a state be created first by a
+      long, out-of-budget path (expansion skipped), then reached by a short,
+      in-budget path that deduplicates without re-triggering the skipped expansion.
+      An unexpanded intermediate state hides its descendants, so one miss cascades.
+    - **Fix (bounded, not a redesign).** Make expansion fire on the FIRST in-budget
+      arrival regardless of create-vs-dedup: the duplicate-arrival / depth-relaxation
+      path also checks whether this arrival brings the state's depth inside the
+      budget while it is still unexpanded, and if so takes the one-time expansion
+      claim there (carrying that rewrite's context so match forwarding still avoids a
+      full rematch). Terminates (depths decrease monotonically, bounded at 0), stays
+      expand-once per state, and adds only the correct expansions being skipped, so
+      the quotient speedup is preserved. Cruder alternative: a fixpoint re-pass that
+      expands any in-budget-but-unexpanded state until none remain.
+    - **Confidence / next step.** Reasoned from the commit history and code shape
+      (depth-gated expansion at creation + the separate relaxation walk), not a
+      fresh trace. Confirm by reproducing the two failing workloads and watching
+      where the in-budget-but-unexpanded state loses its expansion. The full multiway
+      mode (`explore=false`) has no such gap (it never gates expansion on
+      relaxation), which is evidence the gap is in the quotient bookkeeping, not the
+      idea of quotienting. Relates to the loops discussion in item's reconstruction
+      work (`tools/quotient_reconstruction_probe.cpp`, path-length indexing).
+
 ## Status of the remaining open items (why each is not [x])
 
 - **1, 2 (core-rewrite attribution, causal/branchial contention):** BLOCKED on
