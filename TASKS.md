@@ -43,7 +43,7 @@ need paired-mean measurement, not single samples.
 
 ## Robustness / API
 
-4. **VRAM cap + partial results.** (GPU-side done; only FFI surfacing remains, blocked on item 8)
+4. **VRAM cap + partial results.** (DONE — GPU-side robustness, cap, and notebook surfacing.)
    - [x] GPU-side robustness (commit 2241b82): `evolve()` grow-and-retry now
      catches a device-out-of-memory throw from an engine at the grown config,
      tags it `kDeviceOutOfMemory` in the warning trail, and returns the last
@@ -57,10 +57,12 @@ need paired-mean measurement, not single samples.
      initial config and stop grow-and-retry before the cap; a capped run returns a
      flagged partial (verified: 128 MB cap on depth-7 → 15568-state partial, no
      crash). Never allocates past the caller's ceiling.
-   - [ ] Surface the warnings through the paclet FFI to the notebook —
-     **blocked on item 8**: the FFI (`paclet_source/hypergraph_ffi.cpp`) has no
-     GPU path yet, so there is nothing to surface through until the GPU backend
-     is wired in.
+   - [x] Surface the warnings to the notebook (commit): the GPU marshaler
+     (`hg_gpu_backend.cpp`) emits a `Warnings` list (`Kind`/`Count`/`Context`) on
+     the WXF result, and `HGEvolve` raises `HGEvolve::overflow` (kinds + total
+     count) when it is non-empty — the run still returns the flagged partial
+     result, never fails. Verified: the message stays quiet on non-overflow runs
+     (golden 12/12).
 5. [x] **Watchdog safety** (commit dc1b30b): `EngineConfig::max_blocks_per_launch`
    (EvolveInput override, 0 = single launch) splits the match/rewrite grids into
    consecutive synced chunks, bounding any single kernel's duration below the TDR
@@ -166,6 +168,42 @@ need paired-mean measurement, not single samples.
     §10.5 scoreboard is 19/19 with quotient + forced-index-regime workloads;
     stale 11/12 / open-`wolfram_canonical_steps5` claims removed; tweak log
     carries the 2026-07-10 entries.
+
+## Portability / CI (tracked — deferred native builds)
+
+13. **Native MSVC build (unblocks the Windows GPU `hg_evolve_gpu.exe`).** The
+    Windows CUDA toolkit only supports MSVC `cl.exe` as nvcc's host compiler and
+    CUDA libs are MSVC-ABI, so the GPU binary must be a native MSVC build (not the
+    MinGW cross that makes the CPU binary). `cl.exe` rejects the engine's GCC
+    intrinsics. Port surface — cross-builds keep the `__builtin_*` path via `#else`;
+    add `#if defined(_MSC_VER)` fallbacks in one
+    `common/include/hgcommon/portable_intrinsics.hpp`:
+    - popcount / ctz: `bitset.hpp:71,81`, `pattern.hpp:81,209-211,266`,
+      `types.hpp:77`, `rewriter.cpp:53` → `__popcnt`/`__popcnt64`,
+      `_BitScanForward`/`_BitScanForward64`.
+    - CPU-relax spin hint: `concurrent_map.hpp:268-270,357-359`,
+      `segmented_array.hpp:82-84` (already x86 `__builtin_ia32_pause` / ARM
+      `__asm__("yield")`) → MSVC `_mm_pause()` / `YieldProcessor()`.
+    - `__builtin_bswap64`: `wxf.cpp:131,450` → `_byteswap_uint64`.
+    - `#pragma GCC diagnostic`: `wxf.hpp:81-116` → wrap in `#if defined(__GNUC__)`.
+    Then a native MSVC + nvcc CMake config for the whole stack. GPU marshaling +
+    routing + WL are already Linux-validated (item 8); this is purely the toolchain.
+
+14. **macOS CI (recurring gap: nothing exercises the macOS paclet).** The code
+    cross-compiles to macOS via osxcross (clang accepts `__builtin_*`, so item 13
+    is NOT needed for macOS), but there is no Mac + Wolfram to load/run the paclet
+    and no CI at all (`.github/workflows` absent). Plan: a GitHub Actions workflow
+    on the **`macos-14` (ARM64/Apple-Silicon)** hosted runner + free **Wolfram
+    Engine** (native ARM64 since 13.1; headless activation via `WOLFRAM_ID`/
+    `WOLFRAM_PASS` secrets or on-demand licensing) that builds the paclet natively
+    (Xcode clang) and runs `reference/verify_paclet.wls`.
+    - **ARM64**: direct on the runner.
+    - **x64**: the hosted Intel runner (`macos-13`) was retired Dec 2025 (Apple
+      dropped x86_64) — test the x86_64 paclet by running an x64 Wolfram Engine
+      under **Rosetta 2** on the ARM64 runner (loads the `MacOSX-x86-64` binary),
+      or on a self-hosted Intel Mac.
+    The same workflow can add ubuntu (all_tests + GPU gates on a GPU runner) and
+    windows-CPU legs; Windows-GPU CI needs a self-hosted GPU runner + item 13.
 
 ## Status of the remaining open items (why each is not [x])
 

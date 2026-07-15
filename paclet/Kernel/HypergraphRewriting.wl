@@ -412,6 +412,7 @@ HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
+HGEvolve::overflow = "The GPU engine reached a capacity limit (`1`; `2` overflow event(s)) and returned a PARTIAL result. Raise the device-memory cap / reduce the workload, or evaluate on the CPU.";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -1134,6 +1135,13 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
 
   wxfData = BinaryDeserialize[resultBytes];
   If[!AssociationQ[wxfData], Return[$Failed]];
+
+  (* Surface a capacity overflow: the GPU engine returns a flagged partial result
+     rather than failing (see docs/feedback on overflow -> partial result). *)
+  If[KeyExistsQ[wxfData, "Warnings"] && Length[wxfData["Warnings"]] > 0,
+    Module[{kinds = DeleteDuplicates[Lookup[wxfData["Warnings"], "Kind", "?"]],
+            total = Total[Lookup[wxfData["Warnings"], "Count", 0]]},
+      Message[HGEvolve::overflow, kinds, total]]];
 
   (* Extract data - validate that requested data was returned *)
   (* Only use defaults for data we didn't request *)
