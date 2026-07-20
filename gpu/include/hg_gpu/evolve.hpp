@@ -4,6 +4,7 @@
 #include "hg_gpu/types.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace hg_gpu {
@@ -246,6 +247,30 @@ public:
 private:
     struct Impl;
     Impl* impl_;
+};
+
+// PersistentEvolver: the same grow-and-retry robustness as the free evolve(),
+// but it keeps its device Engine alive across run() calls. The free evolve()
+// builds and destroys a whole Engine every call, and that per-call allocation
+// (tens of ms of cudaMalloc/cudaFree) dominates small and medium workloads --
+// 6-13x of the wall time on interactive-sized runs. A caller that evolves many
+// times (the persistent worker process, a benchmark, a notebook session) should
+// hold one PersistentEvolver: the engine is sized on the first run, only ever
+// grows (on overflow), never shrinks, so every subsequent run reuses it. Results
+// are identical to evolve(); run() resets the engine internally between calls.
+class PersistentEvolver {
+public:
+    PersistentEvolver();
+    ~PersistentEvolver();
+    PersistentEvolver(const PersistentEvolver&)            = delete;
+    PersistentEvolver& operator=(const PersistentEvolver&) = delete;
+
+    EvolveResult run(const EvolveInput& input);
+
+private:
+    std::unique_ptr<Engine> engine_;
+    EngineConfig            cfg_{};
+    bool                    has_engine_ = false;
 };
 
 }  // namespace hg_gpu

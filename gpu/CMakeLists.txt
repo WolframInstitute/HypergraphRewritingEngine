@@ -61,4 +61,9 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         tests/bench_cpu_vs_gpu.cpp
     )
     target_link_libraries(bench_cpu_vs_gpu PRIVATE hg_gpu hypergraph)
+
+    add_executable(bench_gpu_evolve
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/bench_gpu_evolve.cpp
+    )
+    target_link_libraries(bench_gpu_evolve PRIVATE hg_gpu hypergraph)
 endif()

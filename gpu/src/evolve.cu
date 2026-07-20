@@ -831,4 +831,81 @@ EvolveResult evolve(const EvolveInput& in) {
     return EvolveResult{};
 }
 
+// ---------------------------------------------------------------------------
+// PersistentEvolver: evolve() with the device Engine kept alive across calls.
+// ---------------------------------------------------------------------------
+PersistentEvolver::PersistentEvolver()  = default;
+PersistentEvolver::~PersistentEvolver() = default;
+
+EvolveResult PersistentEvolver::run(const EvolveInput& in) {
+    constexpr int kMaxRetries = 6;
+    // Never shrink: start from the live engine's config if we have one, else size
+    // to this input. The loop only rebuilds when the config actually changes, so a
+    // run whose input fits the current engine reuses it and pays no allocation.
+    EngineConfig cfg = has_engine_ ? cfg_ : config_from_input(in);
+    std::vector<OverflowWarning> trail;
+
+    uint64_t mem_cap = in.max_device_memory_bytes;
+    if (mem_cap == 0) {
+        size_t freeB = 0, totalB = 0;
+        if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess)
+            mem_cap = static_cast<uint64_t>(static_cast<double>(totalB) * 0.90);
+        cudaGetLastError();
+    }
+    if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap)
+        fit_config_to_cap(cfg, mem_cap);
+
+    EvolveResult best;
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        // (Re)build only when the config differs from the live engine's. On a grow
+        // the old engine is freed before the larger one is built, so peak VRAM is
+        // bounded by the larger config, not their sum.
+        if (!has_engine_ || std::memcmp(&cfg, &cfg_, sizeof(EngineConfig)) != 0) {
+            try {
+                engine_.reset();
+                engine_ = std::make_unique<Engine>(cfg);
+            } catch (const std::exception& e) {
+                has_engine_ = false;
+                trail.push_back(OverflowWarning{
+                    ErrorKind::kDeviceOutOfMemory, 1u,
+                    std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
+                best.warnings = std::move(trail);
+                return best;
+            }
+            cfg_        = cfg;
+            has_engine_ = true;
+        }
+
+        EvolveResult result = engine_->run(in);
+
+        if (result.warnings.empty() && trail.empty()) return result;
+        if (result.warnings.empty()) {
+            result.warnings = std::move(trail);
+            return result;
+        }
+
+        bool any_retryable = false;
+        for (const auto& w : result.warnings)
+            if (grow_config_for(cfg, w.kind)) any_retryable = true;
+        for (auto& w : result.warnings) trail.push_back(std::move(w));
+
+        if (!any_retryable || attempt == kMaxRetries) {
+            result.warnings = std::move(trail);
+            return result;
+        }
+        if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
+            trail.push_back(OverflowWarning{
+                ErrorKind::kDeviceOutOfMemory,
+                static_cast<uint32_t>(estimated_device_bytes(cfg) >> 20),
+                "grown config (~" + std::to_string(estimated_device_bytes(cfg) >> 20) +
+                    " MB) would exceed the device memory cap (" +
+                    std::to_string(mem_cap >> 20) + " MB); returning partial result"});
+            result.warnings = std::move(trail);
+            return result;
+        }
+        best = std::move(result);
+    }
+    return EvolveResult{};
+}
+
 }  // namespace hg_gpu
