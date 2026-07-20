@@ -10,3 +10,6 @@
 !/benchmark_results/*/BENCHMARKS.md
 !/benchmark_results/*/plots/
 !/benchmark_results/*/plots/*.png
+
+# Built paclet archives (regenerable via tools/build_paclet.wls)
+*.paclet
