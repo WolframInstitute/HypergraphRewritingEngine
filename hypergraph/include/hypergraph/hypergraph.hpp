@@ -25,43 +25,6 @@
 namespace hypergraph {
 
 // =============================================================================
-// DirectAdjacencyWithArity: wraps a raw adjacency map (vertex -> list of
-// (edge, position)) to provide for_each_adjacent and for_each_occurrence
-// interfaces expected by the WL hash computation.
-// =============================================================================
-template<typename AdjacencyMapT, typename ArityAccessor>
-class DirectAdjacencyWithArity {
-public:
-    DirectAdjacencyWithArity(const AdjacencyMapT& adj, const ArityAccessor& arities)
-        : adj_(adj), arities_(arities) {}
-
-    template<typename Callback>
-    void for_each_adjacent(VertexId v, Callback&& cb) const {
-        auto it = adj_.find(v);
-        if (it != adj_.end()) {
-            for (const auto& [eid, pos] : it->second) {
-                cb(eid, pos);
-            }
-        }
-    }
-
-    template<typename Callback>
-    void for_each_occurrence(VertexId v, Callback&& cb) const {
-        auto it = adj_.find(v);
-        if (it != adj_.end()) {
-            for (const auto& [eid, pos] : it->second) {
-                EdgeOccurrence occ(eid, pos, arities_[eid]);
-                cb(occ);
-            }
-        }
-    }
-
-private:
-    const AdjacencyMapT& adj_;
-    const ArityAccessor& arities_;
-};
-
-// =============================================================================
 // Hypergraph
 // =============================================================================
 // Central storage for all hypergraph data in the multiway system.

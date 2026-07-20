@@ -333,19 +333,6 @@ struct BranchialEdge {
 };
 
 // =============================================================================
-// StateBranchialInfo
-// =============================================================================
-// Per-state tracking for branchial edge computation.
-// Events that originate from this state are tracked here.
-// When a new event is created, we check for overlap with existing events.
-//
-// Note: events_from_here stored separately in SegmentedArray<LockFreeList<EventId>>
-
-struct StateBranchialInfo {
-    // Placeholder - actual event list stored externally due to dependency ordering
-};
-
-// =============================================================================
 // Canonicalization vs Exploration Deduplication
 // =============================================================================
 // There are THREE orthogonal modes that control multiway evolution behavior:

@@ -143,38 +143,6 @@ enum class EvolutionJobType {
 };
 
 // =============================================================================
-// RewriteTask
-// =============================================================================
-// Captures all data needed to apply a single match in parallel.
-
-struct RewriteTask {
-    MatchRecord match;
-    uint32_t step;
-
-    RewriteTask() : step(0) {}
-    RewriteTask(const MatchRecord& m, uint32_t s) : match(m), step(s) {}
-};
-
-// =============================================================================
-// RewriteResult for parallel collection
-// =============================================================================
-
-struct ParallelRewriteResult {
-    StateId new_state{INVALID_ID};   // Canonical state ID (for deduplication)
-    StateId raw_state{INVALID_ID};   // Raw state ID (with actual produced edges, for evolution)
-    EventId event{INVALID_ID};
-    bool was_new_state{false};
-    bool success{false};
-    MatchRecord match;  // The match that produced this result
-
-    // For match forwarding
-    SparseBitset deleted_edges;
-    SparseBitset created_edges;
-    uint8_t num_produced{0};
-    EdgeId produced_edges[MAX_PATTERN_EDGES];
-};
-
-// =============================================================================
 // MatchContext for Match Forwarding
 // =============================================================================
 // Carries information needed for incremental match discovery.
