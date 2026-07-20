@@ -13,3 +13,6 @@
 
 # Built paclet archives (regenerable via tools/build_paclet.wls)
 *.paclet
+
+# Generated documentation authoring notebooks (regenerable via tools/build_docs.wls)
+/paclet/Documentation/Source/generated/
