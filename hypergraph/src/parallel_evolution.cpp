@@ -779,9 +779,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         push_match_to_children(child_info.child_state, forwarded, child_step);
 
         // Spawn REWRITE task for this forwarded match
-        if (!uniform_random_mode_) {
-            submit_rewrite_task(forwarded, child_step);
-        }
+        submit_rewrite_task(forwarded, child_step);
     });
 }
 
@@ -1037,9 +1035,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         push_match_to_children(child, forwarded, step);
 
         // EAGER: Immediately spawn REWRITE task
-        if (!uniform_random_mode_) {
-            submit_rewrite_task(forwarded, step);
-        }
+        submit_rewrite_task(forwarded, step);
     });
 }
 
@@ -1443,11 +1439,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                             match.matched_edges, match.num_edges,
                             step);
                     }
-                    if (uniform_random_mode_ && pending_new_states_simple_) {
-                        pending_new_states_simple_->push(rr.raw_state, hg_->arena());
-                    } else {
-                        submit_match_task_with_context(rr.raw_state, step + 1, ctx);
-                    }
+                    submit_match_task_with_context(rr.raw_state, step + 1, ctx);
                 }
             }
             propagate_explore_depth(rr.new_state, step);
@@ -1468,13 +1460,8 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                 step);
         }
 
-        // In uniform random mode, push to pending list for main loop to collect
-        if (uniform_random_mode_ && pending_new_states_simple_) {
-            pending_new_states_simple_->push(rr.raw_state, hg_->arena());
-        } else {
-            // Submit MATCH task with context for match forwarding
-            submit_match_task_with_context(rr.raw_state, step + 1, ctx);
-        }
+        // Submit MATCH task with context for match forwarding
+        submit_match_task_with_context(rr.raw_state, step + 1, ctx);
     }
 }
 
@@ -1554,9 +1541,7 @@ void ParallelEvolutionEngine::execute_match_task(
                 store_match_for_state(state, match, true);
                 push_match_to_children(state, match, step);
             }
-            if (!uniform_random_mode_) {
-                submit_rewrite_task(match, step);
-            }
+            submit_rewrite_task(match, step);
         }
     };
 
@@ -1606,10 +1591,8 @@ void ParallelEvolutionEngine::execute_match_task(
                 submit_scan_task(scan_data);
             }
             // Spawn REWRITEs for forwarded matches
-            if (!uniform_random_mode_) {
-                for (size_t i = 0; i < delta_start; ++i) {
-                    submit_rewrite_task(batch[i], step);
-                }
+            for (size_t i = 0; i < delta_start; ++i) {
+                submit_rewrite_task(batch[i], step);
             }
             return;
         }
@@ -1696,22 +1679,16 @@ void ParallelEvolutionEngine::execute_match_task(
     }
 
     // Phase 2: Store all matches, then spawn all REWRITEs (BATCHED MODE ONLY)
-    if (batched_matching_ || uniform_random_mode_) {
-        if (uniform_random_mode_ && pending_matches_) {
-            for (const auto& match : batch) {
-                pending_matches_->push(match, hg_->arena());
-            }
-        } else if (enable_match_forwarding_) {
+    if (batched_matching_) {
+        if (enable_match_forwarding_) {
             for (size_t i = delta_start; i < batch.size(); ++i) {
                 store_match_for_state(state, batch[i]);
             }
             std::atomic_thread_fence(std::memory_order_seq_cst);
         }
 
-        if (!uniform_random_mode_) {
-            for (const auto& match : batch) {
-                submit_rewrite_task(match, step);
-            }
+        for (const auto& match : batch) {
+            submit_rewrite_task(match, step);
         }
     }
 }
@@ -1957,17 +1934,13 @@ void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
     // Store match for collection/forwarding
-    if (uniform_random_mode_ && pending_matches_) {
-        pending_matches_->push(match, hg_->arena());
-    } else if (enable_match_forwarding_) {
+    if (enable_match_forwarding_) {
         store_match_for_state(data.state, match, true);
         push_match_to_children(data.state, match, data.step);
     }
 
-    // Spawn REWRITE task (unless uniform random mode)
-    if (!uniform_random_mode_) {
-        submit_rewrite_task(match, data.step);
-    }
+    // Spawn REWRITE task
+    submit_rewrite_task(match, data.step);
 }
 
 }  // namespace hypergraph

@@ -355,12 +355,6 @@ class ParallelEvolutionEngine {
     bool validate_match_forwarding_{false};
     std::atomic<size_t> validation_mismatches_{0};
 
-    // Uniform random mode: control flags for step-synchronized evolution
-    // When true, MATCH tasks don't spawn REWRITEs (main loop does selection)
-    // When true, REWRITE tasks don't spawn MATCH tasks (main loop collects new states)
-    bool uniform_random_mode_{false};
-    LockFreeList<StateId>* pending_new_states_simple_{nullptr};  // Simple state collection (no forwarding)
-    LockFreeList<MatchRecord>* pending_matches_{nullptr};  // Temporary match collection (cleared each step)
 
     // Early termination: stop pattern matching for a job when its reservoir is full
     // Trades strict uniform sampling (over ALL matches) for speed
