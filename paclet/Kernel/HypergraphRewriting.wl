@@ -3754,5 +3754,60 @@ HGUniformRandom[n_Integer, opts:OptionsPattern[]] := Module[
   icFinalizeResult[result, OptionValue["Graph"]]
 ]
 
+(* ============================================================================ *)
+(* Syntax information and front-end autocompletion                              *)
+(* ============================================================================ *)
+(* SyntaxInformation drives the editor: ArgumentsPattern colours argument count  *)
+(* and OptionNames supplies the option-name dropdown when typing a call.         *)
+(* AddSpecialArgCompletion offers HGEvolve's property strings as a dropdown on    *)
+(* the property argument; it is front-end-only, so it is guarded for kernel runs. *)
+
+SyntaxInformation[HGEvolve] = {
+  "ArgumentsPattern" -> {_, _, _, _., OptionsPattern[]},
+  "OptionNames" -> Keys[Options[HGEvolve]]};
+SyntaxInformation[HGGrid] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGGrid]]};
+SyntaxInformation[HGGridWithHoles] = {
+  "ArgumentsPattern" -> {_, _, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGGridWithHoles]]};
+SyntaxInformation[HGCylinder] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGCylinder]]};
+SyntaxInformation[HGTorus] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGTorus]]};
+SyntaxInformation[HGSphere] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGSphere]]};
+SyntaxInformation[HGKleinBottle] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGKleinBottle]]};
+SyntaxInformation[HGMobiusStrip] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGMobiusStrip]]};
+SyntaxInformation[HGMinkowskiSprinkling] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGMinkowskiSprinkling]]};
+SyntaxInformation[HGBrillLindquist] = {
+  "ArgumentsPattern" -> {_, _, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGBrillLindquist]]};
+SyntaxInformation[HGPoissonDisk] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGPoissonDisk]]};
+SyntaxInformation[HGUniformRandom] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGUniformRandom]]};
+SyntaxInformation[HGToGraph] = {"ArgumentsPattern" -> {_, OptionsPattern[]}};
+SyntaxInformation[EdgeId] = {"ArgumentsPattern" -> {_}};
+SyntaxInformation[HGHausdorffAnalysis] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGHausdorffAnalysis]]};
+SyntaxInformation[HGStateDimensionPlot] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGStateDimensionPlot]]};
+SyntaxInformation[HGTimestepUnionPlot] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGTimestepUnionPlot]]};
+SyntaxInformation[HGDimensionFilmstrip] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGDimensionFilmstrip]]};
+SyntaxInformation[HGGeodesicPlot] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGGeodesicPlot]]};
+SyntaxInformation[HGGeodesicFilmstrip] = {
+  "ArgumentsPattern" -> {_, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGGeodesicFilmstrip]]};
+SyntaxInformation[HGLensingPlot] = {
+  "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGLensingPlot]]};
+SyntaxInformation[HGBranchAlignmentBatch] = {"ArgumentsPattern" -> {_, OptionsPattern[]}};
+
+If[TrueQ[$Notebooks],
+  FE`Evaluate[FEPrivate`AddSpecialArgCompletion[
+    "HGEvolve" -> {0, 0, 0, Keys[propertyRequirementsBase]}]]];
+
 End[]
 EndPackage[]
