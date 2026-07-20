@@ -71,7 +71,7 @@ The build system supports cross-compilation from any host OS to all target platf
 **Linux Native Build:**
 ```bash
 mkdir build_linux && cd build_linux
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -85,7 +85,7 @@ mkdir build_windows && cd build_windows
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -102,7 +102,7 @@ mkdir build_macos && cd build_macos
 cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -117,7 +117,7 @@ cmake .. \
   -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/linux-cross.cmake \
   -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 
@@ -133,7 +133,7 @@ cmake .. \
   -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
   -DWINDOWS_COMPILER=clang \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_MATHEMATICA_PACLET=ON
+  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j$(nproc) paclet
 ```
 

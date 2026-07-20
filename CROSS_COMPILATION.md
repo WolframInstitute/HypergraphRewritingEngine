@@ -499,8 +499,8 @@ rm -rf build_*
 This project is designed to be platform-agnostic:
 - No platform-specific code in core libraries
 - All platform differences handled via CMake
-- Standard C++17, no OS-specific APIs
-- Cross-platform threading (C++11 threads)
+- Standard C++20, no OS-specific APIs
+- Cross-platform threading (std::thread and std::atomic)
 
 Adding new platforms requires only:
 1. Create toolchain file in `cmake/toolchains/`

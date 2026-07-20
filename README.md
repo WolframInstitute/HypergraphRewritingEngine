@@ -33,7 +33,7 @@ The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported cont
 
 ```bash
 mkdir build_linux && cd build_linux
-cmake .. -DBUILD_MATHEMATICA_PACLET=ON
+cmake .. -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON
 make -j32 paclet
 ```
 
