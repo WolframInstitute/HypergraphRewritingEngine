@@ -37,12 +37,6 @@ void compute_state_wl_hashes(const EngineState& engine,
 // Convenience: compute + pull one state's hash back to host. For tests.
 uint64_t compute_state_wl_hash_host(const EngineState& engine, StateId sid);
 
-// Hash a range [lo, hi) of state IDs, writing out_hashes[i-lo] = hash of
-// state i. Faster than compute_state_wl_hashes for evolving workloads that
-// only need new states hashed.
-void compute_state_wl_hashes_range(const EngineState& engine,
-                                   uint32_t lo, uint32_t hi,
-                                   uint64_t* out_hashes_device);
 
 
 // Content-ordered (non-isomorphic) hash per state, for

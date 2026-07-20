@@ -130,26 +130,6 @@ void compute_state_wl_hashes(const EngineState& engine,
     check(cudaDeviceSynchronize(), "k_wl_hash_states sync");
 }
 
-namespace {
-__global__ void k_wl_hash_range(DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t n = hi - lo;
-    if (tid >= n) return;
-    out[tid] = wl_hash_state_device(ds, lo + tid);
-}
-}  // namespace
-
-void compute_state_wl_hashes_range(const EngineState& engine,
-                                   uint32_t lo, uint32_t hi,
-                                   uint64_t* out_hashes_device) {
-    if (hi <= lo) return;
-    uint32_t n = hi - lo;
-    int block = 64;
-    int grid  = (int)((n + block - 1) / block);
-    k_wl_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device);
-    check(cudaDeviceSynchronize(), "k_wl_hash_range sync");
-}
-
 uint64_t compute_state_wl_hash_host(const EngineState& engine, StateId sid) {
     uint64_t* d = nullptr;
     check(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
