@@ -34,8 +34,16 @@ public:
 
     explicit SegmentedArray(size_t segment_size = DEFAULT_SEGMENT_SIZE)
         : segment_size_(segment_size)
+        , seg_shift_(hgcommon::ctz64(segment_size))
+        , seg_mask_(segment_size - 1)
         , claim_(0)
         , count_(0) {
+        // segment_size must be a power of two so index decomposition is a shift/mask
+        // rather than a 64-bit divide on the hottest accessor path.
+        if ((segment_size & (segment_size - 1)) != 0) {
+            std::fprintf(stderr, "SegmentedArray: segment_size must be a power of two\n");
+            std::abort();
+        }
         // Initialize segment pointers to null
         for (size_t i = 0; i < MAX_SEGMENTS; ++i) {
             segments_[i].store(nullptr, std::memory_order_relaxed);
@@ -97,8 +105,8 @@ public:
     T& operator[](uint32_t idx) {
         while (count_.load(std::memory_order_acquire) <= idx) cpu_relax();
 
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
 
         T* segment;
         while (!(segment = segments_[seg_idx].load(std::memory_order_acquire))) cpu_relax();
@@ -109,8 +117,8 @@ public:
     const T& operator[](uint32_t idx) const {
         while (count_.load(std::memory_order_acquire) <= idx) cpu_relax();
 
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
 
         T* segment;
         while (!(segment = segments_[seg_idx].load(std::memory_order_acquire))) cpu_relax();
@@ -123,8 +131,8 @@ public:
         if (idx >= count_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
         return segment ? &segment[offset] : nullptr;
     }
@@ -133,8 +141,8 @@ public:
         if (idx >= count_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
         return segment ? &segment[offset] : nullptr;
     }
@@ -200,8 +208,8 @@ public:
     // different indices. Only one will create the segment, others will use it.
     template<typename Arena>
     T& get_or_default(uint32_t idx, Arena& arena) {
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
 
         // Ensure segment exists (thread-safe via CAS in get_or_create_segment)
         // When segment is created, all elements are default-constructed by arena
@@ -233,8 +241,8 @@ public:
     // 4. Therefore: element data is visible to threads that load the segment
     template<typename Arena, typename... Args>
     void emplace_at(uint32_t idx, Arena& arena, Args&&... args) {
-        size_t seg_idx = idx / segment_size_;
-        size_t offset = idx % segment_size_;
+        size_t seg_idx = idx >> seg_shift_;
+        size_t offset = idx & seg_mask_;
 
         // Ensure segment exists (thread-safe)
         T* segment = get_or_create_segment(seg_idx, arena);
@@ -296,6 +304,8 @@ private:
     }
 
     size_t segment_size_;
+    uint32_t seg_shift_;   // log2(segment_size_)
+    size_t seg_mask_;      // segment_size_ - 1
     // claim_ hands out unique slot indices to concurrent emplace() callers. count_ is
     // the reader-visible high-water mark, advanced (by emplace_at) only after an
     // element's segment is published -- so a reader that sees count_ > idx never
