@@ -331,9 +331,9 @@ __device__ uint64_t ir_canonical_hash_state(DeviceState ds, StateId sid) {
     }
     if (blk.n_edges == 0) return 0;
 
-    // Initial colours — thread-parallel across vertices (one thread per
-    // vertex within the warp). For n_verts > blockDim.x each thread
-    // handles a strided share.
+    // Initial colours. Single-thread for now (see the refinement note below);
+    // parallelising across vertices is a worthwhile optimisation once the fast
+    // path is validated.
     if (threadIdx.x == 0) {
         for (uint32_t v = 0; v < blk.n_verts; ++v) {
             blk.colors[v] = initial_color(blk, v);
@@ -408,7 +408,11 @@ void compute_state_ir_hashes_range(const EngineState& engine,
                                    uint64_t* out_hashes_device) {
     if (hi <= lo) return;
     uint32_t n = hi - lo;
-    k_ir_canon_range<<<n, 32>>>(engine.device(), lo, hi, out_hashes_device);
+    // One thread per state: the kernel body runs entirely on thread 0 (the
+    // __syncthreads barriers are trivial at blockDim 1), so a full warp would only
+    // reserve 31 idle lanes and 32x the per-thread stack/local memory. Widen the
+    // block when the per-vertex refinement is actually parallelised.
+    k_ir_canon_range<<<n, 1>>>(engine.device(), lo, hi, out_hashes_device);
     check(cudaDeviceSynchronize(), "k_ir_canon_range sync");
 }
 
