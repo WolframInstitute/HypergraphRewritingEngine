@@ -1,4 +1,5 @@
 #include "hypergraph/ir_canonicalization.hpp"
+#include "hgcommon/portable_intrinsics.hpp"
 #include <functional>
 
 #include <algorithm>
@@ -125,8 +126,23 @@ bool IRCanonicalizer::refine(const HypergraphAdj& adj, IRPartition& pi) const {
     // relabeling. Refining a cell C by a splitter S only inspects vertices that
     // share an edge with S, so a split costs O(boundary), not O(|C|); keeping the
     // largest piece at C's index (below) bounds total work to ~O(E log n).
-    SSet<uint32_t> worklist;
-    for (uint32_t ci = 0; ci < pi.cells.size(); ++ci) worklist.insert(ci);
+    // Cell indices number at most n, and the worklist is always popped
+    // lowest-index-first, so a bit-set scanned with count-trailing-zeros gives the
+    // same structurally-determined order as an ordered set, with O(1) insert and no
+    // per-splitter tree-node allocation.
+    SVec<uint64_t> worklist((n + 63) / 64 + 1, 0);
+    auto wl_insert = [&](uint32_t ci) { worklist[ci >> 6] |= (uint64_t(1) << (ci & 63)); };
+    auto wl_pop_min = [&]() -> uint32_t {
+        for (uint32_t w = 0; w < worklist.size(); ++w) {
+            if (worklist[w]) {
+                uint32_t b = static_cast<uint32_t>(hgcommon::ctz64(worklist[w]));
+                worklist[w] &= worklist[w] - 1;   // clear lowest set bit
+                return w * 64u + b;
+            }
+        }
+        return UINT32_MAX;
+    };
+    for (uint32_t ci = 0; ci < pi.cells.size(); ++ci) wl_insert(ci);
 
     // Reusable scratch (no per-splitter allocation).
     SVec<uint32_t> inc_edges;
@@ -136,9 +152,8 @@ bool IRCanonicalizer::refine(const HypergraphAdj& adj, IRPartition& pi) const {
     SVec<uint8_t> on_touched(n, 0);
     SVec<SVec<uint64_t>> vsig(n);   // per-vertex signature w.r.t. S (cleared after use)
 
-    while (!worklist.empty()) {
-        uint32_t S = *worklist.begin();
-        worklist.erase(worklist.begin());
+    uint32_t S;
+    while ((S = wl_pop_min()) != UINT32_MAX) {
         IR_PROF(++last_stats_.refine_pops;)
 
         // Edges incident to S, deduplicated via an epoch stamp.
@@ -244,7 +259,7 @@ bool IRCanonicalizer::refine(const HypergraphAdj& adj, IRPartition& pi) const {
                         pi.vertex_to_cell[verts[t]] = new_ci;
                     }
                     pi.cells.push_back(std::move(verts));
-                    worklist.insert(new_ci);
+                    wl_insert(new_ci);
                 }
             }
 
