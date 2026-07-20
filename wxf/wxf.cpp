@@ -8,7 +8,7 @@ namespace wxf {
 // Portable 64-bit byte swap for the (cold) big-endian serialization path.
 static inline uint64_t wxf_bswap64(uint64_t x) {
 #if defined(__GNUC__) || defined(__clang__)
-    return wxf_bswap64(x);
+    return __builtin_bswap64(x);
 #else
     x = ((x & 0x00000000FFFFFFFFull) << 32) | ((x & 0xFFFFFFFF00000000ull) >> 32);
     x = ((x & 0x0000FFFF0000FFFFull) << 16) | ((x & 0xFFFF0000FFFF0000ull) >> 16);
