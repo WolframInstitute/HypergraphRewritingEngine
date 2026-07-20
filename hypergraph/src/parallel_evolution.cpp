@@ -1802,11 +1802,9 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
             first_edge, first_sig, first_cache,
             VariableBinding{}, s.edges,
             hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
-            [&](EdgeId candidate) {
+            [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
-                // Validate candidate
-                const auto& edge = get_edge(candidate);
                 VariableBinding binding;
                 if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding)) return;
 
@@ -1889,14 +1887,12 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         pattern_edge, pattern_sig, sig_cache,
         data.binding, s.edges,
         hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
-        [&](EdgeId candidate) {
+        [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
 
             // Skip if already matched
             if (data.contains_edge(candidate)) return;
 
-            // Validate candidate
-            const auto& edge = get_edge(candidate);
             VariableBinding extended = data.binding;
             if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) return;
 

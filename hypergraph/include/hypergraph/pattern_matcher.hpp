@@ -177,7 +177,7 @@ void generate_candidates(
     if (num_bound == 0) {
         // No bound variables: scan signature partition using cached signatures
         sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
-            on_candidate(eid);
+            on_candidate(eid, get_edge(eid));
         });
     } else {
         // Have bound variables: use inverted index intersection
@@ -200,7 +200,7 @@ void generate_candidates(
                 }
 
                 if (valid) {
-                    on_candidate(eid);
+                    on_candidate(eid, edge);
                 }
             }
         );
@@ -269,15 +269,14 @@ void expand_match(
         pattern_edge, pattern_sig, sig_cache,
         partial.binding, *ctx.state_edges,
         *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
-        [&](EdgeId candidate) {
+        [&](EdgeId candidate, const auto& edge) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
 
             // Skip if already matched
             if (partial.contains_edge(candidate)) return;
 
-            // Validate candidate
-            const auto& edge = ctx.get_edge(candidate);
+            // edge already fetched by generate_candidates
             VariableBinding extended = partial.binding;
 
             if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) {
@@ -316,12 +315,10 @@ void scan_pattern(
         first_edge, first_sig, first_cache,
         VariableBinding{}, *ctx.state_edges,
         *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
-        [&](EdgeId candidate) {
+        [&](EdgeId candidate, const auto& edge) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
 
-            // Validate candidate
-            const auto& edge = ctx.get_edge(candidate);
             VariableBinding binding;
 
             if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding)) {
