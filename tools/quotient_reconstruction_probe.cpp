@@ -131,7 +131,11 @@ static bool check(const WL& w){
     auto exact = oracle(w, oracle_triples, oracle_events, oracle_raw_states);
 
     Hypergraph hg; hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine e(&hg,1); e.set_transitive_reduction(false);
+    // Multiple workers so the skeleton is built under real contention: quotient
+    // completeness depends on a state's expansion firing on its first in-budget
+    // arrival whether that arrival creates the state or relaxes an existing one,
+    // and that claim ordering is only exercised when the two paths race.
+    ParallelEvolutionEngine e(&hg,8); e.set_transitive_reduction(false);
     e.set_explore_from_canonical_states_only(true); for (auto& r : w.rules()) e.add_rule(r);
     auto init=w.init; e.evolve(init,w.steps);
 

@@ -209,17 +209,29 @@ need paired-mean measurement, not single samples.
     The same workflow can add ubuntu (all_tests + GPU gates on a GPU runner) and
     windows-CPU legs; Windows-GPU CI needs a self-hosted GPU runner + item 13.
 
-## Correctness (open)
+## Correctness
 
-15. **Quotient exploration completeness gap on non-productive / mixed rulesets.**
-    `explore_from_canonical_states_only` can leave a discovered canonical state
-    unexpanded, and therefore miss every state reachable only through it. Surfaced
-    by the offline-reconstruction corpus: 2 of 24 workloads have an incomplete
-    quotient skeleton (mAllThree over a triangle finds all 13 states but leaves one
-    it discovered at depth 2 unexpanded, ~10 matches/instance missing; the two-edge
-    init discovers only 9 of 17 states). The reconstruction itself is exact wherever
-    the skeleton is complete, so this is a defect of the exploration, not the
-    propagation (`tools/quotient_reconstruction_probe.cpp` detects and reports it).
+15. **[RESOLVED — did not reproduce] Quotient exploration completeness gap on
+    non-productive / mixed rulesets.** The concern was that
+    `explore_from_canonical_states_only` might leave a discovered canonical state
+    unexpanded (expansion gated on the arrival depth being in-budget at first
+    creation, with a later in-budget arrival deduplicating without re-triggering
+    the skipped expansion), missing every state reachable only through it.
+    - **Verification.** The scenario is already handled at
+      `hypergraph/src/parallel_evolution.cpp` in `propagate_explore_depth`: a
+      relaxed arrival that brings a state in-budget while it is still unexpanded
+      takes the one-time expansion claim (`try_claim_expanded`) and submits the
+      match task. `tools/quotient_reconstruction_probe.cpp` confirms empirically:
+      all 24 corpus workloads produce a complete skeleton and reconstruct the
+      oracle exactly, single-threaded and under contention (8 workers, repeated
+      runs), including the two workloads originally suspected (`mAllThree/I2`
+      finds all 17 states, `mAllThree/I3` all 13) and adversarial deep-loop
+      budgets (`iFlip` at 7 steps: 3 canonical states recurring at every depth;
+      `iShift` at 6; `mIdemProd` at 4 / 1081 states).
+    - **Coverage fix landed.** The probe now builds the quotient skeleton with 8
+      workers instead of 1, so the lock-free first-creation-vs-relaxation claim
+      race is actually exercised rather than assumed. The original item was
+      reasoned from code shape, not a trace; the trace clears it.
     - **Root cause.** Expansion (computing a state's matches, which produces its
       children) is triggered at a state's FIRST creation, gated on the arrival
       depth being within the step budget. A later rewrite that reaches the same
