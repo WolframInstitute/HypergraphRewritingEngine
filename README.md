@@ -144,24 +144,24 @@ See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup.
 ## Project Structure
 
 ```
-hypergraph/              Core rewriting library
-  include/hypergraph/
-    hypergraph.hpp         Hypergraph class
-    parallel_evolution.hpp Evolution engine
-    pattern.hpp            RewriteRule, make_rule()
-    causal_graph.hpp       Causal/branchial edges
+hypergraph/     Core CPU engine: evolution, matching, WL/IR canonicalization, storage
+gpu/            CUDA port (optional, BUILD_GPU=ON), mirrors the CPU algorithms
+job_system/     Work-stealing task scheduler the engine runs on
+lockfree_deque/ Lock-free concurrent deque backing the scheduler
+common/         Shared primitives (portable intrinsics, shared WL hash core)
+wxf/            Wolfram Exchange Format serialization (the WL boundary)
 
-job_system/              Work-stealing task scheduler
-lockfree_deque/          Lock-free concurrent deque
-wxf/                     Wolfram Exchange Format serialization
-
-visualisation/           3D visualization (Vulkan)
-  blackhole/               Physics analysis
-  scene/                   Rendering pipeline
-
-paclet/                  Mathematica paclet
-paclet_source/           LibraryLink FFI
+paclet/         Wolfram Language paclet (kernel code, bundled binaries, doc notebooks)
+paclet_source/  FFI: run_rewriting_core, the standalone hg_evolve binary, GPU marshaling
+reference/      Validation oracle (brute-force ground truth) + golden corpus
+tools/          Standalone research/validation probes and profiling harnesses
+testing/        Aggregate C++ test target (all_tests)
+benchmarks/     Per-area benchmarks;  benchmarking/  is the framework library
+visualisation/  Interactive 3D viewer (Vulkan) and physics analysis
 ```
+
+New here? Users: **[docs/QUICKSTART.md](docs/QUICKSTART.md)**. Developers:
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## Testing
 
