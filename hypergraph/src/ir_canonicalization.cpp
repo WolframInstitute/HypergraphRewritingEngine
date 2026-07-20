@@ -322,11 +322,15 @@ SVec<SVec<VertexId>> IRCanonicalizer::apply_labeling(
     SVec<SVec<VertexId>> result;
     result.reserve(edges.size());
 
-    for (const auto& edge : edges) {
+    // adj.edges_idx[ei] holds the vertex indices of edges[ei] already resolved
+    // through orig_to_idx (build_adjacency), so relabeling is a direct index into
+    // the labeling with no per-vertex hash lookup. This runs at every discrete leaf
+    // of the search, so on symmetric states the saving compounds.
+    for (uint32_t ei = 0; ei < edges.size(); ++ei) {
+        const auto& vis = adj.edges_idx[ei];
         SVec<VertexId> mapped;
-        mapped.reserve(edge.size());
-        for (VertexId v : edge) {
-            uint32_t vi = adj.orig_to_idx.at(v);
+        mapped.reserve(vis.size());
+        for (uint32_t vi : vis) {
             mapped.push_back(static_cast<VertexId>(labeling[vi]));
         }
         result.push_back(std::move(mapped));
