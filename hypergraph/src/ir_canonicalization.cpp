@@ -43,10 +43,14 @@ IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
     HypergraphAdj adj;
     adj.edges = &edges;
 
-    SSet<VertexId> verts;
+    // Sorted-unique vertex set: sort + unique on a vector gives the same ascending
+    // order (which fixes the vertex-index assignment below) without a set's tree.
+    SVec<VertexId> verts;
     for (const auto& edge : edges) {
-        for (VertexId v : edge) verts.insert(v);
+        for (VertexId v : edge) verts.push_back(v);
     }
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
 
     adj.num_vertices = static_cast<uint32_t>(verts.size());
     adj.idx_to_orig.reserve(verts.size());
