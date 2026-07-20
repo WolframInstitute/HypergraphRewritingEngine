@@ -116,6 +116,9 @@ class CausalGraph {
     static constexpr uint64_t DESC_ANC_SET_EMPTY = (1ULL << 62) + 4;
     static constexpr uint64_t DESC_ANC_SET_LOCKED = (1ULL << 62) + 5;
     using DescAncSet = ConcurrentMap<uint64_t, bool, DESC_ANC_SET_EMPTY, DESC_ANC_SET_LOCKED>;
+    // Initial capacity per closure set. Most events have a small closure, so this
+    // stays low; the set resizes for the rare deep ones.
+    static constexpr size_t DESC_ANC_SET_INITIAL_CAPACITY = 16;
 
     static constexpr uint64_t DESC_ANC_EMPTY = (1ULL << 62) + 6;
     static constexpr uint64_t DESC_ANC_LOCKED = (1ULL << 62) + 7;
