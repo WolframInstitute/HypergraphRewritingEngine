@@ -40,6 +40,64 @@ need paired-mean measurement, not single samples.
      Device-side frontier management is the common prerequisite. Pairs with item 6
      (the reservoir sampler's per-step host logic is part of what forces the D2H).
    - Decision + implementation is the remaining large piece.
+   - **UPDATE 2026-07-21 — the bubble is now measured at the kernel level (ncu).**
+     Two findings, in order:
+     - **PersistentEvolver shipped** (commits 2dcf673, 6163d2a). The free
+       `hg_gpu::evolve()` rebuilt and freed the whole device Engine every call
+       (~14-26 ms of cudaMalloc/cudaFree, the dominant cost on small/medium runs);
+       the paclet backend called it per HGEvolve. `hg_gpu::PersistentEvolver` keeps
+       the Engine alive across calls (grow-and-retry preserved, high-water-mark).
+       Measured, identical results: 3 steps 25.6->2.1 ms (12x), 5 steps 27->4.5 ms
+       (6x), 7 steps 157->130 ms (1.2x, work-bound). Wired into
+       `run_gpu_evolution` as a process-lifetime static (worker jobs run serially).
+     - **With allocation gone, the per-step bubble is now the top cost.** ncu on
+       the steady-state step loop (`tools/bench_gpu_evolve <steps> <iters> 1`):
+       every kernel launches grid=1-2 blocks (k_match_batch 1x32, k_rewrite 1x64,
+       k_dedup 1x128, k_ir_canon 1-2x1) at **0.01-0.07% of peak SM throughput,
+       ~2-3% warp occupancy** on a 128-SM 4090. Per step ~73 us of GPU work vs
+       ~0.9 ms wall => the GPU is **~92% idle every step**, waiting on the host
+       round-trips (cudaDeviceSynchronize 73.6% + count cudaMemcpy 9.9% of the
+       PersistentEvolver run). Two compounding causes: (i) per-step host
+       serialization (~5 syncs + count D2H per step, worse under WSL); (ii) a
+       narrow frontier is grid=1-2 blocks no matter what. nsys cannot trace GPU
+       kernels under WSL2 (dxg virtualization) — use ncu for kernel metrics.
+   - **Two levers, by safety profile (record for the at-the-machine session):**
+     - **(a) Device-resident counts + step-chain capture — SAFE ANYWHERE, do first.**
+       Make k_rewrite / hash / k_dedup grid-stride over a FIXED (max_blocks_per_launch)
+       grid, self-limiting on the Pool's device `counter` (Pool::DeviceView.counter),
+       so the grid no longer needs the host to read a count. That removes the
+       `matches.size_host()` and `num_states_host()` D2H reads (drop the `nm==0`
+       early-out; rely on the `state_after<=state_before` break — launching rewrite
+       over 0 matches is a no-op). Keep counts device-resident; one D2H per step for
+       the loop condition only. Then stream-capture match->rewrite->hash->dedup into
+       one cudaGraph replayed per step (re-capture only on pool grow). HANG-SAFE:
+       every kernel still returns in us (grid-stride bounded by a finite device
+       counter, no spin), so it cannot approach the watchdog or wedge the GPU; worst
+       case is wrong results, caught by gpu_differential (24/24 gate). Test tiny-first
+       (steps=2), differential after each kernel change, host timeouts on every run.
+     - **(b) Persistent kernel + device-side frontier — the deep fix for grid=1
+       underfill, but DISPLAY-MACHINE HANG RISK.** One long-running kernel pulls
+       (state,rule) work from a device queue, rewrites, dedups on-device (the GPU
+       already has a lock-free hash_table.hpp) with device-side termination — no
+       per-step relaunch, GPU stays busy across the growing frontier. This is what
+       was tried before and failed; revisit carefully. **KEY: `max_blocks_per_launch`
+       and the whole TDR-avoidance are a WDDM (display-driver) hack. The deployment
+       target is HEADLESS (no display => no TDR watchdog), where long/persistent
+       kernels are viable and safe.** So this belongs on a headless box (or TCC-mode
+       GPU), NOT on the remote WSL dev box that has a display driver and can wedge
+       (requiring a physical reboot). Do it at the machine / on the headless target.
+   - **Optimization + test target: datacenter GPUs (A100/H100), not the dev 4090.**
+     These are headless (no display, no TDR watchdog) so persistent/long kernels are
+     safe, and they are much larger (A100 108 SMs, H100 132 SMs) so the grid=1-2
+     per-step underfill wastes an even larger fraction of the machine — the
+     persistent-kernel + device-frontier design (lever b) is precisely what keeps
+     108-132 SMs busy across the growing frontier. Plan: validate + tune on a cloud
+     A100/H100 instance (occupancy, block/grid sizing, shared-mem/register budgets
+     differ from CC 8.9); the differential + hg_gpu suites gate correctness there,
+     ncu drives the tuning. A GPU CI leg on a datacenter runner would make this
+     repeatable (ties to the CI gap, items 13/14). The 4090 dev box is for
+     correctness + relative before/after only; absolute perf numbers must come from
+     the A100/H100 target.
 
 ## Robustness / API
 
