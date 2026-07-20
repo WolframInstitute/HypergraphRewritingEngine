@@ -26,6 +26,9 @@ static hg_gpu::RewriteRule make_rule(std::vector<std::vector<uint8_t>> lhs,
 int main(int argc, char** argv) {
     int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     int iters = argc > 2 ? std::atoi(argv[2]) : 20;
+    // mode 0 = compare evolve() vs PersistentEvolver; 1 = PersistentEvolver only
+    // (clean steady state for profiling the step-loop compute / bubbles).
+    int mode  = argc > 3 ? std::atoi(argv[3]) : 0;
 
     hg_gpu::EvolveInput in;
     in.rules = { make_rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}) };
@@ -43,12 +46,14 @@ int main(int argc, char** argv) {
 
     // (A) free evolve(): builds and destroys an Engine every call.
     std::vector<double> ta;
-    for (int i = 0; i < iters; ++i) {
-        auto a = std::chrono::steady_clock::now();
-        auto r = hg_gpu::evolve(in);
-        auto b = std::chrono::steady_clock::now();
-        (void)r;
-        ta.push_back(std::chrono::duration<double, std::milli>(b - a).count());
+    if (mode == 0) {
+        for (int i = 0; i < iters; ++i) {
+            auto a = std::chrono::steady_clock::now();
+            auto r = hg_gpu::evolve(in);
+            auto b = std::chrono::steady_clock::now();
+            (void)r;
+            ta.push_back(std::chrono::duration<double, std::milli>(b - a).count());
+        }
     }
 
     // (B) PersistentEvolver: allocations amortized across calls, with the same
@@ -64,9 +69,14 @@ int main(int argc, char** argv) {
         tb.push_back(std::chrono::duration<double, std::milli>(b - a).count());
     }
 
-    std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
-                "Engine.run()_median_ms=%.3f (states=%zu) | speedup=%.2fx\n",
-                steps, r0.states.size(), r0.events.size(),
-                median(ta), median(tb), rw.states.size(), median(ta) / median(tb));
+    if (mode == 0) {
+        std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
+                    "PersistentEvolver_median_ms=%.3f (states=%zu) | speedup=%.2fx\n",
+                    steps, r0.states.size(), r0.events.size(),
+                    median(ta), median(tb), rw.states.size(), median(ta) / median(tb));
+    } else {
+        std::printf("steps=%d states=%zu events=%zu | PersistentEvolver_median_ms=%.3f\n",
+                    steps, rw.states.size(), rw.events.size(), median(tb));
+    }
     return 0;
 }
