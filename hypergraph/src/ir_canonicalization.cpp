@@ -81,26 +81,44 @@ IRPartition IRCanonicalizer::initial_partition(const HypergraphAdj& adj) const {
     pi.vertex_to_cell.resize(adj.num_vertices);
 
     // Initial refinement: group by degree signature
-    // (sorted list of (arity, position) pairs for all occurrences)
+    // (sorted list of (arity, position) pairs for all occurrences).
     using DegreeSig = SVec<std::pair<uint8_t, uint8_t>>;
-    SMap<DegreeSig, SVec<uint32_t>> sig_groups;
-
-    for (uint32_t vi = 0; vi < adj.num_vertices; ++vi) {
+    const uint32_t n = adj.num_vertices;
+    SVec<DegreeSig> sigs;
+    sigs.reserve(n);
+    SVec<uint32_t> order;
+    order.reserve(n);
+    for (uint32_t vi = 0; vi < n; ++vi) {
         DegreeSig sig;
         sig.reserve(adj.vertex_edges[vi].size());
         for (const auto& occ : adj.vertex_edges[vi]) {
             sig.push_back({occ.arity, occ.position});
         }
         std::sort(sig.begin(), sig.end());
-        sig_groups[sig].push_back(vi);
+        sigs.push_back(std::move(sig));
+        order.push_back(vi);
     }
 
-    for (auto& [sig, verts] : sig_groups) {
+    // Order vertices by (signature, vertex): the signature is a structural,
+    // label-independent key, and the vertex tie-break reproduces the ascending
+    // insertion order an ordered map would have kept within each group -- so the
+    // cell partition is bit-identical to the map version, without the per-insert
+    // red-black tree.
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        if (sigs[a] != sigs[b]) return sigs[a] < sigs[b];
+        return a < b;
+    });
+    for (uint32_t i = 0; i < order.size();) {
         uint32_t ci = static_cast<uint32_t>(pi.cells.size());
-        for (uint32_t v : verts) {
-            pi.vertex_to_cell[v] = ci;
+        SVec<uint32_t> verts;
+        uint32_t j = i;
+        while (j < order.size() && sigs[order[j]] == sigs[order[i]]) {
+            pi.vertex_to_cell[order[j]] = ci;
+            verts.push_back(order[j]);
+            ++j;
         }
         pi.cells.push_back(std::move(verts));
+        i = j;
     }
 
     return pi;
