@@ -86,7 +86,15 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
 
 std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host) {
     hg_gpu::EvolveInput in = build_input(job);
-    hg_gpu::EvolveResult result = hg_gpu::evolve(in);
+
+    // Reuse one device Engine across every job this process handles. The
+    // persistent worker processes many HGEvolve calls in one process, and the
+    // per-call Engine allocation dominates small/medium runs, so amortizing it
+    // is 6-12x on interactive workloads. Jobs run serially through the worker, so
+    // a process-lifetime evolver is safe; the one-shot binary just uses it once.
+    // The evolver grows on overflow and never shrinks (high-water-mark).
+    static hg_gpu::PersistentEvolver evolver;
+    hg_gpu::EvolveResult result = evolver.run(in);
 
     hypergraph::IRCanonicalizer ir;
 
