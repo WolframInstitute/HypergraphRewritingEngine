@@ -626,8 +626,8 @@ std::vector<uint8_t> make_binarystring_frame(const std::vector<uint8_t>& length_
 } // namespace
 
 TEST_F(WXFTest, Varint_TenByteEncoding_Uint64Max) {
-    // Encoding of UINT64_MAX is 10 bytes. The corrected `shift > 63` check accepts
-    // all 10 bytes; the old `shift >= 63` threw on byte 10 with "Varint too large".
+    // UINT64_MAX encodes to the maximal 10-byte varint; the decoder's shift bound
+    // (`shift > 63`) must accept all 10 bytes, since the 64th bit lands in byte 10.
     // After successful varint decode the downstream vector<uint8_t> allocation will
     // fail with std::length_error — that's fine; we only want to confirm the
     // varint layer didn't reject the legal 10-byte encoding.

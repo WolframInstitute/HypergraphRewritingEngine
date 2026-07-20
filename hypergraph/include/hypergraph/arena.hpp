@@ -225,10 +225,10 @@ private:
     };
 
     // Install a fresh block at the head of the chain. current_block_ is then
-    // re-synced from head_ so allocators always reach the most-recent block;
-    // previously this was an unconditional store that could leave
-    // current_block_ pointing at an *older* block if two threads raced to
-    // allocate, which silently wasted the newer block's capacity.
+    // re-synced from head_ so allocators always reach the most-recent block: when
+    // two threads race to allocate, the CAS loser must adopt the winner's newer
+    // block rather than reinstate its own, or the newer block's capacity is
+    // silently wasted.
     void allocate_new_block() {
         Block* new_block = Block::create(block_capacity_);
 
