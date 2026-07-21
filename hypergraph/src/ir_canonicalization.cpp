@@ -382,16 +382,20 @@ SVec<SVec<VertexId>> IRCanonicalizer::apply_labeling(
 CanonicalizationResult IRCanonicalizer::build_result(
     const SVec<SVec<VertexId>>& edges,
     const HypergraphAdj& adj,
-    const SVec<uint32_t>& labeling) const {
+    const SVec<uint32_t>& labeling,
+    bool want_inverse_maps) const {
     CanonicalizationResult result;
     result.canonical_form.vertex_count = static_cast<VertexId>(adj.num_vertices);
 
-    // Build vertex mapping
+    // Build vertex mapping. canonical_to_original is a dense vector consumed by the
+    // correspondence path; original_to_canonical is the inverse (map_vertex) direction,
+    // a hash table populated only when the caller asks for it.
     result.vertex_mapping.canonical_to_original.resize(adj.num_vertices);
+    if (want_inverse_maps) result.vertex_mapping.original_to_canonical.reserve(adj.num_vertices);
     for (uint32_t vi = 0; vi < adj.num_vertices; ++vi) {
         VertexId orig_v = adj.idx_to_orig[vi];
         VertexId canonical_v = static_cast<VertexId>(labeling[vi]);
-        result.vertex_mapping.original_to_canonical[orig_v] = canonical_v;
+        if (want_inverse_maps) result.vertex_mapping.original_to_canonical[orig_v] = canonical_v;
         result.vertex_mapping.canonical_to_original[canonical_v] = orig_v;
     }
 
@@ -420,8 +424,9 @@ CanonicalizationResult IRCanonicalizer::build_result(
 
     result.canonical_form.edges.reserve(edges.size());
     result.vertex_mapping.canonical_edge_to_original.resize(edges.size());
+    if (want_inverse_maps) result.vertex_mapping.original_edge_to_canonical.reserve(edges.size());
     for (size_t ci = 0; ci < mapped.size(); ++ci) {
-        result.vertex_mapping.original_edge_to_canonical[mapped[ci].orig_idx] = ci;
+        if (want_inverse_maps) result.vertex_mapping.original_edge_to_canonical[mapped[ci].orig_idx] = ci;
         result.vertex_mapping.canonical_edge_to_original[ci] = mapped[ci].orig_idx;
         result.canonical_form.edges.push_back(std::move(mapped[ci].mapped));
     }
@@ -572,7 +577,7 @@ bool IRCanonicalizer::find_canonical_labeling(
 }
 
 CanonicalizationResult IRCanonicalizer::canonicalize_edges(
-    const SVec<SVec<VertexId>>& edges) const {
+    const SVec<SVec<VertexId>>& edges, bool want_inverse_maps) const {
     if (edges.empty()) {
         CanonicalizationResult result;
         result.canonical_form.vertex_count = 0;
@@ -591,7 +596,7 @@ CanonicalizationResult IRCanonicalizer::canonicalize_edges(
         return result;
     }
 
-    auto result = build_result(edges, adj, labeling);
+    auto result = build_result(edges, adj, labeling, want_inverse_maps);
     worker_scratch().release(scratch_mark);
     return result;
 }
@@ -645,11 +650,11 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
 // Convenience overloads (tests/tools): copy a heap edge list into the per-worker
 // scratch arena, run the scratch-backed path, then reclaim the copy.
 CanonicalizationResult IRCanonicalizer::canonicalize_edges(
-    const std::vector<std::vector<VertexId>>& edges) const {
+    const std::vector<std::vector<VertexId>>& edges, bool want_inverse_maps) const {
     auto mk = worker_scratch().mark();
     SVec<SVec<VertexId>> s; s.reserve(edges.size());
     for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
-    auto result = canonicalize_edges(s);
+    auto result = canonicalize_edges(s, want_inverse_maps);
     worker_scratch().release(mk);
     return result;
 }

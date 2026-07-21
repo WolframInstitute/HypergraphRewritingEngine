@@ -1837,6 +1837,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         wxf::WXFValueAssociation full_result;
 
+        // The States and Events sections dominate the result size, so they are
+        // streamed straight into this scratch Writer as complete key->value blobs
+        // rather than accumulated into an O(states+events) WXFValue tree. They are
+        // spliced ahead of full_result at write time (see the tail of this function);
+        // an Association is a flat concatenation of entries, so the byte stream is
+        // identical to building one combined value tree.
+        wxf::Writer sections;
+        std::size_t streamed_top_sections = 0;
+
         // States -> Association[state_id -> state_data]
         // Send ALL states (not just canonical) - WL uses CanonicalId/ContentStateId for vertex merging
         // Each state includes: Id, CanonicalId, ContentStateId, Step, Edges, IsInitial
@@ -1844,7 +1853,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
         // This matches reference behavior where canonicalization is applied at display time
         if (include_states) {
-            wxf::WXFValueAssociation states_assoc;
             uint32_t num_states = hg.num_states();
 
             // Single pass: compute content hash for each state and build mapping
@@ -1868,28 +1876,58 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
 
-            // Export states with both canonical IDs
-            // When CanonicalizeStates is Full, deduplicate: emit one state per canonical ID
+            // First pass fixes the emitted state set so the association length is
+            // known before streaming. When CanonicalizeStates is Full, emit one state
+            // per canonical ID (isomorphism-based deduplication).
+            std::vector<uint32_t> emit_sids;
+            emit_sids.reserve(num_states);
             std::unordered_set<hypergraph::StateId> emitted_canonical_ids;
             for (uint32_t sid = 0; sid < num_states; ++sid) {
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;
-
                 if (full_canonicalization) {
                     hypergraph::StateId cid = hg.get_canonical_state(sid);
                     if (!emitted_canonical_ids.insert(cid).second) continue;
                 }
+                emit_sids.push_back(sid);
+            }
 
-                // Get canonical state ID (isomorphism-based)
+            // States -> Association[state_id -> state_data], streamed directly.
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            sections.write(std::string("States"));
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            sections.write_varint(emit_sids.size());
+
+            for (uint32_t sid : emit_sids) {
+                const hypergraph::State& state = hg.get_state(sid);
+                // Canonical state ID (isomorphism-based) and content state ID (from cached hash).
                 hypergraph::StateId canonical_id = hg.get_canonical_state(sid);
-
-                // Get content state ID (content-based) - from cached hash
                 hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
 
-                // Build edge list: each edge is {edge_id, v1, v2, ...}
-                // When CanonicalizeStates is Full, edges are IR-canonicalized
-                // (vertices relabeled to 0..n-1, edges sorted) with sequential edge IDs
-                wxf::WXFValueList edge_list;
+                // Association key: raw state id.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(static_cast<int64_t>(sid));
+
+                // state_data association: Id, CanonicalId, ContentStateId, Step, Edges,
+                // IsInitial, and (optionally) CanonicalHash.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                sections.write_varint(include_canonical_hashes ? 7u : 6u);
+
+                auto put_i64 = [&](const char* k, int64_t v) {
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(std::string(k));
+                    sections.write(v);
+                };
+                put_i64("Id", static_cast<int64_t>(sid));
+                put_i64("CanonicalId", static_cast<int64_t>(canonical_id));
+                put_i64("ContentStateId", static_cast<int64_t>(content_id));
+                put_i64("Step", static_cast<int64_t>(state.step));
+
+                // Edges -> List of {edge_id, v1, v2, ...}. When CanonicalizeStates is
+                // Full, edges are IR-canonicalized (vertices 0..n-1, sorted) with
+                // sequential edge IDs.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(std::string("Edges"));
                 if (full_canonicalization) {
                     std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
                     state.edges.for_each([&](hypergraph::EdgeId eid) {
@@ -1900,45 +1938,42 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     if (!edge_vecs.empty()) {
                         hypergraph::IRCanonicalizer ir;
                         auto canon_result = ir.canonicalize_edges(edge_vecs);
+                        const auto& cedges = canon_result.canonical_form.edges;
+                        sections.write_function("List", cedges.size());
                         int64_t edge_idx = 0;
-                        for (const auto& canon_edge : canon_result.canonical_form.edges) {
-                            wxf::WXFValueList edge_data;
-                            edge_data.push_back(wxf::WXFValue(edge_idx++));
-                            for (auto v : canon_edge) {
-                                edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                            }
-                            edge_list.push_back(wxf::WXFValue(edge_data));
+                        for (const auto& canon_edge : cedges) {
+                            sections.write_function("List", canon_edge.size() + 1);
+                            sections.write(edge_idx++);
+                            for (auto v : canon_edge) sections.write(static_cast<int64_t>(v));
                         }
+                    } else {
+                        sections.write_function("List", 0);
                     }
                 } else {
+                    sections.write_function("List", state.edges.count());
                     state.edges.for_each([&](hypergraph::EdgeId eid) {
                         const hypergraph::Edge& edge = hg.get_edge(eid);
-                        wxf::WXFValueList edge_data;
-                        edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                        for (uint8_t i = 0; i < edge.arity; ++i) {
-                            edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
-                        }
-                        edge_list.push_back(wxf::WXFValue(edge_data));
+                        sections.write_function("List", static_cast<std::size_t>(edge.arity) + 1);
+                        sections.write(static_cast<int64_t>(eid));
+                        for (uint8_t i = 0; i < edge.arity; ++i)
+                            sections.write(static_cast<int64_t>(edge.vertices[i]));
                     });
                 }
 
-                wxf::WXFValueAssociation state_assoc;
-                state_assoc.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
-                state_assoc.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(canonical_id))});
-                state_assoc.push_back({wxf::WXFValue("ContentStateId"), wxf::WXFValue(static_cast<int64_t>(content_id))});
-                state_assoc.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
-                state_assoc.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
-                state_assoc.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
+                // IsInitial -> boolean, serialized as the 0/1 integer the value tree
+                // produces (WXFValue(bool) stores int64).
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(std::string("IsInitial"));
+                sections.write(static_cast<int64_t>(state.step == 0));
+
                 if (include_canonical_hashes) {
                     // IR canonical hash (the value the dedup map is keyed on): identical for isomorphic
                     // states within and across runs. Reinterpreted to int64 (bijective, so equality and
                     // grouping are preserved); a hash with the top bit set surfaces as a negative integer.
-                    state_assoc.push_back({wxf::WXFValue("CanonicalHash"), wxf::WXFValue(static_cast<int64_t>(state.canonical_hash))});
+                    put_i64("CanonicalHash", static_cast<int64_t>(state.canonical_hash));
                 }
-
-                states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(sid)), wxf::WXFValue(state_assoc)});
             }
-            full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
+            ++streamed_top_sections;
         }
 
         // Events -> Association[event_id -> event_data]
@@ -1948,13 +1983,26 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // Send ALL events (not just canonical) - WL uses CanonicalId for vertex merging
             // This preserves event multiplicity: multiple events with same canonical ID
             // map to one vertex, but their edges to different output states are preserved.
-            wxf::WXFValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
+
+            // First pass fixes the emitted event set so the association length is
+            // known before streaming.
+            std::vector<uint32_t> emit_eids;
+            emit_eids.reserve(num_raw_events);
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
                 if (event.id == hypergraph::INVALID_ID) continue;
-                // Skip genesis events if ShowGenesisEvents is false
                 if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
+                emit_eids.push_back(eid);
+            }
+
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            sections.write(std::string("Events"));
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            sections.write_varint(emit_eids.size());
+
+            for (uint32_t eid : emit_eids) {
+                const hypergraph::Event& event = hg.get_event(eid);
 
                 // Send BOTH raw and canonical state IDs - WL chooses which to use per graph type
                 // Raw IDs are for edge connectivity to actual states
@@ -1969,43 +2017,64 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     ? static_cast<int64_t>(eid)
                     : static_cast<int64_t>(event.canonical_event_id);
 
-                wxf::WXFValueAssociation event_data;
-                event_data.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
-                event_data.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(canonical_event_id)});
-                event_data.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(event.rule_index))});
-                // Raw state IDs (always included)
-                event_data.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(raw_input_state_id)});
-                event_data.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(raw_output_state_id)});
-                // Canonical state IDs (for when state canonicalization is enabled)
-                event_data.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(canonical_input_state_id)});
-                event_data.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(canonical_output_state_id)});
+                // Association key: raw event id.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(static_cast<int64_t>(eid));
 
-                // Consumed/produced edges
-                wxf::WXFValueList consumed_list, produced_list;
-                for (uint8_t i = 0; i < event.num_consumed; ++i) {
-                    consumed_list.push_back(wxf::WXFValue(static_cast<int64_t>(event.consumed_edges[i])));
-                }
-                for (uint8_t i = 0; i < event.num_produced; ++i) {
-                    produced_list.push_back(wxf::WXFValue(static_cast<int64_t>(event.produced_edges[i])));
-                }
-                event_data.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed_list)});
-                event_data.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced_list)});
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                sections.write_varint(9u);
 
-                events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(eid)), wxf::WXFValue(event_data)});
+                auto put_i64 = [&](const char* k, int64_t v) {
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(std::string(k));
+                    sections.write(v);
+                };
+                put_i64("Id", static_cast<int64_t>(eid));
+                put_i64("CanonicalId", canonical_event_id);
+                put_i64("RuleIndex", static_cast<int64_t>(event.rule_index));
+                put_i64("InputState", raw_input_state_id);
+                put_i64("OutputState", raw_output_state_id);
+                put_i64("CanonicalInputState", canonical_input_state_id);
+                put_i64("CanonicalOutputState", canonical_output_state_id);
+
+                // Consumed/produced edges as integer lists.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(std::string("ConsumedEdges"));
+                sections.write_function("List", event.num_consumed);
+                for (uint8_t i = 0; i < event.num_consumed; ++i)
+                    sections.write(static_cast<int64_t>(event.consumed_edges[i]));
+
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(std::string("ProducedEdges"));
+                sections.write_function("List", event.num_produced);
+                for (uint8_t i = 0; i < event.num_produced; ++i)
+                    sections.write(static_cast<int64_t>(event.produced_edges[i]));
             }
-            full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
+            ++streamed_top_sections;
         }
 
         // EventsMinimal -> Association[event_id -> {Id, CanonicalId, RuleIndex, InputState, OutputState, CanonicalInputState, CanonicalOutputState}]
         // Reduced event data for graph structure variants that don't need full event details
         // Send ALL events - WL uses CanonicalId for vertex merging, RuleIndex for Event=Automatic grouping
         if (include_events_minimal && !include_events) {
-            wxf::WXFValueAssociation events_assoc;
             uint32_t num_raw_events = hg.num_raw_events();
+
+            std::vector<uint32_t> emit_eids;
+            emit_eids.reserve(num_raw_events);
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
                 if (event.id == hypergraph::INVALID_ID) continue;
                 if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
+                emit_eids.push_back(eid);
+            }
+
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            sections.write(std::string("Events"));
+            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            sections.write_varint(emit_eids.size());
+
+            for (uint32_t eid : emit_eids) {
+                const hypergraph::Event& event = hg.get_event(eid);
 
                 // Send BOTH raw and canonical state IDs - WL chooses which to use per graph type
                 int64_t raw_input_state_id = static_cast<int64_t>(event.input_state);
@@ -2018,20 +2087,26 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     ? static_cast<int64_t>(eid)
                     : static_cast<int64_t>(event.canonical_event_id);
 
-                wxf::WXFValueAssociation event_data;
-                event_data.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
-                event_data.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(canonical_event_id)});
-                event_data.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(event.rule_index))});
-                // Raw state IDs (always included)
-                event_data.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(raw_input_state_id)});
-                event_data.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(raw_output_state_id)});
-                // Canonical state IDs (for when state canonicalization is enabled)
-                event_data.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(canonical_input_state_id)});
-                event_data.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(canonical_output_state_id)});
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(static_cast<int64_t>(eid));
 
-                events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(eid)), wxf::WXFValue(event_data)});
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                sections.write_varint(7u);
+
+                auto put_i64 = [&](const char* k, int64_t v) {
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(std::string(k));
+                    sections.write(v);
+                };
+                put_i64("Id", static_cast<int64_t>(eid));
+                put_i64("CanonicalId", canonical_event_id);
+                put_i64("RuleIndex", static_cast<int64_t>(event.rule_index));
+                put_i64("InputState", raw_input_state_id);
+                put_i64("OutputState", raw_output_state_id);
+                put_i64("CanonicalInputState", canonical_input_state_id);
+                put_i64("CanonicalOutputState", canonical_output_state_id);
             }
-            full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
+            ++streamed_top_sections;
         }
 
         // CausalEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -3844,12 +3919,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back(std::make_pair(wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)));
         }
 
-        // Write final association. Reserve the output buffer once from a state/event
-        // estimate (capacity only — bytes unchanged), move the assembled value tree
-        // into the write instead of deep-copying it, and move the finished bytes out.
-        wxf_writer.reserve(1024 + 128 * (static_cast<std::size_t>(hg.num_states())
-                                         + static_cast<std::size_t>(hg.num_events())));
-        wxf_writer.write(wxf::WXFValue(std::move(full_result)));
+        // Write the final top-level association: the streamed States/Events section
+        // blobs spliced ahead of the assembled remaining pairs. An Association is a
+        // flat concatenation of key->value entries, so emitting the header with the
+        // combined count, appending the pre-serialized section bytes, then writing
+        // each full_result pair yields the same byte stream as one combined value
+        // tree — without materializing the O(states+events) tree.
+        wxf_writer.reserve(1024 + sections.size()
+                           + 128 * static_cast<std::size_t>(full_result.size()));
+        wxf_writer.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        wxf_writer.write_varint(streamed_top_sections + full_result.size());
+        wxf_writer.append(sections.data());
+        for (const auto& [key, value] : full_result) {
+            wxf_writer.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            wxf_writer.write(key);
+            wxf_writer.write(value);
+        }
         std::vector<uint8_t> wxf_data = wxf_writer.release_data();
 
         if (show_progress) {

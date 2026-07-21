@@ -167,6 +167,28 @@ create_test_executable(all_tests
     ../wxf/tests/test_wxf.cpp
     # Paclet tests
     ../paclet_source/tests/test_paclet.cpp
+    # FFI WXF serialization pin test: exercises run_rewriting_core end to end.
+    # Pulls in the FFI marshaling TU (compiled in standalone mode, no Wolfram SDK)
+    # plus the blackhole analysis sources it references.
+    ../paclet_source/tests/test_wxf_serialization.cpp
+    ../paclet_source/hypergraph_ffi.cpp
+    ../visualisation/blackhole/src/hausdorff_analysis.cpp
+    ../visualisation/blackhole/src/bh_initial_condition.cpp
+    ../visualisation/blackhole/src/geodesic_analysis.cpp
+    ../visualisation/blackhole/src/particle_detection.cpp
+    ../visualisation/blackhole/src/entropy_analysis.cpp
+    ../visualisation/blackhole/src/curvature_analysis.cpp
+    ../visualisation/blackhole/src/branchial_analysis.cpp
+    ../visualisation/blackhole/src/equilibrium_analysis.cpp
+    ../visualisation/blackhole/src/branch_alignment.cpp
+)
+# run_rewriting_core is the standalone-binary marshaling path (WXF over the FFI):
+# no Wolfram SDK, process-kill abort. HG_STANDALONE_BINARY only guards code in the
+# two paclet_source TUs, so defining it target-wide is inert for the other tests.
+target_compile_definitions(all_tests PRIVATE HG_STANDALONE_BINARY)
+target_include_directories(all_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/paclet_source
+    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 
 # =============================================================================

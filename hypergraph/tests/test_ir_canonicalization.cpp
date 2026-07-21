@@ -209,7 +209,9 @@ TEST_F(IRCanonicalizationTest, CanonicalFormConsistency) {
 
 TEST_F(IRCanonicalizationTest, VertexMappingCorrect) {
     std::vector<std::vector<VertexId>> edges = {{10, 20}, {20, 30}};
-    auto result = ir.canonicalize_edges(edges);
+    // Request the inverse (original_to_canonical) maps; the shipping path leaves
+    // them empty, so this test opts in via want_inverse_maps.
+    auto result = ir.canonicalize_edges(edges, /*want_inverse_maps=*/true);
 
     // Verify mapping is bijective for original vertices
     EXPECT_EQ(result.vertex_mapping.original_to_canonical.size(), 3);

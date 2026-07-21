@@ -261,6 +261,14 @@ public:
     // backing buffer at most once instead of on every doubling. Capacity only; the
     // emitted bytes are unaffected.
     void reserve(std::size_t n) { data_.reserve(n); }
+
+    // Splice an already-serialized byte run into the stream. Used to compose a
+    // top-level association whose element count is known only after its largest
+    // sections have been streamed into a scratch Writer: write the association
+    // header, append the streamed section bytes, then emit the remaining pairs.
+    void append(const std::vector<uint8_t>& bytes) {
+        data_.insert(data_.end(), bytes.begin(), bytes.end());
+    }
 };
 
 // Template implementations

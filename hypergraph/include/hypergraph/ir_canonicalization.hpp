@@ -29,8 +29,13 @@ struct IRPartition {
 class IRCanonicalizer {
 public:
     // Engine entry points: edges already materialized in the per-worker scratch
-    // arena (no heap copy on the hot path).
-    CanonicalizationResult canonicalize_edges(const SVec<SVec<VertexId>>& edges) const;
+    // arena (no heap copy on the hot path). want_inverse_maps builds the
+    // VertexMapping::original_to_canonical / original_edge_to_canonical lookups
+    // (the map_vertex/map_edge direction); the shipping serialization and hash
+    // paths never read them, so it defaults off and the per-canonicalization
+    // hash tables are never allocated. Tools/tests that query those maps pass true.
+    CanonicalizationResult canonicalize_edges(const SVec<SVec<VertexId>>& edges,
+                                              bool want_inverse_maps = false) const;
     uint64_t compute_canonical_hash(const SVec<SVec<VertexId>>& edges) const;
 
     // Canonical hash, plus for each input edge the index of its canonical edge
@@ -68,7 +73,8 @@ public:
 
     // Convenience overloads (tests/tools): adapt a heap edge list into scratch.
     CanonicalizationResult canonicalize_edges(
-        const std::vector<std::vector<VertexId>>& edges) const;
+        const std::vector<std::vector<VertexId>>& edges,
+        bool want_inverse_maps = false) const;
     uint64_t compute_canonical_hash(
         const std::vector<std::vector<VertexId>>& edges) const;
     uint64_t compute_canonical_hash_with_edge_map(
@@ -129,7 +135,8 @@ private:
     CanonicalizationResult build_result(
         const SVec<SVec<VertexId>>& edges,
         const HypergraphAdj& adj,
-        const SVec<uint32_t>& labeling) const;
+        const SVec<uint32_t>& labeling,
+        bool want_inverse_maps) const;
 
     // Runs adjacency + refinement + backtracking IR search on scratch-arena edges;
     // writes the canonical labeling (vertex-index -> canonical label) and adjacency to
