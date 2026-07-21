@@ -114,8 +114,7 @@ RewriteResult Rewriter::apply(
         matched_edges,
         num_matched,
         result.produced_edges,
-        result.num_produced,
-        binding
+        result.num_produced
     );
     result.event = event_result.event_id;
     result.canonical_event = event_result.canonical_event_id;

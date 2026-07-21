@@ -125,13 +125,15 @@ struct Event {
     EdgeId* produced_edges;  // Arena-allocated array
     uint8_t num_consumed;
     uint8_t num_produced;
-    VariableBinding binding;
     EventId canonical_event_id;  // Points to canonical event if this is a duplicate, INVALID_ID if this is canonical
 
+    // The match's VariableBinding is NOT stored on the event: it is consumed during
+    // RHS instantiation and never read from a persistent event afterwards (the event
+    // records consumed/produced edges explicitly). Keeping it cost 132 B per event,
+    // retained for the whole run.
     Event(EventId id_, StateId input, StateId output, RuleIndex rule,
           EdgeId* consumed, uint8_t n_consumed,
           EdgeId* produced, uint8_t n_produced,
-          const VariableBinding& bind,
           EventId canonical_id = INVALID_ID)
         : id(id_)
         , input_state(input)
@@ -141,7 +143,6 @@ struct Event {
         , produced_edges(produced)
         , num_consumed(n_consumed)
         , num_produced(n_produced)
-        , binding(bind)
         , canonical_event_id(canonical_id)
     {}
 
@@ -155,7 +156,6 @@ struct Event {
         , produced_edges(nullptr)
         , num_consumed(0)
         , num_produced(0)
-        , binding()
         , canonical_event_id(INVALID_ID)
     {}
 

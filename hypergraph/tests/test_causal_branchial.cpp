@@ -655,13 +655,11 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
 
     // Create events from both raw states consuming corresponding edges
     // Event 1: from raw1, consumes e0, produces out_e0
-    VariableBinding empty_binding;
     auto result1 = hg.create_event(
         raw1, out_raw1,  // raw input -> raw output
         0,               // rule_index
         &e0, 1,          // consumed edges
-        &out_e0, 1,      // produced edges
-        empty_binding    // binding
+        &out_e0, 1       // produced edges
     );
 
     // Event 2: from raw2, consumes e1 (corresponds to e0), produces out_e1
@@ -669,8 +667,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
         raw2, out_raw2,
         0,
         &e1, 1,
-        &out_e1, 1,
-        empty_binding
+        &out_e1, 1
     );
 
     // Both events should have the same canonical event
@@ -718,11 +715,10 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
         std::move(out2_edges), 1, canonical);
 
     // Event 1: consumes e0
-    VariableBinding empty_binding;
-    auto result1 = hg.create_event(raw, out_raw1, 0, &e0, 1, &out_e0, 1, empty_binding);
+    auto result1 = hg.create_event(raw, out_raw1, 0, &e0, 1, &out_e0, 1);
 
     // Event 2: consumes e1 (NOT corresponding to e0)
-    auto result2 = hg.create_event(raw, out_raw2, 0, &e1, 1, &out_e1, 1, empty_binding);
+    auto result2 = hg.create_event(raw, out_raw2, 0, &e1, 1, &out_e1, 1);
 
     // Both events should be canonical (different signatures - consuming different edges)
     // So they should NOT share the same canonical event
@@ -757,11 +753,10 @@ TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
         std::move(out_edges), 1, canonical);
 
     // Event 1: rule 0
-    VariableBinding empty_binding;
-    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
+    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1);
 
     // Event 2: rule 1 (same edges, different rule)
-    auto result2 = hg.create_event(raw, out_raw, 1, &e0, 1, &out_e, 1, empty_binding);
+    auto result2 = hg.create_event(raw, out_raw, 1, &e0, 1, &out_e, 1);
 
     // Both should be canonical (different rule indices)
     EXPECT_TRUE(result1.is_canonical);
@@ -792,9 +787,8 @@ TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
         std::move(out_edges), 1, canonical);
 
     // Create two identical events
-    VariableBinding empty_binding;
-    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
-    auto result2 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1, empty_binding);
+    auto result1 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1);
+    auto result2 = hg.create_event(raw, out_raw, 0, &e0, 1, &out_e, 1);
 
     // Both should be canonical since canonicalization is disabled
     EXPECT_TRUE(result1.is_canonical);

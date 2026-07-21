@@ -589,8 +589,7 @@ public:
         const EdgeId* consumed,
         uint8_t num_consumed,
         const EdgeId* produced,
-        uint8_t num_produced,
-        const VariableBinding& binding
+        uint8_t num_produced
     );
 
     // Get event by ID

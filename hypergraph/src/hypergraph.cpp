@@ -267,8 +267,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     const EdgeId* consumed,
     uint8_t num_consumed,
     const EdgeId* produced,
-    uint8_t num_produced,
-    const VariableBinding& binding
+    uint8_t num_produced
 ) {
     // Allocate event ID
     EventId eid = counters_.alloc_event();
@@ -372,7 +371,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     // Directly construct event at slot eid using emplace_at
     EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
-                       cons, num_consumed, prod, num_produced, binding, canonical_id_for_event);
+                       cons, num_consumed, prod, num_produced, canonical_id_for_event);
 
     // CRITICAL: Release fence to ensure event data is visible
     std::atomic_thread_fence(std::memory_order_release);
@@ -440,7 +439,6 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
                        static_cast<RuleIndex>(-1),
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
-                       VariableBinding{},
                        canonical_id_for_event);
 
     // CRITICAL: Release fence
