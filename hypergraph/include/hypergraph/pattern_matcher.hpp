@@ -88,11 +88,10 @@ struct PatternMatchingContext {
     // Signature accessor (cached signatures for O(1) lookup)
     SignatureAccessor get_signature;
 
-    // Pre-computed pattern signatures (optimization)
-    EdgeSignature pattern_sigs[MAX_PATTERN_EDGES];
-
-    // Pre-computed compatible data signatures per pattern edge (avoids Bell enumeration)
-    CompatibleSignatureCache sig_caches[MAX_PATTERN_EDGES];
+    // Per-edge pattern signatures and compatible-signature caches are read directly
+    // from `rule` (immutable after RewriteRule::compute_var_counts) — no per-session
+    // copy: the context used to embed EdgeSignature[16] + CompatibleSignatureCache[16]
+    // (~17 KB) and memcpy them from the rule on every state x rule matching session.
 
     // Coordination
     std::atomic<bool>* should_terminate;
@@ -132,15 +131,7 @@ struct PatternMatchingContext {
         , max_matches(SIZE_MAX)
         , on_match(callback)
         , match_dedup(nullptr)
-    {
-        // Copy the rule's precomputed per-edge signatures and compatible-signature
-        // caches (built once in RewriteRule::compute_var_counts) rather than rerunning
-        // the from_pattern Bell enumeration here.
-        for (uint8_t i = 0; i < r->num_lhs_edges; ++i) {
-            pattern_sigs[i] = r->lhs_sig[i];
-            sig_caches[i] = r->lhs_cache[i];
-        }
-    }
+    {}
 };
 
 // =============================================================================
@@ -261,8 +252,8 @@ void expand_match(
     if (pattern_idx >= ctx.rule->num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_idx];
-    const EdgeSignature& pattern_sig = ctx.pattern_sigs[pattern_idx];
-    const CompatibleSignatureCache& sig_cache = ctx.sig_caches[pattern_idx];
+    const EdgeSignature& pattern_sig = ctx.rule->lhs_sig[pattern_idx];
+    const CompatibleSignatureCache& sig_cache = ctx.rule->lhs_cache[pattern_idx];
 
     // Generate candidates
     generate_candidates(
@@ -307,8 +298,8 @@ void scan_pattern(
     // Seed the join with the rule's most-constrained edge (match_order[0]).
     const uint8_t first_pidx = ctx.rule->match_order[0];
     const PatternEdge& first_edge = ctx.rule->lhs[first_pidx];
-    const EdgeSignature& first_sig = ctx.pattern_sigs[first_pidx];
-    const CompatibleSignatureCache& first_cache = ctx.sig_caches[first_pidx];
+    const EdgeSignature& first_sig = ctx.rule->lhs_sig[first_pidx];
+    const CompatibleSignatureCache& first_cache = ctx.rule->lhs_cache[first_pidx];
 
     // Generate candidates for first edge
     generate_candidates(
@@ -454,7 +445,7 @@ void scan_pattern_from_edge(
 
     // Check signature compatibility using cached signature
     const EdgeSignature& data_sig = ctx.get_signature(starting_edge);
-    if (!signature_compatible(data_sig, ctx.pattern_sigs[pattern_position])) {
+    if (!signature_compatible(data_sig, ctx.rule->lhs_sig[pattern_position])) {
         return;
     }
 
