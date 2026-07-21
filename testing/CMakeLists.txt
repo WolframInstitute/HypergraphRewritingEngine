@@ -148,6 +148,7 @@ create_test_executable(all_tests
     # Hypergraph tests
     ../hypergraph/tests/test_concurrent_map.cpp
     ../hypergraph/tests/test_quotient_completeness.cpp
+    ../hypergraph/tests/test_causal_tr_exactness.cpp
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../hypergraph/tests/test_pattern_matching.cpp
     ../hypergraph/tests/test_parallel_evolution.cpp
