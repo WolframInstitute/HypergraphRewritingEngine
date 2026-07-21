@@ -173,48 +173,6 @@ public:
         return {hash, cache};
     }
 
-    // =========================================================================
-    // Incremental WL (B1/B2): parent per-round colour history + O(delta) child
-    // update, bit-identical to compute_state_hash_with_cache. The history is heap
-    // (it outlives the task — cached per-worker); transient work buffers use the
-    // per-worker scratch arena. Colours are keyed by vertex id so they stay valid
-    // across a parent->child rewrite.
-    // =========================================================================
-    // Persistent (per-worker arena) — the history outlives the task that built it.
-    using HistOcc = std::pair<EdgeId, uint8_t>;
-
-    // id-indexed init colour: FNV, degree, sorted (arity,pos) — matches the dense path.
-    // OccVec is any vector of (edge,pos) (PVec history or SVec overlay).
-    template<typename OccVec, typename AA>
-    uint64_t wl_init_id(const OccVec& occ, const AA& ea) const {
-        SVec<std::pair<uint8_t, uint8_t>> ap; ap.reserve(occ.size());
-        for (auto& o : occ) ap.push_back({ea[o.first], o.second});
-        std::sort(ap.begin(), ap.end());
-        uint64_t h = FNV_OFFSET; h = fnv_combine(h, occ.size());
-        for (auto& p : ap) { h = fnv_combine(h, p.first); h = fnv_combine(h, p.second); }
-        return h;
-    }
-    // id-indexed refine: fold sorted fnv_combine(colour[neighbor], k) onto colour[v].
-    // col is a callable id -> current colour; nb is a reusable scratch buffer.
-    template<typename OccVec, typename VA, typename AA, typename Col>
-    uint64_t wl_refine_id(int v, const OccVec& occ,
-                          const VA& ev, const AA& ea, SVec<uint64_t>& nb, Col&& col) const {
-        uint64_t h = col(v); nb.clear();
-        for (auto& o : occ) { uint8_t a = ea[o.first]; const VertexId* vs = ev[o.first];
-            for (uint8_t k = 0; k < a; ++k) if (k != o.second) nb.push_back(fnv_combine(col((int)vs[k]), k)); }
-        std::sort(nb.begin(), nb.end());
-        for (uint64_t x : nb) h = fnv_combine(h, x);
-        return h;
-    }
-    template<typename ColVec, typename VertVec>
-    static int wl_distinct_id(const ColVec& col, const VertVec& verts, SVec<uint64_t>& scratch) {
-        scratch.clear(); for (VertexId v : verts) scratch.push_back(col[v]);
-        std::sort(scratch.begin(), scratch.end());
-        int d = 0; for (size_t i = 0; i < scratch.size(); ++i) if (i == 0 || scratch[i] != scratch[i - 1]) ++d;
-        return d;
-    }
-
-
 
     // =========================================================================
     // Edge Correspondence (O(E) algorithm)
