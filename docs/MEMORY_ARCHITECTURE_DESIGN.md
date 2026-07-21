@@ -37,11 +37,29 @@
 
 **IN PROGRESS:** (none — awaiting next dispatch)
 
-**NOT STARTED:**
-- Causal reachability oracle (§3, the O(N²)→O(N·w) chain-decomposition redesign).
-- Tier reclamation (§1 Tier F / §2b) — per-generation arena reset → working memory O(frontier).
+**DONE since (2026-07-22):**
+- Causal reachability: closure **eliminated** (not chain-decomposition — measured Θ(N)-width so
+  labeling would grow memory; instead id-monotone-pruned backward walk over reduced `preds_`).
+  TR machinery −92% instr, arenaB down every case, exact, determinism 8×. (Supersedes the §3 plan.)
+- IR canon `build_adjacency` de-mapped (sorted `lower_bound`, −14.5% wall-clock, 243 hashes identical).
+
+**NOT STARTED (with measured caveats):**
+- Tier reclamation (§1 Tier F / §2b) — **BLOCKER found:** a per-generation Tier-F reset is UNSAFE for
+  match data because forward-by-reference `MatchCore`s live ACROSS generations (a depth-d match
+  forwards down its subtree until consumed/invalidated — the rendezvous is phaseless pull-based, not
+  band-confined). Exact reclamation must split: (a) reclaim the per-state `LockFreeList` *nodes* at
+  state-expansion quiescence (a lock-free outstanding-task watermark), separately from (b) the
+  `MatchCore`s, which need refcount-or-survival tracking (a core dies only when no surviving
+  descendant match references it). §2b's "Tier-F holds only the active band" assumption must be
+  revised accordingly before implementing.
+- Incremental IR canonicalization — **REFUTED** (see [[project-incrementalisation-status]]): refine
+  warm-start can't be exact + no parent→child locality under the work-stealing task model. MEASURED
+  REALITY: the ~50% canon cost is refine (~26% of total, irreducible-exact) + setup (~20%,
+  amortizable ONLY by batching a parent's children into one task — a scheduler change). So the
+  addressable canon slice is ~20%, modest — not a 50% lever. Incremental *WL hashing* stays dropped.
 - Automorphism reconstruction (§2 pillar 3 / §2b) — don't materialise raw provenance.
-- Incremental hashing (§4) — consume the delta already handed to `create_or_get_canonical_state`.
+- Per-edge storage compaction; ConcurrentMap insert cost (both in-flight 2026-07-22).
+- Frontier-width parallelism (scaling eff 20–43% @16T — cores idle at high T).
 - CPU/GPU shared factoring + persistent-kernel scheduler (§5, Phase 3).
 
 Name/location of this doc still provisional; charter is `OBJECTIVE.md`.
