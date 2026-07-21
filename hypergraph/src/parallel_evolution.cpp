@@ -1498,9 +1498,11 @@ void ParallelEvolutionEngine::execute_match_task(
         return hg_->edge_signature(eid);
     };
 
-    // Batched matching: collect all matches first, then spawn REWRITEs
+    // Batched matching: collect all matches first, then spawn REWRITEs. The batch
+    // is only touched in batched mode, so reserve only then -- the default eager
+    // path would otherwise bump ~32 MatchRecords of per-task scratch for nothing.
     SVec<MatchRecord> batch;
-    batch.reserve(32);
+    if (batched_matching_) batch.reserve(32);
     size_t delta_start = 0;  // Index where delta (discovered) matches start
 
     // Collector callback
