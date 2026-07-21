@@ -58,9 +58,21 @@ Legend: [x] done · [~] in progress · [ ] not started.
 - [ ] Configurable rule caps (`MAX_VARS` 32→8, compile-time; path to variable-length records).
 
 ## 2. Compute / incrementalisation — no wasted work
-- [ ] **Incremental hashing**: consume the delta already handed to
-  `create_or_get_canonical_state` (`incr_consumed/produced`, currently ignored); the
-  `wl_canonical_hash` fold is patchable (WL colour propagation is non-local — the hard part).
+- PROFILE (callgrind, binary-growth depth-8, `tools/timing_harness.cpp --heavy`): **per-child-state
+  canonicalization is ~50% of all instructions** (stable 1T/8T). In `Full` mode (the oracle-certified
+  dedup path) `compute_canonical_hash` dispatches to **IR exact**, NOT WL — the standalone WL digest
+  is <1%. The wall is IR recomputed from scratch per child; its largest component is the colour-
+  **`refine`** loop (~26% incl). Secondary: causal `add_causal_edge` ~18%, `ConcurrentMap::insert`
+  ~26% self (across dedup+causal+match maps), matching ~11%. Scaling is sublinear (eff 20–43% at 16T,
+  frontier-width bound). This reorders the compute backlog below.
+- [ ] **Incremental IR canonicalization** (the proven ~50% lever): warm-start the IR labeling from
+  the parent's canonical partition + the rewrite delta (`incr_parent/consumed/produced`, already
+  threaded into `create_or_get_canonical_state` but ignored) instead of rebuilding adjacency +
+  initial_partition + refine from scratch per child. Must stay EXACT (oracle) + deterministic.
+  NOTE: refinement is non-local, but the parent partition is a strong warm-start and the delta is
+  O(1) — the open question the prior incremental-IR probe (`96b7ba7`) shelved; the profile now
+  justifies revisiting. (Incremental WL hashing was correctly dropped — `0530f69`, and Full mode
+  doesn't even use WL; see [[project-incrementalisation-status]].)
 - [ ] Canonicalization event-path redundancy: `find_edge_correspondence` recomputes both states'
   WL 4× per event; both correspondences built when one is keyed (A1); canonical-state cache
   recomputed per incident event (A3) → memoize on the State; drop the `hash1!=hash2` guard.
