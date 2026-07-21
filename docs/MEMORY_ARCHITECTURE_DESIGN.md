@@ -142,6 +142,37 @@ bit-identical to the current engine and to the brute-force oracle across the ful
 single- and multi-threaded, at every step. This is the riskiest single piece of the design —
 prototype behind a flag, differential-test against the existing closure before switching.
 
+### 3c. De-heap the entire surface — into lifetime tiers, NOT one arena [DECIDED]
+
+Measured (cost_matrix heap counter): heap **dwarfs** the arena (2.8–4.4 MB vs 0.2–1.1 MB
+per small evolution) — a ~2.8 MB fixed floor from oversized default `ConcurrentMap` tables
+plus ~1 KB/event growth. Every heap allocation contends `malloc` across workers; removing
+them is a proven large time win. But **a single global arena is wrong**: it removes the
+contention yet leaves the O(N²) closure resident until end-of-run — same wall. Each site
+must land in the **tier matched to its lifetime** (§1), so it is reclaimed when its
+generation is done. Line-by-line inventory of the shipping engine, with target tier:
+
+| Heap site | Where | Target tier |
+|---|---|---|
+| `ConcurrentMap` tables (`::operator new`) | `concurrent_map.hpp:66` | per-instance (below) |
+| — `canonical_state_map_`, event maps, `seen_*` dedup sets | Hypergraph / CausalGraph | **Tier D** durable (right-sized initial capacity; keys-only where value is dead) |
+| — causal `desc_`/`anc_` + per-event `DescAncSet` | CausalGraph | **replaced** by the reachability oracle (§3); residue **Tier F**, reclaimed per generation |
+| — `state_matches_`, `state_parent_`, child maps, `seen_match_hashes_`, `missing_match_hashes_` | parallel_evolution | **Tier F** frontier-transient |
+| `new T` injector boxing | `lockfree_deque/deque.hpp` ×4 | store `Job*` inline (no alloc) / **Tier T** |
+| `FunctionJob` `make_unique` per task | `job_system/job.hpp:50` | inline tagged-union task in the deque / per-worker slab — **no heap** |
+| WXF `std::vector<uint8_t>` serialization buffers | `wxf/wxf.hpp` | FFI-boundary, per-call; stream into a reused buffer (Tier D scratch) |
+| `std::function` ×11 | job/wxf/ffi/matcher | SBO covers small closures; the load-bearing one is `FunctionJob` (above); rest cold |
+| IR `std::map`/union-find, `canonical_types` `unordered_map` | ir_canonicalization / canonical_types | per-canonicalization → worker-scratch (Tier T) |
+| `make_unique<WLHash>`/`<JobSystem>`, worker vector | one-time setup | cold — acceptable, or Tier D at construction |
+
+The mechanism: `ConcurrentMap` (and the other structures) take an arena + a tier tag; the
+allocator is chosen by lifetime, and superseded tables / completed-generation data are
+reclaimed at the generation boundary rather than `::operator delete`d one-by-one or leaked
+to end-of-run. Right-size initial capacities to kill the fixed floor. Prove each removal
+with the cost_matrix heap counter (heap → 0 on the hot path) and the corpus oracle (exact).
+This is gated on the §1 tier design landing first — de-heap and the hierarchical allocator
+are one piece of work.
+
 ### 4. Zero-waste pass (each collapses a functionally-equivalent intersection)
 
 Canonicalization / hashing:

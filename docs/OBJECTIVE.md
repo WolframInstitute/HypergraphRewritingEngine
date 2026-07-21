@@ -50,6 +50,13 @@ well-documented release. A deep drive to closure. No corners, no hacks, no stone
    separation. Memory traffic (the forwarding deep-copies, the re-serialization, the closure)
    is minimized because bandwidth *is* the wall as much as capacity.
 
+5a. **No `malloc`/heap on any concurrent path — de-heap the entire surface.** `malloc`/
+   `::operator new` contend a global lock across workers and fragment. Every allocation is
+   custom-allocator (arena) backed, placed in the **lifetime tier** that matches it (a single
+   global arena is NOT the answer — it removes contention but not the memory wall). Reclamation
+   happens at the generation boundary. Proven by the heap-allocation counter driving the
+   hot-path heap to zero. See MEMORY_ARCHITECTURE_DESIGN §3c for the line-by-line inventory.
+
 6. **One implementation, reused at every functionally-equivalent intersection.** CPU,
    GPU-lockstep, GPU-persistent are three *schedulers* over a single shared `hgcommon` kernel
    set. WL/IR, SCAN/EXPAND/SINK, delta/full, all bottom out in single sources of truth. No path
