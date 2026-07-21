@@ -3844,9 +3844,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back(std::make_pair(wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)));
         }
 
-        // Write final association
-        wxf_writer.write(wxf::WXFValue(full_result));
-        std::vector<uint8_t> wxf_data = wxf_writer.data();
+        // Write final association. Reserve the output buffer once from a state/event
+        // estimate (capacity only — bytes unchanged), move the assembled value tree
+        // into the write instead of deep-copying it, and move the finished bytes out.
+        wxf_writer.reserve(1024 + 128 * (static_cast<std::size_t>(hg.num_states())
+                                         + static_cast<std::size_t>(hg.num_events())));
+        wxf_writer.write(wxf::WXFValue(std::move(full_result)));
+        std::vector<uint8_t> wxf_data = wxf_writer.release_data();
 
         if (show_progress) {
             core_progress(host, "HGEvolve: Serialization complete.");

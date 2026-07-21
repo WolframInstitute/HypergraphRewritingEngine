@@ -1,6 +1,5 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
-#include <functional>
 
 #include <algorithm>
 #include <cassert>
@@ -760,7 +759,7 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
         // is the corresponding automorphism of the canonical form.
         std::vector<uint32_t> uf(uniq.size());
         for (size_t i = 0; i < uf.size(); ++i) uf[i] = static_cast<uint32_t>(i);
-        std::function<uint32_t(uint32_t)> find = [&](uint32_t x) {
+        auto find = [&](uint32_t x) -> uint32_t {
             while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; }
             return x;
         };

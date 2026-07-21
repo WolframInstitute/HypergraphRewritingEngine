@@ -256,6 +256,11 @@ public:
     std::vector<uint8_t> release_data() noexcept { return std::move(data_); }
     void clear() noexcept { data_.clear(); }
     size_t size() const noexcept { return data_.size(); }
+
+    // Reserve output capacity up front so a large serialization grows the single
+    // backing buffer at most once instead of on every doubling. Capacity only; the
+    // emitted bytes are unaffected.
+    void reserve(std::size_t n) { data_.reserve(n); }
 };
 
 // Template implementations

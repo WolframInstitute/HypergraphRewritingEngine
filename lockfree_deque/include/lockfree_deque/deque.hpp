@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <vector>
 #include <thread>
 
@@ -21,15 +22,35 @@ namespace lockfree {
 // CAS and no architecture-specific code. Capacity is limited to 32768 by the 16-bit
 // indices, which is ample for a work queue.
 //
-// Each slot holds one pointer (nullptr = free). An operation checks the slot state
-// BEFORE committing (push only into a vacated slot, pop only from a published slot) and
-// reports false/nullopt on a transient lag rather than spinning after committing, so
-// every operation is non-blocking.
+// Each slot holds one pointer whose non-null value marks the slot published and null
+// marks it free. When the payload T is itself a pointer, that payload is stored INLINE
+// in the slot (the payload's own nullness is the occupancy flag), so the queue touches
+// the allocator on no operation; for any other T the slot holds a heap box of T and the
+// box pointer is the occupancy flag. An operation checks the slot state BEFORE committing
+// (push only into a vacated slot, pop only from a published slot) and reports
+// false/nullopt on a transient lag rather than spinning after committing, so every
+// operation is non-blocking.
 template<typename T>
 class Deque {
 private:
     static constexpr std::size_t DEFAULT_CAPACITY = 1024;
     static constexpr std::size_t MAX_CAPACITY = 32768;
+
+    // A pointer payload lives inline in its slot; anything else is boxed on the heap.
+    static constexpr bool kInline = std::is_pointer_v<T>;
+    using Slot = std::conditional_t<kInline, T, T*>;   // a pointer either way; null = free
+
+    // Package a value into its slot representation. Inline: the pointer itself (no
+    // allocation). Boxed: a single heap node holding the moved value.
+    static Slot make_slot(T value) {
+        if constexpr (kInline) return value;
+        else return new T(std::move(value));
+    }
+    // Consume a published slot value, freeing the box on the boxed path.
+    static T take_slot(Slot s) {
+        if constexpr (kInline) return s;
+        else { T v = std::move(*s); delete s; return v; }
+    }
 
     static std::size_t round_up_pow2(std::size_t n) {
         std::size_t c = 1;
@@ -47,7 +68,7 @@ private:
     const std::uint32_t capacity_;
     const std::uint32_t mask_;
     alignas(64) std::atomic<std::uint64_t> ht_{0};   // packed {tag, head, tail}
-    std::vector<std::atomic<T*>> buffer_;
+    std::vector<std::atomic<Slot>> buffer_;
 
     // Brief busy-spin then yield, for the blocking variants only. yield() is portable,
     // so there is no architecture-specific pause instruction.
@@ -86,7 +107,7 @@ public:
             if (buffer_[slot].load(std::memory_order_acquire) != nullptr) return false;
             if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h - 1, t),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
-                buffer_[slot].store(new T(std::move(value)), std::memory_order_release);
+                buffer_[slot].store(make_slot(std::move(value)), std::memory_order_release);
                 return true;
             }
         }
@@ -101,7 +122,7 @@ public:
             if (buffer_[slot].load(std::memory_order_acquire) != nullptr) return false;
             if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h, t + 1),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
-                buffer_[slot].store(new T(std::move(value)), std::memory_order_release);
+                buffer_[slot].store(make_slot(std::move(value)), std::memory_order_release);
                 return true;
             }
         }
@@ -115,14 +136,12 @@ public:
             std::uint16_t h = head_of(v), t = tail_of(v);
             if (h == t) return std::nullopt;
             std::uint32_t slot = h & mask_;
-            T* item = buffer_[slot].load(std::memory_order_acquire);
+            Slot item = buffer_[slot].load(std::memory_order_acquire);
             if (item == nullptr) return std::nullopt;
             if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h + 1, t),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
                 buffer_[slot].store(nullptr, std::memory_order_release);
-                std::optional<T> result(std::move(*item));
-                delete item;
-                return result;
+                return std::optional<T>(take_slot(item));
             }
         }
     }
@@ -133,22 +152,20 @@ public:
             std::uint16_t h = head_of(v), t = tail_of(v);
             if (h == t) return std::nullopt;
             std::uint32_t slot = static_cast<std::uint16_t>(t - 1) & mask_;
-            T* item = buffer_[slot].load(std::memory_order_acquire);
+            Slot item = buffer_[slot].load(std::memory_order_acquire);
             if (item == nullptr) return std::nullopt;
             if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h, t - 1),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
                 buffer_[slot].store(nullptr, std::memory_order_release);
-                std::optional<T> result(std::move(*item));
-                delete item;
-                return result;
+                return std::optional<T>(take_slot(item));
             }
         }
     }
 
-    // Blocking: spin (yielding) until there is room / an item. The item is allocated
+    // Blocking: spin (yielding) until there is room / an item. The slot value is formed
     // once and stored only on success, so value is never lost on a failed attempt.
     void push_front(T value) {
-        T* item = new T(std::move(value));
+        Slot item = make_slot(std::move(value));
         std::uint64_t v = ht_.load(std::memory_order_acquire);
         int n = 0;
         while (true) {
@@ -168,7 +185,7 @@ public:
     }
 
     void push_back(T value) {
-        T* item = new T(std::move(value));
+        Slot item = make_slot(std::move(value));
         std::uint64_t v = ht_.load(std::memory_order_acquire);
         int n = 0;
         while (true) {
