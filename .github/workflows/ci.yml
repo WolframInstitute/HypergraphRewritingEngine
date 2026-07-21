@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Linux correctness gate. The Wolfram paclet, the GPU engine, and the visualiser are
+# off (a bare runner has no LibraryLink headers, no CUDA, no Vulkan); all_tests is the
+# aggregate C++ suite, including the ReferenceOracle brute-force isomorphism check.
+# GPU (gpu_differential_tests / hg_gpu_tests) needs a CUDA runner; the paclet golden
+# (reference/verify_paclet.wls) needs a Wolfram Engine + a macOS/Windows leg -- both
+# tracked as follow-ups (TASKS.md items 13/14).
+jobs:
+  linux-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+
+      - name: Build tests
+        run: cmake --build build --target all_tests
+
+      - name: Run tests
+        run: ./build/all_tests --gtest_filter=-PacletTest.*
