@@ -63,9 +63,6 @@ class Hypergraph {
     // Pattern matching indices
     PatternMatchingIndex match_index_;
 
-    // Per-state child tracking for match cascading
-    SegmentedArray<LockFreeList<StateId>> state_children_;
-
     // Causal and branchial graph
     CausalGraph causal_graph_;
 
@@ -568,25 +565,6 @@ public:
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
     bool is_full_canonicalization() const {
         return state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::Full;
-    }
-
-    // =========================================================================
-    // State Parent-Child Relationships
-    // =========================================================================
-
-    // Add child to parent state
-    void add_state_child(StateId parent, StateId child) {
-        if (parent >= state_children_.size()) return;
-        state_children_[parent].push(child, arena_);
-    }
-
-    // Iterate over children of a state
-    template<typename Visitor>
-    void for_each_child(StateId parent, Visitor&& visit) const {
-        if (parent >= state_children_.size()) return;
-        state_children_[parent].for_each([&](StateId child) {
-            visit(child);
-        });
     }
 
     // =========================================================================

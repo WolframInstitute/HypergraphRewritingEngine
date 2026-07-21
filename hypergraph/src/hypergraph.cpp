@@ -78,9 +78,6 @@ StateId Hypergraph::create_state(
 ) {
     StateId sid = counters_.alloc_state();
 
-    // Ensure auxiliary arrays are large enough (thread-safe)
-    state_children_.ensure_size(sid + 1, arena_);
-
     // Directly construct state at slot sid using emplace_at
     states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
 
@@ -379,9 +376,6 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
 
     // CRITICAL: Release fence to ensure event data is visible
     std::atomic_thread_fence(std::memory_order_release);
-
-    // Track parent-child relationship
-    add_state_child(input_state, output_state);
 
     return {eid, canonical_eid, is_canonical};
 }
