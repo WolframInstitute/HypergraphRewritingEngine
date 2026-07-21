@@ -121,7 +121,7 @@ set(TEST_COMMON_LIBS
 function(create_test_executable TARGET_NAME)
     add_executable(${TARGET_NAME} ${ARGN})
     target_link_libraries(${TARGET_NAME} PRIVATE ${TEST_COMMON_LIBS})
-    target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
 
     if(DEBUG_OUTPUT)
         target_compile_definitions(${TARGET_NAME} PRIVATE ENABLE_DEBUG_OUTPUT)
@@ -162,6 +162,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
     ../hypergraph/tests/test_reference_oracle.cpp
+    ../hypergraph/tests/test_oracle_corpus.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp
     # Paclet tests
