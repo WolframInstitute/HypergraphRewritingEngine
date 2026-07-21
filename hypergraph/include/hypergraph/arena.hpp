@@ -321,6 +321,13 @@ class ConcurrentHeterogeneousArena {
 public:
     static constexpr size_t DEFAULT_BLOCK_SIZE = 1024 * 1024;  // 1 MB
 
+    // The first block reserved (per arena, and per worker cursor) is small, and each
+    // successive block doubles up to block_size_. A lightly-used arena therefore
+    // reserves only a small block instead of a full block_size_, so the heap-BYTES
+    // floor tracks actual usage; the geometric ramp keeps the malloc COUNT
+    // logarithmic in the bytes served, never per-allocation.
+    static constexpr size_t INITIAL_BLOCK_SIZE = 64 * 1024;  // 64 KB
+
     // recycle_blocks enables reset()-based block reuse. It is ONLY safe when the
     // arena is used single-threaded (a per-worker scratch arena); leave it false for
     // the shared global arena, where a concurrent reuse would zero a block another
@@ -329,7 +336,8 @@ public:
                                           bool recycle_blocks = false)
         : block_size_(block_size)
         , recycle_(recycle_blocks)
-        , destructor_head_(nullptr) {
+        , destructor_head_(nullptr)
+        , shared_grow_(INITIAL_BLOCK_SIZE < block_size ? INITIAL_BLOCK_SIZE : block_size) {
         allocate_new_block();
         // Per-worker bump cursors back the contention-free concurrent fast path. A
         // recycling scratch arena is single-threaded and uses the shared cursor plus
@@ -509,6 +517,7 @@ private:
         Block* block = nullptr;   // this worker's current bump block
         size_t offset = 0;        // bump position within block->data
         size_t capacity = 0;      // cached block->capacity
+        size_t next_size = 0;     // size of this cursor's next block (0 = use initial); doubles up to block_size_
     };
 
     // Bump this worker's private cursor. On overflow, grab a fresh block sized for
@@ -525,10 +534,16 @@ private:
             }
         }
         // Current block can't fit this request; take a fresh one (shared, but rare).
-        size_t cap = block_size_;
+        // Ramp this cursor's block size geometrically from INITIAL_BLOCK_SIZE up to
+        // block_size_, so a lightly-used worker reserves only a small block.
+        size_t grow = c.next_size ? c.next_size
+                    : (INITIAL_BLOCK_SIZE < block_size_ ? INITIAL_BLOCK_SIZE : block_size_);
+        size_t cap = grow;
         size_t need = size + alignment;  // worst-case alignment slack
-        if (need > cap) cap = need;
+        if (need > cap) cap = need;      // oversized single request (does not perturb the ramp)
         Block* nb = grab_block(cap);
+        c.next_size = grow < block_size_ ? (grow * 2 < block_size_ ? grow * 2 : block_size_)
+                                         : block_size_;
         c.block = nb;
         c.capacity = nb->capacity;
         // Fresh block: data is max_align_t-aligned, so an offset-relative alignment
@@ -563,7 +578,10 @@ private:
                 continue;
             }
 
-            advance_block();
+            // Fresh/recycled block starts near offset 0, so the request needs at most
+            // size + alignment bytes; pass that so a small ramp block still grows big
+            // enough to satisfy an oversized request.
+            advance_block(size + alignment);
         }
     }
 
@@ -593,8 +611,18 @@ private:
         return new_block;
     }
 
-    void allocate_new_block() {
-        grab_block(block_size_);
+    // Grow the shared chain by one block. Its capacity is the geometric ramp size
+    // (shared_grow_, doubling up to block_size_) or min_cap, whichever is larger, so
+    // a lightly-used arena reserves only a small block while an oversized request is
+    // still satisfied. shared_grow_ is atomic because the concurrent over-ceiling
+    // fallback can reach this off the fast path; a race merely mis-sizes a block.
+    void allocate_new_block(size_t min_cap = 0) {
+        size_t grow = shared_grow_.load(std::memory_order_relaxed);
+        size_t cap = grow > min_cap ? grow : min_cap;
+        grab_block(cap);
+        size_t next = grow < block_size_ ? (grow * 2 < block_size_ ? grow * 2 : block_size_)
+                                         : block_size_;
+        shared_grow_.store(next, std::memory_order_relaxed);
 
         // Track the most-recent head: a plain store(new_block) lets a racing
         // thread's older block win current_block_ while its newer block sits
@@ -607,8 +635,10 @@ private:
     // already-allocated successor (populated after a reset()) if present, else grow.
     // The recycle branch is only reached single-threaded (a per-worker scratch arena
     // refilling after reset); the global concurrent arena's current_block_ is always
-    // the head (next == nullptr), so it always grows, preserving prior behaviour.
-    void advance_block() {
+    // the head (next == nullptr), so it always grows, preserving prior behaviour. A
+    // recycled successor too small for the request is handled by allocate_shared's
+    // retry loop, which advances again until a block fits or the chain ends and grows.
+    void advance_block(size_t min_cap = 0) {
         if (recycle_) {
             Block* cur = current_block_.load(std::memory_order_relaxed);
             if (Block* nxt = cur->next) {            // single-threaded: safe to reuse
@@ -617,7 +647,7 @@ private:
                 return;
             }
         }
-        allocate_new_block();
+        allocate_new_block(min_cap);
     }
 
     void register_destructor(void* obj, void (*destroy)(void*)) {
@@ -640,6 +670,10 @@ private:
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;
+    // Geometric growth size for the shared/eager block chain: doubles up to
+    // block_size_ each time a shared block is grabbed. Atomic for the rare
+    // concurrent over-ceiling fallback path.
+    std::atomic<size_t> shared_grow_;
     // Per-worker bump cursors (non-null only for a non-recycling concurrent arena).
     LocalCursor* cursors_ = nullptr;
 };

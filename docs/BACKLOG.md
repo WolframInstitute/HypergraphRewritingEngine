@@ -50,8 +50,11 @@ Legend: [x] done · [~] in progress · [ ] not started.
   `ConcurrentIdSet` pattern to the remaining dedup sets).
 - [ ] `ConcurrentMap` reclaim superseded resize tables at quiescence (~2× map memory retained).
 - [ ] SparseBitset empty-chunk compaction; entries-array growth.
-- [ ] Arena block-size tuning (per-worker 1 MB blocks over-reserve → `heapB` grew; tune for the
-  memory wall) + streaming Tier-D output (free-on-emit) for frontier-resident mode.
+- [x] Arena block right-sizing: 64 KB initial block + geometric ×2 growth to the 1 MB cap (per
+  `LocalCursor`, no shared fast-path state) killed the uniform ~4.8 MB `heapB` floor — small
+  cases −54..62% (self-loop 4.82M→1.81M, below the pre-de-heap 2.79M base), binary-growth
+  −21.6%; arenaB byte-identical, +3–5 mallocs (immaterial), oracle EXACT, 184/184.
+- [ ] Streaming Tier-D output (free-on-emit) for frontier-resident mode.
 - [ ] Configurable rule caps (`MAX_VARS` 32→8, compile-time; path to variable-length records).
 
 ## 2. Compute / incrementalisation — no wasted work
