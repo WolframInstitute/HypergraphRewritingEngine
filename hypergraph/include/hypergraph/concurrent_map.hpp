@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
+#include "arena.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -58,12 +59,19 @@ public:
         size_t mask;  // capacity - 1, for fast modulo
         Table* prev;  // Previous table (for resize chain)
 
-        static Table* create(size_t cap, Table* prev_table = nullptr) {
+        // When arena != nullptr the table is allocated from the arena (no malloc, no
+        // per-map heap contention) and is NEVER individually freed — it is reclaimed in
+        // bulk when the arena is. When arena == nullptr it falls back to ::operator new
+        // (freed in the destructor), for standalone/test use.
+        static Table* create(size_t cap, Table* prev_table,
+                             ConcurrentHeterogeneousArena* arena) {
             // Capacity must be power of 2
             size_t actual_cap = 1;
             while (actual_cap < cap) actual_cap <<= 1;
 
-            void* mem = ::operator new(sizeof(Table) + sizeof(Entry) * actual_cap);
+            size_t bytes = sizeof(Table) + sizeof(Entry) * actual_cap;
+            void* mem = arena ? arena->allocate_raw(bytes, alignof(std::max_align_t))
+                              : ::operator new(bytes);
             Table* table = static_cast<Table*>(mem);
             table->entries = reinterpret_cast<Entry*>(
                 static_cast<char*>(mem) + sizeof(Table));
@@ -80,13 +88,18 @@ public:
         }
     };
 
-    explicit ConcurrentMap(size_t initial_capacity = DEFAULT_INITIAL_CAPACITY)
-        : count_(0) {
-        table_.store(Table::create(initial_capacity), std::memory_order_release);
+    // arena != nullptr routes all table allocation through the arena (no malloc); the
+    // tables are then reclaimed in bulk with the arena, not in this destructor.
+    explicit ConcurrentMap(size_t initial_capacity = DEFAULT_INITIAL_CAPACITY,
+                           ConcurrentHeterogeneousArena* arena = nullptr)
+        : count_(0), arena_(arena) {
+        table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
     }
 
     ~ConcurrentMap() {
-        // Free all tables in the chain
+        // Arena-backed tables are owned by the arena (bulk-freed); nothing to do.
+        if (arena_) return;
+        // Free all heap tables in the chain.
         Table* t = table_.load(std::memory_order_acquire);
         while (t) {
             Table* prev = t->prev;
@@ -431,7 +444,7 @@ private:
         Table* old_table = table_.load(std::memory_order_acquire);
         size_t new_capacity = old_table->capacity * 2;
 
-        Table* new_table = Table::create(new_capacity, old_table);
+        Table* new_table = Table::create(new_capacity, old_table, arena_);
 
         // Rehash all entries from old table
         // Skip EMPTY and LOCKED entries (LOCKED entries will be in new table via insert path)
@@ -448,13 +461,16 @@ private:
                 old_table, new_table,
                 std::memory_order_release,
                 std::memory_order_acquire)) {
-            // Another thread resized first, discard our table
-            ::operator delete(new_table);
+            // Another thread resized first. Discard our table: only free if heap-backed;
+            // an arena-backed loser is reclaimed in bulk with the arena (rare, small).
+            if (!arena_) ::operator delete(new_table);
         }
     }
 
     std::atomic<Table*> table_;
     std::atomic<size_t> count_;
+    // When non-null, all tables are arena-allocated (no malloc) and bulk-reclaimed.
+    ConcurrentHeterogeneousArena* arena_ = nullptr;
 };
 
 }  // namespace hypergraph

@@ -28,7 +28,7 @@ CausalGraph::DescAncSet* CausalGraph::get_or_create_desc(EventId event) {
     // Per-event descendant/ancestor closures are small for the vast majority of
     // events; start tiny and let the map resize the rare large ones, rather than
     // paying a full default-capacity table (~16 KB) per event.
-    auto* new_set = arena_->template create<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY);
+    auto* new_set = arena_->template create<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY, arena_);
     auto [existing, inserted] = desc_.insert_if_absent(key, new_set);
     return inserted ? new_set : existing;
 }
@@ -44,7 +44,7 @@ CausalGraph::DescAncSet* CausalGraph::get_or_create_anc(EventId event) {
     // Per-event descendant/ancestor closures are small for the vast majority of
     // events; start tiny and let the map resize the rare large ones, rather than
     // paying a full default-capacity table (~16 KB) per event.
-    auto* new_set = arena_->template create<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY);
+    auto* new_set = arena_->template create<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY, arena_);
     auto [existing, inserted] = anc_.insert_if_absent(key, new_set);
     return inserted ? new_set : existing;
 }

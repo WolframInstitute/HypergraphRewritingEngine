@@ -59,6 +59,7 @@ Measured measure(const oracle::Case& c, int steps) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     ParallelEvolutionEngine engine(&hg, 1);
+    engine.set_transitive_reduction(true);  // exercise the Desc/Anc closure (the O(N^2) term)
     for (const auto& r : c.rules) engine.add_rule(r);
     engine.evolve(c.init, steps);
 
