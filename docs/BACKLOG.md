@@ -22,7 +22,10 @@ Legend: [x] done · [~] in progress · [ ] not started.
   (predecessor BFS), reconvergence-skip, lazy empties.
 
 ## 1. Memory / allocator — frontier reach
-- [~] Pattern-matcher wasted-compute (F2/F4/F5/F6/F7) — *subagent running*.
+- [x] Pattern-matcher wasted-compute (F2/F4/F5/F6/F7): redundant bound-path signature check
+  removed (`SignatureAccessor` dropped); mutate/undo DFS (no per-candidate `binding`/`PartialMatch`
+  copies); fetched-edge threaded through the intersection; probe skipped when count==1;
+  all-distinct SCAN seeds bypass the Bell enumeration. Exact, no slowdown.
 - [ ] **Tier reclamation**: free per-state transient data (match lists `state_matches_`, etc.)
   once a state is fully expanded → working memory O(active frontier), not O(all states). The
   "release what's processed" lever. Needs a generation/completion quiescence signal + a
@@ -79,11 +82,15 @@ Legend: [x] done · [~] in progress · [ ] not started.
 - [ ] `max_blocks_per_launch` WDDM hack → headless A100/H100 target + tuning.
 
 ## 5. Visualisation
-- [ ] Decide + complete: finish the modular renderer refactor (render/ui/geometry/scene `src`)
-  OR keep the monolithic header — and make `visualisation/` **build**; wire `BUILD_VISUALIZATION`
-  into CI so it can never silently rot (the default-OFF trap that started this audit).
-- [ ] Recover the 25 missing viz `.cpp` from the other machine (or confirm the split was never
-  completed) — see the manifest.
+- [ ] Decide + complete: finish the modular renderer refactor (write the render/ui/geometry/
+  scene `src/*.cpp` by splitting the 2967-line monolithic `scene/include/scene/
+  hypergraph_renderer.hpp`) OR keep the monolith and drop the dead CMake refs — and make
+  `visualisation/` **build**; wire `BUILD_VISUALIZATION` into CI so it can never silently rot
+  (the default-OFF trap that started this audit).
+- [ ] NOTE (settled): the 25 CMake-referenced viz `.cpp` were NEVER committed anywhere —
+  exhaustive object-DB scan across `_final`, the bare remote, the sibling clones, AND the laptop
+  repo/history/disk confirmed zero trace. An interrupted/never-completed modular split, NOT
+  recoverable; the renderer logic already exists in `hypergraph_renderer.hpp`. Not a recovery task.
 - [ ] GPU Barnes-Hut layout (PLAN.md Phase 3); geodesic/defect overlays ("NOT YET RENDERING" —
   the "for Stephen" items); dimension-colored WL multiway graphs (2 files).
 - [ ] Viz UX/animation (convergence-merge, highlight system, event replay, edge bundling);

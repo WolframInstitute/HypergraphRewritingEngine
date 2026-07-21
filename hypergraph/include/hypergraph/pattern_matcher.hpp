@@ -138,7 +138,7 @@ struct PatternMatchingContext {
 // Candidate Generation (HGMatch Algorithm 4)
 // =============================================================================
 
-template<typename EdgeAccessor, typename SignatureAccessor, typename CandidateCallback>
+template<typename EdgeAccessor, typename CandidateCallback>
 void generate_candidates(
     const PatternEdge& pattern_edge,
     const EdgeSignature& pattern_sig,
@@ -148,7 +148,6 @@ void generate_candidates(
     const SignatureIndex& sig_index,
     const InvertedVertexIndex& inv_index,
     const EdgeAccessor& get_edge,
-    const SignatureAccessor& get_signature,
     CandidateCallback&& on_candidate
 ) {
     // Collect bound vertices and their required positions
@@ -166,23 +165,40 @@ void generate_candidates(
     }
 
     if (num_bound == 0) {
-        // No bound variables: scan signature partition using cached signatures
-        sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
-            on_candidate(eid, get_edge(eid));
-        });
+        if (pattern_sig.num_distinct() == pattern_edge.arity) {
+            // All-distinct pattern edge: it imposes no vertex-repetition constraint, so
+            // its compatible data signatures are every set-partition of the arity
+            // (Bell(k)), whose per-signature edge-lists re-union to exactly the arity-k
+            // edges present in this state. The signature index holds whole-evolution
+            // history keyed by signature; drawing candidates from it walks that global
+            // history filtered by the state bitset. Scan this state's own edges once and
+            // keep those of matching arity — the same candidate set in one pass.
+            // validate_candidate re-checks arity downstream.
+            const uint8_t want_arity = pattern_edge.arity;
+            state_edges.for_each([&](EdgeId eid) {
+                const auto& edge = get_edge(eid);
+                if (edge.arity == want_arity) {
+                    on_candidate(eid, edge);
+                }
+            });
+        } else {
+            // Repeated-variable seed edge: the signature level genuinely prunes, so scan
+            // the compatible signature partition using the pre-computed cache.
+            sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
+                on_candidate(eid, get_edge(eid));
+            });
+        }
     } else {
-        // Have bound variables: use inverted index intersection
+        // Have bound variables: use inverted index intersection. The intersection has
+        // already fetched each edge to test containment; it hands that edge to us.
         inv_index.for_each_edge_containing_all(
             bound_vertices, num_bound, state_edges, get_edge,
-            [&](EdgeId eid) {
-                // Check signature compatibility using cached signature
-                const EdgeSignature& data_sig = get_signature(eid);
-                if (!signature_compatible(data_sig, pattern_sig)) {
-                    return;
-                }
-
-                // Check bound vertices at correct positions
-                const auto& edge = get_edge(eid);
+            [&](EdgeId eid, const auto& edge) {
+                // Check bound vertices at the required positions. No signature test here:
+                // validate_candidate (run by on_candidate) binds each variable on first
+                // occurrence and checks equality on repeat, which enforces exactly the
+                // repetition constraint signature_compatible would — at O(arity) instead
+                // of O(arity^2) — and rejects every edge the signature test would.
                 bool valid = true;
                 for (uint8_t i = 0; i < num_bound && valid; ++i) {
                     if (edge.vertices[bound_positions[i]] != bound_vertices[i]) {
@@ -207,7 +223,7 @@ void generate_candidates(
 template<typename EdgeAccessor, typename SignatureAccessor>
 void expand_match(
     PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx,
-    PartialMatch partial
+    PartialMatch& partial
 ) {
     // Check termination
     if (ctx.should_terminate && ctx.should_terminate->load()) return;
@@ -255,11 +271,14 @@ void expand_match(
     const EdgeSignature& pattern_sig = ctx.rule->lhs_sig[pattern_idx];
     const CompatibleSignatureCache& sig_cache = ctx.rule->lhs_cache[pattern_idx];
 
-    // Generate candidates
+    // Generate candidates. Depth-first backtracking mutates a single PartialMatch in
+    // place — bind the new variables directly into partial.binding, push the matched
+    // edge, recurse, then unbind and pop on return — instead of copying the ~356 B of
+    // binding + partial per surviving candidate at every recursion level.
     generate_candidates(
         pattern_edge, pattern_sig, sig_cache,
         partial.binding, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
+        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
         [&](EdgeId candidate, const auto& edge) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
@@ -267,18 +286,31 @@ void expand_match(
             // Skip if already matched
             if (partial.contains_edge(candidate)) return;
 
-            // edge already fetched by generate_candidates
-            VariableBinding extended = partial.binding;
+            // Bind directly into partial.binding, recording which variables are bound
+            // before this edge so the exact set of newly-bound variables can be undone.
+            const uint32_t pre_mask = partial.binding.bound_mask;
 
-            if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) {
+            if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, partial.binding)) {
+                // validate_candidate may bind some variables before hitting a mismatch;
+                // restore partial.binding to its pre-edge state before trying the next.
+                for (uint32_t newly = partial.binding.bound_mask & ~pre_mask; newly; newly &= newly - 1) {
+                    partial.binding.unbind(static_cast<uint8_t>(hgcommon::ctz(newly)));
+                }
                 return;
             }
 
-            // Extend partial match and recurse
-            PartialMatch new_partial = partial.branch();
-            new_partial.add_match(pattern_idx, candidate, extended);
+            // Push the matched edge/order and recurse on the same PartialMatch.
+            partial.match_order[partial.num_matched] = pattern_idx;
+            partial.matched_edges[partial.num_matched] = candidate;
+            partial.num_matched++;
 
-            expand_match(ctx, std::move(new_partial));
+            expand_match(ctx, partial);
+
+            // Pop the edge and unbind the variables this edge bound.
+            partial.num_matched--;
+            for (uint32_t newly = partial.binding.bound_mask & ~pre_mask; newly; newly &= newly - 1) {
+                partial.binding.unbind(static_cast<uint8_t>(hgcommon::ctz(newly)));
+            }
         }
     );
 }
@@ -305,7 +337,7 @@ void scan_pattern(
     generate_candidates(
         first_edge, first_sig, first_cache,
         VariableBinding{}, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge, ctx.get_signature,
+        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
         [&](EdgeId candidate, const auto& edge) {
             // Check termination
             if (ctx.should_terminate && ctx.should_terminate->load()) return;
@@ -346,7 +378,7 @@ void scan_pattern(
                 }
             } else {
                 // Multi-edge pattern: expand
-                expand_match(ctx, std::move(partial));
+                expand_match(ctx, partial);
             }
         }
     );
@@ -479,7 +511,7 @@ void scan_pattern_from_edge(
         }
     } else {
         // Multi-edge pattern: expand from this starting point
-        expand_match(ctx, std::move(partial));
+        expand_match(ctx, partial);
     }
 }
 

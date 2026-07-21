@@ -1795,7 +1795,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         generate_candidates(
             first_edge, first_sig, first_cache,
             VariableBinding{}, s.edges,
-            hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
+            hg_->signature_index(), hg_->inverted_index(), get_edge,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -1854,11 +1854,6 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         return hg_->get_edge(eid);
     };
 
-    // Signature accessor
-    auto get_signature = [this](EdgeId eid) -> const EdgeSignature& {
-        return hg_->edge_signature(eid);
-    };
-
     // Next pattern edge in the rule's optimized join order, skipping edges already
     // matched (the seed may be an arbitrary position for delta matching).
     uint32_t matched_mask = 0;
@@ -1880,7 +1875,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     generate_candidates(
         pattern_edge, pattern_sig, sig_cache,
         data.binding, s.edges,
-        hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature,
+        hg_->signature_index(), hg_->inverted_index(), get_edge,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
 

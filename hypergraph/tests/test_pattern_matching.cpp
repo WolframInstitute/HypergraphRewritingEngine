@@ -482,7 +482,7 @@ TEST(Unified_Index, InvertedIndex_MultipleVertices) {
     MockEdge mock_edges[] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}};
     auto get_edge = [&](EdgeId eid) -> const MockEdge& { return mock_edges[eid]; };
 
-    index.for_each_edge_containing_all(verts, 2, state_edges, get_edge, [&](EdgeId eid) {
+    index.for_each_edge_containing_all(verts, 2, state_edges, get_edge, [&](EdgeId eid, const auto&) {
         edges.push_back(eid);
     });
 

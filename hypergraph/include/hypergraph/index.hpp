@@ -229,40 +229,51 @@ public:
     ) const {
         if (count == 0) return;
 
-        // Seed the scan from the bound vertex with the SHORTEST occurrence list.
-        // The yielded set (edges in state containing ALL bound vertices) is the same
-        // whichever bound vertex's list is walked; only the walk length differs. The
-        // inverted index is global and append-only over the whole evolution, so a hub
-        // vertex owns a huge occurrence list; seeding from the rarest bound vertex
-        // avoids a near-full-history scan per query.
-        //
-        // If any bound vertex has no occurrence list at all, it appears in no edge, so
-        // the intersection is empty and we can stop.
-        constexpr uint32_t PROBE_CAP = 64;  // bounds probe cost; long lists clamp here
-
         uint8_t seed_idx = 0;
         const LockFreeList<EdgeId>* seed_list = nullptr;
-        uint32_t seed_len = UINT32_MAX;
 
-        for (uint8_t i = 0; i < count; ++i) {
-            auto result = vertex_to_edges_.lookup(vertices[i]);
+        if (count == 1) {
+            // Exactly one bound vertex: there is no choice of seed, so skip the
+            // length-probing pass. Its occurrence list IS the scan seed (the dominant
+            // chain-rule case, where each later edge shares a single bound variable).
+            auto result = vertex_to_edges_.lookup(vertices[0]);
             if (!result.has_value()) return;  // vertex occurs nowhere -> empty intersection
-            const LockFreeList<EdgeId>* list = result.value();
+            seed_list = result.value();
+            // seed_idx stays 0
+        } else {
+            // Seed the scan from the bound vertex with the SHORTEST occurrence list.
+            // The yielded set (edges in state containing ALL bound vertices) is the same
+            // whichever bound vertex's list is walked; only the walk length differs. The
+            // inverted index is global and append-only over the whole evolution, so a hub
+            // vertex owns a huge occurrence list; seeding from the rarest bound vertex
+            // avoids a near-full-history scan per query.
+            //
+            // If any bound vertex has no occurrence list at all, it appears in no edge,
+            // so the intersection is empty and we can stop.
+            constexpr uint32_t PROBE_CAP = 64;  // bounds probe cost; long lists clamp here
 
-            // Probe length only far enough to decide whether this list beats the
-            // current best, capped so a hub list is never fully walked just to measure
-            // it. Total probing is O(count * min(shortest_len, PROBE_CAP)).
-            uint32_t bound = seed_len < PROBE_CAP ? seed_len : PROBE_CAP;
-            uint32_t len = 0;
-            list->for_each_while([&](EdgeId) {
-                ++len;
-                return len < bound;
-            });
+            uint32_t seed_len = UINT32_MAX;
 
-            if (seed_list == nullptr || len < seed_len) {
-                seed_len = len;
-                seed_idx = i;
-                seed_list = list;
+            for (uint8_t i = 0; i < count; ++i) {
+                auto result = vertex_to_edges_.lookup(vertices[i]);
+                if (!result.has_value()) return;  // vertex occurs nowhere -> empty intersection
+                const LockFreeList<EdgeId>* list = result.value();
+
+                // Probe length only far enough to decide whether this list beats the
+                // current best, capped so a hub list is never fully walked just to measure
+                // it. Total probing is O(count * min(shortest_len, PROBE_CAP)).
+                uint32_t bound = seed_len < PROBE_CAP ? seed_len : PROBE_CAP;
+                uint32_t len = 0;
+                list->for_each_while([&](EdgeId) {
+                    ++len;
+                    return len < bound;
+                });
+
+                if (seed_list == nullptr || len < seed_len) {
+                    seed_len = len;
+                    seed_idx = i;
+                    seed_list = list;
+                }
             }
         }
 
@@ -288,7 +299,8 @@ public:
             }
 
             if (contains_all) {
-                visit(eid);
+                // Thread the already-fetched edge to the visitor so it need not refetch.
+                visit(eid, edge);
             }
         });
     }
