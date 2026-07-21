@@ -87,10 +87,15 @@ public:
         }
     };
 
-    // Entry in the chunk index: maps chunk_id to chunk pointer
+    // Entry in the chunk index. `owned` distinguishes a chunk this bitset allocated
+    // (safe to mutate in place) from a chunk SHARED by reference from a parent state
+    // (copy-on-write before any mutation). Chunks are immutable once a state is
+    // published, so sharing them across states is lock-free and race-free. Field order
+    // keeps the struct at 16 bytes.
     struct ChunkEntry {
-        uint32_t chunk_id;
         Chunk* chunk;
+        uint32_t chunk_id;
+        bool owned;
     };
 
     // Default constructor - empty bitset
@@ -162,24 +167,27 @@ public:
         uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
         size_t bit_index = edge_id & CHUNK_MASK;
 
-        Chunk* chunk = find_or_create_chunk(chunk_id, arena);
+        Chunk* chunk = find_or_create_owned_chunk(chunk_id, arena);
         if (!chunk->get(bit_index)) {
             chunk->set(bit_index);
             invalidate_count();
         }
     }
 
-    // Remove edge from set
-    void clear(uint32_t edge_id) {
+    // Remove edge from set. Needs the arena to copy-on-write a shared chunk before
+    // mutating it (a shared chunk belongs to a parent state and must not be touched).
+    template<typename Arena>
+    void clear(uint32_t edge_id, Arena& arena) {
         uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
         size_t bit_index = edge_id & CHUNK_MASK;
 
-        Chunk* chunk = find_chunk_mutable(chunk_id);
-        if (chunk && chunk->get(bit_index)) {
-            chunk->clear(bit_index);
-            invalidate_count();
-            // Note: we don't remove empty chunks - they stay allocated
-        }
+        size_t idx;
+        if (!find_entry_index(chunk_id, idx)) return;
+        if (!entries_[idx].chunk->get(bit_index)) return;
+        Chunk* chunk = make_entry_owned(idx, arena);  // COW if shared
+        chunk->clear(bit_index);
+        invalidate_count();
+        // Note: we don't remove empty chunks - they stay allocated
     }
 
     // Number of set bits. The lazy cache fill is safe under concurrent const
@@ -225,28 +233,30 @@ public:
     ) {
         SparseBitset result;
 
-        // Copy parent's entries
+        // Share the parent's chunks BY REFERENCE (copy-on-write). Chunks are immutable
+        // once a state is published, so the child can point straight at them; only the
+        // handful of chunks a consumed/produced edge actually touches get copied — on
+        // write, below. This is the difference between O(E) and O(delta) memory per
+        // derived state, and it removes the per-chunk memcpy from the rewrite hot path.
         if (parent.num_entries_ > 0) {
             size_t initial_capacity = parent.num_entries_ + 4;  // Room for new chunks
             result.entries_ = arena.template allocate_array<ChunkEntry>(initial_capacity);
             result.capacity_ = initial_capacity;
 
             for (size_t i = 0; i < parent.num_entries_; ++i) {
-                // Deep copy each chunk
-                Chunk* new_chunk = arena.template create<Chunk>();
-                std::memcpy(new_chunk->words, parent.entries_[i].chunk->words, sizeof(Chunk::words));
+                result.entries_[i].chunk    = parent.entries_[i].chunk;   // shared
                 result.entries_[i].chunk_id = parent.entries_[i].chunk_id;
-                result.entries_[i].chunk = new_chunk;
+                result.entries_[i].owned    = false;                      // COW on first write
             }
             result.num_entries_ = parent.num_entries_;
         }
 
-        // Clear consumed edges
+        // Clear consumed edges (copy-on-write the touched chunk).
         for (size_t i = 0; i < num_consumed; ++i) {
-            result.clear(consumed[i]);
+            result.clear(consumed[i], arena);
         }
 
-        // Set produced edges
+        // Set produced edges (copy-on-write existing chunks / create owned new ones).
         for (size_t i = 0; i < num_produced; ++i) {
             result.set(produced[i], arena);
         }
@@ -289,42 +299,49 @@ private:
         return nullptr;
     }
 
-    // Binary search for chunk by id (mutable version)
-    Chunk* find_chunk_mutable(uint32_t chunk_id) {
-        return const_cast<Chunk*>(find_chunk(chunk_id));
-    }
-
-    // Find or create chunk, maintaining sorted order
-    template<typename Arena>
-    Chunk* find_or_create_chunk(uint32_t chunk_id, Arena& arena) {
-        // Find insertion point
+    // Binary search. Returns true and sets out_idx to the entry index when chunk_id
+    // is present; otherwise returns false and sets out_idx to the insertion point.
+    bool find_entry_index(uint32_t chunk_id, size_t& out_idx) const {
         size_t lo = 0, hi = num_entries_;
         while (lo < hi) {
             size_t mid = lo + (hi - lo) / 2;
-            if (entries_[mid].chunk_id < chunk_id) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
+            if (entries_[mid].chunk_id < chunk_id) lo = mid + 1; else hi = mid;
+        }
+        out_idx = lo;
+        return lo < num_entries_ && entries_[lo].chunk_id == chunk_id;
+    }
+
+    // Ensure entries_[idx]'s chunk is private to this bitset. If it is shared from a
+    // parent (copy-on-write), copy it once and take ownership. Returns the mutable chunk.
+    template<typename Arena>
+    Chunk* make_entry_owned(size_t idx, Arena& arena) {
+        if (!entries_[idx].owned) {
+            Chunk* copy = arena.template create<Chunk>();
+            std::memcpy(copy->words, entries_[idx].chunk->words, sizeof(Chunk::words));
+            entries_[idx].chunk = copy;
+            entries_[idx].owned = true;
+        }
+        return entries_[idx].chunk;
+    }
+
+    // Find or create a chunk owned by this bitset (COW an existing shared chunk),
+    // maintaining sorted order.
+    template<typename Arena>
+    Chunk* find_or_create_owned_chunk(uint32_t chunk_id, Arena& arena) {
+        size_t idx;
+        if (find_entry_index(chunk_id, idx)) {
+            return make_entry_owned(idx, arena);
         }
 
-        // Check if already exists
-        if (lo < num_entries_ && entries_[lo].chunk_id == chunk_id) {
-            return entries_[lo].chunk;
-        }
-
-        // Need to insert at position 'lo'
+        // Insert a fresh, owned chunk at position idx.
         ensure_capacity(arena);
-
-        // Shift entries to make room
-        for (size_t i = num_entries_; i > lo; --i) {
+        for (size_t i = num_entries_; i > idx; --i) {
             entries_[i] = entries_[i - 1];
         }
-
-        // Create new chunk
         Chunk* new_chunk = arena.template create<Chunk>();
-        entries_[lo].chunk_id = chunk_id;
-        entries_[lo].chunk = new_chunk;
+        entries_[idx].chunk = new_chunk;
+        entries_[idx].chunk_id = chunk_id;
+        entries_[idx].owned = true;
         ++num_entries_;
 
         return new_chunk;
