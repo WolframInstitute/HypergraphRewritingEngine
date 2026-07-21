@@ -19,14 +19,16 @@
   removed; WXF serialization streamed (byte-identical, FFI pin-test added). Residual 69 =
   arena backing blocks + one-time single-threaded setup.
 - Per-worker-cursor arena (§1, the Tier-allocator fast path): DONE.
+- Causal closure base layer (§3): DONE. Reconvergence-skip; **key-only uint32 `ConcurrentIdSet`**
+  (4 B/slot vs 16 B); **`Anc` dropped** (backward BFS over a `preds_` predecessor adjacency,
+  O(pairs) not O(events²)); lazy empty sets. −28.5% total arena on binary-growth, exact,
+  4/8/16-thread deterministic. The closure is still O(N²) worst-case in *count* (chains); the
+  bytes/constant are cut — the asymptotic fix is the reachability oracle below.
 
-**IN PROGRESS:**
-- Causal closure memory reduction (§3 base layer): reconvergence-skip + key-only uint32 sets
-  + drop-`Anc` + lazy empties. The closure is still O(N²) *bytes* (de-heap moved it heap→arena,
-  didn't shrink it); this is the first cut before the reachability oracle.
+**IN PROGRESS:** (none — awaiting next dispatch)
 
 **NOT STARTED:**
-- Causal reachability oracle (§3, the O(N²)→O(N·w) redesign) — after the base layer.
+- Causal reachability oracle (§3, the O(N²)→O(N·w) chain-decomposition redesign).
 - Tier reclamation (§1 Tier F / §2b) — per-generation arena reset → working memory O(frontier).
 - Automorphism reconstruction (§2 pillar 3 / §2b) — don't materialise raw provenance.
 - Incremental hashing (§4) — consume the delta already handed to `create_or_get_canonical_state`.

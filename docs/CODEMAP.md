@@ -58,7 +58,9 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`segmented_array.hpp`** -- append-only fixed-segment array, stable pointers, O(1) access.
   - `SegmentedArray<T>` (`emplace`/`emplace_at`/`get_or_default`/`ensure_size`/`operator[]`/`for_each`)
 - **`concurrent_map.hpp`** -- lock-free open-addressing append-only hash map.
-  - `ConcurrentMap<K,V,EMPTY,LOCKED>` (`insert_if_absent[_waiting]`, `lookup[_waiting]`, `count_unique`, `for_each`), nested `Entry`/`Table`
+  - `ConcurrentMap<K,V,EMPTY,LOCKED>` (`insert_if_absent[_waiting]`, `lookup[_waiting]`, `count_unique`, `for_each`, optional arena backing via ctor/`set_arena`, `bytes_allocated`), nested `Entry`/`Table`
+- **`concurrent_id_set.hpp`** -- lock-free key-only uint32 set (4 B/slot) for the causal Desc closure.
+  - `ConcurrentIdSet<EMPTY>` (single-CAS `EMPTY->key` publication — no LOCKED window, no spin; `insert`, `contains`, `for_each`; arena-backed, superseded-table `prev` chain)
 - **`lock_free_list.hpp`** -- append-only lock-free linked list.
   - `LockFreeList<T>` (`for_each`/`for_each_while`), `SingleThreadedList<T>`
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.

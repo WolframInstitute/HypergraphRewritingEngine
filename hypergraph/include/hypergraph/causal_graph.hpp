@@ -10,6 +10,7 @@
 #include "segmented_array.hpp"
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
+#include "concurrent_id_set.hpp"
 
 // Visualization event emission (compiles to no-op when disabled)
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -87,12 +88,17 @@ class CausalGraph {
     // =========================================================================
     // Online Transitive Reduction (Goranci Algorithm)
     // =========================================================================
-    // Maintains Desc[u] (events reachable from u) and Anc[u] (events reaching u)
-    // for O(1) redundancy checking. Edge (p,c) is redundant iff c ∈ Desc[p].
+    // Maintains only Desc[u] (events reachable from u) for O(1) redundancy checking:
+    // edge (p,c) is redundant iff c ∈ Desc[p]. The ancestor set {p} ∪ Anc[p] needed
+    // to propagate a new edge is enumerated on demand by a backward BFS over recorded
+    // direct predecessors (preds_), so the O(events^2) ancestor closure is never
+    // stored -- predecessor adjacency is only O(causal pairs).
     //
     // When edge (p,c) is added (if not redundant):
     //   - For all a ∈ {p} ∪ Anc[p]: Desc[a] ∪= {c} ∪ Desc[c]
-    //   - For all d ∈ {c} ∪ Desc[c]: Anc[d] ∪= {p} ∪ Anc[p]
+    // A reconvergence skip collapses the inner union: c is inserted into Desc[a]
+    // first, and if it was already present then (by the co-maintained closure
+    // invariant) Desc[c] ⊆ Desc[a] already, so the rest of {c} ∪ Desc[c] is skipped.
     //
     // Thread-safety: concurrent sets with atomic operations. The reduction is
     // exact -- a redundant edge is never emitted, at any thread count. Two
@@ -108,22 +114,27 @@ class CausalGraph {
     //      consumed by c, x->c is added before p->c, placing c in Desc[p] so the
     //      p->c redundancy check finds it.
     // Ancestors of an event have completed their own causal registration before it
-    // runs, so the Desc lookup backing the check reads a settled closure.
+    // runs, so both the Desc lookup backing the check and the predecessor BFS read a
+    // settled sub-DAG.
 
-    // Desc[u] = all events reachable from u (transitive closure)
-    // Anc[u] = all events that can reach u (transitive closure)
-    // Uses ConcurrentMap<EventId, bool> as lock-free set (key present = in set)
-    static constexpr uint64_t DESC_ANC_SET_EMPTY = (1ULL << 62) + 4;
-    static constexpr uint64_t DESC_ANC_SET_LOCKED = (1ULL << 62) + 5;
-    using DescAncSet = ConcurrentMap<uint64_t, bool, DESC_ANC_SET_EMPTY, DESC_ANC_SET_LOCKED>;
+    // Desc[u] = all events reachable from u (transitive closure). Stored as a key-only
+    // uint32 set of EventIds offset by +1 (ConcurrentIdSet reserves key 0 as empty).
+    using DescAncSet = ConcurrentIdSet<0u>;
     // Initial capacity per closure set. Most events have a small closure, so this
     // stays low; the set resizes for the rare deep ones.
     static constexpr size_t DESC_ANC_SET_INITIAL_CAPACITY = 16;
+    // EventIds are stored offset by +1 so id 0 does not alias the set's empty key.
+    static constexpr uint32_t encode_id(EventId e) { return e + 1u; }
 
     static constexpr uint64_t DESC_ANC_EMPTY = (1ULL << 62) + 6;
     static constexpr uint64_t DESC_ANC_LOCKED = (1ULL << 62) + 7;
     ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> desc_;
-    ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> anc_;
+
+    // Direct causal predecessors per consumer event (the producer events of the kept
+    // causal edges it consumes), indexed by event id. Backward BFS over this yields
+    // {p} ∪ Anc[p] exactly, since the kept (transitively reduced) edge set preserves
+    // reachability. O(causal pairs) storage, not O(events^2).
+    SegmentedArray<LockFreeList<EventId>> preds_;
 
     // Whether online transitive reduction is enabled (the FFI turns this on by default).
     std::atomic<bool> transitive_reduction_enabled_{false};
@@ -159,7 +170,6 @@ public:
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
         desc_.set_arena(arena);
-        anc_.set_arena(arena);
         seen_causal_triples_.set_arena(arena);
         seen_causal_event_pairs_.set_arena(arena);
         seen_branchial_pairs_.set_arena(arena);
@@ -179,9 +189,6 @@ public:
 
     // Get or create Desc set for an event (Goranci algorithm)
     DescAncSet* get_or_create_desc(EventId event);
-
-    // Get or create Anc set for an event (Goranci algorithm)
-    DescAncSet* get_or_create_anc(EventId event);
 
     // O(1) redundancy check: is consumer reachable from producer?
     bool is_reachable_via_desc(EventId producer, EventId consumer) const;

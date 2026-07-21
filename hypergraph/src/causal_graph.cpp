@@ -25,33 +25,14 @@ CausalGraph::DescAncSet* CausalGraph::get_or_create_desc(EventId event) {
         return *result;
     }
 
-    // Per-event descendant/ancestor closures are small for the vast majority of
-    // events; start tiny and let the map resize the rare large ones, rather than
-    // paying a full default-capacity table (~16 KB) per event.
+    // Per-event descendant closures are small for the vast majority of events; start
+    // tiny and let the set resize the rare large ones, rather than paying a full
+    // default-capacity table per event.
     // create_untracked: the set's tables live in the arena and are bulk-reclaimed, so
     // its destructor is a no-op — skip the per-object destructor registration (a
     // shared-list CAS) that would otherwise contend on this high-frequency path.
     auto* new_set = arena_->template create_untracked<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY, arena_);
     auto [existing, inserted] = desc_.insert_if_absent(key, new_set);
-    return inserted ? new_set : existing;
-}
-
-CausalGraph::DescAncSet* CausalGraph::get_or_create_anc(EventId event) {
-    uint64_t key = event;
-
-    auto result = anc_.lookup(key);
-    if (result.has_value()) {
-        return *result;
-    }
-
-    // Per-event descendant/ancestor closures are small for the vast majority of
-    // events; start tiny and let the map resize the rare large ones, rather than
-    // paying a full default-capacity table (~16 KB) per event.
-    // create_untracked: the set's tables live in the arena and are bulk-reclaimed, so
-    // its destructor is a no-op — skip the per-object destructor registration (a
-    // shared-list CAS) that would otherwise contend on this high-frequency path.
-    auto* new_set = arena_->template create_untracked<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY, arena_);
-    auto [existing, inserted] = anc_.insert_if_absent(key, new_set);
     return inserted ? new_set : existing;
 }
 
@@ -61,7 +42,7 @@ bool CausalGraph::is_reachable_via_desc(EventId producer, EventId consumer) cons
     auto desc_result = desc_.lookup(producer);
     if (!desc_result.has_value()) return false;
 
-    return (*desc_result)->contains(consumer);
+    return (*desc_result)->contains(encode_id(consumer));
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
@@ -168,51 +149,67 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
 #endif
 
-        if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-            update_transitive_closure(producer, consumer);
-        }
-
         uint64_t pair_key = (static_cast<uint64_t>(producer) << 32) | consumer;
         auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
         if (pair_inserted) {
             num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
+            // Maintain the closure once per unique event pair. The union is
+            // pair-dependent and idempotent, so folding it once (rather than once per
+            // parallel edge of the same pair) yields the identical final Desc closure.
+            if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
+                update_transitive_closure(producer, consumer);
+            }
         }
     }
 }
 
 void CausalGraph::update_transitive_closure(EventId producer, EventId consumer) {
-    DescAncSet* desc_consumer = get_or_create_desc(consumer);
-    DescAncSet* anc_producer = get_or_create_anc(producer);
+    // {consumer} ∪ Desc[consumer], held ENCODED (id+1; 0 is the set's empty sentinel),
+    // with the consumer at index 0 so the reconvergence skip can test it first. Desc
+    // is read via lookup, not get_or_create: a terminal consumer has no Desc set yet,
+    // and materializing an empty one would waste an allocation per leaf event.
+    SVec<uint32_t> descendants_to_add;  // encoded ids
+    auto dc = desc_.lookup(consumer);
+    descendants_to_add.reserve(1 + (dc.has_value() ? (*dc)->size() : 0));
+    descendants_to_add.push_back(encode_id(consumer));
+    if (dc.has_value()) {
+        (*dc)->for_each([&](uint32_t enc_d) {
+            descendants_to_add.push_back(enc_d);
+        });
+    }
 
-    // Worker-local scratch (built during event creation, contents fold into the
-    // persistent Desc/Anc sets, then discarded) -> per-worker arena, no heap.
-    SVec<EventId> ancestors_to_update;
-    ancestors_to_update.reserve(1 + anc_producer->size());
-    ancestors_to_update.push_back(producer);
-    anc_producer->for_each([&](uint64_t id, bool) {
-        ancestors_to_update.push_back(static_cast<EventId>(id));
-    });
+    // Ancestors {producer} ∪ Anc[producer] by backward BFS over recorded direct
+    // predecessors. The kept (reduced) causal edges preserve reachability, so this
+    // yields exactly the ancestor set. Worker-local scratch -> per-worker arena.
+    SVec<EventId> ancestors;
+    ancestors.reserve(8);
+    ancestors.push_back(producer);
+    SUSet<EventId> visited;
+    visited.insert(producer);
+    for (size_t head = 0; head < ancestors.size(); ++head) {
+        LockFreeList<EventId>* pl = preds_.get(ancestors[head]);
+        if (pl) {
+            pl->for_each([&](EventId pred) {
+                if (visited.insert(pred).second) ancestors.push_back(pred);
+            });
+        }
+    }
 
-    SVec<EventId> descendants_to_add;
-    descendants_to_add.reserve(1 + desc_consumer->size());
-    descendants_to_add.push_back(consumer);
-    desc_consumer->for_each([&](uint64_t id, bool) {
-        descendants_to_add.push_back(static_cast<EventId>(id));
-    });
-
-    for (EventId a : ancestors_to_update) {
+    for (EventId a : ancestors) {
         DescAncSet* desc_a = get_or_create_desc(a);
-        for (EventId d : descendants_to_add) {
-            desc_a->insert_if_absent(d, true);
+        // Insert the consumer first. If it was already in Desc[a], then Desc[consumer]
+        // is already ⊆ Desc[a] (co-maintained), so the remaining descendants add
+        // nothing -- skip the inner loop. This collapses the O(|A|·|D|) probe storm to
+        // O(|A|) for reconvergent ancestors.
+        if (!desc_a->insert(descendants_to_add[0])) continue;
+        for (size_t k = 1; k < descendants_to_add.size(); ++k) {
+            desc_a->insert(descendants_to_add[k]);
         }
     }
 
-    for (EventId d : descendants_to_add) {
-        DescAncSet* anc_d = get_or_create_anc(d);
-        for (EventId a : ancestors_to_update) {
-            anc_d->insert_if_absent(a, true);
-        }
-    }
+    // Record the direct predecessor edge for future ancestor BFS. Once per pair
+    // (this runs once per unique event pair), so preds_ holds no duplicates.
+    preds_.get_or_default(consumer, *arena_).push(producer, *arena_);
 }
 
 void CausalGraph::add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
