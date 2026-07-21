@@ -510,7 +510,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
     // dedup key), so there is no separate WL pass. Other modes use the fast WL hash.
     bool full = state_canonicalization_mode_.load(std::memory_order_acquire)
                 == StateCanonicalizationMode::Full;
-    if (!full && use_shared_tree_ && wl_hash_) {
+    if (!full && use_wl_hash_ && wl_hash_) {
         return compute_wl_hash(edges);
     }
 

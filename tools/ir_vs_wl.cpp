@@ -40,7 +40,7 @@ static uint64_t wl_hash(const Edges& edges) {
     SparseBitset bs;
     Hypergraph hg;
     build_hg(hg, edges, bs);
-    hg.enable_shared_tree();
+    hg.enable_wl_hash();
     return hg.compute_canonical_hash(bs);
 }
 
@@ -71,7 +71,7 @@ static double wl_time(const Edges& edges, int iters) {
     SparseBitset bs;
     Hypergraph hg;
     build_hg(hg, edges, bs);
-    hg.enable_shared_tree();
+    hg.enable_wl_hash();
     return median_us([&]() { return hg.compute_canonical_hash(bs); }, iters);
 }
 static double ir_time(const Edges& edges, int iters) {

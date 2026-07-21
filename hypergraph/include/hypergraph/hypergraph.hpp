@@ -106,7 +106,7 @@ class Hypergraph {
     // Selects the algorithm for compute_canonical_hash:
     //   true  -> WL approximate hash (fast hot path)
     //   false -> IR exact canonicalization (isomorphism-invariant)
-    bool use_shared_tree_{true};
+    bool use_wl_hash_{true};
 
 
     // Event canonicalization: maps event signature to first EventId
@@ -551,18 +551,18 @@ public:
     }
 
     // Select the WL approximate hash for compute_canonical_hash (fast hot path)
-    void enable_shared_tree() {
-        use_shared_tree_ = true;
+    void enable_wl_hash() {
+        use_wl_hash_ = true;
     }
 
     // Select IR exact canonicalization for compute_canonical_hash
-    void disable_shared_tree() {
-        use_shared_tree_ = false;
+    void disable_wl_hash() {
+        use_wl_hash_ = false;
     }
 
     // Whether compute_canonical_hash uses the WL approximate hash
-    bool shared_tree_enabled() const {
-        return use_shared_tree_;
+    bool wl_hash_enabled() const {
+        return use_wl_hash_;
     }
 
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
@@ -768,7 +768,7 @@ public:
     uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
 
     // Compute canonical hash (isomorphism-invariant).
-    // With the WL hash enabled (use_shared_tree_), uses the fast approximate hash;
+    // With the WL hash enabled (use_wl_hash_), uses the fast approximate hash;
     // otherwise falls back to IR exact canonicalization.
     uint64_t compute_canonical_hash(const SparseBitset& edges) const;
 

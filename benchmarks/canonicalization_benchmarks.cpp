@@ -65,8 +65,8 @@ BENCHMARK(canonicalization_by_symmetry, "Shows how graph symmetry affects canoni
 // IR exact vs WL approximate: same states, head-to-head
 // =============================================================================
 // Times Hypergraph::compute_canonical_hash on identical states with the WL
-// approximate hash (shared tree on) and IR exact canonicalization (shared tree
-// off). "low" symmetry = each edge its own orbit (refinement discretizes in one
+// approximate hash (WL hash on) and IR exact canonicalization (WL hash off).
+// "low" symmetry = each edge its own orbit (refinement discretizes in one
 // pass, so IR does no individualization); "high" symmetry = few orbits (WL
 // refinement stabilizes non-discrete, forcing IR to individualize and branch).
 // This exposes where the two algorithms diverge in cost, and drives the decision
@@ -93,7 +93,7 @@ BENCHMARK(canon_ir_vs_wl, "IR exact vs WL approximate canonical hash on identica
             BENCHMARK_PARAM("edges", edges);
             BENCHMARK_PARAM("symmetry", sym);
             BENCHMARK_PARAM("engine", "wl");
-            hg.enable_shared_tree();
+            hg.enable_wl_hash();
             BENCHMARK_CODE([&]() {
                 volatile uint64_t h = hg.compute_canonical_hash(bitset);
                 (void)h;
@@ -102,7 +102,7 @@ BENCHMARK(canon_ir_vs_wl, "IR exact vs WL approximate canonical hash on identica
             BENCHMARK_PARAM("edges", edges);
             BENCHMARK_PARAM("symmetry", sym);
             BENCHMARK_PARAM("engine", "ir");
-            hg.disable_shared_tree();
+            hg.disable_wl_hash();
             BENCHMARK_CODE([&]() {
                 volatile uint64_t h = hg.compute_canonical_hash(bitset);
                 (void)h;
