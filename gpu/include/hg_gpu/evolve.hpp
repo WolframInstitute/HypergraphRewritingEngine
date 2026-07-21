@@ -135,9 +135,9 @@ struct EngineConfig {
     uint32_t max_vertex_slots     = 1u << 18;   // 256K flat vertex-tuple slots (avg arity ≤ 4)
     uint32_t max_states           = 1u << 14;   // 16K state slots
     // CSR-packed per-state edge lists. The flat ids pool is sized for the
-    // sum of all state edge counts over the course of the evolution —
-    // empirically max_states × avg_state_edges fits most workloads.
-    // Replaces the legacy O(max_states × max_edges) bitset.
+    // sum of all state edge counts over the course of the evolution;
+    // empirically max_states * avg_state_edges fits most workloads. Sizing
+    // is linear in the total edge-slot count, not max_states * max_edges.
     uint32_t max_state_edge_total = 1u << 22;   // 4M EdgeId slots (16 MB)
     uint32_t sig_index_buckets    = 1024;       // power of two; sig_hash & (n-1)
     uint32_t inverted_pool        = 1u << 18;   // shared LockFreeList node capacity

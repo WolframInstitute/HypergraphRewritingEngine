@@ -70,13 +70,10 @@ struct PartialMatch {
     // Consumed-edges bitmap (one-to-one edge consumption per Wolfram semantics)
     // -------------------------------------------------------------------------
 
-    // Consumed-edge check: scans matched_edges directly. Previously this
-    // used a bitmap of kMaxConsumedBits=1024 bits, which overflows for any
-    // state where edge IDs exceed 1024. Since a match consumes at most
-    // kMaxPatternEdges data edges, a linear scan over matched_edges is
-    // both correct for arbitrary edge IDs and cheap (≤16 comparisons).
-    // The consumed[] array is retained for ABI stability but unused; will
-    // be removed in a follow-up cleanup.
+    // Consumed-edge check: scans matched_edges directly. A match consumes at
+    // most kMaxPatternEdges data edges, so a linear scan over matched_edges is
+    // correct for arbitrary edge IDs and cheap (<=16 comparisons). The
+    // consumed[] array is unused, retained only for ABI stability.
     __device__ bool is_consumed(EdgeId eid) const {
         uint32_t mm = matched_mask;
         while (mm) {

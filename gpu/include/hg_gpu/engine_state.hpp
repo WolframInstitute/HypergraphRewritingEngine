@@ -18,7 +18,7 @@
 
 namespace hg_gpu {
 
-// EngineConfig is now declared in evolve.hpp so host-only translation units
+// EngineConfig is declared in evolve.hpp so host-only translation units
 // (the bench harness, the differential test driver) can include it without
 // pulling in cuda_runtime.h. The full definition lives there; this header
 // transitively re-exports it via #include "hg_gpu/evolve.hpp".

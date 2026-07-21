@@ -491,7 +491,8 @@ std::vector<Workload> build_corpus() {
     // gives it by construction. Compared on canonical states and the step-less
     // transition multiset; causal/branchial are reconstructed offline in this
     // mode. The multi-rule workloads put loops in the multiway states graph,
-    // which is where first-discovery ordering used to diverge.
+    // which is where first-discovery ordering is most prone to diverge across
+    // the two engines -- exactly what this comparison guards.
     ws.push_back({
         .name = "quotient_wolfram_steps5",
         .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},

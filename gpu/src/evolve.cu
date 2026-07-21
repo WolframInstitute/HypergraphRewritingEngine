@@ -46,10 +46,9 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // Raw (pre-dedup) state production in a single step can blow past
     // canonical final-step counts by 10× due to within-step branching
     // before dedup collapses isomorphic states. CSR per-state edge lists
-    // (Stream 2) replaced the old O(max_states × max_edges) bitset, so
-    // sizing is now linear in total edge-slots, not quadratic — we can
-    // afford much larger max_states and max_edges without the bitset
-    // memory explosion that used to force aggressive downsizing.
+    // (Stream 2) size linearly in the total edge-slot count rather than
+    // quadratically in max_states * max_edges, so max_states and max_edges
+    // can be large without a memory blow-up.
     uint32_t expected_edges  = std::max<uint32_t>(1u << 20, static_cast<uint32_t>(n_init) * growth * 512u);
     uint32_t expected_states = std::max<uint32_t>(1u << 17, static_cast<uint32_t>(n_init) * growth * 32u);
 

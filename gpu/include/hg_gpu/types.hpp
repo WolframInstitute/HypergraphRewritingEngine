@@ -32,9 +32,9 @@ using RuleId = uint32_t;  // GPU-local width (host engine uses a 16-bit RuleInde
 //   state_edge_slices: StateEdgeSlice[MAX_STATES]
 //   state_edge_ids:    EdgeId[MAX_STATE_EDGE_TOTAL]
 //     CSR: each state's edges are a sorted-ascending run in state_edge_ids,
-//     pointed to by (offset, count) in state_edge_slices. Replaces the old
-//     O(MAX_STATES × MAX_EDGES) bitset — total memory is now linear in the
-//     sum of per-state edge counts. Sortedness is preserved by rewrite
+//     pointed to by (offset, count) in state_edge_slices. Total memory is
+//     linear in the sum of per-state edge counts, not MAX_STATES * MAX_EDGES.
+//     Sortedness is preserved by rewrite
 //     because new edges (via edge_pool.claim_n) always have IDs greater
 //     than any parent edge.
 
@@ -96,9 +96,9 @@ struct Edge {
 };
 static_assert(sizeof(Edge) == 24, "Edge layout must pack to 24 bytes");
 
-// Per-state edge list descriptor. Replaces the legacy O(states × edges)
-// bitset with a compressed-sparse-row layout: `state_edge_slices[sid] =
-// {offset, count}` points at a sorted run of EdgeIds in `state_edge_ids[]`.
+// Per-state edge list descriptor: a compressed-sparse-row layout where
+// `state_edge_slices[sid] = {offset, count}` points at a sorted run of EdgeIds
+// in `state_edge_ids[]`.
 // The flat ids pool is append-only; each rewrite allocates a consecutive
 // slice via atomic claim_n. Slices stay sorted because (a) initial-state
 // edges are inserted in ascending order, (b) each rewrite appends produced
