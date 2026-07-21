@@ -120,7 +120,16 @@ class Hypergraph {
 
 public:
     Hypergraph()
-        : wl_hash_(std::make_unique<WLHash>(&arena_))
+        // Route every map's table storage through the arena (no malloc, no per-map
+        // heap contention). Ordered by member-declaration order. arena_ is declared
+        // before these maps, so it is fully constructed here.
+        : canonical_state_map_(
+              decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+        , event_canonical_state_map_(
+              decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+        , wl_hash_(std::make_unique<WLHash>(&arena_))
+        , canonical_event_map_(
+              decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     {
         causal_graph_.set_arena(&arena_);
     }

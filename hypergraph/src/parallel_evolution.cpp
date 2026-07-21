@@ -22,6 +22,19 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     , rewriter_(hg)
     , num_threads_(num_threads > 0 ? num_threads : std::thread::hardware_concurrency())
 {
+    // Route every engine map's table storage through the hypergraph arena (no malloc,
+    // no per-map heap contention). These maps are append-only across the engine's
+    // lifetime; re-homing here is single-threaded setup, before any task runs.
+    ConcurrentHeterogeneousArena* arena = &hg_->arena();
+    seen_match_hashes_.set_arena(arena);
+    matched_raw_states_.set_arena(arena);
+    state_matches_.set_arena(arena);
+    state_children_.set_arena(arena);
+    state_parent_.set_arena(arena);
+    missing_match_hashes_.set_arena(arena);
+    parent_successor_count_.set_arena(arena);
+    states_per_step_.set_arena(arena);
+
     job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(num_threads_);
     // Recycle each worker's scratch arena after every job — temporaries allocated
     // during a task are reclaimed in bulk, keeping malloc off the hot path.

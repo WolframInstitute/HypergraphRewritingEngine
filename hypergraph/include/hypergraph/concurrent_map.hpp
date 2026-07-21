@@ -108,6 +108,24 @@ public:
         }
     }
 
+    // Re-home a still-empty map onto an arena: swap the fresh heap table for an
+    // arena-allocated one, so all future table storage (initial + resizes) comes
+    // from the arena and is bulk-reclaimed with it. For a map that is a class member
+    // constructed before its arena is known. MUST be called single-threaded during
+    // setup, before any insert, on a map constructed without an arena.
+    void set_arena(ConcurrentHeterogeneousArena* arena) {
+        arena_ = arena;
+        Table* old = table_.load(std::memory_order_relaxed);
+        size_t cap = old ? old->capacity : DEFAULT_INITIAL_CAPACITY;
+        table_.store(Table::create(cap, nullptr, arena_), std::memory_order_release);
+        // The pre-rehome table(s) were heap-backed; free them.
+        while (old) {
+            Table* prev = old->prev;
+            ::operator delete(old);
+            old = prev;
+        }
+    }
+
     // Total heap bytes held by the table chain (current + retained superseded tables),
     // for memory measurement. O(chain length).
     size_t bytes_allocated() const {

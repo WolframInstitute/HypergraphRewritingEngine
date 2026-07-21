@@ -49,8 +49,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 - **`types.hpp`** -- core value types, IDs, bindings, mode enums.
   - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters`, `CausalEdge`, `BranchialEdge`, `EdgeCausalInfo`, `EdgeOccurrence`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
-- **`arena.hpp`** -- arena allocators (foundation of off-hot-path allocation).
-  - `Arena<T>`, `ConcurrentArena<T>`, `ConcurrentHeterogeneousArena` (lock-free untyped bump; mark/release/reset/recycle), `ArenaVector<T>`; `worker_scratch()`
+- **`arena.hpp`** -- arena allocators (foundation of off-hot-path, malloc-free allocation).
+  - `Arena<T>`, `ConcurrentArena<T>`, `ConcurrentHeterogeneousArena` (**per-worker bump cursors** — each thread bumps a private non-atomic offset, no shared atomic on the fast path, only a lock-free head CAS to grab a fresh ~1 MB block; scratch arenas keep the shared `allocate_shared` path for `mark/release/reset`; `create`/`create_untracked`), `ArenaWorkerRegistry` (thread→dense index, released at exit), `ArenaVector<T>`; `worker_scratch()`
 - **`scratch_alloc.hpp`** -- STL-compatible allocators over the scratch/persistent arenas.
   - `ScratchAlloc<T>`, `PersistAlloc<T>`, `PersistTarget`; `worker_persistent()`; aliases `SVec`/`PVec`/`SSet`/`SUSet`/`SMap`/`SUMap`/`PUMap`
 - **`bitset.hpp`** -- sparse chunked bitset for a state's edge set.

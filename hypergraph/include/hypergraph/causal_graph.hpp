@@ -153,9 +153,18 @@ public:
         return transitive_reduction_enabled_.load(std::memory_order_relaxed);
     }
 
-    // Set arena (for deferred initialization)
+    // Set arena (for deferred initialization). Also re-homes every member map's table
+    // storage onto the arena (no malloc). Single-threaded setup only, before any
+    // event is registered.
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
+        desc_.set_arena(arena);
+        anc_.set_arena(arena);
+        seen_causal_triples_.set_arena(arena);
+        seen_causal_event_pairs_.set_arena(arena);
+        seen_branchial_pairs_.set_arena(arena);
+        state_events_.set_arena(arena);
+        state_edge_events_.set_arena(arena);
     }
 
     // =========================================================================

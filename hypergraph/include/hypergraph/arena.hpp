@@ -250,11 +250,71 @@ private:
 };
 
 // =============================================================================
+// Per-thread arena worker index
+// =============================================================================
+//
+// Each thread that allocates from an arena is assigned a small dense integer in
+// [0, MAX_ARENA_WORKERS). That index selects a PRIVATE bump cursor inside every
+// arena, so the allocation fast path touches only thread-local state and never a
+// shared atomic — this is what lets the shared arena scale to many concurrent
+// allocators without CAS contention. Indices are released at thread exit and
+// reused, so the ceiling bounds PEAK concurrent threads, not total threads spawned
+// over the process lifetime. A thread past the ceiling gets index -1 and falls back
+// to the shared bump path (still correct, just contended); the ceiling sits well
+// above any realistic worker count.
+
+inline constexpr int MAX_ARENA_WORKERS = 256;
+
+class ArenaWorkerRegistry {
+public:
+    // Claim the lowest free index, or -1 if all are taken.
+    int acquire() {
+        for (int i = 0; i < MAX_ARENA_WORKERS; ++i) {
+            if (in_use_[i].load(std::memory_order_relaxed)) continue;
+            bool expected = false;
+            if (in_use_[i].compare_exchange_strong(
+                    expected, true,
+                    std::memory_order_acquire, std::memory_order_relaxed)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    void release(int idx) {
+        if (idx >= 0) in_use_[idx].store(false, std::memory_order_release);
+    }
+private:
+    std::atomic<bool> in_use_[MAX_ARENA_WORKERS] = {};
+};
+
+inline ArenaWorkerRegistry& arena_worker_registry() {
+    static ArenaWorkerRegistry registry;
+    return registry;
+}
+
+// Acquires an index on first use by a thread, releases it at thread exit.
+struct ArenaWorkerIndexHolder {
+    int index;
+    ArenaWorkerIndexHolder() : index(arena_worker_registry().acquire()) {}
+    ~ArenaWorkerIndexHolder() { arena_worker_registry().release(index); }
+};
+
+// The calling thread's arena worker index (assigned on first call, stable for the
+// thread's lifetime, -1 when the worker ceiling is exceeded).
+inline int arena_worker_index() {
+    static thread_local ArenaWorkerIndexHolder holder;
+    return holder.index;
+}
+
+// =============================================================================
 // ConcurrentHeterogeneousArena: Untyped thread-safe arena allocator
 // =============================================================================
 //
 // Bump-pointer arena for heterogeneous object types, safe for concurrent
-// allocation from multiple threads via an atomic claim on the current block.
+// allocation from multiple threads. The fast path is a PER-WORKER bump cursor:
+// each thread carries a private current block and bumps a plain offset with no
+// shared atomic, touching shared state only to grab a fresh block (rare, once per
+// block_size_ bytes). This keeps concurrent allocation contention-free.
 //
 
 class ConcurrentHeterogeneousArena {
@@ -271,6 +331,12 @@ public:
         , recycle_(recycle_blocks)
         , destructor_head_(nullptr) {
         allocate_new_block();
+        // Per-worker bump cursors back the contention-free concurrent fast path. A
+        // recycling scratch arena is single-threaded and uses the shared cursor plus
+        // mark()/release()/reset() stack discipline instead, so it needs none.
+        if (!recycle_) {
+            cursors_ = new LocalCursor[MAX_ARENA_WORKERS];
+        }
     }
 
     ~ConcurrentHeterogeneousArena() {
@@ -288,6 +354,8 @@ public:
             ::operator delete(block);
             block = prev;
         }
+
+        delete[] cursors_;
     }
 
     // Non-copyable, non-movable
@@ -318,29 +386,30 @@ public:
         return obj;
     }
 
-    // Allocate raw memory
+    // Allocate and construct a new T WITHOUT registering a destructor. Reserved for
+    // objects whose cleanup is owned by the arena's bulk reclamation — e.g. an
+    // arena-backed ConcurrentMap, whose own destructor is a no-op because its tables
+    // live in this arena. Registering such a destructor would add a shared-list CAS
+    // per object for no effect, so this path skips it.
+    template<typename T, typename... Args>
+    T* create_untracked(Args&&... args) {
+        void* mem = allocate_raw(sizeof(T), alignof(T));
+        std::atomic_thread_fence(std::memory_order_acquire);
+        T* obj = new (mem) T(std::forward<Args>(args)...);
+        std::atomic_thread_fence(std::memory_order_release);
+        return obj;
+    }
+
+    // Allocate raw memory. The concurrent fast path bumps this worker's private
+    // cursor with no shared atomic; only grabbing a fresh block touches shared state.
+    // A recycling scratch arena (cursors_ == nullptr) and any thread past the worker
+    // ceiling (index < 0) fall through to the shared bump path.
     void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t)) {
-        while (true) {
-            Block* block = current_block_.load(std::memory_order_acquire);
-            size_t offset = block->offset.load(std::memory_order_acquire);
-
-            size_t aligned_offset = (offset + alignment - 1) & ~(alignment - 1);
-            size_t new_offset = aligned_offset + size;
-
-            if (new_offset <= block->capacity) {
-                // Try to claim this region
-                if (block->offset.compare_exchange_weak(
-                        offset, new_offset,
-                        std::memory_order_acq_rel,  // Use acq_rel for stronger ordering
-                        std::memory_order_acquire)) {
-                    void* result = block->data + aligned_offset;
-                    return result;
-                }
-                continue;
-            }
-
-            advance_block();
+        if (cursors_) {
+            int wi = arena_worker_index();
+            if (wi >= 0) return allocate_local(cursors_[wi], size, alignment);
         }
+        return allocate_shared(size, alignment);
     }
 
     // Allocate array of T (default constructed, destructors tracked if needed)
@@ -432,12 +501,80 @@ private:
         DestructorNode* prev;
     };
 
+    // One private bump cursor per worker index. Only the owning thread touches its
+    // cursor, so the offset is a plain integer (no atomic) — the source of the
+    // fast path's freedom from contention. Padded to a cache line so cursors of
+    // different workers never share one.
+    struct alignas(64) LocalCursor {
+        Block* block = nullptr;   // this worker's current bump block
+        size_t offset = 0;        // bump position within block->data
+        size_t capacity = 0;      // cached block->capacity
+    };
+
+    // Bump this worker's private cursor. On overflow, grab a fresh block sized for
+    // the request and bump from there. block->offset is mirrored (relaxed, to this
+    // worker's own block) so bytes_allocated() sees the live high-water mark.
+    void* allocate_local(LocalCursor& c, size_t size, size_t alignment) {
+        if (c.block) {
+            size_t aligned = (c.offset + alignment - 1) & ~(alignment - 1);
+            size_t new_offset = aligned + size;
+            if (new_offset <= c.capacity) {
+                c.offset = new_offset;
+                c.block->offset.store(new_offset, std::memory_order_relaxed);
+                return c.block->data + aligned;
+            }
+        }
+        // Current block can't fit this request; take a fresh one (shared, but rare).
+        size_t cap = block_size_;
+        size_t need = size + alignment;  // worst-case alignment slack
+        if (need > cap) cap = need;
+        Block* nb = grab_block(cap);
+        c.block = nb;
+        c.capacity = nb->capacity;
+        // Fresh block: data is max_align_t-aligned, so an offset-relative alignment
+        // (<= max_align_t, as for every arena request) starts at 0.
+        size_t aligned = (alignment - 1) & ~(alignment - 1);  // == 0
+        size_t new_offset = aligned + size;
+        c.offset = new_offset;
+        nb->offset.store(new_offset, std::memory_order_relaxed);
+        return nb->data + aligned;
+    }
+
+    // Shared bump path: an atomic claim on current_block_'s offset. Backs the
+    // single-threaded recycling scratch arena (whose mark/release/reset ride
+    // current_block_) and the over-ceiling fallback for the concurrent arena.
+    void* allocate_shared(size_t size, size_t alignment) {
+        while (true) {
+            Block* block = current_block_.load(std::memory_order_acquire);
+            size_t offset = block->offset.load(std::memory_order_acquire);
+
+            size_t aligned_offset = (offset + alignment - 1) & ~(alignment - 1);
+            size_t new_offset = aligned_offset + size;
+
+            if (new_offset <= block->capacity) {
+                // Try to claim this region
+                if (block->offset.compare_exchange_weak(
+                        offset, new_offset,
+                        std::memory_order_acq_rel,  // Use acq_rel for stronger ordering
+                        std::memory_order_acquire)) {
+                    void* result = block->data + aligned_offset;
+                    return result;
+                }
+                continue;
+            }
+
+            advance_block();
+        }
+    }
+
     // See ConcurrentArena<T>::allocate_new_block for the rationale: sync
     // current_block_ from head_ after installing the new block so the last
     // store always reflects the most-recent head rather than a racing
     // thread's older block.
-    void allocate_new_block() {
-        Block* new_block = Block::create(block_size_);
+    // Allocate a block of the given capacity and splice it onto the head of the
+    // chain (lock-free). Shared by the per-worker cursor path and allocate_new_block.
+    Block* grab_block(size_t cap) {
+        Block* new_block = Block::create(cap);
 
         Block* old_head = head_.load(std::memory_order_acquire);
         do {
@@ -449,7 +586,15 @@ private:
 
         // Forward link (older -> newer). Only ever READ single-threaded after reset()
         // to recycle blocks, so the plain store is fine alongside the lock-free path.
+        // Each old_head is superseded by exactly one CAS winner, so this store races
+        // with no other write.
         if (old_head) old_head->next = new_block;
+
+        return new_block;
+    }
+
+    void allocate_new_block() {
+        grab_block(block_size_);
 
         // Track the most-recent head: a plain store(new_block) lets a racing
         // thread's older block win current_block_ while its newer block sits
@@ -495,6 +640,8 @@ private:
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;
+    // Per-worker bump cursors (non-null only for a non-recycling concurrent arena).
+    LocalCursor* cursors_ = nullptr;
 };
 
 // Per-worker scratch arena: thread-local, recycled via reset() between tasks. The
