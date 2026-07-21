@@ -1,6 +1,38 @@
 # Grand design: memory-bounded, incremental, CPU/GPU-shared multiway evolution
 
-Status: PROPOSAL for review (not yet implemented). Name/location provisional.
+## Status (kept current as items land; branch `overhaul/phase0-zero-waste`)
+
+**DONE — landed + verified (full suite green, oracle-exact, multi-thread deterministic):**
+- Measurement + verification harness: `reference/oracle_corpus.hpp` (diverse rule-type corpus
+  + brute-force oracle), `test_oracle_corpus.cpp` (exactness + 4/8/16-thread determinism +
+  causal/branchial-count determinism gates), `tools/cost_matrix.cpp` (arena bytes + heap
+  bytes/count counters). This is the "prove, not assume" substrate for everything below.
+- Phase-0 zero-waste (§4): dead `state_children_` removed; WL hash-only path (killed the
+  per-state persistent-arena leak); pattern F1 (dropped 17 KB context copy); `Event.binding`
+  dropped (−132 B/event); `event_canonical_state_map_` gated; **F8 correctness fix** (Bell
+  truncation → silently missed matches) + regression test.
+- SparseBitset **copy-on-write** (§ representation): child = parent chunks by reference + delta.
+- **De-heap of the whole shipping surface (§3c): COMPLETE.** `heapAllocs 1567 → 69` on the
+  corpus. Jobs → per-thread slab pool; **every `ConcurrentMap` → per-worker-cursor arena**
+  (the arena now scales — per-worker bump cursors, no shared-atomic fast path — solving the
+  6× contention a naive single-arena caused); `lockfree_deque` inline payload; IR `std::function`
+  removed; WXF serialization streamed (byte-identical, FFI pin-test added). Residual 69 =
+  arena backing blocks + one-time single-threaded setup.
+- Per-worker-cursor arena (§1, the Tier-allocator fast path): DONE.
+
+**IN PROGRESS:**
+- Causal closure memory reduction (§3 base layer): reconvergence-skip + key-only uint32 sets
+  + drop-`Anc` + lazy empties. The closure is still O(N²) *bytes* (de-heap moved it heap→arena,
+  didn't shrink it); this is the first cut before the reachability oracle.
+
+**NOT STARTED:**
+- Causal reachability oracle (§3, the O(N²)→O(N·w) redesign) — after the base layer.
+- Tier reclamation (§1 Tier F / §2b) — per-generation arena reset → working memory O(frontier).
+- Automorphism reconstruction (§2 pillar 3 / §2b) — don't materialise raw provenance.
+- Incremental hashing (§4) — consume the delta already handed to `create_or_get_canonical_state`.
+- CPU/GPU shared factoring + persistent-kernel scheduler (§5, Phase 3).
+
+Name/location of this doc still provisional; charter is `OBJECTIVE.md`.
 
 ## The objective
 
