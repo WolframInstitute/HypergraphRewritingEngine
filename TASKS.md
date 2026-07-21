@@ -352,8 +352,38 @@ all-remotes push discipline (post-commit hook).
   deployed on both remotes. Every commit auto-pushes to `local` + `origin` via a
   `.git/hooks/post-commit` hook (re-install on the laptop; it is not tracked).
 - Gates: `gpu_differential_tests` 24/24, `hg_gpu_tests` 77/77, `all_tests`
-  172/172 (`PacletTest` needs a Wolfram paclet build absent from the Linux
-  configuration).
+  175/175 non-paclet (`PacletTest` needs a Wolfram paclet build absent from the
+  Linux configuration). A GitHub Actions Linux leg (`.github/workflows/ci.yml`)
+  builds + runs `all_tests` on every push (paclet/GPU/viz off).
+
+## Completed 2026-07-21 (this session)
+
+- **Correctness:** item 15 verified resolved (quotient completeness) + probe
+  hardened to run under contention; `wxf_bswap64` infinite-recursion crash fixed.
+- **CPU perf:** split the forwarding rendezvous epoch into match/child signals
+  (forwarding re-walks -88% at 1 thread, -70..80% at 2-16); IR canonicalization
+  `std::`-tree removal (bitset worklist, sort-based grouping, sorted-unique verts,
+  relabel-via-index; -4.3% instructions, all red-black trees gone from IR);
+  `SegmentedArray` shift/mask; matcher double-fetch + batched-only reserve;
+  per-event causal closures 16 KB -> 16.
+- **GPU perf:** `PersistentEvolver` keeps the device Engine across calls (6-12x on
+  interactive runs; wired into the worker); IR-canon one-thread-per-state launch.
+  The lockstep-bubble work is recorded in item 3 (at-the-machine / headless).
+- **Cleanup:** ~1000+ lines of dead code removed (never-instantiated core classes,
+  dead pattern/index API, dead incremental-WL block, dead GPU stubs/entrypoints,
+  dead `uniform_random_mode_` path); `shared_tree` -> `wl_hash` rename;
+  past-contrast comments fixed CPU + GPU.
+- **Tests added to the gate:** IR distinguishes 1-WL-hard pairs; CPU `ConcurrentMap`
+  contention; quotient completeness (item 15 property); online-vs-offline causal TR
+  exactness on real evolution.
+- **Onboarding / docs:** `SyntaxInformation` + argument/option autocompletion for
+  all 22 public symbols; installable `.paclet` + `tools/build_paclet.wls`; verified
+  `docs/QUICKSTART.md`; `docs/ARCHITECTURE.md` + `CONTRIBUTING.md` + README refresh;
+  MarkdownToNotebook pipeline (`tools/build_docs.wls`) + 22 Symbol pages, a Guide,
+  and a TechNote tutorial in `paclet/Documentation/Source/`.
+- **Refuted by profiling (not committed):** tiered exact canonicalization (+28%),
+  CUDA-graph step capture (targets the smallest slice; the real GPU cost was the
+  per-call allocation, fixed by PersistentEvolver).
 - `explore_from_canonical_states_only` is the quotient mode: expand each
   canonical state once at its shortest depth; deterministic on both engines;
   exact causal/branchial multisets of the full expansion reconstruct offline
