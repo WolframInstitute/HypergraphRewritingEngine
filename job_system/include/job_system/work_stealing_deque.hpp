@@ -1,5 +1,4 @@
-#ifndef JOB_SYSTEM_WORK_STEALING_DEQUE_HPP
-#define JOB_SYSTEM_WORK_STEALING_DEQUE_HPP
+#pragma once
 
 #include <atomic>
 #include <cstddef>
@@ -113,4 +112,3 @@ public:
 
 } // namespace job_system
 
-#endif // JOB_SYSTEM_WORK_STEALING_DEQUE_HPP

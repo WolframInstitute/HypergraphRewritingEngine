@@ -1,5 +1,4 @@
-#ifndef HYPERGRAPH_CANONICAL_TYPES_HPP
-#define HYPERGRAPH_CANONICAL_TYPES_HPP
+#pragma once
 
 #include <vector>
 #include <unordered_map>
@@ -76,4 +75,3 @@ struct CanonicalizationResult {
 
 } // namespace hypergraph
 
-#endif // HYPERGRAPH_CANONICAL_TYPES_HPP

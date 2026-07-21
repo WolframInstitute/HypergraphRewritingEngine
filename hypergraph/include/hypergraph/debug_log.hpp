@@ -1,5 +1,4 @@
-#ifndef HYPERGRAPH_DEBUG_LOG_HPP
-#define HYPERGRAPH_DEBUG_LOG_HPP
+#pragma once
 
 #include <cstdio>
 #include <thread>
@@ -62,4 +61,3 @@ inline void debug_output(const char* fmt, ...) {
     #define DEBUG_LOG(fmt, ...) ((void)0)
 #endif
 
-#endif // HYPERGRAPH_DEBUG_LOG_HPP

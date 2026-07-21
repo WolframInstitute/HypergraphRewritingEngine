@@ -1,5 +1,4 @@
-#ifndef BENCHMARK_FRAMEWORK_HPP
-#define BENCHMARK_FRAMEWORK_HPP
+#pragma once
 
 #include <vector>
 #include <string>
@@ -1835,4 +1834,3 @@ inline void BENCHMARK_META(const std::string& key, const std::string& value) {
 
 } // namespace benchmark
 
-#endif // BENCHMARK_FRAMEWORK_HPP

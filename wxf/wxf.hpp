@@ -1,5 +1,4 @@
-#ifndef WXF_HPP
-#define WXF_HPP
+#pragma once
 
 #include <vector>
 #include <string>
@@ -454,4 +453,3 @@ T deserialize(const uint8_t* data, size_t size) {
 
 } // namespace wxf
 
-#endif // WXF_HPP

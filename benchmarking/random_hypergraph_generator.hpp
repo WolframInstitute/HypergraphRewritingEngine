@@ -1,5 +1,4 @@
-#ifndef RANDOM_HYPERGRAPH_GENERATOR_HPP
-#define RANDOM_HYPERGRAPH_GENERATOR_HPP
+#pragma once
 
 #include <hypergraph/types.hpp>
 #include <random>
@@ -171,4 +170,3 @@ public:
 
 } // namespace benchmark
 
-#endif // RANDOM_HYPERGRAPH_GENERATOR_HPP

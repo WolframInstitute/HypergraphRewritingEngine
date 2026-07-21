@@ -1,5 +1,4 @@
-#ifndef JOB_SYSTEM_JOB_HPP
-#define JOB_SYSTEM_JOB_HPP
+#pragma once
 
 #include <functional>
 #include <memory>
@@ -97,4 +96,3 @@ auto make_compatible_job(JobPtr<JobType> job, F&& compatibility_func) {
 
 } // namespace job_system
 
-#endif // JOB_SYSTEM_JOB_HPP

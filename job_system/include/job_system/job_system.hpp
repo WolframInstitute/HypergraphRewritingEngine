@@ -1,5 +1,4 @@
-#ifndef JOB_SYSTEM_JOB_SYSTEM_HPP
-#define JOB_SYSTEM_JOB_SYSTEM_HPP
+#pragma once
 
 #include <job_system/job.hpp>
 #include <job_system/work_stealing_deque.hpp>
@@ -352,4 +351,3 @@ public:
 
 } // namespace job_system
 
-#endif // JOB_SYSTEM_JOB_SYSTEM_HPP

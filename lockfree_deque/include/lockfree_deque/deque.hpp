@@ -1,5 +1,4 @@
-#ifndef LOCKFREE_DEQUE_HPP
-#define LOCKFREE_DEQUE_HPP
+#pragma once
 
 #include <atomic>
 #include <cstdint>
@@ -225,4 +224,3 @@ public:
 
 } // namespace lockfree
 
-#endif // LOCKFREE_DEQUE_HPP
