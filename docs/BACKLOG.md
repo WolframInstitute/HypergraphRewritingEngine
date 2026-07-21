@@ -70,14 +70,21 @@ Legend: [x] done · [~] in progress · [ ] not started.
   **`refine`** loop (~26% incl). Secondary: causal `add_causal_edge` ~18%, `ConcurrentMap::insert`
   ~26% self (across dedup+causal+match maps), matching ~11%. Scaling is sublinear (eff 20–43% at 16T,
   frontier-width bound). This reorders the compute backlog below.
-- [ ] **Incremental IR canonicalization** (the proven ~50% lever): warm-start the IR labeling from
-  the parent's canonical partition + the rewrite delta (`incr_parent/consumed/produced`, already
-  threaded into `create_or_get_canonical_state` but ignored) instead of rebuilding adjacency +
-  initial_partition + refine from scratch per child. Must stay EXACT (oracle) + deterministic.
-  NOTE: refinement is non-local, but the parent partition is a strong warm-start and the delta is
-  O(1) — the open question the prior incremental-IR probe (`96b7ba7`) shelved; the profile now
-  justifies revisiting. (Incremental WL hashing was correctly dropped — `0530f69`, and Full mode
-  doesn't even use WL; see [[project-incrementalisation-status]].)
+- [x] IR `build_adjacency` de-mapped: the per-child `unordered_map<orig,idx>` (~32% of canon
+  CYCLES, alloc/cache-miss heavy) replaced by `lower_bound` on the already-sorted `idx_to_orig`
+  vertex set. 243 canonical hashes byte-identical; total engine instructions −5.2%, build_adjacency
+  inclusive −26.1%, wall-clock −14.5% (min-of-12); oracle EXACT, 184/184.
+- [~] **Incremental IR canonicalization — REFUTED for now** (rigorous negative, sharpens `96b7ba7`):
+  (a) warm-starting `refine`/`find_canonical_labeling` from a parent partition CANNOT be exact — the
+  discrete-refine canonical order IS the refinement trajectory, so parent-dependence would give
+  isomorphic children different hashes; (b) even the exact-safe adjacency/initial_partition reuse has
+  no amortization hook — each match is a separate work-stealing rewrite task (`submit_rewrite_task`),
+  so there is NO parent→child locality to cache against. UNLOCK PATH (future, architectural): batch a
+  parent's children into one task to create locality, THEN cache the parent adjacency/partition. Until
+  the task model changes, per-child IR (~50%) is irreducible by incrementality. See
+  [[project-incrementalisation-status]].
+- [ ] IR high-symmetry pathology: full-partition copy + fresh scratch per search node (the 1100×
+  cycle blowup) → trail mutate/undo + reused scratch (independent of the above).
 - [ ] Canonicalization event-path redundancy: `find_edge_correspondence` recomputes both states'
   WL 4× per event; both correspondences built when one is keyed (A1); canonical-state cache
   recomputed per incident event (A3) → memoize on the State; drop the `hash1!=hash2` guard.

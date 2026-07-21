@@ -52,13 +52,9 @@ IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
     verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
 
     adj.num_vertices = static_cast<uint32_t>(verts.size());
-    adj.idx_to_orig.reserve(verts.size());
-    uint32_t idx = 0;
-    for (VertexId v : verts) {
-        adj.orig_to_idx[v] = idx;
-        adj.idx_to_orig.push_back(v);
-        ++idx;
-    }
+    // idx_to_orig is exactly the sorted-unique vertex set; a vertex's index is its
+    // rank there, which idx_of() recovers by binary search.
+    adj.idx_to_orig = std::move(verts);
 
     adj.vertex_edges.resize(adj.num_vertices);
     adj.edges_idx.resize(edges.size());
@@ -66,7 +62,7 @@ IRCanonicalizer::HypergraphAdj IRCanonicalizer::build_adjacency(
         uint8_t arity = static_cast<uint8_t>(edges[ei].size());
         adj.edges_idx[ei].reserve(arity);
         for (uint8_t pos = 0; pos < arity; ++pos) {
-            uint32_t vi = adj.orig_to_idx[edges[ei][pos]];
+            uint32_t vi = adj.idx_of(edges[ei][pos]);
             adj.vertex_edges[vi].push_back({ei, pos, arity});
             adj.edges_idx[ei].push_back(vi);
         }
@@ -414,7 +410,7 @@ CanonicalizationResult IRCanonicalizer::build_result(
         me.orig_idx = ei;
         me.mapped.reserve(edges[ei].size());
         for (VertexId v : edges[ei]) {
-            uint32_t vi = adj.orig_to_idx.at(v);
+            uint32_t vi = adj.idx_of(v);
             me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
         }
         mapped.push_back(std::move(me));
@@ -690,7 +686,7 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
             me.orig_idx = ei;
             me.mapped.reserve(edges[ei].size());
             for (VertexId v : edges[ei]) {
-                uint32_t vi = adj.orig_to_idx.at(v);
+                uint32_t vi = adj.idx_of(v);
                 me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
             }
             mapped.push_back(std::move(me));
@@ -743,7 +739,7 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
         for (size_t ei = 0; ei < edges.size(); ++ei) {
             mapped[ei].reserve(edges[ei].size());
             for (VertexId v : edges[ei])
-                mapped[ei].push_back(static_cast<VertexId>(labeling[adj.orig_to_idx.at(v)]));
+                mapped[ei].push_back(static_cast<VertexId>(labeling[adj.idx_of(v)]));
         }
         std::vector<std::vector<VertexId>> sorted_edges = mapped;
         std::sort(sorted_edges.begin(), sorted_edges.end());

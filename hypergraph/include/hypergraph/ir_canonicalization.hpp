@@ -117,8 +117,16 @@ private:
         SVec<SVec<VertexOccurrence>> vertex_edges; // vertex_index -> occurrences
         const SVec<SVec<VertexId>>* edges;
         SVec<SVec<uint32_t>> edges_idx;  // edges in vertex-index form (hot path)
-        SUMap<VertexId, uint32_t> orig_to_idx;
+        // A vertex's index is the ascending rank of its original id, so idx_to_orig
+        // is sorted and the index is the position within it. idx_of() recovers that
+        // position by binary search: one contiguous, cache-resident vector serves
+        // both index->id (subscript) and id->index (search) directions.
         SVec<VertexId> idx_to_orig;
+        uint32_t idx_of(VertexId v) const {
+            return static_cast<uint32_t>(
+                std::lower_bound(idx_to_orig.begin(), idx_to_orig.end(), v)
+                - idx_to_orig.begin());
+        }
     };
 
     HypergraphAdj build_adjacency(const SVec<SVec<VertexId>>& edges) const;
