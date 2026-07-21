@@ -8,7 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(VIZ_VULKAN "Enable Vulkan backend" ON)
 option(VIZ_WEBGPU "Enable WebGPU backend" OFF)
 option(VIZ_CUDA_LAYOUT "Enable CUDA graph layout (NVIDIA only)" OFF)
-option(VIZ_BUILD_FULL "Build all libraries (later phases)" OFF)
 
 # Platform detection
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -27,7 +26,36 @@ elseif(EMSCRIPTEN)
     set(VIZ_WEBGPU ON)
 endif()
 
-# Graphics Abstraction Layer (GAL)
+# Windowing backend detection
+#
+# The Vulkan GAL and the interactive applications both need the native windowing
+# stack (XCB on Linux) - the Vulkan headers pull in <xcb/xcb.h> through
+# VK_USE_PLATFORM_XCB_KHR, and the platform layer opens XCB windows. When that
+# dependency is absent the windowing translation units cannot compile, but the
+# non-windowing library TUs (camera, layout, events, blackhole analysis) still
+# build. VIZ_HAS_WINDOWING records whether the windowing backend is available.
+set(VIZ_HAS_WINDOWING OFF)
+
+if(VIZ_PLATFORM_LINUX)
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(XCB xcb xcb-keysyms xcb-icccm)
+    endif()
+    if(XCB_FOUND)
+        set(VIZ_HAS_WINDOWING ON)
+    else()
+        message(STATUS
+            "XCB development packages not found - skipping the Vulkan GAL, "
+            "viz_platform and the interactive viz applications. Non-windowing "
+            "library translation units still build. Install libxcb, xcb-keysyms "
+            "and xcb-icccm dev packages to enable them.")
+    endif()
+elseif(VIZ_PLATFORM_WINDOWS)
+    set(VIZ_HAS_WINDOWING ON)
+endif()
+
+# Graphics Abstraction Layer (GAL) - windowing backend
+if(VIZ_HAS_WINDOWING)
 add_library(viz_gal STATIC
     gal/src/vulkan/vk_loader.cpp
 )
@@ -35,6 +63,11 @@ add_library(viz_gal STATIC
 target_include_directories(viz_gal PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/gal/include
 )
+
+# XCB headers are pulled in by <vulkan/vulkan.h> via VK_USE_PLATFORM_XCB_KHR.
+if(VIZ_PLATFORM_LINUX AND XCB_FOUND)
+    target_include_directories(viz_gal PUBLIC ${XCB_INCLUDE_DIRS})
+endif()
 
 if(VIZ_VULKAN)
     # Check for Vulkan headers (we dynamically load the library at runtime, but need headers for types)
@@ -69,11 +102,12 @@ if(VIZ_VULKAN)
     # We use -idirafter to add vulkan headers AFTER compiler's standard includes,
     # ensuring <stdint.h> is found in MinGW sysroot, not /usr/include.
     # This must be PUBLIC so executables linking to viz_gal also get the headers.
-    if(CMAKE_CROSSCOMPILING)
-        target_compile_options(viz_gal PUBLIC "-idirafter${VULKAN_INCLUDE_DIR}")
-    else()
-        target_include_directories(viz_gal SYSTEM PUBLIC ${VULKAN_INCLUDE_DIR})
-    endif()
+    # Use -idirafter (rather than a SYSTEM include) so the path survives: CMake
+    # strips SYSTEM include directories that it believes are already implicit
+    # compiler search paths, which drops /usr/include for toolchains (e.g. conda)
+    # whose implicit set lists it but which do not actually search it at runtime.
+    # -idirafter is passed through verbatim and appends after the standard dirs.
+    target_compile_options(viz_gal PUBLIC "-idirafter${VULKAN_INCLUDE_DIR}")
     target_sources(viz_gal PRIVATE
         gal/src/vulkan/vk_device.cpp
         gal/src/vulkan/vk_buffer.cpp
@@ -93,32 +127,27 @@ if(VIZ_WEBGPU)
     target_compile_definitions(viz_gal PUBLIC VIZ_WEBGPU=1)
     # WebGPU sources will be added in a later phase
 endif()
+endif() # VIZ_HAS_WINDOWING (GAL)
 
 # Platform library (windowing/input)
-add_library(viz_platform STATIC)
-
-target_include_directories(viz_platform PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include
-)
-
-if(VIZ_PLATFORM_LINUX)
-    target_sources(viz_platform PRIVATE
-        platform/src/linux/window_xcb.cpp
+if(VIZ_HAS_WINDOWING)
+    add_library(viz_platform STATIC)
+    target_include_directories(viz_platform PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/include
     )
-    # Find XCB libraries
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(XCB REQUIRED xcb xcb-keysyms xcb-icccm)
-    target_include_directories(viz_platform PRIVATE ${XCB_INCLUDE_DIRS})
-    target_link_libraries(viz_platform PRIVATE ${XCB_LIBRARIES})
-elseif(VIZ_PLATFORM_WINDOWS)
-    target_sources(viz_platform PRIVATE
-        platform/src/windows/window_win32.cpp
-    )
-elseif(VIZ_PLATFORM_WEB)
-    # Emscripten sources will be added in a later phase
+    if(VIZ_PLATFORM_LINUX)
+        target_sources(viz_platform PRIVATE
+            platform/src/linux/window_xcb.cpp
+        )
+        target_include_directories(viz_platform PRIVATE ${XCB_INCLUDE_DIRS})
+        target_link_libraries(viz_platform PRIVATE ${XCB_LIBRARIES})
+    elseif(VIZ_PLATFORM_WINDOWS)
+        target_sources(viz_platform PRIVATE
+            platform/src/windows/window_win32.cpp
+        )
+    endif()
+    target_link_libraries(viz_platform PUBLIC viz_gal)
 endif()
-
-target_link_libraries(viz_platform PUBLIC viz_gal)
 
 # ==============================================================================
 # SPIR-V Shader Compilation
@@ -265,8 +294,50 @@ if(VIZ_CUDA_LAYOUT)
     )
 endif()
 
-# Phase 2+ executable: 3D camera, basic rendering, and layout
-if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
+# ==============================================================================
+# Black hole analysis library (no windowing dependency)
+# ==============================================================================
+# The renderer is header-only (scene/include/scene/hypergraph_renderer.hpp), so
+# the scene/render/ui/geometry object libraries of the earlier modular split do
+# not exist. Everything below builds against the header-only renderer plus the
+# committed analysis translation units.
+if(TARGET hypergraph)
+    add_library(viz_blackhole STATIC
+        blackhole/src/bh_initial_condition.cpp
+        blackhole/src/bh_serialization.cpp
+        blackhole/src/hausdorff_analysis.cpp
+        blackhole/src/bh_evolution.cpp
+        blackhole/src/geodesic_analysis.cpp
+        blackhole/src/particle_detection.cpp
+        blackhole/src/curvature_analysis.cpp
+        blackhole/src/entropy_analysis.cpp
+        blackhole/src/branchial_analysis.cpp
+        blackhole/src/equilibrium_analysis.cpp
+        blackhole/src/branch_alignment.cpp
+    )
+    target_include_directories(viz_blackhole PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include
+    )
+    target_compile_definitions(viz_blackhole PUBLIC BLACKHOLE_WITH_LAYOUT=1)
+    target_link_libraries(viz_blackhole PUBLIC
+        hypergraph
+        job_system
+        viz_layout
+    )
+
+    # Analysis tool for .bhdata files (no windowing needed)
+    add_executable(analyze_bhdata
+        tools/analyze_bhdata.cpp
+    )
+    target_link_libraries(analyze_bhdata PRIVATE viz_blackhole)
+else()
+    message(STATUS "Skipping viz_blackhole (hypergraph target not available)")
+endif()
+
+# ==============================================================================
+# Interactive applications (require the windowing backend)
+# ==============================================================================
+if(VIZ_HAS_WINDOWING)
     add_executable(hypergraph_viz
         app/native_main.cpp
     )
@@ -285,7 +356,6 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
     endif()
 
     # Evolution visualisation application - links to hypergraph engine
-    # Only built when hypergraph library is available (built from top-level CMake)
     if(TARGET hypergraph)
         add_executable(evolution_viz
             app/evolution_visualisation.cpp
@@ -306,36 +376,10 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             add_dependencies(evolution_viz compile_shaders)
         endif()
         message(STATUS "Building evolution_viz with hypergraph engine integration")
-    else()
-        message(STATUS "Skipping evolution_viz (hypergraph target not available)")
     endif()
 
-    # Black hole Hausdorff dimension analysis library
-    if(TARGET hypergraph)
-        add_library(viz_blackhole STATIC
-            blackhole/src/bh_initial_condition.cpp
-            blackhole/src/bh_serialization.cpp
-            blackhole/src/hausdorff_analysis.cpp
-            blackhole/src/bh_evolution.cpp
-            blackhole/src/geodesic_analysis.cpp
-            blackhole/src/particle_detection.cpp
-            blackhole/src/curvature_analysis.cpp
-            blackhole/src/entropy_analysis.cpp
-            blackhole/src/branchial_analysis.cpp
-            blackhole/src/equilibrium_analysis.cpp
-            blackhole/src/branch_alignment.cpp
-        )
-        target_include_directories(viz_blackhole PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}/blackhole/include
-        )
-        target_compile_definitions(viz_blackhole PUBLIC BLACKHOLE_WITH_LAYOUT=1)
-        target_link_libraries(viz_blackhole PUBLIC
-            hypergraph
-            job_system
-            viz_layout
-        )
-
-        # Black hole visualisation application
+    # Black hole visualisation application
+    if(TARGET viz_blackhole)
         add_executable(blackhole_viz
             app/blackhole_viz.cpp
         )
@@ -352,14 +396,6 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             add_dependencies(blackhole_viz compile_shaders)
         endif()
         message(STATUS "Building blackhole_viz with hypergraph engine integration")
-
-        # Analysis tool for .bhdata files
-        add_executable(analyze_bhdata
-            tools/analyze_bhdata.cpp
-        )
-        target_link_libraries(analyze_bhdata PRIVATE viz_blackhole)
-    else()
-        message(STATUS "Skipping blackhole_viz (hypergraph target not available)")
     endif()
 
     # Windows: Static link C++ runtime to avoid DLL dependencies
@@ -373,148 +409,6 @@ if(VIZ_PLATFORM_LINUX OR VIZ_PLATFORM_WINDOWS)
             target_link_options(blackhole_viz PRIVATE -static-libgcc -static-libstdc++ -static -pthread)
         endif()
     endif()
-endif()
-
-# Additional libraries and executables for later phases
-if(VIZ_BUILD_FULL)
-    # Camera library
-    add_library(viz_camera STATIC
-        camera/src/camera.cpp
-        camera/src/controller.cpp
-    )
-    target_include_directories(viz_camera PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/camera/include
-    )
-    target_link_libraries(viz_camera PUBLIC viz_math)
-
-    # Geometry library
-    add_library(viz_geometry STATIC
-        geometry/src/quickhull.cpp
-        geometry/src/bubble_mesh.cpp
-        geometry/src/arrow_mesh.cpp
-    )
-    target_include_directories(viz_geometry PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/geometry/include
-    )
-    target_link_libraries(viz_geometry PUBLIC viz_math)
-
-    # Layout library
-    add_library(viz_layout STATIC
-        layout/src/spring_electrical.cpp
-        layout/src/barnes_hut.cpp
-        layout/src/multiway_layout.cpp
-        layout/src/layout_manager.cpp
-    )
-    target_include_directories(viz_layout PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/layout/include
-    )
-    target_link_libraries(viz_layout PUBLIC viz_gal viz_math)
-
-    if(VIZ_CUDA_LAYOUT)
-        enable_language(CUDA)
-        target_sources(viz_layout PRIVATE
-            cuda/layout_kernels.cu
-        )
-        target_compile_definitions(viz_layout PUBLIC VIZ_CUDA_LAYOUT=1)
-    endif()
-
-    # Events library
-    add_library(viz_events STATIC
-        events/src/viz_events.cpp
-        events/src/event_ring_buffer.cpp
-    )
-    target_include_directories(viz_events PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/events/include
-    )
-
-    # UI library
-    add_library(viz_ui STATIC
-        ui/src/ui_context.cpp
-        ui/src/widgets.cpp
-        ui/src/font_atlas.cpp
-    )
-    target_include_directories(viz_ui PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/ui/include
-    )
-    target_link_libraries(viz_ui PUBLIC viz_gal viz_math)
-
-    # Scene library
-    add_library(viz_scene STATIC
-        scene/src/hypergraph_scene.cpp
-        scene/src/evolution_observer.cpp
-    )
-    target_include_directories(viz_scene PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/scene/include
-    )
-    target_link_libraries(viz_scene PUBLIC
-        viz_events
-        viz_layout
-        viz_geometry
-    )
-
-    # Render library
-    add_library(viz_render STATIC
-        render/src/renderer.cpp
-        render/src/passes/opaque_pass.cpp
-        render/src/passes/oit_pass.cpp
-        render/src/passes/selection_pass.cpp
-        render/src/passes/hyperedge_pass.cpp
-        render/src/passes/ui_pass.cpp
-        render/src/passes/composite_pass.cpp
-    )
-    target_include_directories(viz_render PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/render/include
-    )
-    target_link_libraries(viz_render PUBLIC
-        viz_gal
-        viz_camera
-        viz_geometry
-        viz_ui
-        viz_scene
-    )
-
-    # Main visualization library (combines everything)
-    add_library(viz_core INTERFACE)
-    target_link_libraries(viz_core INTERFACE
-        viz_gal
-        viz_platform
-        viz_camera
-        viz_geometry
-        viz_layout
-        viz_events
-        viz_ui
-        viz_scene
-        viz_render
-    )
-
-    # Link full library to main executable
-    target_link_libraries(hypergraph_viz PRIVATE viz_core)
-
-    # Link to main hypergraph library if available
-    if(TARGET hypergraph)
-        target_link_libraries(hypergraph_viz PRIVATE hypergraph)
-        target_compile_definitions(hypergraph_viz PRIVATE HYPERGRAPH_ENABLE_VISUALIZATION=1)
-    endif()
-endif()
-
-# Web executable
-if(VIZ_PLATFORM_WEB AND VIZ_BUILD_FULL)
-    add_executable(hypergraph_viz_web
-        app/web_main.cpp
-    )
-    target_link_libraries(hypergraph_viz_web PRIVATE viz_core)
-
-    set_target_properties(hypergraph_viz_web PROPERTIES
-        SUFFIX ".html"
-        LINK_FLAGS "-s USE_WEBGPU=1 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1"
-    )
-endif()
-
-# Tests
-if(BUILD_TESTS AND VIZ_BUILD_FULL)
-    add_executable(test_viz_quickhull tests/test_quickhull.cpp)
-    target_link_libraries(test_viz_quickhull PRIVATE viz_geometry)
-
-    add_executable(test_viz_ring_buffer tests/test_ring_buffer.cpp)
-    target_link_libraries(test_viz_ring_buffer PRIVATE viz_events)
+else()
+    message(STATUS "Skipping interactive viz applications (no windowing backend)")
 endif()

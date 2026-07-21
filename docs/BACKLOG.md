@@ -87,11 +87,13 @@ Legend: [x] done · [~] in progress · [ ] not started.
 - [ ] `max_blocks_per_launch` WDDM hack → headless A100/H100 target + tuning.
 
 ## 5. Visualisation
-- [ ] Decide + complete: finish the modular renderer refactor (write the render/ui/geometry/
-  scene `src/*.cpp` by splitting the 2967-line monolithic `scene/include/scene/
-  hypergraph_renderer.hpp`) OR keep the monolith and drop the dead CMake refs — and make
-  `visualisation/` **build**; wire `BUILD_VISUALIZATION` into CI so it can never silently rot
-  (the default-OFF trap that started this audit).
+- [~] Decided: KEEP the header-only monolith (`scene/include/scene/hypergraph_renderer.hpp`),
+  dropped the ~25 dead modular `.cpp` refs (+ the `VIZ_BUILD_FULL`/web/tests blocks) from
+  `visualisation/CMakeLists.txt`. `BUILD_VISUALIZATION=ON` now configures + builds clean; the
+  windowing GAL/apps are gated behind a new non-fatal `VIZ_HAS_WINDOWING` (needs XCB dev pkgs +
+  Vulkan). Built here: `viz_camera/layout/events/blackhole` + `analyze_bhdata`. REMAINING: wire
+  `BUILD_VISUALIZATION=ON` into CI so it can never silently rot; install XCB on a CI runner to
+  cover the interactive apps.
 - [ ] NOTE (settled): the 25 CMake-referenced viz `.cpp` were NEVER committed anywhere —
   exhaustive object-DB scan across `_final`, the bare remote, the sibling clones, AND the laptop
   repo/history/disk confirmed zero trace. An interrupted/never-completed modular split, NOT
