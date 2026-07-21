@@ -31,3 +31,30 @@ TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
         EXPECT_EQ(t1, t8) << c.name << ": canonical count differs between 1 and 8 threads";
     }
 }
+
+// The causal + branchial graph invariants (edge counts, event-pair count) are
+// properties of the multiway system, independent of thread scheduling — so they must
+// be identical at every thread count, run after run. This is the gate that guards the
+// causal/closure/transitive-reduction redesign: any change to that code must keep these
+// counts deterministic across 1/4/8/16 threads. Run deeper (more events => more race
+// surface) and repeat to shake out synchronization flakiness.
+TEST(OracleCorpus, CausalBranchialCountsDeterministicAcrossThreads) {
+    for (const auto& c : oracle::corpus()) {
+        oracle::Counts ref = oracle::engine_counts(c.rules, c.init, c.measure_steps, 1);
+        for (int rep = 0; rep < 3; ++rep) {
+            for (unsigned t : {4u, 8u, 16u}) {
+                oracle::Counts got = oracle::engine_counts(c.rules, c.init, c.measure_steps, t);
+                EXPECT_EQ(got.canonical_states, ref.canonical_states)
+                    << c.name << ": canonical_states differ @" << t << " threads (rep " << rep << ")";
+                EXPECT_EQ(got.events, ref.events)
+                    << c.name << ": events differ @" << t << " threads (rep " << rep << ")";
+                EXPECT_EQ(got.causal_edges, ref.causal_edges)
+                    << c.name << ": causal_edges differ @" << t << " threads (rep " << rep << ")";
+                EXPECT_EQ(got.causal_event_pairs, ref.causal_event_pairs)
+                    << c.name << ": causal_event_pairs differ @" << t << " threads (rep " << rep << ")";
+                EXPECT_EQ(got.branchial_edges, ref.branchial_edges)
+                    << c.name << ": branchial_edges differ @" << t << " threads (rep " << rep << ")";
+            }
+        }
+    }
+}

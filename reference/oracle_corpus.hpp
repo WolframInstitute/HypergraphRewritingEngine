@@ -100,6 +100,37 @@ inline size_t brute_force_iso_count(const std::vector<RewriteRule>& rules,
     return distinct.size();
 }
 
+// Graph invariants of a full evolution — all independent of event/state id
+// assignment, so they must be IDENTICAL across thread counts (determinism) and are
+// the quantities every causal/closure optimization must preserve.
+struct Counts {
+    size_t canonical_states;
+    size_t events;
+    size_t causal_edges;
+    size_t causal_event_pairs;
+    size_t branchial_edges;
+};
+
+inline Counts engine_counts(const std::vector<RewriteRule>& rules,
+                            const std::vector<std::vector<VertexId>>& initial,
+                            int steps, unsigned threads,
+                            StateCanonicalizationMode mode = StateCanonicalizationMode::Full,
+                            bool transitive_reduction = true) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(mode);
+    ParallelEvolutionEngine engine(&hg, threads);
+    engine.set_transitive_reduction(transitive_reduction);
+    for (const auto& r : rules) engine.add_rule(r);
+    engine.evolve(initial, steps);
+    Counts c;
+    c.canonical_states    = hg.num_canonical_states();
+    c.events              = hg.num_events();
+    c.causal_edges        = hg.causal_graph().num_causal_edges();
+    c.causal_event_pairs  = hg.causal_graph().num_causal_event_pairs();
+    c.branchial_edges     = hg.causal_graph().num_branchial_edges();
+    return c;
+}
+
 // One workload: a named, typed rule set + initial condition, with a small
 // oracle-checkable depth and a deeper measurement depth.
 struct Case {
