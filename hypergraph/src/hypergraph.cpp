@@ -543,7 +543,7 @@ uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
     }
     EdgeVertexAccessorRaw vert_acc(this);
     EdgeArityAccessorRaw arity_acc(this);
-    return wl_hash_->compute_state_hash_with_cache(edges, vert_acc, arity_acc).first;
+    return wl_hash_->compute_state_hash(edges, vert_acc, arity_acc);
 }
 
 

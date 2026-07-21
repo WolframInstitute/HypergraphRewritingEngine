@@ -67,19 +67,21 @@ public:
     // State Canonical Hash Computation
     // =========================================================================
 
-    // Compute the canonical state hash, also returning the per-vertex
-    // subtree-hash cache. The cache feeds edge-correspondence recovery between
-    // isomorphic states. Uses arena allocation for all temporary storage.
+    // Shared WL body. When out_cache != nullptr it also fills the per-vertex
+    // subtree-hash cache (which feeds edge-correspondence recovery between
+    // isomorphic states) from the PERSISTENT arena, because those colours outlive
+    // the call. When out_cache == nullptr it hashes only and makes ZERO persistent
+    // allocation — the common state-dedup path. One implementation for both, so the
+    // two paths can never drift. All temporary storage is per-worker scratch.
     template<typename VertexAccessor, typename ArityAccessor>
-    std::pair<uint64_t, VertexHashCache> compute_state_hash_with_cache(
+    uint64_t compute_state_hash_impl(
         const SparseBitset& state_edges,
         const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
+        const ArityAccessor& edge_arities,
+        VertexHashCache* out_cache
     ) const {
-        VertexHashCache cache;
-
         if (state_edges.empty()) {
-            return {0, cache};
+            return 0;
         }
 
         auto _wl_mark = worker_scratch().mark();
@@ -106,7 +108,7 @@ public:
 
         if (vertices.size() == 0) {
             worker_scratch().release(_wl_mark);
-            return {0, cache};
+            return 0;
         }
 
         const size_t num_vertices = vertices.size();
@@ -157,20 +159,50 @@ public:
         ArenaVector<uint8_t>  occ_pos(worker_scratch(), total_occ);       occ_pos.resize(total_occ);
         ArenaVector<uint64_t> nbr(worker_scratch(), nbr_cap);             nbr.resize(nbr_cap);
 
-        // Final per-vertex colours land directly in the cache.
-        cache.count = static_cast<uint32_t>(num_vertices);
-        cache.vertices = arena_->allocate_array<VertexId>(cache.count);
-        cache.hashes   = arena_->allocate_array<uint64_t>(cache.count);
-        for (size_t i = 0; i < num_vertices; ++i) cache.vertices[i] = vertices[i];
+        // Only when a cache is requested do the final per-vertex colours land in the
+        // PERSISTENT arena (they must outlive this call for edge correspondence).
+        // Hash-only callers pass nullptr and allocate nothing persistent — this was
+        // the leak: every dedup hash used to strand two arrays in the never-reclaimed
+        // arena.
+        uint64_t* out_colours = nullptr;
+        if (out_cache) {
+            out_cache->count = static_cast<uint32_t>(num_vertices);
+            out_cache->vertices = arena_->allocate_array<VertexId>(out_cache->count);
+            out_cache->hashes   = arena_->allocate_array<uint64_t>(out_cache->count);
+            for (size_t i = 0; i < num_vertices; ++i) out_cache->vertices[i] = vertices[i];
+            out_colours = out_cache->hashes;
+        }
 
         uint64_t hash = hgcommon::wl_canonical_hash(
             ea.data(), eoff.data(), ev.data(),
             static_cast<uint32_t>(n_edges), static_cast<uint32_t>(num_vertices), hgcommon::WL_MAX_REFINE_ITERS,
             cur.data(), nxt.data(), occ_off.data(), occ_edge.data(), occ_pos.data(),
-            nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), cache.hashes);
+            nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), out_colours);
 
         worker_scratch().release(_wl_mark);
+        return hash;
+    }
+
+    // Cached: hash + per-vertex colour cache (for edge correspondence).
+    template<typename VertexAccessor, typename ArityAccessor>
+    std::pair<uint64_t, VertexHashCache> compute_state_hash_with_cache(
+        const SparseBitset& state_edges,
+        const VertexAccessor& edge_vertices,
+        const ArityAccessor& edge_arities
+    ) const {
+        VertexHashCache cache{};
+        uint64_t hash = compute_state_hash_impl(state_edges, edge_vertices, edge_arities, &cache);
         return {hash, cache};
+    }
+
+    // Hash only: ZERO persistent allocation (the common state-dedup path).
+    template<typename VertexAccessor, typename ArityAccessor>
+    uint64_t compute_state_hash(
+        const SparseBitset& state_edges,
+        const VertexAccessor& edge_vertices,
+        const ArityAccessor& edge_arities
+    ) const {
+        return compute_state_hash_impl(state_edges, edge_vertices, edge_arities, nullptr);
     }
 
 
