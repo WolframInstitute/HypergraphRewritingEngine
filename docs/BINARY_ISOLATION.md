@@ -23,7 +23,7 @@ mirrors the approach already proven in
 
 | Channel | Direction | Content |
 |---------|-----------|---------|
-| stdin   | WL → exe  | WXF `BinarySerialize` of the input association (`InitialEdges`/`Roots`, `Rules`, `Steps`, `Options`). |
+| stdin   | WL → exe  | WXF `BinarySerialize` of the input association (`InitialStates` or legacy `InitialEdges`, `Rules`, `Steps`, `Options`). |
 | stdout  | exe → WL  | WXF of the result association (`States`, `Events`, `CausalEdges`, `BranchialEdges`, analysis sections, warnings). Raw bytes, binary mode. |
 | stderr  | exe → WL  | Progress lines (one per line), and a `HGEvolve fatal: ...` line on a caught exception. |
 | exit    | exe → WL  | 0 = success, 1 = fatal error (message on stderr). |
@@ -34,18 +34,18 @@ The input/output WXF associations are **byte-identical** to what the LibraryLink
 
 ## Code structure
 
-- `paclet_source/hg_core.hpp` — `HostBridge` (progress + abort callbacks, either
+- `paclet_source/hg_core.hpp` — `HostBridge` (a single progress callback, which
   may be empty) and the declaration of
   `run_rewriting_core(const std::vector<uint8_t>& wxf_in, const HostBridge&) -> std::vector<uint8_t>`.
 - `paclet_source/hypergraph_ffi.cpp` — defines `run_rewriting_core` (the parse →
   evolve → marshal body, host-agnostic). The LibraryLink entry points
   (`performRewriting` and the blackhole analyses) are a thin adapter compiled
   only when `HG_STANDALONE_BINARY` is **not** defined; they build a `HostBridge`
-  that routes progress to the notebook (`Print` over WSTP) and abort to
-  `libData->AbortQ()`.
+  that routes progress to the notebook. Aborting is a process kill, so there is no
+  cooperative-abort callback.
 - `paclet_source/hg_evolve_main.cpp` — the binary's `main`: read stdin, build a
-  `HostBridge` that writes progress to stderr and supplies no abort callback
-  (the parent kills us), call `run_rewriting_core`, write stdout. Compiled with
+  `HostBridge` that writes progress to stderr (the parent process aborts by killing
+  this one), call `run_rewriting_core`, write stdout. Compiled with
   `-DHG_STANDALONE_BINARY`, so it pulls in **no** Wolfram SDK headers.
 
 ## WL invocation (NeuralLearnability pattern)
