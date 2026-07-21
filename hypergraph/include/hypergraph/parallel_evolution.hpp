@@ -38,22 +38,42 @@
 namespace hypergraph {
 
 // =============================================================================
+// Match Core (immutable, shared)
+// =============================================================================
+// The heavy payload of a match: the rule, the matched data edges, and the
+// variable binding. Allocated once in the arena when a match is first
+// discovered and never mutated afterwards, so a match forwarded to descendant
+// states shares one MatchCore by pointer instead of deep-copying the payload
+// into every descendant. Immutability makes that sharing race-free.
+struct MatchCore {
+    uint16_t rule_index{0};
+    uint8_t num_edges{0};
+    EdgeId matched_edges[MAX_PATTERN_EDGES]{};
+    VariableBinding binding{};
+};
+
+// =============================================================================
 // Match Record
 // =============================================================================
-// Represents a complete match found during pattern matching.
-
+// A match as forwarded to and stored in a descendant state: a pointer to the
+// shared immutable core plus this descendant's own source_state. Forwarding a
+// match to a descendant copies only these two words; the edge list and binding
+// stay behind the core pointer, shared across all descendants of a discovery.
+//
+// source_state is per-descendant because the dedup hash keys on it (see hash())
+// so each descendant deduplicates independently. All heavy-field reads go
+// through core.
 struct MatchRecord {
-    uint16_t rule_index;
-    EdgeId matched_edges[MAX_PATTERN_EDGES];
-    uint8_t num_edges;
-    VariableBinding binding;
-    StateId source_state;
-    StateId canonical_source;  // Canonical state for deterministic deduplication
-    uint64_t source_canonical_hash{0};  // Canonical hash of source state (deterministic)
-    uint64_t storage_epoch{0};  // Epoch when this match was stored (for ordering)
+    const MatchCore* core{nullptr};
+    StateId source_state{INVALID_ID};
 
-    // Hash for deduplication - uses source_state + matched edges + binding
-    // MUST use source_state (raw state ID), NOT source_canonical_hash!
+    uint16_t rule_index() const { return core->rule_index; }
+    uint8_t num_edges() const { return core->num_edges; }
+    const EdgeId* matched_edges() const { return core->matched_edges; }
+    const VariableBinding& binding() const { return core->binding; }
+
+    // Hash for deduplication - uses source_state + matched edges + binding.
+    // MUST use source_state (raw state ID), NOT any canonical identifier!
     //
     // Why: Multiple raw states can share the same canonical hash (isomorphic states).
     // If two raw states S1 and S2 both contain edge E (inherited from common ancestor),
@@ -64,12 +84,13 @@ struct MatchRecord {
     // The raw state IDs are non-deterministic across runs, but that's OK - deduplication
     // only needs to work WITHIN a single run to avoid processing the same match twice.
     uint64_t hash() const {
+        const MatchCore& c = *core;
         // FNV-1a style hash for better distribution and collision resistance
         uint64_t h = 14695981039346656037ULL;  // FNV offset basis
         constexpr uint64_t FNV_PRIME = 1099511628211ULL;
 
         // Mix in rule_index
-        h ^= rule_index;
+        h ^= c.rule_index;
         h *= FNV_PRIME;
 
         // Mix in source_state (raw state ID for collision-free deduplication)
@@ -79,19 +100,19 @@ struct MatchRecord {
         h *= FNV_PRIME;
 
         // Mix in matched edges
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            h ^= matched_edges[i];
+        for (uint8_t i = 0; i < c.num_edges; ++i) {
+            h ^= c.matched_edges[i];
             h *= FNV_PRIME;
         }
 
         // Mix in bound_mask
-        h ^= binding.bound_mask;
+        h ^= c.binding.bound_mask;
         h *= FNV_PRIME;
 
         // Mix in bound variables
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
-            if (binding.is_bound(i)) {
-                h ^= (static_cast<uint64_t>(i) << 32) | binding.get(i);
+            if (c.binding.is_bound(i)) {
+                h ^= (static_cast<uint64_t>(i) << 32) | c.binding.get(i);
                 h *= FNV_PRIME;
             }
         }
@@ -100,16 +121,18 @@ struct MatchRecord {
     }
 
     bool operator==(const MatchRecord& other) const {
-        if (rule_index != other.rule_index || num_edges != other.num_edges ||
+        const MatchCore& a = *core;
+        const MatchCore& b = *other.core;
+        if (a.rule_index != b.rule_index || a.num_edges != b.num_edges ||
             source_state != other.source_state) return false;
         // Compare matched edges
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            if (matched_edges[i] != other.matched_edges[i]) return false;
+        for (uint8_t i = 0; i < a.num_edges; ++i) {
+            if (a.matched_edges[i] != b.matched_edges[i]) return false;
         }
         // Compare bindings
         for (uint8_t i = 0; i < MAX_VARS; ++i) {
-            if (binding.is_bound(i) != other.binding.is_bound(i)) return false;
-            if (binding.is_bound(i) && binding.get(i) != other.binding.get(i)) return false;
+            if (a.binding.is_bound(i) != b.binding.is_bound(i)) return false;
+            if (a.binding.is_bound(i) && a.binding.get(i) != b.binding.get(i)) return false;
         }
         return true;
     }
@@ -187,8 +210,6 @@ struct ScanTaskData {
     StateId state{INVALID_ID};              // State to match in
     uint16_t rule_index{0};                 // Which rule to match
     uint32_t step{0};                       // Evolution step
-    StateId canonical_state{INVALID_ID};    // For deterministic deduplication
-    uint64_t source_canonical_hash{0};      // Canonical hash of source state
     // For delta matching (only find NEW matches involving produced edges)
     bool is_delta{false};                   // If true, only match involving produced_edges
     EdgeId produced_edges[MAX_PATTERN_EDGES]{};  // Zero-initialized
@@ -206,8 +227,6 @@ struct ExpandTaskData {
     uint8_t num_matched{0};                 // Number of edges matched
     VariableBinding binding{};              // Current variable bindings
     uint32_t step{0};                       // Evolution step
-    StateId canonical_state{INVALID_ID};    // For deterministic deduplication
-    uint64_t source_canonical_hash{0};      // Canonical hash of source state
 
     bool is_complete() const {
         return num_matched >= num_pattern_edges;

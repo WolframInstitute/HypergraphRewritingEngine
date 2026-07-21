@@ -24,6 +24,16 @@
   O(pairs) not O(events²)); lazy empty sets. −28.5% total arena on binary-growth, exact,
   4/8/16-thread deterministic. The closure is still O(N²) worst-case in *count* (chains); the
   bytes/constant are cut — the asymptotic fix is the reachability oracle below.
+- **MatchRecord forward-by-reference (§2b):** DONE. The immutable `MatchCore` (`rule_index`,
+  `num_edges`, `matched_edges[16]`, `binding`) is arena-allocated **once** (built on the stack,
+  promoted only on winning the `seen_match_hashes_` claim); `MatchRecord` is now
+  `{const MatchCore* core; StateId source_state}` (16 B) shared by pointer across all
+  descendants. Dead fields `canonical_source`/`source_canonical_hash`/`storage_epoch` and the
+  per-forward canonical-state recompute that fed them dropped. arenaB down every row (−13.7%
+  binary-growth), oracle EXACT, heapAllocs not increased, forwarding validator thread-invariant.
+  Regression harness `tools/forwarding_validator_probe.cpp`. NOTE: the shared-by-pointer core
+  means tier reclamation must treat a parent's cores as live while any descendant holds them
+  (refcount/epoch, not free-on-expand).
 
 **IN PROGRESS:** (none — awaiting next dispatch)
 

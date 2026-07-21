@@ -35,9 +35,14 @@ Legend: [x] done · [~] in progress · [ ] not started.
 - [ ] **Automorphism reconstruction**: store quotient + Aut generators, reconstruct raw
   states/events/causal/branchial from the orbit action instead of materialising them.
   Hard open sub-problem: exact causal/branchial reconstruction under the group action.
-- [ ] **MatchRecord forward-by-reference**: 232 B deep-copied into every descendant by two
-  mechanisms → store the immutable core once, forward `{core*, source_state}` + consumed-edge
-  filter. Bandwidth + memory. (Also removes the 20 B dead fields.)
+- [x] **MatchRecord forward-by-reference**: the immutable `MatchCore` (`rule_index`,
+  `num_edges`, `matched_edges[16]`, `binding`) is arena-allocated once on winning the
+  `seen_match_hashes_` claim; `MatchRecord` is now `{const MatchCore* core; StateId source_state}`
+  (16 B) — forwarding copies two words and shares the core by pointer. Dead fields
+  `canonical_source`/`source_canonical_hash`/`storage_epoch` (and the per-forward
+  `get_canonical_state` recompute that fed them) dropped. arenaB down every row (−13.7% on
+  binary-growth), oracle EXACT, heapAllocs not increased, forwarding validator thread-invariant.
+  Regression harness: `tools/forwarding_validator_probe.cpp`.
 - [ ] Per-edge storage compaction: `Edge.vertices` SBO for arity≤2 (kill out-of-line alloc +
   cache miss/edge); pack `vertex_adjacency_` as CSR (vs 16 B/occurrence linked list);
   drop/shrink `edge_signatures_` (17 B/edge cache).
@@ -104,6 +109,10 @@ Legend: [x] done · [~] in progress · [ ] not started.
 - [ ] `rotation_analysis.{hpp,cpp}` — recovered, uncommitted, pending review/integration.
 
 ## 7. Paper
+- [~] Revision plan written: `docs/PAPER_REVISION_PLAN.md` (section-by-section keep/revise/
+  rewrite/cut; every UT claim flagged with line numbers vs `reference/CANONICALIZATION.md`;
+  perf numbers marked projections; nine benchmark tables T1–T9 specced against real results;
+  missing-contribution sections; 10-item priority checklist).
 - [ ] Reinstate `paper/` (recovered "Rewriting the Universe"), revise, correct, complete.
 - [ ] REAL benchmark numbers (abstract's 50–200× CPU / 5–20× GPU are projections) — CPU here +
   laptop, GPU on laptop then 4090; via `cost_matrix` + a timing harness.

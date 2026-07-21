@@ -208,10 +208,21 @@ void ParallelEvolutionEngine::evolve_uniform_random(
             hg_->arena().bytes_allocated(), hg_->num_edges(), hg_->num_states());
 #endif
 
+    // The step-synchronized uniform-random path is self-contained: its matches are
+    // never stored in state_matches_ nor forwarded through the dataflow rendezvous,
+    // so it keeps a plain value record rather than the shared-core MatchRecord.
+    struct SampleMatch {
+        uint16_t rule_index;
+        uint8_t num_edges;
+        EdgeId matched_edges[MAX_PATTERN_EDGES];
+        VariableBinding binding;
+        StateId source_state;
+    };
+
     PVec<StateId> current_states;
     current_states.push_back(initial_state);
 
-    PVec<MatchRecord> step_matches;
+    PVec<SampleMatch> step_matches;
     step_matches.reserve(matches_per_step * 10);
 
     PVec<StateId> next_states;
@@ -229,7 +240,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
     // Match forwarding data structures
     // state_matches: matches found for each state in current frontier (cleared each step)
-    PUMap<StateId, PVec<MatchRecord>> state_matches;
+    PUMap<StateId, PVec<SampleMatch>> state_matches;
 
     // Child creation info for match forwarding
     struct ChildInfo {
@@ -244,10 +255,10 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
     // Per-step match buffers, hoisted so their capacity is reused across steps
     // (cleared at the top of each step) instead of being reallocated every step.
-    PUMap<StateId, PVec<MatchRecord>> next_state_matches;
+    PUMap<StateId, PVec<SampleMatch>> next_state_matches;
     // job_outputs stays std:: — its inner vectors are push_back'd by WORKER threads,
     // which must not touch the orchestrator's persistent target.
-    std::vector<std::vector<MatchRecord>> job_outputs;
+    std::vector<std::vector<SampleMatch>> job_outputs;
 
     for (size_t step = 1; step <= steps && !current_states.empty(); ++step) {
         if (should_stop_.load(std::memory_order_relaxed)) break;
@@ -273,15 +284,12 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         for (StateId state : current_states) {
             if (should_stop_.load(std::memory_order_relaxed)) break;
 
-            StateId canonical = hg_->get_canonical_state(state);
-            uint64_t canonical_hash = hg_->get_state(state).canonical_hash;
-
             // Check if we have parent info for match forwarding
             auto ci_it = child_info.find(state);
             bool has_parent = (ci_it != child_info.end());
 
             // Get parent's matches if available
-            const PVec<MatchRecord>* parent_matches = nullptr;
+            const PVec<SampleMatch>* parent_matches = nullptr;
             const ChildInfo* ci = nullptr;
             if (has_parent) {
                 ci = &ci_it->second;
@@ -292,7 +300,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
             }
 
             for (uint16_t r = 0; r < rules_.size(); ++r) {
-                std::vector<MatchRecord>* output = &job_outputs[job_idx];
+                std::vector<SampleMatch>* output = &job_outputs[job_idx];
                 uint64_t job_seed = step_seed ^ (job_idx * 0x9e3779b97f4a7c15ULL);
                 job_idx++;
 
@@ -300,7 +308,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
                 // Built + filled on the main thread (data lives in orch_arena); moved
                 // into the job closure, which only READS it. orch_arena outlives all
                 // jobs (wait_for_completion precedes its destruction).
-                PVec<MatchRecord> forwarded_matches;
+                PVec<SampleMatch> forwarded_matches;
                 // Bounded by ci->num_new (<= MAX_PATTERN_EDGES): a stack buffer copied by
                 // value into the job closure, so no per-job heap allocation is needed.
                 std::array<EdgeId, MAX_PATTERN_EDGES> new_edge_list{};
@@ -324,10 +332,8 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
                         if (!uses_consumed) {
                             // Match is still valid - update source state
-                            MatchRecord fwd = pm;
+                            SampleMatch fwd = pm;
                             fwd.source_state = state;
-                            fwd.canonical_source = canonical;
-                            fwd.source_canonical_hash = canonical_hash;
                             forwarded_matches.push_back(fwd);
                         }
                     }
@@ -340,7 +346,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
                 job_system_->submit_function(
                     [this, output, &get_edge, &get_signature,
-                     state, canonical, canonical_hash, r, max_matches_per_job, job_seed,
+                     state, r, max_matches_per_job, job_seed,
                      forwarded = std::move(forwarded_matches),
                      new_edges = new_edge_list, new_edge_count,
                      has_parent]() {
@@ -354,13 +360,11 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 
                         auto on_match = [&](uint16_t rule_index, const EdgeId* edges, uint8_t num_edges,
                                            const VariableBinding& binding, StateId /*src*/) {
-                            MatchRecord match;
+                            SampleMatch match;
                             match.rule_index = rule_index;
                             match.num_edges = num_edges;
                             match.binding = binding;
                             match.source_state = state;
-                            match.canonical_source = canonical;
-                            match.source_canonical_hash = canonical_hash;
                             for (uint8_t i = 0; i < num_edges; ++i) {
                                 match.matched_edges[i] = edges[i];
                             }
@@ -630,7 +634,6 @@ uint64_t ParallelEvolutionEngine::store_match_for_state(
     // (Bumping first opens a window where the pull re-reads the list before the
     // push lands, sees no further epoch change, and quiesces without the match.)
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
-    match.storage_epoch = match_epoch_.load(std::memory_order_relaxed);  // debug stamp only
     list->push(match, hg_->arena());
 
     // In non-batched (eager) mode, we need a fence after each store to ensure
@@ -756,16 +759,15 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
     LockFreeList<ChildInfo>* children = *result;
     children->for_each([&](const ChildInfo& child_info) {
         // Skip if match overlaps with consumed edges
-        if (child_info.match_overlaps_consumed(match.matched_edges, match.num_edges)) {
+        if (child_info.match_overlaps_consumed(match.matched_edges(), match.num_edges())) {
             stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
-        // Create forwarded match with child as source
+        // Forward by reference: share the immutable core, only the per-descendant
+        // source_state differs.
         MatchRecord forwarded = match;
         forwarded.source_state = child_info.child_state;
-        forwarded.canonical_source = hg_->get_canonical_state(child_info.child_state);
-        forwarded.source_canonical_hash = hg_->get_state(child_info.child_state).canonical_hash;
 
         // Deduplicate
         uint64_t h = forwarded.hash();
@@ -780,8 +782,8 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u epoch=%lu",
-                  parent, child_info.child_state, match.rule_index, h, step, match.storage_epoch);
+        DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u",
+                  parent, child_info.child_state, match.rule_index(), h, step);
 
         // Store match in child
         store_match_for_state(child_info.child_state, forwarded);
@@ -863,9 +865,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
         // Skip if match overlaps with ANY consumed edge along the path
         bool overlaps = false;
-        for (uint8_t i = 0; i < ancestor_match.num_edges && !overlaps; ++i) {
+        for (uint8_t i = 0; i < ancestor_match.num_edges() && !overlaps; ++i) {
             for (uint8_t j = 0; j < total_consumed; ++j) {
-                if (ancestor_match.matched_edges[i] == accumulated_consumed[j]) {
+                if (ancestor_match.matched_edges()[i] == accumulated_consumed[j]) {
                     overlaps = true;
                     break;
                 }
@@ -877,18 +879,16 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
             return;
         }
 
-        // Create forwarded match for child state
+        // Forward by reference: share the immutable core, set this child as source.
         MatchRecord forwarded = ancestor_match;
         forwarded.source_state = child;
-        forwarded.canonical_source = hg_->get_canonical_state(child);
-        forwarded.source_canonical_hash = hg_->get_state(child).canonical_hash;
 
         // Deduplicate
         uint64_t h = forwarded.hash();
         auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
         if (!inserted) {
             DEBUG_LOG("FWD_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
-                      ancestor, child, ancestor_match.rule_index, h);
+                      ancestor, child, ancestor_match.rule_index(), h);
             return;  // Already seen
         }
 
@@ -898,8 +898,8 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu epoch=%lu",
-                  ancestor, child, ancestor_match.rule_index, h, ancestor_match.storage_epoch);
+        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu",
+                  ancestor, child, ancestor_match.rule_index(), h);
 
         // CLAIM-WINNER OWNS THE MATCH AT THIS NODE (same invariant as the eager
         // pull): store the copy and propagate to this child's own children, exactly
@@ -1003,8 +1003,8 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
     ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
         // Skip if match overlaps with ANY consumed edge - O(n) vs O(n*m)
         bool overlaps = false;
-        for (uint8_t i = 0; i < ancestor_match.num_edges && !overlaps; ++i) {
-            if (consumed_set.count(ancestor_match.matched_edges[i])) {
+        for (uint8_t i = 0; i < ancestor_match.num_edges() && !overlaps; ++i) {
+            if (consumed_set.count(ancestor_match.matched_edges()[i])) {
                 overlaps = true;
             }
         }
@@ -1014,18 +1014,16 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
             return;
         }
 
-        // Create forwarded match for child state
+        // Forward by reference: share the immutable core, set this child as source.
         MatchRecord forwarded = ancestor_match;
         forwarded.source_state = child;
-        forwarded.canonical_source = hg_->get_canonical_state(child);
-        forwarded.source_canonical_hash = hg_->get_state(child).canonical_hash;
 
         // Deduplicate - seen_match_hashes_ protects against both push and pull duplicates
         uint64_t h = forwarded.hash();
         auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
         if (!inserted) {
             DEBUG_LOG("FWD_EAGER_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
-                      ancestor, child, ancestor_match.rule_index, h);
+                      ancestor, child, ancestor_match.rule_index(), h);
             return;  // Already seen (possibly via push)
         }
 
@@ -1036,7 +1034,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
         DEBUG_LOG("FWD_EAGER ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
-                  ancestor, child, ancestor_match.rule_index, h, step);
+                  ancestor, child, ancestor_match.rule_index(), h, step);
 
         // CLAIM-WINNER OWNS THE MATCH AT THIS NODE: store the copy and propagate to
         // this child's own children, exactly as the push side does when it wins the
@@ -1133,7 +1131,7 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(match.source_state)) return;
 
-    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index, step);
+    DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index(), step);
 
     auto job = job_system::make_job<EvolutionJobType>(
         [this, match, step]() {
@@ -1351,15 +1349,15 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         return;  // Too many states at this generation
     }
 
-    const RewriteRule& rule = rules_[match.rule_index];
+    const RewriteRule& rule = rules_[match.rule_index()];
 
     // Apply the rewrite
     RewriteResult rr = rewriter_.apply(
         rule,
         match.source_state,
-        match.matched_edges,
-        match.num_edges,
-        match.binding,
+        match.matched_edges(),
+        match.num_edges(),
+        match.binding(),
         step
     );
 
@@ -1400,10 +1398,10 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     VIZ_EMIT_REWRITE_APPLIED(
         match.source_state,       // source state
         rr.new_state,             // target state (canonical)
-        match.rule_index,         // rule index
+        match.rule_index(),       // rule index
         rr.event,                 // raw event id (for tracking)
         rr.canonical_event,       // canonical event id (for deduplication)
-        match.num_edges,          // destroyed edges count
+        match.num_edges(),        // destroyed edges count
         rr.num_produced           // created edges count
     );
 #endif
@@ -1414,14 +1412,14 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     if (inserted) {
         DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
-                  match.source_state, rr.raw_state, rr.new_state, match.rule_index, step, rr.was_new_state);
+                  match.source_state, rr.raw_state, rr.new_state, match.rule_index(), step, rr.was_new_state);
 
         // Build MatchContext for match forwarding
         MatchContext ctx;
         ctx.parent_state = match.source_state;
-        ctx.num_consumed = match.num_edges;
-        for (uint8_t i = 0; i < match.num_edges; ++i) {
-            ctx.consumed_edges[i] = match.matched_edges[i];
+        ctx.num_consumed = match.num_edges();
+        for (uint8_t i = 0; i < match.num_edges(); ++i) {
+            ctx.consumed_edges[i] = match.matched_edges()[i];
         }
         ctx.num_produced = rr.num_produced;
         for (uint8_t i = 0; i < rr.num_produced; ++i) {
@@ -1451,7 +1449,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                     if (enable_match_forwarding_) {
                         register_child_with_parent(
                             match.source_state, rr.raw_state,
-                            match.matched_edges, match.num_edges,
+                            match.matched_edges(), match.num_edges(),
                             step);
                     }
                     submit_match_task_with_context(rr.raw_state, step + 1, ctx);
@@ -1471,7 +1469,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         if (enable_match_forwarding_) {
             register_child_with_parent(
                 match.source_state, rr.raw_state,
-                match.matched_edges, match.num_edges,
+                match.matched_edges(), match.num_edges(),
                 step);
         }
 
@@ -1498,9 +1496,6 @@ void ParallelEvolutionEngine::execute_match_task(
 
     const State& s = hg_->get_state(state);
 
-    // Get canonical state for deterministic deduplication
-    StateId canonical_state = hg_->get_canonical_state(state);
-
     // Edge accessor
     auto get_edge = [this](EdgeId eid) -> const Edge& {
         return hg_->get_edge(eid);
@@ -1519,7 +1514,7 @@ void ParallelEvolutionEngine::execute_match_task(
     size_t delta_start = 0;  // Index where delta (discovered) matches start
 
     // Collector callback
-    auto collect_match = [&, state, canonical_state](
+    auto collect_match = [&, state](
         uint16_t rule_index,
         const EdgeId* edges,
         uint8_t num_edges,
@@ -1527,16 +1522,19 @@ void ParallelEvolutionEngine::execute_match_task(
     ) {
         if (should_stop_.load(std::memory_order_relaxed)) return;
 
-        MatchRecord match;
-        match.rule_index = rule_index;
-        match.num_edges = num_edges;
-        match.binding = binding;
-        match.source_state = state;
-        match.canonical_source = canonical_state;
-        match.source_canonical_hash = s.canonical_hash;
+        // Build the payload on the stack so a duplicate costs no arena; the winner
+        // promotes it to an immutable arena-resident MatchCore that forwarded copies
+        // can share.
+        MatchCore core_tmp;
+        core_tmp.rule_index = rule_index;
+        core_tmp.num_edges = num_edges;
+        core_tmp.binding = binding;
         for (uint8_t i = 0; i < num_edges; ++i) {
-            match.matched_edges[i] = edges[i];
+            core_tmp.matched_edges[i] = edges[i];
         }
+        MatchRecord match;
+        match.core = &core_tmp;
+        match.source_state = state;
 
         // Deduplicate
         uint64_t h = match.hash();
@@ -1545,6 +1543,9 @@ void ParallelEvolutionEngine::execute_match_task(
             rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+
+        // Won the dedup: promote the core into the arena so it outlives this frame.
+        match.core = hg_->arena().template create<MatchCore>(core_tmp);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
@@ -1598,8 +1599,6 @@ void ParallelEvolutionEngine::execute_match_task(
                 scan_data.state = state;
                 scan_data.rule_index = r;
                 scan_data.step = step;
-                scan_data.canonical_state = canonical_state;
-                scan_data.source_canonical_hash = s.canonical_hash;
                 scan_data.is_delta = true;
                 scan_data.num_produced = ctx.num_produced;
                 for (uint8_t i = 0; i < ctx.num_produced; ++i) {
@@ -1628,23 +1627,24 @@ void ParallelEvolutionEngine::execute_match_task(
         // VALIDATION: Compare forwarded+delta vs full matching
         if (validate_match_forwarding_) {
             size_t missing = 0;
-            auto count_missing = [&, state, canonical_state](
+            auto count_missing = [&, state](
                 uint16_t rule_index,
                 const EdgeId* edges,
                 uint8_t num_edges,
                 const VariableBinding& binding,
                 StateId /*source_state*/
             ) {
-                MatchRecord match;
-                match.rule_index = rule_index;
-                match.num_edges = num_edges;
-                match.binding = binding;
-                match.source_state = state;
-                match.canonical_source = canonical_state;
-                match.source_canonical_hash = s.canonical_hash;
+                // Transient: only the hash is needed, so the core stays on the stack.
+                MatchCore core_tmp;
+                core_tmp.rule_index = rule_index;
+                core_tmp.num_edges = num_edges;
+                core_tmp.binding = binding;
                 for (uint8_t i = 0; i < num_edges; ++i) {
-                    match.matched_edges[i] = edges[i];
+                    core_tmp.matched_edges[i] = edges[i];
                 }
+                MatchRecord match;
+                match.core = &core_tmp;
+                match.source_state = state;
                 uint64_t h = match.hash();
                 if (!seen_match_hashes_.contains(h)) {
                     ++missing;
@@ -1675,8 +1675,6 @@ void ParallelEvolutionEngine::execute_match_task(
                 scan_data.state = state;
                 scan_data.rule_index = r;
                 scan_data.step = step;
-                scan_data.canonical_state = canonical_state;
-                scan_data.source_canonical_hash = s.canonical_hash;
                 scan_data.is_delta = false;
                 scan_data.num_produced = 0;
                 submit_scan_task(scan_data);
@@ -1774,8 +1772,6 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.num_matched = 1;
                 expand_data.binding = binding;
                 expand_data.step = data.step;
-                expand_data.canonical_state = data.canonical_state;
-                expand_data.source_canonical_hash = data.source_canonical_hash;
 
                 if (rule.num_lhs_edges == 1) {
                     submit_sink_task(expand_data);
@@ -1812,8 +1808,6 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.num_matched = 1;
                 expand_data.binding = binding;
                 expand_data.step = data.step;
-                expand_data.canonical_state = data.canonical_state;
-                expand_data.source_canonical_hash = data.source_canonical_hash;
 
                 if (rule.num_lhs_edges == 1) {
                     submit_sink_task(expand_data);
@@ -1920,17 +1914,18 @@ void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
     EdgeId edges_in_order[MAX_PATTERN_EDGES];
     data.to_pattern_order(edges_in_order);
 
-    // Build MatchRecord
-    MatchRecord match;
-    match.rule_index = data.rule_index;
-    match.num_edges = data.num_pattern_edges;
-    match.binding = data.binding;
-    match.source_state = data.state;
-    match.canonical_source = data.canonical_state;
-    match.source_canonical_hash = data.source_canonical_hash;
+    // Build the payload on the stack; a duplicate costs no arena. The winner
+    // promotes it to an immutable arena-resident MatchCore shared by forwarded copies.
+    MatchCore core_tmp;
+    core_tmp.rule_index = data.rule_index;
+    core_tmp.num_edges = data.num_pattern_edges;
+    core_tmp.binding = data.binding;
     for (uint8_t i = 0; i < data.num_pattern_edges; ++i) {
-        match.matched_edges[i] = edges_in_order[i];
+        core_tmp.matched_edges[i] = edges_in_order[i];
     }
+    MatchRecord match;
+    match.core = &core_tmp;
+    match.source_state = data.state;
 
     // Deduplicate using lock-free ConcurrentMap
     uint64_t h = match.hash();
@@ -1939,6 +1934,9 @@ void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
         rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
         return;  // Already seen
     }
+
+    // Won the dedup: promote the core into the arena so it outlives this frame.
+    match.core = hg_->arena().template create<MatchCore>(core_tmp);
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
     stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
