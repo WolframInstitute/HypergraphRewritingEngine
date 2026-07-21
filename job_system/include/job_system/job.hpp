@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
+#include <new>
 #include <type_traits>
+
+#include <job_system/job_pool.hpp>
 
 namespace job_system {
 
@@ -10,10 +14,20 @@ template<typename JobType>
 class Job {
 public:
     virtual ~Job() = default;
-    
+
     virtual void execute() = 0;
     virtual JobType get_type() const = 0;
     virtual int get_priority() const { return 0; }
+
+    // Route every job allocation through the per-thread slab pool. Because the
+    // destructor is virtual, `delete base_ptr` selects this deallocation function
+    // for the most-derived job type, so make_job / make_unique / the scheduler's
+    // `delete` all take the pooled, malloc-free path with no call-site changes.
+    static void* operator new(std::size_t size) {
+        if (void* p = JobSlotPool::allocate(size)) return p;
+        throw std::bad_alloc();
+    }
+    static void operator delete(void* ptr) noexcept { JobSlotPool::deallocate(ptr); }
 };
 
 template<typename JobType, typename Func>
