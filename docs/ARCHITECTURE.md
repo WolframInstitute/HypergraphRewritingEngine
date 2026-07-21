@@ -42,6 +42,10 @@ Alt-. abort is a process kill, so it never takes down the notebook. See
 
 ## Modules
 
+For a per-file guide — every file with a description and the classes / structs /
+functions it contains — see [CODEMAP.md](CODEMAP.md). This section is the
+higher-level module overview.
+
 Core engine:
 - **`hypergraph/`** — the CPU engine (the heart). `ParallelEvolutionEngine`
   (`parallel_evolution.*`) drives the lock-free dataflow: match → rewrite → dedup as
