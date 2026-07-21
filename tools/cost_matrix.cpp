@@ -11,8 +11,30 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
+#include <new>
 #include <string>
 #include <vector>
+
+// Process-wide heap-allocation counter, so we can MEASURE (not assume) how much
+// malloc/new the engine does — the surface we are driving to zero. Counts every
+// global operator new/new[]; snapshot around the measured evolution.
+namespace {
+std::atomic<uint64_t> g_alloc_count{0};
+std::atomic<uint64_t> g_alloc_bytes{0};
+}  // namespace
+
+void* operator new(std::size_t n) {
+    g_alloc_count.fetch_add(1, std::memory_order_relaxed);
+    g_alloc_bytes.fetch_add(n, std::memory_order_relaxed);
+    if (void* p = std::malloc(n)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 using namespace hypergraph;
 
@@ -25,10 +47,15 @@ struct Measured {
     size_t causal_edges;
     size_t branchial_edges;
     size_t arena_bytes;
+    uint64_t heap_allocs;   // global new calls during the evolution
+    uint64_t heap_bytes;    // global new bytes during the evolution
 };
 
 // Full mode, single-threaded (deterministic memory), online causal+branchial+TR.
 Measured measure(const oracle::Case& c, int steps) {
+    uint64_t a0 = g_alloc_count.load(std::memory_order_relaxed);
+    uint64_t b0 = g_alloc_bytes.load(std::memory_order_relaxed);
+
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     ParallelEvolutionEngine engine(&hg, 1);
@@ -42,6 +69,8 @@ Measured measure(const oracle::Case& c, int steps) {
     m.causal_edges     = hg.causal_graph().num_causal_edges();
     m.branchial_edges  = hg.causal_graph().num_branchial_edges();
     m.arena_bytes      = hg.arena().bytes_allocated();
+    m.heap_allocs      = g_alloc_count.load(std::memory_order_relaxed) - a0;
+    m.heap_bytes       = g_alloc_bytes.load(std::memory_order_relaxed) - b0;
     return m;
 }
 
@@ -52,9 +81,9 @@ int main(int argc, char** argv) {
 
     auto cases = oracle::corpus();
 
-    std::printf("%-18s %-22s %6s %8s %8s %8s %8s %8s %10s %9s\n",
-                "case", "type", "oracle", "canon", "raw", "events",
-                "causal", "branch", "arenaB", "B/state");
+    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s\n",
+                "case", "type", "oracle", "canon", "events",
+                "causal", "branch", "arenaB", "heapB", "heapAllocs");
     std::printf("%s\n", std::string(120, '-').c_str());
 
     bool all_exact = true;
@@ -70,12 +99,12 @@ int main(int argc, char** argv) {
 
         int steps = (steps_override > 0) ? steps_override : c.measure_steps;
         Measured m = measure(c, steps);
-        double b_per_state = m.canonical_states ? double(m.arena_bytes) / double(m.canonical_states) : 0.0;
 
-        std::printf("%-18s %-22s %6s %8zu %8zu %8zu %8zu %8zu %10zu %9.1f\n",
+        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu\n",
                     c.name, c.type, verdict,
-                    m.canonical_states, m.raw_states, m.events,
-                    m.causal_edges, m.branchial_edges, m.arena_bytes, b_per_state);
+                    m.canonical_states, m.events,
+                    m.causal_edges, m.branchial_edges, m.arena_bytes,
+                    (unsigned long long)m.heap_bytes, (unsigned long long)m.heap_allocs);
     }
 
     std::printf("%s\n", std::string(120, '-').c_str());

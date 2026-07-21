@@ -95,6 +95,16 @@ public:
         }
     }
 
+    // Total heap bytes held by the table chain (current + retained superseded tables),
+    // for memory measurement. O(chain length).
+    size_t bytes_allocated() const {
+        size_t total = 0;
+        for (Table* t = table_.load(std::memory_order_acquire); t; t = t->prev) {
+            total += sizeof(Table) + sizeof(Entry) * t->capacity;
+        }
+        return total;
+    }
+
     // Non-copyable, non-movable
     ConcurrentMap(const ConcurrentMap&) = delete;
     ConcurrentMap& operator=(const ConcurrentMap&) = delete;
