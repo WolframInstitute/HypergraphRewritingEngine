@@ -30,8 +30,13 @@ Legend: [x] done · [~] in progress · [ ] not started.
   once a state is fully expanded → working memory O(active frontier), not O(all states). The
   "release what's processed" lever. Needs a generation/completion quiescence signal + a
   reclaimable pool/region.
-- [ ] **Causal reachability oracle**: O(N²)→O(N·w) closure via chain decomposition (or 2-hop) —
-  the asymptotic fix beyond the −28.5% base layer. Must stay online + exact under concurrency.
+- [x] **Causal reachability — closure eliminated.** Measurement rejected chain-decomposition/2-hop
+  (the causal DAGs are in-degree ≤2 but width Θ(N) — labeling compresses by width, so it would
+  *grow* memory here). Instead dropped the materialized Desc closure entirely: `is_reachable(p,c)`
+  is an id-monotone-pruned backward BFS over the reduced `preds_` adjacency (event ids increase
+  along every causal edge → exact + self-pruning), `update_transitive_closure`'s union-storm gone.
+  TR closure machinery −92% instructions (binary-growth), arenaB down every case (−4.6% bg), O(causal-
+  pairs) memory not O(events·depth). Oracle EXACT, causal/branchial determinism 8× under stress.
 - [ ] **Automorphism reconstruction**: store quotient + Aut generators, reconstruct raw
   states/events/causal/branchial from the orbit action instead of materialising them.
   Hard open sub-problem: exact causal/branchial reconstruction under the group action.

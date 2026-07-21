@@ -10,7 +10,6 @@
 #include "segmented_array.hpp"
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
-#include "concurrent_id_set.hpp"
 
 // Visualization event emission (compiles to no-op when disabled)
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -86,54 +85,42 @@ class CausalGraph {
     ConcurrentMap<uint64_t, bool> seen_branchial_pairs_;
 
     // =========================================================================
-    // Online Transitive Reduction (Goranci Algorithm)
+    // Online Transitive Reduction (backward-reachability oracle)
     // =========================================================================
-    // Maintains only Desc[u] (events reachable from u) for O(1) redundancy checking:
-    // edge (p,c) is redundant iff c ∈ Desc[p]. The ancestor set {p} ∪ Anc[p] needed
-    // to propagate a new edge is enumerated on demand by a backward BFS over recorded
-    // direct predecessors (preds_), so the O(events^2) ancestor closure is never
-    // stored -- predecessor adjacency is only O(causal pairs).
+    // An edge (p,c) is redundant iff c is already reachable from p via other kept
+    // edges. Reachability is answered directly from the reduced predecessor adjacency
+    // preds_ by an on-demand backward search from c toward p, so no per-event
+    // descendant closure is materialized: memory is O(causal pairs), not the
+    // O(events * depth) of a stored transitive closure, and no closure-propagation
+    // union runs when an edge is kept.
     //
-    // When edge (p,c) is added (if not redundant):
-    //   - For all a ∈ {p} ∪ Anc[p]: Desc[a] ∪= {c} ∪ Desc[c]
-    // A reconvergence skip collapses the inner union: c is inserted into Desc[a]
-    // first, and if it was already present then (by the co-maintained closure
-    // invariant) Desc[c] ⊆ Desc[a] already, so the rest of {c} ∪ Desc[c] is skipped.
+    // Query is_reachable(p, c): p reaches c iff some kept in-edge q->c has q == p or p
+    // reaches q. A backward BFS from c over preds_ searches for p, visiting only nodes
+    // with id >= id(p): event ids are monotonic along every causal edge (a producer's
+    // event is created before its consumer's), so an ancestor has a strictly smaller
+    // id than its descendant and any node with id < id(p) can neither be p nor have p
+    // as an ancestor. This makes the search exact and self-pruning.
     //
-    // Thread-safety: concurrent sets with atomic operations. The reduction is
-    // exact -- a redundant edge is never emitted, at any thread count. Two
-    // invariants established by the rewriter guarantee it:
-    //   1. An edge's producer is set while the edge is still private to the
-    //      rewrite that created it, before the state holding it is enqueued for
-    //      rewriting. So no consumer can observe an edge whose producer is unset,
-    //      and every causal edge is created by add_edge_consumer.
+    // Thread-safety: fully lock-free; the reduction is exact at any thread count. Two
+    // rewriter invariants guarantee it:
+    //   1. An edge's producer is set while the edge is still private to the rewrite
+    //      that created it, before the state holding it is enqueued for rewriting. So
+    //      no consumer can observe an edge whose producer is unset, and every causal
+    //      edge is created by add_edge_consumer -- hence preds_[c] is written only by
+    //      c's own thread (single writer per list).
     //   2. All in-edges of an event are added by that event's own thread, in
-    //      descending producer-event-id order. Event ids are monotonic and a
-    //      producer's event is created before its consumer's, so descending id is
-    //      reverse topological order: when p reaches x and both produce edges
-    //      consumed by c, x->c is added before p->c, placing c in Desc[p] so the
-    //      p->c redundancy check finds it.
+    //      descending producer-event-id order. Since a producer's event precedes its
+    //      consumer's, descending id is reverse topological order: when p reaches x
+    //      and both produce edges consumed by c, x->c is processed before p->c, so x
+    //      is already in preds_[c] when the p->c redundancy search runs and the path
+    //      p->..->x->c is found.
     // Ancestors of an event have completed their own causal registration before it
-    // runs, so both the Desc lookup backing the check and the predecessor BFS read a
-    // settled sub-DAG.
-
-    // Desc[u] = all events reachable from u (transitive closure). Stored as a key-only
-    // uint32 set of EventIds offset by +1 (ConcurrentIdSet reserves key 0 as empty).
-    using DescAncSet = ConcurrentIdSet<0u>;
-    // Initial capacity per closure set. Most events have a small closure, so this
-    // stays low; the set resizes for the rare deep ones.
-    static constexpr size_t DESC_ANC_SET_INITIAL_CAPACITY = 16;
-    // EventIds are stored offset by +1 so id 0 does not alias the set's empty key.
-    static constexpr uint32_t encode_id(EventId e) { return e + 1u; }
-
-    static constexpr uint64_t DESC_ANC_EMPTY = (1ULL << 62) + 6;
-    static constexpr uint64_t DESC_ANC_LOCKED = (1ULL << 62) + 7;
-    ConcurrentMap<uint64_t, DescAncSet*, DESC_ANC_EMPTY, DESC_ANC_LOCKED> desc_;
+    // runs, so the backward search reads a settled sub-DAG above c.
 
     // Direct causal predecessors per consumer event (the producer events of the kept
-    // causal edges it consumes), indexed by event id. Backward BFS over this yields
-    // {p} ∪ Anc[p] exactly, since the kept (transitively reduced) edge set preserves
-    // reachability. O(causal pairs) storage, not O(events^2).
+    // causal edges it consumes), indexed by event id. This reduced adjacency preserves
+    // reachability, so a backward search over it answers "does p reach c" exactly.
+    // O(causal pairs) storage.
     SegmentedArray<LockFreeList<EventId>> preds_;
 
     // Whether online transitive reduction is enabled (the FFI turns this on by default).
@@ -169,7 +156,6 @@ public:
     // event is registered.
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
-        desc_.set_arena(arena);
         seen_causal_triples_.set_arena(arena);
         seen_causal_event_pairs_.set_arena(arena);
         seen_branchial_pairs_.set_arena(arena);
@@ -187,11 +173,9 @@ public:
     // Get or create consumer list for an edge (thread-safe)
     LockFreeList<EventId>* get_or_create_edge_consumers(EdgeId edge);
 
-    // Get or create Desc set for an event (Goranci algorithm)
-    DescAncSet* get_or_create_desc(EventId event);
-
-    // O(1) redundancy check: is consumer reachable from producer?
-    bool is_reachable_via_desc(EventId producer, EventId consumer) const;
+    // Redundancy check: is consumer already reachable from producer via kept edges?
+    // Backward search over preds_ (the reduced adjacency); exact and lock-free.
+    bool is_reachable(EventId producer, EventId consumer) const;
 
     // Get or create the event list for a state (thread-safe)
     LockFreeList<EventId>* get_or_create_state_events(StateId state);
@@ -261,8 +245,8 @@ public:
     // Add a causal edge (producer -> consumer) with deduplication and optional TR
     void add_causal_edge(EventId producer, EventId consumer, EdgeId edge);
 
-    // Update Desc and Anc sets after adding edge (producer -> consumer)
-    void update_transitive_closure(EventId producer, EventId consumer);
+    // Record a kept edge's producer in the reduced predecessor adjacency preds_.
+    void record_reduced_edge(EventId producer, EventId consumer);
 
     // Add a branchial edge (event <-> event)
     void add_branchial_edge(EventId e1, EventId e2, EdgeId shared);

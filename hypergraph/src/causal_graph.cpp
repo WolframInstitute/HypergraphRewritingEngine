@@ -17,32 +17,35 @@ LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(EdgeId edge) {
     return &edge_consumers_.get_or_default(edge, *arena_);
 }
 
-CausalGraph::DescAncSet* CausalGraph::get_or_create_desc(EventId event) {
-    uint64_t key = event;
-
-    auto result = desc_.lookup(key);
-    if (result.has_value()) {
-        return *result;
-    }
-
-    // Per-event descendant closures are small for the vast majority of events; start
-    // tiny and let the set resize the rare large ones, rather than paying a full
-    // default-capacity table per event.
-    // create_untracked: the set's tables live in the arena and are bulk-reclaimed, so
-    // its destructor is a no-op — skip the per-object destructor registration (a
-    // shared-list CAS) that would otherwise contend on this high-frequency path.
-    auto* new_set = arena_->template create_untracked<DescAncSet>(DESC_ANC_SET_INITIAL_CAPACITY, arena_);
-    auto [existing, inserted] = desc_.insert_if_absent(key, new_set);
-    return inserted ? new_set : existing;
-}
-
-bool CausalGraph::is_reachable_via_desc(EventId producer, EventId consumer) const {
+bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
     if (producer == consumer) return true;
+    // Event ids increase along every causal edge, so an ancestor's id is strictly
+    // smaller than its descendant's: a producer with id >= its consumer's cannot
+    // reach it, and any node with id < producer's is out of the search cone.
+    if (producer >= consumer) return false;
 
-    auto desc_result = desc_.lookup(producer);
-    if (!desc_result.has_value()) return false;
-
-    return (*desc_result)->contains(encode_id(consumer));
+    // Backward BFS from consumer over the reduced predecessor adjacency, searching
+    // for producer and pruning to ids >= producer. Scratch lives in the calling
+    // worker's arena (bulk-reclaimed per task).
+    SVec<EventId> stack;
+    SUSet<EventId> visited;
+    stack.push_back(consumer);
+    visited.insert(consumer);
+    while (!stack.empty()) {
+        EventId x = stack.back();
+        stack.pop_back();
+        const LockFreeList<EventId>* pl = preds_.get(x);
+        if (!pl) continue;
+        bool found = false;
+        pl->for_each([&](EventId q) {
+            if (found) return;
+            if (q == producer) { found = true; return; }
+            // q < producer can neither be producer nor have it as an ancestor; skip.
+            if (q > producer && visited.insert(q).second) stack.push_back(q);
+        });
+        if (found) return true;
+    }
+    return false;
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
@@ -125,7 +128,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
 
         if (!existing_pair.has_value()) {
-            if (is_reachable_via_desc(producer, consumer)) {
+            if (is_reachable(producer, consumer)) {
                 num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
@@ -153,62 +156,18 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
         if (pair_inserted) {
             num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
-            // Maintain the closure once per unique event pair. The union is
-            // pair-dependent and idempotent, so folding it once (rather than once per
-            // parallel edge of the same pair) yields the identical final Desc closure.
+            // Record the kept edge in the reduced adjacency once per unique event
+            // pair, so preds_ holds no duplicate producers for a consumer.
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-                update_transitive_closure(producer, consumer);
+                record_reduced_edge(producer, consumer);
             }
         }
     }
 }
 
-void CausalGraph::update_transitive_closure(EventId producer, EventId consumer) {
-    // {consumer} ∪ Desc[consumer], held ENCODED (id+1; 0 is the set's empty sentinel),
-    // with the consumer at index 0 so the reconvergence skip can test it first. Desc
-    // is read via lookup, not get_or_create: a terminal consumer has no Desc set yet,
-    // and materializing an empty one would waste an allocation per leaf event.
-    SVec<uint32_t> descendants_to_add;  // encoded ids
-    auto dc = desc_.lookup(consumer);
-    descendants_to_add.reserve(1 + (dc.has_value() ? (*dc)->size() : 0));
-    descendants_to_add.push_back(encode_id(consumer));
-    if (dc.has_value()) {
-        (*dc)->for_each([&](uint32_t enc_d) {
-            descendants_to_add.push_back(enc_d);
-        });
-    }
-
-    // Ancestors {producer} ∪ Anc[producer] by backward BFS over recorded direct
-    // predecessors. The kept (reduced) causal edges preserve reachability, so this
-    // yields exactly the ancestor set. Worker-local scratch -> per-worker arena.
-    SVec<EventId> ancestors;
-    ancestors.reserve(8);
-    ancestors.push_back(producer);
-    SUSet<EventId> visited;
-    visited.insert(producer);
-    for (size_t head = 0; head < ancestors.size(); ++head) {
-        LockFreeList<EventId>* pl = preds_.get(ancestors[head]);
-        if (pl) {
-            pl->for_each([&](EventId pred) {
-                if (visited.insert(pred).second) ancestors.push_back(pred);
-            });
-        }
-    }
-
-    for (EventId a : ancestors) {
-        DescAncSet* desc_a = get_or_create_desc(a);
-        // Insert the consumer first. If it was already in Desc[a], then Desc[consumer]
-        // is already ⊆ Desc[a] (co-maintained), so the remaining descendants add
-        // nothing -- skip the inner loop. This collapses the O(|A|·|D|) probe storm to
-        // O(|A|) for reconvergent ancestors.
-        if (!desc_a->insert(descendants_to_add[0])) continue;
-        for (size_t k = 1; k < descendants_to_add.size(); ++k) {
-            desc_a->insert(descendants_to_add[k]);
-        }
-    }
-
-    // Record the direct predecessor edge for future ancestor BFS. Once per pair
-    // (this runs once per unique event pair), so preds_ holds no duplicates.
+void CausalGraph::record_reduced_edge(EventId producer, EventId consumer) {
+    // preds_[consumer] is written only by consumer's own thread (invariant 1) and
+    // this runs once per unique event pair, so it holds no duplicate producers.
     preds_.get_or_default(consumer, *arena_).push(producer, *arena_);
 }
 
