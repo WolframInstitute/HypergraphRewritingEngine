@@ -118,6 +118,17 @@ public:
         const SparseBitset& state_edges,
         Visitor&& visit
     ) const {
+        // If the pattern edge has more compatible data signatures than the cache can
+        // hold (Bell(arity) > MAX_CACHED_SIGS), the cache is INCOMPLETE — enumerate the
+        // full compatible set live so no matching edge is skipped. Correctness over the
+        // (rare, high-arity) fast path.
+        if (sig_cache.overflowed) {
+            // Wrap in a fresh by-value lambda so for_each_candidate deduces a value
+            // Visitor (it stores a Visitor* internally and cannot take a reference type).
+            for_each_candidate(sig_cache.source_pattern_sig, state_edges,
+                               [&](EdgeId eid) { visit(eid); });
+            return;
+        }
         sig_cache.for_each([&](const EdgeSignature& data_sig) {
             for_each_edge_with_signature(data_sig, state_edges, visit);
         });

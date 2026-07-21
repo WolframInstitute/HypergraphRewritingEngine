@@ -913,3 +913,52 @@ TEST(Unified_Integration, SelfLoopEvolution) {
     EXPECT_EQ(unary.arity, 1);
     EXPECT_EQ(unary.vertices[0], 0);
 }
+
+// Regression (F8): a high-arity all-distinct pattern edge has more compatible data
+// signatures (Bell(arity)) than the CompatibleSignatureCache can hold (64). The cached
+// candidate-generation path must NOT silently drop the overflow tail — it must find
+// every matching edge, identical to the complete (uncached) enumeration. Before the fix
+// the cached path returned only the first 64 signatures' edges, silently missing matches.
+TEST(PatternMatchingBellOverflow, CachedOverflowFindsAllMatches) {
+    ConcurrentHeterogeneousArena arena;
+    SignatureIndex index;
+    SparseBitset state_edges;
+
+    // All-distinct arity-6 pattern {a,b,c,d,e,f}: compatible signatures are all Bell(6)=203
+    // partitions of 6 positions, which overflow the 64-slot cache.
+    const uint8_t arity = 6;
+    uint8_t pattern_vars[arity] = {0, 1, 2, 3, 4, 5};
+    EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, arity);
+    CompatibleSignatureCache cache = CompatibleSignatureCache::from_pattern(pattern_sig);
+    ASSERT_TRUE(cache.overflowed) << "arity-6 all-distinct should overflow the signature cache";
+
+    // Collect every compatible signature and realise one distinct data edge per signature.
+    std::vector<EdgeSignature> sigs;
+    enumerate_compatible_signatures(
+        pattern_sig,
+        [](const EdgeSignature& s, void* ud) {
+            static_cast<std::vector<EdgeSignature>*>(ud)->push_back(s);
+        },
+        &sigs);
+    ASSERT_GT(sigs.size(), static_cast<size_t>(CompatibleSignatureCache::MAX_CACHED_SIGS));
+
+    for (size_t i = 0; i < sigs.size(); ++i) {
+        VertexId verts[arity];
+        VertexId base = static_cast<VertexId>(i) * arity + 1000;
+        for (uint8_t p = 0; p < arity; ++p) verts[p] = base + sigs[i].pattern[p];
+        EdgeId eid = static_cast<EdgeId>(i);
+        index.add_edge(eid, EdgeSignature::from_edge(verts, arity), arena);
+        state_edges.set(eid, arena);
+    }
+
+    std::set<EdgeId> complete, cached;
+    index.for_each_candidate(pattern_sig, state_edges,
+                             [&](EdgeId e) { complete.insert(e); });
+    index.for_each_candidate_cached(cache, state_edges,
+                                    [&](EdgeId e) { cached.insert(e); });
+
+    EXPECT_EQ(complete.size(), sigs.size());
+    EXPECT_EQ(cached.size(), sigs.size())
+        << "cached path missed high-arity matches (Bell overflow silently truncated)";
+    EXPECT_EQ(cached, complete);
+}

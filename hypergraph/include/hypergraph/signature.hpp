@@ -313,13 +313,16 @@ struct CompatibleSignatureCache {
     static constexpr uint8_t MAX_CACHED_SIGS = 64;  // Bell(5)=52, Bell(6)=203
 
     EdgeSignature signatures[MAX_CACHED_SIGS];
+    EdgeSignature source_pattern_sig;   // kept for the overflow fallback (re-enumerate live)
     uint8_t count = 0;
+    bool overflowed = false;            // Bell(arity) > MAX_CACHED_SIGS => cache is INCOMPLETE
 
     CompatibleSignatureCache() = default;
 
     // Build cache from pattern signature
     static CompatibleSignatureCache from_pattern(const EdgeSignature& pattern_sig) {
         CompatibleSignatureCache cache;
+        cache.source_pattern_sig = pattern_sig;
 
         enumerate_compatible_signatures(
             pattern_sig,
@@ -327,6 +330,12 @@ struct CompatibleSignatureCache {
                 auto* c = static_cast<CompatibleSignatureCache*>(user_data);
                 if (c->count < MAX_CACHED_SIGS) {
                     c->signatures[c->count++] = sig;
+                } else {
+                    // More compatible signatures than the cache can hold (e.g. a
+                    // high-arity all-distinct pattern edge). Flag it so the consumer
+                    // enumerates the full set live instead of silently dropping the
+                    // tail — dropping it would MISS real matches.
+                    c->overflowed = true;
                 }
             },
             &cache
