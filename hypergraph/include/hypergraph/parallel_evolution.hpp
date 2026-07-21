@@ -128,6 +128,9 @@ struct EvolutionStats {
     std::atomic<size_t> new_matches_discovered{0};
     std::atomic<size_t> full_pattern_matches{0};
     std::atomic<size_t> delta_pattern_matches{0};
+    // Extra ancestor re-walks / child re-scans the forwarding rendezvous performs
+    // when its epoch changes during a push or pull (a measure of cross-worker churn).
+    std::atomic<size_t> forwarding_rewalks{0};
 };
 
 // =============================================================================
@@ -340,7 +343,14 @@ class ParallelEvolutionEngine {
     // Used to determine if push or pull should handle each (match, child) pair:
     // - If match.epoch < child.epoch: child pulls (match was stored before child registered)
     // - If match.epoch >= child.epoch: parent pushes (match stored after child registered)
-    std::atomic<uint64_t> global_epoch_{1};  // Start at 1 to avoid 0 confusion
+    // Split rendezvous epochs. match_epoch_ bumps only when a match is stored for
+    // some state; child_epoch_ bumps only when a child registers under a parent. The
+    // pull retry (collecting ancestor matches) watches match_epoch_; the push retry
+    // (scanning a parent's children) watches child_epoch_. Keeping them separate stops
+    // a match-store from spuriously re-scanning children lists and a child-registration
+    // from spuriously re-walking ancestor chains. Start at 1 to avoid 0 confusion.
+    std::atomic<uint64_t> match_epoch_{1};
+    std::atomic<uint64_t> child_epoch_{1};
 
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};

@@ -612,12 +612,12 @@ uint64_t ParallelEvolutionEngine::store_match_for_state(
     bool with_fence
 ) {
     // Publish the match, THEN bump the rendezvous epoch. Pulls re-walk their
-    // ancestor chain while global_epoch_ keeps changing; pushing before the bump
+    // ancestor chain while match_epoch_ keeps changing; pushing before the bump
     // guarantees that a pull woken by this bump also observes the pushed match.
     // (Bumping first opens a window where the pull re-reads the list before the
     // push lands, sees no further epoch change, and quiesces without the match.)
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
-    match.storage_epoch = global_epoch_.load(std::memory_order_relaxed);  // debug stamp only
+    match.storage_epoch = match_epoch_.load(std::memory_order_relaxed);  // debug stamp only
     list->push(match, hg_->arena());
 
     // In non-batched (eager) mode, we need a fence after each store to ensure
@@ -627,7 +627,7 @@ uint64_t ParallelEvolutionEngine::store_match_for_state(
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
 
-    return global_epoch_.fetch_add(1, std::memory_order_acq_rel);
+    return match_epoch_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(StateId state) {
@@ -694,7 +694,7 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
     children->push(info, hg_->arena());
 
     // Bump the rendezvous epoch (pushers retry their child scan on epoch change)
-    uint64_t epoch = global_epoch_.fetch_add(1, std::memory_order_acq_rel);
+    uint64_t epoch = child_epoch_.fetch_add(1, std::memory_order_acq_rel);
 
     return epoch;
 }
@@ -718,15 +718,16 @@ void ParallelEvolutionEngine::push_match_to_children(
         push_match_to_children_impl(parent, match, step);
     } else {
         // EAGER MODE: Retry loop to close race window
-        uint64_t epoch_before = global_epoch_.load(std::memory_order_acquire);
+        uint64_t epoch_before = child_epoch_.load(std::memory_order_acquire);
         push_match_to_children_impl(parent, match, step);
 
         // Retry if new children may have registered during push
-        uint64_t epoch_after = global_epoch_.load(std::memory_order_acquire);
+        uint64_t epoch_after = child_epoch_.load(std::memory_order_acquire);
         while (epoch_after != epoch_before) {
+            stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
             epoch_before = epoch_after;
             push_match_to_children_impl(parent, match, step);
-            epoch_after = global_epoch_.load(std::memory_order_acquire);
+            epoch_after = child_epoch_.load(std::memory_order_acquire);
         }
     }
 }
@@ -916,7 +917,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
     }
 
     // RETRY LOOP: Pull with epoch tracking to close race window
-    uint64_t epoch_before = global_epoch_.load(std::memory_order_acquire);
+    uint64_t epoch_before = match_epoch_.load(std::memory_order_acquire);
 
     // Walk up the ancestor chain, forwarding matches from each ancestor
     StateId current_ancestor = parent;
@@ -939,8 +940,9 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
     }
 
     // Check if epoch changed - if so, retry to catch any new matches
-    uint64_t epoch_after = global_epoch_.load(std::memory_order_acquire);
+    uint64_t epoch_after = match_epoch_.load(std::memory_order_acquire);
     while (epoch_after != epoch_before) {
+        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
         epoch_before = epoch_after;
 
         // Reset consumed edges and re-walk
@@ -967,7 +969,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
             current_ancestor = pi->parent_state;
         }
 
-        epoch_after = global_epoch_.load(std::memory_order_acquire);
+        epoch_after = match_epoch_.load(std::memory_order_acquire);
     }
 }
 
