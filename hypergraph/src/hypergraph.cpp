@@ -186,8 +186,15 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
     auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
 
-    // Also insert into event_canonical_state_map_ using the isomorphism-invariant hash
-    event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
+    // Insert into event_canonical_state_map_ only when event canonicalization is on:
+    // its sole reader (get_canonical_state_for_event) runs only under
+    // event_signature_keys_ != EVENT_SIG_NONE, and the keys are fixed at config time
+    // before any state is created, so gating here never drops a needed entry. When
+    // event canon is off this saves ~16 B/state + the map's resize chain + a per-state
+    // hash+probe insert.
+    if (event_signature_keys_ != EVENT_SIG_NONE) {
+        event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
+    }
 
     // In Full mode, the map key is the IR canonical hash which is exact —
     // hash collisions are genuine isomorphisms, no verification needed
