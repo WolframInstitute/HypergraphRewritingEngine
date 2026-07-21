@@ -133,6 +133,48 @@ TEST_F(IRCanonicalizationTest, HashDiffers) {
 }
 
 // =============================================================================
+// 1-WL-hard pairs: non-isomorphic graphs whose vertices all share one degree, so
+// Weisfeiler-Leman colour refinement stabilizes to a uniform colouring and cannot
+// separate them. Exact IR must distinguish them -- this is the whole reason IR
+// exists over the fast WL hash, and it was asserted nowhere in the suite.
+// =============================================================================
+namespace {
+std::vector<std::vector<VertexId>> makeCycle(int n) {
+    std::vector<std::vector<VertexId>> e;
+    for (int i = 0; i < n; ++i)
+        e.push_back({(VertexId)i, (VertexId)((i + 1) % n)});
+    return e;
+}
+std::vector<std::vector<VertexId>> makeDisjointCycles(int k, int len) {
+    std::vector<std::vector<VertexId>> e;
+    for (int c = 0; c < k; ++c) {
+        int base = c * len;
+        for (int i = 0; i < len; ++i)
+            e.push_back({(VertexId)(base + i), (VertexId)(base + (i + 1) % len)});
+    }
+    return e;
+}
+}  // namespace
+
+TEST_F(IRCanonicalizationTest, DistinguishesOneWLHardPairs) {
+    // Each pair is a single n-cycle vs k disjoint (n/k)-cycles: same vertex count,
+    // both 2-regular, so 1-WL assigns every vertex the same colour -- yet they are
+    // not isomorphic (one component vs several). Exact IR must give them different
+    // canonical hashes; a match would be an IR false-merge.
+    struct Pair { const char* name; int n; int k; int len; };
+    const Pair pairs[] = {
+        {"C6 vs 2xC3", 6, 2, 3},  {"C8 vs 2xC4", 8, 2, 4},   {"C9 vs 3xC3", 9, 3, 3},
+        {"C10 vs 2xC5", 10, 2, 5}, {"C12 vs 2xC6", 12, 2, 6},
+    };
+    for (const auto& p : pairs) {
+        uint64_t hCycle = ir.compute_canonical_hash(makeCycle(p.n));
+        uint64_t hSplit = ir.compute_canonical_hash(makeDisjointCycles(p.k, p.len));
+        EXPECT_NE(hCycle, hSplit)
+            << p.name << ": IR false-merged a 1-WL-hard non-isomorphic pair";
+    }
+}
+
+// =============================================================================
 // Isomorphism detection on permuted graphs
 // =============================================================================
 
