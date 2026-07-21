@@ -77,30 +77,6 @@ struct PatternEdge {
         return mask;
     }
 
-    // Count distinct variables
-    uint8_t num_distinct_vars() const {
-        return static_cast<uint8_t>(hgcommon::popcount(var_mask()));
-    }
-
-    // Check if variable appears in this edge
-    bool contains_var(uint8_t var) const {
-        for (uint8_t i = 0; i < arity; ++i) {
-            if (vars[i] == var) return true;
-        }
-        return false;
-    }
-
-    // Get positions where a variable appears
-    uint8_t get_var_positions(uint8_t var, uint8_t* positions_out) const {
-        uint8_t count = 0;
-        for (uint8_t i = 0; i < arity; ++i) {
-            if (vars[i] == var) {
-                positions_out[count++] = i;
-            }
-        }
-        return count;
-    }
-
     bool operator==(const PatternEdge& other) const {
         if (arity != other.arity) return false;
         for (uint8_t i = 0; i < arity; ++i) {
@@ -184,16 +160,6 @@ struct RewriteRule {
     // Get mask of new variables (in RHS but not LHS)
     uint32_t new_var_mask() const {
         return rhs_var_mask() & ~lhs_var_mask();
-    }
-
-    // Get mask of preserved variables (in both LHS and RHS)
-    uint32_t preserved_var_mask() const {
-        return lhs_var_mask() & rhs_var_mask();
-    }
-
-    // Get mask of deleted variables (in LHS but not RHS)
-    uint32_t deleted_var_mask() const {
-        return lhs_var_mask() & ~rhs_var_mask();
     }
 
     // Check if two LHS edges share any variables (are "connected")

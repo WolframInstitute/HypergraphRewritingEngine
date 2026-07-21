@@ -20,7 +20,7 @@ namespace hypergraph {
 //
 // Thread safety: Lock-free via ConcurrentMap and LockFreeList.
 // - add_edge: Called by rewrite tasks when creating new edges
-// - get_candidates: Called by match tasks during candidate generation
+// - for_each_candidate: Called by match tasks during candidate generation
 //
 // The index stores all edges from the hypergraph. Queries filter
 // by state (SparseBitset) to get edges present in a specific state.
@@ -123,48 +123,6 @@ public:
         });
     }
 
-    // Get candidates into array (for use with stack arrays)
-    uint32_t get_candidates(
-        const EdgeSignature& pattern_sig,
-        const SparseBitset& state_edges,
-        EdgeId* out,
-        uint32_t max_count
-    ) const {
-        uint32_t count = 0;
-        for_each_candidate(pattern_sig, state_edges, [&](EdgeId eid) {
-            if (count < max_count) {
-                out[count++] = eid;
-            }
-        });
-        return count;
-    }
-
-    // Estimate candidate count for matching order computation
-    // Returns count for exact signature only (lower bound)
-    uint32_t estimate_candidates(
-        const EdgeSignature& pattern_sig,
-        const SparseBitset& state_edges
-    ) const {
-        // For efficiency, we estimate based on exact signature match only
-        // This is a lower bound but fast to compute
-        uint64_t hash = pattern_sig.hash();
-        auto result = by_signature_.lookup(hash);
-        if (!result.has_value()) return 0;
-
-        // Count edges present in state
-        uint32_t count = 0;
-        result.value()->for_each([&](EdgeId eid) {
-            if (state_edges.contains(eid)) {
-                count++;
-            }
-        });
-        return count;
-    }
-
-    // Get number of distinct signatures in index
-    size_t num_signatures() const {
-        return by_signature_.size();
-    }
 };
 
 // =============================================================================
@@ -244,22 +202,6 @@ public:
     }
 
     // Get edges containing vertex at specific position
-    // Requires access to edge data to check position
-    template<typename Visitor, typename EdgeAccessor>
-    void for_each_edge_at_position(
-        VertexId v,
-        uint8_t position,
-        const SparseBitset& state_edges,
-        const EdgeAccessor& get_edge,
-        Visitor&& visit
-    ) const {
-        for_each_edge(v, state_edges, [&](EdgeId eid) {
-            const auto& edge = get_edge(eid);
-            if (position < edge.arity && edge.vertices[position] == v) {
-                visit(eid);
-            }
-        });
-    }
 
     // Intersect: edges containing ALL specified vertices, filtered by state
     // This is the key operation for candidate generation with bound variables
