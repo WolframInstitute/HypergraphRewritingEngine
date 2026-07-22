@@ -1,0 +1,1085 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Mathematica 14.0' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       158,          7]
+NotebookDataLength[     54013,       1076]
+NotebookOptionsPosition[     48473,        962]
+NotebookOutlinePosition[     49559,        995]
+CellTagsIndexPosition[     49480,        990]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+
+Cell[CellGroupData[{
+Cell["HGSphere", "ObjectName",
+ CellID->1224892054,ExpressionUUID->"8393d601-4014-44ba-afc9-60862df940ec"],
+
+Cell[TextData[{
+ Cell["   ", "ModInfo",ExpressionUUID->"cceea5bc-701c-ee48-967e-a144ede4ed1c"],
+ Cell[BoxData[
+  RowBox[{
+   TemplateBox[{
+     Cell[
+      TextData["HGSphere"]], 
+     "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSphere", 
+     "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+    "PackageLink",
+    BaseStyle->"InlineFormula"], "[", 
+   StyleBox["resolution", "TI"], "]"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "33176b2e-ad98-d943-877f-350cb73700af"],
+ "\[LineSeparator]",
+ "generates a spherical topology hypergraph by UV sampling.",
+ "\n"
+}], "Usage",ExpressionUUID->"3b00eb9e-3163-7b45-9dd6-2237a401b47a"],
+
+Cell[TextData[{
+ "The result is an initial-condition object: pass it as the second argument \
+of ",
+ Cell[BoxData["HGEvolve"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "8ba26e45-3f02-d642-a4f0-a358d1554a97"],
+ ", or convert it to a ",
+ Cell[BoxData["Graph"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "429030fb-68f5-e54d-9fcf-4ef95f9377dc"],
+ " with ",
+ Cell[BoxData["HGToGraph"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "18621758-494c-1240-a9d4-ab0d1c99ba69"],
+ "."
+}], "Notes",ExpressionUUID->"2b0ff1ce-f528-834d-83ea-3e49c913cb91"],
+
+Cell["\"Radius\" sets the sphere radius.", "Notes",ExpressionUUID->"db516f20-788f-cb4e-ba51-2a0963747555"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "See Also",
+ Cell[BoxData[
+  TemplateBox[{"SeeAlso", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Insert links to any related reference (function) pages.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "b7caa910-e086-4d39-871e-e78bfb02a4b9"]
+}], "SeeAlsoSection",
+ CellID->1559318232,ExpressionUUID->"6019c63b-8124-433f-bd7e-253812d6da0e"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGTorus"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGTorus", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "ed1b445c-ae1b-c347-b8ab-00b73d2fd828"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGKleinBottle"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGKleinBottle", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "1c134f0d-2964-2d4f-9c6d-0bb51254ccab"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGToGraph"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGToGraph", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "ca1d2093-9013-fa42-8b61-de14030bae9e"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "34603aa9-3266-a54f-ab10-bca2bdd2cc59"]
+}], "SeeAlso",ExpressionUUID->"596d315f-4247-2442-8691-50847c79693b"]
+}, Open  ]],
+
+Cell[TextData[{
+ "Tech Notes",
+ Cell[BoxData[
+  TemplateBox[{"TechNotes", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell["Insert links to related tech notes.", "MoreInfoText"], BaseStyle -> 
+       "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "a0027a76-2f69-4270-bf06-cff364aa09d7"]
+}], "TechNotesSection",
+ CellID->792424486,ExpressionUUID->"fc30b7bb-1c24-4df4-b93c-2a46876a3e74"],
+
+Cell["Related Guides", "MoreAboutSection",
+ CellID->38303248,ExpressionUUID->"090ecd4e-77ab-48e0-ba7a-1f9acccd0dd5"],
+
+Cell[TextData[{
+ "Related Links",
+ Cell[BoxData[
+  TemplateBox[{"RelatedLinks", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Insert links to any related page, including web pages.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "88f916ad-99d1-4784-a15f-dfa2faf44f02"]
+}], "RelatedLinksSection",
+ CellID->47113304,ExpressionUUID->"c8e1cebd-677a-4282-8b17-38a138b1b0ea"],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "Examples Initialization",
+ Cell[BoxData[
+  TemplateBox[{"ExamplesInitialization", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Input that is to be evaluated before any examples are run, e.g. \
+Needs[\[Ellipsis]].", "MoreInfoText"], BaseStyle -> "IFrameBox"]], 
+     "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "1ca4d14a-308f-4a68-bbf6-e6901ce2ab4c"]
+}], "ExamplesInitializationSection",
+ CellID->1718580883,ExpressionUUID->"6961daab-c21b-4e4b-b6ac-a9a47f06ffa5"],
+
+Cell[BoxData[
+ RowBox[{"Needs", "[", "\"\<HypergraphRewriting`\>\"", 
+  "]"}]], "ExampleInitialization",
+ CellID->1969679695,ExpressionUUID->"7dcb178c-574f-4ea8-8531-ff0dec195502"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[GridBox[{
+    {
+     StyleBox[
+      RowBox[{"Basic", " ", "Examples"}], "PrimaryExamplesSection"], 
+     ButtonBox[
+      RowBox[{
+       RowBox[{"More", " ", "Examples"}], " ", "\[RightTriangle]"}],
+      BaseStyle->"ExtendedExamplesLink",
+      ButtonData:>"ExtendedExamples"]}
+   }],
+  $Line = 0; Null]], "PrimaryExamplesSection",
+ CellID->880084151,ExpressionUUID->"4d971e0b-a467-44b1-b908-78f8a7482a42"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGToGraph", "[", 
+  RowBox[{"HGSphere", "[", "16", "]"}], "]"}]], "Input",
+ CellLabel->"In[1]:= ",ExpressionUUID->"81312fef-4ef0-6048-b770-b625c575db2f"],
+
+Cell[BoxData[
+ GraphicsBox[
+  NamespaceBox["NetworkGraphics",
+   DynamicModuleBox[{Typeset`graph = HoldComplete[
+     Graph[CompressedData["
+1:eJwl1GO0EAYYBuB7s23fbFs3c3mZq5a9Zdv2cltctrncsu0h23ju6cfzfv/f
+c94vqGnH6h0CAwICyoiQG4rQhCEs4QhPBCISichEISrRiE4MYhKL2MQhLvGI
+TwISkojEJCEpyUhOCoJISSpSk4a0pCM9GchIJjKThaxkIzs5yEkucpOHvOQj
+PwUoSCEKU4SiBFOM4pSgJKUoHdILZSlHeSpQkR+oRGWqUJVqVKcGP1KTWtSm
+DnWpR30a0JBGNKYJP9GUZjTnZ1rQkla0pg1taUd7OtCRTnSmC7/wK13pRnd6
+0JNe9KYPfelHfwYwkEEMZghDGcZwRjCSUYxmDGMZx3gmMJFJTGYKU5nGdGYw
+k9+YxWzmMJd5zGcBC/mdP1jEYpawlGUs509WsJJVrGYNa1nHejawkU1sZgtb
+2cZ2drCTXexmD3vZx37+4gAHOcRhjnCUYxznb05wklOc5gxnOcd5LnCRS1zm
+Cle5xnVucJNb3OYOd7nHfR7wD//yH//zkEc85glPecZzXvCSV7zmDW95x3s+
+8JFPfOYLXwkZfyChCE0YwhKO8EQgIpGITBSiEo3oxCAmsYhNHOISj/gkICGJ
+SEwSkpKM5KQgiJSkIjVpSEs60pOBjGQiM1nISjayk4Oc5CI3echLPvJTgIIU
+ojBFKEowxShOCUpSitKB3//iNyR3i3c=
+      "], {CompressedData["
+1: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
+
+       "], Null}, {
+      VertexCoordinates -> {{0.09817477042468103, 0}, {
+         0.09817477042468103, Rational[2, 3] Pi}, {
+         0.09817477042468103, Rational[4, 3] Pi}, {0.2945243112740431, 0}, {
+         0.2945243112740431, Rational[2, 9] Pi}, {
+         0.2945243112740431, Rational[4, 9] Pi}, {
+         0.2945243112740431, Rational[2, 3] Pi}, {
+         0.2945243112740431, Rational[8, 9] Pi}, {
+         0.2945243112740431, Rational[10, 9] Pi}, {
+         0.2945243112740431, Rational[4, 3] Pi}, {
+         0.2945243112740431, Rational[14, 9] Pi}, {
+         0.2945243112740431, Rational[16, 9] Pi}, {0.4908738521234052, 0}, {
+         0.4908738521234052, Rational[2, 15] Pi}, {
+         0.4908738521234052, Rational[4, 15] Pi}, {
+         0.4908738521234052, Rational[2, 5] Pi}, {
+         0.4908738521234052, Rational[8, 15] Pi}, {
+         0.4908738521234052, Rational[2, 3] Pi}, {
+         0.4908738521234052, Rational[4, 5] Pi}, {
+         0.4908738521234052, Rational[14, 15] Pi}, {
+         0.4908738521234052, Rational[16, 15] Pi}, {
+         0.4908738521234052, Rational[6, 5] Pi}, {
+         0.4908738521234052, Rational[4, 3] Pi}, {
+         0.4908738521234052, Rational[22, 15] Pi}, {
+         0.4908738521234052, Rational[8, 5] Pi}, {
+         0.4908738521234052, Rational[26, 15] Pi}, {
+         0.4908738521234052, Rational[28, 15] Pi}, {0.6872233929727672, 0}, {
+         0.6872233929727672, Rational[1, 10] Pi}, {
+         0.6872233929727672, Rational[1, 5] Pi}, {
+         0.6872233929727672, Rational[3, 10] Pi}, {
+         0.6872233929727672, Rational[2, 5] Pi}, {
+         0.6872233929727672, Rational[1, 2] Pi}, {
+         0.6872233929727672, Rational[3, 5] Pi}, {
+         0.6872233929727672, Rational[7, 10] Pi}, {
+         0.6872233929727672, Rational[4, 5] Pi}, {
+         0.6872233929727672, Rational[9, 10] Pi}, {0.6872233929727672, Pi}, {
+         0.6872233929727672, Rational[11, 10] Pi}, {
+         0.6872233929727672, Rational[6, 5] Pi}, {
+         0.6872233929727672, Rational[13, 10] Pi}, {
+         0.6872233929727672, Rational[7, 5] Pi}, {
+         0.6872233929727672, Rational[3, 2] Pi}, {
+         0.6872233929727672, Rational[8, 5] Pi}, {
+         0.6872233929727672, Rational[17, 10] Pi}, {
+         0.6872233929727672, Rational[9, 5] Pi}, {
+         0.6872233929727672, Rational[19, 10] Pi}, {0.8835729338221293, 0}, {
+         0.8835729338221293, Rational[2, 25] Pi}, {
+         0.8835729338221293, Rational[4, 25] Pi}, {
+         0.8835729338221293, Rational[6, 25] Pi}, {
+         0.8835729338221293, Rational[8, 25] Pi}, {
+         0.8835729338221293, Rational[2, 5] Pi}, {
+         0.8835729338221293, Rational[12, 25] Pi}, {
+         0.8835729338221293, Rational[14, 25] Pi}, {
+         0.8835729338221293, Rational[16, 25] Pi}, {
+         0.8835729338221293, Rational[18, 25] Pi}, {
+         0.8835729338221293, Rational[4, 5] Pi}, {
+         0.8835729338221293, Rational[22, 25] Pi}, {
+         0.8835729338221293, Rational[24, 25] Pi}, {
+         0.8835729338221293, Rational[26, 25] Pi}, {
+         0.8835729338221293, Rational[28, 25] Pi}, {
+         0.8835729338221293, Rational[6, 5] Pi}, {
+         0.8835729338221293, Rational[32, 25] Pi}, {
+         0.8835729338221293, Rational[34, 25] Pi}, {
+         0.8835729338221293, Rational[36, 25] Pi}, {
+         0.8835729338221293, Rational[38, 25] Pi}, {
+         0.8835729338221293, Rational[8, 5] Pi}, {
+         0.8835729338221293, Rational[42, 25] Pi}, {
+         0.8835729338221293, Rational[44, 25] Pi}, {
+         0.8835729338221293, Rational[46, 25] Pi}, {
+         0.8835729338221293, Rational[48, 25] Pi}, {1.0799224746714913`, 0}, {
+         1.0799224746714913`, Rational[1, 14] Pi}, {
+         1.0799224746714913`, Rational[1, 7] Pi}, {
+         1.0799224746714913`, Rational[3, 14] Pi}, {
+         1.0799224746714913`, Rational[2, 7] Pi}, {
+         1.0799224746714913`, Rational[5, 14] Pi}, {
+         1.0799224746714913`, Rational[3, 7] Pi}, {
+         1.0799224746714913`, Rational[1, 2] Pi}, {
+         1.0799224746714913`, Rational[4, 7] Pi}, {
+         1.0799224746714913`, Rational[9, 14] Pi}, {
+         1.0799224746714913`, Rational[5, 7] Pi}, {
+         1.0799224746714913`, Rational[11, 14] Pi}, {
+         1.0799224746714913`, Rational[6, 7] Pi}, {
+         1.0799224746714913`, Rational[13, 14] Pi}, {
+         1.0799224746714913`, Pi}, {
+         1.0799224746714913`, Rational[15, 14] Pi}, {
+         1.0799224746714913`, Rational[8, 7] Pi}, {
+         1.0799224746714913`, Rational[17, 14] Pi}, {
+         1.0799224746714913`, Rational[9, 7] Pi}, {
+         1.0799224746714913`, Rational[19, 14] Pi}, {
+         1.0799224746714913`, Rational[10, 7] Pi}, {
+         1.0799224746714913`, Rational[3, 2] Pi}, {
+         1.0799224746714913`, Rational[11, 7] Pi}, {
+         1.0799224746714913`, Rational[23, 14] Pi}, {
+         1.0799224746714913`, Rational[12, 7] Pi}, {
+         1.0799224746714913`, Rational[25, 14] Pi}, {
+         1.0799224746714913`, Rational[13, 7] Pi}, {
+         1.0799224746714913`, Rational[27, 14] Pi}, {
+         1.2762720155208536`, 0}, {1.2762720155208536`, Rational[2, 31] Pi}, {
+         1.2762720155208536`, Rational[4, 31] Pi}, {
+         1.2762720155208536`, Rational[6, 31] Pi}, {
+         1.2762720155208536`, Rational[8, 31] Pi}, {
+         1.2762720155208536`, Rational[10, 31] Pi}, {
+         1.2762720155208536`, Rational[12, 31] Pi}, {
+         1.2762720155208536`, Rational[14, 31] Pi}, {
+         1.2762720155208536`, Rational[16, 31] Pi}, {
+         1.2762720155208536`, Rational[18, 31] Pi}, {
+         1.2762720155208536`, Rational[20, 31] Pi}, {
+         1.2762720155208536`, Rational[22, 31] Pi}, {
+         1.2762720155208536`, Rational[24, 31] Pi}, {
+         1.2762720155208536`, Rational[26, 31] Pi}, {
+         1.2762720155208536`, Rational[28, 31] Pi}, {
+         1.2762720155208536`, Rational[30, 31] Pi}, {
+         1.2762720155208536`, Rational[32, 31] Pi}, {
+         1.2762720155208536`, Rational[34, 31] Pi}, {
+         1.2762720155208536`, Rational[36, 31] Pi}, {
+         1.2762720155208536`, Rational[38, 31] Pi}, {
+         1.2762720155208536`, Rational[40, 31] Pi}, {
+         1.2762720155208536`, Rational[42, 31] Pi}, {
+         1.2762720155208536`, Rational[44, 31] Pi}, {
+         1.2762720155208536`, Rational[46, 31] Pi}, {
+         1.2762720155208536`, Rational[48, 31] Pi}, {
+         1.2762720155208536`, Rational[50, 31] Pi}, {
+         1.2762720155208536`, Rational[52, 31] Pi}, {
+         1.2762720155208536`, Rational[54, 31] Pi}, {
+         1.2762720155208536`, Rational[56, 31] Pi}, {
+         1.2762720155208536`, Rational[58, 31] Pi}, {
+         1.2762720155208536`, Rational[60, 31] Pi}, {
+         1.4726215563702154`, 0}, {1.4726215563702154`, Rational[1, 16] Pi}, {
+         1.4726215563702154`, Rational[1, 8] Pi}, {
+         1.4726215563702154`, Rational[3, 16] Pi}, {
+         1.4726215563702154`, Rational[1, 4] Pi}, {
+         1.4726215563702154`, Rational[5, 16] Pi}, {
+         1.4726215563702154`, Rational[3, 8] Pi}, {
+         1.4726215563702154`, Rational[7, 16] Pi}, {
+         1.4726215563702154`, Rational[1, 2] Pi}, {
+         1.4726215563702154`, Rational[9, 16] Pi}, {
+         1.4726215563702154`, Rational[5, 8] Pi}, {
+         1.4726215563702154`, Rational[11, 16] Pi}, {
+         1.4726215563702154`, Rational[3, 4] Pi}, {
+         1.4726215563702154`, Rational[13, 16] Pi}, {
+         1.4726215563702154`, Rational[7, 8] Pi}, {
+         1.4726215563702154`, Rational[15, 16] Pi}, {
+         1.4726215563702154`, Pi}, {
+         1.4726215563702154`, Rational[17, 16] Pi}, {
+         1.4726215563702154`, Rational[9, 8] Pi}, {
+         1.4726215563702154`, Rational[19, 16] Pi}, {
+         1.4726215563702154`, Rational[5, 4] Pi}, {
+         1.4726215563702154`, Rational[21, 16] Pi}, {
+         1.4726215563702154`, Rational[11, 8] Pi}, {
+         1.4726215563702154`, Rational[23, 16] Pi}, {
+         1.4726215563702154`, Rational[3, 2] Pi}, {
+         1.4726215563702154`, Rational[25, 16] Pi}, {
+         1.4726215563702154`, Rational[13, 8] Pi}, {
+         1.4726215563702154`, Rational[27, 16] Pi}, {
+         1.4726215563702154`, Rational[7, 4] Pi}, {
+         1.4726215563702154`, Rational[29, 16] Pi}, {
+         1.4726215563702154`, Rational[15, 8] Pi}, {
+         1.4726215563702154`, Rational[31, 16] Pi}, {
+         1.6689710972195777`, 0}, {1.6689710972195777`, Rational[1, 16] Pi}, {
+         1.6689710972195777`, Rational[1, 8] Pi}, {
+         1.6689710972195777`, Rational[3, 16] Pi}, {
+         1.6689710972195777`, Rational[1, 4] Pi}, {
+         1.6689710972195777`, Rational[5, 16] Pi}, {
+         1.6689710972195777`, Rational[3, 8] Pi}, {
+         1.6689710972195777`, Rational[7, 16] Pi}, {
+         1.6689710972195777`, Rational[1, 2] Pi}, {
+         1.6689710972195777`, Rational[9, 16] Pi}, {
+         1.6689710972195777`, Rational[5, 8] Pi}, {
+         1.6689710972195777`, Rational[11, 16] Pi}, {
+         1.6689710972195777`, Rational[3, 4] Pi}, {
+         1.6689710972195777`, Rational[13, 16] Pi}, {
+         1.6689710972195777`, Rational[7, 8] Pi}, {
+         1.6689710972195777`, Rational[15, 16] Pi}, {
+         1.6689710972195777`, Pi}, {
+         1.6689710972195777`, Rational[17, 16] Pi}, {
+         1.6689710972195777`, Rational[9, 8] Pi}, {
+         1.6689710972195777`, Rational[19, 16] Pi}, {
+         1.6689710972195777`, Rational[5, 4] Pi}, {
+         1.6689710972195777`, Rational[21, 16] Pi}, {
+         1.6689710972195777`, Rational[11, 8] Pi}, {
+         1.6689710972195777`, Rational[23, 16] Pi}, {
+         1.6689710972195777`, Rational[3, 2] Pi}, {
+         1.6689710972195777`, Rational[25, 16] Pi}, {
+         1.6689710972195777`, Rational[13, 8] Pi}, {
+         1.6689710972195777`, Rational[27, 16] Pi}, {
+         1.6689710972195777`, Rational[7, 4] Pi}, {
+         1.6689710972195777`, Rational[29, 16] Pi}, {
+         1.6689710972195777`, Rational[15, 8] Pi}, {
+         1.6689710972195777`, Rational[31, 16] Pi}, {
+         1.8653206380689396`, 0}, {1.8653206380689396`, Rational[2, 31] Pi}, {
+         1.8653206380689396`, Rational[4, 31] Pi}, {
+         1.8653206380689396`, Rational[6, 31] Pi}, {
+         1.8653206380689396`, Rational[8, 31] Pi}, {
+         1.8653206380689396`, Rational[10, 31] Pi}, {
+         1.8653206380689396`, Rational[12, 31] Pi}, {
+         1.8653206380689396`, Rational[14, 31] Pi}, {
+         1.8653206380689396`, Rational[16, 31] Pi}, {
+         1.8653206380689396`, Rational[18, 31] Pi}, {
+         1.8653206380689396`, Rational[20, 31] Pi}, {
+         1.8653206380689396`, Rational[22, 31] Pi}, {
+         1.8653206380689396`, Rational[24, 31] Pi}, {
+         1.8653206380689396`, Rational[26, 31] Pi}, {
+         1.8653206380689396`, Rational[28, 31] Pi}, {
+         1.8653206380689396`, Rational[30, 31] Pi}, {
+         1.8653206380689396`, Rational[32, 31] Pi}, {
+         1.8653206380689396`, Rational[34, 31] Pi}, {
+         1.8653206380689396`, Rational[36, 31] Pi}, {
+         1.8653206380689396`, Rational[38, 31] Pi}, {
+         1.8653206380689396`, Rational[40, 31] Pi}, {
+         1.8653206380689396`, Rational[42, 31] Pi}, {
+         1.8653206380689396`, Rational[44, 31] Pi}, {
+         1.8653206380689396`, Rational[46, 31] Pi}, {
+         1.8653206380689396`, Rational[48, 31] Pi}, {
+         1.8653206380689396`, Rational[50, 31] Pi}, {
+         1.8653206380689396`, Rational[52, 31] Pi}, {
+         1.8653206380689396`, Rational[54, 31] Pi}, {
+         1.8653206380689396`, Rational[56, 31] Pi}, {
+         1.8653206380689396`, Rational[58, 31] Pi}, {
+         1.8653206380689396`, Rational[60, 31] Pi}, {2.061670178918302, 0}, {
+         2.061670178918302, Rational[1, 14] Pi}, {
+         2.061670178918302, Rational[1, 7] Pi}, {
+         2.061670178918302, Rational[3, 14] Pi}, {
+         2.061670178918302, Rational[2, 7] Pi}, {
+         2.061670178918302, Rational[5, 14] Pi}, {
+         2.061670178918302, Rational[3, 7] Pi}, {
+         2.061670178918302, Rational[1, 2] Pi}, {
+         2.061670178918302, Rational[4, 7] Pi}, {
+         2.061670178918302, Rational[9, 14] Pi}, {
+         2.061670178918302, Rational[5, 7] Pi}, {
+         2.061670178918302, Rational[11, 14] Pi}, {
+         2.061670178918302, Rational[6, 7] Pi}, {
+         2.061670178918302, Rational[13, 14] Pi}, {2.061670178918302, Pi}, {
+         2.061670178918302, Rational[15, 14] Pi}, {
+         2.061670178918302, Rational[8, 7] Pi}, {
+         2.061670178918302, Rational[17, 14] Pi}, {
+         2.061670178918302, Rational[9, 7] Pi}, {
+         2.061670178918302, Rational[19, 14] Pi}, {
+         2.061670178918302, Rational[10, 7] Pi}, {
+         2.061670178918302, Rational[3, 2] Pi}, {
+         2.061670178918302, Rational[11, 7] Pi}, {
+         2.061670178918302, Rational[23, 14] Pi}, {
+         2.061670178918302, Rational[12, 7] Pi}, {
+         2.061670178918302, Rational[25, 14] Pi}, {
+         2.061670178918302, Rational[13, 7] Pi}, {
+         2.061670178918302, Rational[27, 14] Pi}, {2.2580197197676637`, 0}, {
+         2.2580197197676637`, Rational[2, 25] Pi}, {
+         2.2580197197676637`, Rational[4, 25] Pi}, {
+         2.2580197197676637`, Rational[6, 25] Pi}, {
+         2.2580197197676637`, Rational[8, 25] Pi}, {
+         2.2580197197676637`, Rational[2, 5] Pi}, {
+         2.2580197197676637`, Rational[12, 25] Pi}, {
+         2.2580197197676637`, Rational[14, 25] Pi}, {
+         2.2580197197676637`, Rational[16, 25] Pi}, {
+         2.2580197197676637`, Rational[18, 25] Pi}, {
+         2.2580197197676637`, Rational[4, 5] Pi}, {
+         2.2580197197676637`, Rational[22, 25] Pi}, {
+         2.2580197197676637`, Rational[24, 25] Pi}, {
+         2.2580197197676637`, Rational[26, 25] Pi}, {
+         2.2580197197676637`, Rational[28, 25] Pi}, {
+         2.2580197197676637`, Rational[6, 5] Pi}, {
+         2.2580197197676637`, Rational[32, 25] Pi}, {
+         2.2580197197676637`, Rational[34, 25] Pi}, {
+         2.2580197197676637`, Rational[36, 25] Pi}, {
+         2.2580197197676637`, Rational[38, 25] Pi}, {
+         2.2580197197676637`, Rational[8, 5] Pi}, {
+         2.2580197197676637`, Rational[42, 25] Pi}, {
+         2.2580197197676637`, Rational[44, 25] Pi}, {
+         2.2580197197676637`, Rational[46, 25] Pi}, {
+         2.2580197197676637`, Rational[48, 25] Pi}, {2.454369260617026, 0}, {
+         2.454369260617026, Rational[1, 10] Pi}, {
+         2.454369260617026, Rational[1, 5] Pi}, {
+         2.454369260617026, Rational[3, 10] Pi}, {
+         2.454369260617026, Rational[2, 5] Pi}, {
+         2.454369260617026, Rational[1, 2] Pi}, {
+         2.454369260617026, Rational[3, 5] Pi}, {
+         2.454369260617026, Rational[7, 10] Pi}, {
+         2.454369260617026, Rational[4, 5] Pi}, {
+         2.454369260617026, Rational[9, 10] Pi}, {2.454369260617026, Pi}, {
+         2.454369260617026, Rational[11, 10] Pi}, {
+         2.454369260617026, Rational[6, 5] Pi}, {
+         2.454369260617026, Rational[13, 10] Pi}, {
+         2.454369260617026, Rational[7, 5] Pi}, {
+         2.454369260617026, Rational[3, 2] Pi}, {
+         2.454369260617026, Rational[8, 5] Pi}, {
+         2.454369260617026, Rational[17, 10] Pi}, {
+         2.454369260617026, Rational[9, 5] Pi}, {
+         2.454369260617026, Rational[19, 10] Pi}, {2.650718801466388, 0}, {
+         2.650718801466388, Rational[2, 15] Pi}, {
+         2.650718801466388, Rational[4, 15] Pi}, {
+         2.650718801466388, Rational[2, 5] Pi}, {
+         2.650718801466388, Rational[8, 15] Pi}, {
+         2.650718801466388, Rational[2, 3] Pi}, {
+         2.650718801466388, Rational[4, 5] Pi}, {
+         2.650718801466388, Rational[14, 15] Pi}, {
+         2.650718801466388, Rational[16, 15] Pi}, {
+         2.650718801466388, Rational[6, 5] Pi}, {
+         2.650718801466388, Rational[4, 3] Pi}, {
+         2.650718801466388, Rational[22, 15] Pi}, {
+         2.650718801466388, Rational[8, 5] Pi}, {
+         2.650718801466388, Rational[26, 15] Pi}, {
+         2.650718801466388, Rational[28, 15] Pi}, {2.84706834231575, 0}, {
+         2.84706834231575, Rational[2, 9] Pi}, {
+         2.84706834231575, Rational[4, 9] Pi}, {
+         2.84706834231575, Rational[2, 3] Pi}, {
+         2.84706834231575, Rational[8, 9] Pi}, {
+         2.84706834231575, Rational[10, 9] Pi}, {
+         2.84706834231575, Rational[4, 3] Pi}, {
+         2.84706834231575, Rational[14, 9] Pi}, {
+         2.84706834231575, Rational[16, 9] Pi}, {3.043417883165112, 0}, {
+         3.043417883165112, Rational[2, 3] Pi}, {
+         3.043417883165112, Rational[4, 3] Pi}}}]]}, 
+    TagBox[GraphicsGroupBox[GraphicsComplexBox[CompressedData["
+1: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
+       "], {
+        {Hue[0.6, 0.7, 0.5], Opacity[0.7], Arrowheads[0.041526874720000606`], 
+         ArrowBox[CompressedData["
+1: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
+          "], 0.0489226967050866]}, 
+        {Hue[0.6, 0.2, 0.8], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
+         DiskBox[1, 0.0489226967050866], DiskBox[2, 0.0489226967050866], 
+         DiskBox[3, 0.0489226967050866], DiskBox[4, 0.0489226967050866], 
+         DiskBox[5, 0.0489226967050866], DiskBox[6, 0.0489226967050866], 
+         DiskBox[7, 0.0489226967050866], DiskBox[8, 0.0489226967050866], 
+         DiskBox[9, 0.0489226967050866], DiskBox[10, 0.0489226967050866], 
+         DiskBox[11, 0.0489226967050866], DiskBox[12, 0.0489226967050866], 
+         DiskBox[13, 0.0489226967050866], DiskBox[14, 0.0489226967050866], 
+         DiskBox[15, 0.0489226967050866], DiskBox[16, 0.0489226967050866], 
+         DiskBox[17, 0.0489226967050866], DiskBox[18, 0.0489226967050866], 
+         DiskBox[19, 0.0489226967050866], DiskBox[20, 0.0489226967050866], 
+         DiskBox[21, 0.0489226967050866], DiskBox[22, 0.0489226967050866], 
+         DiskBox[23, 0.0489226967050866], DiskBox[24, 0.0489226967050866], 
+         DiskBox[25, 0.0489226967050866], DiskBox[26, 0.0489226967050866], 
+         DiskBox[27, 0.0489226967050866], DiskBox[28, 0.0489226967050866], 
+         DiskBox[29, 0.0489226967050866], DiskBox[30, 0.0489226967050866], 
+         DiskBox[31, 0.0489226967050866], DiskBox[32, 0.0489226967050866], 
+         DiskBox[33, 0.0489226967050866], DiskBox[34, 0.0489226967050866], 
+         DiskBox[35, 0.0489226967050866], DiskBox[36, 0.0489226967050866], 
+         DiskBox[37, 0.0489226967050866], DiskBox[38, 0.0489226967050866], 
+         DiskBox[39, 0.0489226967050866], DiskBox[40, 0.0489226967050866], 
+         DiskBox[41, 0.0489226967050866], DiskBox[42, 0.0489226967050866], 
+         DiskBox[43, 0.0489226967050866], DiskBox[44, 0.0489226967050866], 
+         DiskBox[45, 0.0489226967050866], DiskBox[46, 0.0489226967050866], 
+         DiskBox[47, 0.0489226967050866], DiskBox[48, 0.0489226967050866], 
+         DiskBox[49, 0.0489226967050866], DiskBox[50, 0.0489226967050866], 
+         DiskBox[51, 0.0489226967050866], DiskBox[52, 0.0489226967050866], 
+         DiskBox[53, 0.0489226967050866], DiskBox[54, 0.0489226967050866], 
+         DiskBox[55, 0.0489226967050866], DiskBox[56, 0.0489226967050866], 
+         DiskBox[57, 0.0489226967050866], DiskBox[58, 0.0489226967050866], 
+         DiskBox[59, 0.0489226967050866], DiskBox[60, 0.0489226967050866], 
+         DiskBox[61, 0.0489226967050866], DiskBox[62, 0.0489226967050866], 
+         DiskBox[63, 0.0489226967050866], DiskBox[64, 0.0489226967050866], 
+         DiskBox[65, 0.0489226967050866], DiskBox[66, 0.0489226967050866], 
+         DiskBox[67, 0.0489226967050866], DiskBox[68, 0.0489226967050866], 
+         DiskBox[69, 0.0489226967050866], DiskBox[70, 0.0489226967050866], 
+         DiskBox[71, 0.0489226967050866], DiskBox[72, 0.0489226967050866], 
+         DiskBox[73, 0.0489226967050866], DiskBox[74, 0.0489226967050866], 
+         DiskBox[75, 0.0489226967050866], DiskBox[76, 0.0489226967050866], 
+         DiskBox[77, 0.0489226967050866], DiskBox[78, 0.0489226967050866], 
+         DiskBox[79, 0.0489226967050866], DiskBox[80, 0.0489226967050866], 
+         DiskBox[81, 0.0489226967050866], DiskBox[82, 0.0489226967050866], 
+         DiskBox[83, 0.0489226967050866], DiskBox[84, 0.0489226967050866], 
+         DiskBox[85, 0.0489226967050866], DiskBox[86, 0.0489226967050866], 
+         DiskBox[87, 0.0489226967050866], DiskBox[88, 0.0489226967050866], 
+         DiskBox[89, 0.0489226967050866], DiskBox[90, 0.0489226967050866], 
+         DiskBox[91, 0.0489226967050866], DiskBox[92, 0.0489226967050866], 
+         DiskBox[93, 0.0489226967050866], DiskBox[94, 0.0489226967050866], 
+         DiskBox[95, 0.0489226967050866], DiskBox[96, 0.0489226967050866], 
+         DiskBox[97, 0.0489226967050866], DiskBox[98, 0.0489226967050866], 
+         DiskBox[99, 0.0489226967050866], DiskBox[100, 0.0489226967050866], 
+         DiskBox[101, 0.0489226967050866], DiskBox[102, 0.0489226967050866], 
+         DiskBox[103, 0.0489226967050866], DiskBox[104, 0.0489226967050866], 
+         DiskBox[105, 0.0489226967050866], DiskBox[106, 0.0489226967050866], 
+         DiskBox[107, 0.0489226967050866], DiskBox[108, 0.0489226967050866], 
+         DiskBox[109, 0.0489226967050866], DiskBox[110, 0.0489226967050866], 
+         DiskBox[111, 0.0489226967050866], DiskBox[112, 0.0489226967050866], 
+         DiskBox[113, 0.0489226967050866], DiskBox[114, 0.0489226967050866], 
+         DiskBox[115, 0.0489226967050866], DiskBox[116, 0.0489226967050866], 
+         DiskBox[117, 0.0489226967050866], DiskBox[118, 0.0489226967050866], 
+         DiskBox[119, 0.0489226967050866], DiskBox[120, 0.0489226967050866], 
+         DiskBox[121, 0.0489226967050866], DiskBox[122, 0.0489226967050866], 
+         DiskBox[123, 0.0489226967050866], DiskBox[124, 0.0489226967050866], 
+         DiskBox[125, 0.0489226967050866], DiskBox[126, 0.0489226967050866], 
+         DiskBox[127, 0.0489226967050866], DiskBox[128, 0.0489226967050866], 
+         DiskBox[129, 0.0489226967050866], DiskBox[130, 0.0489226967050866], 
+         DiskBox[131, 0.0489226967050866], DiskBox[132, 0.0489226967050866], 
+         DiskBox[133, 0.0489226967050866], DiskBox[134, 0.0489226967050866], 
+         DiskBox[135, 0.0489226967050866], DiskBox[136, 0.0489226967050866], 
+         DiskBox[137, 0.0489226967050866], DiskBox[138, 0.0489226967050866], 
+         DiskBox[139, 0.0489226967050866], DiskBox[140, 0.0489226967050866], 
+         DiskBox[141, 0.0489226967050866], DiskBox[142, 0.0489226967050866], 
+         DiskBox[143, 0.0489226967050866], DiskBox[144, 0.0489226967050866], 
+         DiskBox[145, 0.0489226967050866], DiskBox[146, 0.0489226967050866], 
+         DiskBox[147, 0.0489226967050866], DiskBox[148, 0.0489226967050866], 
+         DiskBox[149, 0.0489226967050866], DiskBox[150, 0.0489226967050866], 
+         DiskBox[151, 0.0489226967050866], DiskBox[152, 0.0489226967050866], 
+         DiskBox[153, 0.0489226967050866], DiskBox[154, 0.0489226967050866], 
+         DiskBox[155, 0.0489226967050866], DiskBox[156, 0.0489226967050866], 
+         DiskBox[157, 0.0489226967050866], DiskBox[158, 0.0489226967050866], 
+         DiskBox[159, 0.0489226967050866], DiskBox[160, 0.0489226967050866], 
+         DiskBox[161, 0.0489226967050866], DiskBox[162, 0.0489226967050866], 
+         DiskBox[163, 0.0489226967050866], DiskBox[164, 0.0489226967050866], 
+         DiskBox[165, 0.0489226967050866], DiskBox[166, 0.0489226967050866], 
+         DiskBox[167, 0.0489226967050866], DiskBox[168, 0.0489226967050866], 
+         DiskBox[169, 0.0489226967050866], DiskBox[170, 0.0489226967050866], 
+         DiskBox[171, 0.0489226967050866], DiskBox[172, 0.0489226967050866], 
+         DiskBox[173, 0.0489226967050866], DiskBox[174, 0.0489226967050866], 
+         DiskBox[175, 0.0489226967050866], DiskBox[176, 0.0489226967050866], 
+         DiskBox[177, 0.0489226967050866], DiskBox[178, 0.0489226967050866], 
+         DiskBox[179, 0.0489226967050866], DiskBox[180, 0.0489226967050866], 
+         DiskBox[181, 0.0489226967050866], DiskBox[182, 0.0489226967050866], 
+         DiskBox[183, 0.0489226967050866], DiskBox[184, 0.0489226967050866], 
+         DiskBox[185, 0.0489226967050866], DiskBox[186, 0.0489226967050866], 
+         DiskBox[187, 0.0489226967050866], DiskBox[188, 0.0489226967050866], 
+         DiskBox[189, 0.0489226967050866], DiskBox[190, 0.0489226967050866], 
+         DiskBox[191, 0.0489226967050866], DiskBox[192, 0.0489226967050866], 
+         DiskBox[193, 0.0489226967050866], DiskBox[194, 0.0489226967050866], 
+         DiskBox[195, 0.0489226967050866], DiskBox[196, 0.0489226967050866], 
+         DiskBox[197, 0.0489226967050866], DiskBox[198, 0.0489226967050866], 
+         DiskBox[199, 0.0489226967050866], DiskBox[200, 0.0489226967050866], 
+         DiskBox[201, 0.0489226967050866], DiskBox[202, 0.0489226967050866], 
+         DiskBox[203, 0.0489226967050866], DiskBox[204, 0.0489226967050866], 
+         DiskBox[205, 0.0489226967050866], DiskBox[206, 0.0489226967050866], 
+         DiskBox[207, 0.0489226967050866], DiskBox[208, 0.0489226967050866], 
+         DiskBox[209, 0.0489226967050866], DiskBox[210, 0.0489226967050866], 
+         DiskBox[211, 0.0489226967050866], DiskBox[212, 0.0489226967050866], 
+         DiskBox[213, 0.0489226967050866], DiskBox[214, 0.0489226967050866], 
+         DiskBox[215, 0.0489226967050866], DiskBox[216, 0.0489226967050866], 
+         DiskBox[217, 0.0489226967050866], DiskBox[218, 0.0489226967050866], 
+         DiskBox[219, 0.0489226967050866], DiskBox[220, 0.0489226967050866], 
+         DiskBox[221, 0.0489226967050866], DiskBox[222, 0.0489226967050866], 
+         DiskBox[223, 0.0489226967050866], DiskBox[224, 0.0489226967050866], 
+         DiskBox[225, 0.0489226967050866], DiskBox[226, 0.0489226967050866], 
+         DiskBox[227, 0.0489226967050866], DiskBox[228, 0.0489226967050866], 
+         DiskBox[229, 0.0489226967050866], DiskBox[230, 0.0489226967050866], 
+         DiskBox[231, 0.0489226967050866], DiskBox[232, 0.0489226967050866], 
+         DiskBox[233, 0.0489226967050866], DiskBox[234, 0.0489226967050866], 
+         DiskBox[235, 0.0489226967050866], DiskBox[236, 0.0489226967050866], 
+         DiskBox[237, 0.0489226967050866], DiskBox[238, 0.0489226967050866], 
+         DiskBox[239, 0.0489226967050866], DiskBox[240, 0.0489226967050866], 
+         DiskBox[241, 0.0489226967050866], DiskBox[242, 0.0489226967050866], 
+         DiskBox[243, 0.0489226967050866], DiskBox[244, 0.0489226967050866], 
+         DiskBox[245, 0.0489226967050866], DiskBox[246, 0.0489226967050866], 
+         DiskBox[247, 0.0489226967050866], DiskBox[248, 0.0489226967050866], 
+         DiskBox[249, 0.0489226967050866], DiskBox[250, 0.0489226967050866], 
+         DiskBox[251, 0.0489226967050866], DiskBox[252, 0.0489226967050866], 
+         DiskBox[253, 0.0489226967050866], DiskBox[254, 0.0489226967050866], 
+         DiskBox[255, 0.0489226967050866], DiskBox[256, 0.0489226967050866], 
+         DiskBox[257, 0.0489226967050866], DiskBox[258, 0.0489226967050866], 
+         DiskBox[259, 0.0489226967050866], DiskBox[260, 0.0489226967050866], 
+         DiskBox[261, 0.0489226967050866], DiskBox[262, 0.0489226967050866], 
+         DiskBox[263, 0.0489226967050866], DiskBox[264, 0.0489226967050866], 
+         DiskBox[265, 0.0489226967050866], DiskBox[266, 0.0489226967050866], 
+         DiskBox[267, 0.0489226967050866], DiskBox[268, 0.0489226967050866], 
+         DiskBox[269, 0.0489226967050866], DiskBox[270, 0.0489226967050866], 
+         DiskBox[271, 0.0489226967050866], DiskBox[272, 0.0489226967050866], 
+         DiskBox[273, 0.0489226967050866], DiskBox[274, 0.0489226967050866], 
+         DiskBox[275, 0.0489226967050866], DiskBox[276, 0.0489226967050866], 
+         DiskBox[277, 0.0489226967050866], DiskBox[278, 0.0489226967050866], 
+         DiskBox[279, 0.0489226967050866], DiskBox[280, 0.0489226967050866], 
+         DiskBox[281, 0.0489226967050866], DiskBox[282, 0.0489226967050866], 
+         DiskBox[283, 0.0489226967050866], DiskBox[284, 0.0489226967050866], 
+         DiskBox[285, 0.0489226967050866], DiskBox[286, 0.0489226967050866], 
+         DiskBox[287, 0.0489226967050866], DiskBox[288, 0.0489226967050866], 
+         DiskBox[289, 0.0489226967050866], DiskBox[290, 0.0489226967050866], 
+         DiskBox[291, 0.0489226967050866], DiskBox[292, 0.0489226967050866], 
+         DiskBox[293, 0.0489226967050866], DiskBox[294, 0.0489226967050866], 
+         DiskBox[295, 0.0489226967050866], DiskBox[296, 0.0489226967050866], 
+         DiskBox[297, 0.0489226967050866], DiskBox[298, 0.0489226967050866], 
+         DiskBox[299, 0.0489226967050866], DiskBox[300, 0.0489226967050866], 
+         DiskBox[301, 0.0489226967050866], DiskBox[302, 0.0489226967050866], 
+         DiskBox[303, 0.0489226967050866], DiskBox[304, 0.0489226967050866], 
+         DiskBox[305, 0.0489226967050866], DiskBox[306, 0.0489226967050866], 
+         DiskBox[307, 0.0489226967050866], DiskBox[308, 0.0489226967050866], 
+         DiskBox[309, 0.0489226967050866], DiskBox[310, 0.0489226967050866], 
+         DiskBox[311, 0.0489226967050866], DiskBox[312, 0.0489226967050866], 
+         DiskBox[313, 0.0489226967050866], DiskBox[314, 0.0489226967050866], 
+         DiskBox[315, 0.0489226967050866], DiskBox[316, 0.0489226967050866], 
+         DiskBox[317, 0.0489226967050866], DiskBox[318, 0.0489226967050866], 
+         DiskBox[319, 0.0489226967050866], DiskBox[320, 0.0489226967050866], 
+         DiskBox[321, 0.0489226967050866], DiskBox[322, 0.0489226967050866], 
+         DiskBox[323, 0.0489226967050866], DiskBox[324, 0.0489226967050866], 
+         DiskBox[325, 0.0489226967050866], 
+         DiskBox[326, 0.0489226967050866]}}]],
+     MouseAppearanceTag["NetworkGraphics"]],
+    AllowKernelInitialization->False]],
+  DefaultBaseStyle->"NetworkGraphics",
+  FormatType->TraditionalForm,
+  FrameTicks->None]], "Output",
+ CellLabel->"Out[1]= ",ExpressionUUID->"8fc941b6-03ae-0e47-9087-7db0cddd3de1"]
+}, Open  ]]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "More Examples",
+ Cell[BoxData[
+  TemplateBox[{"MoreExamples", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell["Extended examples in standardized sections.", "MoreInfoText"], 
+       BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "352b6acf-a93b-4224-8779-658881cdabd0"]
+}], "ExtendedExamplesSection",
+ CellTags->"ExtendedExamples",
+ CellID->533848431,ExpressionUUID->"a6228140-1981-46f0-88fc-4d129033136d"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Scope", "ExampleSection",ExpressionUUID->
+   "32e79d70-f7af-47ff-bb41-513374ef55db"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1293636265,ExpressionUUID->"6d08f999-4c69-4709-9b28-82906be6ee75"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Generalizations & Extensions", "ExampleSection",ExpressionUUID->
+   "a148ce84-caec-4483-aa99-5b7bd6d55bf1"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1020263627,ExpressionUUID->"85bb6475-fccb-4f83-9c4c-95411a492aa7"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Options", "ExampleSection",ExpressionUUID->
+   "b26b6366-7922-4236-a426-38c0f5de13f0"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->2061341341,ExpressionUUID->"3276b1d7-cf51-4f3b-970a-56b0e7c469f0"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Applications", "ExampleSection",ExpressionUUID->
+   "d5715ee2-1cae-4f33-89b2-0e99ea9caa6e"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->258228157,ExpressionUUID->"1cd6234d-1e3c-431d-9989-71f3025eee95"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Properties & Relations", "ExampleSection",ExpressionUUID->
+   "d18b1e1f-4c4c-49a5-bb54-1e5e145ddf4e"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->2123667759,ExpressionUUID->"0e0d5f37-f3c9-4474-a22b-9f10dcc8b438"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Possible Issues", "ExampleSection",ExpressionUUID->
+   "dda06a82-eb41-4b48-8510-6cb821647761"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1305812373,ExpressionUUID->"9397dd0b-9de4-443a-9371-be2b75148f2f"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Interactive Examples", "ExampleSection",ExpressionUUID->
+   "e1fe5ce4-66df-44f8-b96d-14ea9265eaf2"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1653164318,ExpressionUUID->"c5507407-1b71-491f-84b6-3f5747264ef7"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Neat Examples", "ExampleSection",ExpressionUUID->
+   "898193c6-0d9f-4097-90dd-7bc455972e43"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->589267740,ExpressionUUID->"ce9d5678-57c6-4712-bdd3-87904919f71e"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["Metadata", "MetadataSection",
+ CellID->311882160,ExpressionUUID->"2b9a20c0-4684-4af0-ae90-008bcb3cd5bd"],
+
+Cell[TextData[{
+ "New in: ",
+ Cell["XX", "HistoryData",
+  CellTags->"New",ExpressionUUID->"c83e5b59-d200-4539-afdc-500ed06d3c87"],
+ " | Modified in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Modified",ExpressionUUID->"d4e38c0c-d937-44f2-85a5-7c0e8fc755ab"],
+ " | Obsolete in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Obsolete",ExpressionUUID->
+  "4c68d818-8923-4121-80f8-cf0eabb4c0de"]
+}], "History",
+ CellID->341476719,ExpressionUUID->"0647d953-178d-43da-935e-923bdb2c5046"],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "Categorization",
+ Cell[BoxData[
+  TemplateBox[{"Metadata", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Metadata such as page URI, context, and type of documentation page.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "4b3d4122-3cd4-481f-a8ff-5aefbb03e00d"]
+}], "CategorizationSection",
+ CellID->1755438392,ExpressionUUID->"a29a9a03-1747-4a1c-b242-c8059c9e5329"],
+
+Cell["Symbol", "Categorization",
+ CellLabel->"Entity Type",
+ CellID->686433507,ExpressionUUID->"d3672960-eef7-49f2-a47e-fce423fec36a"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine", "Categorization",
+ CellLabel->"Paclet Name",
+ CellID->605800465,ExpressionUUID->"e9337bb6-80d8-4427-9444-53c8416845ec"],
+
+Cell["HypergraphRewriting`", "Categorization",
+ CellLabel->"Context",
+ CellID->468444828,ExpressionUUID->"a09e9c4d-8ab9-4ae7-b585-c517016e8191"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine/ref/HGSphere", "Categorization",
+ CellLabel->"URI",ExpressionUUID->"812bec07-0f84-1741-9ed4-d9a7ca87cc4d"]
+}, Closed]],
+
+Cell["Keywords", "KeywordsSection",
+ CellID->477174294,ExpressionUUID->"ef06640c-42c9-4c00-9a6c-9b632e3752b6"],
+
+Cell[CellGroupData[{
+
+Cell["Syntax Templates", "TemplatesSection",
+ CellID->1872225408,ExpressionUUID->"119176c2-887f-409f-a0c9-b72561b7624c"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Additional Function Template",
+ CellID->1562036412,ExpressionUUID->"1b15e1f4-90c6-45fb-bbe0-ea52939f5d72"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Arguments Pattern",
+ CellID->158391909,ExpressionUUID->"9e18a772-50d9-48d2-8436-649cdc9f97ec"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Local Variables",
+ CellID->1360575930,ExpressionUUID->"1e946dbb-3373-40d7-b302-c6d742eac1b9"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Color Equal Signs",
+ CellID->793782254,ExpressionUUID->"aee0c783-3703-4eff-afcc-bcf11e35c648"]
+}, Closed]]
+}, Open  ]]
+},
+WindowSize->{700, 770},
+WindowMargins->{{5, Automatic}, {Automatic, 0}},
+TaggingRules->{
+ "Metadata" -> {
+   "title" -> "HGSphere", "context" -> "HypergraphRewriting`", 
+    "keywords" -> {}, "summary" -> "", "paclet" -> 
+    "WolframInstitute/HypergraphRewriteEngine", "uri" -> 
+    "WolframInstitute/HypergraphRewriteEngine/ref/HGSphere", "type" -> 
+    "Symbol", "index" -> True, "language" -> "en"}},
+CreateCellID->True,
+CellContext->CellGroup,
+FrontEndVersion->"14.0 for Microsoft Windows (64-bit) (December 12, 2023)",
+StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "FunctionPageStylesExt.nb", 
+  CharacterEncoding -> "UTF-8"],
+ExpressionUUID->"c207366e-060a-406b-a297-9e30e1628f43"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{
+ "ExtendedExamples"->{
+  Cell[43330, 812, 487, 13, 70, "ExtendedExamplesSection",ExpressionUUID->"a6228140-1981-46f0-88fc-4d129033136d",
+   CellTags->"ExtendedExamples",
+   CellID->533848431]}
+ }
+*)
+(*CellTagsIndex
+CellTagsIndex->{
+ {"ExtendedExamples", 49286, 983}
+ }
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[CellGroupData[{
+Cell[580, 22, 106, 1, 70, "ObjectName",ExpressionUUID->"8393d601-4014-44ba-afc9-60862df940ec",
+ CellID->1224892054],
+Cell[689, 25, 673, 17, 70, "Usage",ExpressionUUID->"3b00eb9e-3163-7b45-9dd6-2237a401b47a"],
+Cell[1365, 44, 597, 15, 70, "Notes",ExpressionUUID->"2b0ff1ce-f528-834d-83ea-3e49c913cb91"],
+Cell[1965, 61, 106, 0, 70, "Notes",ExpressionUUID->"db516f20-788f-cb4e-ba51-2a0963747555"]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[2108, 66, 459, 13, 70, "SeeAlsoSection",ExpressionUUID->"6019c63b-8124-433f-bd7e-253812d6da0e",
+ CellID->1559318232],
+Cell[2570, 81, 1507, 40, 70, "SeeAlso",ExpressionUUID->"596d315f-4247-2442-8691-50847c79693b"]
+}, Open  ]],
+Cell[4092, 124, 435, 12, 70, "TechNotesSection",ExpressionUUID->"fc30b7bb-1c24-4df4-b93c-2a46876a3e74",
+ CellID->792424486],
+Cell[4530, 138, 116, 1, 70, "MoreAboutSection",ExpressionUUID->"090ecd4e-77ab-48e0-ba7a-1f9acccd0dd5",
+ CellID->38303248],
+Cell[4649, 141, 471, 13, 70, "RelatedLinksSection",ExpressionUUID->"c8e1cebd-677a-4282-8b17-38a138b1b0ea",
+ CellID->47113304],
+Cell[CellGroupData[{
+Cell[5145, 158, 531, 14, 70, "ExamplesInitializationSection",ExpressionUUID->"6961daab-c21b-4e4b-b6ac-a9a47f06ffa5",
+ CellID->1718580883],
+Cell[5679, 174, 180, 3, 70, "ExampleInitialization",ExpressionUUID->"7dcb178c-574f-4ea8-8531-ff0dec195502",
+ CellID->1969679695]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[5896, 182, 442, 12, 70, "PrimaryExamplesSection",ExpressionUUID->"4d971e0b-a467-44b1-b908-78f8a7482a42",
+ CellID->880084151],
+Cell[CellGroupData[{
+Cell[6363, 198, 177, 3, 70, "Input",ExpressionUUID->"81312fef-4ef0-6048-b770-b625c575db2f"],
+Cell[6543, 203, 36738, 603, 70, "Output",ExpressionUUID->"8fc941b6-03ae-0e47-9087-7db0cddd3de1"]
+}, Open  ]]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[43330, 812, 487, 13, 70, "ExtendedExamplesSection",ExpressionUUID->"a6228140-1981-46f0-88fc-4d129033136d",
+ CellTags->"ExtendedExamples",
+ CellID->533848431],
+Cell[43820, 827, 242, 5, 70, "ExampleSection",ExpressionUUID->"6d08f999-4c69-4709-9b28-82906be6ee75",
+ CellID->1293636265],
+Cell[44065, 834, 265, 5, 70, "ExampleSection",ExpressionUUID->"85bb6475-fccb-4f83-9c4c-95411a492aa7",
+ CellID->1020263627],
+Cell[44333, 841, 244, 5, 70, "ExampleSection",ExpressionUUID->"3276b1d7-cf51-4f3b-970a-56b0e7c469f0",
+ CellID->2061341341],
+Cell[44580, 848, 248, 5, 70, "ExampleSection",ExpressionUUID->"1cd6234d-1e3c-431d-9989-71f3025eee95",
+ CellID->258228157],
+Cell[44831, 855, 259, 5, 70, "ExampleSection",ExpressionUUID->"0e0d5f37-f3c9-4474-a22b-9f10dcc8b438",
+ CellID->2123667759],
+Cell[45093, 862, 252, 5, 70, "ExampleSection",ExpressionUUID->"9397dd0b-9de4-443a-9371-be2b75148f2f",
+ CellID->1305812373],
+Cell[45348, 869, 257, 5, 70, "ExampleSection",ExpressionUUID->"c5507407-1b71-491f-84b6-3f5747264ef7",
+ CellID->1653164318],
+Cell[45608, 876, 249, 5, 70, "ExampleSection",ExpressionUUID->"ce9d5678-57c6-4712-bdd3-87904919f71e",
+ CellID->589267740]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[45894, 886, 110, 1, 70, "MetadataSection",ExpressionUUID->"2b9a20c0-4684-4af0-ae90-008bcb3cd5bd",
+ CellID->311882160],
+Cell[46007, 889, 476, 12, 70, "History",ExpressionUUID->"0647d953-178d-43da-935e-923bdb2c5046",
+ CellID->341476719],
+Cell[CellGroupData[{
+Cell[46508, 905, 485, 13, 70, "CategorizationSection",ExpressionUUID->"a29a9a03-1747-4a1c-b242-c8059c9e5329",
+ CellID->1755438392],
+Cell[46996, 920, 134, 2, 70, "Categorization",ExpressionUUID->"d3672960-eef7-49f2-a47e-fce423fec36a",
+ CellID->686433507],
+Cell[47133, 924, 168, 2, 70, "Categorization",ExpressionUUID->"e9337bb6-80d8-4427-9444-53c8416845ec",
+ CellID->605800465],
+Cell[47304, 928, 144, 2, 70, "Categorization",ExpressionUUID->"a09e9c4d-8ab9-4ae7-b585-c517016e8191",
+ CellID->468444828],
+Cell[47451, 932, 153, 1, 70, "Categorization",ExpressionUUID->"812bec07-0f84-1741-9ed4-d9a7ca87cc4d"]
+}, Closed]],
+Cell[47619, 936, 110, 1, 70, "KeywordsSection",ExpressionUUID->"ef06640c-42c9-4c00-9a6c-9b632e3752b6",
+ CellID->477174294],
+Cell[CellGroupData[{
+Cell[47754, 941, 120, 1, 70, "TemplatesSection",ExpressionUUID->"119176c2-887f-409f-a0c9-b72561b7624c",
+ CellID->1872225408],
+Cell[47877, 944, 149, 2, 70, "Template",ExpressionUUID->"1b15e1f4-90c6-45fb-bbe0-ea52939f5d72",
+ CellID->1562036412],
+Cell[48029, 948, 137, 2, 70, "Template",ExpressionUUID->"9e18a772-50d9-48d2-8436-649cdc9f97ec",
+ CellID->158391909],
+Cell[48169, 952, 136, 2, 70, "Template",ExpressionUUID->"1e946dbb-3373-40d7-b302-c6d742eac1b9",
+ CellID->1360575930],
+Cell[48308, 956, 137, 2, 70, "Template",ExpressionUUID->"aee0c783-3703-4eff-afcc-bcf11e35c648",
+ CellID->793782254]
+}, Closed]]
+}, Open  ]]
+}
+]
+*)
+
+(* End of internal cache information *)
