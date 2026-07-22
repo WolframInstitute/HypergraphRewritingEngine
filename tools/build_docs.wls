@@ -9,9 +9,9 @@
      git clone https://github.com/WolframInstitute/MarkdownToNotebook
      wolframscript -file tools/build_docs.wls /path/to/MarkdownToNotebook/MarkdownToNotebook.wl
 
-   (DocumentationBuild produces the fully-indexed Documentation-Center pages from
-   these authoring notebooks; that step needs the front end and is left to the
-   publish workflow.) *)
+   The generated notebooks are build output (gitignored); the markdown is the source of
+   truth (this mirrors WolframInstitute/MarkdownToNotebook's own paclets, e.g. AccessibleColors).
+   create_paclet_archive's PacletBuild indexes them into the final Documentation-Center pages. *)
 
 If[Length[$ScriptCommandLine] < 2,
   Print["usage: build_docs.wls <path-to-MarkdownToNotebook.wl>"]; Exit[1]];
@@ -21,11 +21,13 @@ Get[mtnPath];
 
 repo    = ParentDirectory[DirectoryName[$InputFileName]];
 srcDir  = FileNameJoin[{repo, "paclet", "Documentation", "Source"}];
-(* Staging output: mirrors the Documentation/English layout but never overwrites a
-   shipped, fully-built page. The publish workflow runs DocumentationBuild on these
-   authoring notebooks (front end, evaluates examples, indexes) and promotes the
-   result into Documentation/English. *)
-docRoot = FileNameJoin[{repo, "paclet", "Documentation", "Source", "generated"}];
+(* Write the authoring notebooks straight into the standard paclet layout under
+   Documentation/English. MarkdownToNotebook evaluates each page's example cells during
+   conversion (against the paclet loaded below), so the notebooks carry the current engine's
+   rendered output; create_paclet_archive's PacletBuild indexes them from here. The
+   notebooks are build output (gitignored) — the markdown under Documentation/Source is the
+   committed source of truth. *)
+docRoot = FileNameJoin[{repo, "paclet", "Documentation", "English"}];
 
 (* Load the paclet being built so MarkdownToNotebook's per-page Needs["HypergraphRewriting`"]
    (from each source's `Context:` frontmatter) resolves to THIS build and the example cells

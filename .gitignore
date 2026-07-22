@@ -15,5 +15,8 @@
 *.paclet
 /paclet_archive/
 
-# Generated documentation authoring notebooks (regenerable via tools/build_docs.wls)
+# Generated documentation notebooks are BUILD OUTPUT (regenerated + evaluated by
+# tools/build_docs.wls); the markdown under Documentation/Source is the committed source
+# of truth. Mirrors WolframInstitute/MarkdownToNotebook's own paclets (e.g. AccessibleColors).
 /paclet/Documentation/Source/generated/
+/paclet/Documentation/English/**/*.nb
