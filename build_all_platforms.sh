@@ -107,10 +107,13 @@ if selected "Windows-x86-64"; then
     if [[ -e "/mnt/c/Program Files/CMake/bin/cmake.exe" \
           && -d "/mnt/c/Program Files/Microsoft Visual Studio/2022" \
           && -n "$(ls -d '/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/'v*.* 2>/dev/null)" ]]; then
+        # Optional/best-effort: a GPU-build failure must NOT block the release (the six platform
+        # libraries are the required artifacts; the GPU exe is a bonus and HGEvolve falls back to
+        # CPU without it). Route a failure to SKIPPED, not FAILED.
         if ./build_windows_gpu.sh; then
             BUILT+=("Windows-x86-64/hg_evolve_gpu.exe")
         else
-            FAILED+=("Windows-x86-64/hg_evolve_gpu.exe")
+            skip "Windows-x86-64/hg_evolve_gpu.exe" "optional GPU build did not complete (see log above); shipping CPU-only Windows"
         fi
     else
         skip "Windows-x86-64/hg_evolve_gpu.exe" "native Windows MSVC+CUDA toolchain not found (VS2022 + CUDA Toolkit + CMake)"

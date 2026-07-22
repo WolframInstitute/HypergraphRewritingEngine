@@ -44,6 +44,28 @@ echo "==> configuring (native MSVC + nvcc)"
     -DBUILD_GPU=ON -DHG_GPU_ARCHS="$ARCHS" -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
     -DBUILD_VISUALIZATION=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF
 
+# The Visual Studio generator only emits the CUDA targets if CMake FOUND a CUDA compiler, which
+# needs the CUDA<->Visual Studio integration (the "CUDA <ver>.props" MSBuild customizations)
+# installed into Visual Studio — not just the CUDA Toolkit. Without it, configure prints "CUDA not
+# found - GPU support disabled" and never generates hg_evolve_gpu.vcxproj, and the build below would
+# fail with a confusing MSB1009. Detect it here with an actionable message.
+if [[ ! -f "$BUILD_WSL/paclet_source/hg_evolve_gpu.vcxproj" ]]; then
+    VSBC="C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Microsoft\\VC\\v170\\BuildCustomizations"
+    CUDAEXT="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v$CUDA_VER\\extras\\visual_studio_integration\\MSBuildExtensions"
+    {
+        echo "error: CMake did not find a CUDA compiler, so no GPU project was generated."
+        echo "       The CUDA Toolkit is installed, but its VISUAL STUDIO INTEGRATION is not — the"
+        echo "       Visual Studio generator needs the 'CUDA $CUDA_VER.props' MSBuild customization."
+        echo "       Install it either way:"
+        echo "         1. Re-run the CUDA $CUDA_VER installer and tick 'Visual Studio Integration', or"
+        echo "         2. From an ELEVATED cmd/PowerShell, copy the props into Visual Studio:"
+        echo "              copy \"$CUDAEXT\\*\" \"$VSBC\\\""
+        echo "       Then re-run ./build_windows_gpu.sh. (Check present with:"
+        echo "         ls \"$VSBC\\CUDA $CUDA_VER.props\" )"
+    } >&2
+    exit 1
+fi
+
 echo "==> building hg_evolve_gpu (compiles the CUDA kernels + host, then device-links)"
 "$WINCMAKE" --build "$BUILD_WIN" --config Release --target hg_evolve_gpu --parallel
 
