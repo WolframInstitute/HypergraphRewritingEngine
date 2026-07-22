@@ -10,10 +10,15 @@
 # OSXCross. macOS host builds the macOS slices natively and the rest via cross-toolchains
 # where available.
 #
-#   Usage: ./build_all_platforms.sh [FILTER]
+#   Usage: ./build_all_platforms.sh [clean] [FILTER]
+#     clean   wipe each selected target's build dir before configuring, forcing a fresh
+#             CMake configure. REQUIRED after a toolchain change: CMake reads a toolchain's
+#             *_LINKER_FLAGS_INIT (and other *_INIT vars) only on the first configure, so an
+#             incremental build silently keeps the old flags. `clean` guarantees they apply.
 #     FILTER  optional substring/regex; only targets whose name matches are built
 #             (e.g. "Windows", "MacOSX", "Linux-x86-64"). Legacy --linux-only /
 #             --windows-only / --macos-only are accepted as aliases.
+#     clean and FILTER are order-independent, e.g. `./build_all_platforms.sh clean Windows`.
 #
 #   Env: BUILD_JOBS (default: nproc), OSXCROSS_ROOT (default: ~/osxcross)
 #
@@ -35,17 +40,21 @@ LR="paclet/LibraryResources"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-# Filter (positional, or legacy --*-only aliases)
+# Args (order-independent): optional `clean` flag plus an optional FILTER substring;
+# legacy --*-only aliases still map to a filter.
+CLEAN=0
 FILTER=""
-case "${1:-}" in
-    --help|-h)
-        sed -n '2,26p' "$0"; exit 0 ;;
-    --linux-only)   FILTER="Linux"  ;;
-    --windows-only) FILTER="Windows";;
-    --macos-only)   FILTER="MacOSX" ;;
-    "")             FILTER=""        ;;
-    *)              FILTER="$1"      ;;
-esac
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)      sed -n '2,31p' "$0"; exit 0 ;;
+        --clean|clean)  CLEAN=1 ;;
+        --linux-only)   FILTER="Linux"  ;;
+        --windows-only) FILTER="Windows";;
+        --macos-only)   FILTER="MacOSX" ;;
+        "")             ;;
+        *)              FILTER="$arg"   ;;
+    esac
+done
 
 BUILT=(); SKIPPED=(); FAILED=()
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -57,6 +66,9 @@ build_target() {
     local name="$1" dir="$2" out="$3"; shift 3
     local platdir; platdir="$(dirname "$out")"   # LibraryResources/<platform>
     echo -e "\n${GREEN}=== $name ===${NC}"
+    # `clean`: wipe the build dir so CMake re-reads the toolchain from scratch (its *_INIT
+    # linker flags are honoured only on a first configure).
+    (( CLEAN )) && rm -rf "$dir"
     mkdir -p "$dir"
     # Clear the artifacts we verify so a failed build can't pass on stale files.
     rm -f "$out" "$platdir"/hg_evolve "$platdir"/hg_evolve.exe

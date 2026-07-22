@@ -9,14 +9,27 @@
 #   ./build_paclet.sh nodocs       assemble using the COMMITTED notebooks as-is (do not regenerate);
 #                                   for the machine that pulls docs rendered + committed elsewhere
 #
+#   Add `clean` (any position, e.g. `./build_paclet.sh clean nodocs`) to force a fresh
+#   platform build — required after a toolchain change, which an incremental build ignores.
+#
 # Output: paclet_archive/WolframInstitute__HypergraphRewriteEngine-<version>.paclet
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-MODE="${1:-}"
+# Args (order-independent): `clean` forwards a clean rebuild; structure|nodocs pick the doc mode.
+MODE=""
+CLEAN=""
+for a in "$@"; do
+    case "$a" in
+        clean|--clean)    CLEAN="clean" ;;
+        structure|nodocs) MODE="$a" ;;
+        "")               ;;
+        *) echo "error: unknown argument '$a' (expected: clean, structure, nodocs)"; exit 2 ;;
+    esac
+done
 
 echo "==> [1/3] platform libraries"
-./build_all_platforms.sh
+./build_all_platforms.sh ${CLEAN:+"$CLEAN"}
 
 if [[ "$MODE" == "nodocs" ]]; then
     echo "==> [2/3] documentation: using the committed notebooks as-is (not regenerating)"
