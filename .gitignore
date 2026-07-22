@@ -15,17 +15,14 @@
 *.paclet
 /paclet_archive/
 
-# Generated documentation notebooks are BUILD OUTPUT (regenerated + evaluated by
-# tools/build_docs.wls); the markdown under Documentation/Source is the committed source
-# of truth. Mirrors WolframInstitute/MarkdownToNotebook's own paclets (e.g. AccessibleColors).
+# Documentation notebooks (Documentation/English/**/*.nb) ARE tracked. They are rendered from the
+# markdown (Documentation/Source, the source of truth) by build_docs.sh, but rendering the example
+# outputs needs the Wolfram cloud (WolframModelPlot etc.), so they are generated on a cloud-connected
+# machine and committed, then assembled into the paclet on any machine.
 /paclet/Documentation/Source/generated/
-/paclet/Documentation/English/**/*.nb
-# build_docs.sh's transient ext4 landing dir (cp from the Windows-local stage before the
-# atomic rename into English/); normally auto-removed, ignored so a crashed run leaves no trace.
+# Transient build_docs scratch (normally auto-removed each run):
 /paclet/Documentation/.english_stage/
-# build_docs.wls success sentinel (normally consumed + removed by build_docs.sh).
 /paclet/Documentation/English/.build_ok
-# build_docs incremental-build manifest (source+engine hashes; regenerated each run).
 /paclet/Documentation/English/.doc_manifest.wl
-# Generated documentation packages (e.g. tutorial example .wl) are build output like the notebooks.
+# Stray non-notebook build output under the generated docs tree:
 /paclet/Documentation/English/**/*.wl

@@ -32,11 +32,15 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"EvolutionCausalGraph"` | state and event vertices with directed causal edges between events |
 | `"EvolutionBranchialGraph"` | state and event vertices with undirected branchial edges |
 | `"EvolutionCausalBranchialGraph"` | state and event vertices with both directed causal and undirected branchial edges (the default) |
-| `"States"`, `"Events"` | the raw state / event lists |
-| `"NumStates"`, `"NumEvents"` | state / event counts |
-| `"CausalEdges"`, `"BranchialEdges"` | the causal / branchial edge lists |
+| `"States"`, `"Events"` | the raw state / event objects (associations, described below) |
+| `"CausalEdges"`, `"BranchialEdges"`, `"GlobalEdges"` | the causal / branchial / global edge lists |
+| `"NumStates"`, `"NumEvents"`, `"NumCausalEdges"`, `"NumBranchialEdges"` | the corresponding counts |
+| `"DimensionData"`, `"CurvatureData"`, `"GeodesicData"`, `"TopologicalData"`, `"EntropyData"`, `"HilbertSpaceData"`, `"BranchialData"`, `"MultispaceData"`, `"AlignmentData"`, `"StateBitvectors"` | results of the corresponding analysis family (each requires its `"*Analysis"` option; see below) |
+| `"All"`, `"Debug"` | an association of, respectively, all graph/list/count properties, or the four counts |
 
+- `prop` may also be a list of property strings, in which case an association keyed by those strings is returned.
 - Any `*Graph` property may take the suffix `Structure` to return the same graph without vertex styling (a lighter-weight rendering), e.g. `"StatesGraphStructure"`.
+- A raw `"States"` result is a list of associations, one per state, with keys `"Id"`, `"CanonicalId"`, `"Step"`, `"IsInitial"`, `"Edges"` (the state's hyperedges), and — when `"IncludeCanonicalHashes" -> True` — `"CanonicalHash"`. A raw `"Events"` result is a list of associations with keys `"Id"`, `"CanonicalId"`, `"RuleIndex"`, `"Step"`, `"InputState"`/`"OutputState"` (state ids), `"ConsumedEdges"`/`"ProducedEdges"` (edge ids), and `"InputStateEdges"`/`"OutputStateEdges"` (the full edge lists).
 
 ### Evolution and output options
 
@@ -237,6 +241,18 @@ An initial condition can be generated instead of passing an explicit edge list. 
 rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
 HGEvolve[rules, HGGrid[3, 3], 2, "NumStates", "CanonicalizeStates" -> Full]
 ```
+
+### Inspecting the raw states
+
+The `"States"` property returns the state objects keyed by id; each is an association carrying its own hyperedges and metadata. Read the id, step, initial flag, and edges of each:
+
+```wl
+rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
+states = HGEvolve[rules, {{1, 2}, {1, 3}}, 2, "States"];
+Column[{#["Id"], #["Step"], #["IsInitial"], #["Edges"]} & /@ Values[states]]
+```
+
+The parallel `"Events"` property returns the update events, each recording its rule, the input and output state ids, and the consumed and produced edges.
 
 ## Options
 
