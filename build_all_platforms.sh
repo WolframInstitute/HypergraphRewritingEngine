@@ -1,322 +1,156 @@
 #!/bin/bash
-# Build hypergraph rewriting library for all platforms
-# Creates a complete multi-platform paclet
+# Build the multi-platform Wolfram paclet library.
+#
+# Host-aware and fault-tolerant: it builds every target the current host can reach, SKIPS
+# the ones it cannot (missing cross-toolchain, or a target this host simply cannot produce)
+# with a clear reason, and never lets one target's failure abort the others. The run only
+# fails (non-zero exit) if a target we actually ATTEMPTED errors out.
+#
+# Linux host cross-compiles all six via native gcc / aarch64-linux-gnu / mingw-w64 / clang /
+# OSXCross. macOS host builds the macOS slices natively and the rest via cross-toolchains
+# where available.
+#
+#   Usage: ./build_all_platforms.sh [FILTER]
+#     FILTER  optional substring/regex; only targets whose name matches are built
+#             (e.g. "Windows", "MacOSX", "Linux-x86-64"). Legacy --linux-only /
+#             --windows-only / --macos-only are accepted as aliases.
+#
+#   Env: BUILD_JOBS (default: nproc), OSXCROSS_ROOT (default: ~/osxcross)
+#
+#   Toolchain deps (Debian/Ubuntu host):
+#     sudo apt install cmake build-essential \
+#          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+#          gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 clang lld
+#     macOS targets additionally need OSXCross: https://github.com/tpoechtrager/osxcross
 
-set -e  # Exit on error
+set -uo pipefail   # deliberately NOT -e: per-target failures are handled inline.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+HOST_OS="$(uname -s)"                          # Linux | Darwin
+OSXCROSS_ROOT="${OSXCROSS_ROOT:-$HOME/osxcross}"
+LR="paclet/LibraryResources"
 
-echo -e "${GREEN}=== Building Hypergraph Rewriting Library for All Platforms ===${NC}\n"
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-# Clean existing library files to ensure fresh builds
-echo -e "${GREEN}Cleaning existing library files...${NC}"
-rm -f paclet/LibraryResources/*/*.so paclet/LibraryResources/*/*.dll paclet/LibraryResources/*/*.dylib
-echo -e "${GREEN}✓ Cleaned${NC}\n"
+# Filter (positional, or legacy --*-only aliases)
+FILTER=""
+case "${1:-}" in
+    --help|-h)
+        sed -n '2,26p' "$0"; exit 0 ;;
+    --linux-only)   FILTER="Linux"  ;;
+    --windows-only) FILTER="Windows";;
+    --macos-only)   FILTER="MacOSX" ;;
+    "")             FILTER=""        ;;
+    *)              FILTER="$1"      ;;
+esac
 
-# Configuration
-BUILD_LINUX=true
-BUILD_WINDOWS=true
-BUILD_MACOS=true
-BUILD_JOBS=${BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
+BUILT=(); SKIPPED=(); FAILED=()
+have() { command -v "$1" >/dev/null 2>&1; }
+selected() { [[ -z "$FILTER" || "$1" =~ $FILTER ]]; }
+skip() { echo -e "${YELLOW}skip   $1 — $2${NC}"; SKIPPED+=("$1 ($2)"); }
 
-# Parse arguments
-for arg in "$@"; do
-    case $arg in
-        --linux-only)
-            BUILD_LINUX=true
-            BUILD_WINDOWS=false
-            BUILD_MACOS=false
-            ;;
-        --windows-only)
-            BUILD_LINUX=false
-            BUILD_WINDOWS=true
-            BUILD_MACOS=false
-            ;;
-        --macos-only)
-            BUILD_LINUX=false
-            BUILD_WINDOWS=false
-            BUILD_MACOS=true
-            ;;
-        --no-linux)
-            BUILD_LINUX=false
-            ;;
-        --no-windows)
-            BUILD_WINDOWS=false
-            ;;
-        --no-macos)
-            BUILD_MACOS=false
-            ;;
-        --help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Build for all platforms (default) or specific platforms:"
-            echo "  --linux-only      Build only Linux"
-            echo "  --windows-only    Build only Windows"
-            echo "  --macos-only      Build only macOS"
-            echo "  --no-linux        Skip Linux build"
-            echo "  --no-windows      Skip Windows build"
-            echo "  --no-macos        Skip macOS build"
-            echo ""
-            echo "Environment variables:"
-            echo "  BUILD_JOBS        Number of parallel jobs (default: auto-detect)"
-            echo "  OSXCROSS_ROOT     Path to OSXCross (default: ~/osxcross)"
-            echo ""
-            echo "Dependencies (Ubuntu/Debian):"
-            echo "  sudo apt install cmake build-essential \\"
-            echo "      gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \\"
-            echo "      gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \\"
-            echo "      clang lld"
-            echo ""
-            echo "  For macOS, also install OSXCross: https://github.com/tpoechtrager/osxcross"
-            exit 0
-            ;;
-    esac
-done
-
-# Check prerequisites
-check_prerequisite() {
-    local name=$1
-    local command=$2
-    local install_hint=$3
-
-    if ! command -v "$command" &> /dev/null; then
-        echo -e "${YELLOW}Warning: $name not found${NC}"
-        echo -e "  Install: $install_hint"
-        return 1
+# build_target NAME BUILD_DIR OUTPUT_LIB [extra cmake args...]
+build_target() {
+    local name="$1" dir="$2" out="$3"; shift 3
+    echo -e "\n${GREEN}=== $name ===${NC}"
+    mkdir -p "$dir"
+    rm -f "$out"   # so a failed build can't pass the existence check on a stale library
+    if ! cmake -S . -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON "$@"; then
+        echo -e "${RED}$name: CMake configuration failed${NC}"; FAILED+=("$name"); return 1
     fi
-    return 0
+    if ! cmake --build "$dir" --target paclet -j"$BUILD_JOBS"; then
+        echo -e "${RED}$name: build failed${NC}"; FAILED+=("$name"); return 1
+    fi
+    if [[ -f "$out" ]]; then
+        echo -e "${GREEN}$name: OK${NC}"; BUILT+=("$name")
+    else
+        echo -e "${RED}$name: build reported success but $out is missing${NC}"; FAILED+=("$name"); return 1
+    fi
 }
 
-echo -e "${GREEN}Checking prerequisites...${NC}"
-check_prerequisite "CMake" "cmake" "sudo apt install cmake (Linux) or brew install cmake (macOS)"
+echo -e "${GREEN}=== Building the Hypergraph Rewriting paclet (host: $HOST_OS, jobs: $BUILD_JOBS) ===${NC}"
+[[ -n "$FILTER" ]] && echo -e "${YELLOW}filter: /$FILTER/${NC}"
 
-# Linux build
-if $BUILD_LINUX; then
-    echo -e "\n${GREEN}=== Building for Linux (x86_64) ===${NC}"
-    mkdir -p build_linux
-    cd build_linux
-
-    # Always configure to ensure correct build settings
-    cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-        || { echo -e "${RED}Linux CMake configuration failed${NC}"; exit 1; }
-
-    make -j"$BUILD_JOBS" paclet \
-        || { echo -e "${RED}Linux build failed${NC}"; exit 1; }
-
-    echo -e "${GREEN}✓ Linux build complete${NC}"
-    cd "$PROJECT_ROOT"
-fi
-
-# Linux ARM64 build
-if $BUILD_LINUX; then
-    echo -e "\n${GREEN}=== Building for Linux (ARM64) ===${NC}"
-
-    if ! check_prerequisite "GCC-ARM64" "aarch64-linux-gnu-gcc" "sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu (Linux)"; then
-        echo -e "${YELLOW}Skipping Linux ARM64 build - ARM64 cross-compiler not available${NC}"
+# ---- Linux x86-64 ----
+if selected "Linux-x86-64"; then
+    if [[ "$HOST_OS" == "Linux" ]]; then
+        build_target "Linux-x86-64" build_linux "$LR/Linux-x86-64/libHypergraphRewriting.so"
     else
-        mkdir -p build_linux_arm64
-        cd build_linux_arm64
-
-        # Always configure to ensure correct build settings
-        cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/linux-cross.cmake \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-            || { echo -e "${RED}Linux ARM64 CMake configuration failed${NC}"; exit 1; }
-
-        make -j"$BUILD_JOBS" paclet \
-            || { echo -e "${RED}Linux ARM64 build failed${NC}"; exit 1; }
-
-        echo -e "${GREEN}✓ Linux ARM64 build complete${NC}"
-        cd "$PROJECT_ROOT"
+        skip "Linux-x86-64" "host is $HOST_OS; no native x86-64 Linux compiler"
     fi
 fi
 
-# Windows build
-if $BUILD_WINDOWS; then
-    echo -e "\n${GREEN}=== Building for Windows (x86_64) ===${NC}"
-
-    if ! check_prerequisite "MinGW" "x86_64-w64-mingw32-gcc" "sudo apt install gcc-mingw-w64-x86-64 (Linux)"; then
-        echo -e "${RED}Skipping Windows build - MinGW not available${NC}"
-        BUILD_WINDOWS=false
+# ---- Linux ARM64 ----
+if selected "Linux-ARM64"; then
+    if have aarch64-linux-gnu-gcc; then
+        build_target "Linux-ARM64" build_linux_arm64 "$LR/Linux-ARM64/libHypergraphRewriting.so" \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=aarch64
     else
-        mkdir -p build_windows
-        cd build_windows
-
-        # Always configure to ensure correct build settings
-        cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-            || { echo -e "${RED}Windows CMake configuration failed${NC}"; exit 1; }
-
-        make -j"$BUILD_JOBS" paclet \
-            || { echo -e "${RED}Windows build failed${NC}"; exit 1; }
-
-        echo -e "${GREEN}✓ Windows build complete${NC}"
-        cd "$PROJECT_ROOT"
+        skip "Linux-ARM64" "aarch64-linux-gnu-gcc not found (apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu)"
     fi
 fi
 
-# Windows ARM64 build
-if $BUILD_WINDOWS; then
-    echo -e "\n${GREEN}=== Building for Windows (ARM64) ===${NC}"
-
-    if ! check_prerequisite "Clang" "clang" "sudo apt install clang (Linux) or brew install llvm (macOS)"; then
-        echo -e "${YELLOW}Skipping Windows ARM64 build - Clang not available${NC}"
+# ---- Windows x86-64 ----
+if selected "Windows-x86-64"; then
+    if have x86_64-w64-mingw32-gcc; then
+        build_target "Windows-x86-64" build_windows "$LR/Windows-x86-64/HypergraphRewriting.dll" \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake
     else
-        mkdir -p build_windows_arm64
-        cd build_windows_arm64
-
-        # Always configure to ensure correct build settings
-        cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/windows-cross.cmake \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DWINDOWS_COMPILER=clang \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-            || { echo -e "${RED}Windows ARM64 CMake configuration failed${NC}"; exit 1; }
-
-        make -j"$BUILD_JOBS" paclet \
-            || { echo -e "${RED}Windows ARM64 build failed${NC}"; exit 1; }
-
-        echo -e "${GREEN}✓ Windows ARM64 build complete${NC}"
-        cd "$PROJECT_ROOT"
+        skip "Windows-x86-64" "mingw not found (apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64)"
     fi
 fi
 
-# macOS build (x86_64)
-if $BUILD_MACOS; then
-    echo -e "\n${GREEN}=== Building for macOS (x86_64) ===${NC}"
-
-    # Check for OSXCross
-    OSXCROSS_ROOT=${OSXCROSS_ROOT:-$HOME/osxcross}
-    if [ ! -d "$OSXCROSS_ROOT" ]; then
-        echo -e "${YELLOW}Warning: OSXCross not found at $OSXCROSS_ROOT${NC}"
-        echo -e "${YELLOW}Set OSXCROSS_ROOT environment variable or install OSXCross${NC}"
-        echo -e "${YELLOW}See: https://github.com/tpoechtrager/osxcross${NC}"
-        echo -e "${RED}Skipping macOS build${NC}"
-        BUILD_MACOS=false
+# ---- Windows ARM64 ----
+if selected "Windows-ARM64"; then
+    if have clang; then
+        build_target "Windows-ARM64" build_windows_arm64 "$LR/Windows-ARM64/HypergraphRewriting.dll" \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DWINDOWS_COMPILER=clang
     else
-        export OSXCROSS_ROOT
-        export PATH="$OSXCROSS_ROOT/target/bin:$PATH"
-        mkdir -p build_macos
-        cd build_macos
-
-        # Always configure to ensure correct build settings
-        cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
-            -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-            || { echo -e "${RED}macOS x86_64 CMake configuration failed${NC}"; exit 1; }
-
-        make -j"$BUILD_JOBS" paclet \
-            || { echo -e "${RED}macOS x86_64 build failed${NC}"; exit 1; }
-
-        echo -e "${GREEN}✓ macOS x86_64 build complete${NC}"
-        cd "$PROJECT_ROOT"
+        skip "Windows-ARM64" "clang not found (apt install clang lld)"
     fi
 fi
 
-# macOS build (ARM64)
-if $BUILD_MACOS; then
-    echo -e "\n${GREEN}=== Building for macOS (ARM64) ===${NC}"
-
-    # Check for OSXCross (already validated above)
-    if [ -d "$OSXCROSS_ROOT" ]; then
-        export OSXCROSS_ROOT
-        export PATH="$OSXCROSS_ROOT/target/bin:$PATH"
-        mkdir -p build_macos_arm64
-        cd build_macos_arm64
-
-        # Always configure to ensure correct build settings
-        cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/macos-cross.cmake \
-            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON \
-            || { echo -e "${RED}macOS ARM64 CMake configuration failed${NC}"; exit 1; }
-
-        make -j"$BUILD_JOBS" paclet \
-            || { echo -e "${RED}macOS ARM64 build failed${NC}"; exit 1; }
-
-        echo -e "${GREEN}✓ macOS ARM64 build complete${NC}"
-        cd "$PROJECT_ROOT"
+# ---- macOS x86-64 + ARM64 ----
+macos_native() {  # native slices on a macOS host
+    selected "MacOSX-x86-64" && build_target "MacOSX-x86-64" build_macos \
+        "$LR/MacOSX-x86-64/libHypergraphRewriting.dylib" -DCMAKE_OSX_ARCHITECTURES=x86_64
+    selected "MacOSX-ARM64" && build_target "MacOSX-ARM64" build_macos_arm64 \
+        "$LR/MacOSX-ARM64/libHypergraphRewriting.dylib" -DCMAKE_OSX_ARCHITECTURES=arm64
+}
+macos_cross() {   # OSXCross from a non-macOS host
+    export OSXCROSS_ROOT PATH="$OSXCROSS_ROOT/target/bin:$PATH"
+    selected "MacOSX-x86-64" && build_target "MacOSX-x86-64" build_macos \
+        "$LR/MacOSX-x86-64/libHypergraphRewriting.dylib" \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=x86_64
+    selected "MacOSX-ARM64" && build_target "MacOSX-ARM64" build_macos_arm64 \
+        "$LR/MacOSX-ARM64/libHypergraphRewriting.dylib" \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=arm64
+}
+if selected "MacOSX-x86-64" || selected "MacOSX-ARM64"; then
+    if [[ "$HOST_OS" == "Darwin" ]]; then
+        macos_native
+    elif [[ -d "$OSXCROSS_ROOT/target/bin" ]]; then
+        macos_cross
+    else
+        selected "MacOSX-x86-64" && skip "MacOSX-x86-64" "not a macOS host and OSXCross not at $OSXCROSS_ROOT"
+        selected "MacOSX-ARM64"  && skip "MacOSX-ARM64"  "not a macOS host and OSXCross not at $OSXCROSS_ROOT"
     fi
 fi
 
-# Summary
-echo -e "\n${GREEN}=== Build Summary ===${NC}"
+# ---- Summary ----
+echo -e "\n${GREEN}=== Summary ===${NC}"
+for t in "${BUILT[@]:-}";   do [[ -n "$t" ]] && echo -e "${GREEN}  ✓ built    $t${NC}"; done
+for t in "${SKIPPED[@]:-}"; do [[ -n "$t" ]] && echo -e "${YELLOW}  - skipped  $t${NC}"; done
+for t in "${FAILED[@]:-}";  do [[ -n "$t" ]] && echo -e "${RED}  ✗ FAILED   $t${NC}"; done
+echo -e "\nLibraries in: $LR/"
 
-# Track build status
-BUILD_FAILED=false
-
-# Check Linux x86-64
-if [ -f paclet/LibraryResources/Linux-x86-64/libHypergraphRewriting.so ]; then
-    echo -e "${GREEN}✓ Linux-x86-64${NC}"
-else
-    echo -e "${RED}✗ Linux-x86-64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-# Check Linux ARM64
-if [ -f paclet/LibraryResources/Linux-ARM64/libHypergraphRewriting.so ]; then
-    echo -e "${GREEN}✓ Linux-ARM64${NC}"
-else
-    echo -e "${RED}✗ Linux-ARM64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-# Check Windows x86-64
-if [ -f paclet/LibraryResources/Windows-x86-64/HypergraphRewriting.dll ]; then
-    echo -e "${GREEN}✓ Windows-x86-64${NC}"
-else
-    echo -e "${RED}✗ Windows-x86-64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-# Check Windows ARM64
-if [ -f paclet/LibraryResources/Windows-ARM64/HypergraphRewriting.dll ]; then
-    echo -e "${GREEN}✓ Windows-ARM64${NC}"
-else
-    echo -e "${RED}✗ Windows-ARM64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-# Check macOS x86-64
-if [ -f paclet/LibraryResources/MacOSX-x86-64/libHypergraphRewriting.dylib ]; then
-    echo -e "${GREEN}✓ MacOSX-x86-64${NC}"
-else
-    echo -e "${RED}✗ MacOSX-x86-64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-# Check macOS ARM64
-if [ -f paclet/LibraryResources/MacOSX-ARM64/libHypergraphRewriting.dylib ]; then
-    echo -e "${GREEN}✓ MacOSX-ARM64${NC}"
-else
-    echo -e "${RED}✗ MacOSX-ARM64 - MISSING${NC}"
-    BUILD_FAILED=true
-fi
-
-echo -e "\n${GREEN}Paclet libraries located in: paclet/LibraryResources/${NC}"
-
-if $BUILD_FAILED; then
-    echo -e "\n${RED}ERROR: Some platform libraries are missing!${NC}"
-    echo -e "${RED}Build incomplete - do not create paclet archive${NC}"
+if (( ${#FAILED[@]} > 0 )); then
+    echo -e "\n${RED}${#FAILED[@]} attempted target(s) failed — do not create the paclet archive.${NC}"
     exit 1
-else
-    echo -e "\n${GREEN}✓ All platform libraries built successfully${NC}"
-    echo -e "\nTo create paclet archive: cd build_<platform> && make create_paclet_archive"
 fi
+echo -e "\n${GREEN}✓ ${#BUILT[@]} target(s) built, ${#SKIPPED[@]} skipped, 0 failed.${NC}"
+echo -e "To bundle the paclet: cd build_<host-platform> && make create_paclet_archive"

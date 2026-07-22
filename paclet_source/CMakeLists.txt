@@ -118,8 +118,9 @@ target_include_directories(HypergraphRewriting PRIVATE
     ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 
-# Progress reporting and abort run over the process-isolation transport (the engine
-# executes in a standalone hg_evolve process speaking WXF over stdio), so the paclet
+# Progress reporting and abort run over the process-isolation transport: the engine
+# executes in a standalone hg_evolve process, and the paclet exchanges WXF with it over a
+# NUL-safe socket (--serve-socket), falling back to one-shot RunProcess stdio. So the paclet
 # library links no WSTP SDK.
 
 # Set target properties based on target platform
@@ -221,8 +222,13 @@ endif()
 # Determine platform directory based on CMAKE_SYSTEM_NAME (set by toolchain)
 if(NOT DEFINED PLATFORM_DIR)
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        # macOS
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        # macOS. A native build picks the slice via CMAKE_OSX_ARCHITECTURES (e.g. an x86_64
+        # build on Apple silicon); a cross build keys off the target processor.
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+            set(PLATFORM_DIR "MacOSX-ARM64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+            set(PLATFORM_DIR "MacOSX-x86-64")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
             set(PLATFORM_DIR "MacOSX-ARM64")
         else()
             set(PLATFORM_DIR "MacOSX-x86-64")

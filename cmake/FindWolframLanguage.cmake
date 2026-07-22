@@ -69,8 +69,10 @@ else()
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
         # macOS
         list(APPEND SEARCH_PATHS
+            "/Applications/Wolfram.app/Contents"                     # Wolfram 14+
             "/Applications/Mathematica.app/Contents"
             "/Applications/Wolfram Engine.app/Contents"
+            "$ENV{HOME}/Applications/Wolfram.app/Contents"
             "$ENV{HOME}/Applications/Mathematica.app/Contents"
             "$ENV{HOME}/Applications/Wolfram Engine.app/Contents"
         )

@@ -11,8 +11,9 @@
 !/benchmark_results/*/plots/
 !/benchmark_results/*/plots/*.png
 
-# Built paclet archives (regenerable via tools/build_paclet.wls)
+# Built paclet archives (regenerable via tools/build_paclet.wls / make create_paclet_archive)
 *.paclet
+/paclet_archive/
 
 # Generated documentation authoring notebooks (regenerable via tools/build_docs.wls)
 /paclet/Documentation/Source/generated/
