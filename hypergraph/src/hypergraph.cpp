@@ -24,12 +24,15 @@ EdgeId Hypergraph::create_edge(
 
     EdgeId eid = counters_.alloc_edge();
 
-    // Allocate and copy vertex array
-    VertexId* verts = arena_.allocate_array<VertexId>(arity);
-    std::memcpy(verts, vertices, arity * sizeof(VertexId));
+    // Small-arity edges store their vertices inline in the Edge; only higher-arity
+    // edges spill to an arena array. The Edge constructor copies from `vertices` into
+    // whichever storage applies, so no separate allocation happens on the common path.
+    VertexId* spill = (arity > Edge::INLINE_ARITY)
+                          ? arena_.allocate_array<VertexId>(arity)
+                          : nullptr;
 
     // Directly construct edge at slot eid using emplace_at
-    edges_.emplace_at(eid, arena_, eid, verts, arity, creator_event, step);
+    edges_.emplace_at(eid, arena_, eid, vertices, arity, spill, creator_event, step);
 
     // CRITICAL: Release fence to ensure vertex data and edge struct are visible
     std::atomic_thread_fence(std::memory_order_release);

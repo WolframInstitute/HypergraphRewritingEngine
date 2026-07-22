@@ -86,28 +86,78 @@ struct VariableBinding {
 // Immutable after creation. Allocated from arena.
 
 struct Edge {
+    // Arity up to INLINE_ARITY is stored inline in the edge itself, so a binary edge
+    // (the common case) needs no separate vertex allocation and no pointer-chase to
+    // reach its vertices. `vertices` always points at the live storage — the inline
+    // buffer for small edges, arena memory for larger ones — so every reader
+    // dereferences it identically regardless of where the vertices live. The field
+    // order packs the inline buffer into padding the pointer would otherwise waste,
+    // keeping sizeof(Edge) at 32 bytes.
+    static constexpr uint8_t INLINE_ARITY = 2;
+
     EdgeId id;
-    VertexId* vertices;      // Arena-allocated array
     uint8_t arity;
     EventId creator_event;   // INVALID_ID for initial edges
     uint32_t step;
+    VertexId* vertices;      // -> inline_vertices (arity<=INLINE_ARITY) or arena array
+    VertexId inline_vertices[INLINE_ARITY];
 
-    Edge(EdgeId id_, VertexId* verts, uint8_t arity_, EventId creator, uint32_t step_)
+    // src supplies the arity vertex ids. spill is arena storage used only when arity
+    // exceeds INLINE_ARITY; for inline edges it is ignored and may be nullptr.
+    Edge(EdgeId id_, const VertexId* src, uint8_t arity_, VertexId* spill,
+         EventId creator, uint32_t step_)
         : id(id_)
-        , vertices(verts)
         , arity(arity_)
         , creator_event(creator)
         , step(step_)
-    {}
+    {
+        VertexId* dst = (arity_ <= INLINE_ARITY) ? inline_vertices : spill;
+        for (uint8_t i = 0; i < arity_; ++i) dst[i] = src[i];
+        vertices = dst;
+    }
 
     // Default constructor for array allocation
     Edge()
         : id(INVALID_ID)
-        , vertices(nullptr)
         , arity(0)
         , creator_event(INVALID_ID)
         , step(0)
+        , vertices(nullptr)
     {}
+
+    // Copy/move re-home an inline `vertices` pointer to this object's own buffer, so a
+    // copied edge never aliases the source's inline storage. Out-of-line vertices are
+    // arena-owned and immutable, so the pointer is shared as-is.
+    Edge(const Edge& o)
+        : id(o.id)
+        , arity(o.arity)
+        , creator_event(o.creator_event)
+        , step(o.step)
+    {
+        copy_vertices_from(o);
+    }
+
+    Edge& operator=(const Edge& o) {
+        id = o.id;
+        arity = o.arity;
+        creator_event = o.creator_event;
+        step = o.step;
+        copy_vertices_from(o);
+        return *this;
+    }
+
+    Edge(Edge&& o) noexcept : Edge(static_cast<const Edge&>(o)) {}
+    Edge& operator=(Edge&& o) noexcept { return *this = static_cast<const Edge&>(o); }
+
+private:
+    void copy_vertices_from(const Edge& o) {
+        if (o.vertices == o.inline_vertices) {
+            for (uint8_t i = 0; i < arity; ++i) inline_vertices[i] = o.inline_vertices[i];
+            vertices = inline_vertices;
+        } else {
+            vertices = o.vertices;  // arena-owned, shared
+        }
+    }
 };
 
 // =============================================================================

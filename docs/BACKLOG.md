@@ -48,9 +48,12 @@ Legend: [x] done · [~] in progress · [ ] not started.
   `get_canonical_state` recompute that fed them) dropped. arenaB down every row (−13.7% on
   binary-growth), oracle EXACT, heapAllocs not increased, forwarding validator thread-invariant.
   Regression harness: `tools/forwarding_validator_probe.cpp`.
-- [ ] Per-edge storage compaction: `Edge.vertices` SBO for arity≤2 (kill out-of-line alloc +
-  cache miss/edge); pack `vertex_adjacency_` as CSR (vs 16 B/occurrence linked list);
-  drop/shrink `edge_signatures_` (17 B/edge cache).
+- [~] Per-edge storage compaction: `Edge.vertices` SBO for arity≤2 DONE — inline 8 B buffer packed
+  into existing padding (`sizeof(Edge)` stays 32 B), self-pointer re-homed on copy/move, stable
+  under `SegmentedArray` (no relocation); readers unchanged (still deref `vertices`). arenaB down
+  every binary-edge case (binary-growth −13976), EXACT, 184/184. BLOCKED under lock-free constraint:
+  CSR `vertex_adjacency_` (global concurrent lock-free append can't take fixed CSR rows without a
+  barrier); `edge_signatures_` drop (return-by-ref in the matcher hot loop — recompute is not cheap).
 - [ ] keys-only sets for `seen_match_hashes_`/`seen_branchial_pairs_`/etc. (apply the causal
   `ConcurrentIdSet` pattern to the remaining dedup sets).
 - [ ] `ConcurrentMap` reclaim superseded resize tables at quiescence (~2× map memory retained).
