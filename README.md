@@ -20,12 +20,14 @@ This project is functional but under active development. No stable release has b
 
 ### Mathematica Paclet
 
-Install the paclet directly from a release `.paclet` file:
+Install the paclet directly from the latest release:
 
 ```mathematica
-PacletInstall["path/to/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
+PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v0.0.1-alpha.6/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
 Needs["HypergraphRewriting`"]
 ```
+
+(Or pass a local path to a downloaded `.paclet` file instead of the URL.)
 
 The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
 
