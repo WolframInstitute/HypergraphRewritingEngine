@@ -48,7 +48,19 @@ if [[ "$WS_KIND" == windows ]]; then
     rm -rf "$STAGE_WSL"
     mkdir -p "$STAGE_WSL"
     echo "==> building documentation notebooks (${MODE:-full evaluation}) [staged via $STAGE_WIN]"
+    # wolframscript can exit non-zero on the benign exit-time license-release message ("The product
+    # exited because of a license error") even after a clean DONE. Do not let that abort placement:
+    # gate on build_docs.wls's .build_ok sentinel, which is written only after every notebook wrote
+    # and verified.
+    set +e
     "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} "out=$STAGE_WIN"
+    ws_rc=$?
+    set -e
+    if [[ ! -f "$STAGE_WSL/.build_ok" ]]; then
+        echo "error: documentation generation did not complete (wolframscript rc=$ws_rc); $ENGLISH/ left unchanged." >&2
+        exit 1
+    fi
+    rm -f "$STAGE_WSL/.build_ok"
 
     # Place each notebook into English/ WITHOUT a truncating overwrite. A notebook open in the
     # front end holds a 9P lock: `cp -f` onto it triggers its --force behaviour (remove a dest it
@@ -81,6 +93,15 @@ if [[ "$WS_KIND" == windows ]]; then
     fi
 else
     echo "==> building documentation notebooks (${MODE:-full evaluation})"
+    # Same license-exit guard as the staged path (native writes straight into English/).
+    set +e
     "$WS_EXE" -file "$SCRIPT" ${MODE:+"$MODE"}
+    ws_rc=$?
+    set -e
+    if [[ ! -f "$ENGLISH/.build_ok" ]]; then
+        echo "error: documentation generation did not complete (wolframscript rc=$ws_rc)." >&2
+        exit 1
+    fi
+    rm -f "$ENGLISH/.build_ok"
 fi
 echo "==> done — notebooks in $ENGLISH/"

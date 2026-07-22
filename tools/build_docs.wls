@@ -98,4 +98,9 @@ If[failed =!= {},
   Scan[Print["  ", #] &, failed];
   Exit[1]];
 
+(* Success sentinel. build_docs.sh gates notebook placement on THIS file, not on wolframscript's
+   process exit code: the benign exit-time "The product exited because of a license error" message
+   can make an otherwise-clean run return non-zero, which would abort the wrapper (set -e) before
+   it ever moves the notebooks into English/. Reaching here means every notebook wrote and verified. *)
+Export[FileNameJoin[{docRoot, ".build_ok"}], "ok", "Text"];
 Print["DONE ", Length[files], " docs"];

@@ -23,3 +23,7 @@
 # build_docs.sh's transient ext4 landing dir (cp from the Windows-local stage before the
 # atomic rename into English/); normally auto-removed, ignored so a crashed run leaves no trace.
 /paclet/Documentation/.english_stage/
+# build_docs.wls success sentinel (normally consumed + removed by build_docs.sh).
+/paclet/Documentation/English/.build_ok
+# Generated documentation packages (e.g. tutorial example .wl) are build output like the notebooks.
+/paclet/Documentation/English/**/*.wl
