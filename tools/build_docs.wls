@@ -5,18 +5,27 @@
    under paclet/Documentation/English, so the notebooks land where the paclet
    documentation build and the paclet repository expect them.
 
-   Usage:
-     git clone https://github.com/WolframInstitute/MarkdownToNotebook
-     wolframscript -file tools/build_docs.wls /path/to/MarkdownToNotebook/MarkdownToNotebook.wl
+   Usage (prefer the wrapper, which finds wolframscript + inits the submodule):
+     ./build_docs.sh              # generate + evaluate into Documentation/English/
+     ./build_docs.sh structure    # input-only cells (evaluate later in the front end)
+   Or directly (MarkdownToNotebook defaults to the tools/MarkdownToNotebook submodule):
+     wolframscript -file tools/build_docs.wls [structure]
 
    The generated notebooks are build output (gitignored); the markdown is the source of
    truth (this mirrors WolframInstitute/MarkdownToNotebook's own paclets, e.g. AccessibleColors).
    create_paclet_archive's PacletBuild indexes them into the final Documentation-Center pages. *)
 
-If[Length[$ScriptCommandLine] < 2,
-  Print["usage: build_docs.wls <path-to-MarkdownToNotebook.wl>"]; Exit[1]];
-mtnPath = $ScriptCommandLine[[2]];
-If[!FileExistsQ[mtnPath], Print["MarkdownToNotebook.wl not found: ", mtnPath]; Exit[1]];
+(* Args are optional: `structure` to skip inline evaluation, and/or an explicit path to
+   MarkdownToNotebook.wl. By default it uses the vendored submodule at tools/MarkdownToNotebook,
+   so no manual checkout is needed. *)
+scriptArgs    = Rest[$ScriptCommandLine];
+structureMode = MemberQ[scriptArgs, "structure"];
+mtnArg        = SelectFirst[scriptArgs, # =!= "structure" &, None];
+mtnPath       = If[mtnArg =!= None, mtnArg,
+  FileNameJoin[{DirectoryName[$InputFileName], "MarkdownToNotebook", "MarkdownToNotebook.wl"}]];
+If[!FileExistsQ[mtnPath],
+  Print["MarkdownToNotebook.wl not found: ", mtnPath,
+        "\n  run: git submodule update --init tools/MarkdownToNotebook"]; Exit[1]];
 Get[mtnPath];
 
 repo    = ParentDirectory[DirectoryName[$InputFileName]];
@@ -41,8 +50,7 @@ PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
    that cannot reach the Wolfram resource system to evaluate inline; then open each notebook
    and Evaluate Notebook in the front end, which runs the examples against the local engine
    only (no cloud). Without this flag, examples are evaluated during conversion. *)
-If[Length[$ScriptCommandLine] >= 3 && $ScriptCommandLine[[3]] === "structure",
-  $convertDepth = 1];
+If[structureMode, $convertDepth = 1];
 
 subdirFor[tmpl_] := Switch[tmpl,
   "Symbol",   {"ReferencePages", "Symbols"},

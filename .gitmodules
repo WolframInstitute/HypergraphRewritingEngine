@@ -1,0 +1,3 @@
+[submodule "tools/MarkdownToNotebook"]
+	path = tools/MarkdownToNotebook
+	url = https://github.com/WolframInstitute/MarkdownToNotebook.git
