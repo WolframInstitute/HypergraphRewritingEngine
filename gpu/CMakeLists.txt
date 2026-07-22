@@ -35,6 +35,10 @@ target_compile_features(hg_gpu PUBLIC cxx_std_17)
 target_compile_options(hg_gpu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     $<$<COMPILE_LANGUAGE:CUDA>:--Werror=cross-execution-space-call>
+    # Compile the per-architecture code-generation passes in parallel (one nvcc invocation emits
+    # SASS for every arch in CUDA_ARCHITECTURES; without this it does them serially). 0 = use all
+    # CPUs. This is the dominant cost of the broad (Turing..Hopper) shippable build.
+    $<$<COMPILE_LANGUAGE:CUDA>:--threads=0>
 )
 
 if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
