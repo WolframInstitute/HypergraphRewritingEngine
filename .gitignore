@@ -25,5 +25,7 @@
 /paclet/Documentation/.english_stage/
 # build_docs.wls success sentinel (normally consumed + removed by build_docs.sh).
 /paclet/Documentation/English/.build_ok
+# build_docs incremental-build manifest (source+engine hashes; regenerated each run).
+/paclet/Documentation/English/.doc_manifest.wl
 # Generated documentation packages (e.g. tutorial example .wl) are build output like the notebooks.
 /paclet/Documentation/English/**/*.wl

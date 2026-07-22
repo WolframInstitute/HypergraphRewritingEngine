@@ -52,8 +52,11 @@ if [[ "$WS_KIND" == windows ]]; then
     # exited because of a license error") even after a clean DONE. Do not let that abort placement:
     # gate on build_docs.wls's .build_ok sentinel, which is written only after every notebook wrote
     # and verified.
+    # dest= lets the converter read the incremental-build manifest and the already-placed
+    # notebooks from the real English/ (as a Windows path), so unchanged docs are skipped.
     set +e
-    "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} "out=$STAGE_WIN"
+    "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} \
+        "out=$STAGE_WIN" "dest=$(wslpath -w "$ROOT/$ENGLISH")"
     ws_rc=$?
     set -e
     if [[ ! -f "$STAGE_WSL/.build_ok" ]]; then
@@ -72,6 +75,9 @@ if [[ "$WS_KIND" == windows ]]; then
     EXT4_STAGE="paclet/Documentation/.english_stage"
     rm -rf "$EXT4_STAGE"
     cp -rf "$STAGE_WSL"/. "$EXT4_STAGE"/
+    # Move every staged file into English/ (the rebuilt notebooks plus the incremental manifest);
+    # cached docs wrote nothing to the stage, so their existing notebooks are left untouched. Only
+    # notebooks are counted for the message.
     placed=0
     failed_place=()
     while IFS= read -r -d '' src; do
@@ -79,13 +85,13 @@ if [[ "$WS_KIND" == windows ]]; then
         dst="$ENGLISH/$rel"
         mkdir -p "$(dirname "$dst")"
         if mv -f "$src" "$dst" 2>/dev/null; then
-            placed=$((placed + 1))
+            [[ "$rel" == *.nb ]] && placed=$((placed + 1))
         else
             failed_place+=("$rel")
         fi
     done < <(find "$EXT4_STAGE" -type f -print0)
     rm -rf "$EXT4_STAGE" "$STAGE_WSL"
-    echo "==> placed $placed notebook(s)"
+    echo "==> placed $placed rebuilt notebook(s) (unchanged docs left in place)"
     if ((${#failed_place[@]})); then
         echo "error: could not place ${#failed_place[@]} notebook(s) into $ENGLISH/:" >&2
         printf '   %s\n' "${failed_place[@]}" >&2
