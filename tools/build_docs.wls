@@ -35,6 +35,15 @@ docRoot = FileNameJoin[{repo, "paclet", "Documentation", "English"}];
 PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 
+(* `structure` as the second argument generates INPUT-ONLY notebooks (MarkdownToNotebook's
+   nested-convert mode): the cells are laid out but examples are NOT evaluated during
+   conversion, so it makes no per-example resource-system/cloud calls. Use this on a machine
+   that cannot reach the Wolfram resource system to evaluate inline; then open each notebook
+   and Evaluate Notebook in the front end, which runs the examples against the local engine
+   only (no cloud). Without this flag, examples are evaluated during conversion. *)
+If[Length[$ScriptCommandLine] >= 3 && $ScriptCommandLine[[3]] === "structure",
+  $convertDepth = 1];
+
 subdirFor[tmpl_] := Switch[tmpl,
   "Symbol",   {"ReferencePages", "Symbols"},
   "Guide",    {"Guides"},
