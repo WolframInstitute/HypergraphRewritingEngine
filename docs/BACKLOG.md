@@ -105,11 +105,24 @@ Legend: [x] done · [~] in progress · [ ] not started.
   `MAX_VARS=32` not bound vars.
 
 ## 3. Concurrency / hardening
+- [x] Release hardening pass (2026-07-22): **TSAN clean** (5× on the concurrency filter, 0 reports —
+  MatchCore forwarding, causal `is_reachable`, edge self-pointer, arena growth all race-free under
+  contention); **ASAN+UBSAN** found + fixed one pre-existing UB (empty WXF binary-string → null-ptr
+  `memcpy`, guarded `len>0` at the 3 read sites), clean after; **feature-combination matrix** added
+  (`test_feature_matrix.cpp`: canon modes × event-canon × 1/4/8/16 threads, quotient, multi-initial,
+  uniform-random — oracle-checked). 189 tests.
+- [ ] **Quotient + multithread + TRUNCATED budget → nondeterministic/incomplete** (found in hardening;
+  a deeper-budget re-manifestation of [[project-quotient-completeness-gap]], which prior probing had
+  marked non-reproducing). Repro: multi-rule, Full, `explore_from_canonical_states_only(true)`,
+  steps=4 → 1-thread=36 canonical, 4-thread intermittently=31 (~1 in 5). Root cause: quotient
+  depth-relaxation (`propagate_explore_depth`) races the step-budget cutoff → which states arrive
+  "in budget" is schedule-dependent. Only bites quotient + truncated budget + MT; full (non-truncated)
+  exploration is complete+deterministic. Fix changes quotient/budget concurrency semantics.
 - [ ] Systematic memory-ordering re-verification (the deep audit's cluster — mostly fixed;
   confirm each; audit any structure not yet checked).
 - [ ] REVIEW §1 residual bugs: FFI vertex `uint8_t` >255 wrap (1.3); int64→int option narrowing
   (1.4, `checked_narrow`). §2: ConcurrentMap LOCKED spin / `locked_slots[64]` 65th-slot drop.
-- [ ] Spin-wait elimination pass — zero spinwait anywhere (charter). TSAN/ASAN CI gates.
+- [ ] Spin-wait elimination pass — zero spinwait anywhere (charter). Wire TSAN/ASAN into CI.
 
 ## 4. GPU — parity, lockstep + persistent, shared code
 - [ ] Apply the whole de-heap + cost analysis to the GPU path.

@@ -158,7 +158,7 @@ std::string Parser::read_string() {
     ensure_bytes(len);
 
     std::string result(len, '\0');
-    std::memcpy(result.data(), &data_[read_position_], len);
+    if (len > 0) std::memcpy(result.data(), &data_[read_position_], len);
     read_position_ += len;
 
     // Note: WXF supports full UTF-8, skipping validation for now
@@ -178,7 +178,7 @@ std::string Parser::read_symbol() {
     ensure_bytes(len);
 
     std::string result(len, '\0');
-    std::memcpy(result.data(), &data_[read_position_], len);
+    if (len > 0) std::memcpy(result.data(), &data_[read_position_], len);
     read_position_ += len;
 
     return result;
@@ -195,7 +195,7 @@ std::vector<uint8_t> Parser::read_binary_string() {
     ensure_bytes(len);
 
     std::vector<uint8_t> result(len);
-    std::memcpy(result.data(), &data_[read_position_], len);
+    if (len > 0) std::memcpy(result.data(), &data_[read_position_], len);
     read_position_ += len;
 
     return result;
