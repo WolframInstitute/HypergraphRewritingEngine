@@ -233,10 +233,14 @@ set(CMAKE_STATIC_LIBRARY_SUFFIX ".a")
 # Windows doesn't use -fPIC (position independent code)
 set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 
-# Link statically for MinGW/GCC to avoid runtime dependencies
+# Link the whole GNU runtime statically for MinGW/GCC targets. -static folds libgcc,
+# libstdc++ AND libwinpthread-1 (pulled in by std::thread) into each binary, so the
+# hg_evolve process binary and the fallback DLL load on a clean Windows machine that
+# has no mingw runtime DLLs on its search path. Only the system DLLs (kernel32,
+# msvcrt, ws2_32) remain as imports, and those are always present.
 if(COMPILER_TYPE STREQUAL "mingw")
-    set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
-    set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+    set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
+    set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
 elseif(COMPILER_TYPE STREQUAL "clang")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
         # For ARM64 with MSVC target, use dynamic MSVC runtime (standard for DLLs)
@@ -244,8 +248,8 @@ elseif(COMPILER_TYPE STREQUAL "clang")
         message(STATUS "Using dynamic MSVC runtime (standard for DLLs)")
     else()
         # For x86/x64 with GNU target, use GCC static linking
-        set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
-        set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+        set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
+        set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
     endif()
 endif()
 

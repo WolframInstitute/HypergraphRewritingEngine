@@ -61,6 +61,13 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_target_properties(hg_evolve PROPERTIES POSITION_INDEPENDENT_CODE ON)
     find_package(Threads REQUIRED)
     target_link_libraries(hg_evolve Threads::Threads)
+    # Fold the C++ runtime into the process binary so it runs on a target whose
+    # libstdc++ is older than the build host's. glibc stays dynamic (it is always
+    # present, and a fully static glibc breaks NSS/dlopen). macOS ships libc++ in the
+    # base system, so there is nothing to bundle there.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(hg_evolve PRIVATE -static-libgcc -static-libstdc++)
+    endif()
 elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     # clang -> lld-link (e.g. Windows-ARM64). Two things it can't do the ordinary way:
     #  1. The hypergraph/wxf static libs are GNU-ar archives; lld-link cannot pull objects from them
@@ -226,6 +233,15 @@ endif()
 
 # Static linking for cross-compiled Windows binaries to avoid runtime dependencies
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(HypergraphRewriting PRIVATE
+        -static-libgcc -static-libstdc++
+    )
+endif()
+
+# The fallback DLL is self-contained on Linux for the same reason as the process
+# binary: fold in libstdc++/libgcc so it loads under a kernel with a different
+# libstdc++ than the build host. (glibc dynamic; macOS libc++ is in the base system.)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_options(HypergraphRewriting PRIVATE
         -static-libgcc -static-libstdc++
     )
