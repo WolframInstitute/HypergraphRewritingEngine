@@ -3757,10 +3757,8 @@ HGUniformRandom[n_Integer, opts:OptionsPattern[]] := Module[
 (* ============================================================================ *)
 (* Syntax information and front-end autocompletion                              *)
 (* ============================================================================ *)
-(* SyntaxInformation drives the editor: ArgumentsPattern colours argument count  *)
-(* and OptionNames supplies the option-name dropdown when typing a call.         *)
-(* AddSpecialArgCompletion offers HGEvolve's property strings as a dropdown on    *)
-(* the property argument; it is front-end-only, so it is guarded for kernel runs. *)
+(* SyntaxInformation drives the editor: ArgumentsPattern colours argument count *)
+(* and OptionNames supplies the option-name dropdown when typing a call.        *)
 
 SyntaxInformation[HGEvolve] = {
   "ArgumentsPattern" -> {_, _, _, _., OptionsPattern[]},
@@ -3804,10 +3802,6 @@ SyntaxInformation[HGGeodesicFilmstrip] = {
 SyntaxInformation[HGLensingPlot] = {
   "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGLensingPlot]]};
 SyntaxInformation[HGBranchAlignmentBatch] = {"ArgumentsPattern" -> {_, OptionsPattern[]}};
-
-If[TrueQ[$Notebooks],
-  FE`Evaluate[FEPrivate`AddSpecialArgCompletion[
-    "HGEvolve" -> {0, 0, 0, Keys[propertyRequirementsBase]}]]];
 
 End[]
 EndPackage[]
