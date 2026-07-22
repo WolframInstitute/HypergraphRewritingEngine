@@ -155,12 +155,17 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
-        // Prev-chain dedup (a key may live only in an old table while a resize is in
-        // flight) is deferred into insert_into_table: it consults the chain exactly once,
-        // at the first EMPTY slot, having already proven the key absent from the current
-        // table. A key already present in the current table returns from the probe's own
-        // key-match and never walks the chain.
-        return insert_into_table(table, key, value, true, table->prev, false);
+        // CRITICAL: Check prev tables in the chain BEFORE inserting.
+        // During resize, entries from old table may not yet be in new table.
+        // If we find the key in a prev table, return it to avoid duplicates.
+        if (table->prev) {
+            auto existing = lookup_in_chain(table->prev, key);
+            if (existing.has_value()) {
+                return {*existing, false};
+            }
+        }
+
+        return insert_into_table(table, key, value, true);
     }
 
     // Like insert_if_absent but waits for LOCKED slots in prev tables.
@@ -175,9 +180,16 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
-        // As insert_if_absent, but the deferred prev-chain probe waits for LOCKED slots so
-        // a mid-flight concurrent insert of the same key is never missed.
-        return insert_into_table(table, key, value, true, table->prev, true);
+        // CRITICAL: Check prev tables in the chain BEFORE inserting.
+        // Use waiting version to handle concurrent inserts (LOCKED slots).
+        if (table->prev) {
+            auto existing = lookup_in_chain_waiting(table->prev, key);
+            if (existing.has_value()) {
+                return {*existing, false};
+            }
+        }
+
+        return insert_into_table(table, key, value, true);
     }
 
     // Lookup value by key
@@ -262,25 +274,13 @@ private:
         return static_cast<size_t>(h);
     }
 
-    // prev_for_dedup: when non-null, the tail of the resize chain (table->prev). A key can
-    //   transiently live only in an old table while a resize is in flight, so before this
-    //   insert publishes a NEW key it must confirm the key is absent from that chain. The
-    //   probe below reaches an EMPTY slot only after proving the key absent from `table`
-    //   (linear-probe invariant), so the chain is walked at most once, and only for keys
-    //   that are genuinely new to `table`. Passing nullptr (e.g. the resize rehash, which
-    //   moves known-unique keys forward) skips the chain probe entirely.
-    // wait_for_prev: use the LOCKED-waiting chain probe, for maps whose dedup must not miss
-    //   a mid-flight concurrent insert of the same key.
-    std::pair<V, bool> insert_into_table(Table* table, K key, V value, bool increment_count,
-                                         Table* prev_for_dedup = nullptr,
-                                         bool wait_for_prev = false) {
+    std::pair<V, bool> insert_into_table(Table* table, K key, V value, bool increment_count) {
         size_t h = hash(key);
         size_t idx = h & table->mask;
 
         // Track LOCKED slots we encountered - need to check them for duplicate keys
         size_t locked_slots[64];
         size_t num_locked = 0;
-        bool prev_checked = false;  // chain probed at most once, at the first EMPTY slot
 
         for (size_t probe = 0; probe < table->capacity; ++probe) {
             size_t i = (idx + probe) & table->mask;
@@ -289,19 +289,6 @@ private:
             K current_key = entry.key.load(std::memory_order_acquire);
 
             if (current_key == EMPTY_KEY) {
-                // First EMPTY slot: the key is absent from `table` up to here, and linear
-                // probing guarantees it is absent from the whole table. Before claiming,
-                // confirm it is not living only in a superseded table mid-resize.
-                if (prev_for_dedup && !prev_checked) {
-                    auto existing = wait_for_prev
-                                        ? lookup_in_chain_waiting(prev_for_dedup, key)
-                                        : lookup_in_chain(prev_for_dedup, key);
-                    if (existing.has_value()) {
-                        return {*existing, false};
-                    }
-                    prev_checked = true;
-                }
-
                 // Slot is empty, try to claim it with LOCKED sentinel
                 if (entry.key.compare_exchange_strong(
                         current_key, LOCKED_KEY,
@@ -362,8 +349,7 @@ private:
 
         // Table is full (shouldn't happen with proper load factor management)
         resize();
-        return wait_for_prev ? insert_if_absent_waiting(key, value)
-                             : insert_if_absent(key, value);
+        return insert_if_absent(key, value);
     }
 
     std::optional<V> lookup_in_chain(Table* table, K key) const {

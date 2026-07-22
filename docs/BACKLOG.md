@@ -88,11 +88,11 @@ Legend: [x] done · [~] in progress · [ ] not started.
   [[project-incrementalisation-status]].
 - [ ] IR high-symmetry pathology: full-partition copy + fresh scratch per search node (the 1100×
   cycle blowup) → trail mutate/undo + reused scratch (independent of the above).
-- [x] ConcurrentMap insert de-waste (the ~24% self-cost, #2 after canon): the prev-chain dedup scan
-  ran on EVERY `insert_if_absent`/`_waiting` on any resized map, even for keys already in the current
-  table. Deferred it to the first EMPTY slot (after linear probing proves absence); resize rehash
-  skips it. Lock-free semantics preserved (prev-check still before slot claim). Total instructions
-  −3.87%, ConcurrentMap self −14.8% (24.45%→21.66%); EXACT, determinism 8×, 184/184.
+- [ ] ConcurrentMap insert de-waste (defer the prev-chain dedup probe) — ATTEMPTED + REVERTED
+  (`a9d3ed5`→revert): the deferral opened a duplicate-insert race across the resize boundary
+  (`ConcurrentMapTest.FirstWriterWinsNoDuplicateInserts` failed ~10%; pre-change 30/30). Worth
+  ~3% of total but needs a correct design that keeps the prev-chain check atomic w.r.t. the slot
+  claim. Re-attempt with a proper race analysis + a stress gate in CI.
 - [ ] Canonicalization event-path redundancy: `find_edge_correspondence` recomputes both states'
   WL 4× per event; both correspondences built when one is keyed (A1); canonical-state cache
   recomputed per incident event (A3) → memoize on the State; drop the `hash1!=hash2` guard.
