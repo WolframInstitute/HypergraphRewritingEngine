@@ -638,6 +638,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 initial_states_raw,
                 steps,
                 (event_signature_keys == hypergraph::EVENT_SIG_NONE) ? 0 : 1,
+                // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
+                (state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? 2 :
+                (state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? 1 : 0,
                 causal_transitive_reduction,
                 explore_from_canonical_states_only,
                 quotient_initial_states,

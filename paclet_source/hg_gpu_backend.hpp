@@ -22,6 +22,7 @@ struct GpuJob {
 
     int steps = 0;
     int event_canon_mode = 0;   // 0 None, 1 Full, 2 Automatic
+    int state_canon_mode = 2;   // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
     bool transitive_reduction = true;
     bool explore_from_canonical_states_only = false;
     bool quotient_initial_states = false;

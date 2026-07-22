@@ -61,6 +61,15 @@ struct NormalizedResult {
     std::multiset<uint64_t> causal_edge_keys;
     std::multiset<uint64_t> branchial_edge_keys;
 
+    // Count diagnostics for the NumStates convention (deliberately NOT in operator==):
+    // NumStates as reported by HGEvolve is the CPU's num_canonical_states().
+    size_t num_canonical_states = 0;  // cpu: hg.num_canonical_states(); gpu: n/a
+    size_t raw_states = 0;            // cpu: hg.num_states(); gpu: result.states.size()
+    size_t produced_states = 0;       // states that are the output of some event (non-root)
+    size_t distinct_content = 0;      // distinct content-ordered (non-iso) hashes among states
+    std::multiset<uint64_t> content_multiset;  // per-state raw edge content (labels intact)
+    std::multiset<uint64_t> iso_multiset;      // per-state IR canonical hash (labels normalised)
+
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
             && event_keys              == o.event_keys
@@ -72,6 +81,18 @@ struct NormalizedResult {
 uint64_t mix_fnv(uint64_t h, uint64_t x) {
     h ^= x;
     h *= 1099511628211ULL;
+    return h;
+}
+// Byte/content key: hashes a state's edge multiset with its LABELS intact (edges sorted for
+// order-independence, but vertices NOT relabelled). Two states share this key iff their raw edge
+// content is identical — a strictly stronger equivalence than the iso-invariant IR hash.
+uint64_t content_key(std::vector<std::vector<hg_gpu::VertexId>> edges) {
+    std::sort(edges.begin(), edges.end());
+    uint64_t h = 14695981039346656037ULL;
+    for (const auto& e : edges) {
+        for (auto v : e) h = mix_fnv(h, static_cast<uint64_t>(v));
+        h = mix_fnv(h, 0x2CULL);   // edge separator
+    }
     return h;
 }
 uint64_t event_key(uint64_t input_hash, uint64_t output_hash, uint32_t rule, uint32_t step) {
@@ -183,6 +204,8 @@ NormalizedResult run_cpu(const Workload& w) {
         uint64_t h = ir.compute_canonical_hash(edges);
         state_hash_by_id[sid] = h;
         out.canonical_state_hashes.insert(h);
+        out.content_multiset.insert(content_key(edges));
+        out.iso_multiset.insert(h);
     }
 
     // EventId → event_key (input_hash, output_hash, rule, step).
@@ -202,6 +225,18 @@ NormalizedResult run_cpu(const Workload& w) {
                                 w.explore_from_canonical_states_only ? 0u : step);
         event_key_by_id[eid] = ek;
         out.event_keys.insert(ek);
+    }
+
+    // Count diagnostics. NumStates as HGEvolve reports it is hg.num_canonical_states().
+    out.num_canonical_states = hg.num_canonical_states();
+    out.raw_states = state_hash_by_id.size();
+    {
+        std::set<uint32_t> outs;
+        for (uint32_t eid = 0; eid < hg.num_events(); ++eid) {
+            const auto& ev = hg.get_event(eid);
+            if (ev.id != hypergraph::INVALID_ID) outs.insert(ev.output_state);
+        }
+        out.produced_states = outs.size();
     }
 
     for (const auto& ce : hg.causal_graph().get_causal_edges()) {
@@ -261,6 +296,8 @@ NormalizedResult run_gpu(const Workload& w) {
         uint64_t h = ir.compute_canonical_hash(s.edges);
         state_hash_by_id[s.id] = h;
         out.canonical_state_hashes.insert(h);
+        out.content_multiset.insert(content_key(s.edges));
+        out.iso_multiset.insert(h);
     }
 
     std::unordered_map<uint32_t, uint64_t> event_key_by_id;
@@ -271,6 +308,26 @@ NormalizedResult run_gpu(const Workload& w) {
                                 w.explore_from_canonical_states_only ? 0u : ev.step);
         event_key_by_id[ev.id] = ek;
         out.event_keys.insert(ek);
+    }
+
+    // Count diagnostics (GPU side).
+    out.raw_states = result.states.size();
+    {
+        std::set<uint32_t> outs;
+        for (const auto& ev : result.events) outs.insert(ev.output_state);
+        out.produced_states = outs.size();
+        std::set<uint64_t> content;
+        for (const auto& s : result.states) {
+            auto e = s.edges;
+            std::sort(e.begin(), e.end());
+            uint64_t h = 1469598103934665603ULL;
+            for (const auto& ed : e) {
+                for (auto v : ed) h = (h ^ static_cast<uint64_t>(v)) * 1099511628211ULL;
+                h = (h ^ 0x2CULL) * 1099511628211ULL;
+            }
+            content.insert(h);
+        }
+        out.distinct_content = content.size();
     }
 
     for (const auto& ce : result.causal_edges) {
@@ -563,5 +620,57 @@ std::vector<Workload> build_corpus() {
 INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
     ::testing::ValuesIn(build_corpus()),
     [](const ::testing::TestParamInfo<Workload>& info) { return info.param.name; });
+
+// Diagnostic: print the count conventions across modes and root counts so the GPU marshalling's
+// NumStates (= the CPU's num_canonical_states()) can be reproduced exactly, not reverse-engineered.
+TEST(CanonicalStateCount, ModesVsCpu) {
+    using M = hg_gpu::CanonicalizationMode;
+    auto r = rule({{0, 1}}, {{0, 2}, {2, 1}});   // binary edge splitting
+    std::vector<std::vector<std::vector<hg_gpu::VertexId>>> root1 = {{{0u, 1u}}};
+    std::vector<std::vector<std::vector<hg_gpu::VertexId>>> root2 = {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}};
+    std::vector<std::vector<std::vector<hg_gpu::VertexId>>> root3 =
+        {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}, {{0u, 1u}, {1u, 2u}, {2u, 3u}}};
+    struct C { const char* name; std::vector<std::vector<std::vector<hg_gpu::VertexId>>> roots; uint32_t steps; };
+    std::vector<C> cases = {{"1root", root1, 4}, {"2root", root2, 3}, {"3root", root3, 3}};
+    const char* mn[] = {"None", "Automatic", "Full"};
+    M modes[] = {M::None, M::Automatic, M::Full};
+    std::printf("\n%-6s %-10s | cpu: canon raw prod | gpu: raw prod content ir\n", "roots", "mode");
+    for (auto& c : cases) for (int mi = 0; mi < 3; ++mi) {
+        Workload w;
+        w.name = std::string(c.name) + "_" + mn[mi];
+        w.rules = {r};
+        w.initial_states = c.roots;
+        w.num_steps = c.steps;
+        w.canon_mode = modes[mi];
+        NormalizedResult cpu = run_cpu(w);
+        NormalizedResult gpu = run_gpu(w);
+        std::printf("%-6s %-10s |     %4zu %4zu %4zu | %4zu %4zu %4zu %4zu\n",
+            c.name, mn[mi],
+            cpu.num_canonical_states, cpu.raw_states, cpu.produced_states,
+            gpu.raw_states, gpu.produced_states, gpu.distinct_content,
+            gpu.canonical_state_hashes.size());
+
+        // NumStates the GPU marshalling (hg_gpu_backend.cpp) reports, by the same per-mode rule:
+        //   None -> raw - 1, Automatic -> distinct content, Full -> distinct IR class.
+        size_t gpu_num_states =
+            modes[mi] == M::None      ? gpu.raw_states :
+            modes[mi] == M::Automatic ? gpu.distinct_content
+                                      : gpu.canonical_state_hashes.size();
+        EXPECT_EQ(gpu_num_states, cpu.num_canonical_states)
+            << "NumStates mismatch for " << w.name;
+        // Correctness invariant for the raw modes: the two engines produce the same states up to
+        // isomorphism, WITH the same multiplicity (strictly stronger than the set comparison in
+        // DifferentialEvolution). Byte-equivalence of the raw labels does NOT hold and is not
+        // expected — None/Automatic keep each engine's own vertex numbering, which is assignment-
+        // order dependent; only Full canonicalises labels. Report byte-equivalence as a diagnostic.
+        if (modes[mi] != M::Full) {
+            EXPECT_EQ(cpu.iso_multiset, gpu.iso_multiset)
+                << "iso multiset (states up to isomorphism, with multiplicity) differ for " << w.name;
+            std::printf("       byte-equiv(%-9s): %s\n", mn[mi],
+                cpu.content_multiset == gpu.content_multiset
+                    ? "yes" : "no (iso-equivalent; raw vertex labels differ by engine)");
+        }
+    }
+}
 
 }  // namespace

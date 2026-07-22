@@ -69,7 +69,10 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.num_steps = static_cast<uint32_t>(std::max(0, job.steps));
     // The GPU canonicalizes states with McKay IR only; Full is the sole correct
     // mode. State dedup / class collapse is done host-side in the marshaler.
-    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.canonicalization =
+        job.state_canon_mode == 0 ? hg_gpu::CanonicalizationMode::None :
+        job.state_canon_mode == 1 ? hg_gpu::CanonicalizationMode::Automatic :
+                                    hg_gpu::CanonicalizationMode::Full;
     in.event_canonicalization =
         job.event_canon_mode == 1 ? hg_gpu::EventCanonicalizationMode::Full :
         job.event_canon_mode == 2 ? hg_gpu::EventCanonicalizationMode::Automatic :
@@ -98,21 +101,38 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
 
     hypergraph::IRCanonicalizer ir;
 
-    // Group the raw per-provenance GPU states into canonical classes by their
-    // host-recomputed IR hash; the class representative (first-seen id) is the
-    // stable handle emitted for that canonical state.
+    // Group the GPU states by the requested canonicalization mode, mirroring the CPU:
+    //   None      -> every state is distinct (per-provenance / tree mode, no grouping)
+    //   Automatic -> exact edge-content (non-isomorphic) equality
+    //   Full      -> IR isomorphism class
+    // The class representative (first-seen id) is the stable handle emitted. state_hash always
+    // holds the IR canonical hash so the optional CanonicalHash output is available in any mode.
+    const hg_gpu::CanonicalizationMode canon_mode = in.canonicalization;
+    auto content_key = [](const std::vector<std::vector<hg_gpu::VertexId>>& edges) -> uint64_t {
+        std::vector<std::vector<hg_gpu::VertexId>> e = edges;
+        std::sort(e.begin(), e.end());
+        uint64_t h = 1469598103934665603ull;               // FNV-1a over the sorted edge multiset
+        for (const auto& ed : e) {
+            for (auto v : ed) h = (h ^ static_cast<uint64_t>(v)) * 1099511628211ull;
+            h = (h ^ 0x2Cull) * 1099511628211ull;          // edge separator
+        }
+        return h;
+    };
     std::unordered_map<uint64_t, hg_gpu::StateId> hash_to_rep;
     std::unordered_map<hg_gpu::StateId, hg_gpu::StateId> state_to_rep;
     std::unordered_map<hg_gpu::StateId, uint64_t> state_hash;
     std::unordered_map<hg_gpu::StateId, const std::vector<std::vector<hg_gpu::VertexId>>*> state_edges;
     std::vector<hg_gpu::StateId> class_reps;
     for (const auto& s : result.states) {
-        uint64_t h = ir.compute_canonical_hash(s.edges);
-        state_hash[s.id] = h;
+        state_hash[s.id] = ir.compute_canonical_hash(s.edges);
         state_edges[s.id] = &s.edges;
-        auto it = hash_to_rep.find(h);
+        uint64_t key =
+            canon_mode == hg_gpu::CanonicalizationMode::None      ? static_cast<uint64_t>(s.id) :
+            canon_mode == hg_gpu::CanonicalizationMode::Automatic ? content_key(s.edges)
+                                                                  : state_hash[s.id];
+        auto it = hash_to_rep.find(key);
         if (it == hash_to_rep.end()) {
-            hash_to_rep[h] = s.id;
+            hash_to_rep[key] = s.id;
             state_to_rep[s.id] = s.id;
             class_reps.push_back(s.id);
         } else {
@@ -139,13 +159,24 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         wxf::WXFValueAssociation states_assoc;
         for (hg_gpu::StateId rep : class_reps) {
             wxf::WXFValueList edge_list;
-            auto canon = ir.canonicalize_edges(*state_edges[rep]);
             int64_t idx = 0;
-            for (const auto& ce : canon.canonical_form.edges) {
-                wxf::WXFValueList ed;
-                ed.push_back(wxf::WXFValue(idx++));
-                for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                edge_list.push_back(wxf::WXFValue(ed));
+            // Full relabels to the IR canonical form; None/Automatic keep the state's own labels
+            // (there is no canonical relabelling when states are not identified by isomorphism).
+            if (canon_mode == hg_gpu::CanonicalizationMode::Full) {
+                auto canon = ir.canonicalize_edges(*state_edges[rep]);
+                for (const auto& ce : canon.canonical_form.edges) {
+                    wxf::WXFValueList ed;
+                    ed.push_back(wxf::WXFValue(idx++));
+                    for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                    edge_list.push_back(wxf::WXFValue(ed));
+                }
+            } else {
+                for (const auto& ce : *state_edges[rep]) {
+                    wxf::WXFValueList ed;
+                    ed.push_back(wxf::WXFValue(idx++));
+                    for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+                    edge_list.push_back(wxf::WXFValue(ed));
+                }
             }
             bool is_init = is_output.find(rep) == is_output.end();
             int64_t step = is_init ? 0 : static_cast<int64_t>(state_step[rep]);
@@ -221,6 +252,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});
     }
 
+    // NumStates mirrors the CPU's num_canonical_states() = canonical_state_map_.count_unique(),
+    // verified against the CPU engine in gpu/tests/test_gpu_vs_cpu_differential.cpp
+    // (CanonicalStateCount.ModesVsCpu). class_reps is grouped by the mode's dedup key, so its size
+    // is exactly the CPU count in every mode: None -> raw state count, Automatic -> distinct
+    // content, Full -> distinct IR class. (The CPU's None-mode sentinel undercount is fixed in
+    // create_or_get_canonical_state, so no adjustment is needed here.)
     full_result.push_back({wxf::WXFValue("NumStates"),
                            wxf::WXFValue(static_cast<int64_t>(class_reps.size()))});
     full_result.push_back({wxf::WXFValue("NumEvents"),
