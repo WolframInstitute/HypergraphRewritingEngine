@@ -10,7 +10,7 @@ SeeAlso: [HGEvolve, HGToGraph, HGGrid]
 
 # Hypergraph Rewriting Engine
 
-A high-performance multiway hypergraph rewriting engine. It applies rewrite rules to a hypergraph in all possible ways, building the multiway states graph together with its causal and branchial structure, and canonicalizes states so isomorphic ones are identified.
+A high-performance multiway hypergraph rewriting engine. It applies rewrite rules to a hypergraph in all possible ways, building the multiway states graph together with its causal and branchial structure, and can canonicalize states so isomorphic ones are identified.
 
 ## Functions
 

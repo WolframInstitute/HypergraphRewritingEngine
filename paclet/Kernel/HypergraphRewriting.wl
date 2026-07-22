@@ -89,7 +89,7 @@ Options[HGEvolve] = {
   "ExplorationProbability" -> 1.0,
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
   "QuotientInitialStates" -> False,  (* True: isomorphic initial states collapse to one canonical root (needs ExploreFromCanonicalStatesOnly). False (default): each provided initial state is a distinct entry point, matching MultiwaySystem. *)
-  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine computes the canonical (Full-quotiented) multiway on the device -- it always deduplicates isomorphic states -- so its state counts match CanonicalizeStates -> Full regardless of the option. *)
+  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "AspectRatio" -> None,
@@ -215,7 +215,7 @@ If[$HypergraphLibrary =!= $Failed,
 (* Standalone process-isolation engine binary, shipped beside the DLL. It reads
    the WXF job on stdin and writes the WXF result on stdout (progress on stderr).
    When present it supersedes the LibraryLink call: an abort is a process kill
-   and a crash cannot take down the kernel. See docs/BINARY_ISOLATION.md. *)
+   and a crash cannot take down the kernel. See docs/ARCHITECTURE.md. *)
 hgFindEngineBinary[base_String] := Module[{exeName, pacletRoot, exePath},
   exeName = If[StringMatchQ[$SystemID, "Windows*"], base <> ".exe", base];
   pacletRoot = DirectoryName[$InputFileName, 2];

@@ -59,7 +59,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"MatchesPerStep"` | `0` | matches applied per step in uniform-random mode (0 = all) |
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
 | `"EdgeDeduplication"` | `True` | one causal/branchial edge per event pair, rather than one per shared hyperedge |
-| `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"`, where a GPU build is bundled (falls back to CPU with a message otherwise). The GPU engine always computes the canonical (`Full`-quotiented) multiway |
+| `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"`, where a GPU build is bundled (falls back to CPU with a message otherwise) |
 | `"IncludeStateContents"` | `False` | attach each state's hyperedge list to the result |
 | `"IncludeEventContents"` | `False` | attach each event's matched/produced edges to the result |
 | `"IncludeCanonicalHashes"` | `False` | attach a run-stable isomorphism hash to each state, for fusing results across runs |
@@ -377,11 +377,11 @@ HGEvolve[rules, {{1, 2}}, 3, "StatesGraphStructure", "AspectRatio" -> 1/2]
 
 ### "TargetDevice"
 
-Evolution runs on the CPU by default. Where a GPU build is bundled, `"GPU"` runs on the device; otherwise it falls back to the CPU with a message. The GPU engine computes the canonical (`Full`-quotiented) multiway on the device — it always deduplicates isomorphic states — so its state counts match `"CanonicalizeStates" -> Full`:
+Evolution runs on the CPU by default. Where a GPU build is bundled, `"GPU"` runs on the device; otherwise it falls back to the CPU with a message. The GPU engine honors the same `"CanonicalizeStates"` modes (`None`, `Automatic`, `Full`) as the CPU, and its state counts match the CPU's in every mode:
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
-HGEvolve[rules, {{1, 2}}, 3, "NumStates", "TargetDevice" -> "GPU", "CanonicalizeStates" -> Full]
+HGEvolve[rules, {{1, 2}}, 3, "NumStates", "TargetDevice" -> "GPU"]
 ```
 
 ## Properties and Relations
