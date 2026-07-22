@@ -1,0 +1,57 @@
+name: Paclet + Wolfram golden
+
+# Builds the Wolfram Language paclet against the FREE Wolfram Engine and runs the golden
+# corpus (reference/verify_paclet.wls: States/Events/Causal/Branchial vs golden_corpus.wl).
+# Runs on GitHub-hosted runners (free for this public repo). No local machine involved.
+#
+# ONE-TIME SETUP (repo Settings -> Secrets and variables -> Actions):
+#   Add a secret so the Free Wolfram Engine can license headlessly. Either:
+#     WOLFRAM_ID + WOLFRAM_PASSWORD   (a free Wolfram account), or
+#     WOLFRAMSCRIPT_ENTITLEMENTID     (an on-demand entitlement from your Wolfram account)
+#   The Free Wolfram Engine for Developers is free: https://www.wolfram.com/engine/
+
+on:
+  workflow_dispatch:        # manual until the license secret is wired, then add push/pr
+  # push: { branches: [master] }
+  # pull_request:
+
+jobs:
+  paclet-golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Install Free Wolfram Engine
+        run: |
+          set -euo pipefail
+          # The download URL is version-pinned; update as needed. This resolves to a .sh installer.
+          curl -L -o /tmp/WolframEngine.sh \
+            "https://account.wolfram.com/download/public/wolfram-engine/desktop/LINUX"
+          sudo bash /tmp/WolframEngine.sh -- -auto -verbose
+          wolframscript -version
+
+      - name: License (on-demand entitlement, if provided)
+        if: ${{ env.WOLFRAMSCRIPT_ENTITLEMENTID != '' }}
+        env:
+          WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
+        run: echo "using on-demand entitlement licensing"
+
+      - name: License (Wolfram ID activation, fallback)
+        if: ${{ secrets.WOLFRAM_ID != '' }}
+        run: |
+          # Activate the Free Engine with a Wolfram account (headless). Adjust to your account type.
+          wolframscript -authenticate "${{ secrets.WOLFRAM_ID }}" "${{ secrets.WOLFRAM_PASSWORD }}" || true
+
+      - name: Build the paclet (finds the Engine's LibraryLink SDK)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=OFF -DBUILD_VISUALIZATION=OFF
+          cmake --build build --target paclet
+
+      - name: Golden corpus (HGEvolve vs golden_corpus.wl)
+        env:
+          WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
+        run: wolframscript -file reference/verify_paclet.wls

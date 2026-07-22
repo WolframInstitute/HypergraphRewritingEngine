@@ -1,0 +1,45 @@
+name: GPU
+
+# FREE part: compile the CUDA engine on a normal GitHub-hosted runner (installs the CUDA
+# toolkit; nvcc-compiles BUILD_GPU=ON). This catches CUDA build-rot — e.g. a toolkit-version
+# break — WITHOUT needing a GPU. It does NOT run the kernels.
+#
+# The GPU-RUN gate (gpu_differential_tests: GPU-vs-CPU exactness) needs an actual GPU. GitHub-
+# hosted GPU runners are a PAID tier, so it is not free-cloud. Enable the run job below only if
+# you attach a self-hosted runner on a CUDA machine (opt-in) or a paid GPU runner.
+
+on:
+  workflow_dispatch:        # manual until validated on a real Actions run, then add push/pr
+  pull_request:
+
+jobs:
+  gpu-compile:                        # free: build-only, no GPU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+      - name: Configure + compile GPU engine (sm_80/86/89/90)
+        run: |
+          cmake -S . -B build_gpu -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_GPU=ON -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF \
+            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90"
+          cmake --build build_gpu --target hg_gpu hg_gpu_tests gpu_differential_tests
+
+  gpu-run:                            # GPU-vs-CPU exactness — needs a GPU (self-hosted or paid)
+    if: false                         # flip to a self-hosted label to enable, e.g. runs-on: [self-hosted, gpu]
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + run GPU differential tests
+        run: |
+          cmake -S . -B build_gpu -DCMAKE_BUILD_TYPE=Release -DBUILD_GPU=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=native
+          cmake --build build_gpu --target gpu_differential_tests hg_gpu_tests -j
+          ./build_gpu/gpu_differential_tests
+          ./build_gpu/hg_gpu_tests
