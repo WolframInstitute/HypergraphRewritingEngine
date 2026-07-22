@@ -16,6 +16,14 @@ add_library(hg_gpu STATIC
 
 set_property(TARGET hg_gpu PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
 
+# hg_gpu is built with separable compilation (relocatable device code), so its device symbols
+# need a device-link (nvcc -dlink) step before it can be linked into a plain C++ target such as
+# hg_evolve_gpu. Resolve them inside the static library so any non-CUDA consumer links cleanly.
+# The Makefile/Ninja generators device-link at the consumer automatically; the Visual Studio
+# generator does not, leaving __cudaRegisterLinkedBinary unresolved (LNK2019) — this makes the
+# device link explicit and generator-independent, so the Windows MSVC build links too.
+set_property(TARGET hg_gpu PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
 target_include_directories(hg_gpu
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

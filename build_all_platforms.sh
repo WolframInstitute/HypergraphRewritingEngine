@@ -101,6 +101,20 @@ if selected "Windows-x86-64"; then
     else
         skip "Windows-x86-64" "mingw not found (apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64)"
     fi
+    # The Windows CUDA engine (hg_evolve_gpu.exe) can't be cross-compiled with mingw — on Windows
+    # nvcc requires MSVC as its host compiler. Build it natively (best-effort) via the Windows
+    # toolchain when it is present; the mingw DLL/CPU exe above are the required Windows artifacts.
+    if [[ -e "/mnt/c/Program Files/CMake/bin/cmake.exe" \
+          && -d "/mnt/c/Program Files/Microsoft Visual Studio/2022" \
+          && -n "$(ls -d '/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/'v*.* 2>/dev/null)" ]]; then
+        if ./build_windows_gpu.sh; then
+            BUILT+=("Windows-x86-64/hg_evolve_gpu.exe")
+        else
+            FAILED+=("Windows-x86-64/hg_evolve_gpu.exe")
+        fi
+    else
+        skip "Windows-x86-64/hg_evolve_gpu.exe" "native Windows MSVC+CUDA toolchain not found (VS2022 + CUDA Toolkit + CMake)"
+    fi
 fi
 
 # ---- Windows ARM64 ----

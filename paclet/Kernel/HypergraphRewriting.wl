@@ -89,7 +89,7 @@ Options[HGEvolve] = {
   "ExplorationProbability" -> 1.0,
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
   "QuotientInitialStates" -> False,  (* True: isomorphic initial states collapse to one canonical root (needs ExploreFromCanonicalStatesOnly). False (default): each provided initial state is a distinct entry point, matching MultiwaySystem. *)
-  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]); GPU via the paclet is not yet wired -- falls back to CPU with a message. *)
+  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine computes the canonical (Full-quotiented) multiway on the device -- it always deduplicates isomorphic states -- so its state counts match CanonicalizeStates -> Full regardless of the option. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "AspectRatio" -> None,
