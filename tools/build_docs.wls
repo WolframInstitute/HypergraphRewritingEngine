@@ -15,12 +15,19 @@
    truth (this mirrors WolframInstitute/MarkdownToNotebook's own paclets, e.g. AccessibleColors).
    create_paclet_archive's PacletBuild indexes them into the final Documentation-Center pages. *)
 
-(* Args are optional: `structure` to skip inline evaluation, and/or an explicit path to
-   MarkdownToNotebook.wl. By default it uses the vendored submodule at tools/MarkdownToNotebook,
-   so no manual checkout is needed. *)
+(* Args are optional and order-independent:
+     structure     skip inline evaluation (input-only cells)
+     out=<dir>     write the notebooks under <dir> instead of paclet/Documentation/English
+     <path>        an explicit path to MarkdownToNotebook.wl (defaults to the vendored submodule)
+   `out=` exists so the wrapper can stage the notebooks onto a Windows-local directory when the
+   Wolfram kernel is the Windows install driving WSL: the Windows kernel cannot reliably Export
+   onto the WSL 9P share (large notebooks fail Export::noopen), so build_docs.sh has it write to
+   /mnt/c/Temp and copies the results into place from the Linux side. *)
+outArgQ[a_]   := StringMatchQ[ToString[a], "out=" ~~ ___];
 scriptArgs    = Rest[$ScriptCommandLine];
 structureMode = MemberQ[scriptArgs, "structure"];
-mtnArg        = SelectFirst[scriptArgs, # =!= "structure" &, None];
+outArg        = SelectFirst[scriptArgs, outArgQ, None];
+mtnArg        = SelectFirst[scriptArgs, (# =!= "structure" && ! outArgQ[#]) &, None];
 mtnPath       = If[mtnArg =!= None, mtnArg,
   FileNameJoin[{DirectoryName[$InputFileName], "MarkdownToNotebook", "MarkdownToNotebook.wl"}]];
 If[!FileExistsQ[mtnPath],
@@ -35,8 +42,10 @@ srcDir  = FileNameJoin[{repo, "paclet", "Documentation", "Source"}];
    conversion (against the paclet loaded below), so the notebooks carry the current engine's
    rendered output; create_paclet_archive's PacletBuild indexes them from here. The
    notebooks are build output (gitignored) — the markdown under Documentation/Source is the
-   committed source of truth. *)
-docRoot = FileNameJoin[{repo, "paclet", "Documentation", "English"}];
+   committed source of truth. `out=` (from build_docs.sh) redirects this to a staging directory. *)
+docRoot = If[outArg =!= None,
+  StringDrop[outArg, StringLength["out="]],
+  FileNameJoin[{repo, "paclet", "Documentation", "English"}]];
 
 (* Load the paclet being built so MarkdownToNotebook's per-page Needs["HypergraphRewriting`"]
    (from each source's `Context:` frontmatter) resolves to THIS build and the example cells
@@ -61,16 +70,32 @@ subdirFor[tmpl_] := Switch[tmpl,
 files = FileNames["*.md", srcDir];
 If[files === {}, Print["no source docs in ", srcDir]; Exit[0]];
 
+failed = {};
 Do[
-  Module[{meta, tmpl, name, target},
+  Module[{meta, tmpl, name, target, rel},
     meta   = MarkdownToNotebook[f, "Association"]["Metadata"];
     tmpl   = Lookup[meta, "Template", "Symbol"];
     name   = Lookup[meta, "Name", FileBaseName[f]];
     target = FileNameJoin[Join[{docRoot}, subdirFor[tmpl], {name <> ".nb"}]];
+    rel    = FileNameJoin[Join[subdirFor[tmpl], {name <> ".nb"}]];
     If[!DirectoryQ[DirectoryName[target]],
       CreateDirectory[DirectoryName[target], CreateIntermediateDirectories -> True]];
+    (* Delete any prior copy so a post-write FileExistsQ is a true success signal, not a
+       leftover from an earlier build. *)
+    If[FileExistsQ[target], DeleteFile[target]];
     MarkdownToNotebook[f, target];
-    Print["built ", tmpl, " -> ", FileNameDrop[target, FileNameSplit[repo] // Length]]],
+    (* MarkdownToNotebook's Export can fail (e.g. Export::noopen) without aborting, which would
+       otherwise leave a missing/stale notebook while we falsely report success. Verify. *)
+    If[TrueQ[FileExistsQ[target]] && FileByteCount[target] > 0,
+      Print["built ", tmpl, " -> ", rel],
+      Print["FAILED ", tmpl, " -> ", rel, "  (Export did not write the notebook)"];
+      AppendTo[failed, rel]]],
   {f, files}];
+
+If[failed =!= {},
+  Print[""];
+  Print["ERROR: ", Length[failed], " of ", Length[files], " notebook(s) failed to write:"];
+  Scan[Print["  ", #] &, failed];
+  Exit[1]];
 
 Print["DONE ", Length[files], " docs"];

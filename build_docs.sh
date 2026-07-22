@@ -13,6 +13,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+MODE="${1:-}"                       # "structure" or empty
+ENGLISH="paclet/Documentation/English"
+SCRIPT="$ROOT/tools/build_docs.wls"
+
 # 1. Ensure the MarkdownToNotebook submodule is present.
 if [[ ! -f tools/MarkdownToNotebook/MarkdownToNotebook.wl ]]; then
     echo "==> fetching MarkdownToNotebook submodule"
@@ -21,22 +25,36 @@ if [[ ! -f tools/MarkdownToNotebook/MarkdownToNotebook.wl ]]; then
     git submodule update --init tools/MarkdownToNotebook
 fi
 
-# 2. Find wolframscript: native on PATH, else the Windows install via WSL.
-run_ws() {  # run_ws <wl-script> <args...>
-    local script="$1"; shift
-    if command -v wolframscript >/dev/null 2>&1; then
-        wolframscript -file "$script" "$@"
-    else
-        local exe
-        exe="$(ls /mnt/c/Program\ Files/Wolfram*/*/*/wolframscript.exe 2>/dev/null | sort -V | tail -1 || true)"
-        [[ -n "$exe" ]] || { echo "error: wolframscript not found (install Wolfram Engine or Mathematica)"; exit 1; }
-        # Windows kernel needs Windows paths.
-        local wargs=(); local a
-        for a in "$@"; do wargs+=("$a"); done
-        "$exe" -file "$(wslpath -w "$script")" "${wargs[@]}"
-    fi
-}
+# 2. Resolve wolframscript: native on PATH, else the Windows install driven from WSL.
+if command -v wolframscript >/dev/null 2>&1; then
+    WS_KIND=native
+    WS_EXE=wolframscript
+else
+    WS_EXE="$(ls /mnt/c/Program\ Files/Wolfram*/*/*/wolframscript.exe 2>/dev/null | sort -V | tail -1 || true)"
+    [[ -n "$WS_EXE" ]] || { echo "error: wolframscript not found (install Wolfram Engine or Mathematica)"; exit 1; }
+    WS_KIND=windows
+fi
 
-echo "==> building documentation notebooks (${1:-full evaluation})"
-run_ws "$ROOT/tools/build_docs.wls" ${1:+"$1"}
-echo "==> done — notebooks in paclet/Documentation/English/"
+# 3. Build the notebooks.
+if [[ "$WS_KIND" == windows ]]; then
+    # The Windows Wolfram kernel cannot reliably Export onto the WSL 9P share
+    # (\\wsl.localhost\...): large notebooks (HGEvolve, the guide) fail with Export::noopen —
+    # the same file-locking limitation create_paclet_archive sidesteps by staging through
+    # /mnt/c/Temp. So have the kernel write to a Windows-local directory, then copy the
+    # notebooks into place with a Linux cp (which owns the ext4 filesystem and never trips
+    # the 9P lock, even if a notebook is open in the front end).
+    STAGE_WSL=/mnt/c/Temp/hg_docs_stage
+    STAGE_WIN='C:\Temp\hg_docs_stage'
+    rm -rf "$STAGE_WSL"
+    mkdir -p "$STAGE_WSL"
+    echo "==> building documentation notebooks (${MODE:-full evaluation}) [staged via $STAGE_WIN]"
+    "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} "out=$STAGE_WIN"
+    echo "==> copying notebooks into $ENGLISH/"
+    mkdir -p "$ENGLISH"
+    cp -rf "$STAGE_WSL"/. "$ENGLISH"/
+    rm -rf "$STAGE_WSL"
+else
+    echo "==> building documentation notebooks (${MODE:-full evaluation})"
+    "$WS_EXE" -file "$SCRIPT" ${MODE:+"$MODE"}
+fi
+echo "==> done — notebooks in $ENGLISH/"
