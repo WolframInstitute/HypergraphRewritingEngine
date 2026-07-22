@@ -16,7 +16,9 @@ cd "$ROOT"
 # 1. Ensure the MarkdownToNotebook submodule is present.
 if [[ ! -f tools/MarkdownToNotebook/MarkdownToNotebook.wl ]]; then
     echo "==> fetching MarkdownToNotebook submodule"
-    git submodule update --init --recursive tools/MarkdownToNotebook
+    # NOT --recursive: MarkdownToNotebook's own example submodules are SSH-only (sw1sh/*)
+    # and we don't need them; the converter itself is all that's required.
+    git submodule update --init tools/MarkdownToNotebook
 fi
 
 # 2. Find wolframscript: native on PATH, else the Windows install via WSL.
