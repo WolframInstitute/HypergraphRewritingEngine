@@ -29,6 +29,7 @@
 
 // Include comprehensive WXF library
 #include "wxf.hpp"
+#include "graph_marshal.hpp"
 
 // Include blackhole analysis (without layout dependency)
 #include "blackhole/hausdorff_analysis.hpp"
@@ -651,6 +652,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 include_causal_edges,
                 include_branchial_edges,
                 include_canonical_hashes,
+                graph_properties,
+                edge_deduplication,
+                branchial_step,
+                show_genesis_events,
             };
             if (show_progress) {
                 core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -2442,275 +2447,55 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 return true;
             };
 
-            // Build GraphData for each requested graph property
-            wxf::WXFValueAssociation all_graph_data;
+            // Adapt the engine to the shared graph marshaller (graph_marshal.hpp) so the CPU
+            // and the GPU backend build byte-identical GraphData. The wrappers reuse the
+            // effective-id and serialization lambdas above -- one graph-building code path.
+            struct CpuGraphSource {
+                const hypergraph::Hypergraph& hg;
+                bool show_genesis;
+                std::function<int64_t(hypergraph::StateId)> eff_state;
+                std::function<int64_t(hypergraph::EventId)> eff_event;
+                std::function<bool(hypergraph::EventId)> valid_event;
+                std::function<wxf::WXFValueAssociation(hypergraph::StateId)> state_data;
+                std::function<wxf::WXFValueAssociation(hypergraph::EventId)> event_data;
 
-            for (const std::string& graph_property : graph_properties) {
-                wxf::WXFValueList vertices;
-                wxf::WXFValueList edges;
-                wxf::WXFValueAssociation vertex_data;
-
-                // Parse property name
-                bool is_states = graph_property.rfind("States", 0) == 0;
-                bool is_causal = graph_property.rfind("Causal", 0) == 0;
-                bool is_branchial = graph_property.rfind("Branchial", 0) == 0;
-                bool is_evolution = graph_property.find("Evolution") != std::string::npos;
-                bool has_causal = is_evolution && graph_property.find("Causal") != std::string::npos;
-                bool has_branchial = is_evolution && graph_property.find("Branchial") != std::string::npos;
-
-                // Helper to add edge to edges list
-                auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
-                                          wxf::WXFValueAssociation data = {}) {
-                    wxf::WXFValueAssociation edge;
-                    edge.push_back({wxf::WXFValue("From"), from});
-                    edge.push_back({wxf::WXFValue("To"), to});
-                    edge.push_back({wxf::WXFValue("Type"), wxf::WXFValue(type)});
-                    if (!data.empty()) edge.push_back({wxf::WXFValue("Data"), wxf::WXFValue(data)});
-                    edges.push_back(wxf::WXFValue(edge));
-                };
-
-            // Helper to add causal edges with proper deduplication
-            // EdgeDeduplication=True: one edge per raw (producer, consumer) pair
-            // EdgeDeduplication=False: N edges for N shared hyperedges
-            // Note: Our causal graph stores one CausalEdge per (producer, consumer, hyperedge) triple
-            // IMPORTANT: Each edge must have unique data or the Wolfram Language's Graph[] will deduplicate!
-            auto add_causal_edges = [&]() {
-                // First pass: count CausalEdges per raw (producer, consumer) pair
-                std::map<std::pair<hypergraph::EventId, hypergraph::EventId>, size_t> pair_counts;
-                for (const auto& ce : hg.causal_graph().get_causal_edges()) {
-                    if (!show_genesis_events && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
-                    pair_counts[{ce.producer, ce.consumer}]++;
-                }
-
-                // Second pass: emit edges (with unique index to prevent Graph[] deduplication)
-                for (const auto& [pair, count] : pair_counts) {
-                    int64_t from = get_effective_event_id(pair.first);
-                    int64_t to = get_effective_event_id(pair.second);
-                    wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
-                    wxf::WXFValueList to_tag = {wxf::WXFValue("E"), wxf::WXFValue(to)};
-
-                    size_t num_edges = edge_deduplication ? 1 : count;
-                    for (size_t k = 0; k < num_edges; ++k) {
-                        wxf::WXFValueAssociation causal_data;
-                        causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(from)});
-                        causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(to)});
-                        // Add unique index to prevent the Wolfram Language Graph[] deduplication
-                        if (num_edges > 1) {
-                            causal_data.push_back({wxf::WXFValue("EdgeIndex"), wxf::WXFValue(static_cast<int64_t>(k))});
-                        }
-                        add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Causal", causal_data);
+                uint32_t num_states() const { return hg.num_states(); }
+                bool state_valid(uint32_t sid) const { return hg.get_state(sid).id != hypergraph::INVALID_ID; }
+                int64_t effective_state_id(uint32_t sid) const { return eff_state(sid); }
+                uint32_t state_step(uint32_t sid) const { return hg.get_state(sid).step; }
+                wxf::WXFValueAssociation serialize_state_data(uint32_t sid) const { return state_data(sid); }
+                uint32_t num_raw_events() const { return hg.num_raw_events(); }
+                bool is_valid_event(uint32_t eid) const { return valid_event(eid); }
+                int64_t effective_event_id(uint32_t eid) const { return eff_event(eid); }
+                uint32_t event_input_state(uint32_t eid) const { return hg.get_event(eid).input_state; }
+                uint32_t event_output_state(uint32_t eid) const { return hg.get_event(eid).output_state; }
+                wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const { return event_data(eid); }
+                std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
+                    std::vector<std::pair<uint32_t, uint32_t>> out;
+                    for (const auto& ce : hg.causal_graph().get_causal_edges()) {
+                        if (!show_genesis && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
+                        out.emplace_back(ce.producer, ce.consumer);
                     }
+                    return out;
+                }
+                std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const {
+                    std::vector<std::pair<uint32_t, uint32_t>> out;
+                    for (const auto& be : hg.causal_graph().get_branchial_edges()) {
+                        if (!show_genesis && (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2))) continue;
+                        out.emplace_back(be.event1, be.event2);
+                    }
+                    return out;
                 }
             };
-
-            if (is_states) {
-                // === STATES GRAPH ===
-                // Vertices: states (deduplicated by effective ID)
-                std::map<int64_t, hypergraph::StateId> state_verts;
-                for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
-                    if (hg.get_state(sid).id == hypergraph::INVALID_ID) continue;
-                    int64_t eff = get_effective_state_id(sid);
-                    if (!state_verts.count(eff)) state_verts[eff] = sid;
-                }
-                for (auto& [eff, raw] : state_verts) {
-                    vertices.push_back(wxf::WXFValue(eff));
-                    vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(serialize_state_data(raw))});
-                }
-                // Edges: events (state → state)
-                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
-                    if (!is_valid_event(eid)) continue;
-                    const hypergraph::Event& e = hg.get_event(eid);
-                    add_graph_edge(wxf::WXFValue(get_effective_state_id(e.input_state)),
-                                   wxf::WXFValue(get_effective_state_id(e.output_state)),
-                                   "Directed", serialize_event_data(eid));
-                }
-            }
-            else if (is_causal) {
-                // === CAUSAL GRAPH ===
-                // Vertices: events (deduplicated, tagged)
-                std::map<int64_t, hypergraph::EventId> event_verts;
-                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
-                    if (!is_valid_event(eid)) continue;
-                    int64_t eff = get_effective_event_id(eid);
-                    if (!event_verts.count(eff)) event_verts[eff] = eid;
-                }
-                for (auto& [eff, raw] : event_verts) {
-                    wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
-                    vertices.push_back(wxf::WXFValue(tag));
-                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_event_data(raw))});
-                }
-                // Add causal edges using shared helper
-                add_causal_edges();
-            }
-            else if (is_branchial) {
-                // === BRANCHIAL GRAPH ===
-                // Vertices: states involved in branchial edges (output states of branchial event pairs)
-                std::set<hypergraph::StateId> state_set;
-                std::map<int64_t, hypergraph::StateId> state_verts;
-                auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
-
-                // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
-                uint32_t target_step = 0;
-                bool filter_by_step = (branchial_step != 0);
-                if (filter_by_step) {
-                    if (branchial_step > 0) {
-                        target_step = static_cast<uint32_t>(branchial_step);
-                    } else {
-                        target_step = static_cast<uint32_t>(steps + 1 + branchial_step);
-                    }
-                }
-
-                // First pass: collect all states
-                for (const auto& edge : branchial_edge_vec) {
-                    if (!show_genesis_events &&
-                        (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) continue;
-                    const hypergraph::Event& event1 = hg.get_event(edge.event1);
-                    const hypergraph::Event& event2 = hg.get_event(edge.event2);
-
-                    // Filter by step if specified
-                    if (filter_by_step) {
-                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
-                        if (output_state.step != target_step) continue;
-                    }
-
-                    // Use effective state IDs based on canonicalization mode
-                    int64_t state1 = get_effective_state_id(event1.output_state);
-                    int64_t state2 = get_effective_state_id(event2.output_state);
-                    if (!state_verts.count(state1))
-                        state_verts[state1] = event1.output_state;
-                    if (!state_verts.count(state2))
-                        state_verts[state2] = event2.output_state;
-                }
-
-                // Add vertices with data
-                for (auto& [eff, raw] : state_verts) {
-                    vertices.push_back(wxf::WXFValue(eff));
-                    vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(serialize_state_data(raw))});
-                }
-
-                // Edges: branchial state edges (no deduplication - preserve multiplicity)
-                for (const auto& edge : branchial_edge_vec) {
-                    if (!show_genesis_events &&
-                        (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) continue;
-                    const hypergraph::Event& event1 = hg.get_event(edge.event1);
-                    const hypergraph::Event& event2 = hg.get_event(edge.event2);
-
-                    // Filter by step if specified
-                    if (filter_by_step) {
-                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
-                        if (output_state.step != target_step) continue;
-                    }
-
-                    // Use effective state IDs based on canonicalization mode
-                    int64_t state1 = get_effective_state_id(event1.output_state);
-                    int64_t state2 = get_effective_state_id(event2.output_state);
-                    // Tooltip data: effective state IDs (matches graph vertices)
-                    wxf::WXFValueAssociation branchial_data;
-                    branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(state1)});
-                    branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(state2)});
-                    add_graph_edge(wxf::WXFValue(state1), wxf::WXFValue(state2), "Branchial", branchial_data);
-                }
-            }
-            else if (is_evolution) {
-                // === EVOLUTION GRAPH ===
-                // Vertices: states (tagged {"S", id}) + events (tagged {"E", id})
-                std::set<int64_t> state_ids;
-                std::map<int64_t, hypergraph::StateId> raw_states;
-                std::map<int64_t, hypergraph::EventId> event_verts;
-
-                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
-                    if (!is_valid_event(eid)) continue;
-                    const hypergraph::Event& e = hg.get_event(eid);
-                    // Track states using effective IDs for proper deduplication
-                    int64_t in_id = get_effective_state_id(e.input_state);
-                    int64_t out_id = get_effective_state_id(e.output_state);
-                    if (!raw_states.count(in_id)) raw_states[in_id] = e.input_state;
-                    if (!raw_states.count(out_id)) raw_states[out_id] = e.output_state;
-                    state_ids.insert(in_id);
-                    state_ids.insert(out_id);
-                    int64_t eff = get_effective_event_id(eid);
-                    if (!event_verts.count(eff)) event_verts[eff] = eid;
-                }
-
-                // Add state vertices
-                for (int64_t sid : state_ids) {
-                    wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
-                    vertices.push_back(wxf::WXFValue(tag));
-                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_state_data(raw_states[sid]))});
-                }
-                // Add event vertices
-                for (auto& [eff, raw] : event_verts) {
-                    wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
-                    vertices.push_back(wxf::WXFValue(tag));
-                    vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(serialize_event_data(raw))});
-                }
-
-                // Edges: state↔event from each event (use effective IDs for deduplication)
-                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
-                    if (!is_valid_event(eid)) continue;
-                    const hypergraph::Event& e = hg.get_event(eid);
-                    int64_t eff_eid = get_effective_event_id(eid);
-                    wxf::WXFValueList s_in = {wxf::WXFValue("S"), wxf::WXFValue(get_effective_state_id(e.input_state))};
-                    wxf::WXFValueList s_out = {wxf::WXFValue("S"), wxf::WXFValue(get_effective_state_id(e.output_state))};
-                    wxf::WXFValueList e_tag = {wxf::WXFValue("E"), wxf::WXFValue(eff_eid)};
-                    // Tooltip data: effective event ID (matches graph vertices)
-                    wxf::WXFValueAssociation edge_data;
-                    edge_data.push_back({wxf::WXFValue("EventId"), wxf::WXFValue(eff_eid)});
-                    add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
-                    add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
-                }
-
-                // Optional causal edges using shared helper
-                if (has_causal) {
-                    add_causal_edges();
-                }
-
-                // Optional branchial edges
-                if (has_branchial) {
-                    // Compute target step for filtering (same logic as BranchialGraph)
-                    uint32_t target_step = 0;
-                    bool filter_by_step = (branchial_step != 0);
-                    if (filter_by_step) {
-                        if (branchial_step > 0) {
-                            target_step = static_cast<uint32_t>(branchial_step);
-                        } else {
-                            target_step = static_cast<uint32_t>(steps + 1 + branchial_step);
-                        }
-                    }
-
-                    for (const auto& be : hg.causal_graph().get_branchial_edges()) {
-                        if (!show_genesis_events && (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2))) continue;
-
-                        // Filter by step if specified
-                        if (filter_by_step) {
-                            const hypergraph::Event& event1 = hg.get_event(be.event1);
-                            const hypergraph::State& output_state = hg.get_state(event1.output_state);
-                            if (output_state.step != target_step) continue;
-                        }
-
-                        int64_t from = get_effective_event_id(be.event1);
-                        int64_t to = get_effective_event_id(be.event2);
-                        wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
-                        wxf::WXFValueList to_tag = {wxf::WXFValue("E"), wxf::WXFValue(to)};
-                        // Tooltip data: effective event IDs (matches graph vertices)
-                        wxf::WXFValueAssociation branchial_data;
-                        branchial_data.push_back({wxf::WXFValue("Event1"), wxf::WXFValue(from)});
-                        branchial_data.push_back({wxf::WXFValue("Event2"), wxf::WXFValue(to)});
-                        add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Branchial", branchial_data);
-                    }
-                }
-            }
-
-                // Build GraphData association for this property
-                wxf::WXFValueAssociation graph_data;
-                graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
-                graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edges)});
-                graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(vertex_data)});
-                all_graph_data.push_back({wxf::WXFValue(graph_property), wxf::WXFValue(graph_data)});
-            }  // end for each graph_property
-
-            // Add keyed GraphData to result
-            full_result.push_back({wxf::WXFValue("GraphData"), wxf::WXFValue(all_graph_data)});
+            CpuGraphSource gsrc{hg, show_genesis_events,
+                get_effective_state_id, get_effective_event_id, is_valid_event,
+                serialize_state_data, serialize_event_data};
+            hgmarshal::GraphOptions gopts;
+            gopts.edge_deduplication = edge_deduplication;
+            gopts.branchial_step = branchial_step;
+            gopts.steps = steps;
+            full_result.push_back({wxf::WXFValue("GraphData"),
+                                   hgmarshal::build_graph_data(gsrc, graph_properties, gopts)});
         }
 
         // Only include counts when requested

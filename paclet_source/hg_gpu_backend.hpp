@@ -35,6 +35,14 @@ struct GpuJob {
     bool include_causal_edges = true;
     bool include_branchial_edges = true;
     bool include_canonical_hashes = false;
+
+    // Graph properties (StatesGraph / CausalGraph / BranchialGraph / Evolution* and
+    // their Structure variants) and the options that shape them. Marshalled through
+    // the shared hgmarshal::build_graph_data so GPU GraphData matches the CPU FFI.
+    std::vector<std::string> graph_properties;
+    bool edge_deduplication = true;
+    int  branchial_step = 0;      // 0=all, >0 1-based step, <0 from end (-1=final)
+    bool show_genesis_events = false;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same
