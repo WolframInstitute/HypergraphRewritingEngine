@@ -172,7 +172,11 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     uint64_t map_key, canonical_hash;
     switch (state_canonicalization_mode_.load(std::memory_order_acquire)) {
         case StateCanonicalizationMode::None:
-            map_key = static_cast<uint64_t>(new_sid);
+            // +1: the dedup key is the raw state id, and canonical_state_map_ reserves 0 as its
+            // EMPTY-slot sentinel. Without the offset the first state (id 0) keys to 0, which
+            // count_unique() cannot store or count, silently undercounting None by one. The offset
+            // keeps ids unique (None never dedups) while lifting id 0 off the sentinel.
+            map_key = static_cast<uint64_t>(new_sid) + 1;
             canonical_hash = wl_child();
             break;
         case StateCanonicalizationMode::Automatic:
@@ -185,6 +189,9 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             map_key = canonical_hash;
             break;
     }
+    // Any mode whose key hashes to 0 would hit the same EMPTY=0 sentinel; nudge it off (mirrors the
+    // GPU's h==0?1:h guard). None is already offset above, so this only ever affects a 0-valued hash.
+    if (map_key == 0) map_key = 1;
     states_[new_sid].canonical_hash = canonical_hash;
 
     // Try to insert into canonical map (lock-free, waiting for LOCKED slots)

@@ -128,9 +128,10 @@ TEST(WxfSerializationPin, DefaultStatesAndEvents) {
     int64_t num_states = read_int_key(out, "NumStates");
     int64_t num_events = read_int_key(out, "NumEvents");
 
-    // States carries every raw state; NumStates is the (smaller) canonical count.
+    // Default mode is CanonicalizeStates -> None: States carries every raw state and NumStates is
+    // the canonical count, which in None equals the raw count (every provenance is its own state).
     EXPECT_EQ(states_entries, 33);
-    EXPECT_EQ(num_states, 32);
+    EXPECT_EQ(num_states, 33);
     EXPECT_GT(events_entries, 0);
     EXPECT_GE(num_events, 0);
 
