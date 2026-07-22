@@ -38,8 +38,11 @@ function(find_linux_compiler)
         return()
     endif()
 
-    # Check if we're on WSL (can use native Linux tools)
-    if(EXISTS "/proc/sys/fs/binfmt_misc/WSLInterop")
+    # Check if we're on WSL (can use native Linux tools). Native tools only produce the
+    # HOST arch (x86_64); for a cross-arch target (e.g. aarch64) skip this and fall through
+    # to the ${ARCH_PREFIX}-gcc cross-compiler below, or WSL silently builds the wrong arch.
+    if(EXISTS "/proc/sys/fs/binfmt_misc/WSLInterop" AND
+       (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "amd64"))
         find_program(WSL_GCC gcc)
         find_program(WSL_GXX g++)
 
