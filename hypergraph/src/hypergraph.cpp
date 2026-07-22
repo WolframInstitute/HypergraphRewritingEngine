@@ -2,6 +2,7 @@
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
+#include "hypergraph/atomic_compat.hpp"
 #include <thread>
 
 namespace hypergraph {
@@ -219,7 +220,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
 
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
     if (canonical_id == INVALID_ID) return false;
-    std::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
+    hg::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
     uint32_t cur = known.load(std::memory_order_acquire);
     while (depth < cur) {
         if (known.compare_exchange_weak(cur, depth,
@@ -233,7 +234,7 @@ bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
 
 bool Hypergraph::try_claim_expanded(StateId canonical_id) {
     if (canonical_id == INVALID_ID) return false;
-    std::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
+    hg::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
     uint32_t expected = 0;
     return flag.compare_exchange_strong(expected, 1,
                                         std::memory_order_acq_rel,
@@ -242,7 +243,7 @@ bool Hypergraph::try_claim_expanded(StateId canonical_id) {
 
 uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
     if (canonical_id == INVALID_ID) return INVALID_ID;
-    std::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));
+    hg::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));
     return known.load(std::memory_order_acquire);
 }
 
@@ -257,7 +258,7 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     // is not a formal data race. On 64-bit targets the underlying load/store
     // are already single instructions, so this compiles to the same code plus
     // the appropriate fences.
-    std::atomic_ref<uint64_t> atomic_hash(state.canonical_hash);
+    hg::atomic_ref<uint64_t> atomic_hash(state.canonical_hash);
     uint64_t cached = atomic_hash.load(std::memory_order_acquire);
     if (cached != 0) {
         return cached;
