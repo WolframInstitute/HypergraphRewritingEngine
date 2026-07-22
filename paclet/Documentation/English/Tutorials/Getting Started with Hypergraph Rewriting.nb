@@ -1,0 +1,729 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Wolfram 14.3' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       154,          7]
+NotebookDataLength[     25842,        720]
+NotebookOptionsPosition[     19634,        610]
+NotebookOutlinePosition[     20612,        639]
+CellTagsIndexPosition[     20569,        636]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+
+Cell[CellGroupData[{
+Cell["Getting Started with Hypergraph Rewriting", "Title",
+ CellID->509267359,ExpressionUUID->"4ddb5767-1f00-4973-a411-49eacd07850d"],
+
+Cell["\<\
+This tutorial walks through the core workflow: define a rule, evolve a \
+hypergraph in all possible ways, and inspect the resulting states, causal, \
+and branchial structure.\
+\>", "Text",ExpressionUUID->"58f261dd-b773-3b41-bb70-2874fb15d561"],
+
+Cell["A first evolution", "Section",ExpressionUUID->"76be58a3-37a6-8b44-bf96-b243aaf9d09a"],
+
+Cell[TextData[{
+ "A rewrite rule is written ",
+ Cell[BoxData[
+  RowBox[{"lhs", " ", "->", " ", "rhs"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "6093b3dd-3611-4f4e-924e-9b537981e21c"],
+ ". Each side is a list of hyperedges, and each hyperedge is a list of \
+vertices. This rule rewrites a single edge into two:"
+}], "Text",ExpressionUUID->"a80c539d-0627-884b-9395-77ce81b03395"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4"}], 
+  "]"}]], "Input",
+ CellLabel->"In[1]:= ",ExpressionUUID->"6dd0d050-7102-2b4f-99ba-d1bec98e0f13"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "4"}], "]"}]], "Output",
+ CellLabel->"Out[1]= ",ExpressionUUID->"ff3cc8e3-92e3-264e-b19b-14d8a9a3269d"]
+}, Open  ]],
+
+Cell[TextData[{
+ "The second argument is the initial state (a list of hyperedges); the third \
+is the number of steps. By default ",
+ Cell[BoxData["HGEvolve"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "9127287e-47a6-7f48-93d5-dce9a68541da"],
+ " returns the combined evolution/causal/branchial graph."
+}], "Text",ExpressionUUID->"2d1f7701-aecb-5b47-9a64-6fa1e3b78048"],
+
+Cell["Choosing what to return", "Section",ExpressionUUID->"a5ec7e0a-08ad-6d4e-afcf-b3768b84ec0d"],
+
+Cell["\<\
+Pass a property string as the fourth argument to select the output:\
+\>", "Text",ExpressionUUID->"cb703e2a-55ec-8c43-84eb-add645ec35e6"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4", ",", 
+   " ", "\"\<StatesGraph\>\""}], "]"}], "\n", 
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4", ",", 
+   " ", "\"\<CausalGraph\>\""}], "]"}], "\n", 
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4", ",", 
+   " ", "\"\<NumStates\>\""}], "]"}]}], "Input",
+ CellLabel->"In[2]:= ",ExpressionUUID->"e6ec8cb9-7e7d-3343-ad7d-0b12d85f2586"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "4", 
+   ",", "\<\"StatesGraph\"\>"}], "]"}]], "Output",
+ CellLabel->
+  "Out[2@1]= ",ExpressionUUID->"b1381689-15cf-7241-9569-3110cc900f43"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "4", 
+   ",", "\<\"CausalGraph\"\>"}], "]"}]], "Output",
+ CellLabel->
+  "Out[2@2]= ",ExpressionUUID->"6ffccf5f-6521-ff4c-896b-c795fa7a618f"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "4", 
+   ",", "\<\"NumStates\"\>"}], "]"}]], "Output",
+ CellLabel->
+  "Out[2@3]= ",ExpressionUUID->"bf6922d1-e1e0-e641-a1a3-1731d1317b6a"]
+}, Open  ]],
+
+Cell[TextData[{
+ "Common properties include ",
+ Cell[BoxData["\"\<States\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "ad2d37a4-525a-2b45-a940-f8db56cb2ae5"],
+ ", ",
+ Cell[BoxData["\"\<Events\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "3ffed40b-a82b-3646-ba43-f29331f294e2"],
+ ", ",
+ Cell[BoxData["\"\<StatesGraph\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "47330edc-4e94-7540-bb44-c2b015875a60"],
+ ", ",
+ Cell[BoxData["\"\<CausalGraph\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "c405dab4-701b-7b41-bbc4-ab597ef97f25"],
+ ", ",
+ Cell[BoxData["\"\<BranchialGraph\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "17d7c697-6431-c442-ac11-88e097a91ee9"],
+ ", and the counts ",
+ Cell[BoxData["\"\<NumStates\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "c8c8b620-a177-a740-afaf-d1a5a22492a3"],
+ ", ",
+ Cell[BoxData["\"\<NumEvents\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "09aa6601-81e8-9c46-a5f4-8051540ffd07"],
+ "."
+}], "Text",ExpressionUUID->"bb5f3dda-d7a6-2346-bac5-af3ce5a26ae1"],
+
+Cell["Identifying isomorphic states", "Section",ExpressionUUID->"b113ce09-fe2a-3b44-bf2d-bab4847c882f"],
+
+Cell[TextData[{
+ "By default every distinct provenance is a separate state. Set ",
+ Cell[BoxData["\"\<CanonicalizeStates\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "e646a342-9ee3-1946-87b3-6b2ed3e23b38"],
+ " to ",
+ Cell[BoxData["Full"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "58ee88d3-14ed-b542-b9d7-5f7e212b3921"],
+ " to identify states that are the same up to isomorphism, collapsing the \
+multiway graph:"
+}], "Text",ExpressionUUID->"cee7842a-496a-f948-84cb-fe62a3d8323c"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4", ",", 
+   " ", "\"\<NumStates\>\"", ",", " ", 
+   RowBox[{"\"\<CanonicalizeStates\>\"", " ", "->", " ", "Full"}]}], 
+  "]"}]], "Input",
+ CellLabel->"In[3]:= ",ExpressionUUID->"0fc62f28-7a31-a145-aac5-343211428361"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "4", 
+   ",", "\<\"NumStates\"\>", ",", 
+   RowBox[{"\<\"CanonicalizeStates\"\>", "\[Rule]", "Full"}]}], 
+  "]"}]], "Output",
+ CellLabel->"Out[3]= ",ExpressionUUID->"af8cb6b6-2a53-b04c-902f-a062d7e63a1e"]
+}, Open  ]],
+
+Cell[TextData[{
+ Cell[BoxData["Automatic"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "95f33214-812f-a242-a814-03739db473c4"],
+ " uses a faster content hash (which may merge some non-isomorphic states); \
+",
+ Cell[BoxData["Full"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "93fbb855-2487-7d44-87e9-b0e6a86bd485"],
+ " is exact."
+}], "Text",ExpressionUUID->"b990141a-d365-1e41-bf48-04b1d4af1a89"],
+
+Cell["The canonical Wolfram Physics rule", "Section",ExpressionUUID->"4af20296-ca79-0340-ae02-c2328c2d0872"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "4"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "4"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"3", ",", " ", "4"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], ",", " ", "5", ",", 
+   " ", "\"\<StatesGraph\>\""}], "]"}]], "Input",
+ CellLabel->"In[4]:= ",ExpressionUUID->"42ea4a5c-f221-f147-af7e-013d3778db17"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", "3"}], "}"}]}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", "4"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "4"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"3", ",", "4"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], ",", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "3"}], "}"}]}], "}"}], ",", "5", 
+   ",", "\<\"StatesGraph\"\>"}], "]"}]], "Output",
+ CellLabel->"Out[4]= ",ExpressionUUID->"a30d2f01-9000-a94d-a91d-7972b569004c"]
+}, Open  ]],
+
+Cell["Structured initial conditions", "Section",ExpressionUUID->"e943e7e3-a524-b844-bae5-9e98625a8090"],
+
+Cell[TextData[{
+ "Instead of an explicit edge list, use an initial-condition generator or a \
+named condition. Visualize one with ",
+ Cell[BoxData["HGToGraph"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "e57fad04-8fd3-3f44-bb68-a3c9613a9edc"],
+ ":"
+}], "Text",ExpressionUUID->"0cac1a83-cc2b-e445-a6e5-46d040f3794a"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{"HGToGraph", "[", 
+  RowBox[{"HGGrid", "[", 
+   RowBox[{"8", ",", " ", "8"}], "]"}], "]"}], "\n", 
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"HGGrid", "[", 
+    RowBox[{"8", ",", " ", "8"}], "]"}], ",", " ", "2", ",", 
+   " ", "\"\<NumStates\>\""}], "]"}]}], "Input",
+ CellLabel->"In[5]:= ",ExpressionUUID->"b87ede5c-204c-8445-8590-d2fa501e5f13"],
+
+Cell[BoxData[
+ RowBox[{"HGToGraph", "[", 
+  RowBox[{"HGGrid", "[", 
+   RowBox[{"8", ",", "8"}], "]"}], "]"}]], "Output",
+ CellLabel->
+  "Out[5@1]= ",ExpressionUUID->"c336e1b3-db5d-924b-8f61-b8344cb6b81f"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"HGGrid", "[", 
+    RowBox[{"8", ",", "8"}], "]"}], ",", "2", ",", "\<\"NumStates\"\>"}], 
+  "]"}]], "Output",
+ CellLabel->
+  "Out[5@2]= ",ExpressionUUID->"063603cb-3935-3745-9a55-4852950e6d4a"]
+}, Open  ]],
+
+Cell[TextData[{
+ "See also ",
+ Cell[BoxData["HGTorus"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "a9747d3e-2a63-3745-9c3a-1bf87ad0e532"],
+ ", ",
+ Cell[BoxData["HGSphere"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "5a066d9e-46b3-8043-9698-6431d4dd3558"],
+ ", ",
+ Cell[BoxData["HGCylinder"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "63217127-22ba-584d-8101-692b23681ed2"],
+ ", ",
+ Cell[BoxData["HGMinkowskiSprinkling"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "3bdc9a79-0a3e-7440-9f2e-f47e6d5f06af"],
+ ", and the other generators."
+}], "Text",ExpressionUUID->"d81e98d5-ce3a-d241-973e-793dac2ea4cd"],
+
+Cell["Running on the GPU", "Section",ExpressionUUID->"8da10b8d-0b75-bb49-bbf8-58f8b65a0c4e"],
+
+Cell[TextData[{
+ "Where a GPU build is bundled, evolve on the GPU with ",
+ Cell[BoxData[
+  RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<GPU\>\""}]], 
+  "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "fe3bc4dd-343b-8045-993d-b9243d67e72a"],
+ " (it falls back to the CPU with a message if no GPU binary is present):"
+}], "Text",ExpressionUUID->"a04bad0b-6d5c-744d-b835-1d65b845f2fb"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "5", ",", 
+   " ", "\"\<NumStates\>\"", ",", " ", 
+   RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<GPU\>\""}]}], 
+  "]"}]], "Input",
+ CellLabel->"In[6]:= ",ExpressionUUID->"d892c3d3-8d73-ca44-abb2-6d1333f34ac0"],
+
+Cell[BoxData[
+ RowBox[{"HGEvolve", "[", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", "2"}], "}"}], "}"}], "\[Rule]", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", "2"}], "}"}], ",", 
+      RowBox[{"{", 
+       RowBox[{"2", ",", "3"}], "}"}]}], "}"}]}], ",", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", "2"}], "}"}], "}"}], ",", "5", 
+   ",", "\<\"NumStates\"\>", ",", 
+   RowBox[{"\<\"TargetDevice\"\>", "\[Rule]", "\<\"GPU\"\>"}]}], 
+  "]"}]], "Output",
+ CellLabel->"Out[6]= ",ExpressionUUID->"7c8a5cd0-0301-3144-9265-9188f2cab610"]
+}, Open  ]],
+
+Cell["Next steps", "Section",ExpressionUUID->"647cbf66-bb3f-cd49-b284-692109ede705"],
+
+Cell[TextData[{
+ "See the ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "534bdd8e-a8db-e349-a2aa-0fb3322db337"],
+ " reference page for the full option list, and ",
+ Cell[BoxData[
+  RowBox[{"Options", "[", "HGEvolve", "]"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "27fa81d2-dba2-8042-8835-67fddd40ea14"],
+ " in a session."
+}], "Text",ExpressionUUID->"6792e44a-c95b-8d4a-bb0a-82144db07f71"],
+
+Cell["Related Guides", "TutorialMoreAboutSection",
+ CellChangeTimes->{{3.843042384656711*^9, 3.843042386024461*^9}},
+ CellID->23220180,ExpressionUUID->"5257eb3e-c622-464d-9014-cc39ccdeadf5"],
+
+Cell["Related Tech Notes", "RelatedTutorialsSection",
+ CellID->415694126,ExpressionUUID->"b2e45423-8573-455e-a176-5d94c88daeca"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["Metadata", "MetadataSection",
+ CellID->311882160,ExpressionUUID->"38acdcf9-123b-4203-93d8-59fc1f9c4ab9"],
+
+Cell[TextData[{
+ "New in: ",
+ Cell["XX", "HistoryData",
+  CellTags->"New",ExpressionUUID->"9e04c779-a98d-4274-b63e-a9437d005a21"],
+ " | Modified in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Modified",ExpressionUUID->"e5363c95-b3fd-42e2-a6c8-60e1218df4dd"],
+ " | Obsolete in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Obsolete",ExpressionUUID->
+  "991fde72-3054-4dea-97b6-83b389d54674"]
+}], "History",
+ CellID->341476719,ExpressionUUID->"72ab9502-89c9-4b16-9ce4-9a5270f3244a"],
+
+Cell[CellGroupData[{
+
+Cell["Categorization", "CategorizationSection",
+ CellID->1122911449,ExpressionUUID->"92ac9f0b-ee9b-473e-a1b0-116a912bcdd0"],
+
+Cell["Tech Note", "Categorization",
+ CellLabel->"Entity Type",
+ CellID->686433507,ExpressionUUID->"42f179a2-5985-429e-8a53-eaef0eb8edd1"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine", "Categorization",
+ CellLabel->"Paclet Name",
+ CellID->605800465,ExpressionUUID->"5ee37782-a9f3-410a-9c77-31ee5fde0f9c"],
+
+Cell["HypergraphRewriting`", "Categorization",
+ CellLabel->"Context",
+ CellID->468444828,ExpressionUUID->"ede4e8bf-a791-499c-bac0-9252a967c621"],
+
+Cell["\<\
+WolframInstitute/HypergraphRewriteEngine/tutorial/GettingStarted\
+\>", "Categorization",
+ CellLabel->"URI",ExpressionUUID->"70673c8d-b1cb-9a44-bf5a-f5c9818dae7b"]
+}, Closed]],
+
+Cell[CellGroupData[{
+
+Cell["Keywords", "KeywordsSection",
+ CellID->1427428552,ExpressionUUID->"cad3e2f5-97ed-4ec0-b746-8f0b1d4c7db5"],
+
+Cell["hypergraph", "Keywords",
+ CellID->1251852827,ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd"],
+
+Cell["multiway", "Keywords",
+ CellID->1251852827,ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd"],
+
+Cell["rewriting", "Keywords",
+ CellID->1251852827,ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd"],
+
+Cell["tutorial", "Keywords",
+ CellID->1251852827,ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd"],
+
+Cell["Wolfram physics", "Keywords",
+ CellID->1251852827,ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd"]
+}, Closed]]
+}, Open  ]]
+},
+WindowSize->{700, 771},
+WindowMargins->{{4, Automatic}, {Automatic, 0}},
+TaggingRules->{
+ "Metadata" -> {
+   "title" -> "Getting Started with Hypergraph Rewriting", "context" -> 
+    "HypergraphRewriting`", 
+    "keywords" -> {
+     "hypergraph", "multiway", "rewriting", "tutorial", "Wolfram physics"}, 
+    "summary" -> "", "paclet" -> "WolframInstitute/HypergraphRewriteEngine", 
+    "uri" -> "WolframInstitute/HypergraphRewriteEngine/tutorial/\
+GettingStarted", "type" -> "Tech Note", "index" -> True, "language" -> 
+    "en"}},
+CreateCellID->True,
+CellContext->CellGroup,
+FrontEndVersion->"14.3 for Microsoft Windows (64-bit) (July 8, 2025)",
+StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "TechNotePageStylesExt.nb", 
+  CharacterEncoding -> "UTF-8"],
+ExpressionUUID->"d301168b-d1fb-48ec-b587-e40ee4be4221"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{}
+*)
+(*CellTagsIndex
+CellTagsIndex->{}
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[CellGroupData[{
+Cell[576, 22, 133, 1, 70, "Title",ExpressionUUID->"4ddb5767-1f00-4973-a411-49eacd07850d",
+ CellID->509267359],
+Cell[712, 25, 253, 4, 70, "Text",ExpressionUUID->"58f261dd-b773-3b41-bb70-2874fb15d561"],
+Cell[968, 31, 91, 0, 70, "Section",ExpressionUUID->"76be58a3-37a6-8b44-bf96-b243aaf9d09a"],
+Cell[1062, 33, 401, 8, 70, "Text",ExpressionUUID->"a80c539d-0627-884b-9395-77ce81b03395"],
+Cell[CellGroupData[{
+Cell[1488, 45, 560, 17, 70, "Input",ExpressionUUID->"6dd0d050-7102-2b4f-99ba-d1bec98e0f13"],
+Cell[2051, 64, 518, 16, 70, "Output",ExpressionUUID->"ff3cc8e3-92e3-264e-b19b-14d8a9a3269d"]
+}, Open  ]],
+Cell[2584, 83, 388, 7, 70, "Text",ExpressionUUID->"2d1f7701-aecb-5b47-9a64-6fa1e3b78048"],
+Cell[2975, 92, 97, 0, 70, "Section",ExpressionUUID->"a5ec7e0a-08ad-6d4e-afcf-b3768b84ec0d"],
+Cell[3075, 94, 146, 2, 70, "Text",ExpressionUUID->"cb703e2a-55ec-8c43-84eb-add645ec35e6"],
+Cell[CellGroupData[{
+Cell[3246, 100, 1592, 49, 70, "Input",ExpressionUUID->"e6ec8cb9-7e7d-3343-ad7d-0b12d85f2586"],
+Cell[4841, 151, 555, 18, 70, "Output",ExpressionUUID->"b1381689-15cf-7241-9569-3110cc900f43"],
+Cell[5399, 171, 555, 18, 70, "Output",ExpressionUUID->"6ffccf5f-6521-ff4c-896b-c795fa7a618f"],
+Cell[5957, 191, 553, 18, 70, "Output",ExpressionUUID->"bf6922d1-e1e0-e641-a1a3-1731d1317b6a"]
+}, Open  ]],
+Cell[6525, 212, 1151, 30, 70, "Text",ExpressionUUID->"bb5f3dda-d7a6-2346-bac5-af3ce5a26ae1"],
+Cell[7679, 244, 103, 0, 70, "Section",ExpressionUUID->"b113ce09-fe2a-3b44-bf2d-bab4847c882f"],
+Cell[7785, 246, 525, 11, 70, "Text",ExpressionUUID->"cee7842a-496a-f948-84cb-fe62a3d8323c"],
+Cell[CellGroupData[{
+Cell[8335, 261, 673, 19, 70, "Input",ExpressionUUID->"0fc62f28-7a31-a145-aac5-343211428361"],
+Cell[9011, 282, 619, 19, 70, "Output",ExpressionUUID->"af8cb6b6-2a53-b04c-902f-a062d7e63a1e"]
+}, Open  ]],
+Cell[9645, 304, 434, 10, 70, "Text",ExpressionUUID->"b990141a-d365-1e41-bf48-04b1d4af1a89"],
+Cell[10082, 316, 108, 0, 70, "Section",ExpressionUUID->"4af20296-ca79-0340-ae02-c2328c2d0872"],
+Cell[CellGroupData[{
+Cell[10215, 320, 927, 27, 70, "Input",ExpressionUUID->"42ea4a5c-f221-f147-af7e-013d3778db17"],
+Cell[11145, 349, 843, 27, 70, "Output",ExpressionUUID->"a30d2f01-9000-a94d-a91d-7972b569004c"]
+}, Open  ]],
+Cell[12003, 379, 103, 0, 70, "Section",ExpressionUUID->"e943e7e3-a524-b844-bae5-9e98625a8090"],
+Cell[12109, 381, 335, 7, 70, "Text",ExpressionUUID->"0cac1a83-cc2b-e445-a6e5-46d040f3794a"],
+Cell[CellGroupData[{
+Cell[12469, 392, 686, 19, 70, "Input",ExpressionUUID->"b87ede5c-204c-8445-8590-d2fa501e5f13"],
+Cell[13158, 413, 204, 5, 70, "Output",ExpressionUUID->"c336e1b3-db5d-924b-8f61-b8344cb6b81f"],
+Cell[13365, 420, 536, 17, 70, "Output",ExpressionUUID->"063603cb-3935-3745-9a55-4852950e6d4a"]
+}, Open  ]],
+Cell[13916, 440, 682, 18, 70, "Text",ExpressionUUID->"d81e98d5-ce3a-d241-973e-793dac2ea4cd"],
+Cell[14601, 460, 92, 0, 70, "Section",ExpressionUUID->"8da10b8d-0b75-bb49-bbf8-58f8b65a0c4e"],
+Cell[14696, 462, 404, 8, 70, "Text",ExpressionUUID->"a04bad0b-6d5c-744d-b835-1d65b845f2fb"],
+Cell[CellGroupData[{
+Cell[15125, 474, 674, 19, 70, "Input",ExpressionUUID->"d892c3d3-8d73-ca44-abb2-6d1333f34ac0"],
+Cell[15802, 495, 620, 19, 70, "Output",ExpressionUUID->"7c8a5cd0-0301-3144-9265-9188f2cab610"]
+}, Open  ]],
+Cell[16437, 517, 84, 0, 70, "Section",ExpressionUUID->"647cbf66-bb3f-cd49-b284-692109ede705"],
+Cell[16524, 519, 658, 17, 70, "Text",ExpressionUUID->"6792e44a-c95b-8d4a-bb0a-82144db07f71"],
+Cell[17185, 538, 190, 2, 70, "TutorialMoreAboutSection",ExpressionUUID->"5257eb3e-c622-464d-9014-cc39ccdeadf5",
+ CellID->23220180],
+Cell[17378, 542, 128, 1, 70, "RelatedTutorialsSection",ExpressionUUID->"b2e45423-8573-455e-a176-5d94c88daeca",
+ CellID->415694126]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[17543, 548, 110, 1, 70, "MetadataSection",ExpressionUUID->"38acdcf9-123b-4203-93d8-59fc1f9c4ab9",
+ CellID->311882160],
+Cell[17656, 551, 476, 12, 70, "History",ExpressionUUID->"72ab9502-89c9-4b16-9ce4-9a5270f3244a",
+ CellID->341476719],
+Cell[CellGroupData[{
+Cell[18157, 567, 123, 1, 70, "CategorizationSection",ExpressionUUID->"92ac9f0b-ee9b-473e-a1b0-116a912bcdd0",
+ CellID->1122911449],
+Cell[18283, 570, 137, 2, 70, "Categorization",ExpressionUUID->"42f179a2-5985-429e-8a53-eaef0eb8edd1",
+ CellID->686433507],
+Cell[18423, 574, 168, 2, 70, "Categorization",ExpressionUUID->"5ee37782-a9f3-410a-9c77-31ee5fde0f9c",
+ CellID->605800465],
+Cell[18594, 578, 144, 2, 70, "Categorization",ExpressionUUID->"ede4e8bf-a791-499c-bac0-9252a967c621",
+ CellID->468444828],
+Cell[18741, 582, 172, 3, 70, "Categorization",ExpressionUUID->"70673c8d-b1cb-9a44-bf5a-f5c9818dae7b"]
+}, Closed]],
+Cell[CellGroupData[{
+Cell[18950, 590, 111, 1, 70, "KeywordsSection",ExpressionUUID->"cad3e2f5-97ed-4ec0-b746-8f0b1d4c7db5",
+ CellID->1427428552],
+Cell[19064, 593, 106, 1, 70, "Keywords",ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd",
+ CellID->1251852827],
+Cell[19173, 596, 104, 1, 70, "Keywords",ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd",
+ CellID->1251852827],
+Cell[19280, 599, 105, 1, 70, "Keywords",ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd",
+ CellID->1251852827],
+Cell[19388, 602, 104, 1, 70, "Keywords",ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd",
+ CellID->1251852827],
+Cell[19495, 605, 111, 1, 70, "Keywords",ExpressionUUID->"7d839546-a25f-4ff1-84c3-c40cc0be71bd",
+ CellID->1251852827]
+}, Closed]]
+}, Open  ]]
+}
+]
+*)
+
+(* End of internal cache information *)
