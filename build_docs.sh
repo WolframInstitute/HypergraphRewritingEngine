@@ -49,10 +49,36 @@ if [[ "$WS_KIND" == windows ]]; then
     mkdir -p "$STAGE_WSL"
     echo "==> building documentation notebooks (${MODE:-full evaluation}) [staged via $STAGE_WIN]"
     "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} "out=$STAGE_WIN"
-    echo "==> copying notebooks into $ENGLISH/"
-    mkdir -p "$ENGLISH"
-    cp -rf "$STAGE_WSL"/. "$ENGLISH"/
-    rm -rf "$STAGE_WSL"
+
+    # Place each notebook into English/ WITHOUT a truncating overwrite. A notebook open in the
+    # front end holds a 9P lock: `cp -f` onto it triggers its --force behaviour (remove a dest it
+    # cannot open, then fail to recreate under the lock) and DESTROYS the file. So copy the stage
+    # onto ext4 first (fresh files, no lock), then move each notebook into English/ with a
+    # same-filesystem rename — rename replaces the directory entry without opening the target, so
+    # an open-in-front-end notebook is updated cleanly (the front end keeps the old inode).
+    echo "==> placing notebooks into $ENGLISH/"
+    EXT4_STAGE="paclet/Documentation/.english_stage"
+    rm -rf "$EXT4_STAGE"
+    cp -rf "$STAGE_WSL"/. "$EXT4_STAGE"/
+    placed=0
+    failed_place=()
+    while IFS= read -r -d '' src; do
+        rel="${src#"$EXT4_STAGE"/}"
+        dst="$ENGLISH/$rel"
+        mkdir -p "$(dirname "$dst")"
+        if mv -f "$src" "$dst" 2>/dev/null; then
+            placed=$((placed + 1))
+        else
+            failed_place+=("$rel")
+        fi
+    done < <(find "$EXT4_STAGE" -type f -print0)
+    rm -rf "$EXT4_STAGE" "$STAGE_WSL"
+    echo "==> placed $placed notebook(s)"
+    if ((${#failed_place[@]})); then
+        echo "error: could not place ${#failed_place[@]} notebook(s) into $ENGLISH/:" >&2
+        printf '   %s\n' "${failed_place[@]}" >&2
+        exit 1
+    fi
 else
     echo "==> building documentation notebooks (${MODE:-full evaluation})"
     "$WS_EXE" -file "$SCRIPT" ${MODE:+"$MODE"}

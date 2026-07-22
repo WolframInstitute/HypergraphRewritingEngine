@@ -20,3 +20,6 @@
 # of truth. Mirrors WolframInstitute/MarkdownToNotebook's own paclets (e.g. AccessibleColors).
 /paclet/Documentation/Source/generated/
 /paclet/Documentation/English/**/*.nb
+# build_docs.sh's transient ext4 landing dir (cp from the Windows-local stage before the
+# atomic rename into English/); normally auto-removed, ignored so a crashed run leaves no trace.
+/paclet/Documentation/.english_stage/
