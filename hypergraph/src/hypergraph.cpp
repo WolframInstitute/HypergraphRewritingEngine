@@ -240,6 +240,12 @@ bool Hypergraph::try_claim_expanded(StateId canonical_id) {
                                         std::memory_order_acquire);
 }
 
+uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
+    if (canonical_id == INVALID_ID) return INVALID_ID;
+    std::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));
+    return known.load(std::memory_order_acquire);
+}
+
 uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     if (state_id == INVALID_ID) return 0;
 

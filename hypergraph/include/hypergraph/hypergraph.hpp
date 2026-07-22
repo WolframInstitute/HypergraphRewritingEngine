@@ -533,6 +533,12 @@ public:
     bool try_lower_explore_depth(StateId canonical_id, uint32_t depth);
     bool try_claim_expanded(StateId canonical_id);
 
+    // Current shortest known depth of a canonical state (INVALID_ID until first relaxed).
+    // A child's arrival depth is derived from its parent's live minimum here, so that a
+    // later shorter path to the parent pulls the child's subtree into budget even after the
+    // parent was first expanded at a deeper claim depth.
+    uint32_t explore_depth_of(StateId canonical_id) const;
+
     // Number of unique canonical states
     // Uses count_unique() for accurate counting after evolution completes,
     // handling the case where ConcurrentMap may have duplicate keys due to

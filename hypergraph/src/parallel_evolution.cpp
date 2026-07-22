@@ -1060,6 +1060,12 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
     // Depth strictly decreases on every accepted relaxation and is bounded below by zero,
     // so this terminates. Matching still runs at most once per canonical state, because
     // the claim is separate from the depth.
+    // The caller has already lowered canonical_state's depth. Order that store before the
+    // scan of its child list so a child registered concurrently (which pushes itself, then
+    // reads this parent's depth, both across a seq_cst fence) is either seen here or sees
+    // the lowered depth itself -- never stranded at a stale depth. Same fence guards each
+    // deeper scan against its own just-completed relaxation store.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
     if (!kids) return;
 
@@ -1078,6 +1084,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
         if (d < budget && hg_->try_claim_expanded(s) && should_explore()) {
             submit_match_task(s, d + 1);  // a canonical state is its own representative
         }
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
             more->for_each([&](StateId child) { pending.emplace_back(child, d + 1); });
         }
@@ -1433,13 +1440,30 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         // rewrite's match context, which is what lets forwarding skip a full rematch.
         if (explore_from_canonical_states_only_) {
             const StateId parent_canonical = hg_->get_canonical_state(match.source_state);
+            // Publish the canonical transition BEFORE reading the parent's depth. A racing
+            // relaxation of the parent lowers the parent's depth and then scans this child
+            // list; this side pushes the child and then reads the parent's depth. The
+            // seq_cst fences on both sides forbid the outcome where the scan misses this
+            // child AND this read misses the lowered depth, so the child always learns the
+            // parent's true minimum depth even across the publish/relax race.
             canon_children_.get_or_default(parent_canonical, hg_->arena())
                            .push(rr.new_state, hg_->arena());
+            std::atomic_thread_fence(std::memory_order_seq_cst);
 
-            if (!hg_->try_lower_explore_depth(rr.new_state, step)) return;
+            // The child's arrival depth is one past the parent's CURRENT minimum depth, not
+            // the depth the parent happened to be expanded at. A shorter path to the parent
+            // found after it was first expanded must pull the child (and its subtree) into
+            // budget; deriving the depth from the parent's live minimum, together with the
+            // relaxation cascade below, makes expansion depend only on the shortest-path
+            // depth, never on the order arrivals race.
+            const uint32_t parent_depth = hg_->explore_depth_of(parent_canonical);
+            const uint32_t child_depth =
+                (parent_depth == INVALID_ID) ? step : parent_depth + 1;
+
+            if (!hg_->try_lower_explore_depth(rr.new_state, child_depth)) return;
 
             const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
-            if (step < budget && hg_->try_claim_expanded(rr.new_state)) {
+            if (child_depth < budget && hg_->try_claim_expanded(rr.new_state)) {
                 // Exploration-probability pruning: flip the coin ONCE per canonical
                 // state, at its first (shortest-depth) claim, so a state reached by N
                 // transitions is kept with probability p, not 1-(1-p)^N. Matches the
@@ -1450,12 +1474,12 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                         register_child_with_parent(
                             match.source_state, rr.raw_state,
                             match.matched_edges(), match.num_edges(),
-                            step);
+                            child_depth);
                     }
-                    submit_match_task_with_context(rr.raw_state, step + 1, ctx);
+                    submit_match_task_with_context(rr.raw_state, child_depth + 1, ctx);
                 }
             }
-            propagate_explore_depth(rr.new_state, step);
+            propagate_explore_depth(rr.new_state, child_depth);
             return;
         }
 

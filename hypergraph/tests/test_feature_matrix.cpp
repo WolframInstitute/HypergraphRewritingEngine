@@ -193,11 +193,11 @@ TEST(FeatureMatrix, FullModeOracleExactAllThreads) {
 // are NOT asserted; canonical_states and events are the online quotient invariants.
 // -----------------------------------------------------------------------------
 TEST(FeatureMatrix, QuotientMatchesFullClosureAndDeterministic) {
-    // Checked at the oracle depth, where the corpus workloads reach their canonical
-    // closure within budget. (At the deeper measurement depth the step budget truncates
-    // mid-closure and the quotient depth-relaxation vs budget-cutoff interaction makes the
-    // reached canonical set scheduling-dependent under multithreading -- a quotient/budget
-    // property independent of the lock-free hot-path hardening; see the escalation note.)
+    // Checked at the oracle depth, where the corpus workloads reach their canonical closure
+    // within budget, so the quotient closure equals the full closure exactly. The
+    // truncated-budget regime (step budget shorter than the closure depth), where a state
+    // can be reached out of budget and later relaxed in, is covered separately by
+    // QuotientTruncatedBudgetCompleteAndDeterministic.
     for (const auto& c : oracle::corpus()) {
         int steps = c.oracle_steps;
         Config full{StateCanonicalizationMode::Full, EVENT_SIG_NONE, /*quotient=*/false};
@@ -213,6 +213,48 @@ TEST(FeatureMatrix, QuotientMatchesFullClosureAndDeterministic) {
             std::string ctx = std::string(c.name) + " quotient threads=" + std::to_string(t);
             EXPECT_EQ(got.canonical_states, ref.canonical_states) << ctx << " canonical_states";
             EXPECT_EQ(got.events, ref.events) << ctx << " events";
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Truncated-budget quotient completeness under multithreading. When the step budget is
+// STRICTLY SHORTER than the canonical closure depth, a canonical state can first be
+// reached out of budget and only later relaxed to an in-budget depth. The invariant: a
+// canonical state is expanded IFF its minimum-over-all-arrival-paths depth is < budget --
+// a shortest-path property of the multiway graph, so the reached canonical set is complete
+// and identical at every thread count regardless of the order arrivals race.
+//
+// The completeness anchor is the full (non-quotient) expansion at the SAME truncated
+// budget: it reaches exactly the canonical states whose shortest raw path is within
+// budget, which is the same set the quotient must reach. Repeated many times per thread
+// count to stress the depth-relaxation vs expansion-claim race.
+// -----------------------------------------------------------------------------
+TEST(FeatureMatrix, QuotientTruncatedBudgetCompleteAndDeterministic) {
+    Config full{StateCanonicalizationMode::Full, EVENT_SIG_NONE, /*quotient=*/false};
+    Config quot{StateCanonicalizationMode::Full, EVENT_SIG_NONE, /*quotient=*/true};
+
+    for (const auto& c : oracle::corpus()) {
+        // measure_steps truncates several corpus workloads mid-closure (e.g. multi-rule
+        // reaches its closure well past step 4), which is exactly the regime that exposes
+        // the relaxation/budget race.
+        const int steps = c.measure_steps;
+
+        // Independent completeness reference: full expansion reaches every canonical state
+        // whose shortest path is within budget -- the complete in-budget canonical set.
+        const size_t complete_ref = run_counts(c.rules, c.init, steps, 4, full).canonical_states;
+
+        const size_t quot_1t = run_counts(c.rules, c.init, steps, 1, quot).canonical_states;
+        EXPECT_EQ(quot_1t, complete_ref)
+            << c.name << ": 1-thread quotient in-budget set != full in-budget closure";
+
+        for (unsigned t : {1u, 4u, 8u, 16u}) {
+            for (int rep = 0; rep < 40; ++rep) {
+                const size_t got = run_counts(c.rules, c.init, steps, t, quot).canonical_states;
+                ASSERT_EQ(got, complete_ref)
+                    << c.name << " quotient truncated-budget threads=" << t
+                    << " rep=" << rep << " canonical_states";
+            }
         }
     }
 }

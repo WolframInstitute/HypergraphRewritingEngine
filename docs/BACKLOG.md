@@ -111,13 +111,16 @@ Legend: [x] done · [~] in progress · [ ] not started.
   `memcpy`, guarded `len>0` at the 3 read sites), clean after; **feature-combination matrix** added
   (`test_feature_matrix.cpp`: canon modes × event-canon × 1/4/8/16 threads, quotient, multi-initial,
   uniform-random — oracle-checked). 189 tests.
-- [ ] **Quotient + multithread + TRUNCATED budget → nondeterministic/incomplete** (found in hardening;
-  a deeper-budget re-manifestation of [[project-quotient-completeness-gap]], which prior probing had
-  marked non-reproducing). Repro: multi-rule, Full, `explore_from_canonical_states_only(true)`,
-  steps=4 → 1-thread=36 canonical, 4-thread intermittently=31 (~1 in 5). Root cause: quotient
-  depth-relaxation (`propagate_explore_depth`) races the step-budget cutoff → which states arrive
-  "in budget" is schedule-dependent. Only bites quotient + truncated budget + MT; full (non-truncated)
-  exploration is complete+deterministic. Fix changes quotient/budget concurrency semantics.
+- [x] **Quotient + multithread + TRUNCATED budget → nondeterministic/incomplete — FIXED** (`9642ba4`).
+  Root cause: a child's explore depth was taken from the parent's *claim* depth (`step`), not the
+  parent's *live minimum* — so a later relaxation below budget never expanded the stale-depth subtree;
+  compounded by a StoreLoad race between relaxation and async child registration. Fix: derive child
+  depth from `Hypergraph::explore_depth_of` (live min → always ≤ step, a pure relaxation) threaded
+  through claim/forward/submit/propagate, + paired seq_cst fences across the publish/relax boundary.
+  Invariant: a canonical state is expanded IFF its min-over-all-paths depth < budget, at most once.
+  All quotient-gated (non-quotient hot path byte-identical). New regression test
+  `FeatureMatrix.QuotientTruncatedBudgetCompleteAndDeterministic` (fail-before/pass-after, 8× stress
+  ×{1,4,8,16} threads); cost_matrix EXACT; 190/190. See [[project-quotient-completeness-gap]].
 - [ ] Systematic memory-ordering re-verification (the deep audit's cluster — mostly fixed;
   confirm each; audit any structure not yet checked).
 - [ ] REVIEW §1 residual bugs: FFI vertex `uint8_t` >255 wrap (1.3); int64→int option narrowing
