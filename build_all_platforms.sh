@@ -55,20 +55,29 @@ skip() { echo -e "${YELLOW}skip   $1 — $2${NC}"; SKIPPED+=("$1 ($2)"); }
 # build_target NAME BUILD_DIR OUTPUT_LIB [extra cmake args...]
 build_target() {
     local name="$1" dir="$2" out="$3"; shift 3
+    local platdir; platdir="$(dirname "$out")"   # LibraryResources/<platform>
     echo -e "\n${GREEN}=== $name ===${NC}"
     mkdir -p "$dir"
-    rm -f "$out"   # so a failed build can't pass the existence check on a stale library
+    # Clear the artifacts we verify so a failed build can't pass on stale files.
+    rm -f "$out" "$platdir"/hg_evolve "$platdir"/hg_evolve.exe
     if ! cmake -S . -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON "$@"; then
         echo -e "${RED}$name: CMake configuration failed${NC}"; FAILED+=("$name"); return 1
     fi
-    if ! cmake --build "$dir" --target paclet -j"$BUILD_JOBS"; then
+    # Build BOTH the LibraryLink library (paclet) AND the standalone evolution process (hg_evolve).
+    # The process binary is the primary evolution path on every platform — HGEvolve runs the engine
+    # in it so a crash/abort kills the process, not the notebook (the in-engine abort mechanism was
+    # removed in favour of this). Shipping only the library would silently fall back to running the
+    # engine in-kernel, defeating the isolation. hg_evolve cross-compiles like any executable.
+    if ! cmake --build "$dir" --target paclet hg_evolve -j"$BUILD_JOBS"; then
         echo -e "${RED}$name: build failed${NC}"; FAILED+=("$name"); return 1
     fi
-    if [[ -f "$out" ]]; then
-        echo -e "${GREEN}$name: OK${NC}"; BUILT+=("$name")
-    else
-        echo -e "${RED}$name: build reported success but $out is missing${NC}"; FAILED+=("$name"); return 1
+    if [[ ! -f "$out" ]]; then
+        echo -e "${RED}$name: build reported success but the library $out is missing${NC}"; FAILED+=("$name"); return 1
     fi
+    if ! ls "$platdir"/hg_evolve "$platdir"/hg_evolve.exe >/dev/null 2>&1; then
+        echo -e "${RED}$name: the hg_evolve process binary was not produced in $platdir${NC}"; FAILED+=("$name"); return 1
+    fi
+    echo -e "${GREEN}$name: OK (library + hg_evolve process)${NC}"; BUILT+=("$name")
 }
 
 echo -e "${GREEN}=== Building the Hypergraph Rewriting paclet (host: $HOST_OS, jobs: $BUILD_JOBS) ===${NC}"

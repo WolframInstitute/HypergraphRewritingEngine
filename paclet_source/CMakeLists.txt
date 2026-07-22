@@ -61,8 +61,20 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_target_properties(hg_evolve PROPERTIES POSITION_INDEPENDENT_CODE ON)
     find_package(Threads REQUIRED)
     target_link_libraries(hg_evolve Threads::Threads)
+elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    # clang -> lld-link (e.g. Windows-ARM64). Two things it can't do the ordinary way:
+    #  1. The hypergraph/wxf static libs are GNU-ar archives; lld-link cannot pull objects from them
+    #     on demand (their symbol index isn't in the MSVC format), so every symbol reports as
+    #     undefined. Force-include them with /WHOLEARCHIVE exactly as the HypergraphRewriting DLL
+    #     does above.
+    #  2. A target_link_libraries name for winsock becomes a malformed `-lws2_32.lib`; pass the
+    #     import lib straight to the linker instead.
+    target_link_options(hg_evolve PRIVATE
+        "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib"
+        "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib"
+        "LINKER:ws2_32.lib")  # winsock for --serve-socket
 else()
-    target_link_libraries(hg_evolve ws2_32)  # winsock for --serve-socket
+    target_link_libraries(hg_evolve ws2_32)  # winsock for --serve-socket (mingw)
 endif()
 
 # GPU-enabled binary: same FFI marshaling, plus the GPU backend. Built only when
