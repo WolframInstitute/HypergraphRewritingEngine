@@ -875,7 +875,27 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
             has_engine_ = true;
         }
 
-        EvolveResult result = engine_->run(in);
+        EvolveResult result;
+        try {
+            result = engine_->run(in);
+        } catch (const std::exception& e) {
+            // Engine::run throws on a hard overflow (and on a genuine device fault). Unlike
+            // the free evolve() -- which builds a throwaway Engine per attempt -- this evolver
+            // REUSES engine_ across calls, so a throw that leaves the device state inconsistent
+            // would poison every later call in this worker (the reported "works, then fails and
+            // never recovers until a kernel reset"). Discard the engine so the next attempt/call
+            // rebuilds a clean one, clear any non-sticky device error, and return the best
+            // partial so far with an overflow warning instead of propagating -- mirroring the
+            // graceful partial-result contract of the free evolve().
+            engine_.reset();
+            has_engine_ = false;
+            cudaGetLastError();
+            trail.push_back(OverflowWarning{
+                ErrorKind::kDeviceOutOfMemory, 1u,
+                std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
+            best.warnings = std::move(trail);
+            return best;
+        }
 
         if (result.warnings.empty() && trail.empty()) return result;
         if (result.warnings.empty()) {
