@@ -106,6 +106,14 @@ if(TARGET hg_gpu)
         ${CMAKE_SOURCE_DIR}/common/include
     )
     target_link_libraries(hg_evolve_gpu hg_gpu hypergraph wxf)
+    # Static CUDA runtime: link libcudart_static so the binary needs no cudart shared library.
+    # (The NVIDIA driver, nvcuda.dll / libcuda.so, remains a runtime dependency -- it is the
+    # installed GPU driver and cannot be statically linked; it is present wherever a GPU is.)
+    set_property(TARGET hg_evolve_gpu PROPERTY CUDA_RUNTIME_LIBRARY Static)
+    find_package(CUDAToolkit QUIET)
+    if(TARGET CUDA::cudart_static)
+        target_link_libraries(hg_evolve_gpu CUDA::cudart_static)
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(hg_evolve_gpu PRIVATE -O3 -Wno-unused-function)
     endif()

@@ -58,8 +58,14 @@ rm -rf "$BUILD_WSL"
 mkdir -p "$BUILD_WSL"
 
 echo "==> configuring (native MSVC + nvcc)"
+# CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded folds the C/C++ runtime statically (/MT) into every
+# target (hypergraph, wxf, hg_gpu, hg_evolve_gpu, and the nvcc host objects), so hg_evolve_gpu.exe
+# has no VC++ redistributable dependency. Combined with the static CUDA runtime (CUDA_RUNTIME_LIBRARY
+# Static), the only remaining runtime dependency is the NVIDIA driver (nvcuda.dll), which is present
+# wherever a usable GPU is. Needs CMake policy CMP0091 (NEW) -- default in the CMake versions we use.
 "$WINCMAKE" -S "$SRC" -B "$BUILD_WIN" -G "$GEN" -A x64 -T "cuda=$CUDA_DIR_WIN" \
     -DBUILD_GPU=ON -DHG_GPU_ARCHS="$ARCHS" -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
+    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
     -DBUILD_VISUALIZATION=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF
 
 # The generator only emits the CUDA targets if CMake found the compiler. If it didn't, the build

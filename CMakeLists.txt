@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
+# CMP0091 (CMake 3.15+) makes CMAKE_MSVC_RUNTIME_LIBRARY take effect, so a Windows/MSVC build
+# can select the static C runtime (/MT). Must be set before project(). Without NEW the property
+# is silently ignored and the binary keeps a VCRUNTIME140 / MSVCP140 (VC++ redist) dependency.
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
 project(HypergraphEngine VERSION 0.0.1 LANGUAGES CXX)
 
 # Shared CPU/GPU definitions (hgcommon)

@@ -24,6 +24,12 @@ set_property(TARGET hg_gpu PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
 # device link explicit and generator-independent, so the Windows MSVC build links too.
 set_property(TARGET hg_gpu PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
+# Static-link the CUDA runtime so consumers (hg_evolve_gpu) carry no cudart64_*.dll /
+# libcudart.so dependency. The only unavoidable runtime dependency of a GPU binary is the
+# NVIDIA driver (nvcuda.dll / libcuda.so): it is the installed driver, cannot be statically
+# linked, and is present on every machine that has a usable NVIDIA GPU.
+set_property(TARGET hg_gpu PROPERTY CUDA_RUNTIME_LIBRARY Static)
+
 target_include_directories(hg_gpu
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
