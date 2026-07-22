@@ -33,10 +33,9 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"EvolutionBranchialGraph"` | state and event vertices with undirected branchial edges |
 | `"EvolutionCausalBranchialGraph"` | state and event vertices with both directed causal and undirected branchial edges (the default) |
 | `"States"`, `"Events"` | the raw state / event objects (associations, described below) |
-| `"CausalEdges"`, `"BranchialEdges"`, `"GlobalEdges"` | the causal / branchial / global edge lists |
+| `"CausalEdges"`, `"BranchialEdges"` | the causal / branchial edge lists |
 | `"NumStates"`, `"NumEvents"`, `"NumCausalEdges"`, `"NumBranchialEdges"` | the corresponding counts |
-| `"DimensionData"`, `"CurvatureData"`, `"GeodesicData"`, `"TopologicalData"`, `"EntropyData"`, `"HilbertSpaceData"`, `"BranchialData"`, `"MultispaceData"`, `"AlignmentData"`, `"StateBitvectors"` | results of the corresponding analysis family (each requires its `"*Analysis"` option; see below) |
-| `"All"`, `"Debug"` | an association of, respectively, all graph/list/count properties, or the four counts |
+| `"Debug"` | an association of the four counts |
 
 - `prop` may also be a list of property strings, in which case an association keyed by those strings is returned.
 - Any `*Graph` property may take the suffix `Structure` to return the same graph without vertex styling (a lighter-weight rendering), e.g. `"StatesGraphStructure"`.
@@ -254,6 +253,26 @@ Column[{#["Id"], #["Step"], #["IsInitial"], #["Edges"]} & /@ Values[states]]
 
 The parallel `"Events"` property returns the update events, each recording its rule, the input and output state ids, and the consumed and produced edges.
 
+### Branchial structure
+
+The branchial graph joins states that branch from a common ancestor. Return it for a small canonicalized evolution:
+
+```wl
+rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
+HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "BranchialGraph", "CanonicalizeStates" -> Full]
+```
+
+### Events, edge lists, and counts
+
+`"Events"` returns the update events, `"CausalEdges"` / `"BranchialEdges"` the raw causal / branchial edge lists, and `"Debug"` an association of the four counts:
+
+```wl
+rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
+{Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Events"]],
+ Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "CausalEdges"]],
+ HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Debug"]}
+```
+
 ## Options
 
 ### "CanonicalizeStates"
@@ -363,18 +382,6 @@ Evolution runs on the CPU by default. Where a GPU build is bundled, `"GPU"` runs
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
 HGEvolve[rules, {{1, 2}}, 3, "NumStates", "TargetDevice" -> "GPU", "CanonicalizeStates" -> Full]
-```
-
-## Applications
-
-### Dimension analysis
-
-Enabling an analysis family attaches its results to the evolution. Here local Hausdorff dimensions are computed for a small grid evolution (see `HGStateDimensionPlot` and `HGHausdorffAnalysis` for visualization and detail):
-
-```wl
-rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
-res = HGEvolve[rules, HGGrid[4, 4], 1, "States", "DimensionAnalysis" -> True, "IncludeStateContents" -> True];
-Length[res]
 ```
 
 ## Properties and Relations

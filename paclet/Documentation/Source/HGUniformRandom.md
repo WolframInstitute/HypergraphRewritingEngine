@@ -4,6 +4,7 @@ Name: HGUniformRandom
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGUniformRandom
+SeeAlso: [HGPoissonDisk, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGUniformRandom
 ```wl
 HGToGraph[HGUniformRandom[120]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

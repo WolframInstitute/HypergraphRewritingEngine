@@ -4,6 +4,7 @@ Name: HGBranchAlignmentBatch
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGBranchAlignmentBatch
+SeeAlso: [HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGBranchAlignmentBatch
 
 - Batch analysis of branch alignment in curvature shape space.
 - See `Options[HGBranchAlignmentBatch]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

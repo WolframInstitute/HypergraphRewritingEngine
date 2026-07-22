@@ -4,6 +4,7 @@ Name: HGLensingPlot
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGLensingPlot
+SeeAlso: [HGGeodesicPlot, HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGLensingPlot
 
 - Compares the discrete geometry's light bending to the GR expectation.
 - See `Options[HGLensingPlot]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

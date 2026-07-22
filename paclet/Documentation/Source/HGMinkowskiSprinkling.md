@@ -4,6 +4,7 @@ Name: HGMinkowskiSprinkling
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGMinkowskiSprinkling
+SeeAlso: [HGBrillLindquist, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGMinkowskiSprinkling
 ```wl
 HGToGraph[HGMinkowskiSprinkling[60]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

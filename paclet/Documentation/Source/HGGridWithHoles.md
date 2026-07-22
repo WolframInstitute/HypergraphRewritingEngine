@@ -4,6 +4,7 @@ Name: HGGridWithHoles
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGridWithHoles
+SeeAlso: [HGGrid, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGridWithHoles
 ```wl
 HGToGraph[HGGridWithHoles[16, 16, {{8, 8, 3}}]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

@@ -4,6 +4,7 @@ Name: HGGeodesicPlot
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGeodesicPlot
+SeeAlso: [HGGeodesicFilmstrip, HGLensingPlot, HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGeodesicPlot
 
 - Traces test-particle geodesics through the graph geometry.
 - See `Options[HGGeodesicPlot]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

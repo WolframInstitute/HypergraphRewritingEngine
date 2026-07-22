@@ -4,6 +4,7 @@ Name: HGDimensionFilmstrip
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGDimensionFilmstrip
+SeeAlso: [HGTimestepUnionPlot, HGHausdorffAnalysis, HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGDimensionFilmstrip
 
 - A filmstrip view of how dimension evolves.
 - See `Options[HGDimensionFilmstrip]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

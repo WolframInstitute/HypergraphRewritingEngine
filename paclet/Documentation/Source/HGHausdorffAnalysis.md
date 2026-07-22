@@ -4,6 +4,7 @@ Name: HGHausdorffAnalysis
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGHausdorffAnalysis
+SeeAlso: [HGStateDimensionPlot, HGDimensionFilmstrip, HGEvolve]
 ---
 
 ## Usage
@@ -20,7 +21,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGHausdorffAnalysis
 ```wl
 HGHausdorffAnalysis[{{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 3}}]
 ```
-
-## See Also
-
-HGEvolve

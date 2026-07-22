@@ -5,6 +5,7 @@ Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics]
+SeeAlso: [HGEvolve, HGToGraph, HGGrid]
 ---
 
 # Hypergraph Rewriting Engine

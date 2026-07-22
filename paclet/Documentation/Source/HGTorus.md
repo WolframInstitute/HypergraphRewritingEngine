@@ -4,6 +4,7 @@ Name: HGTorus
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGTorus
+SeeAlso: [HGCylinder, HGSphere, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGTorus
 ```wl
 HGToGraph[HGTorus[16]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

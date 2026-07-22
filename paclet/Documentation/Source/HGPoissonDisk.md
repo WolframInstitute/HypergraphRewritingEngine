@@ -4,6 +4,7 @@ Name: HGPoissonDisk
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGPoissonDisk
+SeeAlso: [HGUniformRandom, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGPoissonDisk
 ```wl
 HGToGraph[HGPoissonDisk[120, 0.08]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

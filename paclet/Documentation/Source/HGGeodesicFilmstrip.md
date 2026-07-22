@@ -4,6 +4,7 @@ Name: HGGeodesicFilmstrip
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGeodesicFilmstrip
+SeeAlso: [HGGeodesicPlot, HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGGeodesicFilmstrip
 
 - The per-timestep companion to `HGGeodesicPlot`.
 - See `Options[HGGeodesicFilmstrip]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

@@ -4,6 +4,7 @@ Name: EdgeId
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/EdgeId
+SeeAlso: [HGEvolve]
 ---
 
 ## Usage
@@ -13,7 +14,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/EdgeId
 ## Details
 
 - `EdgeId` appears in event and causal-graph data returned by `HGEvolve`, identifying which edges an event consumed or produced.
-
-## See Also
-
-HGEvolve

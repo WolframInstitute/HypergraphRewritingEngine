@@ -4,6 +4,7 @@ Name: HGKleinBottle
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGKleinBottle
+SeeAlso: [HGMobiusStrip, HGSphere, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGKleinBottle
 ```wl
 HGToGraph[HGKleinBottle[16, 6]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

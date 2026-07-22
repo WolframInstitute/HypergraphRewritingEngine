@@ -4,6 +4,7 @@ Name: HGTimestepUnionPlot
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGTimestepUnionPlot
+SeeAlso: [HGDimensionFilmstrip, HGStateDimensionPlot, HGEvolve]
 ---
 
 ## Usage
@@ -14,7 +15,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGTimestepUnionPlot
 
 - `evolutionResult` is the output of `HGEvolve`.
 - See `Options[HGTimestepUnionPlot]` for the analysis and styling options.
-
-## See Also
-
-HGEvolve

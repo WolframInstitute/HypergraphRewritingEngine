@@ -4,6 +4,7 @@ Name: HGCylinder
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGCylinder
+SeeAlso: [HGTorus, HGSphere, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGCylinder
 ```wl
 HGToGraph[HGCylinder[16, 6]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph

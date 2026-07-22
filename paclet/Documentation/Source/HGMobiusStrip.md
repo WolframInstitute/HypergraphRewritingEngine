@@ -4,6 +4,7 @@ Name: HGMobiusStrip
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGMobiusStrip
+SeeAlso: [HGKleinBottle, HGCylinder, HGToGraph, HGEvolve]
 ---
 
 ## Usage
@@ -21,7 +22,3 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGMobiusStrip
 ```wl
 HGToGraph[HGMobiusStrip[24, 4]]
 ```
-
-## See Also
-
-HGEvolve, HGToGraph
