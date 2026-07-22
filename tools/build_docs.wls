@@ -27,6 +27,12 @@ srcDir  = FileNameJoin[{repo, "paclet", "Documentation", "Source"}];
    result into Documentation/English. *)
 docRoot = FileNameJoin[{repo, "paclet", "Documentation", "Source", "generated"}];
 
+(* Load the paclet being built so MarkdownToNotebook's per-page Needs["HypergraphRewriting`"]
+   (from each source's `Context:` frontmatter) resolves to THIS build and the example cells
+   render the current engine's output, not an installed release's. *)
+PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
+PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
+
 subdirFor[tmpl_] := Switch[tmpl,
   "Symbol",   {"ReferencePages", "Symbols"},
   "Guide",    {"Guides"},
