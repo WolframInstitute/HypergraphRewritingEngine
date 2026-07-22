@@ -37,8 +37,10 @@ HGEvolve[...]
 
 Process isolation: the paclet shells out to the standalone `hg_evolve` binary over
 WXF (stdin/stdout, or a persistent worker over a loopback socket). A crash or an
-Alt-. abort is a process kill, so it never takes down the notebook. See
-[BINARY_ISOLATION.md](BINARY_ISOLATION.md).
+Alt-. abort is a process kill, so it never takes down the notebook. The binary is
+shipped for every platform (and `hg_evolve_gpu` on the CUDA platforms); the
+LibraryLink library remains only as a last-resort fallback and for the standalone
+analysis functions.
 
 ## Modules
 
@@ -88,7 +90,7 @@ Boundary + tooling:
   `Automatic` = fast content hash (may false-merge); `Full` = exact IR. WL is the
   fast approximate hash; IR is exact. (A WL-bucket + IR-on-collision "tiered exact"
   scheme was tried and profiled as a pessimization — the multiway is dedup-heavy, so
-  duplicates still need IR to confirm; see TASKS.md.)
+  duplicates still need IR to confirm.)
 - **Quotient exploration** (`ExploreFromCanonicalStatesOnly`) expands each canonical
   state once at its shortest depth, so a run costs the canonical closure, not the
   exponentially larger provenance count.

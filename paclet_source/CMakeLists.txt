@@ -37,7 +37,7 @@ add_library(HypergraphRewriting SHARED ${SOURCES})
 # Reuses the exact marshaling of hypergraph_ffi.cpp via run_rewriting_core, but
 # compiled with HG_STANDALONE_BINARY so no Wolfram SDK is pulled in. This is the
 # deployment path that supersedes the LibraryLink DLL: abort = process kill,
-# crashes are isolated from the notebook. See docs/BINARY_ISOLATION.md.
+# crashes are isolated from the notebook. See docs/ARCHITECTURE.md.
 add_executable(hg_evolve
     hg_evolve_main.cpp
     hypergraph_ffi.cpp
@@ -80,7 +80,7 @@ endif()
 # GPU-enabled binary: same FFI marshaling, plus the GPU backend. Built only when
 # BUILD_GPU produced the hg_gpu target. TargetDevice -> "GPU" in the paclet
 # selects this exe; it always runs hg_gpu::evolve and marshals the result
-# through the same WXF path as the CPU binary. See docs/BINARY_ISOLATION.md.
+# through the same WXF path as the CPU binary. See docs/ARCHITECTURE.md.
 if(TARGET hg_gpu)
     add_executable(hg_evolve_gpu
         hg_evolve_main.cpp

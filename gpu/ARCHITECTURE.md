@@ -69,7 +69,7 @@ narrow runs (10^4+ steps under pruning), where the per-step cost dominates.
 The persistent-kernel streaming design below is the candidate replacement for
 that regime (M7); whether CUDA graphs — which amortise launch cost with no
 resident kernel and no watchdog exposure — get close enough instead is an open
-decision (TASKS.md item 3). Nothing below this paragraph in §3-§5 is
+decision. Nothing below this paragraph in §3-§5 is
 implemented; it is the target design, kept because its data structures
 (queues, termination detection) are what M7 would build.
 

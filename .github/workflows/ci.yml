@@ -10,7 +10,7 @@ on:
 # aggregate C++ suite, including the ReferenceOracle brute-force isomorphism check.
 # GPU (gpu_differential_tests / hg_gpu_tests) needs a CUDA runner; the paclet golden
 # (reference/verify_paclet.wls) needs a Wolfram Engine + a macOS/Windows leg -- both
-# tracked as follow-ups (TASKS.md items 13/14).
+# tracked as follow-ups.
 jobs:
   linux-tests:
     runs-on: ubuntu-latest

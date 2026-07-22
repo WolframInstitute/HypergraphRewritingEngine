@@ -15,14 +15,10 @@
 *.paclet
 /paclet_archive/
 
-# Documentation notebooks (Documentation/English/**/*.nb) ARE tracked. They are rendered from the
-# markdown (Documentation/Source, the source of truth) by build_docs.sh, but rendering the example
-# outputs needs the Wolfram cloud (WolframModelPlot etc.), so they are generated on a cloud-connected
-# machine and committed, then assembled into the paclet on any machine.
+# Documentation notebooks (Documentation/English/**/*.nb) ARE tracked — rendered from the markdown
+# (Documentation/Source) on a cloud-connected machine and committed. Ignored here are the doc
+# build's own generated/transient outputs:
 /paclet/Documentation/Source/generated/
-# Transient build_docs scratch (normally auto-removed each run):
 /paclet/Documentation/.english_stage/
 /paclet/Documentation/English/.build_ok
 /paclet/Documentation/English/.doc_manifest.wl
-# Stray non-notebook build output under the generated docs tree:
-/paclet/Documentation/English/**/*.wl

@@ -1,6 +1,6 @@
 // Quotient exploration (explore_from_canonical_states_only) must discover the same
 // canonical closure as the full expansion -- it may only skip re-expanding a state,
-// never miss one (TASKS.md item 15). Loop-forming idempotent / mixed rulesets are the
+// never miss one. Loop-forming idempotent / mixed rulesets are the
 // ones that historically risked leaving a canonical state unexpanded. This gates that
 // property, which was previously checked only by an un-wired standalone probe.
 #include <gtest/gtest.h>
