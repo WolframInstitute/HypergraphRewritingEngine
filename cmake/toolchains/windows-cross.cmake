@@ -243,9 +243,10 @@ if(COMPILER_TYPE STREQUAL "mingw")
     set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
 elseif(COMPILER_TYPE STREQUAL "clang")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
-        # For ARM64 with MSVC target, use dynamic MSVC runtime (standard for DLLs)
-        # No special flags needed - dynamic CRT is the default
-        message(STATUS "Using dynamic MSVC runtime (standard for DLLs)")
+        # The MSVC-ABI runtime library is selected by CMAKE_MSVC_RUNTIME_LIBRARY (CMP0091 NEW):
+        # MultiThreaded links the static CRT (/MT), the default MultiThreadedDLL links it
+        # dynamically (/MD). No linker flags are set here.
+        message(STATUS "ARM64 MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
     else()
         # For x86/x64 with GNU target, use GCC static linking
         set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")

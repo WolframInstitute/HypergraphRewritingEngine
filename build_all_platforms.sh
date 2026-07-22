@@ -144,9 +144,14 @@ fi
 # ---- Windows ARM64 ----
 if selected "Windows-ARM64"; then
     if have clang; then
+        # MultiThreaded (/MT) folds the C/C++ runtime in statically: clang targets the MSVC ABI
+        # here, CMake honours CMAKE_MSVC_RUNTIME_LIBRARY (CMP0091 NEW), and the static ARM64 CRT
+        # libs (libcmt/libcpmt/libvcruntime/libucrt) ship with VS+SDK. Result: the ARM64 DLL and
+        # hg_evolve.exe import only KERNEL32/WS2_32 -- no VC++ redistributable dependency.
         build_target "Windows-ARM64" build_windows_arm64 "$LR/Windows-ARM64/HypergraphRewriting.dll" \
             -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DWINDOWS_COMPILER=clang
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DWINDOWS_COMPILER=clang \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     else
         skip "Windows-ARM64" "clang not found (apt install clang lld)"
     fi
