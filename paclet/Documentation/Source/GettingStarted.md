@@ -15,10 +15,11 @@ all possible ways, and inspect the resulting states, causal, and branchial struc
 ## A first evolution
 
 A rewrite rule is written `lhs -> rhs`. Each side is a list of hyperedges, and each
-hyperedge is a list of vertices. This rule rewrites a single edge into two:
+hyperedge is a list of vertices. This rule matches two edges that share a vertex and adds
+the edge closing the triangle between their other two endpoints:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 3]
 ```
 
 The second argument is the initial state (a list of hyperedges); the third is the
@@ -30,9 +31,9 @@ graph.
 Pass a property string as the fourth argument to select the output:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "StatesGraph"]
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "CausalGraph"]
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "NumStates"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 3, "StatesGraph"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 3, "CausalGraph"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 3, "NumStates"]
 ```
 
 Common properties include `"States"`, `"Events"`, `"StatesGraph"`, `"CausalGraph"`,
@@ -45,7 +46,8 @@ to `Full` to identify states that are the same up to isomorphism, collapsing the
 multiway graph:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "NumStates", "CanonicalizeStates" -> Full]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 5, "NumStates"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 5, "NumStates", "CanonicalizeStates" -> Full]
 ```
 
 `Automatic` uses a faster content hash (which may merge some non-isomorphic states);
@@ -53,8 +55,19 @@ HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "NumStates", "CanonicalizeSt
 
 ## The canonical Wolfram Physics rule
 
+This is the rule from the Wolfram Physics Project. Its uncanonicalized multiway blows up
+quickly, so show the isomorphism-merged states graph:
+
 ```wl
-HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 5, "StatesGraph"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraph", "CanonicalizeStates" -> Full]
+```
+
+## Higher-arity hyperedges
+
+Edges may have any arity. This rule acts on ternary (3-vertex) hyperedges, extending a chain:
+
+```wl
+HGEvolve[{{1, 2, 3}, {3, 4, 5}} -> {{1, 2, 3}, {3, 4, 5}, {5, 6, 7}}, {{1, 2, 3}, {3, 4, 5}}, 4, "StatesGraph", "CanonicalizeStates" -> Full]
 ```
 
 ## Structured initial conditions
@@ -64,7 +77,7 @@ condition. Visualize one with `HGToGraph`:
 
 ```wl
 HGToGraph[HGGrid[8, 8]]
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, HGGrid[8, 8], 2, "NumStates"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, HGGrid[4, 4], 2, "NumStates"]
 ```
 
 See also `HGTorus`, `HGSphere`, `HGCylinder`, `HGMinkowskiSprinkling`, and the other
@@ -76,7 +89,7 @@ Where a GPU build is bundled, evolve on the GPU with `"TargetDevice" -> "GPU"` (
 falls back to the CPU with a message if no GPU binary is present):
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 5, "NumStates", "TargetDevice" -> "GPU"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 5, "NumStates", "TargetDevice" -> "GPU"]
 ```
 
 ## Next steps

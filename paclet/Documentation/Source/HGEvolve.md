@@ -33,28 +33,28 @@ Use `Options[HGEvolve]` for the full list.
 
 ## Basic Examples
 
-Evolve a single edge-splitting rule for four steps:
+This rule matches two edges that share a vertex and adds the edge closing the triangle between their other two endpoints. By default `HGEvolve` returns the combined evolution/causal/branchial graph:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 3]
 ```
 
-Get just the states graph:
+The multiway states graph, with isomorphic states merged via `"CanonicalizeStates" -> Full`:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "StatesGraph"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 4, "StatesGraph", "CanonicalizeStates" -> Full]
 ```
 
-The canonical Wolfram Physics rule from two initial edges:
+Higher-arity hyperedges work identically — here a rule on ternary (3-vertex) edges:
 
 ```wl
-HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 5]
+HGEvolve[{{1, 2, 3}, {3, 4, 5}} -> {{1, 2, 3}, {3, 4, 5}, {5, 6, 7}}, {{1, 2, 3}, {3, 4, 5}}, 4, "StatesGraph", "CanonicalizeStates" -> Full]
 ```
 
-Deduplicate isomorphic states exactly, and count them:
+Count the distinct states up to isomorphism:
 
 ```wl
-HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 4, "NumStates", "CanonicalizeStates" -> Full]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, {{1, 2}, {1, 3}}, 5, "NumStates", "CanonicalizeStates" -> Full]
 ```
 
 ## See Also
