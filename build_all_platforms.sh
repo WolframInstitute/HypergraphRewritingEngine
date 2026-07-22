@@ -74,7 +74,7 @@ build_target() {
     if [[ ! -f "$out" ]]; then
         echo -e "${RED}$name: build reported success but the library $out is missing${NC}"; FAILED+=("$name"); return 1
     fi
-    if ! ls "$platdir"/hg_evolve "$platdir"/hg_evolve.exe >/dev/null 2>&1; then
+    if ! { [ -e "$platdir/hg_evolve" ] || [ -e "$platdir/hg_evolve.exe" ]; }; then
         echo -e "${RED}$name: the hg_evolve process binary was not produced in $platdir${NC}"; FAILED+=("$name"); return 1
     fi
     echo -e "${GREEN}$name: OK (library + hg_evolve process)${NC}"; BUILT+=("$name")
