@@ -123,20 +123,24 @@ private:
         free_list_head() = p;
     }
 
-    struct TlsGuard {
-        ~TlsGuard() {
-            if (t_pool_) { release_pool(t_pool_); t_pool_ = nullptr; }
-        }
-    };
-
     static JobSlotPool* tls_pool() {
         if (t_pool_ == nullptr) {
-            // Construct the registry statics before the thread-local guard so they are
-            // destroyed after it: the main thread's guard runs release_pool() during
-            // process exit and must still find a live mutex and free list.
+            // Touch the registry statics before constructing the guard so they outlive it:
+            // the guard runs release_pool() at thread/process exit and must still find a
+            // live mutex and free list.
             (void)registry_mutex();
             (void)free_list_head();
-            (void)t_guard_;             // ODR-use so the exit hook is registered
+            // Function-local guard, NOT a class-scope `inline thread_local`: a non-trivial
+            // inline thread_local emits a per-TU TLS-init function GCC folds via COMDAT but
+            // MinGW's ld does not (the Windows paclet failed to link on t_guard_). A
+            // function-local static thread_local carries a single guard tied to this inline
+            // function, which folds on every target. t_pool_ itself is a trivial pointer, so
+            // its class-scope inline thread_local is MinGW-safe and stays (deallocate reads it).
+            struct TlsGuard {
+                ~TlsGuard() { if (t_pool_) { release_pool(t_pool_); t_pool_ = nullptr; } }
+            };
+            static thread_local TlsGuard guard;   // recycles the pool at thread exit
+            (void)guard;
             t_pool_ = acquire_pool();
         }
         return t_pool_;
@@ -147,8 +151,7 @@ private:
     char* chunk_list_head_ = nullptr;                                  // for completeness
     JobSlotPool* next_free_ = nullptr;                                 // reuse free list
 
-    static inline thread_local JobSlotPool* t_pool_ = nullptr;
-    static inline thread_local TlsGuard t_guard_{};
+    static inline thread_local JobSlotPool* t_pool_ = nullptr;         // trivial; MinGW-safe
 };
 
 } // namespace job_system
