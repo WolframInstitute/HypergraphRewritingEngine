@@ -141,9 +141,10 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `paclet_source/` -- FFI + standalone binary + GPU marshaling
 
 - **`hg_core.hpp`** -- `HostBridge` (progress callback; abort = process kill), `run_rewriting_core()` declaration
-- **`hypergraph_ffi.cpp`** -- the marshaling TU: `run_rewriting_core` (WXF<->engine, parses all options, routes CPU or GPU, serializes States/Events/Causal/Branchial/analysis), `ffi_helpers::read_rules_association`, plus LibraryLink DLL exports `performRewriting`/`performHausdorffAnalysis`/`performBranchAlignment[Batch]` + `WolframLibrary_initialize/uninitialize`
+- **`hypergraph_ffi.cpp`** -- the marshaling TU: `run_rewriting_core` (WXF<->engine, parses all options, routes CPU or GPU, serializes States/Events/Causal/Branchial/analysis), `ffi_helpers::read_rules_association`, plus LibraryLink DLL exports `performRewriting`/`performHausdorffAnalysis`/`performBranchAlignment[Batch]` + `WolframLibrary_initialize/uninitialize`. Builds the `GraphData` block (for the `*Graph` properties) via the shared `hgmarshal::build_graph_data`, adapting the engine through a `CpuGraphSource`
+- **`graph_marshal.hpp`** -- the shared `*Graph` marshaller: `hgmarshal::build_graph_data(source, properties, opts)`, templated over a `Source` that exposes the evolved multiway as effective (canonicalization-collapsed) ids + per-vertex tooltips. Both `hypergraph_ffi.cpp` (CPU engine) and `hg_gpu_backend.cpp` (GPU result) drive it, so CPU and GPU emit identical graph structure for every property -- ONE graph-building code path, no divergent copies
 - **`hg_evolve_main.cpp`** -- the `hg_evolve` binary: `run_one_shot`, `run_serve` (stdio worker), `run_serve_socket` (loopback-TCP worker), frame I/O helpers, `main` (flag dispatch, progress->stderr)
-- **`hg_gpu_backend.hpp`/`.cpp`** -- `GpuJob` struct + `run_gpu_evolution` (builds `hg_gpu::EvolveInput`, runs `PersistentEvolver`, regroups the raw GPU result into canonical-class WXF matching the CPU FFI); `build_input`
+- **`hg_gpu_backend.hpp`/`.cpp`** -- `GpuJob` struct + `run_gpu_evolution` (builds `hg_gpu::EvolveInput`, runs `PersistentEvolver`, regroups the raw GPU result into canonical-class WXF matching the CPU FFI, and builds `GraphData` through the shared `hgmarshal::build_graph_data` via a `GpuGraphSource`); `build_input`
 
 ## `paclet/` -- the Wolfram Language paclet
 
