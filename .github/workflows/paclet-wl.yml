@@ -18,6 +18,12 @@ on:
 jobs:
   paclet-golden:
     runs-on: ubuntu-latest
+    # The secrets context cannot be referenced from a step `if:`; job-level env can, so hoist the
+    # license secrets here and gate the licensing steps on env instead.
+    env:
+      WOLFRAM_ID: ${{ secrets.WOLFRAM_ID }}
+      WOLFRAM_PASSWORD: ${{ secrets.WOLFRAM_PASSWORD }}
+      WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,16 +40,14 @@ jobs:
           wolframscript -version
 
       - name: License (on-demand entitlement, if provided)
-        if: ${{ env.WOLFRAMSCRIPT_ENTITLEMENTID != '' }}
-        env:
-          WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
+        if: env.WOLFRAMSCRIPT_ENTITLEMENTID != ''
         run: echo "using on-demand entitlement licensing"
 
       - name: License (Wolfram ID activation, fallback)
-        if: ${{ secrets.WOLFRAM_ID != '' }}
+        if: env.WOLFRAM_ID != ''
         run: |
           # Activate the Free Engine with a Wolfram account (headless). Adjust to your account type.
-          wolframscript -authenticate "${{ secrets.WOLFRAM_ID }}" "${{ secrets.WOLFRAM_PASSWORD }}" || true
+          wolframscript -authenticate "$WOLFRAM_ID" "$WOLFRAM_PASSWORD" || true
 
       - name: Build the paclet (finds the Engine's LibraryLink SDK)
         run: |
@@ -52,6 +56,4 @@ jobs:
           cmake --build build --target paclet
 
       - name: Golden corpus (HGEvolve vs golden_corpus.wl)
-        env:
-          WOLFRAMSCRIPT_ENTITLEMENTID: ${{ secrets.WOLFRAMSCRIPT_ENTITLEMENTID }}
         run: wolframscript -file reference/verify_paclet.wls
