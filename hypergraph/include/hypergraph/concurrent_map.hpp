@@ -23,8 +23,6 @@ namespace hypergraph {
 // Append-only concurrent hash map using open addressing with linear probing.
 // Optimized for the case where we never delete entries.
 //
-// Thread safety: Lock-free insert_if_absent and lookup (NO spin-waits).
-//
 // Key requirements:
 //   - K must be trivially copyable
 //   - K must have TWO reserved values:
@@ -35,8 +33,15 @@ namespace hypergraph {
 //
 // Design: Uses sentinel-based insertion inspired by Folly AtomicUnorderedMap.
 //   - Insert: CAS empty→LOCKED, write value, write key
-//   - Lookup: Skip LOCKED slots (no spin-wait), treat as "not found yet"
-//   - This is lock-free: no thread ever blocks waiting for another
+//   - A claimed slot is always resolved to a real key, never back to EMPTY: with no
+//     tombstone, a slot returning to EMPTY would cut every probe run passing through
+//     it and hide entries stored further along.
+//
+// Progress guarantee: obstruction-free, not lock-free. A claim resolves in two stores
+// and is awaited by insert (in place, before claiming) and by the *_waiting lookups,
+// so a preempted claimant stalls those waiters. It cannot deadlock: a thread holding a
+// claim only stores, never waits, so no waits-for cycle can form. The plain lookups
+// probe past a claimed slot and report "not found yet" rather than waiting.
 //
 // Resize: When load factor exceeds threshold, allocates new larger table.
 //         Old table remains valid, lookups check both via chain.
@@ -175,9 +180,18 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
-        // CRITICAL: Check prev tables in the chain BEFORE inserting.
+        // Check prev tables in the chain BEFORE inserting.
         // During resize, entries from old table may not yet be in new table.
         // If we find the key in a prev table, return it to avoid duplicates.
+        //
+        // This scan does NOT wait on claimed slots, so a key being deposited into a prev
+        // table right now is reported absent and gets a second entry -- for the
+        // get-or-create callers that means two container objects for one key. Switching
+        // to lookup_in_chain_waiting closes that window but is not a free swap: it was
+        // measured to change the reconstruction's branchial count on one configuration
+        // (all-three / selfloop / d=3, 67 vs 66 against full-capture), and it makes a
+        // thread block on a claim in a SUPERSEDED table, which nothing else does. Use
+        // insert_if_absent_waiting where one-object-per-key has to hold.
         if (table->prev) {
             auto existing = lookup_in_chain(table->prev, key);
             if (existing.has_value()) {
@@ -308,51 +322,55 @@ private:
         return static_cast<size_t>(h);
     }
 
+    // Insert into one table's probe run.
+    //
+    // A slot claimed with LOCKED is ALWAYS resolved to a real key -- it is never
+    // restored to EMPTY. That is what keeps open addressing sound here: this table
+    // has no tombstone, so a slot that went back to EMPTY would terminate the probe
+    // run of every key whose run passes through it, hiding entries stored further
+    // along (and making the next insert of such a key report itself as newly
+    // inserted -- a duplicate, through the `was_inserted` flag that every dedup
+    // decision in the engine reads).
+    //
+    // The invariant holds because a LOCKED slot encountered while probing is awaited
+    // IN PLACE, before this thread claims any slot of its own. By the time a claim is
+    // made, every earlier slot of the probe run holds a settled key that is not ours,
+    // so the claim can always be completed. It also keeps the wait acyclic: a thread
+    // that holds a claim only stores -- it never waits -- so no thread waits on a
+    // waiter and there is no cycle to deadlock on.
     std::pair<V, bool> insert_into_table(Table* table, K key, V value, bool increment_count) {
         size_t h = hash(key);
         size_t idx = h & table->mask;
-
-        // Track LOCKED slots we encountered - need to check them for duplicate keys
-        size_t locked_slots[64];
-        size_t num_locked = 0;
 
         for (size_t probe = 0; probe < table->capacity; ++probe) {
             size_t i = (idx + probe) & table->mask;
             Entry& entry = table->entries[i];
 
-            K current_key = entry.key.load(std::memory_order_acquire);
+            // Settle this slot before moving past it: it ends up either holding a
+            // settled key this thread can compare against, or claimed by this thread.
+            while (true) {
+                K current_key = entry.key.load(std::memory_order_acquire);
 
-            if (current_key == EMPTY_KEY) {
-                // Slot is empty, try to claim it with LOCKED sentinel
+                // A claim resolves in two stores, so wait it out rather than probing
+                // past it: the claimant may be inserting our key, and only the settled
+                // key can say. Bounded by another thread's two stores, never by a waiter.
+                while (current_key == LOCKED_KEY) {
+                    hgcommon::cpu_relax();
+                    current_key = entry.key.load(std::memory_order_acquire);
+                }
+
+                if (current_key != EMPTY_KEY) {
+                    if (current_key == key) {
+                        // Key already exists - value is guaranteed to be set
+                        return {entry.value.load(std::memory_order_acquire), false};
+                    }
+                    break;  // different key: keep probing
+                }
+
                 if (entry.key.compare_exchange_strong(
                         current_key, LOCKED_KEY,
                         std::memory_order_acq_rel,
                         std::memory_order_acquire)) {
-
-                    // Successfully claimed slot - but we may have skipped LOCKED slots
-                    // that are inserting the same key. Must wait for them to resolve.
-                    // Note: LOCKED state is very short-lived (just value+key writes), so
-                    // unbounded spin is safe here - if it takes "too long" something is broken.
-                    if (num_locked > 0) {
-                        for (size_t li = 0; li < num_locked; ++li) {
-                            size_t ci = locked_slots[li];
-                            K check_key;
-                            // Spin until LOCKED resolves (should be very fast - nanoseconds)
-                            do {
-                                check_key = table->entries[ci].key.load(std::memory_order_acquire);
-                                hgcommon::cpu_relax();
-                            } while (check_key == LOCKED_KEY);
-
-                            if (check_key == key) {
-                                // Duplicate found! Release our claimed slot
-                                entry.key.store(EMPTY_KEY, std::memory_order_release);
-                                V existing = table->entries[ci].value.load(std::memory_order_acquire);
-                                return {existing, false};
-                            }
-                        }
-                    }
-
-                    // No duplicate - proceed with insert
                     entry.value.store(value, std::memory_order_release);
                     entry.key.store(key, std::memory_order_release);
                     if (increment_count) {
@@ -360,30 +378,18 @@ private:
                     }
                     return {value, true};
                 }
-                // CAS failed, re-read key
-                current_key = entry.key.load(std::memory_order_acquire);
+                // Lost the claim to another thread; re-examine this same slot, which
+                // now holds either that thread's claim or its settled key.
             }
-
-            if (current_key == LOCKED_KEY) {
-                // Slot is being written - remember it for later checking
-                if (num_locked < 64) {
-                    locked_slots[num_locked++] = i;
-                }
-                continue;
-            }
-
-            if (current_key == key) {
-                // Key already exists - value is guaranteed to be set
-                V existing = entry.value.load(std::memory_order_acquire);
-                return {existing, false};
-            }
-
-            // Collision with different key, continue probing
         }
 
-        // Table is full (shouldn't happen with proper load factor management)
+        // Table is full (shouldn't happen with proper load factor management).
+        // Retry against the grown table at this level, preserving increment_count:
+        // going back through insert_if_absent would force counting on, which
+        // double-counts when this call came from resize()'s rehash.
         resize();
-        return insert_if_absent(key, value);
+        return insert_into_table(table_.load(std::memory_order_acquire), key, value,
+                                 increment_count);
     }
 
     std::optional<V> lookup_in_chain(Table* table, K key) const {
