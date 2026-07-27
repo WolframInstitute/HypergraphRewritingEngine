@@ -3,7 +3,10 @@
 // their counts are immune to host-load noise). Drives the Wolfram rule to a fixed
 // depth under a chosen state-canonicalization mode.
 //
-// Usage: profile_evolve [steps] [mode]   mode = none | auto | full   (default 5 full)
+// Usage: profile_evolve [steps] [mode] [threads]
+//   mode = none | auto | full   (default 5 full 1)
+// threads defaults to 1, which is what keeps per-function attribution clean; raise it to
+// exercise the concurrent paths (contention, false sharing, the map rendezvous).
 #include "hypergraph/parallel_evolution.hpp"
 #include <cstdio>
 #include <cstring>
@@ -13,6 +16,7 @@ using namespace hypergraph;
 int main(int argc, char** argv) {
     int steps = argc > 1 ? std::atoi(argv[1]) : 5;
     const char* mode = argc > 2 ? argv[2] : "full";
+    int threads = argc > 3 ? std::atoi(argv[3]) : 1;
 
     Hypergraph hg;
     StateCanonicalizationMode m = StateCanonicalizationMode::Full;
@@ -20,14 +24,14 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(mode, "auto")) m = StateCanonicalizationMode::Automatic;
     hg.set_state_canonicalization_mode(m);
 
-    ParallelEvolutionEngine e(&hg, 1);  // single worker: clean per-function attribution
+    ParallelEvolutionEngine e(&hg, threads);
     // Wolfram rule {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}}
     e.add_rule(make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build());
 
     std::vector<std::vector<VertexId>> init = {{0u,1u},{0u,2u}};
     e.evolve(init, steps);
 
-    std::printf("mode=%s steps=%d states=%u canonical=%u events=%u\n",
-                mode, steps, hg.num_states(), hg.num_canonical_states(), hg.num_events());
+    std::printf("mode=%s steps=%d threads=%d states=%u canonical=%u events=%u\n",
+                mode, steps, threads, hg.num_states(), hg.num_canonical_states(), hg.num_events());
     return 0;
 }
