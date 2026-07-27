@@ -609,8 +609,14 @@ public:
     // Request early termination of evolution
     // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
     // Call wait_for_idle() after request_stop() to ensure all jobs have completed.
+    // Relaxed, deliberately, and matching the ~22 in-loop checks on the task paths.
+    // Nothing is PUBLISHED through this flag -- it carries no data, it only asks the
+    // workers to stop starting work -- so there is no writer-side state for an acquire
+    // to pick up, and an acquire/release pair here would order nothing while adding a
+    // fence to every one of those checks. Coherence alone guarantees the store becomes
+    // visible; observing it late costs at most one more task.
     void request_stop() {
-        should_stop_.store(true, std::memory_order_release);
+        should_stop_.store(true, std::memory_order_relaxed);
     }
 
     // Check if stop has been requested
