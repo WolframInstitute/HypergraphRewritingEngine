@@ -142,18 +142,22 @@ struct MatchRecord {
 // Evolution Statistics
 // =============================================================================
 
+// Every worker bumps several of these per match and per state. Packed, nine of them fit
+// in barely more than one cache line, so counters that record unrelated events would
+// contend for the same line -- pure interference, since nothing ever reads them during a
+// run. One line each; the struct is a singleton, so the padding is free.
 struct EvolutionStats {
-    std::atomic<size_t> states_created{0};
-    std::atomic<size_t> events_created{0};
-    std::atomic<size_t> matches_found{0};
-    std::atomic<size_t> matches_forwarded{0};
-    std::atomic<size_t> matches_invalidated{0};
-    std::atomic<size_t> new_matches_discovered{0};
-    std::atomic<size_t> full_pattern_matches{0};
-    std::atomic<size_t> delta_pattern_matches{0};
+    alignas(64) std::atomic<size_t> states_created{0};
+    alignas(64) std::atomic<size_t> events_created{0};
+    alignas(64) std::atomic<size_t> matches_found{0};
+    alignas(64) std::atomic<size_t> matches_forwarded{0};
+    alignas(64) std::atomic<size_t> matches_invalidated{0};
+    alignas(64) std::atomic<size_t> new_matches_discovered{0};
+    alignas(64) std::atomic<size_t> full_pattern_matches{0};
+    alignas(64) std::atomic<size_t> delta_pattern_matches{0};
     // Extra ancestor re-walks / child re-scans the forwarding rendezvous performs
     // when its epoch changes during a push or pull (a measure of cross-worker churn).
-    std::atomic<size_t> forwarding_rewalks{0};
+    alignas(64) std::atomic<size_t> forwarding_rewalks{0};
 };
 
 // =============================================================================
@@ -368,8 +372,11 @@ class ParallelEvolutionEngine {
     // (scanning a parent's children) watches child_epoch_. Keeping them separate stops
     // a match-store from spuriously re-scanning children lists and a child-registration
     // from spuriously re-walking ancestor chains. Start at 1 to avoid 0 confusion.
-    std::atomic<uint64_t> match_epoch_{1};
-    std::atomic<uint64_t> child_epoch_{1};
+    // Each takes its own cache line: adjacent, the two would share one, and a bump of
+    // either would invalidate the other for every core watching it -- which is exactly
+    // the coupling the split exists to remove, reintroduced by the hardware.
+    alignas(64) std::atomic<uint64_t> match_epoch_{1};
+    alignas(64) std::atomic<uint64_t> child_epoch_{1};
 
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
@@ -444,10 +451,11 @@ class ParallelEvolutionEngine {
     ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
 
     // Statistics (atomics for thread-safety)
-    std::atomic<size_t> total_matches_found_{0};
-    std::atomic<size_t> total_rewrites_{0};
-    std::atomic<size_t> total_events_{0};
-    std::atomic<size_t> rejected_duplicates_{0};
+    // Four hot counters in 32 bytes would share a line; one each (see EvolutionStats).
+    alignas(64) std::atomic<size_t> total_matches_found_{0};
+    alignas(64) std::atomic<size_t> total_rewrites_{0};
+    alignas(64) std::atomic<size_t> total_events_{0};
+    alignas(64) std::atomic<size_t> rejected_duplicates_{0};
 
     // Evolution statistics
     EvolutionStats stats_;

@@ -415,11 +415,16 @@ struct State {
 // =============================================================================
 // Thread-safe ID allocation via atomic fetch_add.
 
+// Packed together these four are 16 bytes -- one cache line -- and every worker
+// fetch_adds them on every edge, state and event it creates. The line would then
+// ping-pong between cores on allocations that have nothing to do with each other, so
+// each counter gets a line of its own. The struct is a singleton, so the padding costs
+// nothing that matters.
 struct GlobalCounters {
-    std::atomic<VertexId> next_vertex{0};
-    std::atomic<EdgeId> next_edge{0};
-    std::atomic<StateId> next_state{0};
-    std::atomic<EventId> next_event{0};
+    alignas(64) std::atomic<VertexId> next_vertex{0};
+    alignas(64) std::atomic<EdgeId> next_edge{0};
+    alignas(64) std::atomic<StateId> next_state{0};
+    alignas(64) std::atomic<EventId> next_event{0};
 
     VertexId alloc_vertex() {
         return next_vertex.fetch_add(1, std::memory_order_relaxed);
@@ -434,8 +439,9 @@ struct GlobalCounters {
     }
 
     EventId alloc_event() {
-        // Use release ordering so counter increment synchronizes with acquire fences
-        // in wait_for_completion. This ensures num_events() returns accurate count.
+        // Release pairs with the acquire load in num_events(), so a reader that sees the
+        // count also sees the event this id was allocated for. The counter's own value
+        // needs no ordering to be fresh -- coherence gives that.
         return next_event.fetch_add(1, std::memory_order_release);
     }
 
