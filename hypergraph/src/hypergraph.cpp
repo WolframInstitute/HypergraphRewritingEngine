@@ -124,8 +124,15 @@ StateId Hypergraph::get_or_create_genesis_state() {
     if (genesis_state_init_.compare_exchange_strong(expected, 1,
             std::memory_order_acq_rel, std::memory_order_acquire)) {
         // We are the initializer - create the genesis state
-        SparseBitset empty_edges;
-        genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
+        try {
+            SparseBitset empty_edges;
+            genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
+        } catch (...) {
+            // Hand the claim back before propagating: a claim left at "in progress"
+            // parks every other thread in the wait below with nothing left to finish it.
+            genesis_state_init_.store(0, std::memory_order_release);
+            throw;
+        }
         genesis_state_init_.store(2, std::memory_order_release);
         return genesis_state_;
     }
