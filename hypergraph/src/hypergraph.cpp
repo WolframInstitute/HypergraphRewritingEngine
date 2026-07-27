@@ -191,7 +191,12 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // Any mode whose key hashes to 0 would hit the same EMPTY=0 sentinel; nudge it off (mirrors the
     // GPU's h==0?1:h guard). None is already offset above, so this only ever affects a 0-valued hash.
     if (map_key == 0) map_key = 1;
-    states_[new_sid].canonical_hash = canonical_hash;
+    // create_state has already published new_sid, so another thread can be reading this
+    // state's canonical_hash (get_or_compute_canonical_hash, get_canonical_state_for_event)
+    // while this store runs. Both sides go through atomic_ref: the store carries the
+    // computed hash, and the acquire loads pick it up.
+    hg::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
+        .store(canonical_hash, std::memory_order_release);
 
     // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
     auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
@@ -214,12 +219,11 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // hash collisions are genuine isomorphisms, no verification needed
     bool verified_duplicate = !was_inserted;
 
-    // Cache the canonical ID in the state for fast lookup
-    states_[new_sid].canonical_id = existing_or_new;
-
-    // CRITICAL: Release fence ensures canonical_id write is visible to other threads
-    // on ARM64's weak memory model. Pairs with acquire fence in get_canonical_state().
-    std::atomic_thread_fence(std::memory_order_release);
+    // Cache the canonical ID in the state for fast lookup. Released here and acquired by
+    // get_canonical_state(); the store itself is what carries the edge, since a bare fence
+    // pairs with another fence only through an intervening atomic on the same object.
+    hg::atomic_ref<StateId>(states_[new_sid].canonical_id)
+        .store(existing_or_new, std::memory_order_release);
 
     if (verified_duplicate) {
         return {existing_or_new, new_sid, false};

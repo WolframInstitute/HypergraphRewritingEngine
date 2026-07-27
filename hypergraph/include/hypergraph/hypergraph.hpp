@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "types.hpp"
+#include "atomic_compat.hpp"
 #include "signature.hpp"
 #include "pattern.hpp"
 #include "index.hpp"
@@ -509,11 +510,11 @@ public:
         if (state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::None) {
             return raw_state;
         }
-        // Acquire fence ensures we see the canonical_id write from create_or_get_canonical_state
-        // This is critical for ARM64's weak memory model
-        std::atomic_thread_fence(std::memory_order_acquire);
+        // Acquires the canonical_id released by create_or_get_canonical_state. The load
+        // itself carries the edge, which matters on a weak model like ARM64.
         const State& state = get_state(raw_state);
-        return state.canonical_id;
+        return hg::atomic_ref<StateId>(const_cast<StateId&>(state.canonical_id))
+            .load(std::memory_order_acquire);
     }
 
     // Get the canonical state for event canonicalization purposes.
@@ -523,9 +524,11 @@ public:
     StateId get_canonical_state_for_event(StateId raw_state) const {
         if (raw_state == INVALID_ID) return INVALID_ID;
 
-        // Get the isomorphism-invariant hash for this state
+        // Get the isomorphism-invariant hash for this state. Written concurrently by
+        // create_or_get_canonical_state and get_or_compute_canonical_hash, so acquire it.
         const State& state = get_state(raw_state);
-        uint64_t hash = state.canonical_hash;
+        uint64_t hash = hg::atomic_ref<uint64_t>(const_cast<uint64_t&>(state.canonical_hash))
+            .load(std::memory_order_acquire);
 
         // If hash is 0, the state's hash wasn't computed - fall back to raw state
         if (hash == 0) return raw_state;
