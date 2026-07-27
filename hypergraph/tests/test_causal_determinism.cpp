@@ -176,3 +176,66 @@ TEST(CausalDeterminism, QuotientCausalAttribution) {
         EXPECT_EQ(s.causal.size(), 1u) << w.name << ": causal attribution non-deterministic under quotient";
     }
 }
+
+// Branchial siblings of one instance must be counted exactly once, whatever order the
+// two matches of a pair are applied in.
+//
+// The pairing used to elect a reporter by match id ("count it if other.id < m.id"), which
+// silently assumed id order matched the order matches become visible in the expansion
+// list. It does not -- ids come from a global counter while the list is appended
+// concurrently -- so a lower-id match could reach the list after a higher-id match had
+// already scanned: the higher one never saw it, the lower one dismissed the higher as not
+// below it, and the pair was lost by BOTH sides. It reproduced as a branchial count short
+// by 2 on roughly one matrix run in four, never on events or causal pairs.
+//
+// Electing the reporter by application order instead is necessary but not sufficient:
+// both sides can observe the other's application claim (claim a, claim b, scan a, scan b),
+// so the pair itself has to be claimed. This drives the two smallest configurations that
+// exhibited the loss, at the thread count that produced it.
+TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
+    // iters is sized from the measured loss rate WITHOUT the fix: dup+dedup/selfloop lost a
+    // pair about once in 700 evolutions (observed at iterations 137 and 1310 on two runs), so
+    // 4000 catches a regression with high probability in ~2 s. The fan case races far less and
+    // is kept short -- it is here because it was one of the two configurations observed to
+    // fail, not because it carries the detection.
+    struct Case { const char* name; int iters; std::vector<hgraph::RewriteRule> rules;
+                  std::vector<std::vector<hgraph::VertexId>> init; };
+    // dup+dedup: {{x,y}} -> {{x,y}},{{x,y}} together with {{x,y}},{{x,y}} -> {{x,y}}.
+    auto dup_dedup = [] {
+        return std::vector<hgraph::RewriteRule>{
+            hgraph::make_rule(0).lhs({0,1}).rhs({0,1}).rhs({0,1}).build(),
+            hgraph::make_rule(1).lhs({0,1}).lhs({0,1}).rhs({0,1}).build()};
+    };
+    const std::vector<Case> cases = {
+        {"dup+dedup/selfloop", 4000, dup_dedup(), {{0,0}}},
+        {"dup+dedup/fan",       400, dup_dedup(), {{0,1},{0,2}}},
+    };
+
+    for (const auto& c : cases) {
+        size_t expected = 0;
+        {   // full capture, single-threaded: the reference the reconstruction must match
+            hgraph::Hypergraph hg;
+            hg.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
+            hgraph::ParallelEvolutionEngine e(&hg, 1);
+            e.set_transitive_reduction(false);
+            e.set_explore_from_canonical_states_only(false);
+            for (const auto& r : c.rules) e.add_rule(r);
+            auto in = c.init; e.evolve(in, 3);
+            expected = hg.causal_graph().num_branchial_edges();
+        }
+        ASSERT_GT(expected, 0u) << c.name << ": no branchial edges to compare";
+
+        for (int iter = 0; iter < c.iters; ++iter) {
+            hgraph::Hypergraph hg;
+            hg.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
+            hgraph::ParallelEvolutionEngine e(&hg, 8);
+            e.set_transitive_reduction(false);
+            e.set_explore_from_canonical_states_only(true);
+            hg.set_quotient_reconstruction(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            auto in = c.init; e.evolve(in, 3);
+            ASSERT_EQ(hg.num_reconstructed_branchial(), expected)
+                << c.name << ": branchial count differs from full capture on iteration " << iter;
+        }
+    }
+}

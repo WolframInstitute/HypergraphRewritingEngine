@@ -164,6 +164,11 @@ class Hypergraph {
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
     ConcurrentMap<uint64_t, bool> qc_applied_;
+    // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
+    // can observe the other's application claim already present -- their claims and their scans
+    // interleave freely -- so ordering alone cannot elect one reporter, and the pair is claimed
+    // directly instead.
+    ConcurrentMap<uint64_t, bool> qc_branchial_pairs_;
     std::atomic<uint32_t> qc_next_instance_{0};
     std::atomic<uint32_t> qc_next_raw_event_{0};
     std::atomic<bool> quotient_reconstruction_{false};

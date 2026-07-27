@@ -828,10 +828,13 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     // instance arriving replays the known matches, and a match being captured replays the
     // known instances -- and unlike the producer-set DP this is NOT idempotent: every
     // application mints a raw event. Exactly-once is therefore enforced here.
-    uint64_t ck = 1469598103934665603ULL;
-    ck ^= inst.id;  ck *= 1099511628211ULL;
-    ck ^= m.id;     ck *= 1099511628211ULL;
-    if (ck == 0 || ck == ~0ULL) ck = 1;
+    const auto apply_key = [](uint32_t instance, uint32_t match) {
+        uint64_t k = 1469598103934665603ULL;
+        k ^= instance;  k *= 1099511628211ULL;
+        k ^= match;     k *= 1099511628211ULL;
+        return (k == 0 || k == ~0ULL) ? 1 : k;
+    };
+    const uint64_t ck = apply_key(inst.id, m.id);
     if (!qc_applied_.insert_if_absent(ck, true).second) return;
     if (m.from_slots != inst.nslots) return;   // capture/instance disagree; drop rather than corrupt
 
@@ -867,17 +870,47 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     }
 
     // Branchial: two events are siblings when they expand the SAME instance and their consumed
-    // edges overlap. Each unordered pair is counted once, by only considering matches whose id
-    // is below this one -- so whichever of the two applies second reports the pair, and the
-    // claim above guarantees that happens exactly once per (instance, match).
+    // edges overlap. Each unordered pair is reported once, by whichever of the two APPLIES
+    // second -- recognised by the other's application claim already being present.
+    //
+    // The order that matters here is application order, not match-id order. Match ids come
+    // from a global counter while the expansion list is appended concurrently, so a lower id
+    // can reach the list after a higher one has already scanned it: the higher one would not
+    // see it, and the lower one would dismiss the higher as "not below me", losing the pair
+    // from both sides. Keying on the claim removes the assumption entirely, because the claim
+    // is what decides whether a sibling event exists at all -- a match whose application is
+    // dropped (from_slots disagreeing with the instance) never claims, so it never forms a
+    // pair, which id order could not express either.
+    //
+    // NEVER ZERO: each side claims before it scans, so if this scan misses the other's claim
+    // then this claim precedes theirs and their scan -- which runs after their claim -- sees
+    // this one. Both missing would require each claim to precede the other. The fence orders
+    // this thread's claim ahead of its scan (Dekker), and the scan reads through the waiting
+    // lookup so a claim mid-insert is awaited rather than probed past.
+    //
+    // NEVER TWICE: that argument does not elect a single reporter -- it only rules out both
+    // sides missing. Both CAN see each other (claim a, claim b, scan a, scan b), so the pair
+    // itself is claimed, and the winner reports it.
     if (m.num_consumed) {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         for_each_expansion_match(state_hash, [&](const SlotMatch& other) {
-            if (other.id >= m.id) return;
+            if (other.id == m.id) return;
             bool overlaps = false;
             for (uint32_t i = 0; i < m.num_consumed && !overlaps; ++i)
                 for (uint32_t j = 0; j < other.num_consumed; ++j)
                     if (m.consumed_slots[i] == other.consumed_slots[j]) { overlaps = true; break; }
-            if (overlaps) qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
+            if (!overlaps) return;
+            if (!qc_applied_.lookup_waiting(apply_key(inst.id, other.id)).has_value()) return;
+
+            const uint32_t lo = m.id < other.id ? m.id : other.id;
+            const uint32_t hi = m.id < other.id ? other.id : m.id;
+            uint64_t bk = 1469598103934665603ULL;
+            bk ^= inst.id;  bk *= 1099511628211ULL;
+            bk ^= lo;       bk *= 1099511628211ULL;
+            bk ^= hi;       bk *= 1099511628211ULL;
+            if (bk == 0 || bk == ~0ULL) bk = 1;
+            if (qc_branchial_pairs_.insert_if_absent(bk, true).second)
+                qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         });
     }
 
