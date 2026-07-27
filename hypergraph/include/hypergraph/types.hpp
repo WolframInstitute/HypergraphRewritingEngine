@@ -24,6 +24,7 @@ using hgcommon::StateId;
 using hgcommon::EventId;
 using hgcommon::MatchId;
 using hgcommon::INVALID_ID;
+using RuleIndex = uint16_t;  // host-only width (the GPU port uses a 32-bit RuleId)
 
 // Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it,
 // so it is an ordinary canonical form and needs a hash of its own. It cannot be 0, which
@@ -34,7 +35,7 @@ using hgcommon::INVALID_ID;
 // mixing constant already used in this file -- and only has to be non-zero and fixed.
 inline constexpr uint64_t EMPTY_STATE_CANONICAL_HASH = 0x9E3779B97F4A7C15ULL;
 
-using RuleIndex = uint16_t;  // host-only width (the GPU port uses a 32-bit RuleId)
+// The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an
 // edge's producer events with its consumer events. Strongly typed and distinct from:
 //   * EdgeId     -- one concrete hyperedge instance in one state (a dense counter), and
 //   * CausalEdge -- a producer->consumer relation at the multiway-graph level.
@@ -140,7 +141,6 @@ struct SlotMatch {
     const uint32_t* surv_from_slot = nullptr;    // length num_survivors (slot in `from`)
     const uint32_t* surv_to_slot = nullptr;      // length num_survivors (slot in `to`)
 };
-
 
 // =============================================================================
 // AbortedException
