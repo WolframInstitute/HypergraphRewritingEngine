@@ -124,7 +124,7 @@ EventId CausalGraph::get_edge_producer(EdgeId edge) const {
 
 void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
     if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
-        uint64_t pair_key = (static_cast<uint64_t>(producer) << 32) | consumer;
+        const uint64_t pair_key = causal_pair_key(producer, consumer);
         auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
 
         if (!existing_pair.has_value()) {
@@ -142,6 +142,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
     triple_key *= 1099511628211ULL;
     triple_key ^= edge;
     triple_key *= 1099511628211ULL;
+    if (triple_key == 0) triple_key = 1;   // never the map's EMPTY sentinel
 
     auto [_, inserted] = seen_causal_triples_.insert_if_absent(triple_key, true);
     if (inserted) {
@@ -152,7 +153,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
 #endif
 
-        uint64_t pair_key = (static_cast<uint64_t>(producer) << 32) | consumer;
+        const uint64_t pair_key = causal_pair_key(producer, consumer);
         auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
         if (pair_inserted) {
             num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);

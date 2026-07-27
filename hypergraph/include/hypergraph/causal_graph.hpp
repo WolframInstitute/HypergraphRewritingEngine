@@ -81,6 +81,15 @@ class CausalGraph {
     // Counts unique event pairs that have a causal relationship.
     ConcurrentMap<uint64_t, bool> seen_causal_event_pairs_;
 
+    // Pack an ordered event pair into a map key. Both ids are offset by one so that the
+    // self-loop (0,0) -- a real canonical self-loop under quotient, where distinct raw events
+    // of one canonical type collapse to a single representative -- cannot land on the map's
+    // EMPTY sentinel and be silently dropped. Packing stays injective: event ids are far below
+    // 2^32-1, so the +1 cannot carry into the neighbouring field.
+    static uint64_t causal_pair_key(EventId producer, EventId consumer) {
+        return ((static_cast<uint64_t>(producer) + 1) << 32) | (static_cast<uint64_t>(consumer) + 1);
+    }
+
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
     ConcurrentMap<uint64_t, bool> seen_branchial_pairs_;
 

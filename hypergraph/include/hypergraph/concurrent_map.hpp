@@ -5,12 +5,13 @@
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
 #include "arena.hpp"
+#include "debug_log.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <optional>
 #include <type_traits>
-#include <unordered_set>
+#include <stdexcept>
 #include <utility>
 
 namespace hypergraph {
@@ -28,7 +29,8 @@ namespace hypergraph {
 //   - K must be trivially copyable
 //   - K must have TWO reserved values:
 //     * EMPTY_KEY (default 0) - slot is available
-//     * LOCKED_KEY - slot is being written (readers skip, no spin)
+//     * LOCKED_KEY - slot is claimed, its key not yet stored
+//   - A key equal to either sentinel is rejected (see reject_sentinel_key)
 //   - Good hash distribution expected from caller
 //
 // Design: Uses sentinel-based insertion inspired by Folly AtomicUnorderedMap.
@@ -142,11 +144,29 @@ public:
     ConcurrentMap(ConcurrentMap&&) = delete;
     ConcurrentMap& operator=(ConcurrentMap&&) = delete;
 
+    // A key equal to a sentinel cannot be stored: the slot would read as empty (or as
+    // mid-write) and the entry would silently never exist. That is a programmer error in the
+    // caller's key domain -- a dense id starting at 0, or a hash that came out 0 -- so it is
+    // reported rather than absorbed. Three separate correctness bugs in this engine were this
+    // exact silent no-op (an id-0 state undercount, a genesis edge id 0 crash, and an orbit
+    // table for state 0 that could never be found), each of which took a long investigation
+    // because nothing failed at the point of the mistake. Callers offset dense ids by +1 or
+    // move the sentinels into a reserved band.
+    static void reject_sentinel_key(K key, const char* op) {
+        if (key == EMPTY_KEY || key == LOCKED_KEY) {
+            DEBUG_LOG("ConcurrentMap::%s called with a reserved sentinel key", op);
+            throw std::logic_error(
+                "ConcurrentMap: key collides with a reserved sentinel (EMPTY/LOCKED). "
+                "Offset dense ids by +1 or use a reserved sentinel band.");
+        }
+    }
+
     // Insert key-value pair if key doesn't exist
     // Returns: (value, was_inserted)
     //   - If key was new: returns (value, true)
     //   - If key existed: returns (existing_value, false)
     std::pair<V, bool> insert_if_absent(K key, V value) {
+        reject_sentinel_key(key, "insert_if_absent");
         // Check if we need to resize
         Table* table = table_.load(std::memory_order_acquire);
         size_t current_count = count_.load(std::memory_order_relaxed);
@@ -172,6 +192,7 @@ public:
     // Use this when deterministic deduplication is critical (e.g., canonical state maps).
     // The waiting ensures we don't miss concurrent inserts that are mid-flight.
     std::pair<V, bool> insert_if_absent_waiting(K key, V value) {
+        reject_sentinel_key(key, "insert_if_absent_waiting");
         // Check if we need to resize
         Table* table = table_.load(std::memory_order_acquire);
         size_t current_count = count_.load(std::memory_order_relaxed);
