@@ -124,9 +124,27 @@ RewriteResult Rewriter::apply(
     // Online Causal/Branchial Tracking
     // =====================================================================
 
-    // Register produced edges (set this event as producer)
+    // Quotient mode: capture this event's canonical transition into the causal skeleton
+    // (deduplicated); the depth-indexed producer-set reconstruction propagates over it.
+    if (hg_->quotient_causal()) {
+        hg_->register_quotient_transition(result.event);
+    }
+
+    // Full-capture causal: the stable raw edge id is the rendezvous key, so a producer and
+    // any later consumer of the same edge instance meet directly. Under quotient this whole
+    // block is replaced by the online depth-indexed reconstruction driven from
+    // register_quotient_transition above (which is why it is gated off here).
+    if (!hg_->quotient_causal()) {
+    // Register produced edges (set this event as producer). The produced edges live in
+    // result.raw_state (the output state); key each by its canonical edge identity so
+    // that, under quotient, every parent producing the same canonical edge orbit meets its
+    // consumers at one rendezvous key -- making the producer set the full, schedule-
+    // independent attribution. Off quotient the key is just the raw edge id.
+    CanonicalEdgeKey produced_keys[MAX_PATTERN_EDGES];
+    hg_->causal_edge_keys(result.raw_state, result.produced_edges, result.num_produced,
+                          produced_keys);
     for (uint8_t i = 0; i < result.num_produced; ++i) {
-        hg_->set_edge_producer(result.produced_edges[i], result.event);
+        hg_->set_edge_producer(produced_keys[i], result.event, result.produced_edges[i]);
     }
 
     // Register consumed edges (add this event as consumer)
@@ -142,11 +160,17 @@ RewriteResult Rewriter::apply(
     // - Add P1→C second: Check Desc[P1] → C found → SKIP (correct!)
     // Wrong order would store P1→C before P2→C updates Desc[P1].
 
+    // The consumed edges live in input_state; key each by its canonical edge identity so a
+    // consumer rendezvous with every producer of that canonical edge (not just the one
+    // parent whose raw output became the representative).
+    CanonicalEdgeKey consumed_keys[MAX_PATTERN_EDGES];
+    hg_->causal_edge_keys(input_state, matched_edges, num_matched, consumed_keys);
+
     // Collect (producer_id, edge_index) pairs for sorting (per-worker scratch arena;
     // recycled after the task, so no heap allocation on the rewrite hot path)
     ArenaVector<std::pair<EventId, uint8_t>> sorted_consumed(worker_scratch(), num_matched);
     for (uint8_t i = 0; i < num_matched; ++i) {
-        EventId producer = hg_->get_edge_producer(matched_edges[i]);
+        EventId producer = hg_->get_edge_producer(consumed_keys[i]);
         sorted_consumed.emplace_back(producer, i);
     }
 
@@ -161,8 +185,9 @@ RewriteResult Rewriter::apply(
 
     // Add causal edges in sorted order
     for (const auto& [producer, idx] : sorted_consumed) {
-        hg_->add_edge_consumer(matched_edges[idx], result.event);
+        hg_->add_edge_consumer(consumed_keys[idx], result.event, matched_edges[idx]);
     }
+    }  // end !quotient_causal (full-capture rendezvous)
 
     // Register for branchial tracking (checks overlap with other events from same state)
     // Use the RAW input state ID for grouping (matching v1's behavior)

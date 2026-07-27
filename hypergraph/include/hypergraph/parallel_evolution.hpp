@@ -773,6 +773,10 @@ private:
     void release_step_slot(uint32_t step);
     bool should_explore();
 
+    // Disables causal transitive reduction under quotient exploration; see the definition.
+    void guard_quotient_transitive_reduction();
+
+
     // Per-thread sampling RNG used by should_explore() and get_shuffled_rule_indices().
     // Re-seeds from random_seed_ (mixed with the thread id) whenever the run's
     // sampling_generation_ advances; random_seed_==0 draws a fresh random_device seed.

@@ -64,12 +64,20 @@ public:
     // accumulating per-edge data across the several labelings by which distinct
     // parents reach one canonical state. Orbits are numbered by the canonical order
     // of their smallest content class, so the numbering is itself invariant.
+    // `out_edge_class`, when non-null, additionally receives each edge's canonical content
+    // class -- the index of its canonicalized vertex tuple among the state's distinct
+    // canonicalized tuples, in canonical order. Orbits are unions of content classes under
+    // Aut, so the class is strictly finer; it is computed on the way to the orbit and costs
+    // nothing extra. It is the identification the quotient's per-instance reconstruction
+    // slots on (see Hypergraph::EdgeOrbitTable::slot).
     uint64_t compute_canonical_hash_with_edge_orbits(
         const SVec<SVec<VertexId>>& edges,
-        std::vector<uint32_t>& out_edge_orbit) const;
+        std::vector<uint32_t>& out_edge_orbit,
+        std::vector<uint32_t>* out_edge_class = nullptr) const;
     uint64_t compute_canonical_hash_with_edge_orbits(
         const std::vector<std::vector<VertexId>>& edges,
-        std::vector<uint32_t>& out_edge_orbit) const;
+        std::vector<uint32_t>& out_edge_orbit,
+        std::vector<uint32_t>* out_edge_class = nullptr) const;
 
     // Convenience overloads (tests/tools): adapt a heap edge list into scratch.
     CanonicalizationResult canonicalize_edges(

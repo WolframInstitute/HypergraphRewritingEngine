@@ -23,7 +23,7 @@
 // hid. See docs/VERIFICATION_PLAN.md.
 // =============================================================================
 
-namespace hg = hypergraph;
+namespace hgraph = hypergraph;   // hg is the engine's atomic_compat namespace
 
 namespace {
 
@@ -34,12 +34,12 @@ struct Fingerprint {
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
 };
 
-Fingerprint fingerprint(hg::Hypergraph& g) {
-    auto canon = [&](hg::StateId s) -> uint64_t {
-        return s == hg::INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
+Fingerprint fingerprint(hgraph::Hypergraph& g) {
+    auto canon = [&](hgraph::StateId s) -> uint64_t {
+        return s == hgraph::INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
     };
-    auto esig = [&](hg::EventId e) -> uint64_t {
-        const hg::Event& x = g.get_event(e);
+    auto esig = [&](hgraph::EventId e) -> uint64_t {
+        const hgraph::Event& x = g.get_event(e);
         return fnv(fnv(fnv(1469598103934665603ULL, canon(x.input_state)),
                        canon(x.output_state)), x.rule_index);
     };
@@ -47,15 +47,24 @@ Fingerprint fingerprint(hg::Hypergraph& g) {
     Fingerprint fp;
     std::vector<uint64_t> sh;
     for (uint32_t s = 0; s < g.num_states(); ++s)
-        if (g.get_state(s).id != hg::INVALID_ID) sh.push_back(canon(s));
+        if (g.get_state(s).id != hgraph::INVALID_ID) sh.push_back(canon(s));
     std::sort(sh.begin(), sh.end());
     fp.states = 1469598103934665603ULL; for (uint64_t v : sh) fp.states = fnv(fp.states, v);
     fp.num_states = static_cast<long>(sh.size());
 
+    // Under quotient the causal relation is reconstructed rather than explored, so it is read
+    // from the reconstruction -- which is also what the engine reports. Reading the materialised
+    // causal graph here instead would fingerprint an empty set and pass vacuously.
     std::vector<uint64_t> ce;
-    for (const auto& c : g.causal_graph().get_causal_edges()) {
-        if (c.producer == hg::INVALID_ID || c.consumer == hg::INVALID_ID) continue;
-        ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
+    if (g.quotient_reconstruction()) {
+        g.for_each_reconstructed_causal(/*reduced=*/true, [&](uint64_t p, uint64_t c) {
+            ce.push_back(fnv(fnv(0, p), c));
+        });
+    } else {
+        for (const auto& c : g.causal_graph().get_causal_edges()) {
+            if (c.producer == hgraph::INVALID_ID || c.consumer == hgraph::INVALID_ID) continue;
+            ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
+        }
     }
     std::sort(ce.begin(), ce.end());
     fp.causal = 1469598103934665603ULL; for (uint64_t v : ce) fp.causal = fnv(fp.causal, v);
@@ -72,16 +81,16 @@ Fingerprint fingerprint(hg::Hypergraph& g) {
     fp.num_branchial = static_cast<long>(be.size());
 
     for (uint32_t e = 0; e < g.num_raw_events(); ++e)
-        if (g.get_event(e).id != hg::INVALID_ID) ++fp.num_events;
+        if (g.get_event(e).id != hgraph::INVALID_ID) ++fp.num_events;
     return fp;
 }
 
-Fingerprint run(const std::vector<hg::RewriteRule>& rules,
-                const std::vector<std::vector<hg::VertexId>>& init,
+Fingerprint run(const std::vector<hgraph::RewriteRule>& rules,
+                const std::vector<std::vector<hgraph::VertexId>>& init,
                 bool quotient, int threads, uint64_t seed, int steps) {
-    hg::Hypergraph g;
-    g.set_state_canonicalization_mode(hg::StateCanonicalizationMode::Full);
-    hg::ParallelEvolutionEngine e(&g, threads);
+    hgraph::Hypergraph g;
+    g.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
+    hgraph::ParallelEvolutionEngine e(&g, threads);
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(quotient);
     e.set_random_seed(seed);
@@ -92,24 +101,24 @@ Fingerprint run(const std::vector<hg::RewriteRule>& rules,
 
 struct Workload {
     const char* name;
-    std::vector<hg::RewriteRule> rules;
-    std::vector<std::vector<hg::VertexId>> init;
+    std::vector<hgraph::RewriteRule> rules;
+    std::vector<std::vector<hgraph::VertexId>> init;
     int steps;
 };
 
 std::vector<Workload> workloads() {
     std::vector<Workload> w;
     w.push_back({"WPP",
-        {hg::make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
+        {hgraph::make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
         {{0,1},{0,2}}, 6});
     w.push_back({"mixed1",
-        {hg::make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
-         hg::make_rule(1).lhs({0,1}).rhs({1,0}).build(),
-         hg::make_rule(2).lhs({0,1}).lhs({1,2}).rhs({0,2}).build()},
+        {hgraph::make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
+         hgraph::make_rule(1).lhs({0,1}).rhs({1,0}).build(),
+         hgraph::make_rule(2).lhs({0,1}).lhs({1,2}).rhs({0,2}).build()},
         {{0,1}}, 6});
     w.push_back({"mixed2",
-        {hg::make_rule(0).lhs({0,1}).rhs({1,0}).build(),
-         hg::make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
+        {hgraph::make_rule(0).lhs({0,1}).rhs({1,0}).build(),
+         hgraph::make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
         {{0,1}}, 6});
     return w;
 }
@@ -153,10 +162,15 @@ TEST(CausalDeterminism, QuotientStatesEventsBranchialDeterministic) {
     }
 }
 
-// The Phase-2 target: causal attribution must be order-independent under quotient too.
-// DISABLED until the producer-set (order-independent) attribution lands; enabling this
-// (rename off DISABLED_) is the acceptance test for that fix. See docs/VERIFICATION_PLAN.md.
-TEST(CausalDeterminism, DISABLED_QuotientCausalAttribution) {
+// Quotient causal attribution must be order-independent. The engine serves the correct
+// TR-OFF causal graph under quotient (the online producer-set reconstruction, qc_*); the
+// run() harness requests TR on, but the engine's guard_quotient_transitive_reduction()
+// downgrades it to TR-off, because the transitively-reduced RAW causal graph is PROVEN not
+// reconstructable from the quotient skeleton (the raw instance wiring is discarded --
+// docs/VERIFICATION_PLAN.md, tools/quotient_causal_tr_deadend_probe.cpp). So under quotient
+// this verifies TR-OFF causal determinism; TR-on causal determinism is covered by
+// NonQuotientFullyDeterministic (full-capture, the only mode that can produce reduce(raw)).
+TEST(CausalDeterminism, QuotientCausalAttribution) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/true);
         EXPECT_EQ(s.causal.size(), 1u) << w.name << ": causal attribution non-deterministic under quotient";

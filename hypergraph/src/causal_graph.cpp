@@ -9,12 +9,20 @@ namespace hypergraph {
 // Edge Causal Tracking
 // =============================================================================
 
-EdgeCausalInfo* CausalGraph::get_or_create_edge_producer(EdgeId edge) {
-    return &edge_producers_.get_or_default(edge, *arena_);
+LockFreeList<EventId>* CausalGraph::get_or_create_edge_producers(CanonicalEdgeKey edge_key) {
+    auto result = edge_producers_.lookup(edge_key.value);
+    if (result.has_value()) return *result;
+    auto* new_list = arena_->template create<LockFreeList<EventId>>();
+    auto [existing, inserted] = edge_producers_.insert_if_absent(edge_key.value, new_list);
+    return inserted ? new_list : existing;
 }
 
-LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(EdgeId edge) {
-    return &edge_consumers_.get_or_default(edge, *arena_);
+LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(CanonicalEdgeKey edge_key) {
+    auto result = edge_consumers_.lookup(edge_key.value);
+    if (result.has_value()) return *result;
+    auto* new_list = arena_->template create<LockFreeList<EventId>>();
+    auto [existing, inserted] = edge_consumers_.insert_if_absent(edge_key.value, new_list);
+    return inserted ? new_list : existing;
 }
 
 bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
@@ -74,44 +82,73 @@ LockFreeList<EventId>* CausalGraph::get_or_create_state_edge_events(StateId stat
     return inserted ? new_list : existing;
 }
 
-bool CausalGraph::set_edge_producer(EdgeId edge, EventId producer) {
-    EdgeCausalInfo* info = get_or_create_edge_producer(edge);
-    LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
+bool CausalGraph::set_edge_producer(CanonicalEdgeKey edge_key, EventId producer, EdgeId raw_edge) {
+    LockFreeList<EventId>* producers = get_or_create_edge_producers(edge_key);
+    LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge_key);
 
-    EventId expected = INVALID_ID;
-    bool was_set = info->producer.compare_exchange_strong(
-        expected, producer,
-        std::memory_order_release,
-        std::memory_order_acquire
-    );
+    // Producer side of the symmetric rendezvous: publish self into the producer set,
+    // then scan the consumer set. The producer set is append-only and de-duplicated by
+    // the (producer,consumer) triple dedup downstream, so re-adding the same producer is
+    // harmless; we report novelty for callers/tests that care.
+    bool newly_added = true;
+    producers->for_each([&](EventId p) { if (p == producer) newly_added = false; });
+    producers->push(producer, *arena_);
 
-    if (was_set) {
-        consumers->for_each([&](EventId consumer) {
-            add_causal_edge(producer, consumer, edge);
-        });
-    }
+    // StoreLoad barrier: pushing self (store to producers.head_) must be ordered before
+    // scanning consumers (load of consumers.head_). Paired with the identical fence in
+    // add_edge_consumer this makes the handshake sequentially consistent, so at least
+    // one side sees the other for every (producer,consumer) pair -- no store-buffer miss.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
-    return was_set;
+    consumers->for_each([&](EventId consumer) {
+        add_causal_edge(producer, consumer, raw_edge);
+    });
+
+    return newly_added;
 }
 
-void CausalGraph::add_edge_consumer(EdgeId edge, EventId consumer) {
-    EdgeCausalInfo* info = get_or_create_edge_producer(edge);
-    LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge);
+void CausalGraph::add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer, EdgeId raw_edge) {
+    LockFreeList<EventId>* producers = get_or_create_edge_producers(edge_key);
+    LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge_key);
 
+    // Consumer side of the symmetric rendezvous: publish self into the consumer set,
+    // then scan the producer set and emit an edge from every producer.
     consumers->push(consumer, *arena_);
 
-    EventId producer = info->producer.load(std::memory_order_acquire);
-    if (producer != INVALID_ID) {
-        add_causal_edge(producer, consumer, edge);
-    }
+    // StoreLoad barrier, mirror of set_edge_producer -- see there.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    producers->for_each([&](EventId producer) {
+        add_causal_edge(producer, consumer, raw_edge);
+    });
 }
 
-EventId CausalGraph::get_edge_producer(EdgeId edge) const {
-    // get() returns null for an edge whose producer slot has not been materialized
-    // (out of range, or its segment not yet installed) -- such an edge has no producer.
-    const EdgeCausalInfo* info = edge_producers_.get(edge);
-    if (!info) return INVALID_ID;
-    return info->producer.load(std::memory_order_acquire);
+void CausalGraph::propagate_producers(CanonicalEdgeKey from_key, CanonicalEdgeKey to_key,
+                                      EdgeId raw_edge) {
+    // A surviving edge carries its producers across a rewrite: whoever produced the
+    // parent orbit (from_key) also "produces" the same edge in the child orbit (to_key),
+    // because it is literally the same edge instance passing through. Register each as a
+    // producer of to_key so a downstream consumer of that orbit rendezvous with the
+    // edge's original creators, not just events that freshly produced into the child.
+    // Reuses set_edge_producer so the rendezvous + (producer,consumer) dedup are shared.
+    auto result = edge_producers_.lookup(from_key.value);
+    if (!result.has_value()) return;
+    (*result)->for_each([&](EventId p) {
+        set_edge_producer(to_key, p, raw_edge);
+    });
+}
+
+EventId CausalGraph::get_edge_producer(CanonicalEdgeKey edge_key) const {
+    // A key with no producer set materialized has no producer.
+    auto result = edge_producers_.lookup(edge_key.value);
+    if (!result.has_value()) return INVALID_ID;
+    // The largest producer id in the set is the closest (latest) producer; returning it
+    // is a deterministic function of the order-independent set. INVALID_ID if empty.
+    EventId best = INVALID_ID;
+    (*result)->for_each([&](EventId p) {
+        if (best == INVALID_ID || p > best) best = p;
+    });
+    return best;
 }
 
 // =============================================================================

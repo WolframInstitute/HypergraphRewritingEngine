@@ -716,8 +716,10 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
 
 uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     const SVec<SVec<VertexId>>& edges,
-    std::vector<uint32_t>& out_edge_orbit) const {
+    std::vector<uint32_t>& out_edge_orbit,
+    std::vector<uint32_t>* out_edge_class) const {
     out_edge_orbit.assign(edges.size(), 0u);
+    if (out_edge_class) out_edge_class->assign(edges.size(), 0u);
     if (edges.empty()) return 0;
 
     auto scratch_mark = worker_scratch().mark();
@@ -783,8 +785,11 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
         uint32_t next = 0;
         for (auto& kv : root_to_orbit) kv.second = next++;
 
-        for (size_t ei = 0; ei < edges.size(); ++ei)
-            out_edge_orbit[ei] = root_to_orbit[find(class_of(mapped[ei]))];
+        for (size_t ei = 0; ei < edges.size(); ++ei) {
+            const uint32_t c = class_of(mapped[ei]);
+            out_edge_orbit[ei] = root_to_orbit[find(c)];
+            if (out_edge_class) (*out_edge_class)[ei] = c;
+        }
     }
 
     worker_scratch().release(scratch_mark);
@@ -793,11 +798,12 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
 
 uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     const std::vector<std::vector<VertexId>>& edges,
-    std::vector<uint32_t>& out_edge_orbit) const {
+    std::vector<uint32_t>& out_edge_orbit,
+    std::vector<uint32_t>* out_edge_class) const {
     auto mk = worker_scratch().mark();
     SVec<SVec<VertexId>> s; s.reserve(edges.size());
     for (const auto& e : edges) s.emplace_back(e.begin(), e.end());
-    auto h = compute_canonical_hash_with_edge_orbits(s, out_edge_orbit);
+    auto h = compute_canonical_hash_with_edge_orbits(s, out_edge_orbit, out_edge_class);
     worker_scratch().release(mk);
     return h;
 }

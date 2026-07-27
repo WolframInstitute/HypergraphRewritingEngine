@@ -60,13 +60,18 @@ TEST(Unified_CausalGraph, SetEdgeProducer) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
-    // Set producer for edge 0
-    EXPECT_TRUE(cg.set_edge_producer(0, 42));  // First set succeeds
-    EXPECT_EQ(cg.get_edge_producer(0), 42u);
+    // Add producer 42 for edge 0
+    EXPECT_TRUE(cg.set_edge_producer(CanonicalEdgeKey{0}, 42, 0));   // newly added
+    EXPECT_EQ(cg.get_edge_producer(CanonicalEdgeKey{0}), 42u);
 
-    // Second set should fail (already set)
-    EXPECT_FALSE(cg.set_edge_producer(0, 99));
-    EXPECT_EQ(cg.get_edge_producer(0), 42u);  // Still 42
+    // Re-adding the same producer reports "not new"; the representative is unchanged.
+    EXPECT_FALSE(cg.set_edge_producer(CanonicalEdgeKey{0}, 42, 0));
+    EXPECT_EQ(cg.get_edge_producer(CanonicalEdgeKey{0}), 42u);
+
+    // A distinct producer joins the set (quotient recurrence): newly added, and the
+    // representative is now the largest (closest) producer id.
+    EXPECT_TRUE(cg.set_edge_producer(CanonicalEdgeKey{0}, 99, 0));
+    EXPECT_EQ(cg.get_edge_producer(CanonicalEdgeKey{0}), 99u);
 }
 
 TEST(Unified_CausalGraph, ProducerConsumerCausalEdge) {
@@ -74,10 +79,10 @@ TEST(Unified_CausalGraph, ProducerConsumerCausalEdge) {
     CausalGraph cg(&arena);
 
     // Event 0 produces edge 5
-    cg.set_edge_producer(5, 0);
+    cg.set_edge_producer(CanonicalEdgeKey{5}, 0, 5);
 
     // Event 1 consumes edge 5
-    cg.add_edge_consumer(5, 1);
+    cg.add_edge_consumer(CanonicalEdgeKey{5}, 1, 5);
 
     // Should create causal edge 0 -> 1
     EXPECT_EQ(cg.num_causal_edges(), 1u);
@@ -94,13 +99,13 @@ TEST(Unified_CausalGraph, ConsumerBeforeProducer_Rendezvous) {
     CausalGraph cg(&arena);
 
     // Event 1 consumes edge 5 BEFORE producer is set
-    cg.add_edge_consumer(5, 1);
+    cg.add_edge_consumer(CanonicalEdgeKey{5}, 1, 5);
 
     // No causal edge yet (no producer)
     EXPECT_EQ(cg.num_causal_edges(), 0u);
 
     // Event 0 produces edge 5 (arrives later)
-    cg.set_edge_producer(5, 0);
+    cg.set_edge_producer(CanonicalEdgeKey{5}, 0, 5);
 
     // Now causal edge should exist (rendezvous pattern)
     EXPECT_EQ(cg.num_causal_edges(), 1u);
@@ -116,12 +121,12 @@ TEST(Unified_CausalGraph, MultipleConsumers) {
     CausalGraph cg(&arena);
 
     // Event 0 produces edge 10
-    cg.set_edge_producer(10, 0);
+    cg.set_edge_producer(CanonicalEdgeKey{10}, 0, 10);
 
     // Events 1, 2, 3 all consume edge 10
-    cg.add_edge_consumer(10, 1);
-    cg.add_edge_consumer(10, 2);
-    cg.add_edge_consumer(10, 3);
+    cg.add_edge_consumer(CanonicalEdgeKey{10}, 1, 10);
+    cg.add_edge_consumer(CanonicalEdgeKey{10}, 2, 10);
+    cg.add_edge_consumer(CanonicalEdgeKey{10}, 3, 10);
 
     // Should create 3 causal edges: 0->1, 0->2, 0->3
     EXPECT_EQ(cg.num_causal_edges(), 3u);
@@ -186,7 +191,7 @@ TEST(Unified_Rewriter, SingleRewrite_CausalTracking) {
 
     // Check that produced edge has producer set
     EdgeId produced = result.produced_edges[0];
-    EXPECT_EQ(hg.causal_graph().get_edge_producer(produced), result.event);
+    EXPECT_EQ(hg.causal_graph().get_edge_producer(CanonicalEdgeKey{produced}), result.event);
 
     // Initial edge e0 has no producer (it's an initial edge)
     // But it was consumed, so this event is registered as consumer
@@ -372,7 +377,7 @@ TEST(Unified_Rewriter, TwoEdgeRule_CausalTracking) {
     EXPECT_EQ(pedge.vertices[1], v2);
 
     // Producer should be set
-    EXPECT_EQ(hg.causal_graph().get_edge_producer(produced), result.event);
+    EXPECT_EQ(hg.causal_graph().get_edge_producer(CanonicalEdgeKey{produced}), result.event);
 }
 
 // =============================================================================
@@ -388,8 +393,8 @@ TEST(Unified_CausalGraph, ManyEdges) {
 
     // Create chain: event i produces edge i, event i+1 consumes edge i
     for (int i = 0; i < NUM_EVENTS - 1; ++i) {
-        cg.set_edge_producer(i, i);
-        cg.add_edge_consumer(i, i + 1);
+        cg.set_edge_producer(CanonicalEdgeKey(static_cast<uint64_t>(i)), i, i);
+        cg.add_edge_consumer(CanonicalEdgeKey(static_cast<uint64_t>(i)), i + 1, i);
     }
 
     // Should have NUM_EVENTS - 1 causal edges
@@ -406,13 +411,13 @@ TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
     // 3 producer events, each produces 2 edges
     // 4 consumer events, each consumes all 6 edges
     for (int p = 0; p < 3; ++p) {
-        cg.set_edge_producer(p * 2, p);
-        cg.set_edge_producer(p * 2 + 1, p);
+        cg.set_edge_producer(CanonicalEdgeKey(static_cast<uint64_t>(p * 2)), p, p * 2);
+        cg.set_edge_producer(CanonicalEdgeKey(static_cast<uint64_t>(p * 2 + 1)), p, p * 2 + 1);
     }
 
     for (int c = 0; c < 4; ++c) {
         for (int e = 0; e < 6; ++e) {
-            cg.add_edge_consumer(e, 10 + c);  // Consumer events start at ID 10
+            cg.add_edge_consumer(CanonicalEdgeKey(static_cast<uint64_t>(e)), 10 + c, e);  // Consumer events start at ID 10
         }
     }
 
@@ -808,12 +813,12 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_Basic) {
 
     // Create a chain: event 0 -> event 1 -> event 2
     // Edge 0 from event 0 to event 1
-    cg.set_edge_producer(0, 0);  // Event 0 produces edge 0
-    cg.add_edge_consumer(0, 1);  // Event 1 consumes edge 0
+    cg.set_edge_producer(CanonicalEdgeKey{0}, 0, 0);  // Event 0 produces edge 0
+    cg.add_edge_consumer(CanonicalEdgeKey{0}, 1, 0);  // Event 1 consumes edge 0
 
     // Edge 1 from event 1 to event 2
-    cg.set_edge_producer(1, 1);  // Event 1 produces edge 1
-    cg.add_edge_consumer(1, 2);  // Event 2 consumes edge 1
+    cg.set_edge_producer(CanonicalEdgeKey{1}, 1, 1);  // Event 1 produces edge 1
+    cg.add_edge_consumer(CanonicalEdgeKey{1}, 2, 1);  // Event 2 consumes edge 1
 
     // Without TR: 2 causal edges (0->1, 1->2)
     EXPECT_EQ(cg.num_causal_edges(), 2u);
@@ -829,12 +834,12 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
 
     // Create a chain: event 0 -> event 1 -> event 2
     // Edge 0 from event 0 to event 1
-    cg.set_edge_producer(0, 0);
-    cg.add_edge_consumer(0, 1);
+    cg.set_edge_producer(CanonicalEdgeKey{0}, 0, 0);
+    cg.add_edge_consumer(CanonicalEdgeKey{0}, 1, 0);
 
     // Edge 1 from event 1 to event 2
-    cg.set_edge_producer(1, 1);
-    cg.add_edge_consumer(1, 2);
+    cg.set_edge_producer(CanonicalEdgeKey{1}, 1, 1);
+    cg.add_edge_consumer(CanonicalEdgeKey{1}, 2, 1);
 
     // Now we have: 0 -> 1 -> 2
     EXPECT_EQ(cg.num_causal_edges(), 2u);

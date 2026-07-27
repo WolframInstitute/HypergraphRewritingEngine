@@ -64,6 +64,10 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
+    // Causal edges key by canonical edge orbit exactly when states are quotiented; set
+    // this before any state (incl. genesis) is created so its edge keys use the right mode.
+    hg_->set_quotient_causal(explore_from_canonical_states_only_);
+    guard_quotient_transitive_reduction();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
@@ -87,6 +91,10 @@ void ParallelEvolutionEngine::evolve(
     // Create or get the canonical state (canonical hash computed inside, mode-aware).
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
+
+    // Seed the quotient causal reconstruction at this root (depth 0).
+    if (explore_from_canonical_states_only_)
+        hg_->quotient_causal_seed(canonical_state, static_cast<int>(steps));
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -158,6 +166,10 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
+    // Causal edges key by canonical edge orbit exactly when states are quotiented; set
+    // this before any state (incl. genesis) is created so its edge keys use the right mode.
+    hg_->set_quotient_causal(explore_from_canonical_states_only_);
+    guard_quotient_transitive_reduction();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
@@ -582,6 +594,10 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     if (enable_genesis_events_) {
         hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
     }
+
+    // Seed the quotient causal reconstruction at this root (depth 0).
+    if (explore_from_canonical_states_only_)
+        hg_->quotient_causal_seed(canonical_state, static_cast<int>(max_steps_));
 
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
@@ -1305,6 +1321,27 @@ std::mt19937& ParallelEvolutionEngine::sampling_rng() const {
         seen_gen = gen;
     }
     return rng;
+}
+
+
+void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
+    // Quotient emits causal edges between CANONICAL event ids, which are schedule-dependent
+    // (canonical_event_map_ is first-writer-wins) and non-topological under recurrence, so the
+    // online transitive reduction -- which assumes id order == topological order -- would
+    // produce a non-deterministic, wrong reduced graph. Serving the correct un-reduced graph is
+    // strictly better, hence this guard.
+    //
+    // The per-instance raw reconstruction (Hypergraph::set_quotient_reconstruction) recovers
+    // every raw observable COUNT exactly, but its causal edge IDENTITIES are not yet canonical:
+    // slots tie-break on EdgeId within a content class, and when same-content edges have
+    // different producers the wiring varies run to run. Until that tie-break is canonical the
+    // reconstruction cannot replace this guard. See docs/VERIFICATION_PLAN.md.
+    if (explore_from_canonical_states_only_ &&
+        hg_ && hg_->causal_graph().transitive_reduction_enabled()) {
+        hg_->causal_graph().set_transitive_reduction(false);
+        DEBUG_LOG("WARN: transitive reduction is disabled under quotient exploration; returning "
+                  "the correct un-reduced causal graph. Use full-capture for the reduced graph.");
+    }
 }
 
 bool ParallelEvolutionEngine::should_explore() {

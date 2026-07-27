@@ -84,6 +84,131 @@ class Hypergraph {
     // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
+    // Whether the evolution quotients isomorphic states (explore-from-canonical-only). When
+    // set, causal edges are keyed by canonical edge orbit so attribution is schedule-
+    // independent across the labelings by which parents reach one canonical state.
+    std::atomic<bool> quotient_causal_{false};
+
+    // Per-state canonical edge-orbit tables, computed once at state canonicalization in
+    // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
+    // and cached by state id. The quotient causal reconstruction reads edge orbits from
+    // here rather than recomputing per event (which would re-run IR canonicalization on
+    // every event -- catastrophic on high-automorphism states). Key: StateId as uint64_t.
+    ConcurrentMap<uint64_t, EdgeOrbitTable*> state_orbit_tables_;
+
+    // The captured quotient causal skeleton: the distinct canonical transitions out of each
+    // canonical state (keyed by the source state's canonical hash), plus a dedup set over
+    // transition signatures. Built online as events fire in quotient mode; the depth-indexed
+    // producer-set reconstruction propagates over it.
+    ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
+    ConcurrentMap<uint64_t, bool> seen_transitions_;
+
+    // Depth-indexed producer-set reconstruction (the online form of the validated DP).
+    // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
+    // (append-only); qc_dsup_seen_ dedups (key, producer); qc_reached_ marks (state_hash,
+    // depth). Producers cascade forward monotonically as transitions and reachability are
+    // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
+    ConcurrentMap<uint64_t, bool> qc_dsup_seen_;
+    ConcurrentMap<uint64_t, bool> qc_reached_;
+    std::atomic<int> qc_max_steps_{0};
+
+    // The expanded representative's FULL match list per canonical state, in slots -- the
+    // input to the per-instance raw reconstruction. Deliberately not the deduplicated
+    // transitions_from_: slots are finer than orbits and SlotMatch carries no multiplicity,
+    // so two matches over one orbit must both survive (full-capture fires both).
+    // qc_expansion_rep_ pins the one raw state whose events define the expansion, so a second
+    // raw state of the same class (a dedup race) cannot append a duplicate expansion.
+    ConcurrentMap<uint64_t, LockFreeList<SlotMatch>*> qc_expansion_;
+    ConcurrentMap<uint64_t, uint64_t> qc_expansion_rep_;   // canonical hash -> StateId + 1
+    std::atomic<uint32_t> qc_next_match_id_{0};
+
+    // The slot FRAME of a canonical class: the first raw state seen for the class, whose slot
+    // numbering every other instance of that class is aligned into.
+    //
+    // Slots are read off a state's canonical labeling, and two raw states of one class have
+    // labelings differing by an automorphism -- different reference frames. Without a frame the
+    // reconstruction mixes them: a child's producer vector would be written in the producing
+    // event's own output-state numbering but read against a different state's, and which state
+    // that is depends on thread scheduling. Pinning one frame per class removes the choice.
+    ConcurrentMap<uint64_t, uint64_t> qc_frame_;           // canonical hash -> StateId + 1
+
+    // Fills out[i] with the frame slot of orb->edges[i]. Identity when `s` IS the frame (the
+    // common case -- the expanded representative usually claims it), otherwise one edge
+    // correspondence against the frame state. Runs only while capturing the expansion, i.e.
+    // once per canonical match, never on the per-instance path.
+    bool qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitTable* orb, uint32_t* out);
+
+    // Diagnostic: a state's frame slots must be a function of the state, so two calls for one
+    // state must agree. qc_frame_sig_ records the first result; disagreements are counted.
+    ConcurrentMap<uint64_t, uint64_t> qc_frame_sig_;       // StateId + 1 -> slot-vector hash
+    std::atomic<size_t> qc_frame_disagree_{0};
+    std::atomic<size_t> qc_align_fail_{0};      // captures dropped because alignment failed
+    std::atomic<size_t> qc_align_badcorr_{0};   // of those, an invalid/short edge correspondence
+    void qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_t n);
+
+    // Per-instance raw reconstruction. One QcInstance is one raw state of the full expansion,
+    // carrying the producing reconstructed-event id per slot; replaying every expansion match
+    // against every instance regenerates the raw event set the quotient never explores.
+    // Reconstructed event ids come from a counter -- counts and causal edges need only ids,
+    // not Event records, so this does not undo the quotient's state/edge compression.
+    struct QcInstance {
+        uint32_t id = 0;
+        uint32_t nslots = 0;
+        const uint32_t* prod = nullptr;   // length nslots; QC_NO_PRODUCER for initial edges
+    };
+    static constexpr uint32_t QC_NO_PRODUCER = 0xFFFFFFFFu;
+    ConcurrentMap<uint64_t, LockFreeList<QcInstance>*> qc_instances_;   // key(hash,depth,0)
+    // Claims a (instance, match) application. Both the instance side and the match side drive
+    // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
+    // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
+    ConcurrentMap<uint64_t, bool> qc_applied_;
+    std::atomic<uint32_t> qc_next_instance_{0};
+    std::atomic<uint32_t> qc_next_raw_event_{0};
+    std::atomic<bool> quotient_reconstruction_{false};
+
+    // Reconstructed causal relation over raw event ids. ONE base with TWO views: every pair is
+    // recorded, and each carries whether it survives transitive reduction, so TR-on is a filter
+    // rather than a mode and either view is available in any order without recomputation.
+    // Reconstructed ids are topological by construction -- qc_apply mints a producer's id
+    // before creating the child instance whose later application mints the consumer's -- and
+    // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
+    // reduction decision is exact at insertion.
+    ConcurrentMap<uint64_t, bool> qc_causal_pairs_;              // distinct (producer, consumer)
+    ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
+    // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
+    // Reconstructed events carry no Event record, so this is the only identity they have -- it
+    // is what schedule-independence is fingerprinted on, and what a later materialisation of
+    // the raw event list would key off.
+    SegmentedArray<uint64_t> qc_event_sig_;
+    std::atomic<size_t> qc_num_causal_edges_{0};   // per consumed edge (the T1 multiset)
+    std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
+    std::atomic<size_t> qc_num_tr_pairs_{0};       // distinct pairs surviving reduction
+    std::atomic<size_t> qc_num_branchial_{0};      // sibling matches of one instance, overlapping
+    bool qc_reachable(uint32_t producer, uint32_t consumer) const;
+    void qc_record_causal(uint32_t producer, uint32_t consumer);
+
+    static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
+        uint64_t h = 1469598103934665603ULL;
+        h ^= state_hash; h *= 1099511628211ULL;
+        h ^= (static_cast<uint64_t>(depth) << 32) | orbit; h *= 1099511628211ULL;
+        return h;
+    }
+    static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
+        uint64_t h = 1469598103934665603ULL;
+        h ^= state_hash; h *= 1099511628211ULL;
+        h ^= depth; h *= 1099511628211ULL;
+        return h ? h : 1;
+    }
+    LockFreeList<EventId>* qc_dsup_list(uint64_t key);
+    void qc_capture_expansion(EventId e);
+    void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
+    void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
+    void qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit, EventId producer);
+    void qc_process_transition(const CanonicalTransition& t, uint64_t from_hash, uint32_t depth);
+    void qc_reach(uint64_t state_hash, uint32_t depth);
+    void qc_emit(EventId producer, EventId consumer);
+
     // Weisfeiler-Leman hash implementation (fast approximate state hash)
     std::unique_ptr<WLHash> wl_hash_;
 
@@ -580,20 +705,157 @@ public:
     CausalGraph& causal_graph() { return causal_graph_; }
     const CausalGraph& causal_graph() const { return causal_graph_; }
 
-    // Set edge producer (called when edge is created by an event)
-    void set_edge_producer(EdgeId edge, EventId producer) {
-        causal_graph_.set_edge_producer(edge, producer);
+    // Set edge producer: register `producer` as a producer of the canonical edge `key`
+    // (mint keys with causal_edge_keys). raw_edge is the concrete edge id kept on the
+    // CausalEdge record for viz.
+    void set_edge_producer(CanonicalEdgeKey key, EventId producer, EdgeId raw_edge) {
+        causal_graph_.set_edge_producer(key, producer, raw_edge);
     }
 
-    // Get edge producer (returns INVALID_ID if edge has no producer yet)
-    EventId get_edge_producer(EdgeId edge) const {
-        return causal_graph_.get_edge_producer(edge);
+    // Mint the canonical edge key for each of the n `edges` belonging to `state`, writing
+    // results into out. Under quotient (and Full canonicalization) the key is
+    // fnv(canonical_hash(state), edge_orbit_in_state) -- iso-invariant, so every raw edge
+    // instance of one canonical edge orbit maps to the same key regardless of which parent
+    // produced it or which labeling a consumer matched. Otherwise (full multiway, or WL
+    // mode) the key is the raw EdgeId, keeping isomorphic-but-distinct raw states' causal
+    // edges disjoint. This is the ONLY place a CanonicalEdgeKey is minted from (state, edge).
+    void causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n,
+                          CanonicalEdgeKey* out) const;
+
+    // Compute the canonical edge-orbit table for `edges` and cache it under state id `s`,
+    // returning the state's canonical hash (the same IR canonicalization serves both, so
+    // this replaces the plain dedup hash in quotient mode at no extra canon cost).
+    uint64_t compute_and_cache_state_orbits(StateId s, const SparseBitset& edges);
+
+    // The cached edge-orbit table for a state (null if not computed -- e.g. full-capture
+    // mode, or before canonicalization).
+    const EdgeOrbitTable* state_orbits(StateId s) const {
+        auto r = state_orbit_tables_.lookup(static_cast<uint64_t>(s) + 1);  // +1: key 0 is the map's EMPTY sentinel
+        return r.has_value() ? *r : nullptr;
     }
 
-    // Add edge consumer (called when edge is consumed by an event)
-    void add_edge_consumer(EdgeId edge, EventId consumer) {
-        causal_graph_.add_edge_consumer(edge, consumer);
+    // Capture the canonical transition an event realizes into the quotient causal skeleton
+    // (idempotent per distinct canonical transition). No-op if either endpoint's orbit
+    // table is missing. Quotient mode only.
+    void register_quotient_transition(EventId e);
+
+    // Seed the quotient causal reconstruction at an initial state (depth 0): mark it
+    // reachable and give each of its edge orbits the sentinel INIT producer (INVALID_ID,
+    // skipped at emission -- initial edges have no producer). max_steps bounds the depth.
+    void quotient_causal_seed(StateId initial_state, int max_steps);
+
+    // Visit the distinct canonical transitions out of the canonical state `from_hash`.
+    template <typename F>
+    void for_each_transition_from(uint64_t from_hash, F&& f) const {
+        auto r = transitions_from_.lookup(from_hash);
+        if (r.has_value()) (*r)->for_each([&](const CanonicalTransition& t) { f(t); });
     }
+
+    // Visit every match of the expanded representative of the canonical state `from_hash`,
+    // in slots and undeduplicated -- the input to the per-instance raw reconstruction.
+    template <typename F>
+    void for_each_expansion_match(uint64_t from_hash, F&& f) const {
+        auto r = qc_expansion_.lookup(from_hash);
+        if (r.has_value()) (*r)->for_each([&](const SlotMatch& m) { f(m); });
+    }
+
+    // Per-instance raw reconstruction: replays the captured expansion against every raw
+    // instance so quotient mode can report the raw observables it never explores. Off by
+    // default while it is proven out against full-capture.
+    void set_quotient_reconstruction(bool on) {
+        quotient_reconstruction_.store(on, std::memory_order_relaxed);
+    }
+    bool quotient_reconstruction() const {
+        return quotient_reconstruction_.load(std::memory_order_relaxed);
+    }
+    // Raw observables recovered by the reconstruction (the full-capture counts).
+    size_t num_reconstructed_events() const {
+        return qc_next_raw_event_.load(std::memory_order_relaxed);
+    }
+    size_t num_reconstructed_causal_edges() const {
+        return qc_num_causal_edges_.load(std::memory_order_relaxed);
+    }
+    // TR-off view: every distinct (producer, consumer). TR-on view: those tagged in-reduction.
+    size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const {
+        return (transitively_reduced ? qc_num_tr_pairs_ : qc_num_causal_pairs_)
+                   .load(std::memory_order_relaxed);
+    }
+    size_t num_reconstructed_branchial() const {
+        return qc_num_branchial_.load(std::memory_order_relaxed);
+    }
+    size_t num_frame_alignment_disagreements() const {
+        return qc_frame_disagree_.load(std::memory_order_relaxed);
+    }
+    size_t num_alignment_failures() const { return qc_align_fail_.load(std::memory_order_relaxed); }
+    size_t num_bad_correspondences() const { return qc_align_badcorr_.load(std::memory_order_relaxed); }
+
+    // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
+    // signatures. `reduced` selects the view: false walks every recorded pair (TR off), true
+    // walks only those tagged in-reduction (TR on). Both come from the same online base, so
+    // either view is available in any order at no extra cost.
+    template <typename F>
+    void for_each_reconstructed_causal(bool reduced, F&& f) const {
+        auto sig = [&](uint32_t e) -> uint64_t {
+            const uint64_t* s = qc_event_sig_.get(e);
+            return s ? *s : 0;
+        };
+        if (reduced) {
+            qc_preds_.for_each([&](uint64_t k, LockFreeList<uint32_t>* lst) {
+                const uint32_t c = static_cast<uint32_t>(k - 1);
+                lst->for_each([&](uint32_t p) { f(sig(p), sig(c)); });
+            });
+        } else {
+            qc_causal_pairs_.for_each([&](uint64_t k, bool) {
+                f(sig(static_cast<uint32_t>(k >> 32)), sig(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
+            });
+        }
+    }
+
+    // ==========================================================================
+    // Observables (SPEC section 5)
+    // ==========================================================================
+    // The engine reaches the same observable two ways: full-capture explores every raw state,
+    // quotient explores one per isomorphism class and reconstructs the rest. These accessors
+    // hide that choice. They are deliberately NOT the num_events()/causal_graph() accessors,
+    // which report what is MATERIALISED -- internal code iterates records by id against those,
+    // and would break if they started reporting counts with no records behind them.
+
+    size_t observable_num_events() const {
+        return quotient_reconstruction() ? num_reconstructed_events() : num_events();
+    }
+    size_t observable_num_causal_edges() const {
+        return quotient_reconstruction() ? num_reconstructed_causal_edges()
+                                         : causal_graph_.num_causal_edges();
+    }
+    size_t observable_num_causal_pairs(bool transitively_reduced) const {
+        return quotient_reconstruction() ? num_reconstructed_causal_pairs(transitively_reduced)
+                                         : causal_graph_.num_causal_event_pairs();
+    }
+    size_t observable_num_branchial() const {
+        return quotient_reconstruction() ? num_reconstructed_branchial()
+                                         : causal_graph_.num_branchial_edges();
+    }
+
+    // Get a representative edge producer for a canonical edge key (INVALID_ID if none).
+    EventId get_edge_producer(CanonicalEdgeKey key) const {
+        return causal_graph_.get_edge_producer(key);
+    }
+
+    // Add edge consumer: register `consumer` as a consumer of the canonical edge `key`.
+    void add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge) {
+        causal_graph_.add_edge_consumer(key, consumer, raw_edge);
+    }
+
+    // Carry a surviving edge's producers from its parent-state orbit key to its
+    // child-state orbit key (see CausalGraph::propagate_producers).
+    void propagate_producers(CanonicalEdgeKey from, CanonicalEdgeKey to, EdgeId raw_edge) {
+        causal_graph_.propagate_producers(from, to, raw_edge);
+    }
+
+    // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set
+    // by the evolution engine before evolving; read when minting causal edge keys.
+    void set_quotient_causal(bool q) { quotient_causal_.store(q, std::memory_order_relaxed); }
+    bool quotient_causal() const { return quotient_causal_.load(std::memory_order_relaxed); }
 
     // Create a genesis event for an initial state.
     // This synthetic event connects the empty genesis state to the initial state.

@@ -29,10 +29,19 @@ namespace hypergraph {
 // - Branchial edges computed by tracking events per canonical input state
 // - All storage is lock-free append-only (no deletions during evolution)
 //
-// Rendezvous Pattern (for causal edges):
-// - Producer: WRITE producer, then READ consumers → create edges to consumers
-// - Consumer: WRITE to consumers, then READ producer → create edge from producer
-// - Guarantees: at least one side sees the other, no edges missed
+// Rendezvous Pattern (for causal edges), symmetric two-set handshake:
+// - Producer: PUSH itself into the edge's producer set, then SCAN the consumer set
+//   → create an edge to every consumer.
+// - Consumer: PUSH itself into the edge's consumer set, then SCAN the producer set
+//   → create an edge from every producer.
+// - A seq_cst fence sits between each side's push and scan, so the two form an SC
+//   store-load pair: for any (producer, consumer) at least one side observes the
+//   other (no store-buffer miss), hence no causal edge is dropped at any timing.
+// - Both sides are append-only sets, so the emitted edge set is exactly
+//   producers × consumers for the edge -- independent of thread schedule and of the
+//   order producers/consumers arrive. Under quotient recurrence a canonical edge can
+//   have several producers; keeping ALL of them (not an order-dependent first writer)
+//   is what makes the causal attribution deterministic.
 //
 // Thread safety: Fully lock-free. Multiple events can be created concurrently.
 //
@@ -40,14 +49,30 @@ namespace hypergraph {
 //         Arena-allocated, freed in bulk at end of evolution.
 
 class CausalGraph {
-    // Per-edge producer tracking (set once when edge created). Edge ids are dense and
-    // sequential, so a direct-indexed array beats a hash map: no hashing, no per-edge
-    // heap node, contiguous storage. get_or_default(edge) lazily materializes the slot
-    // (default producer == INVALID_ID); the reader-visible size grows with it.
-    SegmentedArray<EdgeCausalInfo> edge_producers_;
+    // The rendezvous is keyed by a CANONICAL EDGE KEY, not a raw edge id. Under quotient
+    // the key is fnv(canonical_hash(state), edge_orbit_in_state) so every parent that
+    // produces, and every event that consumes, the same canonical edge orbit meets at one
+    // key -- the orbit is the only edge identity invariant across the different labelings
+    // by which distinct parents reach one canonical state (a raw edge id or position is
+    // not, once the state has automorphisms). Without quotient the key is just the raw
+    // edge id, so isomorphic-but-distinct raw states keep disjoint causal edges. Keys are
+    // arbitrary 64-bit values, so a hash map (not a dense array) backs each set.
 
-    // Per-edge consumer lists (appended when edge consumed), likewise indexed by edge id.
-    SegmentedArray<LockFreeList<EventId>> edge_consumers_;
+    // Per-key producer set: the events that produced this canonical edge. A set because
+    // under quotient recurrence one canonical edge is produced by several events; keeping
+    // ALL of them (not an order-dependent first writer) is what makes attribution
+    // deterministic. Symmetric with the consumer set below.
+    // Storage keys on the raw 64-bit value (ConcurrentMap CASes an atomic integer key);
+    // the strongly-typed CanonicalEdgeKey is unwrapped to its .value only at this boundary.
+    // Sentinels sit in a reserved high band so that a non-quotient key -- a raw EdgeId,
+    // which is 32-bit and includes 0 -- is always a valid key; causal_edge_keys masks its
+    // orbit-hash keys into [0, 2^63) so they never collide with the band either.
+    static constexpr uint64_t CE_MAP_EMPTY = 1ULL << 63;
+    static constexpr uint64_t CE_MAP_LOCKED = (1ULL << 63) + 1;
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*, CE_MAP_EMPTY, CE_MAP_LOCKED> edge_producers_;
+
+    // Per-key consumer set (appended when the canonical edge is consumed).
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*, CE_MAP_EMPTY, CE_MAP_LOCKED> edge_consumers_;
 
     // Per-state event lists for branchial tracking
     // Maps StateId -> list of events that have this state as input
@@ -170,17 +195,19 @@ public:
         seen_branchial_pairs_.set_arena(arena);
         state_events_.set_arena(arena);
         state_edge_events_.set_arena(arena);
+        edge_producers_.set_arena(arena);
+        edge_consumers_.set_arena(arena);
     }
 
     // =========================================================================
     // Edge Causal Tracking
     // =========================================================================
 
-    // Get or create producer info for an edge (thread-safe)
-    EdgeCausalInfo* get_or_create_edge_producer(EdgeId edge);
+    // Get or create the producer set for a canonical edge key (thread-safe)
+    LockFreeList<EventId>* get_or_create_edge_producers(CanonicalEdgeKey edge_key);
 
-    // Get or create consumer list for an edge (thread-safe)
-    LockFreeList<EventId>* get_or_create_edge_consumers(EdgeId edge);
+    // Get or create the consumer set for a canonical edge key (thread-safe)
+    LockFreeList<EventId>* get_or_create_edge_consumers(CanonicalEdgeKey edge_key);
 
     // Redundancy check: is consumer already reachable from producer via kept edges?
     // Backward search over preds_ (the reduced adjacency); exact and lock-free.
@@ -192,14 +219,24 @@ public:
     // Get or create the co-consumer list for a (state, consumed edge) bucket
     LockFreeList<EventId>* get_or_create_state_edge_events(StateId state, EdgeId edge);
 
-    // Called when an edge is produced by an event
-    bool set_edge_producer(EdgeId edge, EventId producer);
+    // Called when a canonical edge (edge_key) is produced by an event: adds the event to
+    // the edge's producer set and rendezvous-emits causal edges to all consumers. raw_edge
+    // is the concrete edge id recorded on the CausalEdge for viz/debug. Returns true if
+    // this producer was newly added (not already in the set).
+    bool set_edge_producer(CanonicalEdgeKey edge_key, EventId producer, EdgeId raw_edge);
 
-    // Called when an edge is consumed by an event
-    void add_edge_consumer(EdgeId edge, EventId consumer);
+    // Called when a canonical edge (edge_key) is consumed by an event.
+    void add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer, EdgeId raw_edge);
 
-    // Get producer of an edge (may be INVALID_ID for initial edges)
-    EventId get_edge_producer(EdgeId edge) const;
+    // Carry an edge's producer set across a rewrite it survives: register every producer
+    // of from_key as a producer of to_key (rendezvous-emitting to to_key's consumers).
+    void propagate_producers(CanonicalEdgeKey from_key, CanonicalEdgeKey to_key, EdgeId raw_edge);
+
+    // A representative producer of a canonical edge -- the largest producer event id in
+    // the set (the closest producer, for the reverse-topological TR insertion heuristic),
+    // or INVALID_ID if the edge has no producer. Deterministic: a function of the
+    // order-independent producer set, not of arrival order.
+    EventId get_edge_producer(CanonicalEdgeKey edge_key) const;
 
     // =========================================================================
     // Branchial Tracking
