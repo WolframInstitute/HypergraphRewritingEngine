@@ -882,25 +882,28 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     // dropped (from_slots disagreeing with the instance) never claims, so it never forms a
     // pair, which id order could not express either.
     //
-    // NEVER ZERO: each side claims before it scans, so if this scan misses the other's claim
-    // then this claim precedes theirs and their scan -- which runs after their claim -- sees
-    // this one. Both missing would require each claim to precede the other. The fence orders
-    // this thread's claim ahead of its scan (Dekker), and the scan reads through the waiting
-    // lookup so a claim mid-insert is awaited rather than probed past.
+    // NEVER ZERO, by modification order on one atomic rather than by timeliness. This
+    // application publishes itself into the instance's applied list and then scans that same
+    // list. The push is a release CAS on the list head and the scan an acquire load of it, so
+    // this scan sees at least this thread's own node, and the stack's prev chain holds every
+    // node pushed before it. Of the two applications forming a pair, whichever pushed later in
+    // that head's modification order therefore sees the earlier one. Membership of the list IS
+    // the proof that the other application happened -- an application dropped before this
+    // point (its claim lost, or from_slots disagreeing with the instance) never publishes, and
+    // so never forms a pair.
     //
-    // NEVER TWICE: that argument does not elect a single reporter -- it only rules out both
-    // sides missing. Both CAN see each other (claim a, claim b, scan a, scan b), so the pair
-    // itself is claimed, and the winner reports it.
+    // NEVER TWICE: that elects no single reporter -- both sides can see each other when their
+    // pushes and scans interleave -- so the unordered pair is claimed and the winner reports.
     if (m.num_consumed) {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        for_each_expansion_match(state_hash, [&](const SlotMatch& other) {
+        auto& applied = qc_inst_applied_.get_or_default(inst.id, arena_);
+        applied.push(QcAppliedMatch{m.id, m.num_consumed, m.consumed_slots}, arena_);
+        applied.for_each([&](const QcAppliedMatch& other) {
             if (other.id == m.id) return;
             bool overlaps = false;
             for (uint32_t i = 0; i < m.num_consumed && !overlaps; ++i)
                 for (uint32_t j = 0; j < other.num_consumed; ++j)
                     if (m.consumed_slots[i] == other.consumed_slots[j]) { overlaps = true; break; }
             if (!overlaps) return;
-            if (!qc_applied_.lookup_waiting(apply_key(inst.id, other.id)).has_value()) return;
 
             const uint32_t lo = m.id < other.id ? m.id : other.id;
             const uint32_t hi = m.id < other.id ? other.id : m.id;

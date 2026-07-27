@@ -165,10 +165,32 @@ class Hypergraph {
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
     ConcurrentMap<uint64_t, bool> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
-    // can observe the other's application claim already present -- their claims and their scans
-    // interleave freely -- so ordering alone cannot elect one reporter, and the pair is claimed
-    // directly instead.
+    // can see each other, so the pair is claimed directly rather than a reporter being elected.
     ConcurrentMap<uint64_t, bool> qc_branchial_pairs_;
+
+    // The matches already applied to one instance, indexed by dense instance id. Branchial
+    // pairing scans THIS, not the expansion list, and that is what makes the pairing provable
+    // rather than merely observed to work.
+    //
+    // Each application pushes here before it scans. A push is a release CAS on the list head;
+    // the scan is an acquire load of the same head. A thread's load after its own successful
+    // CAS cannot return a value earlier in that head's modification order than its own node,
+    // and the stack's prev chain holds every node pushed before it. So of two applications,
+    // whichever pushed LATER in the head's modification order necessarily sees the earlier
+    // one -- no appeal to timeliness, only to modification-order coherence on one atomic.
+    // Scanning the expansion list instead gave no such guarantee: the two sides read a
+    // structure neither had written, so nothing ordered their reads against each other.
+    //
+    // A SegmentedArray, not a ConcurrentMap: instance ids are dense, so a direct-indexed slot
+    // has no resize chain and no sentinel-key domain, and get_or_default hands both threads
+    // the same list object. A map could hand them two lists during a resize window, which
+    // would put the two sides on different heads and void the argument above.
+    struct QcAppliedMatch {
+        uint32_t id;
+        uint32_t num_consumed;
+        const uint32_t* consumed_slots;   // arena-backed, stable
+    };
+    SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
     std::atomic<uint32_t> qc_next_instance_{0};
     std::atomic<uint32_t> qc_next_raw_event_{0};
     std::atomic<bool> quotient_reconstruction_{false};
