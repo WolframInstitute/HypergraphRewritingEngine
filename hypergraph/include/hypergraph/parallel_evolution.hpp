@@ -779,7 +779,9 @@ private:
     // Pruning helpers
     bool can_create_states_at_step(uint32_t step) const;
     bool can_have_more_children(StateId parent) const;
+    static bool try_claim_budget(std::atomic<size_t>* counter, size_t limit);
     bool try_reserve_successor_slot(StateId parent);
+    void release_successor_slot(StateId parent);
     bool try_reserve_step_slot(uint32_t step);
     void release_step_slot(uint32_t step);
     bool should_explore();

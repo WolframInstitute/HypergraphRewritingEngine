@@ -1259,60 +1259,58 @@ bool ParallelEvolutionEngine::can_have_more_children(StateId parent) const {
     return (*result)->load(std::memory_order_relaxed) < max_successor_states_per_parent_;
 }
 
-bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
-    if (max_successor_states_per_parent_ == 0) return true;
+// Find, or install, the budget counter a key shares across threads. Templated because
+// the step and successor maps carry different reserved sentinel bands.
+template <typename Map>
+static std::atomic<size_t>* budget_counter(Map& counters, uint64_t key,
+                                           ConcurrentHeterogeneousArena& arena) {
+    auto result = counters.lookup(key);
+    if (result.has_value()) return *result;
 
-    // Get or create atomic counter for this parent
-    uint64_t key = parent;
-    auto result = parent_successor_count_.lookup(key);
-    std::atomic<size_t>* counter = nullptr;
+    auto* counter = arena.template create<std::atomic<size_t>>(0);
+    auto [existing, inserted] = counters.insert_if_absent(key, counter);
+    return inserted ? counter : existing;  // another thread installed one first
+}
 
-    if (result.has_value()) {
-        counter = *result;
-    } else {
-        // Allocate new counter from arena
-        counter = hg_->arena().template create<std::atomic<size_t>>(0);
-        auto [existing, inserted] = parent_successor_count_.insert_if_absent(key, counter);
-        if (!inserted) {
-            counter = existing;  // Another thread beat us
+// Claim one unit of a budget, or report it exhausted.
+//
+// A fetch_add followed by a rollback would publish a count above the limit for as long
+// as the rollback takes, and the plain readers (can_create_states_at_step,
+// can_have_more_children) prune on exactly that value -- so N concurrent claimants would
+// make each other's in-budget work look out-of-budget, and which work got pruned would
+// depend on the interleaving. Claiming by CAS never publishes a count above the limit,
+// so the budget prunes the same work whatever the schedule.
+bool ParallelEvolutionEngine::try_claim_budget(std::atomic<size_t>* counter, size_t limit) {
+    size_t cur = counter->load(std::memory_order_relaxed);
+    while (cur < limit) {
+        if (counter->compare_exchange_weak(cur, cur + 1,
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_relaxed)) {
+            return true;
         }
     }
+    return false;
+}
 
-    // Try to increment, fail if at limit
-    size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
-    if (old_val >= max_successor_states_per_parent_) {
-        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
-        return false;
+bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
+    if (max_successor_states_per_parent_ == 0) return true;  // Unlimited
+    return try_claim_budget(budget_counter(parent_successor_count_, parent, hg_->arena()),
+                            max_successor_states_per_parent_);
+}
+
+void ParallelEvolutionEngine::release_successor_slot(StateId parent) {
+    if (max_successor_states_per_parent_ == 0) return;  // Unlimited, nothing to release
+
+    auto result = parent_successor_count_.lookup(parent);
+    if (result.has_value()) {
+        (*result)->fetch_sub(1, std::memory_order_relaxed);
     }
-    return true;
 }
 
 bool ParallelEvolutionEngine::try_reserve_step_slot(uint32_t step) {
     if (max_states_per_step_ == 0) return true;  // Unlimited
-
-    // Get or create atomic counter for this step
-    uint64_t key = step;
-    auto result = states_per_step_.lookup(key);
-    std::atomic<size_t>* counter = nullptr;
-
-    if (result.has_value()) {
-        counter = *result;
-    } else {
-        // Allocate new counter from arena
-        counter = hg_->arena().template create<std::atomic<size_t>>(0);
-        auto [existing, inserted] = states_per_step_.insert_if_absent(key, counter);
-        if (!inserted) {
-            counter = existing;  // Another thread beat us
-        }
-    }
-
-    // Try to increment, fail if at limit
-    size_t old_val = counter->fetch_add(1, std::memory_order_relaxed);
-    if (old_val >= max_states_per_step_) {
-        counter->fetch_sub(1, std::memory_order_relaxed);  // Rollback
-        return false;
-    }
-    return true;
+    return try_claim_budget(budget_counter(states_per_step_, step, hg_->arena()),
+                            max_states_per_step_);
 }
 
 void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
@@ -1406,6 +1404,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     // Pruning: check max_states_per_step (child will be at step+1)
     if (!try_reserve_step_slot(step + 1)) {
+        release_successor_slot(match.source_state);  // no child will occupy it
         return;  // Too many states at this generation
     }
 
@@ -1421,9 +1420,13 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         step
     );
 
+    // Both budgets count states this parent actually contributed, so a rewrite that
+    // produces none gives both slots back. Holding the successor slot here would retire
+    // a parent's child budget on work that never became a child.
     if (rr.new_state == INVALID_ID) {
-        // Rewrite failed - release the reserved slot
+        // Rewrite failed - release the reserved slots
         release_step_slot(step + 1);
+        release_successor_slot(match.source_state);
         return;
     }
 
@@ -1431,8 +1434,9 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     total_events_.fetch_add(1, std::memory_order_relaxed);
 
     if (!rr.was_new_state) {
-        // Duplicate state - release the reserved slot (only count unique states)
+        // Duplicate state - release the reserved slots (only count unique states)
         release_step_slot(step + 1);
+        release_successor_slot(match.source_state);
     }
 
     // Emit visualization events for canonical states only
