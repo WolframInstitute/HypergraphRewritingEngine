@@ -104,7 +104,12 @@ private:
         return nullptr;
     }
 
-    void run_job(WorkerData* data, JobRaw job) {
+    // recycle_scratch is false when this runs nested inside another job on the same
+    // thread (see enqueue): on_job_complete_ resets the per-worker scratch arena, and
+    // the job further out on the stack still holds live allocations in it. The nested
+    // job's own scratch sits above the outer job's high-water mark and is reclaimed
+    // when the outer job completes.
+    void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
         data->jobs_executing.fetch_add(1);
         try {
             job->execute();
@@ -121,7 +126,7 @@ private:
             stop_all_workers();
         }
         delete job;
-        if (on_job_complete_) on_job_complete_();   // recycle per-worker scratch
+        if (recycle_scratch && on_job_complete_) on_job_complete_();  // recycle per-worker scratch
         data->jobs_executing.fetch_sub(1);
         data->jobs_executed.fetch_add(1, std::memory_order_relaxed);
 
@@ -173,8 +178,20 @@ private:
     // Route a job to the current worker's own deque (nested submit) or the injector.
     void enqueue(JobRaw raw) {
         if (t_sys_ == this && t_worker_ != nullptr) {
-            if (!t_worker_->deque.push(raw)) injector_.push_back(raw);  // local overflow
+            if (!t_worker_->deque.push(raw)) {               // local overflow
+                // A worker must never BLOCK pushing to the injector: a worker parked
+                // in a push cannot pop, so with every worker parked there at once
+                // nothing would ever drain the queues again. Expansion is combinatorial
+                // and submits from inside running jobs, so saturating both the local
+                // deque and the injector is reachable, not hypothetical. Running the
+                // job here instead always makes progress.
+                if (!injector_.try_push_back(raw)) {
+                    run_job(t_worker_, raw, /*recycle_scratch=*/false);
+                    return;                                  // run_job counts completion
+                }
+            }
         } else {
+            // Not a worker thread, so blocking cannot stall the drain.
             injector_.push_back(raw);
         }
         wake_one_worker();
