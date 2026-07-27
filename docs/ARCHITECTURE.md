@@ -93,9 +93,28 @@ Boundary + tooling:
   duplicates still need IR to confirm.)
 - **Quotient exploration** (`ExploreFromCanonicalStatesOnly`) expands each canonical
   state once at its shortest depth, so a run costs the canonical closure, not the
-  exponentially larger provenance count.
+  exponentially larger provenance count. The raw events full capture would have fired
+  are therefore never created, so causal and branchial structure has to be
+  RECONSTRUCTED rather than observed: each canonical state retains its expanded
+  representative's full match list named in SLOTS (an edge's rank under a canonical
+  content-class ordering, so slot *i* names corresponding edges across every raw
+  instance of that state), plus one pinned reference frame per canonical class,
+  because two raw states of one class have labelings differing by an automorphism.
+  Causal edges key on `CanonicalEdgeKey` — the edge ORBIT, the only edge identity
+  invariant across the labelings by which distinct parents reach one canonical state.
+  Verified against full capture across the reconstruction matrix; still default-OFF
+  (`set_quotient_reconstruction`) while the older aggregate producer-set DP ships.
 - **Everything on the hot path is lock-free and arena-allocated.** No mutexes, no
   `std::` heap containers on the hot path. Fixes stay lock-free.
+- **Concurrent-structure invariants that are easy to break.** `ConcurrentMap` is open
+  addressed with no tombstone, so a claimed slot must never return to EMPTY — that
+  cuts the probe run of every key passing through it, and the next insert of a hidden
+  key reports itself as newly inserted, which is what every dedup decision reads. A
+  key equal to a sentinel is unstorable and is rejected loudly. `SegmentedArray`'s
+  `count_` is a high-water mark, so an index is readable only after its own `emplace`
+  returned. A worker must never block pushing to the injector, since a worker parked
+  in a push cannot pop. Election among concurrent participants must key on a CLAIM,
+  never on an id ordering that is not the visibility ordering.
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
   without justification (an inverted-index skip once cost 200x).
 

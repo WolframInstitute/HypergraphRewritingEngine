@@ -48,17 +48,25 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `hypergraph/include/hypergraph/` -- core CPU engine (headers)
 
 - **`types.hpp`** -- core value types, IDs, bindings, mode enums.
-  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters`, `CausalEdge`, `BranchialEdge`, `EdgeCausalInfo`, `EdgeOccurrence`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
+  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCausalInfo`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
+  - quotient reconstruction types: `CanonicalEdgeKey` (the quotient-aware edge identity that meets producers with consumers -- orbit-keyed under quotient, raw `EdgeId` otherwise), `EdgeOrbitTable` (per-state edge orbits + SLOTS), `CanonicalTransition` (orbit-deduplicated), `SlotMatch` (undeduplicated, slot-named)
+  - `EMPTY_STATE_CANONICAL_HASH` -- the empty state's own canonical hash; it cannot be 0, which means "not computed" for `State::canonical_hash` and is `ConcurrentMap`'s `EMPTY_KEY`
 - **`arena.hpp`** -- arena allocators (foundation of off-hot-path, malloc-free allocation).
-  - `Arena<T>`, `ConcurrentArena<T>`, `ConcurrentHeterogeneousArena` (**per-worker bump cursors** — each thread bumps a private non-atomic offset, no shared atomic on the fast path, only a lock-free head CAS to grab a fresh ~1 MB block; scratch arenas keep the shared `allocate_shared` path for `mark/release/reset`; `create`/`create_untracked`), `ArenaWorkerRegistry` (thread→dense index, released at exit), `ArenaVector<T>`; `worker_scratch()`
+  - `Arena<T>`, `ConcurrentArena<T>`, `ConcurrentHeterogeneousArena` (**per-worker bump cursors** — each thread bumps a private non-atomic offset, no shared atomic on the fast path, only a lock-free head CAS to grab a fresh ~1 MB block; scratch arenas keep the shared `allocate_shared` path for `mark/release/reset`; `create`/`create_untracked`), `ArenaWorkerRegistry` (thread→dense index, released at exit), `ArenaVector<T>`; `worker_scratch()` — the recycling scratch arena bumps `current_block_` with plain relaxed accesses (`allocate_single`), not the shared atomic claim: it is single-threaded, and the locked RMW cost 4.35x on the bump path
 - **`scratch_alloc.hpp`** -- STL-compatible allocators over the scratch/persistent arenas.
   - `ScratchAlloc<T>`, `PersistAlloc<T>`, `PersistTarget`; `worker_persistent()`; aliases `SVec`/`PVec`/`SSet`/`SUSet`/`SMap`/`SUMap`/`PUMap`
 - **`bitset.hpp`** -- sparse chunked bitset for a state's edge set.
   - `SparseBitset` (+ `derive()`, `from_edges()`), nested `Chunk`/`ChunkEntry`
 - **`segmented_array.hpp`** -- append-only fixed-segment array, stable pointers, O(1) access.
   - `SegmentedArray<T>` (`emplace`/`emplace_at`/`get_or_default`/`ensure_size`/`operator[]`/`for_each`)
+  - `MAX_SEGMENTS` is now enforced in `get_or_create_segment` (throws `std::length_error`); every write path funnels through it, and past it the CAS would land in the adjacent member
+  - CONTRACT: `count_` is a high-water mark, so an index may be read only after its own `emplace` returned, or during quiescence
 - **`concurrent_map.hpp`** -- lock-free open-addressing append-only hash map.
   - `ConcurrentMap<K,V,EMPTY,LOCKED>` (`insert_if_absent[_waiting]`, `lookup[_waiting]`, `count_unique`, `for_each`, optional arena backing via ctor/`set_arena`, `bytes_allocated`), nested `Entry`/`Table`
+  - **No tombstone**: a claimed slot is always resolved to a real key, never back to EMPTY, or the probe run of every key passing through it would be cut. Inserters therefore await a claimed slot IN PLACE before claiming one of their own.
+  - **Obstruction-free, not lock-free**, and cannot deadlock: a thread holding a claim only stores, never waits.
+  - `reject_sentinel_key` throws on a key equal to EMPTY/LOCKED -- such a key is silently unstorable, which caused four separate correctness bugs.
+  - `for_each`/`count_unique` walk the whole resize chain and emit each key once (a key can settle only in a superseded table, since `resize()` skips claimed slots).
 - **`concurrent_id_set.hpp`** -- lock-free key-only uint32 set (4 B/slot) for the causal Desc closure.
   - `ConcurrentIdSet<EMPTY>` (single-CAS `EMPTY->key` publication — no LOCKED window, no spin; `insert`, `contains`, `for_each`; arena-backed, superseded-table `prev` chain)
 - **`lock_free_list.hpp`** -- append-only lock-free linked list.
@@ -78,12 +86,19 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`ir_canonicalization.hpp`** -- McKay individualization-refinement exact canonicalizer (the reference algorithm).
   - `IRPartition`; `IRCanonicalizer` (`canonicalize_edges`, `compute_canonical_hash[_with_edge_map/_with_edge_orbits]`, `are_isomorphic`; private `build_adjacency`/`initial_partition`/`refine`/`individualize`/`find_canonical_labeling`)
 - **`causal_graph.hpp`** -- online lock-free causal + branchial relationships with online transitive reduction.
-  - `CausalGraph` (`set_edge_producer`/`add_edge_consumer`, `add_causal_edge`/`add_branchial_edge`, `update_transitive_closure`/`is_reachable_via_desc`, `register_event_from_state_with_overlap_check`, `for_each_causal_edge`/`for_each_branchial_edge`)
+  - `CausalGraph` (`set_edge_producer`/`add_edge_consumer`/`propagate_producers` -- all keyed by `CanonicalEdgeKey`, not raw `EdgeId`, so orbit-shared edges meet at one key under quotient; `add_causal_edge`/`add_branchial_edge`, `update_transitive_closure`/`is_reachable_via_desc`, `register_event_from_state_with_overlap_check`, `for_each_causal_edge`/`for_each_branchial_edge`)
+  - `causal_pair_key(producer, consumer)` offsets both ids so a self-loop on event 0 is not the map's EMPTY sentinel
 - **`hypergraph.hpp`** -- central store: edges/states/events, indices, canonicalization, causal graph.
   - `Hypergraph` (`create_edge`/`create_state`/`create_event`, `create_or_get_canonical_state`/`get_canonical_state`, `compute_canonical_hash`/`compute_wl_hash`/`compute_content_ordered_hash`, `try_lower_explore_depth`/`try_claim_expanded` for quotient mode, genesis support), result structs `CanonicalStateResult`/`CreateEventResult`
+  - `canonical_hash`/`canonical_id` are published and read through `hg::atomic_ref` (release store / acquire load); a bare fence pair would order nothing
+  - **quotient raw causal reconstruction** (`set_quotient_reconstruction`, default OFF): `compute_and_cache_state_orbits` (orbits+slots, piggybacked on the dedup IR pass), `qc_capture_expansion`/`qc_frame_slots` (the representative's full match list in slots, aligned into one pinned reference frame per canonical class), `qc_add_instance`/`qc_apply` (per-instance replay minting raw event ids), `qc_record_causal`/`qc_reachable` (causal base + in-reduction tag), `for_each_reconstructed_causal`, `num_reconstructed_*`, `observable_num_*`
+  - the older aggregate producer-set DP (`qc_dsup_`, `qc_reach`, `qc_emit`) is still the DEFAULT quotient causal path; the per-instance reconstruction above is verified against full capture but not yet wired as the default (backlog: S4)
 - **`parallel_evolution.hpp`** -- the dataflow parallel multiway evolution engine.
   - `ParallelEvolutionEngine` (`evolve` x2, `evolve_uniform_random`, `add_rule`, `set_*` config; private task methods `execute_*_task`/`submit_*_task`; forwarding `store_match_for_state`/`register_child_with_parent`/`push_match_to_children`/`forward_existing_parent_matches[_eager]`; pruning/RNG/quotient `should_explore`/`sampling_rng`/`propagate_explore_depth`)
-  - structs `MatchRecord`, `EvolutionStats`, `MatchContext`, `ScanTaskData`, `ExpandTaskData`, `ChildInfo`, `ParentInfo`; enum `EvolutionJobType`
+  - `last_error()`/`raise_worker_error()` -- `wait_for_completion()` returns the moment a worker latches an error, so every run-completion path raises anything but `Aborted` rather than returning a truncated graph as a complete one
+  - `try_claim_budget`/`release_successor_slot` -- pruning budgets are claimed by CAS (a fetch-add-then-rollback publishes a count above the limit, which the readers prune on), and every path that produces no child returns both slots
+  - `guard_quotient_transitive_reduction()` -- forces TR off under quotient, because causal edges are emitted between canonical event ids whose assignment is schedule-dependent
+  - structs `MatchRecord`, `EvolutionStats` (each counter `alignas(64)`), `MatchContext`, `ScanTaskData`, `ExpandTaskData`, `ChildInfo`, `ParentInfo`; enum `EvolutionJobType`
 - **`rewriter.hpp`** -- applies a rule+match to produce a new state (declaration).
   - `RewriteResult`, `Rewriter` (`apply`), `apply_rewrite()`
 - **`debug_log.hpp`** -- debug logging routed to an FFI callback or printf (`DEBUG_LOG` macro, no-op unless enabled).
@@ -130,6 +145,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 - **`job.hpp`** -- `Job<JobType>` (abstract), `FunctionJob<>`, `make_job()`, `ScheduleMode`, `CompatibilityAwareJob<>`
 - **`job_system.hpp`** -- `JobSystem<JobType>` (the scheduler: per-worker Chase-Lev deques + shared injector, `submit`/`start`/`shutdown`/`wait_for_completion`, `set_on_job_complete` scratch recycle), nested `WorkerData`/`SystemStatistics`; `ErrorType`
+  - a WORKER never blocks pushing to the injector (`try_push_back`, else run the job inline): a worker parked in a push cannot pop, so all workers parked there would wedge the system. The inline path passes `recycle_scratch=false`, since the outer job on the same stack still holds live scratch allocations.
 - **`work_stealing_deque.hpp`** -- `WorkStealingDeque<T>` (bounded Chase-Lev; owner `push`/`pop`, thief `steal`)
 - **`lockfree_deque/deque.hpp`** -- `Deque<T>` (bounded MPMC via one packed {tag,head,tail} atomic, ABA-defeating tag; try/blocking push/pop both ends)
 
