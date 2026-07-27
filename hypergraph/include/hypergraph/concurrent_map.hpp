@@ -227,24 +227,19 @@ public:
     // Count actual unique keys in the map (accurate, O(n) scan)
     // Use this after all inserts are complete for accurate counts.
     // This handles the case where duplicate keys exist due to concurrent inserts.
+    // Distinct live keys across the chain. Allocation-free: an entry in a superseded table is
+    // counted only if no newer table carries the same key, which is the same one-probe test
+    // for_each uses -- no seen-keys set, so no heap and no per-entry hashing.
     size_t count_unique() const {
         size_t unique_count = 0;
-        Table* table = table_.load(std::memory_order_acquire);
-
-        // We need to track which keys we've seen because duplicates can exist
-        // across different positions in the table due to the LOCKED race condition
-        std::unordered_set<K> seen_keys;
-
-        while (table) {
-            for (size_t i = 0; i < table->capacity; ++i) {
-                K key = table->entries[i].key.load(std::memory_order_acquire);
-                if (key != EMPTY_KEY && key != LOCKED_KEY) {
-                    if (seen_keys.insert(key).second) {
-                        ++unique_count;
-                    }
-                }
+        Table* head = table_.load(std::memory_order_acquire);
+        for (Table* t = head; t; t = t->prev) {
+            for (size_t i = 0; i < t->capacity; ++i) {
+                const K key = t->entries[i].key.load(std::memory_order_acquire);
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
+                if (t != head && contains_in_newer(head, t, key)) continue;
+                ++unique_count;
             }
-            table = table->prev;
         }
         return unique_count;
     }
@@ -253,11 +248,29 @@ public:
         return size() == 0;
     }
 
-    // Iterate over all entries (not thread-safe during inserts)
+    // Iterate over all live entries exactly once (not thread-safe during inserts).
+    //
+    // The superseded chain must be walked: resize() skips LOCKED slots, so an insert that was
+    // mid-flight when the table was replaced completes into the OLD table and lives only
+    // there. But resize() also rehashes every settled entry into the new table, so a naive
+    // chain walk yields those twice -- measured at 22,154 visits for a map holding 10,630
+    // entries, and *which* ones doubled depended on when resizes fired, so a caller that
+    // fingerprinted the iteration saw thread-dependent results from identical data.
+    //
+    // So: walk the chain, and emit an entry only if no NEWER table already carries that key.
+    // The probe is O(1) and allocation-free -- superseded tables halve in size going back, so
+    // the extra probing is bounded by roughly the current table's size.
     template<typename F>
     void for_each(F&& f) const {
-        Table* table = table_.load(std::memory_order_acquire);
-        for_each_in_chain(table, std::forward<F>(f));
+        Table* head = table_.load(std::memory_order_acquire);
+        for (Table* t = head; t; t = t->prev) {
+            for (size_t i = 0; i < t->capacity; ++i) {
+                const K key = t->entries[i].key.load(std::memory_order_acquire);
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
+                if (t != head && contains_in_newer(head, t, key)) continue;   // already emitted
+                f(key, t->entries[i].value.load(std::memory_order_acquire));
+            }
+        }
     }
 
 private:
@@ -440,6 +453,22 @@ private:
         }
 
         return std::nullopt;
+    }
+
+    // Is `key` present in any table strictly newer than `older`? Used to emit each key once
+    // while still walking the chain (a mid-flight insert can settle only in an old table, so
+    // the chain cannot be skipped, but resize() rehashes settled entries so it double-visits).
+    bool contains_in_newer(Table* head, Table* older, K key) const {
+        for (Table* t = head; t && t != older; t = t->prev) {
+            size_t idx = hash(key) & t->mask;
+            for (size_t probe = 0; probe < t->capacity; ++probe) {
+                const K k = t->entries[idx].key.load(std::memory_order_acquire);
+                if (k == key) return true;
+                if (k == EMPTY_KEY) break;           // key would have been placed by here
+                idx = (idx + 1) & t->mask;
+            }
+        }
+        return false;
     }
 
     template<typename F>
