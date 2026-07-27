@@ -340,8 +340,9 @@ public:
         , shared_grow_(INITIAL_BLOCK_SIZE < block_size ? INITIAL_BLOCK_SIZE : block_size) {
         allocate_new_block();
         // Per-worker bump cursors back the contention-free concurrent fast path. A
-        // recycling scratch arena is single-threaded and uses the shared cursor plus
-        // mark()/release()/reset() stack discipline instead, so it needs none.
+        // recycling scratch arena is single-threaded and bumps current_block_ directly
+        // (allocate_single), under mark()/release()/reset() stack discipline, so it
+        // needs none. Invariant relied on by allocate_raw: !recycle_ ⇒ cursors_ != null.
         if (!recycle_) {
             cursors_ = new LocalCursor[MAX_ARENA_WORKERS];
         }
@@ -410,13 +411,13 @@ public:
 
     // Allocate raw memory. The concurrent fast path bumps this worker's private
     // cursor with no shared atomic; only grabbing a fresh block touches shared state.
-    // A recycling scratch arena (cursors_ == nullptr) and any thread past the worker
-    // ceiling (index < 0) fall through to the shared bump path.
+    // A recycling arena is single-threaded, so it bumps current_block_'s offset with
+    // no read-modify-write at all. Any thread past the worker ceiling (index < 0)
+    // falls through to the atomic shared bump path.
     void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t)) {
-        if (cursors_) {
-            int wi = arena_worker_index();
-            if (wi >= 0) return allocate_local(cursors_[wi], size, alignment);
-        }
+        if (recycle_) return allocate_single(size, alignment);
+        int wi = arena_worker_index();
+        if (wi >= 0) return allocate_local(cursors_[wi], size, alignment);
         return allocate_shared(size, alignment);
     }
 
@@ -555,9 +556,32 @@ private:
         return nb->data + aligned;
     }
 
+    // Single-threaded bump path for a recycling arena. Bumps the same
+    // current_block_/offset pair that mark()/release()/reset() ride, so the stack
+    // discipline and bytes_allocated() see exactly the state they always did — but
+    // with plain loads and stores, since only the owning thread can reach this arena.
+    // The fields stay atomic for the shared path's sake; relaxed on a single thread
+    // is a bare mov, where the shared path's compare_exchange is a locked RMW.
+    void* allocate_single(size_t size, size_t alignment) {
+        while (true) {
+            Block* block = current_block_.load(std::memory_order_relaxed);
+            size_t offset = block->offset.load(std::memory_order_relaxed);
+
+            size_t aligned_offset = (offset + alignment - 1) & ~(alignment - 1);
+            size_t new_offset = aligned_offset + size;
+
+            if (new_offset <= block->capacity) {
+                block->offset.store(new_offset, std::memory_order_relaxed);
+                return block->data + aligned_offset;
+            }
+            // Fresh/recycled block starts near offset 0, so the request needs at most
+            // size + alignment bytes.
+            advance_block(size + alignment);
+        }
+    }
+
     // Shared bump path: an atomic claim on current_block_'s offset. Backs the
-    // single-threaded recycling scratch arena (whose mark/release/reset ride
-    // current_block_) and the over-ceiling fallback for the concurrent arena.
+    // over-ceiling fallback for the concurrent arena.
     void* allocate_shared(size_t size, size_t alignment) {
         while (true) {
             Block* block = current_block_.load(std::memory_order_acquire);
