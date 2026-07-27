@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <stdexcept>
 #include <type_traits>
 
 namespace hypergraph {
@@ -92,16 +93,15 @@ public:
 
     // Access element by index - O(1)
     //
-    // MEMORY ORDERING:
-    // Readers wait for count_ > idx (acquire), which synchronizes-with the release CAS
-    // an emplace/emplace_at performs after constructing element idx and publishing its
-    // segment. The segment store (release) happens-before that CAS, so the acquire
-    // load of the segment pointer sees a fully constructed element.
-    //
-    // count_ is a high-water mark, so under concurrent emplace it can pass idx before
-    // the segment holding an EARLIER, still-in-flight slot is installed. We therefore
-    // also spin for the segment pointer instead of dereferencing null. Both spins are
-    // no-ops on the common path (accessing idx after its own emplace has returned).
+    // MEMORY ORDERING: the acquire load of count_ synchronizes-with the release CAS of
+    // WHICHEVER emplace last raised it -- not necessarily idx's own, since count_ is a
+    // high-water mark each emplace advances independently. So waiting for count_ > idx
+    // does NOT by itself establish that idx is constructed; that is the caller obligation
+    // stated in the emplace CONTRACT above (access idx only after its own emplace has
+    // returned, or iterate only when emplaces are quiescent). What the two spins do
+    // guarantee is that the segment pointer is non-null before it is dereferenced, since
+    // a concurrent emplace can raise count_ past idx while an EARLIER slot's segment is
+    // still being installed. Both spins are no-ops on the common path.
     T& operator[](uint32_t idx) {
         while (count_.load(std::memory_order_acquire) <= idx) cpu_relax();
 
@@ -247,8 +247,9 @@ public:
         // Ensure segment exists (thread-safe)
         T* segment = get_or_create_segment(seg_idx, arena);
 
-        // Pre-create next segment when nearing end of current
-        if (offset >= segment_size_ - 1) {
+        // Pre-create next segment when nearing end of current. Skipped at the last
+        // segment: this is a look-ahead, and the element being placed here still fits.
+        if (offset >= segment_size_ - 1 && seg_idx + 1 < MAX_SEGMENTS) {
             get_or_create_segment(seg_idx + 1, arena);
         }
 
@@ -281,6 +282,17 @@ public:
 private:
     template<typename Arena>
     T* get_or_create_segment(size_t seg_idx, Arena& arena) {
+        // The segment table is a fixed inline array, so an index past it would CAS into
+        // whatever member follows and corrupt it with no symptom at the point of the
+        // mistake. Every write path funnels through here, so one check covers them all;
+        // reads cannot outrun it, because count_ only reaches idx+1 once idx's write
+        // succeeded.
+        if (seg_idx >= MAX_SEGMENTS) {
+            throw std::length_error(
+                "SegmentedArray: capacity exhausted (MAX_SEGMENTS segments). Raise "
+                "MAX_SEGMENTS or the segment size.");
+        }
+
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
         if (segment) {
             return segment;
