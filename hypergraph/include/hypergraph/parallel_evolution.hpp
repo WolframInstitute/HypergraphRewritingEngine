@@ -615,7 +615,12 @@ public:
 
     // Check if stop has been requested
     bool stop_requested() const {
-        return should_stop_.load(std::memory_order_acquire);
+        return should_stop_.load(std::memory_order_relaxed);
+    }
+
+    // Error latched by a worker during the last evolve(), or None.
+    job_system::ErrorType last_error() const {
+        return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
     }
 
     // =========================================================================
@@ -659,6 +664,12 @@ public:
     );
 
 private:
+    // Raise whatever a worker latched during the run. wait_for_completion() returns the
+    // moment a worker latches an error, so tasks are still outstanding and the graph is
+    // truncated; without this the run returns looking complete. Aborted is the caller's
+    // own request, so it returns quietly with whatever was built.
+    void raise_worker_error() const;
+
     void finalize_evolution();
 
     // Helper: Create an initial state from a set of edges WITHOUT submitting for matching

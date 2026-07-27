@@ -154,6 +154,7 @@ void ParallelEvolutionEngine::evolve(
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
+    raise_worker_error();
 
     finalize_evolution();
 }
@@ -180,6 +181,7 @@ void ParallelEvolutionEngine::evolve(
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
+    raise_worker_error();
 
     finalize_evolution();
 }
@@ -425,6 +427,7 @@ void ParallelEvolutionEngine::evolve_uniform_random(
         }
 
         job_system_->wait_for_completion();
+        raise_worker_error();
 
         // Merge job outputs and store per-state
         size_t job_i = 0;
@@ -518,6 +521,19 @@ void ParallelEvolutionEngine::evolve_uniform_random(
 // =============================================================================
 // Private Helper Methods
 // =============================================================================
+
+void ParallelEvolutionEngine::raise_worker_error() const {
+    switch (last_error()) {
+        case job_system::ErrorType::None:
+        case job_system::ErrorType::Aborted:
+            return;
+        default:
+            throw std::runtime_error(
+                std::string("evolution failed in a worker: ")
+                + job_system_->get_error_description()
+                + " (the graph is truncated at the point of failure)");
+    }
+}
 
 void ParallelEvolutionEngine::finalize_evolution() {
     // CRITICAL: Acquire fence to ensure all writes from worker threads are visible

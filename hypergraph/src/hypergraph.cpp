@@ -202,7 +202,11 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // before any state is created, so gating here never drops a needed entry. When
     // event canon is off this saves ~16 B/state + the map's resize chain + a per-state
     // hash+probe insert.
-    if (event_signature_keys_ != EVENT_SIG_NONE) {
+    // A 0 hash means the mode computed none (WL selected with no hasher configured);
+    // get_canonical_state_for_event reads that as "fall back to the raw state", so there
+    // is nothing to key an entry on. Every state with a hash has a non-zero one --
+    // the empty state included, via EMPTY_STATE_CANONICAL_HASH.
+    if (event_signature_keys_ != EVENT_SIG_NONE && canonical_hash != 0) {
         event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
     }
 
@@ -547,7 +551,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
 
     if (edge_vectors.empty()) {
         worker_scratch().release(mk);
-        return 0;
+        return EMPTY_STATE_CANONICAL_HASH;
     }
 
     IRCanonicalizer ir;
@@ -558,7 +562,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
 
 uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
     if (edges.empty()) {
-        return 0;
+        return EMPTY_STATE_CANONICAL_HASH;
     }
 
     std::atomic_thread_fence(std::memory_order_acquire);

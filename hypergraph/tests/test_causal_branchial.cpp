@@ -5,6 +5,7 @@
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/causal_graph.hpp"
+#include "hypergraph/parallel_evolution.hpp"
 #include <vector>
 #include <set>
 #include <algorithm>
@@ -429,12 +430,36 @@ TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
 // Canonical Hash Integration Tests
 // =============================================================================
 
+// The empty state is an ordinary canonical form -- any rule with an empty RHS reaches
+// it -- so it gets a hash of its own, stable and distinct from the two other meanings
+// carried by 0: "canonical hash not computed" (State::canonical_hash) and ConcurrentMap's
+// EMPTY_KEY, which no storable key may equal.
 TEST(Unified_CanonicalHash, CanonicalHash_EmptyState) {
     Hypergraph hg;
     SparseBitset empty_edges;
 
     uint64_t hash = hg.compute_canonical_hash(empty_edges);
-    EXPECT_EQ(hash, 0u);
+    EXPECT_EQ(hash, EMPTY_STATE_CANONICAL_HASH);
+    EXPECT_NE(hash, 0u);
+
+    SparseBitset also_empty;
+    EXPECT_EQ(hg.compute_canonical_hash(also_empty), hash);
+}
+
+// A rule that empties the state must evolve, not throw: it drives a state whose
+// canonical hash keys the dedup, event-canonical and quotient maps.
+TEST(Unified_CanonicalHash, EmptyingRuleEvolvesWithoutError) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(EventKey_ConsumedEdges | EventKey_ProducedEdges);
+
+    ParallelEvolutionEngine engine(&hg, 4);
+    engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
+
+    std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
+    EXPECT_NO_THROW(engine.evolve(init, 3));
+    EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
+    EXPECT_GT(hg.num_states(), 1u);
 }
 
 TEST(Unified_CanonicalHash, CanonicalHash_SingleEdge) {

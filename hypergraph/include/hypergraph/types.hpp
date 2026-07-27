@@ -24,6 +24,16 @@ using hgcommon::StateId;
 using hgcommon::EventId;
 using hgcommon::MatchId;
 using hgcommon::INVALID_ID;
+
+// Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it,
+// so it is an ordinary canonical form and needs a hash of its own. It cannot be 0, which
+// carries two other meanings a state hash must stay clear of: State::canonical_hash uses
+// 0 for "not computed yet" (get_canonical_state_for_event falls back to the raw state on
+// it), and 0 is ConcurrentMap's EMPTY_KEY, so a 0-hashed state is unstorable in every map
+// this hash keys. The value is arbitrary -- the fractional part of the golden ratio, a
+// mixing constant already used in this file -- and only has to be non-zero and fixed.
+inline constexpr uint64_t EMPTY_STATE_CANONICAL_HASH = 0x9E3779B97F4A7C15ULL;
+
 using RuleIndex = uint16_t;  // host-only width (the GPU port uses a 32-bit RuleId)
 // edge's producer events with its consumer events. Strongly typed and distinct from:
 //   * EdgeId     -- one concrete hyperedge instance in one state (a dense counter), and
