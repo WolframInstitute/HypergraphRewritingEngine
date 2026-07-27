@@ -453,20 +453,6 @@ enum class StateCanonicalizationMode : uint8_t {
 };
 
 // =============================================================================
-// EdgeOccurrence: Position of a vertex within an edge
-// =============================================================================
-
-struct EdgeOccurrence {
-    EdgeId edge_id;
-    uint8_t position;
-    uint8_t arity;
-
-    EdgeOccurrence() : edge_id(INVALID_ID), position(0), arity(0) {}
-    EdgeOccurrence(EdgeId eid, uint8_t pos, uint8_t ar)
-        : edge_id(eid), position(pos), arity(ar) {}
-};
-
-// =============================================================================
 // SubtreeBloomFilter: Compact representation of vertices in a subtree
 // =============================================================================
 // Uses bloom filter to track subtree membership with O(1) membership test.

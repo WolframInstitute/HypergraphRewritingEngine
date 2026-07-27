@@ -84,19 +84,6 @@ class Hypergraph {
     // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
-    // ==========================================================================
-    // Global Vertex Adjacency Index
-    // ==========================================================================
-    // Maps each vertex to the list of edges it appears in, with position info.
-    // This is THE canonical adjacency structure for the entire hypergraph.
-    //
-    // Thread safety: Append-only via LockFreeList. Edges are immutable after
-    // creation, so once registered here, entries never change or get removed.
-    //
-    // Usage: When computing state hashes, iterate this and filter by
-    // state_edges.contains(edge_id) to get per-state adjacency without copying.
-    SegmentedArray<LockFreeList<EdgeOccurrence>> vertex_adjacency_;
-
     // Weisfeiler-Leman hash implementation (fast approximate state hash)
     std::unique_ptr<WLHash> wl_hash_;
 
@@ -256,102 +243,6 @@ public:
 
     EdgeArityAccessorRaw edge_arity_accessor_raw() const {
         return EdgeArityAccessorRaw(this);
-    }
-
-    // =========================================================================
-    // Global Vertex Adjacency Access
-    // =========================================================================
-    // Provides access to the global vertex-to-edge adjacency index.
-    // Use for state hash computation: iterate occurrences and filter by
-    // state_edges.contains(edge_id) to get per-state adjacency without copying.
-
-    // Get the edge occurrences for a vertex (may be empty if vertex not seen)
-    const LockFreeList<EdgeOccurrence>* get_vertex_adjacency(VertexId v) const {
-        if (v >= vertex_adjacency_.size()) {
-            return nullptr;
-        }
-        return &vertex_adjacency_[v];
-    }
-
-    // Iterate over edges containing vertex v that are also in state_edges
-    // This is the key operation for the WL hash computation without copying adjacency
-    template<typename F>
-    void for_each_adjacent_edge_in_state(
-        VertexId v,
-        const SparseBitset& state_edges,
-        F&& f
-    ) const {
-        if (v >= vertex_adjacency_.size()) return;
-
-        vertex_adjacency_[v].for_each([&](const EdgeOccurrence& occ) {
-            if (state_edges.contains(occ.edge_id)) {
-                f(occ);
-            }
-        });
-    }
-
-    // Iterate over ALL edge occurrences for a vertex (unfiltered)
-    // Used by hash strategies with their own filtering
-    template<typename F>
-    void for_each_occurrence(VertexId v, F&& f) const {
-        if (v >= vertex_adjacency_.size()) return;
-        vertex_adjacency_[v].for_each(std::forward<F>(f));
-    }
-
-    // Adjacency provider wrapper for use with hash strategies
-    // This wraps the global adjacency index into an object that can be passed
-    // to the incremental WL hash's adjacency queries
-    class GlobalAdjacencyProvider {
-        const Hypergraph* hg_;
-    public:
-        explicit GlobalAdjacencyProvider(const Hypergraph* hg) : hg_(hg) {}
-
-        template<typename F>
-        void for_each_occurrence(VertexId v, F&& f) const {
-            hg_->for_each_occurrence(v, std::forward<F>(f));
-        }
-    };
-
-    GlobalAdjacencyProvider adjacency_provider() const {
-        return GlobalAdjacencyProvider(this);
-    }
-
-    // State-filtered adjacency provider: uses global index but filters by state's edge set
-    // This is the key optimization: O(vertex_degree) iteration with O(1) contains check
-    // instead of O(state_edges) adjacency rebuild
-    class StateFilteredAdjacencyProvider {
-        const SegmentedArray<LockFreeList<EdgeOccurrence>>* vertex_adjacency_;
-        const SparseBitset* state_edges_;
-    public:
-        StateFilteredAdjacencyProvider(
-            const SegmentedArray<LockFreeList<EdgeOccurrence>>* vertex_adjacency,
-            const SparseBitset* state_edges)
-            : vertex_adjacency_(vertex_adjacency), state_edges_(state_edges) {}
-
-        template<typename Callback>
-        void for_each_adjacent(VertexId v, Callback&& cb) const {
-            if (v >= vertex_adjacency_->size()) return;
-            (*vertex_adjacency_)[v].for_each([&](const EdgeOccurrence& occ) {
-                if (state_edges_->contains(occ.edge_id)) {
-                    cb(occ.edge_id, occ.position);
-                }
-            });
-        }
-
-        // For compute_tree_hash_external_adjacency which expects EdgeOccurrence
-        template<typename Callback>
-        void for_each_occurrence(VertexId v, Callback&& cb) const {
-            if (v >= vertex_adjacency_->size()) return;
-            (*vertex_adjacency_)[v].for_each([&](const EdgeOccurrence& occ) {
-                if (state_edges_->contains(occ.edge_id)) {
-                    cb(occ);
-                }
-            });
-        }
-    };
-
-    StateFilteredAdjacencyProvider state_filtered_adjacency(const SparseBitset& state_edges) const {
-        return StateFilteredAdjacencyProvider(&vertex_adjacency_, &state_edges);
     }
 
     // =========================================================================

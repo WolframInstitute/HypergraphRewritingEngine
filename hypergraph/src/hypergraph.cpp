@@ -44,13 +44,6 @@ EdgeId Hypergraph::create_edge(
     // Update indices
     match_index_.add_edge(eid, vertices, arity, arena_);
 
-    // Register in global vertex adjacency index
-    for (uint8_t i = 0; i < arity; ++i) {
-        VertexId v = vertices[i];
-        EdgeOccurrence occ(eid, i, arity);
-        vertex_adjacency_.get_or_default(v, arena_).push(occ, arena_);
-    }
-
     return eid;
 }
 

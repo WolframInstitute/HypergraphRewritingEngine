@@ -39,7 +39,7 @@ namespace hypergraph {
 // - State hash computation: Thread-safe, uses shared read-only data
 // - Hash caching: Lock-free via ConcurrentMap
 //
-// Note: Common types (EdgeOccurrence, VertexHashCache, EdgeCorrespondence,
+// Note: Common types (VertexHashCache, EdgeCorrespondence,
 // EventSignature, FNV constants) are defined in types.hpp
 
 // Forward declarations
