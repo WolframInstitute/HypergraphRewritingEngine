@@ -89,8 +89,13 @@ struct IrScratch {
     uint32_t* base;
     uint64_t  used = 0;
     HG_HD uint32_t* u32(uint64_t count) { uint32_t* p = base + used; used += count; return p; }
+
+    // Aligns on the ADDRESS, not on the index. Aligning the index only reaches an 8-byte
+    // boundary when `base` is already 8-byte aligned, which a caller handing out fixed-stride
+    // slices of one pool does not guarantee: a slot base of pool + i*stride with an odd stride
+    // is 4-byte aligned for odd i, and a uint64 view of it faults on the device.
     HG_HD uint64_t* u64(uint64_t count) {
-        used = (used + 1) & ~uint64_t(1);                 // 8-byte align
+        while ((reinterpret_cast<uintptr_t>(base + used) & uintptr_t(7)) != 0) ++used;
         uint64_t* p = reinterpret_cast<uint64_t*>(base + used);
         used += 2 * count;
         return p;

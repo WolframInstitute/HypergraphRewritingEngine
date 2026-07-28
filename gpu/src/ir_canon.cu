@@ -29,8 +29,16 @@ HG_HD inline uint64_t ir_slot_words(uint32_t max_verts, uint32_t max_edges,
     return (max_edges + 3) / 4          // ea, as bytes rounded to a word
          + (max_edges + 1)              // eoff
          + max_occs                     // ev
+         + max_verts                    // verts_local: the thread's local-index table
          + hgcommon::ir_scratch_words(max_verts, max_edges, max_occs, depth)
          + 8;                           // alignment slack
+}
+
+// Slot stride, rounded so every slot base keeps the 8-byte alignment the pool starts with --
+// a uint64 view of a 4-byte-aligned slot faults on the device.
+HG_HD inline uint64_t ir_slot_stride(uint32_t max_verts, uint32_t max_edges,
+                                     uint32_t max_occs, uint32_t depth) {
+    return (ir_slot_words(max_verts, max_edges, max_occs, depth) + 1ull) & ~1ull;
 }
 
 // Depth the device attempts. A state discrete after refinement needs none of it; this bounds
@@ -43,11 +51,12 @@ constexpr uint32_t kIRDeviceDepth = 8;
 __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
                               uint8_t*& ea, uint32_t*& eoff, uint32_t*& ev,
                               uint32_t& n_edges, uint32_t& n_verts, uint32_t& total_occ,
-                              VertexId* verts_local)
+                              VertexId*& verts_local)
 {
     ea   = reinterpret_cast<uint8_t*>(slot);
     eoff = slot + (kMaxIREdges + 3) / 4;
     ev   = eoff + (kMaxIREdges + 1);
+    verts_local = ev + kMaxIROccs;
 
     n_edges = 0; n_verts = 0; total_occ = 0;
     if (sid >= ds.max_states) return false;
@@ -93,11 +102,10 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
     uint32_t* slot = pool + tid * slot_words;
-    __shared__ VertexId verts_local[kMaxIRVerts];
 
     for (uint32_t i = lo + tid; i < hi; i += stride) {
         const StateId sid = i;
-        uint8_t* ea; uint32_t* eoff; uint32_t* ev;
+        uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
         uint32_t n_edges, n_verts, total_occ;
 
         if (!flatten_state(ds, sid, slot, ea, eoff, ev, n_edges, n_verts, total_occ,
@@ -110,7 +118,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         }
         if (n_edges == 0) { out[i - lo] = 0; continue; }
 
-        uint32_t* scratch = ev + kMaxIROccs;
+        uint32_t* scratch = verts_local + kMaxIRVerts;
         hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
         for (uint32_t depth = 1; depth <= kIRDeviceDepth; depth *= kIRDeviceDepth) {
             r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
@@ -146,8 +154,8 @@ void compute_state_ir_hashes_range(const EngineState& engine,
     if (hi <= lo) return;
     const uint32_t n = hi - lo;
     const uint32_t threads = n < kIRMaxThreads ? n : kIRMaxThreads;
-    const uint64_t slot_words = ir_slot_words(kMaxIRVerts, kMaxIREdges, kMaxIROccs,
-                                              kIRDeviceDepth);
+    const uint64_t slot_words = ir_slot_stride(kMaxIRVerts, kMaxIREdges, kMaxIROccs,
+                                               kIRDeviceDepth);
 
     uint32_t* pool = nullptr;
     check(cudaMalloc(&pool, size_t(threads) * slot_words * sizeof(uint32_t)), "pool alloc");
