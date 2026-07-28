@@ -294,9 +294,43 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
     EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
     uint32_t* arr_rank = arena_.allocate_array<uint32_t>(n ? n : 1);
     if (n > 0) {
-        IRCanonicalizer ir;
-        thread_local std::vector<uint32_t> ranks;
-        hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, ranks);
+        // Flatten to the shared core's convention and take the hash AND the ranks from one
+        // pass. The core is the code the device runs, so an event identity built on these
+        // ranks means the same thing on both.
+        SVec<uint8_t> ea;
+        SVec<uint32_t> eoff, ev;
+        ea.reserve(n); eoff.reserve(n); ev.reserve(n * 2);
+        for (uint32_t i = 0; i < n; ++i) {
+            eoff.push_back(static_cast<uint32_t>(ev.size()));
+            ea.push_back(static_cast<uint8_t>(edge_vectors[i].size()));
+            for (VertexId v : edge_vectors[i]) ev.push_back(v);
+        }
+        SVec<uint32_t> verts(ev.begin(), ev.end());
+        std::sort(verts.begin(), verts.end());
+        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+        const uint32_t n_verts = static_cast<uint32_t>(verts.size());
+        for (uint32_t& x : ev)
+            x = static_cast<uint32_t>(std::lower_bound(verts.begin(), verts.end(), x) - verts.begin());
+
+        const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+        SVec<uint32_t> ranks(n);
+        bool ok = false;
+        for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+            const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
+            auto* scratch = static_cast<uint32_t*>(
+                worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+            auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
+                                                 n, n_verts, total_occ, scratch, depth,
+                                                 ranks.data());
+            if (r.status == hgcommon::IR_OK) { hash = r.hash; ok = true; break; }
+            if (r.status == hgcommon::IR_EMPTY) break;
+        }
+        if (!ok) {
+            IRCanonicalizer ir;
+            thread_local std::vector<uint32_t> fallback_ranks;
+            hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, fallback_ranks);
+            for (uint32_t i = 0; i < n; ++i) ranks[i] = fallback_ranks[i];
+        }
         for (uint32_t i = 0; i < n; ++i) { arr_edges[i] = ids[i]; arr_rank[i] = ranks[i]; }
     }
     worker_scratch().release(mk);

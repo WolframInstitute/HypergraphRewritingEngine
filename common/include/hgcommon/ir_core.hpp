@@ -46,17 +46,27 @@ HG_HD inline uint32_t ir_bitset_words(uint32_t n) { return (n + 63u) / 64u + 1u;
 // needing more reports IR_NEED_DEPTH so the caller can retry with a larger one.
 constexpr uint32_t IR_MAX_DEPTH_DEFAULT = 64;
 
-// Automorphisms retained for orbit pruning. Generators only SKIP branches that are automorphic
-// to one already explored, and automorphic branches reach the same canonical form, so a cap
-// costs search time on a highly symmetric state and never changes the result.
-constexpr uint32_t IR_MAX_GENERATORS = 64;
+// Automorphisms retained for orbit pruning, as a per-caller BUDGET rather than a constant.
+//
+// Generators only SKIP branches automorphic to one already explored, and automorphic branches
+// reach the same canonical form, so the budget costs search TIME on a symmetric state and
+// never changes the result. It is not a tuning nicety: on a state of 30 isomorphic components
+// a budget of 64 leaves the pruning too weak to collapse the search and it does not finish,
+// where 512 completes in 5.4 s -- faster than the unbounded-generator host implementation's
+// 6.9 s on the same state.
+//
+// So the two devices want different budgets, and that is exactly the split: the RESULT is
+// shared, the search budget is orchestration. The host can afford generators * n_verts words
+// of scratch; a device thread cannot.
+constexpr uint32_t IR_HOST_GENERATORS   = 512;
+constexpr uint32_t IR_DEVICE_GENERATORS = 32;
 
 // Generators and depth blocks are the bulk of the scratch and are touched only when the
 // initial refinement leaves a non-discrete partition. max_depth == 1 means "root only": it
 // sizes for the common state, which is discrete after refinement, and reports IR_NEED_DEPTH
 // for the rest so the caller can retry at a depth that searches.
-HG_HD inline uint32_t ir_generator_cap(uint32_t max_depth) {
-    return max_depth > 1 ? IR_MAX_GENERATORS : 0u;
+HG_HD inline uint32_t ir_generator_cap(uint32_t max_depth, uint32_t max_generators) {
+    return max_depth > 1 ? max_generators : 0u;
 }
 
 enum IrStatus : uint32_t { IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2 };
@@ -68,7 +78,8 @@ HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 7ull * n_verts +
 
 // Total uint32 words of scratch for a given problem size.
 HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
-                                       uint32_t total_occ, uint32_t max_depth) {
+                                       uint32_t total_occ, uint32_t max_depth,
+                                       uint32_t max_generators = IR_HOST_GENERATORS) {
     const uint64_t n = n_verts, e = n_edges, occ = total_occ, d = max_depth;
     return
         (n + 1) + occ + occ + n             // occ_off, occ_edge, occ_pos, cursor
@@ -77,9 +88,9 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
       + n + n + n + n + n                   // path, uf, labeling, first_labeling, inv
-      + 3 * (occ + e)                       // cur_form, best_form, first_form
+      + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
-      + uint64_t(ir_generator_cap(max_depth)) * n   // generators, row-major
+      + uint64_t(ir_generator_cap(max_depth, max_generators)) * n  // generators, row-major
       + 64;                                 // alignment slack for the uint64 views
 }
 
@@ -437,8 +448,11 @@ HG_HD inline void ir_build_form(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order)
 {
-    // order[] sorts edge indices by the relabeled vertex tuple, prefix-shorter first. Ties are
-    // edges with identical canonical content, so their relative order does not reach the form.
+    // order[] sorts edge indices by the relabeled vertex tuple, prefix-shorter first, ties
+    // broken by INPUT INDEX. Tied edges have identical canonical content and so contribute the
+    // same bytes to the form either way -- the tie-break does not move the hash. It is there so
+    // that order[] is a well-defined permutation, which is what makes a per-edge canonical RANK
+    // meaningful: rank is the position an edge takes here.
     for (uint32_t e = 0; e < n_edges; ++e) order[e] = e;
     struct EdgeCmp {
         const uint8_t* ea; const uint32_t* eoff; const uint32_t* ev; const uint32_t* labeling;
@@ -448,8 +462,8 @@ HG_HD inline void ir_build_form(
                 const uint32_t x = labeling[ev[eoff[a] + k]], y = labeling[ev[eoff[b] + k]];
                 if (x != y) return x < y ? -1 : 1;
             }
-            if (la == lb) return 0;
-            return la < lb ? -1 : 1;
+            if (la != lb) return la < lb ? -1 : 1;
+            return a < b ? -1 : (a > b ? 1 : 0);
         }
     };
     ir_heapsort_idx(order, n_edges, EdgeCmp{ea, eoff, ev, labeling});
@@ -538,10 +552,17 @@ struct IrResult {
 // The search is an explicit loop over depth-indexed buffers rather than recursion: a device
 // has no stack to spare, and the host gets a bounded frame either way.
 // -----------------------------------------------------------------------------------------
+// out_edge_rank, when non-null, receives each input edge's CANONICAL RANK: the position it
+// takes when the state's edges are ordered by (canonical content, input index) under the
+// winning labeling. Ranks are a permutation of [0, n_edges), they are a property of the
+// state's isomorphism class plus the input order, and event identity is defined over them --
+// which is why the device needs them and why they come from the same pass as the hash rather
+// than a second canonicalization.
 HG_HD inline IrResult ir_canonical_hash(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
-    uint32_t* scratch, uint32_t max_depth)
+    uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
+    uint32_t max_generators = IR_HOST_GENERATORS)
 {
     IrResult out{0, IR_EMPTY, 0};
     if (n_edges == 0 || n_verts == 0) return out;
@@ -571,7 +592,8 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* cur_form  = sc.u32(form_words);
     uint32_t* best_form = sc.u32(form_words);
     uint32_t* first_form= sc.u32(form_words);
-    const uint32_t gen_cap = ir_generator_cap(max_depth);
+    uint32_t* best_order= sc.u32(n_edges);
+    const uint32_t gen_cap = ir_generator_cap(max_depth, max_generators);
     uint32_t* gens      = sc.u32(uint64_t(gen_cap) * n);
     uint32_t* depths    = sc.u32(uint64_t(max_depth) * ir_depth_words(n));
     uint64_t* worklist  = sc.u64(ir_bitset_words(n));
@@ -615,6 +637,9 @@ HG_HD inline IrResult ir_canonical_hash(
         ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order);
         if (!has_best || ir_cmp_form(cur_form, best_form, form_words) < 0) {
             for (uint32_t i = 0; i < form_words; ++i) best_form[i] = cur_form[i];
+            // The winning leaf's edge order IS the canonical rank assignment, and the winner
+            // is not necessarily the last leaf visited, so it is captured here.
+            for (uint32_t i = 0; i < n_edges; ++i) best_order[i] = form_order[i];
             has_best = true;
         }
         if (!has_first) {
@@ -635,8 +660,14 @@ HG_HD inline IrResult ir_canonical_hash(
         }
     };
 
+    auto emit_ranks = [&]() {
+        if (!out_edge_rank) return;
+        for (uint32_t i = 0; i < n_edges; ++i) out_edge_rank[best_order[i]] = i;
+    };
+
     if (pi.is_discrete()) {
         leaf(pi);
+        emit_ranks();
         out.hash = ir_hash_form(best_form, n_edges, n);
         out.status = IR_OK;
         out.n_verts = n;
@@ -719,6 +750,7 @@ HG_HD inline IrResult ir_canonical_hash(
     }
 
     if (!has_best) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }
+    emit_ranks();
     out.hash = ir_hash_form(best_form, n_edges, n);
     out.status = IR_OK;
     out.n_verts = n;

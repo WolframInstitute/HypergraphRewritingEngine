@@ -30,7 +30,8 @@ HG_HD inline uint64_t ir_slot_words(uint32_t max_verts, uint32_t max_edges,
          + (max_edges + 1)              // eoff
          + max_occs                     // ev
          + max_verts                    // verts_local: the thread's local-index table
-         + hgcommon::ir_scratch_words(max_verts, max_edges, max_occs, depth)
+         + hgcommon::ir_scratch_words(max_verts, max_edges, max_occs, depth,
+                                      hgcommon::IR_DEVICE_GENERATORS)
          + 8;                           // alignment slack
 }
 
@@ -127,7 +128,8 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
         for (uint32_t depth = 1; depth <= kIRDeviceDepth; depth *= kIRDeviceDepth) {
             r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
-                                            scratch, depth);
+                                            scratch, depth, nullptr,
+                                            hgcommon::IR_DEVICE_GENERATORS);
             if (r.status != hgcommon::IR_NEED_DEPTH) break;
         }
         if (r.status == hgcommon::IR_NEED_DEPTH) {
