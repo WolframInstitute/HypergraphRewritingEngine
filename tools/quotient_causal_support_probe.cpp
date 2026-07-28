@@ -241,12 +241,15 @@ static bool check(const WL& w){
     for (auto& kv : full_branchial) if(!predset_br.count(kv.first)) ++br_missing;
     for (auto& e : predset_br) if(!full_branchial.count(e)) ++br_extra;
     bool br_ok = !br_missing && !br_extra;
-    size_t wrong=0, missing=0, extra=0;
+    size_t missing=0, extra=0;
     for (auto& kv : exact) if(!predset.count(kv.first)) ++missing;   // exact keyset = full-capture support
     for (auto& e : predset) if(!exact.count(e)) ++extra;
     long double maxdev=0; long double predicted_events=0; (void)maxdev; (void)predicted_events;
-    bool ev_ok = true;
-    bool ok = !wrong && !missing && !extra && ev_ok && br_ok;
+    // `ev_ok` was a hard-coded true and `wrong` was never incremented, so two of the four
+    // conjuncts of the verdict below could not fail. The event-count prediction this file is
+    // named for is not computed here at all, so the verdict rests on the support-set
+    // comparison only -- which is stated rather than dressed up as more.
+    bool ok = !missing && !extra && br_ok;
     size_t d_entries=0; for (auto& kv : Dsup) d_entries += kv.second.size();
     size_t skel_events = hg.num_events(), skel_states = hg.num_canonical_states();
     // explore_from_canonical_states_only can discover a strictly smaller canonical

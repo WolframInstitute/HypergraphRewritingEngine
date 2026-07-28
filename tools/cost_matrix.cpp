@@ -31,10 +31,32 @@ void* operator new(std::size_t n) {
     throw std::bad_alloc();
 }
 void* operator new[](std::size_t n) { return operator new(n); }
+
+// The ALIGNED overloads are separate functions, and an over-aligned type routes to them
+// rather than to the plain ones above. Replacing only the plain pair left this counter blind
+// to every such allocation -- including the arena's `new LocalCursor[MAX_ARENA_WORKERS]`,
+// where LocalCursor is alignas(64), so 16 KB per arena went uncounted by the very instrument
+// the de-heap numbers were measured with.
+void* operator new(std::size_t n, std::align_val_t a) {
+    g_alloc_count.fetch_add(1, std::memory_order_relaxed);
+    g_alloc_bytes.fetch_add(n, std::memory_order_relaxed);
+    if (void* p = std::aligned_alloc(static_cast<std::size_t>(a),
+                                     (n + static_cast<std::size_t>(a) - 1) &
+                                         ~(static_cast<std::size_t>(a) - 1))) {
+        return p;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n, std::align_val_t a) { return operator new(n, a); }
+
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
 
 using namespace hypergraph;
 
@@ -88,13 +110,17 @@ int main(int argc, char** argv) {
     std::printf("%s\n", std::string(120, '-').c_str());
 
     bool all_exact = true;
+    bool any_unverified = false;   // a row the oracle could not check
     for (const auto& c : cases) {
         // Exactness: engine Full-count vs brute-force iso count at the oracle depth.
         bool all_small = true;
         size_t brute = oracle::brute_force_iso_count(c.rules, c.init, c.oracle_steps, &all_small);
         size_t full  = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);
         const char* verdict;
-        if (!all_small)          verdict = "oversz";
+        // "oversz" means the brute-force oracle could not run, so exactness was NOT checked
+        // for this row. Leaving all_exact alone let the summary print ALL EXACT having
+        // verified nothing -- a not-measured reported as a pass.
+        if (!all_small)        { verdict = "oversz"; any_unverified = true; }
         else if (full == brute)  verdict = "EXACT";
         else { verdict = "FAIL"; all_exact = false; }
 
@@ -109,6 +135,10 @@ int main(int argc, char** argv) {
     }
 
     std::printf("%s\n", std::string(120, '-').c_str());
-    std::printf("exactness (oracle depth): %s\n", all_exact ? "ALL EXACT" : "*** MISMATCH ***");
-    return all_exact ? 0 : 1;
+    std::printf("exactness (oracle depth): %s%s\n",
+                all_exact ? "ALL EXACT" : "*** MISMATCH ***",
+                any_unverified ? "  (some rows UNVERIFIED: oversized for the brute-force oracle)" : "");
+    // An unverified row is not a pass. Exit non-zero so nothing can gate on a run that
+    // silently checked less than it appears to.
+    return (all_exact && !any_unverified) ? 0 : 1;
 }

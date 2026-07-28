@@ -290,12 +290,18 @@ int main() {
     test_capacity(gen_random(10, 13, 7), "random-10-13", productive);
     test_capacity(gen_random(12, 16, 9), "random-12-16", productive);
 
+    // How to READ the table above. The conclusion is NOT stated here: it was previously
+    // written as a fixed string asserting that equivalence-complexity selectivity is "~0,
+    // indistinguishable from random", while the rows printed directly above it reported
+    // -1.43 against a random baseline of -0.66. A probe that prints its answer regardless of
+    // its measurement is not a measurement.
     std::printf("Reading:\n"
-                " (II) Pearson(IRcost, mass) ~ 0 => equivalence-complexity is NOT mass-like; it tracks symmetry.\n"
-                " (I) flux-selectivity = mean flux of dropped branches minus survivors. mass(causal-flux) cost\n"
-                "     is strongly positive (drops massive branches, by construction); equiv-complexity is ~0,\n"
-                "     indistinguishable from random => dropping by equivalence-complexity gives a MASS-BLIND\n"
-                "     collapse. Together: equivalence-complexity cannot be the OR (Penrose E_G) driver; a\n"
-                "     genuine mass quantity (causal flux) can.\n");
+                " (II) Pearson(IRcost, mass): near 0 would mean equivalence-complexity is not\n"
+                "      mass-like and tracks symmetry instead. Read the printed value.\n"
+                " (I)  flux-selectivity = mean flux of dropped branches minus survivors.\n"
+                "      Compare the equiv-complexity column against the RANDOM column in the same\n"
+                "      row: only a value near random supports a mass-blind collapse, and only\n"
+                "      then does the Penrose E_G reading follow. A value clearly below random\n"
+                "      means the opposite -- it is selecting against massive branches.\n");
     return 0;
 }

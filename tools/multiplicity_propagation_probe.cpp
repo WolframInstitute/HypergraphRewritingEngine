@@ -22,6 +22,9 @@ using Init  = std::vector<std::vector<VertexId>>;
 struct WL { const char* name; const char* kind; Rules (*rules)(); Init init; int steps; };
 
 // productive: |rhs| > |lhs|
+// Set when a workload could not be checked, so the summary cannot claim it passed.
+static bool g_unverified = false;
+
 static Rules pSplit(){ return { make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build() }; }
 static Rules pWolfram(){ return { make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build() }; }
 static Rules pArity3(){ return { make_rule(0).lhs({0,1}).rhs({0,1,2}).rhs({2,0}).build() }; }
@@ -261,7 +264,10 @@ static bool check(const WL& w){
     if(!ok && skeleton_complete)
         printf("     wrong=%zu missing=%zu extra=%zu maxdev=%.6Lf predEv=%.2Lf oracleEv=%zu\n",
                wrong, missing, extra, maxdev, predicted_events, oracle_events);
-    if(!skeleton_complete) return true;   // not a D failure
+    // An incomplete skeleton means this workload was NOT checked. Returning true reported
+    // it as a pass, and main() then printed the success banner over it.
+    if(!skeleton_complete) { printf("     SKIPPED: skeleton incomplete, nothing verified\n");
+                             g_unverified = true; return true; }
     if(!ok) printf("     wrong=%zu missing=%zu extra=%zu maxdev=%.6Lf predEv=%.2Lf oracleEv=%zu\n",
                    wrong, missing, extra, maxdev, predicted_events, oracle_events);
     return ok;
@@ -298,7 +304,11 @@ int main(){
     };
     bool all=true; size_t n=0;
     for (auto& w : wls){ all &= check(w); ++n; }
-    printf("\n%zu workloads | %s\n", n, all? "D REPRODUCES THE ORACLE EXACTLY ON EVERY WORKLOAD WITH A COMPLETE SKELETON"
-                                             : "*** D DOES NOT REPRODUCE THE ORACLE ***");
-    return all?0:1;
+    // A skipped workload is not a passing one. The banner used to be printed over any number
+    // of skips -- including all of them -- and the exit code agreed.
+    printf("\n%zu workloads | %s%s\n", n,
+           all ? "D REPRODUCES THE ORACLE EXACTLY ON EVERY WORKLOAD CHECKED"
+               : "*** D DOES NOT REPRODUCE THE ORACLE ***",
+           g_unverified ? "  (SOME WORKLOADS SKIPPED: incomplete skeleton, nothing verified)" : "");
+    return (all && !g_unverified) ? 0 : 1;
 }
