@@ -2,6 +2,7 @@
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
+#include "hgcommon/ir_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
 
@@ -538,23 +539,66 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
         return compute_wl_hash(edges);
     }
 
-    // Full mode, or WL disabled: exact canonical hash via IR (polynomial for low-symmetry graphs).
-    // Materialize into the per-worker scratch arena (no heap), reclaimed after.
+    // Full mode, or WL disabled: exact canonical hash via individualization-refinement.
+    // Flattened straight from the edge set into the per-worker scratch arena (no heap) and
+    // handed to the shared CPU/GPU core, so both devices agree bit for bit.
     auto mk = worker_scratch().mark();
-    SVec<SVec<VertexId>> edge_vectors;
 
     std::atomic_thread_fence(std::memory_order_acquire);
 
+    SVec<uint8_t> ea;
+    SVec<uint32_t> eoff, ev;
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
-        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
+        eoff.push_back(static_cast<uint32_t>(ev.size()));
+        ea.push_back(e.arity);
+        for (uint8_t p = 0; p < e.arity; ++p) ev.push_back(e.vertices[p]);
     });
 
-    if (edge_vectors.empty()) {
+    if (ea.empty()) {
         worker_scratch().release(mk);
         return EMPTY_STATE_CANONICAL_HASH;
     }
 
+    // Local vertex indices are the rank in the sorted-unique vertex set -- the indexing the
+    // core's initial partition ties-breaks on, so the labeling it derives is well defined.
+    SVec<uint32_t> verts(ev.begin(), ev.end());
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    const uint32_t n_verts = static_cast<uint32_t>(verts.size());
+    for (uint32_t& x : ev)
+        x = static_cast<uint32_t>(std::lower_bound(verts.begin(), verts.end(), x) - verts.begin());
+
+    const uint32_t n_edges = static_cast<uint32_t>(ea.size());
+    const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+
+    // Escalating depth. Almost every state is discrete straight after refinement, and at
+    // depth 1 the core sizes for exactly that: no per-level partition blocks, no generator
+    // rows. Only a state that actually needs the individualization search pays for it, and
+    // it pays on the retry -- where the search dominates the re-run anyway.
+    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+        const uint64_t words =
+            hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
+        // Raw, so the buffer is not zeroed on the way in: the core writes every word it
+        // later reads. 8-byte aligned for the uint64 views it takes inside the span.
+        auto* scratch = static_cast<uint32_t*>(
+            worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+        auto r = hgcommon::ir_canonical_hash(
+            ea.data(), eoff.data(), ev.data(), n_edges, n_verts, total_occ, scratch, depth);
+        if (r.status == hgcommon::IR_OK) {
+            worker_scratch().release(mk);
+            return r.hash;
+        }
+        if (r.status == hgcommon::IR_EMPTY) break;
+    }
+
+    // A state whose individualization path outruns even the largest depth: fall back to the
+    // unbounded-depth implementation, which allocates per level.
+    SVec<SVec<VertexId>> edge_vectors;
+    edges.for_each([&](EdgeId eid) {
+        const Edge& e = edges_[eid];
+        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
+    });
     IRCanonicalizer ir;
     uint64_t h = ir.compute_canonical_hash(edge_vectors);
     worker_scratch().release(mk);
