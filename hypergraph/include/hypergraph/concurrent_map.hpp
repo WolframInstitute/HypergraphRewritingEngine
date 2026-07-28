@@ -12,6 +12,7 @@
 #include <optional>
 #include <type_traits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace hypergraph {
@@ -152,16 +153,21 @@ public:
     // A key equal to a sentinel cannot be stored: the slot would read as empty (or as
     // mid-write) and the entry would silently never exist. That is a programmer error in the
     // caller's key domain -- a dense id starting at 0, or a hash that came out 0 -- so it is
-    // reported rather than absorbed. Three separate correctness bugs in this engine were this
-    // exact silent no-op (an id-0 state undercount, a genesis edge id 0 crash, and an orbit
-    // table for state 0 that could never be found), each of which took a long investigation
-    // because nothing failed at the point of the mistake. Callers offset dense ids by +1 or
-    // move the sentinels into a reserved band.
+    // reported rather than absorbed. FOUR separate correctness bugs in this engine were this
+    // exact silent no-op (an id-0 state undercount, a genesis edge id 0 crash, an orbit table
+    // for state 0 that could never be found, and a causal self-loop on event 0), each of which
+    // took a long investigation because nothing failed at the point of the mistake. Callers
+    // offset dense ids by +1 or move the sentinels into a reserved band.
+    //
+    // The operation name goes in the thrown message, not only in DEBUG_LOG: that macro
+    // compiles away unless debug logging is on, and this throw is most likely to be seen in a
+    // release build, where knowing which call site tripped it is most of the diagnosis.
     static void reject_sentinel_key(K key, const char* op) {
         if (key == EMPTY_KEY || key == LOCKED_KEY) {
             DEBUG_LOG("ConcurrentMap::%s called with a reserved sentinel key", op);
             throw std::logic_error(
-                "ConcurrentMap: key collides with a reserved sentinel (EMPTY/LOCKED). "
+                std::string("ConcurrentMap::") + op +
+                ": key collides with a reserved sentinel (EMPTY/LOCKED). "
                 "Offset dense ids by +1 or use a reserved sentinel band.");
         }
     }
