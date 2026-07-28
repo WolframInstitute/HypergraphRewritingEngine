@@ -69,14 +69,14 @@ class Hypergraph {
 
     // Canonical state deduplication map: canonical_hash -> StateId
     // Used to find existing equivalent states before creating new ones
-    ConcurrentMap<uint64_t, StateId> canonical_state_map_;
+    ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_state_map_;
 
     // Event canonicalization state map: always keyed by isomorphism-invariant hash
     // Unlike canonical_state_map_ (keyed differently based on state_canonicalization_mode_),
     // this map is ALWAYS keyed by canonical_hash (WL/IR) regardless of state mode.
     // Used by event signature computation to find canonical representatives for
     // edge correspondence when state_canonicalization_mode_ is None or Automatic.
-    ConcurrentMap<uint64_t, StateId> event_canonical_state_map_;
+    ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> event_canonical_state_map_;
 
     // State canonicalization mode: controls how states are deduplicated
     // None: tree mode - no deduplication, each state is unique
@@ -142,7 +142,7 @@ class Hypergraph {
 
     // Diagnostic: a state's frame slots must be a function of the state, so two calls for one
     // state must agree. qc_frame_sig_ records the first result; disagreements are counted.
-    ConcurrentMap<uint64_t, uint64_t> qc_frame_sig_;       // StateId + 1 -> slot-vector hash
+    ConcurrentMap<uint64_t, uint64_t, uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}> qc_frame_sig_;       // StateId + 1 -> slot-vector hash
     std::atomic<size_t> qc_frame_disagree_{0};
     std::atomic<size_t> qc_align_fail_{0};      // captures dropped because alignment failed
     std::atomic<size_t> qc_align_badcorr_{0};   // of those, an invalid/short edge correspondence
@@ -248,7 +248,7 @@ class Hypergraph {
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
-    ConcurrentMap<uint64_t, EventId> canonical_event_map_;
+    ConcurrentMap<uint64_t, EventId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_event_map_;
     std::atomic<uint32_t> canonical_event_count_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
 

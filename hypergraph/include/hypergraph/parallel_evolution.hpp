@@ -410,7 +410,7 @@ class ParallelEvolutionEngine {
 
     // Track missing hashes to verify they arrive later via push
     // Value is (state_id << 16) | rule_index for debugging
-    ConcurrentMap<uint64_t, uint64_t> missing_match_hashes_{4096};
+    ConcurrentMap<uint64_t, uint64_t, uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}> missing_match_hashes_{4096};
     std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
