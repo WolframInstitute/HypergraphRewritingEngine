@@ -162,9 +162,20 @@ public:
         // the entire reason it is used as a canonical hash. Measured before this was sized
         // correctly: `{{1,0,1,1},{1,1,0}}` splits into two hashes across its presentations.
         //
-        // Bound it by the contract in wl_core.hpp instead: the worst case is every occurrence
-        // sitting in a maximum-arity edge.
-        size_t nbr_cap = total_occ ? total_occ * (MAX_ARITY - 1) : 1;
+        // So it is computed, not bounded. Bounding it by MAX_ARITY -- every occurrence sitting
+        // in a maximum-arity edge -- over-allocates by (MAX_ARITY-1)/mean_arity, which on the
+        // binary edges that dominate real rules is 15x, and the buffer is zeroed on
+        // allocation: measured at 14% of ALL instructions in a non-Full evolution.
+        ArenaVector<uint32_t> nn_count(worker_scratch(), num_vertices ? num_vertices : 1);
+        nn_count.resize(num_vertices ? num_vertices : 1);
+        for (size_t v = 0; v < num_vertices; ++v) nn_count[v] = 0;
+        for (size_t e = 0; e < n_edges; ++e) {
+            const uint32_t contrib = ea[e] ? uint32_t(ea[e] - 1) : 0u;
+            for (uint8_t p = 0; p < ea[e]; ++p) nn_count[ev[eoff[e] + p]] += contrib;
+        }
+        size_t nbr_cap = 1;
+        for (size_t v = 0; v < num_vertices; ++v)
+            if (nn_count[v] > nbr_cap) nbr_cap = nn_count[v];
         ArenaVector<uint64_t> cur(worker_scratch(), num_vertices);        cur.resize(num_vertices);
         ArenaVector<uint64_t> nxt(worker_scratch(), num_vertices);        nxt.resize(num_vertices);
         ArenaVector<uint64_t> dscr(worker_scratch(), num_vertices);       dscr.resize(num_vertices);
