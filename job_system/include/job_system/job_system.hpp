@@ -6,7 +6,6 @@
 #include <thread>
 #include <vector>
 #include <mutex>
-#include <condition_variable>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -57,12 +56,39 @@ private:
 
     std::atomic<size_t> total_submitted_{0};
     std::atomic<size_t> total_completed_{0};
+    // How many workers are parked. Submitting is the hot path and parking is rare, so this
+    // exists to keep the common submit free of any read-modify-write: with nobody parked
+    // there is nobody to wake, and the counter bump and notify are both skipped.
     std::atomic<int> idle_workers_{0};
+    // Times a worker actually blocked. Worth keeping visible: this system is designed on the
+    // assumption that parking is rare, and the number confirms it -- a depth-6 Wolfram run of
+    // 15,966 events parks 14 times at 4 threads and 27 at 8.
+    std::atomic<size_t> park_waits_{0};
+    // How many threads are inside wait_for_completion. Completion is signalled per job, and
+    // notifying an address with no waiter is not free -- the implementation hashes it into a
+    // process-wide waiter table, so every worker would touch one shared line on every job.
+    // Almost always zero, so this keeps job completion a pure counter increment.
+    std::atomic<int> completion_waiters_{0};
+    // Bumped only when a completion brings completed up to submitted -- the only moment the
+    // system can be quiescent. Waiters block on THIS, not on the completion count: blocking on
+    // the count wakes them once per job, and each wake re-runs is_quiescent(), which scans
+    // every worker's deque. Sixteen thousand jobs then cost sixteen thousand scans.
+    std::atomic<uint32_t> quiescence_seq_{0};
 
-    std::mutex park_mutex_;                  // idle parking only (off the hot path)
-    std::condition_variable park_cv_;
-    std::mutex completion_mutex_;
-    std::condition_variable completion_cv_;
+    // Idle workers block on this counter rather than on a condition variable. It is
+    // incremented by every enqueue and by anything that should end a park (an error, a
+    // shutdown), so a parked worker is woken by ANY new work, wherever it landed.
+    //
+    // That last part is why a sequence counter and not a predicate: the old park slept on a
+    // condition that asked whether the shared injector was non-empty, which is blind to a job
+    // pushed onto a worker's own deque -- work a parked thread could have stolen. A 200us
+    // timeout covered the gap by re-checking. A counter has no gap to cover, so the wait needs
+    // no timeout and does no polling.
+    //
+    // std::atomic::wait blocks only while the value still equals the one the caller sampled,
+    // so a submit racing with a park cannot be lost: the counter has already moved and the
+    // wait returns at once. The fast path is a plain load with no syscall and no lock.
+    std::atomic<uint32_t> work_seq_{0};
 
     std::atomic<ErrorType> error_type_{ErrorType::None};
 
@@ -79,12 +105,49 @@ private:
     // job orphaned in an exited worker's queue.
     void stop_all_workers() {
         for (auto& w : workers_) w->stop.store(true, std::memory_order_release);
-        park_cv_.notify_all();
-        completion_cv_.notify_all();
+        wake_all_workers();
+        quiescence_seq_.fetch_add(1, std::memory_order_release);
+        quiescence_seq_.notify_all();      // release anyone inside wait_for_completion
     }
 
+    // Publish that the world changed. Bumping before notifying is what makes the park
+    // lost-wakeup-free: a worker that sampled the old value finds it stale and does not sleep.
+    //
+    // The idle check is sequentially consistent against the worker's own sequentially
+    // consistent increment, and that pairing is what allows it to be skipped safely. The two
+    // sides are a store-then-load on different locations: the submitter pushes then reads
+    // idle_workers_; a parking worker increments idle_workers_ then looks for work. At least
+    // one of them must observe the other, so a worker that this call skips is a worker whose
+    // own final look for work happens after the push and therefore finds it.
     void wake_one_worker() {
-        if (idle_workers_.load(std::memory_order_acquire) > 0) park_cv_.notify_one();
+        if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
+        work_seq_.fetch_add(1, std::memory_order_release);
+        work_seq_.notify_one();
+    }
+
+    // Unconditional: used by error latching and shutdown, where a parked worker must be
+    // released whether or not the idle count says one is there.
+    void wake_all_workers() {
+        work_seq_.fetch_add(1, std::memory_order_release);
+        work_seq_.notify_all();
+    }
+
+    // Exhaustive version, used only immediately before parking. find_work picks victims at
+    // RANDOM with a bounded number of attempts, so it can come back empty while a deque still
+    // holds work -- fine when the caller loops, but not as the basis for going to sleep. The
+    // old park hid this behind a 200us timeout that woke and retried; with the timeout gone,
+    // a worker must establish that there is genuinely nothing before it waits.
+    JobRaw find_work_exhaustive(WorkerData* data) {
+        if (JobRaw j = data->deque.pop()) return j;
+        for (auto& w : workers_) {
+            if (w.get() == data) continue;
+            if (JobRaw j = w->deque.steal()) {
+                data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
+                return j;
+            }
+        }
+        if (auto opt = injector_.try_pop_front()) return *opt;
+        return nullptr;
     }
 
     JobRaw find_work(WorkerData* data, std::mt19937& rng) {
@@ -137,9 +200,14 @@ private:
         // Notify the completion waiter only at quiescence (this job brings completed up
         // to submitted), not on every job. The waiter also polls on a timeout, so a
         // missed wakeup from a racing submit only adds latency, never a hang.
-        size_t done = total_completed_.fetch_add(1) + 1;
+        const size_t done = total_completed_.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (done == total_submitted_.load(std::memory_order_acquire)) {
-            completion_cv_.notify_all();
+            // Bump before notifying: a waiter that sampled the old value finds it stale and
+            // re-checks instead of sleeping through the event it was waiting for.
+            quiescence_seq_.fetch_add(1, std::memory_order_release);
+            if (completion_waiters_.load(std::memory_order_acquire) > 0) {
+                quiescence_seq_.notify_all();
+            }
         }
     }
 
@@ -156,16 +224,27 @@ private:
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
             if (data->stop.load(std::memory_order_acquire)) break;  // shutdown, drained
 
-            idle_workers_.fetch_add(1, std::memory_order_release);
-            {
-                std::unique_lock<std::mutex> lock(park_mutex_);
-                park_cv_.wait_for(lock, std::chrono::microseconds(200), [this, data] {
-                    return data->stop.load(std::memory_order_acquire)
-                        || error_type_.load(std::memory_order_acquire) != ErrorType::None
-                        || !injector_.empty();
-                });
+            // Sample the counter BEFORE the last look for work. Anything submitted after this
+            // point moves the counter, so the wait below returns immediately rather than
+            // sleeping through it; anything submitted before it is found by that last look.
+            // Announce the park BEFORE sampling the counter and taking the last look for
+            // work, so a submitter either sees this worker as parked and wakes it, or is
+            // ordered before that last look and is found by it.
+            idle_workers_.fetch_add(1, std::memory_order_seq_cst);
+            const uint32_t seq = work_seq_.load(std::memory_order_acquire);
+            if (JobRaw job = find_work_exhaustive(data)) {
+                idle_workers_.fetch_sub(1, std::memory_order_relaxed);
+                run_job(data, job);
+                continue;
             }
-            idle_workers_.fetch_sub(1, std::memory_order_release);
+            if (error_type_.load(std::memory_order_acquire) == ErrorType::None &&
+                !data->stop.load(std::memory_order_acquire)) {
+                park_waits_.fetch_add(1, std::memory_order_relaxed);
+                work_seq_.wait(seq, std::memory_order_acquire);
+            }
+            idle_workers_.fetch_sub(1, std::memory_order_relaxed);
+            if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
+            if (data->stop.load(std::memory_order_acquire)) break;
         }
 
         t_sys_ = nullptr;
@@ -242,7 +321,7 @@ public:
     void shutdown() {
         if (!is_running_.load()) return;
         for (auto& worker : workers_) worker->stop.store(true, std::memory_order_release);
-        park_cv_.notify_all();
+        wake_all_workers();
         for (auto& worker : workers_) {
             if (worker->thread.joinable()) worker->thread.join();
         }
@@ -282,29 +361,42 @@ public:
     // callback or a worker error), false if completed normally.
     template<typename AbortCheck>
     bool wait_for_completion_with_abort(AbortCheck&& abort_check) {
+        // abort_check is a caller-supplied poll, so this one keeps a bounded sleep -- there
+        // is nothing to be notified BY when the abort condition lives outside the system.
+        completion_waiters_.fetch_add(1, std::memory_order_seq_cst);
+        struct Leave { std::atomic<int>& n; ~Leave() { n.fetch_sub(1, std::memory_order_release); } }
+            leave{completion_waiters_};
+
         while (true) {
             if (abort_check()) return true;
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) return true;
-
-            std::unique_lock<std::mutex> lock(completion_mutex_);
-            completion_cv_.wait_for(lock, std::chrono::milliseconds(50), [this] {
-                return total_submitted_.load() == total_completed_.load();
-            });
-
             if (is_quiescent()) return false;
+
+            const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
+            if (is_quiescent()) return false;
+            quiescence_seq_.wait(q, std::memory_order_acquire);
         }
     }
 
     void wait_for_completion() {
+        // No timeout and no polling: this blocks on the completion counter itself and is
+        // woken by the job that moves it. Sampling the counter before the final quiescence
+        // check is what closes the race -- a job completing in between changes the value, so
+        // the wait returns rather than sleeping past the event it was waiting for.
+        // Register as a waiter BEFORE the first check. A job completing between the check and
+        // the registration would otherwise see no waiter, skip the notify, and leave this
+        // blocked on a value that never moves again.
+        completion_waiters_.fetch_add(1, std::memory_order_seq_cst);
+        struct Leave { std::atomic<int>& n; ~Leave() { n.fetch_sub(1, std::memory_order_release); } }
+            leave{completion_waiters_};
+
         while (true) {
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) return;
-
-            std::unique_lock<std::mutex> lock(completion_mutex_);
-            completion_cv_.wait_for(lock, std::chrono::milliseconds(10), [this] {
-                return total_submitted_.load() == total_completed_.load();
-            });
-
             if (is_quiescent()) return;
+
+            const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
+            if (is_quiescent()) return;
+            quiescence_seq_.wait(q, std::memory_order_acquire);
         }
     }
 
@@ -336,6 +428,8 @@ public:
     }
 
     bool is_running() const { return is_running_.load(); }
+
+    size_t park_waits() const { return park_waits_.load(std::memory_order_relaxed); }
 
     ErrorType get_error_type() const { return error_type_.load(std::memory_order_acquire); }
     bool has_error() const { return get_error_type() != ErrorType::None; }

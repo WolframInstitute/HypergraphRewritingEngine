@@ -704,6 +704,7 @@ public:
 
     // Job system diagnostics
     size_t pending_jobs() const { return job_system_ ? job_system_->get_pending_count() : 0; }
+    size_t job_system_park_waits() const { return job_system_ ? job_system_->park_waits() : 0; }
     size_t executing_jobs() const { return job_system_ ? job_system_->get_executing_count() : 0; }
 
     // Error state - check after evolution completes
