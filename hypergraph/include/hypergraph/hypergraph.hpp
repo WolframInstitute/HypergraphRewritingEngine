@@ -255,8 +255,7 @@ class Hypergraph {
     // Genesis state: the empty state (no edges) from which all initial states originate
     // Created lazily on first call to get_or_create_genesis_state()
     // Uses lock-free initialization: 0=uninit, 1=in_progress, 2=done
-    StateId genesis_state_{INVALID_ID};
-    std::atomic<int> genesis_state_init_{0};
+    std::atomic<StateId> genesis_state_{INVALID_ID};
 
 public:
     Hypergraph()
@@ -464,29 +463,23 @@ public:
     // for all initial states via genesis events.
     StateId get_or_create_genesis_state();
 
-    // Check if a state is the genesis state
+    // Check if a state is the genesis state. INVALID_ID until one is published, and no
+    // state id equals INVALID_ID, so the comparison alone answers both questions.
     bool is_genesis_state(StateId sid) const {
-        return genesis_state_init_.load(std::memory_order_acquire) == 2 && sid == genesis_state_;
+        return sid == genesis_state_.load(std::memory_order_acquire);
     }
 
     // Check if an event is a genesis event (connects from genesis state to initial state)
     bool is_genesis_event(EventId eid) const {
-        if (genesis_state_init_.load(std::memory_order_acquire) != 2) {
-            return false;
-        }
-        if (eid >= events_.size()) {
-            return false;
-        }
-        const Event& event = events_[eid];
-        return event.input_state == genesis_state_;
+        const StateId genesis = genesis_state_.load(std::memory_order_acquire);
+        if (genesis == INVALID_ID) return false;
+        if (eid >= events_.size()) return false;
+        return events_[eid].input_state == genesis;
     }
 
     // Get genesis state ID (returns INVALID_ID if not created)
     StateId genesis_state() const {
-        if (genesis_state_init_.load(std::memory_order_acquire) == 2) {
-            return genesis_state_;
-        }
-        return INVALID_ID;
+        return genesis_state_.load(std::memory_order_acquire);
     }
 
     // =========================================================================

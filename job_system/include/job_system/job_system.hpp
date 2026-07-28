@@ -109,8 +109,10 @@ private:
     // the job further out on the stack still holds live allocations in it. The nested
     // job's own scratch sits above the outer job's high-water mark and is reclaimed
     // when the outer job completes.
+    // `data` is null when a non-worker submitter runs an overflowed job on its own thread;
+    // the per-worker counters simply do not apply to it.
     void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
-        data->jobs_executing.fetch_add(1);
+        if (data) data->jobs_executing.fetch_add(1);
         try {
             job->execute();
         } catch (const std::bad_alloc&) {
@@ -127,8 +129,10 @@ private:
         }
         delete job;
         if (recycle_scratch && on_job_complete_) on_job_complete_();  // recycle per-worker scratch
-        data->jobs_executing.fetch_sub(1);
-        data->jobs_executed.fetch_add(1, std::memory_order_relaxed);
+        if (data) {
+            data->jobs_executing.fetch_sub(1);
+            data->jobs_executed.fetch_add(1, std::memory_order_relaxed);
+        }
 
         // Notify the completion waiter only at quiescence (this job brings completed up
         // to submitted), not on every job. The waiter also polls on a timeout, so a
@@ -176,25 +180,27 @@ private:
     }
 
     // Route a job to the current worker's own deque (nested submit) or the injector.
+    //
+    // NOTHING BLOCKS HERE. A full queue is answered by doing the work on the calling thread,
+    // which always makes progress, rather than by waiting for space someone else must create.
+    // For a worker that is not merely preferable but required: a worker parked inside a push
+    // cannot pop, so with every worker parked there at once nothing would ever drain the
+    // queues again -- and expansion is combinatorial and submits from inside running jobs, so
+    // saturating both the local deque and the injector is reachable, not hypothetical.
     void enqueue(JobRaw raw) {
-        if (t_sys_ == this && t_worker_ != nullptr) {
-            if (!t_worker_->deque.push(raw)) {               // local overflow
-                // A worker must never BLOCK pushing to the injector: a worker parked
-                // in a push cannot pop, so with every worker parked there at once
-                // nothing would ever drain the queues again. Expansion is combinatorial
-                // and submits from inside running jobs, so saturating both the local
-                // deque and the injector is reachable, not hypothetical. Running the
-                // job here instead always makes progress.
-                if (!injector_.try_push_back(raw)) {
-                    run_job(t_worker_, raw, /*recycle_scratch=*/false);
-                    return;                                  // run_job counts completion
-                }
-            }
-        } else {
-            // Not a worker thread, so blocking cannot stall the drain.
-            injector_.push_back(raw);
+        const bool on_worker = (t_sys_ == this && t_worker_ != nullptr);
+
+        if (on_worker && t_worker_->deque.push(raw)) {        // node-local, the common case
+            wake_one_worker();
+            return;
         }
-        wake_one_worker();
+        if (injector_.try_push_back(raw)) {
+            wake_one_worker();
+            return;
+        }
+        // Both full. Run it here. On a worker, recycle_scratch is false because the job
+        // further out on this stack still holds live allocations in the per-worker arena.
+        run_job(on_worker ? t_worker_ : nullptr, raw, /*recycle_scratch=*/on_worker ? false : true);
     }
 
 public:

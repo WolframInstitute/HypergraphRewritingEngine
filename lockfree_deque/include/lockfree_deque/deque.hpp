@@ -72,10 +72,6 @@ private:
 
     // Brief busy-spin then yield, for the blocking variants only. yield() is portable,
     // so there is no architecture-specific pause instruction.
-    static void spin_pause(int& n) {
-        if (++n < 64) return;
-        std::this_thread::yield();
-    }
 
     bool is_full(std::uint64_t v) const {
         return static_cast<std::uint16_t>(tail_of(v) - head_of(v)) >= capacity_;
@@ -162,65 +158,11 @@ public:
         }
     }
 
-    // Blocking: spin (yielding) until there is room / an item. The slot value is formed
-    // once and stored only on success, so value is never lost on a failed attempt.
-    void push_front(T value) {
-        Slot item = make_slot(std::move(value));
-        std::uint64_t v = ht_.load(std::memory_order_acquire);
-        int n = 0;
-        while (true) {
-            std::uint16_t h = head_of(v), t = tail_of(v);
-            std::uint32_t slot = static_cast<std::uint16_t>(h - 1) & mask_;
-            if (is_full(v) || buffer_[slot].load(std::memory_order_acquire) != nullptr) {
-                spin_pause(n);
-                v = ht_.load(std::memory_order_acquire);
-                continue;
-            }
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h - 1, t),
-                                          std::memory_order_acq_rel, std::memory_order_acquire)) {
-                buffer_[slot].store(item, std::memory_order_release);
-                return;
-            }
-        }
-    }
-
-    void push_back(T value) {
-        Slot item = make_slot(std::move(value));
-        std::uint64_t v = ht_.load(std::memory_order_acquire);
-        int n = 0;
-        while (true) {
-            std::uint16_t h = head_of(v), t = tail_of(v);
-            std::uint32_t slot = t & mask_;
-            if (is_full(v) || buffer_[slot].load(std::memory_order_acquire) != nullptr) {
-                spin_pause(n);
-                v = ht_.load(std::memory_order_acquire);
-                continue;
-            }
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h, t + 1),
-                                          std::memory_order_acq_rel, std::memory_order_acquire)) {
-                buffer_[slot].store(item, std::memory_order_release);
-                return;
-            }
-        }
-    }
-
-    T pop_front() {
-        int n = 0;
-        while (true) {
-            auto result = try_pop_front();
-            if (result.has_value()) return std::move(*result);
-            spin_pause(n);
-        }
-    }
-
-    T pop_back() {
-        int n = 0;
-        while (true) {
-            auto result = try_pop_back();
-            if (result.has_value()) return std::move(*result);
-            spin_pause(n);
-        }
-    }
+    // There is deliberately no blocking push or pop. Waiting for another thread to make room
+    // or supply an item is the one thing a bounded queue must not offer a worker: a worker
+    // parked inside a push cannot pop, so a full queue could stall the very threads that
+    // drain it. Callers handle a full or empty queue themselves -- the job system runs the
+    // job on the calling thread -- which always makes progress.
 
     bool empty() const {
         std::uint64_t v = ht_.load(std::memory_order_acquire);

@@ -91,40 +91,35 @@ public:
         hgcommon::cpu_relax();
     }
 
-    // Access element by index - O(1)
+    // Access element by index - O(1).
     //
-    // MEMORY ORDERING: the acquire load of count_ synchronizes-with the release CAS of
-    // WHICHEVER emplace last raised it -- not necessarily idx's own, since count_ is a
-    // high-water mark each emplace advances independently. So waiting for count_ > idx
-    // does NOT by itself establish that idx is constructed; that is the caller obligation
-    // stated in the emplace CONTRACT above (access idx only after its own emplace has
-    // returned, or iterate only when emplaces are quiescent). What the two spins do
-    // guarantee is that the segment pointer is non-null before it is dereferenced, since
-    // a concurrent emplace can raise count_ past idx while an EARLIER slot's segment is
-    // still being installed. Both spins are no-ops on the common path.
+    // DOES NOT WAIT. Reaching an index whose own emplace has not published is a violation of
+    // the contract above, not a condition to sit out: the caller holds an id that is not yet
+    // an element, and no amount of waiting makes that a correct thing to have done. Waiting
+    // for it also hid where the id came from -- the engine's num_states()/num_edges()/
+    // num_raw_events() report CLAIM counters, which run ahead of what is published, so a loop
+    // bounded by one of those would stall here rather than report the mismatch.
+    const T& at_published(uint32_t idx) const {
+        if (idx >= count_.load(std::memory_order_acquire)) {
+            throw std::logic_error(
+                "SegmentedArray: index is not published yet. Access an index only after its "
+                "own emplace() has returned, or iterate only while emplaces are quiescent.");
+        }
+        const size_t seg_idx = idx >> seg_shift_;
+        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
+        if (!segment) {
+            throw std::logic_error(
+                "SegmentedArray: segment for this index is not published yet (count_ is a "
+                "high-water mark, so a LOWER index can still be in flight).");
+        }
+        return segment[idx & seg_mask_];
+    }
+
     T& operator[](uint32_t idx) {
-        while (count_.load(std::memory_order_acquire) <= idx) cpu_relax();
-
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
-
-        T* segment;
-        while (!(segment = segments_[seg_idx].load(std::memory_order_acquire))) cpu_relax();
-
-        return segment[offset];
+        return const_cast<T&>(static_cast<const SegmentedArray*>(this)->at_published(idx));
     }
 
-    const T& operator[](uint32_t idx) const {
-        while (count_.load(std::memory_order_acquire) <= idx) cpu_relax();
-
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
-
-        T* segment;
-        while (!(segment = segments_[seg_idx].load(std::memory_order_acquire))) cpu_relax();
-
-        return segment[offset];
-    }
+    const T& operator[](uint32_t idx) const { return at_published(idx); }
 
     // Get pointer to element (may be null if not yet allocated)
     T* get(uint32_t idx) {

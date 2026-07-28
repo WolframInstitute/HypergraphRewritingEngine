@@ -110,38 +110,28 @@ StateId Hypergraph::create_state(std::initializer_list<EdgeId> edge_ids,
 }
 
 StateId Hypergraph::get_or_create_genesis_state() {
-    // Lock-free initialization using CAS
-    // States: 0=uninit, 1=in_progress, 2=done
+    // The empty state every initial state descends from. Created on demand, and NOBODY WAITS
+    // for it: a thread that finds it uninitialised builds one and offers it, and whichever
+    // offer wins is the one everyone uses. Losing threads discard their candidate.
+    //
+    // Electing an initialiser and having the others spin until it published was the previous
+    // shape, and it made every other thread's progress depend on one thread being scheduled --
+    // and on it not throwing, since a claim abandoned mid-flight parked them permanently.
+    // A discarded empty state costs one state id and nothing else, which is a better trade
+    // than a dependency on someone else's timeline.
+    StateId current = genesis_state_.load(std::memory_order_acquire);
+    if (current != INVALID_ID) return current;
 
-    // Fast path: already created
-    int state = genesis_state_init_.load(std::memory_order_acquire);
-    if (state == 2) {
-        return genesis_state_;
-    }
+    SparseBitset empty_edges;
+    const StateId candidate = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
 
-    // Try to become the initializer (CAS 0 -> 1)
-    int expected = 0;
-    if (genesis_state_init_.compare_exchange_strong(expected, 1,
-            std::memory_order_acq_rel, std::memory_order_acquire)) {
-        // We are the initializer - create the genesis state
-        try {
-            SparseBitset empty_edges;
-            genesis_state_ = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
-        } catch (...) {
-            // Hand the claim back before propagating: a claim left at "in progress"
-            // parks every other thread in the wait below with nothing left to finish it.
-            genesis_state_init_.store(0, std::memory_order_release);
-            throw;
-        }
-        genesis_state_init_.store(2, std::memory_order_release);
-        return genesis_state_;
+    StateId expected = INVALID_ID;
+    if (genesis_state_.compare_exchange_strong(expected, candidate,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_acquire)) {
+        return candidate;
     }
-
-    // Someone else is initializing or already done - spin until done
-    while (genesis_state_init_.load(std::memory_order_acquire) != 2) {
-        std::this_thread::yield();  // Allow other threads to progress
-    }
-    return genesis_state_;
+    return expected;   // another thread's genesis won; ours is simply unused
 }
 
 // =============================================================================

@@ -18,7 +18,7 @@ TEST_F(LockFreeDequeTest, InitiallyEmpty) {
 }
 
 TEST_F(LockFreeDequeTest, PushFrontPopFront) {
-    deque.push_front(42);
+    ASSERT_TRUE(deque.try_push_front(42));
     EXPECT_FALSE(deque.empty());
     
     auto value = deque.try_pop_front();
@@ -28,7 +28,7 @@ TEST_F(LockFreeDequeTest, PushFrontPopFront) {
 }
 
 TEST_F(LockFreeDequeTest, PushBackPopBack) {
-    deque.push_back(99);
+    ASSERT_TRUE(deque.try_push_back(99));
     EXPECT_FALSE(deque.empty());
     
     auto value = deque.try_pop_back();
@@ -38,7 +38,7 @@ TEST_F(LockFreeDequeTest, PushBackPopBack) {
 }
 
 TEST_F(LockFreeDequeTest, PushFrontPopBack) {
-    deque.push_front(123);
+    ASSERT_TRUE(deque.try_push_front(123));
     EXPECT_FALSE(deque.empty());
     
     auto value = deque.try_pop_back();
@@ -48,7 +48,7 @@ TEST_F(LockFreeDequeTest, PushFrontPopBack) {
 }
 
 TEST_F(LockFreeDequeTest, PushBackPopFront) {
-    deque.push_back(456);
+    ASSERT_TRUE(deque.try_push_back(456));
     EXPECT_FALSE(deque.empty());
     
     auto value = deque.try_pop_front();
@@ -63,10 +63,10 @@ TEST_F(LockFreeDequeTest, PopFromEmpty) {
 }
 
 TEST_F(LockFreeDequeTest, MultipleElements) {
-    deque.push_front(1);
-    deque.push_front(2);
-    deque.push_back(3);
-    deque.push_back(4);
+    ASSERT_TRUE(deque.try_push_front(1));
+    ASSERT_TRUE(deque.try_push_front(2));
+    ASSERT_TRUE(deque.try_push_back(3));
+    ASSERT_TRUE(deque.try_push_back(4));
     
     auto v1 = deque.try_pop_front();
     ASSERT_TRUE(v1.has_value());
@@ -90,7 +90,7 @@ TEST_F(LockFreeDequeTest, MultipleElements) {
 TEST_F(LockFreeDequeTest, FIFOOrder) {
     const int count = 10;
     for (int i = 0; i < count; ++i) {
-        deque.push_back(i);
+        ASSERT_TRUE(deque.try_push_back(i));
     }
     
     for (int i = 0; i < count; ++i) {
@@ -105,7 +105,7 @@ TEST_F(LockFreeDequeTest, FIFOOrder) {
 TEST_F(LockFreeDequeTest, LIFOOrder) {
     const int count = 10;
     for (int i = 0; i < count; ++i) {
-        deque.push_front(i);
+        ASSERT_TRUE(deque.try_push_front(i));
     }
     
     for (int i = count - 1; i >= 0; --i) {
@@ -127,7 +127,7 @@ TEST(LockFreeDequeMultiThreaded, ConcurrentPushFront) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&deque, t, items_per_thread]() {
             for (int i = 0; i < items_per_thread; ++i) {
-                deque.push_front(t * items_per_thread + i);
+                ASSERT_TRUE(deque.try_push_front(t * items_per_thread + i));
             }
         });
     }
@@ -154,7 +154,7 @@ TEST(LockFreeDequeMultiThreaded, ConcurrentPushBack) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&deque, t, items_per_thread]() {
             for (int i = 0; i < items_per_thread; ++i) {
-                deque.push_back(t * items_per_thread + i);
+                ASSERT_TRUE(deque.try_push_back(t * items_per_thread + i));
             }
         });
     }
@@ -178,9 +178,9 @@ TEST(LockFreeDequeMultiThreaded, ProducerConsumer) {
     std::thread producer([&deque, num_items]() {
         for (int i = 0; i < num_items; ++i) {
             if (i % 2 == 0) {
-                deque.push_front(i);
+                ASSERT_TRUE(deque.try_push_front(i));
             } else {
-                deque.push_back(i);
+                ASSERT_TRUE(deque.try_push_back(i));
             }
         }
     });
@@ -230,11 +230,11 @@ TEST(LockFreeDequeMultiThreaded, MixedOperations) {
                 int op = op_dist(gen);
                 switch (op) {
                     case 0:
-                        deque.push_front(i);
+                        ASSERT_TRUE(deque.try_push_front(i));
                         total_pushed.fetch_add(1);
                         break;
                     case 1:
-                        deque.push_back(i);
+                        ASSERT_TRUE(deque.try_push_back(i));
                         total_pushed.fetch_add(1);
                         break;
                     case 2:
@@ -372,10 +372,10 @@ protected:
 };
 
 TEST_F(LockFreeDequeWithStrings, StringOperations) {
-    deque.push_front("hello");
-    deque.push_back("world");
-    deque.push_front("foo");
-    deque.push_back("bar");
+    ASSERT_TRUE(deque.try_push_front("hello"));
+    ASSERT_TRUE(deque.try_push_back("world"));
+    ASSERT_TRUE(deque.try_push_front("foo"));
+    ASSERT_TRUE(deque.try_push_back("bar"));
     
     auto v1 = deque.try_pop_front();
     ASSERT_TRUE(v1.has_value());
@@ -415,8 +415,8 @@ TEST(LockFreeDequeComplex, ComplexObjectHandling) {
     ComplexObject obj1(1, "first", {1, 2, 3});
     ComplexObject obj2(2, "second", {4, 5, 6});
     
-    deque.push_front(obj1);
-    deque.push_back(obj2);
+    ASSERT_TRUE(deque.try_push_front(obj1));
+    ASSERT_TRUE(deque.try_push_back(obj2));
     
     auto retrieved1 = deque.try_pop_front();
     ASSERT_TRUE(retrieved1.has_value());

@@ -75,25 +75,22 @@ int main() {
     std::atomic<int> producer_count{0};
     std::atomic<int> consumer_count{0};
     
-    // Submit producer jobs
+    // A job must never wait inside itself: it occupies a worker while it does, so a job
+    // waiting on work that only another job can produce can consume every worker and the
+    // producers it is waiting for will never run. Both sides below therefore complete
+    // whatever the queue's state is.
     for (int i = 0; i < 20; ++i) {
         job_system.submit_function([&shared_deque, &producer_count, i]() {
-            shared_deque.push_back(i * 10);
-            producer_count.fetch_add(1);
+            // Bounded queue: handle a refusal, do not wait for room.
+            if (shared_deque.try_push_back(i * 10)) producer_count.fetch_add(1);
         }, TaskType::TASK1);
     }
-    
-    // Submit consumer jobs
+
+    // Consumers take at most one item and return. An empty queue means there is nothing to
+    // do yet, not something to wait for -- the item will be taken by a later consumer.
     for (int i = 0; i < 20; ++i) {
         job_system.submit_function([&shared_deque, &consumer_count]() {
-            while (true) {
-                auto item = shared_deque.try_pop_front();
-                if (item.has_value()) {
-                    consumer_count.fetch_add(1);
-                    break;
-                }
-                std::this_thread::yield();
-            }
+            if (shared_deque.try_pop_front().has_value()) consumer_count.fetch_add(1);
         }, TaskType::TASK2);
     }
     
