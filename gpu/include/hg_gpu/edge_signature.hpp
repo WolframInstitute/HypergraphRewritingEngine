@@ -2,6 +2,8 @@
 
 #include "hg_gpu/types.hpp"
 
+#include "hgcommon/signature_core.hpp"  // the rules themselves, shared with the host
+
 #include <cstdint>
 
 namespace hg_gpu {
@@ -34,44 +36,18 @@ struct EdgeSignature {
     }
 };
 
-// Compute the signature pattern from a vertex tuple.
+// The rules themselves live in hgcommon/signature_core.hpp so the host runs the same ones;
+// what stays here is only this port's EdgeSignature layout and the wrappers onto it.
 __host__ __device__ inline EdgeSignature signature_from_vertices(
     const VertexId* vertices, uint8_t arity) {
     EdgeSignature sig;
     sig.arity = arity;
-    if (arity == 0) return sig;
-
-    VertexId seen   [kMaxArity];
-    uint8_t  labels [kMaxArity];
-    uint8_t  next_label = 0;
-
-    for (uint8_t i = 0; i < arity; ++i) {
-        VertexId v = vertices[i];
-        uint8_t label = next_label;
-        for (uint8_t j = 0; j < next_label; ++j) {
-            if (seen[j] == v) { label = labels[j]; break; }
-        }
-        if (label == next_label) {
-            seen[next_label]   = v;
-            labels[next_label] = next_label;
-            ++next_label;
-        }
-        sig.pattern[i] = label;
-    }
+    hgcommon::signature_pattern_from_vertices(vertices, arity, sig.pattern);
     return sig;
 }
 
 __host__ __device__ inline uint64_t signature_hash(const EdgeSignature& sig) {
-    constexpr uint64_t kFnvOffset = 14695981039346656037ULL;
-    constexpr uint64_t kFnvPrime  = 1099511628211ULL;
-    uint64_t h = kFnvOffset;
-    h ^= sig.arity;
-    h *= kFnvPrime;
-    for (uint8_t i = 0; i < sig.arity; ++i) {
-        h ^= sig.pattern[i];
-        h *= kFnvPrime;
-    }
-    return h;
+    return hgcommon::signature_hash(sig.arity, sig.pattern);
 }
 
 __host__ __device__ inline uint64_t signature_hash_from_vertices(
@@ -79,22 +55,10 @@ __host__ __device__ inline uint64_t signature_hash_from_vertices(
     return signature_hash(signature_from_vertices(vertices, arity));
 }
 
-// Compatibility predicate: a data edge with sig `data` can match a pattern
-// edge with sig `pattern` iff for every two positions i,j, pattern[i]=pattern[j]
-// implies data[i]=data[j]. Different pattern vars MAY (but need not) collapse
-// to the same data vertex — this is Wolfram non-distinct binding semantics.
 __host__ __device__ inline bool signature_compatible(const EdgeSignature& data,
                                                      const EdgeSignature& pattern) {
-    if (data.arity != pattern.arity) return false;
-    for (uint8_t i = 0; i < pattern.arity; ++i) {
-        for (uint8_t j = i + 1; j < pattern.arity; ++j) {
-            if (pattern.pattern[i] == pattern.pattern[j] &&
-                data.pattern[i]    != data.pattern[j]) {
-                return false;
-            }
-        }
-    }
-    return true;
+    return hgcommon::signature_compatible(data.arity, data.pattern,
+                                          pattern.arity, pattern.pattern);
 }
 
 }  // namespace hg_gpu

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "types.hpp"
+#include "hgcommon/signature_core.hpp"
 
 namespace hypergraph {
 
@@ -35,36 +36,7 @@ struct EdgeSignature {
         EdgeSignature sig;
         sig.arity = arity;
         std::memset(sig.pattern, 0, MAX_ARITY);
-
-        if (arity == 0) return sig;
-
-        // Map first occurrence of each vertex to incrementing label
-        uint8_t next_label = 0;
-        VertexId seen[MAX_ARITY];
-        uint8_t labels[MAX_ARITY];
-
-        for (uint8_t i = 0; i < arity; ++i) {
-            VertexId v = vertices[i];
-
-            // Check if vertex already seen
-            uint8_t label = next_label;
-            for (uint8_t j = 0; j < next_label; ++j) {
-                if (seen[j] == v) {
-                    label = labels[j];
-                    break;
-                }
-            }
-
-            // If new vertex, assign new label
-            if (label == next_label) {
-                seen[next_label] = v;
-                labels[next_label] = next_label;
-                next_label++;
-            }
-
-            sig.pattern[i] = label;
-        }
-
+        hgcommon::signature_pattern_from_vertices(vertices, arity, sig.pattern);
         return sig;
     }
 
@@ -109,17 +81,7 @@ struct EdgeSignature {
     }
 
     // Compute hash for signature (for use in ConcurrentMap)
-    uint64_t hash() const {
-        // FNV-1a hash
-        uint64_t h = 14695981039346656037ULL;
-        h ^= arity;
-        h *= 1099511628211ULL;
-        for (uint8_t i = 0; i < arity; ++i) {
-            h ^= pattern[i];
-            h *= 1099511628211ULL;
-        }
-        return h;
-    }
+    uint64_t hash() const { return hgcommon::signature_hash(arity, pattern); }
 
     bool operator==(const EdgeSignature& other) const {
         if (arity != other.arity) return false;
@@ -134,13 +96,7 @@ struct EdgeSignature {
     }
 
     // Number of distinct vertices (max label + 1)
-    uint8_t num_distinct() const {
-        uint8_t max_label = 0;
-        for (uint8_t i = 0; i < arity; ++i) {
-            if (pattern[i] > max_label) max_label = pattern[i];
-        }
-        return arity > 0 ? max_label + 1 : 0;
-    }
+    uint8_t num_distinct() const { return hgcommon::signature_num_distinct(arity, pattern); }
 };
 
 // =============================================================================
@@ -159,26 +115,8 @@ struct EdgeSignature {
 
 inline bool signature_compatible(const EdgeSignature& data_sig,
                                  const EdgeSignature& pattern_sig) {
-    // Arities must match
-    if (data_sig.arity != pattern_sig.arity) return false;
-
-    // For each pair of positions in the pattern:
-    // If pattern has same variable, data must have same vertex
-    for (uint8_t i = 0; i < pattern_sig.arity; ++i) {
-        for (uint8_t j = i + 1; j < pattern_sig.arity; ++j) {
-            if (pattern_sig.pattern[i] == pattern_sig.pattern[j]) {
-                // Pattern requires same variable at positions i and j
-                // Data edge must have same vertex at those positions
-                if (data_sig.pattern[i] != data_sig.pattern[j]) {
-                    return false;
-                }
-            }
-            // Note: if pattern has different variables, we don't constrain data
-            // This implements non-distinct variable semantics
-        }
-    }
-
-    return true;
+    return hgcommon::signature_compatible(data_sig.arity, data_sig.pattern,
+                                          pattern_sig.arity, pattern_sig.pattern);
 }
 
 // =============================================================================
