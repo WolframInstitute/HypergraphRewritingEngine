@@ -270,7 +270,10 @@ void Parser::read_association(const AssociationCallback& callback) {
     }
 }
 
-void Parser::skip_value() {
+void Parser::skip_value(size_t depth) {
+    if (depth >= MAX_SKIP_DEPTH) {
+        throw ParseError("WXF nesting exceeds the maximum skip depth", read_position_);
+    }
     Token token = peek_token();
 
     switch (token) {
@@ -299,24 +302,24 @@ void Parser::skip_value() {
             read_binary_string();
             break;
         case Token::Function:
-            read_function([](const std::string&, size_t arg_count, Parser& p) {
+            read_function([depth](const std::string&, size_t arg_count, Parser& p) {
                 // Skip all arguments recursively
                 for (size_t i = 0; i < arg_count; i++) {
-                    p.skip_value();
+                    p.skip_value(depth + 1);
                 }
             });
             break;
         case Token::Association:
-            read_association_generic([](Parser& k, Parser& v) {
+            read_association_generic([depth](Parser& k, Parser& v) {
                 // Skip both key and value recursively
-                k.skip_value();
-                v.skip_value();
+                k.skip_value(depth + 1);
+                v.skip_value(depth + 1);
             });
             break;
         case Token::Rule:
             read_byte(); // consume '-'
-            skip_value(); // skip key
-            skip_value(); // skip value
+            skip_value(depth + 1); // skip key
+            skip_value(depth + 1); // skip value
             break;
         default:
             throw TypeError("Cannot skip unsupported or invalid token", read_position_);

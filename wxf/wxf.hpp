@@ -209,7 +209,15 @@ public:
     size_t position() const noexcept { return read_position_; }
     size_t remaining() const noexcept { return size_ - read_position_; }
     bool at_end() const noexcept { return read_position_ >= size_; }
-    void skip_value();  // Skip over any WXF value (atomic or structured)
+    // Skip over any WXF value (atomic or structured).
+    //
+    // Structured values recurse, and the input decides how deep -- a Rule token costs ONE
+    // BYTE and recurses twice, so a small crafted message can drive the stack past its limit
+    // and crash the process. WXF arrives from outside, so the depth is bounded rather than
+    // trusted; exceeding it is a malformed message, not a fatal condition.
+    static constexpr size_t MAX_SKIP_DEPTH = 512;
+    void skip_value() { skip_value(0); }
+    void skip_value(size_t depth);
 
 private:
     void ensure_bytes(size_t count);
@@ -350,6 +358,14 @@ T Parser::read() {
         }
 
         T result;
+        // `len` is an unchecked varint from the input, so reserving on it lets a 14-byte
+        // message ask for tens of gigabytes. Every element costs at least one more byte on
+        // the wire, so a length past what remains in the buffer is provably a malformed
+        // message -- reject it instead of allocating for it. read_string, read_symbol and
+        // read_binary_string already bound themselves this way via ensure_bytes.
+        if (len > remaining()) {
+            throw ParseError("WXF list length exceeds the remaining input", read_position_);
+        }
         result.reserve(len);
 
         using ElementType = typename T::value_type;

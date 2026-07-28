@@ -703,3 +703,76 @@ TEST_F(WXFTest, Varint_BoundaryValues_Decode) {
         }
     }
 }
+
+// WXF is parsed from bytes that arrive from outside the process, so malformed input must be
+// rejected as an error -- never as a crash, and never as an allocation the sender chose.
+//
+// These are written to DISCRIMINATE. A first attempt asserted only "throws a WXFException",
+// which BOTH the guarded and the unguarded build satisfy: the unguarded one just throws
+// later, on running out of input. A test that passes with the defect still present is worse
+// than no test, so each case below is built so removing its guard changes what is observed.
+
+// Depth. skip_value recurses on structured tokens and the INPUT chooses how deep. These
+// lists are well-formed and properly terminated, so without the bound they parse fine; the
+// discriminator is success-versus-refusal, not which exception comes out.
+TEST_F(WXFTest, NestingPastTheSkipDepthLimitIsRefused) {
+    // Built with the Writer so the bytes are unquestionably valid WXF -- the point of the
+    // test is the DEPTH, and hand-assembled bytes would confound "refused for nesting" with
+    // "refused for being malformed".
+    auto nested = [](size_t depth) {
+        wxf::Writer w;
+        w.write_header();
+        for (size_t i = 0; i < depth; ++i) w.write_function("List", 1);
+        w.write_int8(0);                                       // innermost leaf
+        return w.data();
+    };
+
+    {   // well inside the bound: must still be accepted
+        auto d = nested(wxf::Parser::MAX_SKIP_DEPTH / 4);
+        wxf::Parser p(d.data(), d.size());
+        p.skip_header();
+        EXPECT_NO_THROW(p.skip_value()) << "nesting within the limit must still parse";
+    }
+    {   // past the bound: refused rather than recursed into
+        auto d = nested(wxf::Parser::MAX_SKIP_DEPTH + 16);
+        wxf::Parser p(d.data(), d.size());
+        p.skip_header();
+        EXPECT_THROW(p.skip_value(), wxf::WXFException)
+            << "nesting past the limit must be refused -- recursion here is driven by the "
+               "input, and unbounded it exhausts the stack";
+    }
+}
+
+// Container length. Without the bound this reserves on the sender's number and dies with
+// std::bad_alloc, which is NOT a WXFException -- so a caller catching the WXF base type
+// leaks it. Demanding a WXFException is exactly what separates the two builds.
+TEST_F(WXFTest, ImpossibleListLengthIsRejectedBeforeAllocating) {
+    // A COMPLETE list header -- token, count, and the List head symbol -- so the parser
+    // reaches the element loop. Without the head the read fails on the malformed header
+    // instead, never touching the allocation this test is about.
+    std::vector<uint8_t> data = {'8', ':', 'f'};
+    uint64_t huge = 1ull << 40;                    // ~1e12 elements, from an 18-byte message
+    while (huge >= 0x80) { data.push_back(static_cast<uint8_t>((huge & 0x7F) | 0x80)); huge >>= 7; }
+    data.push_back(static_cast<uint8_t>(huge));
+    data.push_back('s'); data.push_back(4);
+    for (char c : std::string("List")) data.push_back(static_cast<uint8_t>(c));
+
+    // Assert the SPECIFIC rejection, not merely "some WXF error". Without the bound this
+    // still throws -- the reserve succeeds under overcommit and the read then runs out of
+    // input -- so requiring only a WXFException cannot tell the two builds apart. What
+    // distinguishes them is being refused BEFORE the count is used to size anything.
+    wxf::Parser parser(data.data(), data.size());
+    parser.skip_header();
+    bool refused_on_length = false;
+    try {
+        parser.read<std::vector<int64_t>>();
+    } catch (const wxf::ParseError& e) {
+        refused_on_length =
+            std::string(e.what()).find("exceeds the remaining input") != std::string::npos;
+    } catch (...) {
+    }
+    EXPECT_TRUE(refused_on_length)
+        << "an element count past the remaining input must be refused on the count itself; "
+           "reaching the allocation means an 18-byte message can size a multi-terabyte "
+           "reservation";
+}
