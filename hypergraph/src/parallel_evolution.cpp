@@ -764,19 +764,35 @@ void ParallelEvolutionEngine::push_match_to_children(
     if (batched_matching_) {
         // With batched matching, no retry loop needed
         push_match_to_children_impl(parent, match, step);
-    } else {
-        // EAGER MODE: Retry loop to close race window
-        uint64_t epoch_before = child_epoch_.load(std::memory_order_acquire);
-        push_match_to_children_impl(parent, match, step);
+        return;
+    }
 
-        // Retry if new children may have registered during push
-        uint64_t epoch_after = child_epoch_.load(std::memory_order_acquire);
-        while (epoch_after != epoch_before) {
-            stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
-            epoch_before = epoch_after;
-            push_match_to_children_impl(parent, match, step);
-            epoch_after = child_epoch_.load(std::memory_order_acquire);
-        }
+    // EAGER MODE: re-run while THIS parent is still gaining children.
+    //
+    // The retry is not redundant with for_each's own stability loop: that loop covers nodes
+    // appended to a list being walked, but the impl returns early when the parent has no
+    // children list AT ALL yet, and then there is nothing to iterate.
+    //
+    // It is scoped to this parent's own list. Watching a counter bumped by every child
+    // registration anywhere in the graph made an unrelated registration force a re-walk here,
+    // and since the impl recurses into each child -- each level opening its own loop on the
+    // same shared counter -- one outer retry re-executed a whole subtree. Termination then
+    // required a moment in which NO thread anywhere registered a child, which on a loaded run
+    // is not something to rely on. A single parent gains finitely many children, so scoped
+    // this way the loop is bounded by that.
+    auto child_epoch = [this](StateId p) -> uintptr_t {
+        auto r = state_children_.lookup(p);
+        return r.has_value() ? (*r)->head_token() : 0;
+    };
+
+    uintptr_t before = child_epoch(parent);
+    push_match_to_children_impl(parent, match, step);
+    uintptr_t after = child_epoch(parent);
+    while (after != before) {
+        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
+        before = after;
+        push_match_to_children_impl(parent, match, step);
+        after = child_epoch(parent);
     }
 }
 
@@ -947,6 +963,29 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     });
 }
 
+
+// Fold the match-list head of every ancestor on `parent`'s chain into one token. Two reads
+// returning the same value mean no ancestor ON THIS CHAIN gained a match between them.
+//
+// Scoping matters twice over here. Watching a counter bumped by every match store anywhere
+// coupled this walk to unrelated states, and -- worse -- the walk itself calls
+// store_match_for_state, which bumped that same counter, so the walker perturbed the very
+// quantity it was waiting to see settle and guaranteed at least one extra full re-walk every
+// pass. Those stores go to the CHILD, which is not on the ancestor chain, so a chain-scoped
+// token is untouched by them.
+uintptr_t ParallelEvolutionEngine::ancestor_match_epoch(StateId parent) const {
+    uintptr_t token = 0;
+    StateId cur = parent;
+    for (uint32_t hops = 0; cur != INVALID_ID && hops < kMaxAncestorHops; ++hops) {
+        auto m = state_matches_.lookup(cur);
+        token = token * 1099511628211ULL + (m.has_value() ? (*m)->head_token() : 0);
+        auto p = state_parent_.lookup(cur);
+        if (!p.has_value() || !*p || !(*p)->has_parent()) break;
+        cur = (*p)->parent_state;
+    }
+    return token;
+}
+
 void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
     StateId parent,
     StateId child,
@@ -961,8 +1000,8 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
         accumulated_consumed[total_consumed++] = consumed_edges[i];
     }
 
-    // RETRY LOOP: Pull with epoch tracking to close race window
-    uint64_t epoch_before = match_epoch_.load(std::memory_order_acquire);
+    // RETRY LOOP: re-walk while an ancestor ON THIS CHAIN is still gaining matches.
+    uintptr_t epoch_before = ancestor_match_epoch(parent);
 
     // Walk up the ancestor chain, forwarding matches from each ancestor
     StateId current_ancestor = parent;
@@ -985,7 +1024,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
     }
 
     // Check if epoch changed - if so, retry to catch any new matches
-    uint64_t epoch_after = match_epoch_.load(std::memory_order_acquire);
+    uintptr_t epoch_after = ancestor_match_epoch(parent);
     while (epoch_after != epoch_before) {
         stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
         epoch_before = epoch_after;
@@ -1014,7 +1053,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
             current_ancestor = pi->parent_state;
         }
 
-        epoch_after = match_epoch_.load(std::memory_order_acquire);
+        epoch_after = ancestor_match_epoch(parent);
     }
 }
 

@@ -109,6 +109,14 @@ public:
         }
     }
 
+    // An opaque token that changes whenever a node is pushed. Two reads returning the same
+    // token mean nothing was appended between them; the value itself carries no meaning and
+    // must not be dereferenced. Lets a caller scope a "did this list grow?" check to ONE
+    // list, instead of watching a counter shared with every other list in the engine.
+    uintptr_t head_token() const {
+        return reinterpret_cast<uintptr_t>(head_.load(std::memory_order_acquire));
+    }
+
     // Iterate with early termination
     // Return false from f to stop iteration
     // Keeps checking for new nodes until list is stable or terminated

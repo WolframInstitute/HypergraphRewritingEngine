@@ -793,6 +793,10 @@ private:
     // Pruning helpers
     bool can_create_states_at_step(uint32_t step) const;
     bool can_have_more_children(StateId parent) const;
+    // Ancestor-chain-scoped epoch for the pull-side retry; see the definition.
+    static constexpr uint32_t kMaxAncestorHops = 1u << 20;   // guards a malformed parent cycle
+    uintptr_t ancestor_match_epoch(StateId parent) const;
+
     static bool try_claim_budget(std::atomic<size_t>* counter, size_t limit);
     bool try_reserve_successor_slot(StateId parent);
     void release_successor_slot(StateId parent);
