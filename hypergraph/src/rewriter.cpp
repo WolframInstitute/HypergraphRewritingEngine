@@ -2,6 +2,7 @@
 
 #include "hypergraph/rewriter.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
+#include "hgcommon/rewrite_core.hpp"
 
 namespace hypergraph {
 
@@ -45,38 +46,30 @@ RewriteResult Rewriter::apply(
     SparseBitset new_edges = SparseBitset::derive(
         input_edges, matched_edges, num_matched, nullptr, 0, hg_->arena());
 
-    // Allocate fresh vertices for new RHS variables
-    VertexId fresh_vertex_map[MAX_VARS];
-    std::memset(fresh_vertex_map, 0xFF, sizeof(fresh_vertex_map));
+    // Fresh vertices for the variables that occur only in the RHS. Allocation is this
+    // device's business; WHICH variables get them and IN WHAT ORDER is the rewrite's, so
+    // that part is hgcommon's and the device runs the same one.
+    const uint32_t new_var_mask = rule.new_var_mask();
+    VertexId fresh_ids[MAX_VARS];
+    uint8_t num_fresh = 0;
+    for (uint32_t m = new_var_mask; m; m &= m - 1) fresh_ids[num_fresh++] = hg_->alloc_vertex();
 
-    uint32_t new_var_mask = rule.new_var_mask();
-    while (new_var_mask) {
-        uint8_t var = hgcommon::ctz(new_var_mask);
-        fresh_vertex_map[var] = hg_->alloc_vertex();
-        new_var_mask &= new_var_mask - 1;
-    }
+    // Extend a COPY of the match's binding: the match is shared with the forwarding
+    // machinery, so it must not be mutated.
+    VariableBinding rhs_binding = binding;
+    hgcommon::assign_fresh_variables(new_var_mask, fresh_ids, rhs_binding.bindings);
 
     // Create new edges from RHS pattern
     result.num_produced = 0;
     for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
         const PatternEdge& rhs_edge = rule.rhs[i];
 
-        // Resolve vertices for this edge
+        // Resolve vertices for this edge. A false return means the rule names a variable
+        // that is neither matched nor new, which is a malformed rule, not a failed match.
         VertexId vertices[MAX_ARITY];
-        for (uint8_t j = 0; j < rhs_edge.arity; ++j) {
-            uint8_t var = rhs_edge.var_at(j);
-
-            if (binding.is_bound(var)) {
-                // Variable from LHS - use binding
-                vertices[j] = binding.get(var);
-            } else if (fresh_vertex_map[var] != INVALID_ID) {
-                // Fresh variable - use allocated vertex
-                vertices[j] = fresh_vertex_map[var];
-            } else {
-                // Error: variable not bound and not fresh
-                // This shouldn't happen with valid rules
-                return result;
-            }
+        if (!hgcommon::resolve_rhs_vertices(rhs_edge.vars, rhs_edge.arity,
+                                            rhs_binding.bindings, vertices)) {
+            return result;
         }
 
         // Create the edge (producer will be set after event is created)

@@ -547,6 +547,14 @@ DeviceRule make_device_rule(const RewriteRule& rule) {
     d.num_rhs_edges = static_cast<uint8_t>(rule.rhs.size());
     d.num_rhs_vars  = rule.num_rhs_vars;
 
+    // Which variables are new, taken from the rule rather than inferred from the counts.
+    {
+        uint32_t lhs_mask = 0, rhs_mask = 0;
+        for (const auto& e : rule.lhs) for (uint8_t v : e) lhs_mask |= (uint32_t(1) << v);
+        for (const auto& e : rule.rhs) for (uint8_t v : e) rhs_mask |= (uint32_t(1) << v);
+        d.new_var_mask = rhs_mask & ~lhs_mask;
+    }
+
     // Emit LHS in connectivity-scheduled order. The DFS binds edges in the
     // ORDER they appear in `d.lhs[]`, so we physically reorder here.
     auto schedule = schedule_lhs_edges(rule);

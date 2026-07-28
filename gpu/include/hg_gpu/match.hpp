@@ -60,6 +60,12 @@ struct DeviceRule {
     uint8_t           num_lhs_vars  = 0;
     uint8_t           num_rhs_edges = 0;
     uint8_t           num_rhs_vars  = 0;  // total (includes new vars in RHS)
+
+    // Variables occurring in the RHS but not the LHS, as a mask rather than as a count.
+    // The set is not an index RANGE: a rule may number its LHS variables sparsely, and
+    // num_lhs_vars is a count on the host and a max-index-plus-one here, so neither reading
+    // of [num_lhs_vars, num_rhs_vars) names the right variables. hgcommon takes the mask.
+    uint32_t          new_var_mask  = 0;
 };
 
 // One match found during pattern matching.

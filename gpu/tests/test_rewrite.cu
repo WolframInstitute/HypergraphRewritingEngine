@@ -74,6 +74,41 @@ TEST(Rewrite, SimpleChainRuleOneStep) {
     EXPECT_EQ(e2_verts, (std::vector<VertexId>{1u, 2u}));
 }
 
+TEST(Rewrite, SparseVariableNumberingBindsTheRightNewVariable) {
+    // Rule: {{x,z}} -> {{x,z},{z,y}} with variable indices 0 and 2 on the LHS and 1 new.
+    //
+    // The new variables are rhs_vars & ~lhs_vars = {1}. They are NOT the index range
+    // [num_lhs_vars, num_rhs_vars): num_lhs_vars is a count on the host and a max-index-plus-
+    // one in the paclet's GPU backend, and neither reading names variable 1 here. Taking the
+    // range would assign the fresh vertex to variable 2 -- which the match already bound --
+    // and leave variable 1 unbound, so the produced edge would carry the fresh vertex in the
+    // wrong position and an INVALID_ID in the other.
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 2}};
+    r.rhs = {{0, 2}, {2, 1}};
+    r.num_lhs_vars = 2;   // a COUNT of {0,2}, deliberately not a dense prefix
+    r.num_rhs_vars = 3;
+
+    hg_gpu::EngineState engine(small_cfg());
+    hg_gpu::upload_initial_state(engine, {{0u, 1u}});
+
+    auto dr = hg_gpu::make_device_rule(r);
+    std::vector<hg_gpu::DeviceRule> rules = {dr};
+
+    hg_gpu::Pool<hg_gpu::MatchRecord> matches(64);
+    uint32_t n_matches = hg_gpu::run_match_kernel(engine, rules, /*state=*/0, matches);
+    ASSERT_EQ(n_matches, 1u);
+    uint32_t n_new = hg_gpu::run_rewrite_kernel(engine, rules, matches, n_matches, /*step=*/1);
+    ASSERT_EQ(n_new, 1u);
+
+    // x=0, z=1 from the match; y is the one fresh vertex, so 2.
+    EXPECT_EQ(engine.vertex_high_water_host(), 3u);
+    auto e1_verts = engine.edge_vertices_host(1);
+    EXPECT_EQ(e1_verts, (std::vector<VertexId>{0u, 1u}));   // {x,z}
+    auto e2_verts = engine.edge_vertices_host(2);
+    EXPECT_EQ(e2_verts, (std::vector<VertexId>{1u, 2u}));   // {z,y}, y fresh
+}
+
 TEST(Rewrite, WolframCanonicalRuleOneStep) {
     // {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}}
     hg_gpu::RewriteRule r;

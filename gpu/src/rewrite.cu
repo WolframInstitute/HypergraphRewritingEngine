@@ -1,4 +1,5 @@
 #include "hg_gpu/edge_signature.hpp"
+#include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hg_gpu/rewrite.hpp"
 
 #include <cuda_runtime.h>
@@ -272,8 +273,7 @@ __global__ void k_rewrite(DeviceState              ds,
     // pattern which left the new state's bitset uninitialized and produced
     // spurious OOBs in the WL hash / dedup downstream.
     // -------------------------------------------------------------------
-    const uint8_t num_new_vars = (rule.num_rhs_vars > rule.num_lhs_vars)
-        ? (rule.num_rhs_vars - rule.num_lhs_vars) : 0;
+    const uint8_t num_new_vars = static_cast<uint8_t>(__popc(rule.new_var_mask));
 
     // Total vertex slots needed across all RHS edges.
     uint32_t vert_slots_needed = 0;
@@ -348,9 +348,16 @@ __global__ void k_rewrite(DeviceState              ds,
             ds.errors.record(ErrorKind::kVertexPoolFull);
             return;
         }
-        for (uint8_t i = 0; i < num_new_vars; ++i) {
-            binding[rule.num_lhs_vars + i] = vid_base + i;
-        }
+        // Which variables are new, and the order they take the fresh ids in, is the
+        // rewrite's rule and lives in hgcommon; the high-water bump above is this device's.
+        VertexId fresh_ids[kMaxVars];
+        for (uint8_t i = 0; i < num_new_vars; ++i) fresh_ids[i] = vid_base + i;
+        VertexId local_binding[kMaxVars];
+        #pragma unroll
+        for (uint32_t v = 0; v < kMaxVars; ++v) local_binding[v] = binding[v];
+        hgcommon::assign_fresh_variables(rule.new_var_mask, fresh_ids, local_binding);
+        #pragma unroll
+        for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = local_binding[v];
     }
 
     // -------------------------------------------------------------------
@@ -370,15 +377,15 @@ __global__ void k_rewrite(DeviceState              ds,
         uint32_t vert_off = vert_cursor;
         vert_cursor += re.arity;
 
+        VertexId local_verts[kMaxArity];
+        for (uint8_t i = 0; i < re.arity; ++i) local_verts[i] = binding[re.vars[i]];
         for (uint8_t i = 0; i < re.arity; ++i) {
-            ds.vertex_pool.at(vert_off + i) = binding[re.vars[i]];
+            ds.vertex_pool.at(vert_off + i) = local_verts[i];
         }
 
         Edge ne{};
         ne.arity         = re.arity;
         ne.vertex_offset = vert_off;
-        VertexId local_verts[kMaxArity];
-        for (uint8_t i = 0; i < re.arity; ++i) local_verts[i] = binding[re.vars[i]];
         ne.signature     = signature_hash_from_vertices(local_verts, re.arity);
         ne.creator_event = my_event;
         ne.step          = step;
