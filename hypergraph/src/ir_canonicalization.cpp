@@ -714,6 +714,67 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_map(
     return hash;
 }
 
+uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_rank(
+    const SVec<SVec<VertexId>>& edges,
+    std::vector<uint32_t>& out_edge_rank) const {
+    out_edge_rank.assign(edges.size(), 0u);
+    if (edges.empty()) return 0;
+
+    auto scratch_mark = worker_scratch().mark();
+    HypergraphAdj adj;
+    SVec<uint32_t> labeling;
+    bool ok = find_canonical_labeling(edges, adj, labeling);
+
+    uint64_t hash = 14695981039346656037ULL;
+    constexpr uint64_t prime = 1099511628211ULL;
+    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
+    hash *= prime;
+
+    if (ok) {
+        struct MappedEdge {
+            std::vector<VertexId> mapped;
+            size_t orig_idx;
+        };
+        std::vector<MappedEdge> mapped;
+        mapped.reserve(edges.size());
+        for (size_t ei = 0; ei < edges.size(); ++ei) {
+            MappedEdge me;
+            me.orig_idx = ei;
+            me.mapped.reserve(edges[ei].size());
+            for (VertexId v : edges[ei]) {
+                uint32_t vi = adj.idx_of(v);
+                me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
+            }
+            mapped.push_back(std::move(me));
+        }
+        // Ordered by (canonical content, ORIGINAL INDEX). The index tie-break is what makes
+        // this a RANK -- a distinct value per edge -- rather than a content class, and it is
+        // what keeps duplicate-content edges apart. Positional event identity is defined this
+        // way precisely so it does NOT quotient state automorphisms: two symmetric edge-role
+        // assignments keep distinct ranks and stay distinct events.
+        std::sort(mapped.begin(), mapped.end(),
+                  [](const MappedEdge& a, const MappedEdge& b) {
+                      if (a.mapped != b.mapped) return a.mapped < b.mapped;
+                      return a.orig_idx < b.orig_idx;
+                  });
+
+        for (const auto& me : mapped) {
+            for (auto vertex : me.mapped) {
+                hash ^= static_cast<uint64_t>(vertex);
+                hash *= prime;
+            }
+            hash ^= 0xDEADBEEF;
+            hash *= prime;
+        }
+        for (size_t i = 0; i < mapped.size(); ++i) {
+            out_edge_rank[mapped[i].orig_idx] = static_cast<uint32_t>(i);
+        }
+    }
+
+    worker_scratch().release(scratch_mark);
+    return hash;
+}
+
 uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     const SVec<SVec<VertexId>>& edges,
     std::vector<uint32_t>& out_edge_orbit,

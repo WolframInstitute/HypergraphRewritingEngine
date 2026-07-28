@@ -105,6 +105,11 @@ class Hypergraph {
     // every event -- catastrophic on high-automorphism states). Key: StateId as uint64_t.
     ConcurrentMap<uint64_t, EdgeOrbitTable*> state_orbit_tables_;
 
+    // Canonical RANK of each edge of a state, built once per state when event
+    // canonicalization is on and read by every event that consumes or produces one of those
+    // edges. Edges ascend (SparseBitset iterates in id order), so a lookup binary-searches.
+    ConcurrentMap<uint64_t, EdgeRankTable*> state_edge_rank_tables_;
+
     // The captured quotient causal skeleton: the distinct canonical transitions out of each
     // canonical state (keyed by the source state's canonical hash), plus a dedup set over
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
@@ -258,6 +263,11 @@ class Hypergraph {
     // Signature computed from keys specified by event_signature_keys_ bitflag
     ConcurrentMap<uint64_t, EventId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_event_map_;
     std::atomic<uint32_t> canonical_event_count_{0};
+
+    // Times an event signature used a RAW edge id because no edge correspondence was found.
+    // Such a signature is not an isomorphism invariant, so a non-zero count means the event
+    // set is approximate; see the fallback in create_event.
+    std::atomic<uint64_t> event_sig_raw_fallbacks_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
 
     // Genesis state: the empty state (no edges) from which all initial states originate
@@ -570,6 +580,30 @@ public:
     // This is used for event canonicalization, which needs isomorphism-invariant
     // state hashes regardless of whether state_canonicalization_mode_ is None.
     uint64_t get_or_compute_canonical_hash(StateId state_id);
+
+    // Build the state's canonical rank table and return the exact canonical hash from the
+    // SAME individualization-refinement pass -- the event path needs both, and running IR
+    // twice for them is the difference between one pass per state and two per event.
+    uint64_t cache_state_edge_ranks(StateId state_id, const SparseBitset& edges);
+
+    // Canonical rank of `edge` within `state`, or UINT32_MAX when the state has no table.
+    uint32_t edge_rank_in_state(StateId state_id, EdgeId edge) const {
+        auto r = state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1);
+        if (!r.has_value()) return UINT32_MAX;
+        const EdgeRankTable* t = *r;
+        uint32_t lo = 0, hi = t->n;
+        while (lo < hi) {
+            const uint32_t mid = lo + (hi - lo) / 2;
+            if (t->edges[mid] < edge) lo = mid + 1; else hi = mid;
+        }
+        return (lo < t->n && t->edges[lo] == edge) ? t->rank[lo] : UINT32_MAX;
+    }
+
+    // Event signatures that fell back to a raw edge id. Non-zero means the event identity is
+    // approximate rather than canonical.
+    uint64_t event_signature_raw_fallbacks() const {
+        return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
+    }
 
     // Quotient exploration support. try_lower_explore_depth records a shorter path to a
     // canonical state, returning true only when it improved on what was known. Depth is a
@@ -947,6 +981,14 @@ public:
     // With the WL hash enabled (use_wl_hash_), uses the fast approximate hash;
     // otherwise falls back to IR exact canonicalization.
     uint64_t compute_canonical_hash(const SparseBitset& edges) const;
+
+    // Isomorphism-invariant and EXACT, whatever the state mode selects. The event path uses
+    // this, because event identity is defined over isomorphism classes.
+    uint64_t compute_exact_canonical_hash(const SparseBitset& edges) const;
+
+    // What a state reports and what the event path resolves representatives through: exact
+    // when event canonicalization is on, mode-aware otherwise.
+    uint64_t compute_reported_canonical_hash(const SparseBitset& edges) const;
 
     // Compute the Weisfeiler-Leman approximate canonical hash for a set of
     // edges. This is the fast hot-path hash backing compute_canonical_hash (in

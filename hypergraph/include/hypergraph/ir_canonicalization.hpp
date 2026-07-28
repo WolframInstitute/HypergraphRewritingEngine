@@ -56,6 +56,17 @@ public:
         const SVec<SVec<VertexId>>& edges,
         std::vector<uint32_t>& out_edge_class) const;
 
+    // Canonical hash, plus for each input edge its canonical RANK: the edge's position when
+    // the edges are ordered by (canonical content, original index). Unlike the content class
+    // above, a rank is distinct for every edge -- the index tie-break separates duplicates --
+    // which is what Positional event identity requires, since it must NOT quotient state
+    // automorphisms. The rank is a property of the state's isomorphism class plus the input
+    // edge order, so an event identified by ranks needs no representative state and does not
+    // move when the state-identity mode does.
+    uint64_t compute_canonical_hash_with_edge_rank(
+        const SVec<SVec<VertexId>>& edges,
+        std::vector<uint32_t>& out_edge_rank) const;
+
     // Canonical hash, plus for each input edge the id of its canonical edge ORBIT
     // under the state's automorphism group. Unlike the content class above, the orbit
     // is invariant under vertex relabeling and edge reordering even when Aut is

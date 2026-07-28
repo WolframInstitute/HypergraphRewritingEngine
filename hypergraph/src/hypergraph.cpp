@@ -151,9 +151,18 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     StateId new_sid = create_state(std::move(edge_set), step, 0, parent_event);
     const SparseBitset& edges = get_state(new_sid).edges;
 
-    // WL canonical hash for None/Automatic modes.
-    auto wl_child = [&]() -> uint64_t {
-        return compute_canonical_hash(edges);
+    // Reported hash for None/Automatic modes: the exact invariant when event
+    // canonicalization is on (see compute_reported_canonical_hash), the fast WL hash
+    // otherwise. Separate from map_key, which is what actually decides state identity.
+    // One individualization-refinement pass serves both when event canonicalization is on:
+    // the exact hash the event path resolves representatives through, and the per-edge ranks
+    // it identifies consumed/produced edges by.
+    const bool need_ranks = (event_signature_keys_ != EVENT_SIG_NONE);
+    uint64_t ranked_hash = 0;
+    if (need_ranks) ranked_hash = cache_state_edge_ranks(new_sid, edges);
+
+    auto reported_child = [&]() -> uint64_t {
+        return need_ranks ? ranked_hash : compute_canonical_hash(edges);
     };
 
     // Canonical identity + dedup key. In Full mode the exact IR hash is BOTH the
@@ -168,11 +177,11 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             // count_unique() cannot store or count, silently undercounting None by one. The offset
             // keeps ids unique (None never dedups) while lifting id 0 off the sentinel.
             map_key = static_cast<uint64_t>(new_sid) + 1;
-            canonical_hash = wl_child();
+            canonical_hash = reported_child();
             break;
         case StateCanonicalizationMode::Automatic:
             map_key = compute_content_ordered_hash(edges);
-            canonical_hash = wl_child();
+            canonical_hash = reported_child();
             break;
         case StateCanonicalizationMode::Full:
         default:
@@ -181,6 +190,8 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             // the orbits; there is no extra canon pass). Otherwise just the dedup hash.
             if (quotient_causal_.load(std::memory_order_relaxed))
                 canonical_hash = compute_and_cache_state_orbits(new_sid, edges);
+            else if (need_ranks)
+                canonical_hash = ranked_hash;   // exact IR, already computed with the ranks
             else
                 canonical_hash = compute_canonical_hash(edges);   // exact IR
             map_key = canonical_hash;
@@ -259,6 +270,44 @@ uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
     return known.load(std::memory_order_acquire);
 }
 
+// Build the state's canonical rank table, returning the exact canonical hash from the SAME
+// individualization-refinement pass. Both are wanted whenever event canonicalization is on --
+// the hash for the representative lookup, the ranks for the edge identity -- and computing
+// them together is what keeps this to ONE pass per state rather than two per event.
+//
+// The state's edges are taken in EdgeId order, which is the "original index" the rank's
+// tie-break uses: deterministic, and a property of the state rather than of the schedule that
+// built it. Called once on the creating thread; insert_if_absent guards the rest.
+uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
+    auto mk = worker_scratch().mark();
+    SVec<SVec<VertexId>> edge_vectors;
+    SVec<EdgeId> ids;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    edges.for_each([&](EdgeId eid) {
+        const Edge& e = edges_[eid];
+        edge_vectors.emplace_back(e.vertices, e.vertices + e.arity);
+        ids.push_back(eid);
+    });
+
+    const uint32_t n = static_cast<uint32_t>(ids.size());
+    uint64_t hash = EMPTY_STATE_CANONICAL_HASH;
+    EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
+    uint32_t* arr_rank = arena_.allocate_array<uint32_t>(n ? n : 1);
+    if (n > 0) {
+        IRCanonicalizer ir;
+        thread_local std::vector<uint32_t> ranks;
+        hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, ranks);
+        for (uint32_t i = 0; i < n; ++i) { arr_edges[i] = ids[i]; arr_rank[i] = ranks[i]; }
+    }
+    worker_scratch().release(mk);
+
+    EdgeRankTable* tbl = arena_.template create<EdgeRankTable>();
+    tbl->n = n; tbl->edges = arr_edges; tbl->rank = arr_rank;
+    // +1: the map reserves key 0 as its EMPTY-slot sentinel, so state 0 needs the offset.
+    state_edge_rank_tables_.insert_if_absent(static_cast<uint64_t>(state_id) + 1, tbl);
+    return hash;
+}
+
 uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     if (state_id == INVALID_ID) return 0;
 
@@ -276,8 +325,9 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
         return cached;
     }
 
-    // Compute the canonical hash on-demand (mode-aware: exact IR in Full mode, WL otherwise)
-    uint64_t hash = compute_canonical_hash(state.edges);
+    // On-demand, and it must agree with what create_or_get_canonical_state published --
+    // the event path reads both.
+    uint64_t hash = compute_reported_canonical_hash(state.edges);
 
     // Publish with release; racing writers may all compute the same value and
     // the final stored value is deterministic across threads.
@@ -331,47 +381,46 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             sig_key = fnv_hash(sig_key, static_cast<uint64_t>(rule_index));
         }
 
-        // Add edge signatures if requested
+        // Add edge signatures if requested.
+        //
+        // A consumed or produced edge is identified by its canonical RANK in its own state's
+        // canonical labeling -- the position it takes when that state's edges are ordered by
+        // (canonical content, original index). This is the definition Positional event
+        // identity carries (reference/MultiwayReference.wl, eventSigAutomaticPositional), and
+        // the reason it is stated over the state's OWN labeling is that no representative
+        // state then enters the identity. Resolving the edges through a representative
+        // instead makes the event identity follow whichever state the representative map
+        // happened to hold, which moves with the state-identity mode: measured on the
+        // binary-growth corpus case as 8 events under Full against 6 under Automatic, where
+        // the reference gives 8 under both.
         if (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) {
-            const State& in_state = get_state(input_state);
-            const State& out_state = get_state(output_state);
-            const State& canonical_in_state = get_state(canonical_input);
-
-            // Compute edge correspondence using hash dispatch
-            EdgeCorrespondence input_correspondence = find_edge_correspondence_dispatch(
-                in_state.edges, canonical_in_state.edges);
-            EdgeCorrespondence output_correspondence = find_edge_correspondence_dispatch(
-                out_state.edges, canonical_out_state.edges);
-
-            // Build edge mappings (worker-local scratch during event creation)
-            SUMap<EdgeId, EdgeId> input_edge_map, output_edge_map;
-            if (input_correspondence.valid) {
-                for (uint32_t i = 0; i < input_correspondence.count; ++i) {
-                    input_edge_map[input_correspondence.state1_edges[i]] =
-                        input_correspondence.state2_edges[i];
-                }
-            }
-            if (output_correspondence.valid) {
-                for (uint32_t i = 0; i < output_correspondence.count; ++i) {
-                    output_edge_map[output_correspondence.state1_edges[i]] =
-                        output_correspondence.state2_edges[i];
-                }
-            }
 
             // Map edges to canonical equivalents and compute signatures
+            // A miss means no edge correspondence was found, and the raw edge id goes into
+            // the signature instead. Raw ids are run-local and carry no isomorphism meaning,
+            // so such a signature is not an invariant of the event -- it is reproducible for a
+            // fixed schedule and nothing more. Counted rather than substituted silently:
+            // event_signature_raw_fallbacks() reports how many, which is what lets a caller
+            // tell a canonical event count from an approximate one.
             if (keys & EventKey_ConsumedEdges) {
                 for (uint8_t i = 0; i < num_consumed; ++i) {
-                    auto it = input_edge_map.find(consumed[i]);
-                    EdgeId canonical_edge = (it != input_edge_map.end()) ? it->second : consumed[i];
-                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_edge));
+                    uint32_t r = edge_rank_in_state(input_state, consumed[i]);
+                    if (r == UINT32_MAX) {
+                        event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                        r = consumed[i];
+                    }
+                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(r));
                 }
             }
 
             if (keys & EventKey_ProducedEdges) {
                 for (uint8_t i = 0; i < num_produced; ++i) {
-                    auto it = output_edge_map.find(produced[i]);
-                    EdgeId canonical_edge = (it != output_edge_map.end()) ? it->second : produced[i];
-                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_edge));
+                    uint32_t r = edge_rank_in_state(output_state, produced[i]);
+                    if (r == UINT32_MAX) {
+                        event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                        r = produced[i];
+                    }
+                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(r));
                 }
             }
         }
@@ -538,8 +587,28 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
     if (!full && use_wl_hash_ && wl_hash_) {
         return compute_wl_hash(edges);
     }
+    return compute_exact_canonical_hash(edges);
+}
 
-    // Full mode, or WL disabled: exact canonical hash via individualization-refinement.
+// The hash a state REPORTS, and the one the event path resolves representatives through.
+//
+// Event identity is defined over ISOMORPHISM classes and SPEC.md sec 4 makes it independent
+// of the state-identity choice. Resolving it through the mode-aware hash breaks that: the WL
+// hash is isomorphism-invariant but COARSER than IR, so outside Full mode more states share a
+// representative, the edge correspondence resolves to a coarser one, and the event identity
+// derived from it coarsens with it -- measured on the binary-growth corpus case as 8 events
+// under Full against 6 under Automatic, with the finer state identity producing FEWER events.
+//
+// So when event canonicalization is on, the reported hash is the exact invariant in every
+// state mode. It is only paid for when it is asked for; with event canonicalization off this
+// is the mode-aware hash and nothing changes.
+uint64_t Hypergraph::compute_reported_canonical_hash(const SparseBitset& edges) const {
+    if (event_signature_keys_ != EVENT_SIG_NONE) return compute_exact_canonical_hash(edges);
+    return compute_canonical_hash(edges);
+}
+
+uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) const {
+    // Exact canonical hash via individualization-refinement.
     // Flattened straight from the edge set into the per-worker scratch arena (no heap) and
     // handed to the shared CPU/GPU core, so both devices agree bit for bit.
     auto mk = worker_scratch().mark();

@@ -60,6 +60,17 @@ struct CanonicalEdgeKey {
 // (iso-invariant), so the same orbit id denotes corresponding edges across every raw state
 // isomorphic to this one -- the identity the quotient causal reconstruction indexes on.
 // Arena-allocated; `num_orbits` is the count of distinct orbits.
+// Per-edge canonical RANK for one state: the edge's position when the state's edges are
+// ordered by (canonical content, original index). Distinct for every edge -- the index
+// tie-break separates duplicate-content edges, which Positional event identity requires
+// since it must not quotient state automorphisms. Arena-allocated; edges ascend so a lookup
+// binary-searches.
+struct EdgeRankTable {
+    uint32_t n = 0;
+    const EdgeId* edges = nullptr;   // sorted ascending, length n
+    const uint32_t* rank = nullptr;  // length n, parallel to edges
+};
+
 struct EdgeOrbitTable {
     uint32_t n = 0;
     uint32_t num_orbits = 0;

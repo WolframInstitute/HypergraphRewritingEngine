@@ -241,6 +241,42 @@ TEST(FeatureMatrix, IdentityLatticesAreOrdered) {
 }
 
 // -----------------------------------------------------------------------------
+// SPEC.md sec 4 states the two identity axes are INDEPENDENT: changing how STATES are merged
+// cannot change how many distinct EVENTS there are. The reference has this property --
+// MultiwayReference gives 8 events for binary-growth under both "Canonical" and "None" --
+// and the engine did not, because it identified consumed/produced edges by mapping them onto
+// a REPRESENTATIVE state's edge ids, so the identity followed whichever state the
+// representative map happened to hold, which moves with the state mode. Measured then: 8
+// events under Full against 6 under Automatic, with the finer state identity producing FEWER
+// events, which the refinement lattice forbids.
+// -----------------------------------------------------------------------------
+TEST(FeatureMatrix, EventIdentityIsIndependentOfStateIdentity) {
+    const StateCanonicalizationMode modes[] = {
+        StateCanonicalizationMode::Full,
+        StateCanonicalizationMode::Automatic,
+        StateCanonicalizationMode::None,
+    };
+    const EventSignatureKeys event_variants[] = {
+        EVENT_SIG_NONE, EVENT_SIG_FULL, EVENT_SIG_AUTOMATIC,
+    };
+
+    for (const auto& c : oracle::corpus()) {
+        for (EventSignatureKeys ek : event_variants) {
+            // One depth for all three, since counts from different depths are not comparable.
+            oracle::Counts ref = run_counts(c.rules, c.init, c.oracle_steps, 1,
+                                            Config{modes[0], ek, /*quotient=*/false});
+            for (StateCanonicalizationMode m : modes) {
+                oracle::Counts got = run_counts(c.rules, c.init, c.oracle_steps, 1,
+                                                Config{m, ek, /*quotient=*/false});
+                EXPECT_EQ(got.events, ref.events)
+                    << c.name << " event=" << event_name(ek) << " state=" << mode_name(m)
+                    << ": event count moved with the state identity";
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Oracle-exactness anchor across threads: Full + event-off canonical_states must equal
 // the INDEPENDENT brute-force isomorphism count at every thread count (not just 1).
 // -----------------------------------------------------------------------------
