@@ -81,12 +81,10 @@ int main(int argc, char** argv) {
            states.size(), total_edges,
            states.empty() ? 0.0 : double(total_edges) / states.size(), max_edges);
 
-    // Pre-flatten so the shared core is timed on canonicalization, not on marshalling; the
-    // host path takes the edge lists it already wants.
-    std::vector<Flat> flat;
-    flat.reserve(states.size());
-    for (const auto& s : states) flat.push_back(flatten(s));
-
+    // Both sides are timed from the SAME starting point -- a state's edge lists -- so the
+    // marshalling each one needs is inside its own measurement. Pre-flattening for the core
+    // only would charge the host for building an adjacency and charge the core for nothing,
+    // which is not a comparison of the two implementations.
     std::vector<uint64_t> scratch;
     uint64_t sink = 0;
 
@@ -99,7 +97,8 @@ int main(int argc, char** argv) {
     };
     auto time_core = [&]() {
         auto t0 = std::chrono::steady_clock::now();
-        for (const auto& f : flat) {
+        for (const auto& st : states) {
+            const Flat f = flatten(st);
             for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
                 const uint64_t words = hgcommon::ir_scratch_words(
                     f.n_verts, static_cast<uint32_t>(f.ea.size()), f.total_occ, depth);
