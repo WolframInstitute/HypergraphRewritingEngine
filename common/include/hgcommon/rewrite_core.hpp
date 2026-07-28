@@ -7,7 +7,9 @@
 //
 //   SEMANTICS  a variable appearing in the LHS is already bound by the match; a variable
 //              appearing only in the RHS is NEW and takes a freshly created vertex, and the
-//              new variables take their fresh vertices in ASCENDING VARIABLE ORDER.
+//              new variables take their fresh vertices in ASCENDING VARIABLE ORDER -- so the
+//              n-th new variable takes the n-th fresh vertex, and n is recoverable from the
+//              mask without storing anything per rewrite.
 //   HARDWARE   where the fresh vertex ids come from -- a host counter, a device high-water
 //              bump -- and where the produced edges are stored.
 //
@@ -45,32 +47,57 @@ HG_HD inline uint8_t rw_ctz32(uint32_t x) {
 #endif
 }
 
-// Bind the rule's new variables to freshly created vertices, ascending by variable index:
-// the n-th new variable takes fresh_ids[n]. Returns how many were bound, which is the number
-// of fresh vertices the caller must have supplied.
-//
-// `binding` is the match's, extended in place -- callers work on a copy, since the match
-// itself is shared with the forwarding machinery and must not be mutated.
-HG_HD inline uint8_t assign_fresh_variables(
-    uint32_t new_var_mask, const VertexId* fresh_ids, VertexId* binding)
-{
-    uint8_t n = 0;
-    while (new_var_mask) {
-        const uint8_t var = rw_ctz32(new_var_mask);
-        binding[var] = fresh_ids[n++];
-        new_var_mask &= new_var_mask - 1;
-    }
-    return n;
+HG_HD inline uint8_t rw_popcount32(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+    return static_cast<uint8_t>(__popc(x));
+#elif defined(_MSC_VER)
+    return static_cast<uint8_t>(__popcnt(x));
+#else
+    return static_cast<uint8_t>(__builtin_popcount(x));
+#endif
 }
 
-// Vertices of one produced edge. Every variable must be bound by now -- by the match if it
-// occurs in the LHS, by assign_fresh_variables if it does not. False means the rule names a
-// variable that is neither, which is a malformed rule rather than a failed match.
+// How many fresh vertices a rule needs: one per new variable.
+HG_HD inline uint8_t num_fresh_variables(uint32_t new_var_mask) {
+    return rw_popcount32(new_var_mask);
+}
+
+// Bind the rule's new variables to a consecutive block of fresh vertices, ascending by
+// variable index: the n-th new variable takes first_fresh + n. `fresh` is indexed BY VARIABLE
+// and must arrive filled with INVALID_ID; only the new variables' slots are written.
+//
+// A block rather than a list of ids because both ports reserve one: the device bumps a
+// high-water mark once, and the host takes one fetch_add instead of one per variable.
+HG_HD inline void assign_fresh_consecutive(
+    uint32_t new_var_mask, VertexId first_fresh, VertexId* fresh)
+{
+    VertexId next = first_fresh;
+    while (new_var_mask) {
+        const uint8_t var = rw_ctz32(new_var_mask);
+        fresh[var] = next++;
+        new_var_mask &= new_var_mask - 1;
+    }
+}
+
+// Vertices of one produced edge: from the MATCH if the variable occurs in the LHS, otherwise
+// from the fresh assignment. Both arrays are indexed by variable and both use INVALID_ID for
+// "not here", so a port that has already merged the fresh vertices into its binding passes
+// that same array twice.
+//
+// Two array lookups rather than deriving the fresh index from the mask by popcount: the
+// derived form needs no per-rewrite array, but it cost 72 instructions an event more than the
+// lookup on the host, which is the shape this had before it was shared and is the one to keep.
+//
+// False means the rule names a variable that is neither matched nor new -- a malformed rule,
+// not a failed match.
 HG_HD inline bool resolve_rhs_vertices(
-    const uint8_t* rhs_vars, uint8_t arity, const VertexId* binding, VertexId* out)
+    const uint8_t* rhs_vars, uint8_t arity,
+    const VertexId* binding, const VertexId* fresh, VertexId* out)
 {
     for (uint8_t i = 0; i < arity; ++i) {
-        const VertexId v = binding[rhs_vars[i]];
+        const uint8_t var = rhs_vars[i];
+        VertexId v = binding[var];
+        if (v == INVALID_ID) v = fresh[var];
         if (v == INVALID_ID) return false;
         out[i] = v;
     }

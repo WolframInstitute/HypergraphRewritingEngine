@@ -348,16 +348,14 @@ __global__ void k_rewrite(DeviceState              ds,
             ds.errors.record(ErrorKind::kVertexPoolFull);
             return;
         }
-        // Which variables are new, and the order they take the fresh ids in, is the
-        // rewrite's rule and lives in hgcommon; the high-water bump above is this device's.
-        VertexId fresh_ids[kMaxVars];
-        for (uint8_t i = 0; i < num_new_vars; ++i) fresh_ids[i] = vid_base + i;
-        VertexId local_binding[kMaxVars];
+        // The fresh ids are consecutive from the high-water bump; which variable takes which
+        // is the rewrite's rule and lives in hgcommon.
+        VertexId merged[kMaxVars];
         #pragma unroll
-        for (uint32_t v = 0; v < kMaxVars; ++v) local_binding[v] = binding[v];
-        hgcommon::assign_fresh_variables(rule.new_var_mask, fresh_ids, local_binding);
+        for (uint32_t v = 0; v < kMaxVars; ++v) merged[v] = binding[v];
+        hgcommon::assign_fresh_consecutive(rule.new_var_mask, vid_base, merged);
         #pragma unroll
-        for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = local_binding[v];
+        for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = merged[v];
     }
 
     // -------------------------------------------------------------------
@@ -377,8 +375,17 @@ __global__ void k_rewrite(DeviceState              ds,
         uint32_t vert_off = vert_cursor;
         vert_cursor += re.arity;
 
+        VertexId local_binding[kMaxVars];
+        #pragma unroll
+        for (uint32_t v = 0; v < kMaxVars; ++v) local_binding[v] = binding[v];
         VertexId local_verts[kMaxArity];
-        for (uint8_t i = 0; i < re.arity; ++i) local_verts[i] = binding[re.vars[i]];
+        // The device merges its fresh vertices into the binding, so the same array serves
+        // as both sources.
+        if (!hgcommon::resolve_rhs_vertices(re.vars, re.arity, local_binding, local_binding,
+                                            local_verts)) {
+            ds.errors.record(ErrorKind::kVertexPoolFull);
+            return;
+        }
         for (uint8_t i = 0; i < re.arity; ++i) {
             ds.vertex_pool.at(vert_off + i) = local_verts[i];
         }

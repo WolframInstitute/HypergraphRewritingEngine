@@ -50,14 +50,15 @@ RewriteResult Rewriter::apply(
     // device's business; WHICH variables get them and IN WHAT ORDER is the rewrite's, so
     // that part is hgcommon's and the device runs the same one.
     const uint32_t new_var_mask = rule.new_var_mask();
-    VertexId fresh_ids[MAX_VARS];
-    uint8_t num_fresh = 0;
-    for (uint32_t m = new_var_mask; m; m &= m - 1) fresh_ids[num_fresh++] = hg_->alloc_vertex();
+    const uint8_t num_fresh = hgcommon::num_fresh_variables(new_var_mask);
+    // One block, so the fresh ids are consecutive and this takes ONE atomic rather than one
+    // per new variable -- and it gives the host the same shape the device's high-water bump
+    // already had, so both scatter them through the same shared rule.
+    const VertexId fresh_base = num_fresh ? hg_->alloc_vertices(num_fresh) : 0;
 
-    // Extend a COPY of the match's binding: the match is shared with the forwarding
-    // machinery, so it must not be mutated.
-    VariableBinding rhs_binding = binding;
-    hgcommon::assign_fresh_variables(new_var_mask, fresh_ids, rhs_binding.bindings);
+    VertexId fresh_by_var[MAX_VARS];
+    std::memset(fresh_by_var, 0xFF, sizeof(fresh_by_var));
+    hgcommon::assign_fresh_consecutive(new_var_mask, fresh_base, fresh_by_var);
 
     // Create new edges from RHS pattern
     result.num_produced = 0;
@@ -68,7 +69,7 @@ RewriteResult Rewriter::apply(
         // that is neither matched nor new, which is a malformed rule, not a failed match.
         VertexId vertices[MAX_ARITY];
         if (!hgcommon::resolve_rhs_vertices(rhs_edge.vars, rhs_edge.arity,
-                                            rhs_binding.bindings, vertices)) {
+                                            binding.bindings, fresh_by_var, vertices)) {
             return result;
         }
 
