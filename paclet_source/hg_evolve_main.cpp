@@ -41,9 +41,18 @@ using socket_t = int;
 
 namespace {
 
+// Ceiling on a single job frame. The length prefix is 8 bytes read straight off the wire, so
+// without a bound a corrupt or truncated header sizes an allocation from garbage -- all-0xFF
+// reads as ~1.8e19 -- and the resize throws from outside the per-job try, terminating a
+// worker the client is still talking to. 1 GiB is far above any real job and far below a
+// length that cannot be allocated.
+constexpr uint64_t kMaxJobBytes = 1ull << 30;
+
 // Read exactly n bytes from stdin into out. Returns false on EOF before any
-// byte of a new frame (clean end) or on a short read mid-frame (caller decides).
+// byte of a new frame (clean end), on a short read mid-frame (caller decides),
+// or if n exceeds the frame cap.
 bool read_exact(size_t n, std::vector<uint8_t>& out) {
+    if (static_cast<uint64_t>(n) > kMaxJobBytes) return false;
     out.resize(n);
     size_t got = 0;
     while (got < n) {
@@ -180,6 +189,18 @@ int run_serve_socket(const HostBridge& host, const char* portfile) {
         if (!sock_recv_exact(conn, lenbuf, 8)) break;  // client closed
         uint64_t len = 0;
         for (int i = 0; i < 8; ++i) len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
+        // The length is 8 bytes straight off the socket, and this resize sits OUTSIDE the
+        // try below -- so a corrupt or truncated header (all-0xFF reads as ~1.8e19) throws
+        // out of main and terminates the worker the client is still talking to. Reject it as
+        // a job error, which the frame protocol already expresses.
+        if (len > kMaxJobBytes) {
+            std::fprintf(stderr, "HGEvolve: job frame of %llu bytes exceeds the %llu-byte cap\n",
+                         static_cast<unsigned long long>(len),
+                         static_cast<unsigned long long>(kMaxJobBytes));
+            uint8_t zero[8] = {0};                  // a zero-length reply frame = job errored
+            if (!sock_send_all(conn, zero, 8)) break;
+            continue;                               // the stream is unusable past this point,
+        }                                           // but the client decides whether to retry
         job.resize(static_cast<size_t>(len));
         if (len && !sock_recv_exact(conn, job.data(), static_cast<size_t>(len))) break;
         std::vector<uint8_t> out;

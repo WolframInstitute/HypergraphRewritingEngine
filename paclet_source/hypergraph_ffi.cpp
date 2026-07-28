@@ -266,6 +266,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
             else if (key == "Steps") {
                 steps = value_parser.read<int>();
+                // Every budget check in the engine is `step > max_steps_`, and this is cast to
+                // size_t downstream -- so a negative value becomes SIZE_MAX and no check ever
+                // fires. The run then ends only by exhausting the SegmentedArray ceiling,
+                // after multi-GB of arena, as a hard failure.
+                if (steps < 0) {
+                    throw std::runtime_error("Steps must be non-negative, got " +
+                                             std::to_string(steps));
+                }
             }
             else if (key == "Options") {
                 value_parser.read_association([&](const std::string& option_key, wxf::Parser& option_parser) {
@@ -708,47 +716,73 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             uint8_t max_lhs_var = 0;
             uint8_t max_rhs_var = 0;
 
-            // Parse LHS edges
-            rule.num_lhs_edges = 0;
-            for (const auto& edge : rule_data[0]) {
-                if (rule.num_lhs_edges >= hypergraph::MAX_PATTERN_EDGES) break;
-                hypergraph::PatternEdge& pe = rule.lhs[rule.num_lhs_edges];
-                pe.arity = 0;
-                for (int64_t v : edge) {
-                    if (v >= 0 && pe.arity < hypergraph::MAX_ARITY) {
-                        pe.vars[pe.arity++] = static_cast<uint8_t>(v);
-                        if (v > max_lhs_var) max_lhs_var = static_cast<uint8_t>(v);
+            // Parse one side of the rule. Every limit is REPORTED, not absorbed: silently
+            // truncating an over-long pattern, dropping an out-of-range variable or skipping a
+            // negative id all hand back a DIFFERENT rule than the caller wrote, and the run
+            // then succeeds, so nothing downstream can tell that it happened.
+            //
+            // The variable bound is the one that matters most. A pattern variable is an index
+            // into VariableBinding's MAX_VARS-entry array and a bit position in its 32-bit
+            // bound_mask, so a variable at or above MAX_VARS writes out of bounds and shifts
+            // by more than the width -- memory corruption, not a wrong answer. Above 255 it
+            // also wraps through uint8_t, silently merging two distinct variables.
+            auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
+                                  uint8_t& num_edges, uint8_t& max_var, const char* side) {
+                num_edges = 0;
+                size_t edge_index = 0;
+                for (const auto& edge : edges) {
+                    if (num_edges >= hypergraph::MAX_PATTERN_EDGES) {
+                        throw std::runtime_error(
+                            std::string("rule ") + std::to_string(rule.index) + " " + side +
+                            " has more than " + std::to_string(hypergraph::MAX_PATTERN_EDGES) +
+                            " edges");
                     }
+                    hypergraph::PatternEdge& pe = out[num_edges];
+                    pe.arity = 0;
+                    for (int64_t v : edge) {
+                        if (v < 0) {
+                            throw std::runtime_error(
+                                std::string("rule ") + std::to_string(rule.index) + " " + side +
+                                " edge " + std::to_string(edge_index) +
+                                " has a negative pattern variable");
+                        }
+                        if (v >= static_cast<int64_t>(hypergraph::MAX_VARS)) {
+                            throw std::runtime_error(
+                                std::string("rule ") + std::to_string(rule.index) + " " + side +
+                                " uses pattern variable " + std::to_string(v) +
+                                ", but the maximum is " +
+                                std::to_string(hypergraph::MAX_VARS - 1));
+                        }
+                        if (pe.arity >= hypergraph::MAX_ARITY) {
+                            throw std::runtime_error(
+                                std::string("rule ") + std::to_string(rule.index) + " " + side +
+                                " edge " + std::to_string(edge_index) + " has arity above " +
+                                std::to_string(hypergraph::MAX_ARITY));
+                        }
+                        pe.vars[pe.arity++] = static_cast<uint8_t>(v);
+                        if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
+                    }
+                    if (pe.arity > 0) num_edges++;
+                    ++edge_index;
                 }
-                if (pe.arity > 0) {
-                    rule.num_lhs_edges++;
-                }
-            }
+            };
 
-            // Parse RHS edges
-            rule.num_rhs_edges = 0;
-            for (const auto& edge : rule_data[1]) {
-                if (rule.num_rhs_edges >= hypergraph::MAX_PATTERN_EDGES) break;
-                hypergraph::PatternEdge& pe = rule.rhs[rule.num_rhs_edges];
-                pe.arity = 0;
-                for (int64_t v : edge) {
-                    if (v >= 0 && pe.arity < hypergraph::MAX_ARITY) {
-                        pe.vars[pe.arity++] = static_cast<uint8_t>(v);
-                        if (v > max_rhs_var) max_rhs_var = static_cast<uint8_t>(v);
-                    }
-                }
-                if (pe.arity > 0) {
-                    rule.num_rhs_edges++;
-                }
-            }
+            parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var, "LHS");
+            parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var, "RHS");
 
             rule.num_lhs_vars = max_lhs_var + 1;
             rule.num_rhs_vars = max_rhs_var + 1;
             rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
 
-            if (rule.num_lhs_edges > 0 && rule.num_rhs_edges > 0) {
-                engine.add_rule(rule);
+            // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the
+            // engine gives the resulting empty state a canonical hash of its own precisely so
+            // it works. Only an empty LHS is rejected, since it matches everywhere and would
+            // not terminate.
+            if (rule.num_lhs_edges == 0) {
+                throw std::runtime_error(std::string("rule ") + std::to_string(rule.index) +
+                                         " has an empty left-hand side");
             }
+            engine.add_rule(rule);
         }
 
         // Convert all initial states to vectors of edges
