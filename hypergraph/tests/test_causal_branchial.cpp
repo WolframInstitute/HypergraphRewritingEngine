@@ -8,6 +8,8 @@
 #include "hypergraph/parallel_evolution.hpp"
 #include <vector>
 #include <set>
+#include <map>
+#include "hypergraph/ir_canonicalization.hpp"
 #include <algorithm>
 
 using namespace hypergraph;
@@ -966,4 +968,67 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_DisabledByDefault) {
     // Without TR, all 3 edges stored
     EXPECT_EQ(cg.num_causal_edges(), 3u);
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 0u);
+}
+
+// The WL hash must be isomorphism-INVARIANT: two presentations of one graph must hash the
+// same. That is the entire basis for using it as a canonical hash, and it carries
+// `canonical_hash` in every mode except Full -- None being the default -- as well as
+// resolving the canonical representative for event canonicalization in ALL modes.
+//
+// It was not. wl_core's refinement writes one neighbour entry per (occurrence of v, other
+// position in that occurrence's edge), so nn(v) = sum over v's occurrences of (arity - 1),
+// which exceeds total_occ exactly when a vertex repeats inside an edge of arity >= 3. The
+// caller sized the buffer at total_occ, and wl_core drops entries past the cap SILENTLY --
+// and which ones get dropped depends on occurrence order, a presentation detail. So two
+// labellings of one state hashed differently.
+//
+// The IR canonical hash is the oracle for "same graph"; the cases below are the smallest
+// that trip the truncation, and the no-repeat cases are the control that never could.
+TEST(Unified_CanonicalHash, WLHashIsIsomorphismInvariant) {
+    auto wl_of = [](const std::vector<std::vector<VertexId>>& edges) {
+        Hypergraph hg;
+        SparseBitset set;
+        for (const auto& e : edges)
+            set.set(hg.create_edge(e.data(), static_cast<uint8_t>(e.size())), hg.arena());
+        return hg.compute_wl_hash(set);
+    };
+
+    struct Case { const char* name; std::vector<std::vector<VertexId>> edges; uint32_t nv; };
+    const std::vector<Case> cases = {
+        {"binary path (control, no repeat)", {{0,1},{1,2}},        3},
+        {"arity-3 (control, no repeat)",     {{0,1,2},{2,1,0}},    3},
+        {"arity-3 self-loop",                {{0,0,0}},            1},
+        {"arity-3, one repeated vertex",     {{0,0,1}},            2},
+        {"arity-4 repeat with a partner",    {{1,0,1,1},{1,1,0}},  2},
+        {"arity-4 repeat + binary edge",     {{0,0,0,1},{1,0}},    2},
+    };
+
+    for (const auto& c : cases) {
+        // Group every presentation by its exact IR hash; within a group WL must agree.
+        std::map<uint64_t, std::set<uint64_t>> ir_to_wl;
+        std::vector<VertexId> relabel(c.nv);
+        for (uint32_t i = 0; i < c.nv; ++i) relabel[i] = i;
+        do {
+            std::vector<std::vector<VertexId>> r;
+            for (const auto& e : c.edges) {
+                std::vector<VertexId> ne;
+                for (VertexId v : e) ne.push_back(relabel[v]);
+                r.push_back(std::move(ne));
+            }
+            std::vector<size_t> order(r.size());
+            for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+            do {
+                std::vector<std::vector<VertexId>> p;
+                for (size_t i : order) p.push_back(r[i]);
+                IRCanonicalizer ir;
+                ir_to_wl[ir.compute_canonical_hash(p)].insert(wl_of(p));
+            } while (std::next_permutation(order.begin(), order.end()));
+        } while (std::next_permutation(relabel.begin(), relabel.end()));
+
+        for (const auto& [ir_hash, wl_values] : ir_to_wl) {
+            EXPECT_EQ(wl_values.size(), 1u)
+                << c.name << ": one isomorphism class (IR hash " << ir_hash << ") received "
+                << wl_values.size() << " distinct WL hashes";
+        }
+    }
 }

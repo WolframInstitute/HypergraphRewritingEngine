@@ -150,7 +150,21 @@ public:
         }
 
         // Core scratch (transient, per-worker arena).
-        size_t nbr_cap = total_occ ? total_occ : 1;
+        // The refinement round writes one neighbour entry per (occurrence of v, OTHER position
+        // in that occurrence's edge), i.e. nn(v) = sum over v's occurrences of (arity - 1) --
+        // NOT total_occ. The two differ exactly when a vertex repeats inside an edge of arity
+        // >= 3: a lone {0,0,0} gives total_occ = 3 but nn = 3 * 2 = 6.
+        //
+        // Undersizing this does not fault; wl_core silently drops the entries past the cap
+        // (`if (nn < nbr_cap)`), and WHICH entries are dropped depends on occurrence order --
+        // which is a presentation detail, not a property of the graph. So two labellings of one
+        // state hash differently, and the WL hash stops being isomorphism-invariant, which is
+        // the entire reason it is used as a canonical hash. Measured before this was sized
+        // correctly: `{{1,0,1,1},{1,1,0}}` splits into two hashes across its presentations.
+        //
+        // Bound it by the contract in wl_core.hpp instead: the worst case is every occurrence
+        // sitting in a maximum-arity edge.
+        size_t nbr_cap = total_occ ? total_occ * (MAX_ARITY - 1) : 1;
         ArenaVector<uint64_t> cur(worker_scratch(), num_vertices);        cur.resize(num_vertices);
         ArenaVector<uint64_t> nxt(worker_scratch(), num_vertices);        nxt.resize(num_vertices);
         ArenaVector<uint64_t> dscr(worker_scratch(), num_vertices);       dscr.resize(num_vertices);
