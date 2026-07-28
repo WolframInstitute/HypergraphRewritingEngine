@@ -3,6 +3,7 @@
 #include <job_system/job.hpp>
 #include <job_system/work_stealing_deque.hpp>
 #include <lockfree_deque/deque.hpp>
+#include <hgcommon/park.hpp>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -74,6 +75,7 @@ private:
     // the count wakes them once per job, and each wake re-runs is_quiescent(), which scans
     // every worker's deque. Sixteen thousand jobs then cost sixteen thousand scans.
     std::atomic<uint32_t> quiescence_seq_{0};
+    static_assert(sizeof(uint32_t) == 4, "the park backends compare a 32-bit word");
 
     // Idle workers block on this counter rather than on a condition variable. It is
     // incremented by every enqueue and by anything that should end a park (an error, a
@@ -107,7 +109,7 @@ private:
         for (auto& w : workers_) w->stop.store(true, std::memory_order_release);
         wake_all_workers();
         quiescence_seq_.fetch_add(1, std::memory_order_release);
-        quiescence_seq_.notify_all();      // release anyone inside wait_for_completion
+        hgcommon::unpark_all(quiescence_seq_);   // release anyone inside wait_for_completion
     }
 
     // Publish that the world changed. Bumping before notifying is what makes the park
@@ -122,14 +124,14 @@ private:
     void wake_one_worker() {
         if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
         work_seq_.fetch_add(1, std::memory_order_release);
-        work_seq_.notify_one();
+        hgcommon::unpark_one(work_seq_);
     }
 
     // Unconditional: used by error latching and shutdown, where a parked worker must be
     // released whether or not the idle count says one is there.
     void wake_all_workers() {
         work_seq_.fetch_add(1, std::memory_order_release);
-        work_seq_.notify_all();
+        hgcommon::unpark_all(work_seq_);
     }
 
     // Exhaustive version, used only immediately before parking. find_work picks victims at
@@ -206,7 +208,7 @@ private:
             // re-checks instead of sleeping through the event it was waiting for.
             quiescence_seq_.fetch_add(1, std::memory_order_release);
             if (completion_waiters_.load(std::memory_order_acquire) > 0) {
-                quiescence_seq_.notify_all();
+                hgcommon::unpark_all(quiescence_seq_);
             }
         }
     }
@@ -240,7 +242,7 @@ private:
             if (error_type_.load(std::memory_order_acquire) == ErrorType::None &&
                 !data->stop.load(std::memory_order_acquire)) {
                 park_waits_.fetch_add(1, std::memory_order_relaxed);
-                work_seq_.wait(seq, std::memory_order_acquire);
+                hgcommon::park_if_equal(work_seq_, seq);
             }
             idle_workers_.fetch_sub(1, std::memory_order_relaxed);
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
@@ -374,7 +376,7 @@ public:
 
             const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
             if (is_quiescent()) return false;
-            quiescence_seq_.wait(q, std::memory_order_acquire);
+            hgcommon::park_if_equal(quiescence_seq_, q);
         }
     }
 
@@ -396,7 +398,7 @@ public:
 
             const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
             if (is_quiescent()) return;
-            quiescence_seq_.wait(q, std::memory_order_acquire);
+            hgcommon::park_if_equal(quiescence_seq_, q);
         }
     }
 

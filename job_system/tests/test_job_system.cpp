@@ -4,6 +4,8 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <thread>
+#include <hgcommon/park.hpp>
 #include <mutex>
 #include <iostream>
 #include <future>
@@ -477,4 +479,39 @@ TEST(JobSystemError, ExceptionDoesNotDeadlock) {
         waiter.detach();
         (void)js.release();
     }
+}
+// The engine's charter is that nothing waits on a lock. Blocking is the one place that is
+// easy to violate by accident, because std::atomic::wait satisfies the standard while taking
+// a mutex: libstdc++'s waiter pool holds a std::mutex and a __condvar whenever
+// _GLIBCXX_HAVE_PLATFORM_WAIT is absent, and libc++ and the MSVC STL have the same shape.
+// hgcommon names the primitive instead of inheriting it, and this fails the build's test run
+// on a platform that has quietly fallen back, rather than leaving it to be discovered later.
+TEST_F(JobSystemTest, ParkingDoesNotUseALock) {
+    EXPECT_TRUE(hgcommon::park_is_lock_free())
+        << "blocking fell back to std::atomic::wait, whose implementation may take a lock; "
+           "add an address-wait backend for this platform in hgcommon/park.hpp";
+}
+
+// park_if_equal must not block when the value has already moved -- that is what makes the
+// submit-then-notify ordering lost-wakeup-free rather than merely usually-fine.
+TEST_F(JobSystemTest, ParkReturnsImmediatelyWhenValueAlreadyChanged) {
+    std::atomic<uint32_t> a{7};
+    auto start = std::chrono::steady_clock::now();
+    hgcommon::park_if_equal(a, 6);       // 7 != 6, so this must not wait for a wake
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 100)
+        << "park blocked on a value that had already changed; a submit racing a park would "
+           "then be lost";
+}
+
+// And it must be released by an unpark.
+TEST_F(JobSystemTest, ParkIsReleasedByUnpark) {
+    std::atomic<uint32_t> a{0};
+    std::atomic<bool> woke{false};
+    std::thread t([&] { hgcommon::park_if_equal(a, 0); woke.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    a.fetch_add(1);
+    hgcommon::unpark_all(a);
+    t.join();
+    EXPECT_TRUE(woke.load());
 }
