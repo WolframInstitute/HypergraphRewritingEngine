@@ -7,7 +7,12 @@
 // SBO, and the per-worker arena growth must all survive:
 //
 //   StateCanonicalizationMode {None, Automatic, Full}
-//     x event-canonicalization {off, EVENT_SIG_FULL}
+//     x event-canonicalization {EVENT_SIG_NONE, EVENT_SIG_FULL, EVENT_SIG_AUTOMATIC}
+//
+// The two axes are the ones SPEC.md sec 4 defines, and they are INDEPENDENT, so the gate is
+// the full 3x3 rather than a diagonal. The third event value is the one upstream
+// MultiwaySystem calls CanonicalEventFunction -> Automatic: identity by consumed/produced
+// edges at canonical rank, kept ordered by match position.
 //     x threads {1, 4, 8, 16}
 //     + quotient exploration {off, on}
 //     + uniform-random sampling (fixed seed)
@@ -114,6 +119,14 @@ size_t brute_iso_multi(const std::vector<RewriteRule>& rules,
             << (ctx) << " branchial_edges";                                               \
     } while (0)
 
+// The three points of the event-identity lattice (SPEC sec 4.2), coarse to fine.
+const char* event_name(EventSignatureKeys k) {
+    if (k == EVENT_SIG_NONE) return "DistinctApplications";
+    if (k == EVENT_SIG_FULL) return "ByEndpointStates";
+    if (k == EVENT_SIG_AUTOMATIC) return "ByConsumedProducedEdges";
+    return "?";
+}
+
 const char* mode_name(StateCanonicalizationMode m) {
     switch (m) {
         case StateCanonicalizationMode::None: return "None";
@@ -142,7 +155,9 @@ TEST(FeatureMatrix, CanonModeEventCanonThreadDeterminism) {
         StateCanonicalizationMode::Automatic,
         StateCanonicalizationMode::Full,
     };
-    const EventSignatureKeys event_variants[] = {EVENT_SIG_NONE, EVENT_SIG_FULL};
+    const EventSignatureKeys event_variants[] = {
+        EVENT_SIG_NONE, EVENT_SIG_FULL, EVENT_SIG_AUTOMATIC,
+    };
 
     for (const auto& c : oracle::corpus()) {
         for (StateCanonicalizationMode m : modes) {
@@ -153,13 +168,76 @@ TEST(FeatureMatrix, CanonModeEventCanonThreadDeterminism) {
                 for (unsigned t : {4u, 8u, 16u}) {
                     oracle::Counts got = run_counts(c.rules, c.init, steps, t, cfg);
                     std::string ctx = std::string(c.name) + " mode=" + mode_name(m) +
-                                      " event=" + (ek ? "Full" : "off") +
+                                      " event=" + event_name(ek) +
                                       " threads=" + std::to_string(t);
                     EXPECT_COUNTS_EQ(got, ref, ctx);
                 }
             }
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Both identity axes are REFINEMENT LATTICES, and the gate has to see the ordering. Every
+// other check here is an equality between runs of the SAME configuration, so a mode that had
+// silently become a duplicate of another -- or had been wired to the wrong hash -- would pass
+// all of them. This is the check that distinguishes the cells from each other.
+//
+// State identity, coarsest first: Full merges isomorphic states, Automatic merges only
+// states with identical edge content, None merges nothing. Each is a refinement of the one
+// before, so at a fixed depth
+//     canonical_states(Full) <= canonical_states(Automatic) <= canonical_states(None).
+//
+// Event identity (SPEC 4.2), coarsest first: ByEndpointStates keys on (canonical in,
+// canonical out) alone; ByConsumedProducedEdges refines that with which edges moved;
+// DistinctApplications keeps every application apart. So
+//     events(ByEndpointStates) <= events(ByConsumedProducedEdges) <= events(DistinctApplications).
+//
+// The <= alone would hold if all three collapsed to one mode, so each axis also has to be
+// SEPARATED somewhere in the corpus -- at least one case where the inequality is strict.
+// -----------------------------------------------------------------------------
+TEST(FeatureMatrix, IdentityLatticesAreOrdered) {
+    bool state_axis_separated = false;
+    bool event_axis_separated = false;
+
+    for (const auto& c : oracle::corpus()) {
+        // One depth for all three state modes: steps_for deliberately runs None shallower,
+        // and counts from different depths are not comparable.
+        const int steps = c.oracle_steps;
+
+        oracle::Counts s_full = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::Full,      EVENT_SIG_NONE, false});
+        oracle::Counts s_auto = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::Automatic, EVENT_SIG_NONE, false});
+        oracle::Counts s_none = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::None,      EVENT_SIG_NONE, false});
+
+        EXPECT_LE(s_full.canonical_states, s_auto.canonical_states)
+            << c.name << ": Full must merge at least as much as Automatic";
+        EXPECT_LE(s_auto.canonical_states, s_none.canonical_states)
+            << c.name << ": Automatic must merge at least as much as None";
+        if (s_full.canonical_states < s_auto.canonical_states ||
+            s_auto.canonical_states < s_none.canonical_states) state_axis_separated = true;
+
+        oracle::Counts e_end = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::Full, EVENT_SIG_FULL,      false});
+        oracle::Counts e_edg = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::Full, EVENT_SIG_AUTOMATIC, false});
+        oracle::Counts e_app = run_counts(c.rules, c.init, steps, 1,
+            Config{StateCanonicalizationMode::Full, EVENT_SIG_NONE,      false});
+
+        EXPECT_LE(e_end.events, e_edg.events)
+            << c.name << ": ByConsumedProducedEdges must refine ByEndpointStates";
+        EXPECT_LE(e_edg.events, e_app.events)
+            << c.name << ": DistinctApplications must refine ByConsumedProducedEdges";
+        if (e_end.events < e_edg.events || e_edg.events < e_app.events)
+            event_axis_separated = true;
+    }
+
+    EXPECT_TRUE(state_axis_separated)
+        << "no corpus case separates the three state identities -- the axis is untested";
+    EXPECT_TRUE(event_axis_separated)
+        << "no corpus case separates the three event identities -- the axis is untested";
 }
 
 // -----------------------------------------------------------------------------

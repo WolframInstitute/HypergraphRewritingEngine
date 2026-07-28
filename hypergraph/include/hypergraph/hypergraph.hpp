@@ -71,17 +71,25 @@ class Hypergraph {
     // Used to find existing equivalent states before creating new ones
     ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_state_map_;
 
-    // Event canonicalization state map: always keyed by isomorphism-invariant hash
-    // Unlike canonical_state_map_ (keyed differently based on state_canonicalization_mode_),
-    // this map is ALWAYS keyed by canonical_hash (WL/IR) regardless of state mode.
-    // Used by event signature computation to find canonical representatives for
-    // edge correspondence when state_canonicalization_mode_ is None or Automatic.
+    // Event canonicalization state map, keyed by canonical_hash rather than by the state
+    // mode's dedup key, so event identity does not follow the state-merging choice.
+    // Used by event signature computation to find canonical representatives for edge
+    // correspondence when state_canonicalization_mode_ is None or Automatic.
+    //
+    // CAVEAT, measured: canonical_hash is the EXACT IR hash in Full mode and the APPROXIMATE
+    // WL hash otherwise. Both are isomorphism-invariant, but WL is coarser, so more states
+    // share a representative and the event identity derived from it is coarser too. The two
+    // axes are therefore not independent the way SPEC.md sec 4 states: on the binary-growth
+    // corpus case, ByConsumedProducedEdges reports 8 events under Full and 6 under Automatic.
     ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> event_canonical_state_map_;
 
-    // State canonicalization mode: controls how states are deduplicated
-    // None: tree mode - no deduplication, each state is unique
-    // Automatic: content-ordered hash (not yet implemented, behaves like Full)
-    // Full: isomorphism-invariant hash via WL approximate or IR exact
+    // State canonicalization mode: controls how states are deduplicated, via the map_key
+    // create_or_get_canonical_state builds -- which is a DIFFERENT quantity from the
+    // canonical_hash it reports.
+    //   None:      dedup key is the raw state id, so nothing merges
+    //   Automatic: dedup key is compute_content_ordered_hash -- merges states with identical
+    //              edge content, which is NOT isomorphism-invariant
+    //   Full:      dedup key is the exact IR hash -- merges isomorphic states
     // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
