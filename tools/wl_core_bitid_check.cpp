@@ -33,6 +33,15 @@ int main(){
         {"grid-ish", {{0,1},{1,2},{3,4},{4,5},{0,3},{1,4},{2,5}}},
         {"selfloop", {{0,0},{0,1},{1,1}}},
         {"multi",    {{0,1},{0,1},{1,2}}},
+        // A vertex repeated inside an edge of arity >= 3 is the ONLY shape that makes the
+        // refinement's neighbour count exceed total_occ, and it is what separates the two arms
+        // here: cpu_hash goes through the engine, core_hash passes a non-truncating cap. The
+        // corpus above contains no such edge, which is exactly why this check stayed green
+        // while the engine's WL hash was not isomorphism-invariant.
+        {"dup-a3",   {{0,0,1}}},
+        {"dup-a4",   {{1,0,1,1},{1,1,0}}},
+        {"a3-loop",  {{0,0,0}}},
+        {"dup-a4-b", {{0,0,0,1},{1,0}}},
     };
     int pass=0,fail=0;
     for(auto& [name,edges]: tests){
