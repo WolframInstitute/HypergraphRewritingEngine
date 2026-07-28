@@ -86,11 +86,6 @@ public:
         return idx;
     }
 
-    // CPU relaxation hint for bounded spin-wait loops.
-    static void cpu_relax() {
-        hgcommon::cpu_relax();
-    }
-
     // Access element by index - O(1).
     //
     // DOES NOT WAIT. Reaching an index whose own emplace has not published is a violation of
