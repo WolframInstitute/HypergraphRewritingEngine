@@ -8,6 +8,7 @@
 #include "types.hpp"
 #include "signature.hpp"
 #include "pattern.hpp"
+#include "hgcommon/match_core.hpp"
 #include "index.hpp"
 #include "arena.hpp"
 #include "bitset.hpp"
@@ -46,21 +47,11 @@ inline bool validate_candidate(
     const PatternEdge& pattern_edge,
     VariableBinding& binding
 ) {
-    if (edge_arity != pattern_edge.arity) return false;
-
-    for (uint8_t i = 0; i < edge_arity; ++i) {
-        VertexId actual = edge_vertices[i];
-        uint8_t var = pattern_edge.var_at(i);
-
-        if (binding.is_bound(var)) {
-            if (actual != binding.get(var)) {
-                return false;
-            }
-        } else {
-            binding.bind(var, actual);
-        }
-    }
-    return true;
+    // The rule itself lives in hgcommon so the device runs the same one; VariableBinding
+    // already stores exactly the array-plus-mask the shared form takes.
+    return hgcommon::bind_pattern_edge(edge_vertices, edge_arity,
+                                       pattern_edge.vars, pattern_edge.arity,
+                                       binding.bindings, binding.bound_mask);
 }
 
 // =============================================================================

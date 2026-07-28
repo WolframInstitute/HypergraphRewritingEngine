@@ -4,6 +4,8 @@
 
 #include <cuda_runtime.h>
 
+#include "hgcommon/match_core.hpp"  // bind_pattern_edge -- shared with the host matcher
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -151,7 +153,6 @@ __global__ void k_match_one_state(DeviceState ds,
 
         auto try_candidate = [&] (EdgeId cand) {
             const Edge& e = ds.edge_pool.at(cand);
-            if (e.arity != pe.arity)              return;
             if (!state_contains(ds, state_id, cand)) return;
             if (pm.is_consumed(cand))             return;
 
@@ -160,11 +161,12 @@ __global__ void k_match_one_state(DeviceState ds,
             #pragma unroll
             for (uint32_t v = 0; v < kMaxVars; ++v) saved_bindings[v] = pm.var_binding[v];
 
-            bool ok = true;
-            for (uint8_t i = 0; i < pe.arity; ++i) {
-                VertexId vert = ds.vertex_pool.at(e.vertex_offset + i);
-                if (!pm.check_or_bind_var(pe.vars[i], vert)) { ok = false; break; }
-            }
+            // Arity check and variable binding are one rule, and it lives in hgcommon so the
+            // host runs the same one. The pool is a flat array, so an edge's vertices are a
+            // contiguous span from its offset.
+            const bool ok = hgcommon::bind_pattern_edge(
+                &ds.vertex_pool.at(e.vertex_offset), e.arity,
+                pe.vars, pe.arity, pm.var_binding, pm.bound_mask);
 
             if (ok) {
                 pm.bind_pattern_edge(depth, cand);
@@ -289,17 +291,16 @@ __global__ void k_match_batch(DeviceState      ds,
     // loop at depth 0 to iterate candidates striped across the block.
     auto run_dfs_from_root = [&] (EdgeId root_cand) {
         const Edge& e0 = ds.edge_pool.at(root_cand);
-        if (e0.arity != pe0.arity)                return;
         if (!state_contains(ds, state_id, root_cand)) return;
 
         PartialMatch pm;
         pm.reset(rule.num_lhs_edges, rule.num_lhs_vars);
 
-        // Try to bind pattern_edge 0 to root_cand.
-        for (uint8_t i = 0; i < pe0.arity; ++i) {
-            VertexId vert = ds.vertex_pool.at(e0.vertex_offset + i);
-            if (!pm.check_or_bind_var(pe0.vars[i], vert)) return;
-        }
+        // Bind pattern edge 0 to root_cand. pm is freshly reset, so a partial binding left by
+        // a failed attempt is discarded with it -- no save/restore needed here.
+        if (!hgcommon::bind_pattern_edge(&ds.vertex_pool.at(e0.vertex_offset), e0.arity,
+                                         pe0.vars, pe0.arity, pm.var_binding, pm.bound_mask))
+            return;
         pm.bind_pattern_edge(0, root_cand);
         pm.set_consumed(root_cand);
 
@@ -341,7 +342,6 @@ __global__ void k_match_batch(DeviceState      ds,
 
             auto try_candidate = [&] (EdgeId cand) {
                 const Edge& ec = ds.edge_pool.at(cand);
-                if (ec.arity != pe.arity)               return;
                 if (!state_contains(ds, state_id, cand)) return;
                 if (pm.is_consumed(cand))               return;
 
@@ -350,11 +350,9 @@ __global__ void k_match_batch(DeviceState      ds,
                 #pragma unroll
                 for (uint32_t v = 0; v < kMaxVars; ++v) saved_bindings[v] = pm.var_binding[v];
 
-                bool ok = true;
-                for (uint8_t i = 0; i < pe.arity; ++i) {
-                    VertexId vert = ds.vertex_pool.at(ec.vertex_offset + i);
-                    if (!pm.check_or_bind_var(pe.vars[i], vert)) { ok = false; break; }
-                }
+                const bool ok = hgcommon::bind_pattern_edge(
+                    &ds.vertex_pool.at(ec.vertex_offset), ec.arity,
+                    pe.vars, pe.arity, pm.var_binding, pm.bound_mask);
 
                 if (ok) {
                     pm.bind_pattern_edge(depth, cand);
