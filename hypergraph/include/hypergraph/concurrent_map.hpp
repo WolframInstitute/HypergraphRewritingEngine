@@ -189,23 +189,19 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
-        // Check prev tables in the chain BEFORE inserting.
-        // During resize, entries from old table may not yet be in new table.
-        // If we find the key in a prev table, return it to avoid duplicates.
+        // Check superseded tables before inserting. An entry can live only in one of them --
+        // an insert that resolved against a table after its slot had been rehashed completes
+        // there -- and inserting again would give one key two entries, which for the
+        // get-or-create callers means two container objects and a silently split rendezvous.
         //
-        // This scan does NOT wait on claimed slots, so a key being deposited into a prev
-        // table right now is reported absent and gets a second entry -- for the
-        // get-or-create callers that means two container objects for one key. Switching
-        // to lookup_in_chain_waiting closes that window but is not a free swap: it was
-        // measured to change the reconstruction's branchial count on one configuration
-        // (all-three / selfloop / d=3, 67 vs 66 against full-capture), and it makes a
-        // thread block on a claim in a SUPERSEDED table, which nothing else does. Use
-        // insert_if_absent_waiting where one-object-per-key has to hold.
+        // The scan SETTLES rather than merely looks. A plain lookup reports a key whose value
+        // is not yet published as absent, which is the right answer for a reader and the wrong
+        // one here: this caller is holding a value to offer, so it completes that entry
+        // instead of walking past it and creating a rival. Offering a value is the same
+        // exchange every publisher uses, so this closes the window without anyone waiting.
         if (table->prev) {
-            auto existing = lookup_in_chain(table->prev, key);
-            if (existing.has_value()) {
-                return {*existing, false};
-            }
+            auto settled = find_and_settle_in_chain(table->prev, key, value);
+            if (settled.has_value()) return *settled;
         }
 
         return insert_into_table(table, key, value, true);
@@ -369,6 +365,23 @@ private:
             return {value, true};
         }
         return {current, false};   // another thread's value won; `current` holds it
+    }
+
+    // Find `key` anywhere in the chain and ensure its value is settled, offering `value` if it
+    // is not. Returns the settled value and whether it is the caller's, or nullopt if the key
+    // is absent from every table.
+    std::optional<std::pair<V, bool>> find_and_settle_in_chain(Table* table, K key, V value) {
+        while (table) {
+            const size_t start = hash(key) & table->mask;
+            for (size_t probe = 0; probe < table->capacity; ++probe) {
+                Entry& entry = table->entries[(start + probe) & table->mask];
+                const K current = entry.key.load(std::memory_order_acquire);
+                if (current == EMPTY_KEY) break;          // not in THIS table; try the next
+                if (current == key) return publish_value(entry, value);
+            }
+            table = table->prev;
+        }
+        return std::nullopt;
     }
 
     std::optional<V> lookup_in_chain(Table* table, K key) const {
