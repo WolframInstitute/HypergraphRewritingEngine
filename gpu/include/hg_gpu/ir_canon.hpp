@@ -20,9 +20,17 @@ namespace hg_gpu {
 //
 // A state that exceeds the slot's bounds (kMaxIRVerts / kMaxIREdges / kMaxIROccs in the .cu)
 // or whose individualization search wants more depth than the pool is sized for falls back to
-// the 1-WL hash. That hash is isomorphism-invariant, so deduplication stays correct; it is
-// coarser than the exact hash, so those states are COUNTED -- last_ir_degraded_states()
-// reports how many, which is what makes the degradation visible instead of silent.
+// the 1-WL hash, and that hash then serves as the state's DEDUP KEY.
+//
+// That is a correctness exposure, not a tuning knob. Isomorphism-invariance is one
+// directional: WL never separates two isomorphic states, but it does MERGE non-isomorphic
+// ones. tools/ir_vs_wl demonstrates it constructively on the prism against K3,3 -- six
+// vertices -- and on the rook's 4x4 graph against Shrikhande. Nothing bounds how often an
+// evolution reaches such a state, so no measured collision rate over some other corpus
+// licenses assuming it is rare.
+//
+// last_ir_degraded_states() reports how many states took the fallback. A non-zero count means
+// the state set may contain wrongly merged states.
 
 uint64_t compute_state_ir_hash_host(const EngineState& engine, StateId sid);
 

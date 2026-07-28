@@ -110,8 +110,13 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
 
         if (!flatten_state(ds, sid, slot, ea, eoff, ev, n_edges, n_verts, total_occ,
                            verts_local)) {
-            // Larger than the slot's bounds. The 1-WL hash is isomorphism-invariant, so
-            // dedup stays correct; it is coarser than the exact hash, so it is counted.
+            // Larger than the slot's bounds, so the dedup key for this state is the 1-WL
+            // hash. That is NOT a correct dedup key. Isomorphism-invariance is one
+            // directional: WL never separates isomorphic states, but it does MERGE
+            // non-isomorphic ones -- tools/ir_vs_wl collides on the prism against K3,3, six
+            // vertices, and on the rook's graph against Shrikhande. Nothing bounds how often
+            // an evolution reaches such a state, so the count below is the only honest
+            // signal, and it is a report of a defect rather than of a tuning parameter.
             out[i - lo] = wl_hash_state_device(ds, sid);
             atomicAdd(degraded, 1u);
             continue;
@@ -126,7 +131,8 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
             if (r.status != hgcommon::IR_NEED_DEPTH) break;
         }
         if (r.status == hgcommon::IR_NEED_DEPTH) {
-            // An individualization path deeper than the pool is sized for.
+            // An individualization path deeper than the pool is sized for. Same hazard as
+            // above: the fallback key can merge non-isomorphic states.
             out[i - lo] = wl_hash_state_device(ds, sid);
             atomicAdd(degraded, 1u);
         } else {
