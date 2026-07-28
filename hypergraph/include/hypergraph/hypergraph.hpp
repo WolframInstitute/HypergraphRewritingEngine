@@ -316,15 +316,7 @@ public:
     }
 
     // Ensure vertex ID space is at least `max_id + 1`
-    void reserve_vertices(VertexId max_id) {
-        VertexId current = counters_.next_vertex.load(std::memory_order_relaxed);
-        while (current <= max_id) {
-            if (counters_.next_vertex.compare_exchange_weak(
-                    current, max_id + 1, std::memory_order_relaxed)) {
-                break;
-            }
-        }
-    }
+    void reserve_vertices(VertexId max_id);
 
     // =========================================================================
     // Edge Management
@@ -559,22 +551,7 @@ public:
     // Always uses the isomorphism-invariant hash (WL/IR) to find the canonical
     // representative, regardless of state_canonicalization_mode_.
     // This is needed for computing edge correspondence when state mode is None.
-    StateId get_canonical_state_for_event(StateId raw_state) const {
-        if (raw_state == INVALID_ID) return INVALID_ID;
-
-        // Get the isomorphism-invariant hash for this state. Written concurrently by
-        // create_or_get_canonical_state and get_or_compute_canonical_hash, so acquire it.
-        const State& state = get_state(raw_state);
-        uint64_t hash = hg::atomic_ref<uint64_t>(const_cast<uint64_t&>(state.canonical_hash))
-            .load(std::memory_order_acquire);
-
-        // If hash is 0, the state's hash wasn't computed - fall back to raw state
-        if (hash == 0) return raw_state;
-
-        // Lookup in event_canonical_state_map_ which is always keyed by canonical_hash
-        auto result = event_canonical_state_map_.lookup_waiting(hash);
-        return result.value_or(raw_state);
-    }
+    StateId get_canonical_state_for_event(StateId raw_state) const;
 
     // Get the canonical hash for a state (compute on-demand if not available)
     // This is used for event canonicalization, which needs isomorphism-invariant
@@ -587,17 +564,7 @@ public:
     uint64_t cache_state_edge_ranks(StateId state_id, const SparseBitset& edges);
 
     // Canonical rank of `edge` within `state`, or UINT32_MAX when the state has no table.
-    uint32_t edge_rank_in_state(StateId state_id, EdgeId edge) const {
-        auto r = state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1);
-        if (!r.has_value()) return UINT32_MAX;
-        const EdgeRankTable* t = *r;
-        uint32_t lo = 0, hi = t->n;
-        while (lo < hi) {
-            const uint32_t mid = lo + (hi - lo) / 2;
-            if (t->edges[mid] < edge) lo = mid + 1; else hi = mid;
-        }
-        return (lo < t->n && t->edges[lo] == edge) ? t->rank[lo] : UINT32_MAX;
-    }
+    uint32_t edge_rank_in_state(StateId state_id, EdgeId edge) const;
 
     // Event signatures that fell back to a raw edge id. Non-zero means the event identity is
     // approximate rather than canonical.
