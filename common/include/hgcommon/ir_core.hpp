@@ -116,12 +116,27 @@ struct IrPartition {
     }
 };
 
-// Heapsort over an index array. O(n log n) with no recursion, no allocation and no std::,
-// so one routine serves host and device. Not stable; every comparator below either is a total
-// order or has ties whose relative order does not reach the output.
+// Below this length, insertion sort. States here are small -- a few tens of vertices and
+// edges -- and at that size heapsort's sift-down loses to a linear scan over data already
+// close to sorted, while above it heapsort's bound is what keeps a large state off O(n^2).
+constexpr uint32_t IR_SMALL_SORT = 24;
+
+// Sort an index array. O(n log n) above the small-array threshold, no recursion, no
+// allocation and no std::, so one routine serves host and device. Not stable; every
+// comparator below either is a total order or has ties whose relative order does not reach
+// the output.
 template <class Cmp>
 HG_HD inline void ir_heapsort_idx(uint32_t* a, uint32_t n, Cmp cmp) {
     if (n < 2) return;
+    if (n <= IR_SMALL_SORT) {
+        for (uint32_t i = 1; i < n; ++i) {
+            const uint32_t key = a[i];
+            uint32_t j = i;
+            while (j > 0 && cmp(a[j - 1], key) > 0) { a[j] = a[j - 1]; --j; }
+            a[j] = key;
+        }
+        return;
+    }
     auto sift = [&](uint32_t root, uint32_t end) {
         for (;;) {
             uint32_t child = 2 * root + 1;

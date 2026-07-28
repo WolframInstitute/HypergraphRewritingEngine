@@ -546,8 +546,14 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
 
     std::atomic_thread_fence(std::memory_order_acquire);
 
+    // Reserved from the edge count so the three buffers are bumped once each rather than
+    // grown by repeated doubling; MAX_ARITY bounds the occurrences.
+    const size_t edge_count = edges.count();
     SVec<uint8_t> ea;
     SVec<uint32_t> eoff, ev;
+    ea.reserve(edge_count);
+    eoff.reserve(edge_count);
+    ev.reserve(edge_count * 2);
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
         eoff.push_back(static_cast<uint32_t>(ev.size()));
