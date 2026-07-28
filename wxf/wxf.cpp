@@ -380,7 +380,12 @@ void Parser::read_function(const FunctionCallback& callback) {
 }
 
 void Parser::ensure_bytes(size_t count) {
-    if (read_position_ + count > size_) {
+    // Subtract rather than add: `count` comes from a varint in the input, so
+    // read_position_ + count wraps for a large declared length and the comparison then
+    // SUCCEEDS -- bypassing the one bounds check standing between untrusted bytes and the
+    // reads that follow. read_position_ <= size_ is an invariant of the parser, so the
+    // subtraction cannot underflow.
+    if (count > size_ - read_position_) {
         throw ParseError("Unexpected end of WXF data", read_position_);
     }
 }

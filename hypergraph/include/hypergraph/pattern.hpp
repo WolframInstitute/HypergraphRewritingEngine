@@ -276,6 +276,17 @@ public:
         if (vars.size() > MAX_ARITY) {
             throw std::length_error("RuleBuilder::lhs: edge arity exceeds MAX_ARITY");
         }
+        // A pattern variable is BOTH an index into VariableBinding's MAX_VARS-entry array and
+        // a bit position in its 32-bit bound_mask, so an out-of-range one writes out of bounds
+        // and shifts past the type's width -- memory corruption, not a wrong answer. The arity
+        // and edge-count limits above were enforced; this one was declared and never checked,
+        // so every direct C++ caller (tools, tests, embedders) could trip it.
+        for (const T& v : vars) {
+            if (static_cast<uint64_t>(v) >= MAX_VARS) {
+                throw std::length_error(
+                    "RuleBuilder::lhs: pattern variable index exceeds MAX_VARS");
+            }
+        }
         PatternEdge edge;
         edge.arity = static_cast<uint8_t>(vars.size());
         for (uint8_t i = 0; i < edge.arity; ++i) {
@@ -302,6 +313,17 @@ public:
         }
         if (vars.size() > MAX_ARITY) {
             throw std::length_error("RuleBuilder::rhs: edge arity exceeds MAX_ARITY");
+        }
+        // A pattern variable is BOTH an index into VariableBinding's MAX_VARS-entry array and
+        // a bit position in its 32-bit bound_mask, so an out-of-range one writes out of bounds
+        // and shifts past the type's width -- memory corruption, not a wrong answer. The arity
+        // and edge-count limits above were enforced; this one was declared and never checked,
+        // so every direct C++ caller (tools, tests, embedders) could trip it.
+        for (const T& v : vars) {
+            if (static_cast<uint64_t>(v) >= MAX_VARS) {
+                throw std::length_error(
+                    "RuleBuilder::rhs: pattern variable index exceeds MAX_VARS");
+            }
         }
         PatternEdge edge;
         edge.arity = static_cast<uint8_t>(vars.size());
