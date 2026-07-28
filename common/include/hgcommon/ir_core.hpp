@@ -275,6 +275,11 @@ HG_HD inline void ir_refine(
     uint32_t epoch = 0;
 
     for (;;) {
+        // A discrete partition has nothing left to split, so every splitter still queued
+        // would gather its incident edges and compute its signatures only to find no cell
+        // divides. Refinement of a discrete partition is the identity.
+        if (pi.ncells == n) break;
+
         // Pop the lowest set cell id.
         uint32_t S = 0xFFFFFFFFu;
         for (uint32_t w = 0; w < wl_words; ++w) {
