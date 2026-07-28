@@ -97,10 +97,11 @@ __device__ uint64_t wl_hash_state_device(DeviceState ds, StateId sid) {
     uint32_t occ_off[kMaxWlVertices + 1], occ_edge[kOccCap];
     uint8_t  occ_pos[kOccCap];
     uint64_t nbr[kOccCap];
+    uint32_t comp[kMaxWlVertices];
 
     return hgcommon::wl_canonical_hash(
         ea, eoff, ev, n_edges, n_verts, hgcommon::WL_MAX_REFINE_ITERS,
-        cur, nxt, occ_off, occ_edge, occ_pos, nbr, kOccCap, dscr, nullptr);
+        cur, nxt, occ_off, occ_edge, occ_pos, nbr, kOccCap, dscr, nullptr, comp);
 }
 
 namespace {

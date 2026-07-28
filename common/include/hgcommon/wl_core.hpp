@@ -18,6 +18,12 @@ namespace hgcommon {
 // Max WL colour-refinement rounds (shared so CPU and GPU stop identically).
 constexpr uint32_t WL_MAX_REFINE_ITERS = 100;
 
+// Union-find root with path halving. Used only for the connected-component fold below.
+HG_HD inline uint32_t wl_find(uint32_t* parent, uint32_t x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+}
+
 // Insertion sort — small n, no std:: on device.
 HG_HD inline void wl_isort(uint64_t* a, uint32_t n) {
     for (uint32_t i = 1; i < n; ++i) {
@@ -33,8 +39,8 @@ HG_HD inline void wl_isort(uint64_t* a, uint32_t n) {
 //   ev[eoff[e] + p] = local vertex index of edge e position p   (p in [0, ea[e]))
 // Scratch (caller-sized): cur/nxt [n_verts]; occ_off [n_verts+1];
 //   occ_edge/occ_pos [total_occ = Σ ea]; nbr [nbr_cap ≥ max vertex degree * (MAX_ARITY-1)];
-//   dscr [n_verts]. max_iters bounds refinement. out_colours (optional, [n_verts])
-//   receives the final per-vertex colours (for edge-correspondence caches).
+//   dscr [n_verts]; comp [n_verts]. max_iters bounds refinement. out_colours (optional,
+//   [n_verts]) receives the final per-vertex colours (for edge-correspondence caches).
 HG_HD inline uint64_t wl_canonical_hash(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, uint32_t n_verts, uint32_t max_iters,
@@ -42,7 +48,8 @@ HG_HD inline uint64_t wl_canonical_hash(
     uint32_t* occ_off, uint32_t* occ_edge, uint8_t* occ_pos,
     uint64_t* nbr, uint32_t nbr_cap,
     uint64_t* dscr,
-    uint64_t* out_colours)
+    uint64_t* out_colours,
+    uint32_t* comp)
 {
     if (n_verts == 0 || n_edges == 0) return 0;
 
@@ -113,7 +120,38 @@ HG_HD inline uint64_t wl_canonical_hash(
     if (out_colours)
         for (uint32_t v = 0; v < n_verts; ++v) out_colours[v] = cur[v];
 
-    // --- Final commutative fold: FNV(n_verts, n_edges, Σmix64(vcol), Σmix64(ehash)). ---
+    // --- Connected components ---
+    //
+    // Colour refinement is LOCAL: a vertex's colour is a function of its neighbourhood, so it
+    // cannot see how the graph decomposes. A 6-cycle and two disjoint 3-cycles give every
+    // vertex two same-coloured neighbours and therefore the identical colouring, and any fold
+    // over per-vertex or per-edge colours alone folds them to the same value. That is not a
+    // rare adversarial case: it is every "same local structure, different global connectivity"
+    // pair, and it was 5 out of 5 collisions the IR-vs-WL probe found.
+    //
+    // The component decomposition is itself an isomorphism invariant and costs a union-find
+    // over the edges. Folding a per-component term in separates the whole class.
+    for (uint32_t v = 0; v < n_verts; ++v) comp[v] = v;
+    for (uint32_t e = 0; e < n_edges; ++e) {
+        if (ea[e] == 0) continue;
+        uint32_t r = wl_find(comp, ev[eoff[e]]);
+        for (uint8_t p = 1; p < ea[e]; ++p) {
+            const uint32_t x = wl_find(comp, ev[eoff[e] + p]);
+            if (x != r) { comp[x] = r; }
+        }
+    }
+    // Point every vertex directly at its root, so the accumulators below index by root.
+    for (uint32_t v = 0; v < n_verts; ++v) comp[v] = wl_find(comp, v);
+
+    // Per-component accumulators, indexed by root. nxt and dscr are both finished with:
+    // nxt was the refinement's double buffer, dscr its distinct-count sort scratch.
+    for (uint32_t v = 0; v < n_verts; ++v) { nxt[v] = 0; dscr[v] = 0; }
+    for (uint32_t v = 0; v < n_verts; ++v) {
+        nxt[comp[v]] += splitmix64(cur[v]);   // colour sum, commutative
+        dscr[comp[v]] += 1;                   // vertex count
+    }
+
+    // --- Final commutative fold: FNV(n_verts, n_edges, Σmix64(vcol), Σmix64(ehash), Σcomp). ---
     uint64_t vsum = 0;
     for (uint32_t v = 0; v < n_verts; ++v) vsum += splitmix64(cur[v]);
     uint64_t esum = 0;
@@ -121,12 +159,22 @@ HG_HD inline uint64_t wl_canonical_hash(
         uint64_t eh = fnv_hash(FNV_OFFSET, ea[e]);
         for (uint8_t p = 0; p < ea[e]; ++p) eh = fnv_hash(eh, cur[ev[eoff[e] + p]]);
         esum += splitmix64(eh);
+        dscr[comp[ev[eoff[e]]]] += (uint64_t(1) << 32);   // edge count, packed above the size
     }
+    uint64_t csum = 0;
+    for (uint32_t v = 0; v < n_verts; ++v) {
+        if (comp[v] != v) continue;                        // one term per component
+        uint64_t ch = fnv_hash(FNV_OFFSET, dscr[v]);       // (edge count << 32) | vertex count
+        ch = fnv_hash(ch, nxt[v]);                         // colour sum
+        csum += splitmix64(ch);                            // commutative over components
+    }
+
     uint64_t hash = FNV_OFFSET;
     hash = fnv_hash(hash, n_verts);
     hash = fnv_hash(hash, n_edges);
     hash = fnv_hash(hash, vsum);
     hash = fnv_hash(hash, esum);
+    hash = fnv_hash(hash, csum);
     return hash;
 }
 

@@ -13,9 +13,9 @@ static uint64_t core_hash(const std::vector<std::vector<VertexId>>& edges){
         for(VertexId v: e){ auto it=idx.find(v); uint32_t li; if(it==idx.end()){li=idx.size(); idx[v]=li;} else li=it->second; ev.push_back(li);} }
     uint32_t nv=idx.size(), ne=edges.size();
     std::vector<uint64_t> cur(nv),nxt(nv),dscr(nv),nbr(ne*16+16),out(nv);
-    std::vector<uint32_t> occ_off(nv+1),occ_edge(ev.size()); std::vector<uint8_t> occ_pos(ev.size());
+    std::vector<uint32_t> occ_off(nv+1),occ_edge(ev.size()),comp(nv?nv:1); std::vector<uint8_t> occ_pos(ev.size());
     return hgcommon::wl_canonical_hash(ea.data(),eoff.data(),ev.data(),ne,nv,16,
-        cur.data(),nxt.data(),occ_off.data(),occ_edge.data(),occ_pos.data(),nbr.data(),nbr.size(),dscr.data(),out.data());
+        cur.data(),nxt.data(),occ_off.data(),occ_edge.data(),occ_pos.data(),nbr.data(),nbr.size(),dscr.data(),out.data(),comp.data());
 }
 static uint64_t cpu_hash(const std::vector<std::vector<VertexId>>& edges){
     Hypergraph hg; std::vector<EdgeId> eids;

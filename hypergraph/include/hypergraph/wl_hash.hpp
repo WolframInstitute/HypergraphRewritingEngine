@@ -183,6 +183,8 @@ public:
         ArenaVector<uint32_t> occ_edge(worker_scratch(), total_occ);      occ_edge.resize(total_occ);
         ArenaVector<uint8_t>  occ_pos(worker_scratch(), total_occ);       occ_pos.resize(total_occ);
         ArenaVector<uint64_t> nbr(worker_scratch(), nbr_cap);             nbr.resize(nbr_cap);
+        ArenaVector<uint32_t> comp(worker_scratch(), num_vertices ? num_vertices : 1);
+        comp.resize(num_vertices ? num_vertices : 1);
 
         // Only when a cache is requested do the final per-vertex colours land in the
         // PERSISTENT arena (they must outlive this call for edge correspondence).
@@ -202,7 +204,7 @@ public:
             ea.data(), eoff.data(), ev.data(),
             static_cast<uint32_t>(n_edges), static_cast<uint32_t>(num_vertices), hgcommon::WL_MAX_REFINE_ITERS,
             cur.data(), nxt.data(), occ_off.data(), occ_edge.data(), occ_pos.data(),
-            nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), out_colours);
+            nbr.data(), static_cast<uint32_t>(nbr_cap), dscr.data(), out_colours, comp.data());
 
         worker_scratch().release(_wl_mark);
         return hash;
