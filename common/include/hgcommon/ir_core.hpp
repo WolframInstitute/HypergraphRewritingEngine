@@ -75,7 +75,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + 2 * ir_bitset_words(n_verts)        // worklist, as uint64
       + e + e + e                           // inc_edges, edge_epoch, form_order
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
-      + n + n + 2 * occ                     // sig_off, sig_cnt, sig_buf as uint64
+      + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
       + n + n + n + n + n                   // path, uf, labeling, first_labeling, inv
       + 3 * (occ + e)                       // cur_form, best_form, first_form
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
@@ -249,7 +249,7 @@ HG_HD inline void ir_refine(
     IrPartition& pi,
     uint64_t* worklist, uint32_t* inc_edges, uint32_t* edge_epoch,
     uint32_t* touched, uint32_t* on_touched, uint32_t* torder,   // torder holds 2n: order, then split staging
-    uint32_t* sig_off, uint32_t* sig_cnt, uint64_t* sig_buf)
+    uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf)
 {
     const uint32_t n = pi.n;
     const uint32_t wl_words = ir_bitset_words(n);
@@ -339,13 +339,19 @@ HG_HD inline void ir_refine(
 
             const uint32_t adjacent = j - i;
             const uint32_t leftover = pi.clen[C] - adjacent;
+
+            // Group boundaries, found once. Equal signatures are contiguous after the sort,
+            // so one scan records where each group starts and everything below reads gstart
+            // instead of re-comparing the runs.
             uint32_t groups = 0;
             for (uint32_t k = i; k < j;) {
-                uint32_t m = k;
+                gstart[groups++] = k;
+                uint32_t m = k + 1;
                 while (m < j && ir_cmp_run(sig_buf + sig_off[torder[m]], sig_cnt[torder[m]],
                                            sig_buf + sig_off[torder[k]], sig_cnt[torder[k]]) == 0) ++m;
-                ++groups; k = m;
+                k = m;
             }
+            gstart[groups] = j;
 
             if (groups + (leftover > 0 ? 1u : 0u) > 1) {
                 // Rewrite C's run of lab as [leftover..., group0..., group1..., ...]. The
@@ -364,19 +370,11 @@ HG_HD inline void ir_refine(
 
                 // Piece boundaries within C's run: the leftover block, then one per signature
                 // group. The largest keeps C's id so vertices referencing it need no revisit.
-                uint32_t bstart[2];  // scratch for the running scan
                 uint32_t best_len = leftover, best_off = 0;
-                (void)bstart;
-                {
-                    uint32_t off = leftover;
-                    for (uint32_t k = i; k < j;) {
-                        uint32_t m = k;
-                        while (m < j && ir_cmp_run(sig_buf + sig_off[torder[m]], sig_cnt[torder[m]],
-                                                   sig_buf + sig_off[torder[k]], sig_cnt[torder[k]]) == 0) ++m;
-                        const uint32_t len = m - k;
-                        if (len > best_len) { best_len = len; best_off = off; }
-                        off += len; k = m;
-                    }
+                for (uint32_t g = 0, off = leftover; g < groups; ++g) {
+                    const uint32_t len = gstart[g + 1] - gstart[g];
+                    if (len > best_len) { best_len = len; best_off = off; }
+                    off += len;
                 }
 
                 // Assign ids: the winning piece keeps C, every other piece appends.
@@ -393,15 +391,10 @@ HG_HD inline void ir_refine(
                     for (uint32_t t = 0; t < len; ++t) pi.cell_of[pi.lab[cs + off + t]] = id;
                 };
                 assign(0, leftover);
-                {
-                    uint32_t off = leftover;
-                    for (uint32_t k = i; k < j;) {
-                        uint32_t m = k;
-                        while (m < j && ir_cmp_run(sig_buf + sig_off[torder[m]], sig_cnt[torder[m]],
-                                                   sig_buf + sig_off[torder[k]], sig_cnt[torder[k]]) == 0) ++m;
-                        assign(off, m - k);
-                        off += m - k; k = m;
-                    }
+                for (uint32_t g = 0, off = leftover; g < groups; ++g) {
+                    const uint32_t len = gstart[g + 1] - gstart[g];
+                    assign(off, len);
+                    off += len;
                 }
             }
 
@@ -544,6 +537,7 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* torder    = sc.u32(2 * n);
     uint32_t* sig_off   = sc.u32(n + 1);
     uint32_t* sig_cnt   = sc.u32(n);
+    uint32_t* gstart    = sc.u32(n + 1);
     uint32_t* path      = sc.u32(n);
     uint32_t* uf        = sc.u32(n);
     uint32_t* labeling  = sc.u32(n);
@@ -583,7 +577,7 @@ HG_HD inline IrResult ir_canonical_hash(
     ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder);
     ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi,
               worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-              sig_off, sig_cnt, sig_buf);
+              sig_off, sig_cnt, gstart, sig_buf);
     store_ncells(0, pi.ncells);
 
     uint32_t n_gens = 0;
@@ -694,7 +688,7 @@ HG_HD inline IrResult ir_canonical_hash(
         ir_individualize(view(d), child, target_of(d), v);
         ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, child,
                   worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-                  sig_off, sig_cnt, sig_buf);
+                  sig_off, sig_cnt, gstart, sig_buf);
         store_ncells(d + 1, child.ncells);
         ++d;
     }

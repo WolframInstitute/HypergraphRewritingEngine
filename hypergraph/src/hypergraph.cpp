@@ -560,14 +560,33 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
         return EMPTY_STATE_CANONICAL_HASH;
     }
 
-    // Local vertex indices are the rank in the sorted-unique vertex set -- the indexing the
-    // core's initial partition ties-breaks on, so the labeling it derives is well defined.
-    SVec<uint32_t> verts(ev.begin(), ev.end());
-    std::sort(verts.begin(), verts.end());
-    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
-    const uint32_t n_verts = static_cast<uint32_t>(verts.size());
-    for (uint32_t& x : ev)
-        x = static_cast<uint32_t>(std::lower_bound(verts.begin(), verts.end(), x) - verts.begin());
+    // Local vertex indices, assigned in encounter order through a direct-mapped table.
+    //
+    // The core's result does not depend on which order they are assigned in: the only place
+    // an index is read as a value is the initial partition's tie-break, which orders vertices
+    // WITHIN a cell, and no output reads within-cell order. (The equivalence probe checks
+    // this the other way round, by relabeling every state three times.) So the indices need
+    // not be ranks, and this costs one pass instead of a sort plus a binary search per
+    // occurrence.
+    //
+    // The table is per-worker and grows monotonically; a generation stamp makes reuse O(1)
+    // instead of clearing it, so its cost amortises to nothing across states.
+    static thread_local std::vector<uint32_t> local_index;
+    static thread_local std::vector<uint32_t> stamp;
+    static thread_local uint32_t generation = 0;
+    uint32_t max_vid = 0;
+    for (uint32_t x : ev) max_vid = std::max(max_vid, x);
+    if (stamp.size() <= max_vid) {
+        stamp.assign(static_cast<size_t>(max_vid) * 2 + 64, 0);
+        local_index.resize(stamp.size());
+        generation = 0;
+    }
+    ++generation;
+    uint32_t n_verts = 0;
+    for (uint32_t& x : ev) {
+        if (stamp[x] != generation) { stamp[x] = generation; local_index[x] = n_verts++; }
+        x = local_index[x];
+    }
 
     const uint32_t n_edges = static_cast<uint32_t>(ea.size());
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
