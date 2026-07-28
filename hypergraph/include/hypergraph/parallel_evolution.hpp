@@ -167,9 +167,28 @@ struct EvolutionStats {
 enum class EvolutionJobType {
     SCAN,       // Find initial candidates for first pattern edge
     EXPAND,     // Extend partial match by one edge
-    SINK,       // Process complete match, spawn REWRITE
     MATCH,      // Orchestrate matching for a state (spawn SCAN tasks or fallback to sync)
-    REWRITE,    // Apply a match to produce new state
+    REWRITE,    // Apply a contiguous RANGE of one state's matches
+};
+
+// A contiguous range of one state's matches, applied by a single task.
+//
+// The unit of work is a state expansion, not an individual match. The locality in this
+// computation lives at the STATE: every child of one parent is built from the same edge set,
+// canonicalized against the same starting adjacency, and every branchial pair among them is
+// internal to that parent. Tasking per match discards all of it -- the parent's adjacency and
+// initial partition are rebuilt for each child, which is why incremental canonicalization had
+// no amortization hook and stayed refuted, and canonicalization is about half of all
+// instructions.
+//
+// Ranges rather than whole states so a parent with thousands of matches still balances. The
+// match array is arena-resident and immutable, so chunks of one parent share it read-only --
+// shared clean lines, which cost nothing to replicate across cores.
+struct ExpandChunk {
+    const MatchRecord* matches = nullptr;   // arena-resident, shared by all chunks of a parent
+    uint32_t begin = 0;
+    uint32_t end = 0;
+    uint32_t step = 0;
 };
 
 // =============================================================================
@@ -204,10 +223,12 @@ struct MatchContext {
 };
 
 // =============================================================================
-// SCAN/EXPAND/SINK Task Data Structures (HGMatch Dataflow Model)
+// SCAN/EXPAND Task Data Structures (HGMatch Dataflow Model)
 // =============================================================================
 // These structures capture all data needed to execute matching tasks in parallel.
-// Following HGMatch paper: SCAN→EXPAND*→SINK pipeline.
+// Following HGMatch paper: a SCAN seeds the join and EXPAND* extends it one pattern
+// edge at a time. A completed match is finished in place by complete_match, and the
+// matches one task completes are expanded together.
 
 // SCAN task: Find initial candidates for first pattern edge
 struct ScanTaskData {
@@ -221,7 +242,7 @@ struct ScanTaskData {
 };
 
 // EXPAND task: Extend partial match by one edge
-// Also used for SINK (when match is complete)
+// Also carries a completed match into complete_match
 struct ExpandTaskData {
     StateId state{INVALID_ID};              // State being matched
     uint16_t rule_index{0};                 // Rule being matched
@@ -403,7 +424,7 @@ class ParallelEvolutionEngine {
     // Disabled by default.
     bool enable_genesis_events_{false};
 
-    // Task-based matching: use SCAN→EXPAND→SINK task decomposition (HGMatch model)
+    // Task-based matching: use the SCAN→EXPAND join decomposition (HGMatch model)
     // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
     // When disabled (default), uses synchronous find_matches() within MATCH task.
     bool task_based_matching_{true};
@@ -507,7 +528,7 @@ public:
     // tracked from the initial state's edges to events that consume them.
     void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
 
-    // Enable task-based matching (HGMatch SCAN→EXPAND→SINK model)
+    // Enable task-based matching (HGMatch SCAN→EXPAND join model)
     // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
     // When disabled (default), uses synchronous find_matches() within MATCH task.
     void set_task_based_matching(bool enable) { task_based_matching_ = enable; }
@@ -779,16 +800,34 @@ private:
     void submit_match_task(StateId state, uint32_t step);
     void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx);
     void submit_rewrite_task(const MatchRecord& match, uint32_t step);
+
+    // Apply one chunk's matches. Runs them back to back on this thread so the parent's data
+    // stays hot for the whole range.
+    void execute_expand_chunk(const ExpandChunk& chunk);
+    void submit_expand_chunk(const ExpandChunk& chunk);
+
+    // Hand a state's collected matches to chunk tasks. The first chunk runs INLINE on the
+    // calling thread: most states have few matches, and for those this keeps the whole
+    // expansion on the core that just built the match list, with no scheduling at all.
+    void dispatch_expansion(StateId state, uint32_t step, const MatchRecord* matches,
+                            size_t count);
+
+    // Matches per chunk. Small enough that a wide state still spreads across workers, large
+    // enough that the per-task cost is amortised over a run of children that share a parent.
+    static constexpr size_t kExpandChunkSize = 16;
     void submit_scan_task(const ScanTaskData& data);
 
     void submit_expand_task(const ExpandTaskData& data);
-    void submit_sink_task(const ExpandTaskData& data);
 
     // Task Execution
     void execute_match_task(StateId state, uint32_t step, const MatchContext& ctx);
     void execute_scan_task(const ScanTaskData& data);
     void execute_expand_task(const ExpandTaskData& data);
-    void execute_sink_task(const ExpandTaskData& data);
+    // Finish a complete match: dedup it, promote its core to the arena, and register it for
+    // forwarding. Returns false when the match is a duplicate or a limit forbids it; on true,
+    // `out` is ready to rewrite. The caller batches these rather than tasking each one -- the
+    // work here is a hash insert and two list pushes, less than the cost of scheduling it.
+    bool complete_match(const ExpandTaskData& data, MatchRecord& out);
     void execute_rewrite_task(const MatchRecord& match, uint32_t step);
 
     // Pruning helpers

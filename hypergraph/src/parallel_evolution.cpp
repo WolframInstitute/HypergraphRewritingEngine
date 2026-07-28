@@ -1220,6 +1220,55 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     job_system_->submit(std::move(job));
 }
 
+void ParallelEvolutionEngine::execute_expand_chunk(const ExpandChunk& chunk) {
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    for (uint32_t i = chunk.begin; i < chunk.end; ++i) {
+        if (should_stop_.load(std::memory_order_relaxed)) return;
+        execute_rewrite_task(chunk.matches[i], chunk.step);
+    }
+}
+
+void ParallelEvolutionEngine::submit_expand_chunk(const ExpandChunk& chunk) {
+    auto job = job_system::make_job<EvolutionJobType>(
+        [this, chunk]() { execute_expand_chunk(chunk); },
+        EvolutionJobType::REWRITE
+    );
+    job_system_->submit(std::move(job));
+}
+
+void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
+                                                 const MatchRecord* matches, size_t count) {
+    if (count == 0) return;
+    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (max_steps_ > 0 && step > max_steps_) return;
+    // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
+    // still does the reserving check per child, so this is a filter, not the decision.
+    if (!can_create_states_at_step(step + 1)) return;
+    if (!can_have_more_children(state)) return;
+
+    if (count <= kExpandChunkSize) {
+        // Everything on this thread: no arena copy, no job, and the parent's data is already
+        // in this core's cache from the matching that produced these records.
+        ExpandChunk chunk{matches, 0, static_cast<uint32_t>(count), step};
+        execute_expand_chunk(chunk);
+        return;
+    }
+
+    // Wide state. The match records outlive this frame, so they move to the arena; every
+    // chunk then reads one shared immutable array.
+    MatchRecord* shared = hg_->arena().template allocate_array<MatchRecord>(count);
+    for (size_t i = 0; i < count; ++i) shared[i] = matches[i];
+
+    // Submit the tail first and keep the head for this thread. The submitted chunks are
+    // available to steal while this one runs, so the wide case both spreads and stays warm.
+    for (size_t begin = kExpandChunkSize; begin < count; begin += kExpandChunkSize) {
+        const size_t end = std::min(begin + kExpandChunkSize, count);
+        submit_expand_chunk(ExpandChunk{shared, static_cast<uint32_t>(begin),
+                                        static_cast<uint32_t>(end), step});
+    }
+    execute_expand_chunk(ExpandChunk{shared, 0, kExpandChunkSize, step});
+}
+
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (max_steps_ > 0 && data.step > max_steps_) return;
@@ -1256,24 +1305,6 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     );
     // LIFO scheduling: depth-first traversal, bounded memory O(|E(q)|² × |E(H)|)
     job_system_->submit(std::move(job), job_system::ScheduleMode::LIFO);
-}
-
-void ParallelEvolutionEngine::submit_sink_task(const ExpandTaskData& data) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
-
-    DEBUG_LOG("SUBMIT_SINK state=%u rule=%u matched=%u step=%u",
-              data.state, data.rule_index, data.num_matched, data.step);
-
-    auto job = job_system::make_job<EvolutionJobType>(
-        [this, data]() {
-            execute_sink_task(data);
-        },
-        EvolutionJobType::SINK
-    );
-    job_system_->submit(std::move(job));
 }
 
 // =============================================================================
@@ -1822,9 +1853,7 @@ void ParallelEvolutionEngine::execute_match_task(
             std::atomic_thread_fence(std::memory_order_seq_cst);
         }
 
-        for (const auto& match : batch) {
-            submit_rewrite_task(match, step);
-        }
+        dispatch_expansion(state, step, batch.data(), batch.size());
     }
 }
 
@@ -1861,6 +1890,12 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
     // Per-edge pattern signatures and compatible-signature caches are precomputed
     // once on the rule (rule.lhs_sig / rule.lhs_cache); read them here.
 
+    // Single-edge rules complete a match on the seed itself. Collect them here and expand
+    // them together at the end rather than one task per match: they are all children of the
+    // same parent, so running them back to back keeps that parent's edge set and
+    // canonicalization inputs in this core's cache for the whole run.
+    SVec<MatchRecord> completed;
+
     if (data.is_delta) {
         // Delta matching: start from produced edges
         for (uint8_t p = 0; p < data.num_produced; ++p) {
@@ -1894,7 +1929,8 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.step = data.step;
 
                 if (rule.num_lhs_edges == 1) {
-                    submit_sink_task(expand_data);
+                    MatchRecord m;
+                    if (complete_match(expand_data, m)) completed.push_back(m);
                 } else {
                     submit_expand_task(expand_data);
                 }
@@ -1930,13 +1966,16 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 expand_data.step = data.step;
 
                 if (rule.num_lhs_edges == 1) {
-                    submit_sink_task(expand_data);
+                    MatchRecord m;
+                    if (complete_match(expand_data, m)) completed.push_back(m);
                 } else {
                     submit_expand_task(expand_data);
                 }
             }
         );
     }
+
+    dispatch_expansion(data.state, data.step, completed.data(), completed.size());
 }
 
 // =============================================================================
@@ -1956,7 +1995,8 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
     // Check if complete (shouldn't happen, but safety check)
     if (data.is_complete()) {
-        submit_sink_task(data);
+        MatchRecord m;
+        if (complete_match(data, m)) dispatch_expansion(data.state, data.step, &m, 1);
         return;
     }
 
@@ -1985,6 +2025,12 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     const EdgeSignature& pattern_sig = rule.lhs_sig[pattern_idx];
     const CompatibleSignatureCache& sig_cache = rule.lhs_cache[pattern_idx];
 
+    // Completions of the LAST pattern edge are siblings: same parent, same rule, differing in
+    // one edge. They are the natural expansion batch -- collected here and applied together
+    // below, so the parent's data is loaded once for the whole family instead of once per
+    // child on whichever worker happened to steal it.
+    SVec<MatchRecord> completed;
+
     // Generate candidates
     generate_candidates(
         pattern_edge, pattern_sig, sig_cache,
@@ -2007,25 +2053,28 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
             new_data.binding = extended;
 
             if (new_data.is_complete()) {
-                submit_sink_task(new_data);
+                MatchRecord m;
+                if (complete_match(new_data, m)) completed.push_back(m);
             } else {
                 submit_expand_task(new_data);
             }
         }
     );
+
+    dispatch_expansion(data.state, data.step, completed.data(), completed.size());
 }
 
 // =============================================================================
 // SINK Task Execution
 // =============================================================================
 
-void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
+bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRecord& out) {
+    if (should_stop_.load(std::memory_order_relaxed)) return false;
+    if (max_steps_ > 0 && data.step > max_steps_) return false;
 
     // Early exit if rewrites are impossible due to limits
-    if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
+    if (!can_create_states_at_step(data.step + 1)) return false;
+    if (!can_have_more_children(data.state)) return false;
 
     DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
               data.state, data.rule_index, data.num_matched, data.step);
@@ -2052,7 +2101,7 @@ void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
     auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
     if (!inserted) {
         rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
-        return;  // Already seen
+        return false;  // Already seen
     }
 
     // Won the dedup: promote the core into the arena so it outlives this frame.
@@ -2069,8 +2118,8 @@ void ParallelEvolutionEngine::execute_sink_task(const ExpandTaskData& data) {
         push_match_to_children(data.state, match, data.step);
     }
 
-    // Spawn REWRITE task
-    submit_rewrite_task(match, data.step);
+    out = match;
+    return true;
 }
 
 }  // namespace hypergraph
