@@ -833,6 +833,132 @@ TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
         << " events. The signature is being computed and not applied.";
 }
 
+// The free evolve() wrapper carries the persistent selector, and its grow-and-retry works with
+// it.
+//
+// The design notes asserted the opposite -- that "the evolve() wrapper cannot grow-and-retry a
+// single launch, so it must size up front or refuse the persistent selector". That was reasoned
+// from what a persistent kernel is, not measured. The wrapper does not resume a launch: it
+// destructs the engine, doubles the offending config fields and re-runs the whole evolution,
+// which is scheduler-agnostic. `in` is passed through unchanged, so persistent_scheduler is
+// carried into every attempt.
+//
+// Everything below Engine::run is already covered; what was not covered is that the wrapper
+// itself produces the same evolution under either scheduler.
+TEST(Rewrite, TheEvolveWrapperCarriesThePersistentSelector) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
+                    hg_gpu::EventCanonicalizationMode::Full}) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+        in.num_steps = 3;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+        in.event_canonicalization = ev;
+
+        const auto lockstep = hg_gpu::evolve(in);
+        in.persistent_scheduler = true;
+        const auto persistent = hg_gpu::evolve(in);
+
+        const std::string cell = "event=" + std::to_string(static_cast<int>(ev));
+        EXPECT_TRUE(lockstep.warnings.empty())
+            << cell << ": the level-synchronous reference overflowed through the wrapper";
+        EXPECT_TRUE(persistent.warnings.empty())
+            << cell << ": the persistent run overflowed through the wrapper and did not recover";
+        ASSERT_GT(lockstep.states.size(), 1u) << "workload never branched";
+
+        std::multiset<uint64_t> a, b;
+        for (const auto& s : lockstep.states)   a.insert(s.canonical_hash);
+        for (const auto& s : persistent.states) b.insert(s.canonical_hash);
+        EXPECT_EQ(b, a) << cell << ": the wrapper produced a different state set per scheduler";
+
+        size_t na = 0, nb = 0;
+        for (const auto& e : lockstep.events)   if (e.canonical_id == hg_gpu::INVALID_ID) ++na;
+        for (const auto& e : persistent.events) if (e.canonical_id == hg_gpu::INVALID_ID) ++nb;
+        EXPECT_EQ(nb, na) << cell << ": canonical event count differs through the wrapper";
+    }
+}
+
+// Arena exhaustion is a RECOVERABLE capacity failure, and must be reported as one.
+//
+// The persistent scheduler claims IR scratch from a DeviceArena sized as a multiple of
+// cfg.max_states. When a worker cannot get a slot it used to record kScratchOverflow -- the same
+// kind as a fixed per-thread bound in the TR closure -- and the host's grow_config_for marks
+// that kind non-retryable, on the reasoning that the caller "must accept the soft accuracy
+// degradation (1-WL fallback)".
+//
+// Both halves of that are false here. There is no 1-WL fallback on this path, deliberately: a
+// fallback key MERGES non-isomorphic states, so the design records a capacity overflow and
+// returns partial work instead (docs/GPU_PERSISTENT_DESIGN.md sec 3a). And the arena IS
+// config-controlled, so growing recovers it. A run that could have completed returned a partial
+// result and called the cause unfixable.
+//
+// This pins the distinction the fix rests on: a starved arena reports kIRArenaExhausted, never
+// kScratchOverflow, and the same run with a sufficient arena reports nothing at all.
+TEST(Rewrite, StarvedIRArenaReportsARetryableKind) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
+    const uint32_t kSteps = 3;
+
+    auto run_with_arena = [&](uint64_t arena_words) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = kSteps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(arena_words);
+
+        hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      hg_gpu::CanonicalizationMode::Full,
+                                      hgcommon::EVENT_SIG_FULL, /*blocks=*/9);
+        std::vector<hg_gpu::OverflowWarning> w;
+        engine.collect_warnings_into(w, "starved arena probe");
+        return std::make_pair(w, engine.num_states_host());
+    };
+
+    // Big enough for every state this workload reaches.
+    const auto [healthy, healthy_states] = run_with_arena(64ull << 20);
+    EXPECT_TRUE(healthy.empty())
+        << "the control run overflowed, so the starved comparison below proves nothing";
+    ASSERT_GT(healthy_states, 1u) << "workload never branched; the comparison is vacuous";
+
+    // Too small for even one slot, so every worker that needs one is refused.
+    const auto [starved, starved_states] = run_with_arena(8ull);
+    bool saw_arena = false, saw_scratch = false;
+    for (const auto& w : starved) {
+        if (w.kind == hg_gpu::ErrorKind::kIRArenaExhausted) saw_arena = true;
+        if (w.kind == hg_gpu::ErrorKind::kScratchOverflow)  saw_scratch = true;
+    }
+    EXPECT_TRUE(saw_arena)
+        << "a starved arena did not report kIRArenaExhausted; the host cannot know the failure "
+        << "is one that growing the config would fix";
+    EXPECT_FALSE(saw_scratch)
+        << "a starved arena reported kScratchOverflow, which grow_config_for treats as an "
+        << "unfixable kernel limit -- this is the conflation the separate kind exists to end";
+    EXPECT_LT(starved_states, healthy_states)
+        << "the starved run reached as many states as the healthy one, so the arena was not "
+        << "actually the binding constraint and this test is not measuring what it claims";
+}
+
 // The limit of edge ranks, pinned on the state that reaches it.
 //
 // A canonical rank is a position in a canonical LABELLING. When a state has a nontrivial

@@ -670,10 +670,27 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
+        case ErrorKind::kIRArenaExhausted:
+            // The device IR arena, which run_persistent_evolve and the step loop's identity
+            // phase both size as a multiple of cfg.max_states. So this IS config-controlled,
+            // and doubling max_states doubles the arena along with it.
+            //
+            // It was previously recorded as kScratchOverflow and inherited that kind's "cannot
+            // retry" policy, which is wrong twice over on the persistent path: there is no
+            // 1-WL fallback there (by design -- a fallback key MERGES non-isomorphic states),
+            // so the work is lost rather than degraded, and growing would have recovered it.
+            // A run that could have completed returned a partial result instead.
+            dbl(cfg.max_states);
+            dbl(cfg.max_state_edge_total);
+            return true;
+        case ErrorKind::kIRDepthExceeded:
+            // The individualization search wanted to go deeper than the device attempts. The
+            // depth is a constant the slot is shaped for, not a config field, so no amount of
+            // growing helps and retrying would just burn six doublings.
+            return false;
         case ErrorKind::kScratchOverflow:
-            // Kernel-internal local-memory bound; not config-controlled.
-            // Cannot retry — caller must accept the soft accuracy
-            // degradation (1-WL fallback) or upgrade to global-memory IR.
+            // A fixed per-thread bound (the TR closure's ancestor/descendant scratch). Not
+            // config-controlled, so it cannot be retried; the caller accepts the truncation.
             return false;
         default: return false;
     }

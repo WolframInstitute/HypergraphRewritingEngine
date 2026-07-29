@@ -47,6 +47,17 @@ enum class ErrorKind : uint32_t {
     // whose GPU also drives the display that distinction is the difference between a failed
     // run and a lost session.
     kPersistentStall     = 22,
+    // The device IR arena could not give a worker a slot for the state it was canonicalizing.
+    // Distinct from kScratchOverflow, which is a fixed per-thread bound: this one is sized from
+    // the config (the arena scales with max_states), so growing the config is a real remedy and
+    // the host's grow-and-retry treats it as retryable. Collapsing the two made a recoverable
+    // capacity failure look like an unfixable kernel limit.
+    kIRArenaExhausted    = 23,
+    // The individualization search needed to go deeper than the device attempts. NOT
+    // config-controlled -- the depth is a constant the slot is shaped for -- so growing cannot
+    // help, and unlike the level-synchronous path there is no 1-WL fallback here: the state is
+    // left un-canonicalized rather than keyed by a hash that MERGES non-isomorphic states.
+    kIRDepthExceeded     = 24,
     kCount
 };
 
@@ -72,6 +83,8 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
+        case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
+        case ErrorKind::kIRDepthExceeded:     return "IR search depth (not config-controlled)";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         default:                              return "unknown";

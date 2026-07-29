@@ -51,19 +51,20 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
 // Only the Full arm touches the arena, so a run in the other two modes never claims IR scratch.
 // `want_ranks` is passed through to the Full arm so that when the run also needs per-edge ranks
 // the single pass produces both, rather than the key here and the ranks in a repeat pass.
-__device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMode mode,
-                                 DeviceArena::View arena,
-                                 uint32_t*& slot, uint64_t& slot_words, uint64_t& out_key,
-                                 bool want_ranks) {
+__device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
+                                            CanonicalizationMode mode,
+                                            DeviceArena::View arena,
+                                            uint32_t*& slot, uint64_t& slot_words,
+                                            uint64_t& out_key, bool want_ranks) {
     switch (mode) {
         case CanonicalizationMode::None:
             // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
             // dedup map's EMPTY sentinel.
             out_key = static_cast<uint64_t>(sid) + 1ull;
-            return true;
+            return ExactHashStatus::kOk;
         case CanonicalizationMode::Automatic:
             out_key = content_hash_state_device(ds, sid);
-            return true;
+            return ExactHashStatus::kOk;
         case CanonicalizationMode::Full:
         default:
             return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
@@ -88,9 +89,13 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     uint64_t  slot_words = 0;
 
     uint64_t key = 0;
-    if (!state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks)) {
-        ds.errors.record(ErrorKind::kScratchOverflow);
-        return;
+    {
+        const ExactHashStatus st =
+            state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks);
+        if (st != ExactHashStatus::kOk) {
+            ds.errors.record(error_kind_for(st));
+            return;
+        }
     }
     ds.state_canonical_hash[sid] = key;
 
@@ -98,10 +103,13 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // here only if an event identity will read it; under event mode None nobody does.
     if (need_exact) {
         uint64_t exact = key;
-        if (state_mode != CanonicalizationMode::Full &&
-            !state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks)) {
-            ds.errors.record(ErrorKind::kScratchOverflow);
-            return;
+        if (state_mode != CanonicalizationMode::Full) {
+            const ExactHashStatus st =
+                state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks);
+            if (st != ExactHashStatus::kOk) {
+                ds.errors.record(error_kind_for(st));
+                return;
+            }
         }
         ds.state_exact_hash[sid] = exact;
     }
@@ -390,9 +398,11 @@ __global__ void k_persistent_evolve(
                 // under a coarser one -- 1-WL merges non-isomorphic states.
                 if (child_sid != INVALID_ID) {
                     uint64_t h = 0;
-                    if (!state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                          ir_slot_words, h, need_ranks)) {
-                        ds.errors.record(ErrorKind::kScratchOverflow);
+                    const ExactHashStatus key_st =
+                        state_key_device(ds, child_sid, state_mode, arena, ir_slot,
+                                         ir_slot_words, h, need_ranks);
+                    if (key_st != ExactHashStatus::kOk) {
+                        ds.errors.record(error_kind_for(key_st));
                     } else {
                         // Publish before anything reads it: a transition OUT of this state
                         // needs it as an input hash, and that read happens on another block.
@@ -404,11 +414,14 @@ __global__ void k_persistent_evolve(
                         // individualization-refinement pass per state bought for nobody.
                         uint64_t exact = h;
                         if (event_keys != EVENT_SIG_NONE) {
-                            if (state_mode != CanonicalizationMode::Full &&
-                                !state_exact_hash_device(ds, child_sid, arena, ir_slot,
-                                                         ir_slot_words, exact, need_ranks)) {
-                                ds.errors.record(ErrorKind::kScratchOverflow);
-                                exact = 0;
+                            if (state_mode != CanonicalizationMode::Full) {
+                                const ExactHashStatus ex_st =
+                                    state_exact_hash_device(ds, child_sid, arena, ir_slot,
+                                                            ir_slot_words, exact, need_ranks);
+                                if (ex_st != ExactHashStatus::kOk) {
+                                    ds.errors.record(error_kind_for(ex_st));
+                                    exact = 0;
+                                }
                             }
                             ds.state_exact_hash[child_sid] = exact;
                         }

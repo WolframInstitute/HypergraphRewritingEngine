@@ -205,15 +205,15 @@ void check(cudaError_t err, const char* what) {
 // edge's own CSR slot. It rides on the pass the hash already runs, so Automatic event identity
 // costs no extra canonicalization -- only the scatter. Slots the flattening skipped keep
 // UINT32_MAX, which the signature site counts rather than silently substitutes.
-__device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
-                                        DeviceArena::View arena,
-                                        uint32_t*& slot, uint64_t& slot_words,
-                                        uint64_t& out_hash, bool want_ranks) {
+__device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
+                                                   DeviceArena::View arena,
+                                                   uint32_t*& slot, uint64_t& slot_words,
+                                                   uint64_t& out_hash, bool want_ranks) {
     // Measure this state: exact counts, not a bound. Occurrences are summed rather than taken
     // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
     uint32_t n_edges = 0, total_occ = 0;
     {
-        if (sid >= ds.max_states) { out_hash = 0; return true; }
+        if (sid >= ds.max_states) { out_hash = 0; return ExactHashStatus::kOk; }
         StateEdgeSlice sl = ds.state_edge_slices[sid];
         const uint32_t live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
         for (uint32_t k = 0; k < sl.count; ++k) {
@@ -224,7 +224,7 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
             ++n_edges; total_occ += e.arity;
         }
     }
-    if (n_edges == 0) { out_hash = 0; return true; }
+    if (n_edges == 0) { out_hash = 0; return ExactHashStatus::kOk; }
 
     IrSlotShape shape;
     shape.cap_edges = n_edges + 1;
@@ -237,7 +237,7 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
         // Grow. The previous slot is abandoned rather than freed -- a bump arena has no free,
         // and with each block growing at most to its own peak the waste is bounded.
         uint32_t* bigger = arena.claim(need);
-        if (!bigger) return false;
+        if (!bigger) return ExactHashStatus::kArenaExhausted;
         slot = bigger;
         slot_words = need;
     }
@@ -253,9 +253,11 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
     uint32_t fn_edges, n_verts, fn_occ;
     if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
                        verts_local, ranks ? flat_to_slot : nullptr)) {
-        // Cannot happen: the shape was sized from this state's own counts. Treated as an
-        // arena failure rather than silently hashing something else.
-        return false;
+        // Cannot happen: the shape was sized from this state's own counts. Reported under its
+        // own status rather than silently hashing something else, and deliberately NOT as an
+        // arena failure -- growing the config would not fix it, so calling it retryable would
+        // send the host into six pointless doublings.
+        return ExactHashStatus::kMalformedState;
     }
 
     uint32_t* scratch = flat_to_slot + shape.cap_edges;
@@ -266,7 +268,7 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
                                         hgcommon::IR_DEVICE_GENERATORS);
         if (r.status != hgcommon::IR_NEED_DEPTH) break;
     }
-    if (r.status == hgcommon::IR_NEED_DEPTH) return false;
+    if (r.status == hgcommon::IR_NEED_DEPTH) return ExactHashStatus::kDepthExceeded;
     out_hash = r.hash;
 
     if (ranks) {
@@ -276,7 +278,7 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
             ds.state_edge_rank[sl.offset + flat_to_slot[j]] = rank_buf[j];
         __threadfence();
     }
-    return true;
+    return ExactHashStatus::kOk;
 }
 
 // Memory the scratch pool may take. Slot size grows with state size, so this trades

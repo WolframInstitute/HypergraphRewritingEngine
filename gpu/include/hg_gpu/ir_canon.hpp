@@ -59,9 +59,38 @@ void compute_state_ir_hashes_range(const EngineState& engine,
 // Returns false when the arena is exhausted or the search wants more depth than the device
 // attempts. Both are capacity overflows -- record the warning and return partial work, never a
 // coarser hash, and never a host round trip to grow.
-__device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
-                                        DeviceArena::View arena,
-                                        uint32_t*& slot, uint64_t& slot_words,
-                                        uint64_t& out_hash, bool want_ranks = false);
+// Why an exact hash could not be produced. Carried rather than collapsed to a bool because the
+// three causes call for three different responses, and treating them alike made a recoverable
+// capacity failure indistinguishable from a fixed kernel limit:
+//
+//   kArenaExhausted   the arena had no slot of the size this state needs. The arena is sized
+//                     from the config, so growing the config is a real remedy -- the host's
+//                     grow-and-retry treats it as retryable.
+//   kDepthExceeded    the individualization search wanted to go deeper than the device
+//                     attempts. The depth is a constant the slot is shaped for, so growing
+//                     cannot help.
+//   kMalformedState   the flattening did not fit a shape sized from this state's own counts,
+//                     which cannot happen; reported rather than silently hashing something else.
+enum class ExactHashStatus : uint8_t {
+    kOk = 0,
+    kArenaExhausted,
+    kDepthExceeded,
+    kMalformedState,
+};
+
+__device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
+                                                   DeviceArena::View arena,
+                                                   uint32_t*& slot, uint64_t& slot_words,
+                                                   uint64_t& out_hash, bool want_ranks = false);
+
+// The ErrorKind a failed exact hash should be recorded as. One place, so a new call site cannot
+// pick a different mapping and re-conflate what this separation exists to keep apart.
+HG_HD inline ErrorKind error_kind_for(ExactHashStatus s) {
+    switch (s) {
+        case ExactHashStatus::kArenaExhausted: return ErrorKind::kIRArenaExhausted;
+        case ExactHashStatus::kDepthExceeded:  return ErrorKind::kIRDepthExceeded;
+        default:                               return ErrorKind::kScratchOverflow;
+    }
+}
 
 }  // namespace hg_gpu

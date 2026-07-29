@@ -34,8 +34,10 @@ __global__ void k_fill_exact_and_ranks(DeviceState ds, uint32_t lo, uint32_t hi,
             ds.state_exact_hash[sid] = ds.state_canonical_hash[sid];
             continue;
         }
-        if (!state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, want_ranks)) {
-            ds.errors.record(ErrorKind::kScratchOverflow);
+        const ExactHashStatus st =
+            state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, want_ranks);
+        if (st != ExactHashStatus::kOk) {
+            ds.errors.record(error_kind_for(st));
             continue;
         }
         ds.state_exact_hash[sid] = exact;
