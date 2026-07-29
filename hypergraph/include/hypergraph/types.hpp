@@ -9,6 +9,7 @@
 
 #include "bitset.hpp"
 #include "hgcommon/core.hpp"
+#include "hgcommon/event_core.hpp"
 
 namespace hypergraph {
 
@@ -555,24 +556,19 @@ struct BranchialEdge {
 // Corresponds to Multicomputation's CanonicalEventFunction key selection.
 // When 0 (None), no event canonicalization occurs.
 
-enum EventSignatureKey : uint8_t {
-    EventKey_InputState     = 1 << 0,  // Canonical input state ID
-    EventKey_OutputState    = 1 << 1,  // Canonical output state ID
-    EventKey_Step           = 1 << 2,  // Evolution step number
-    EventKey_Rule           = 1 << 3,  // Rule index
-    EventKey_ConsumedEdges  = 1 << 4,  // Canonical positions of consumed edges
-    EventKey_ProducedEdges  = 1 << 5,  // Canonical positions of produced edges
-};
-
-using EventSignatureKeys = uint8_t;
-
-// Presets matching Multicomputation's CanonicalEventFunction modes
-constexpr EventSignatureKeys EVENT_SIG_NONE = 0;
-constexpr EventSignatureKeys EVENT_SIG_FULL =
-    EventKey_InputState | EventKey_OutputState;
-constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
-    EventKey_InputState | EventKey_OutputState | EventKey_Step |
-    EventKey_ConsumedEdges | EventKey_ProducedEdges;
+// The key bits, the presets and the signature rule live in hgcommon so the device computes
+// event identity the same way; these names keep working unqualified.
+using hgcommon::EventSignatureKey;
+using hgcommon::EventSignatureKeys;
+using hgcommon::EventKey_InputState;
+using hgcommon::EventKey_OutputState;
+using hgcommon::EventKey_Step;
+using hgcommon::EventKey_Rule;
+using hgcommon::EventKey_ConsumedEdges;
+using hgcommon::EventKey_ProducedEdges;
+using hgcommon::EVENT_SIG_NONE;
+using hgcommon::EVENT_SIG_FULL;
+using hgcommon::EVENT_SIG_AUTOMATIC;
 
 // =============================================================================
 // StateCanonicalizationMode: Controls state canonicalization/deduplication

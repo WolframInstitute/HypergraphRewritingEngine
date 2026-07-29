@@ -436,70 +436,39 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
         StateId canonical_output = get_canonical_state_for_event(output_state);
         const State& canonical_out_state = get_state(canonical_output);
 
-        uint64_t sig_key = FNV_OFFSET;
-
-        // Add isomorphism-invariant state hashes to signature if requested
-        if (keys & EventKey_InputState) {
-            uint64_t input_hash = get_or_compute_canonical_hash(input_state);
-            sig_key = fnv_hash(sig_key, input_hash);
-        }
-        if (keys & EventKey_OutputState) {
-            uint64_t output_hash = get_or_compute_canonical_hash(output_state);
-            sig_key = fnv_hash(sig_key, output_hash);
-        }
-        if (keys & EventKey_Step) {
-            sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_out_state.step));
-        }
-        if (keys & EventKey_Rule) {
-            sig_key = fnv_hash(sig_key, static_cast<uint64_t>(rule_index));
-        }
-
-        // Add edge signatures if requested.
-        //
-        // A consumed or produced edge is identified by its canonical RANK in its own state's
-        // canonical labeling -- the position it takes when that state's edges are ordered by
-        // (canonical content, original index). This is the definition Positional event
-        // identity carries (reference/MultiwayReference.wl, eventSigAutomaticPositional), and
-        // the reason it is stated over the state's OWN labeling is that no representative
-        // state then enters the identity. Resolving the edges through a representative
-        // instead makes the event identity follow whichever state the representative map
-        // happened to hold, which moves with the state-identity mode: measured on the
-        // binary-growth corpus case as 8 events under Full against 6 under Automatic, where
-        // the reference gives 8 under both.
-        if (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) {
-
-            // Map edges to canonical equivalents and compute signatures
-            // A miss means no edge correspondence was found, and the raw edge id goes into
-            // the signature instead. Raw ids are run-local and carry no isomorphism meaning,
-            // so such a signature is not an invariant of the event -- it is reproducible for a
-            // fixed schedule and nothing more. Counted rather than substituted silently:
-            // event_signature_raw_fallbacks() reports how many, which is what lets a caller
-            // tell a canonical event count from an approximate one.
-            if (keys & EventKey_ConsumedEdges) {
-                for (uint8_t i = 0; i < num_consumed; ++i) {
-                    uint32_t r = edge_rank_in_state(input_state, consumed[i]);
-                    if (r == UINT32_MAX) {
-                        event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-                        r = consumed[i];
-                    }
-                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(r));
+        // Ranks of the consumed and produced edges, in match and RHS order. A missing rank
+        // means no rank table for that state; the raw edge id stands in and is COUNTED,
+        // because such a signature is not an isomorphism invariant and a caller comparing
+        // event counts across runs needs to know it happened.
+        uint32_t consumed_ranks[MAX_PATTERN_EDGES];
+        uint32_t produced_ranks[MAX_PATTERN_EDGES];
+        if (keys & EventKey_ConsumedEdges) {
+            for (uint8_t i = 0; i < num_consumed; ++i) {
+                uint32_t r = edge_rank_in_state(input_state, consumed[i]);
+                if (r == UINT32_MAX) {
+                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                    r = consumed[i];
                 }
+                consumed_ranks[i] = r;
             }
-
-            if (keys & EventKey_ProducedEdges) {
-                for (uint8_t i = 0; i < num_produced; ++i) {
-                    uint32_t r = edge_rank_in_state(output_state, produced[i]);
-                    if (r == UINT32_MAX) {
-                        event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-                        r = produced[i];
-                    }
-                    sig_key = fnv_hash(sig_key, static_cast<uint64_t>(r));
+        }
+        if (keys & EventKey_ProducedEdges) {
+            for (uint8_t i = 0; i < num_produced; ++i) {
+                uint32_t r = edge_rank_in_state(output_state, produced[i]);
+                if (r == UINT32_MAX) {
+                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                    r = produced[i];
                 }
+                produced_ranks[i] = r;
             }
         }
 
-        // Avoid key=0 (reserved as EMPTY_KEY in ConcurrentMap)
-        if (sig_key == 0 || sig_key == FNV_OFFSET) sig_key = 1;
+        const uint64_t sig_key = hgcommon::event_signature(
+            keys,
+            (keys & EventKey_InputState)  ? get_or_compute_canonical_hash(input_state)  : 0,
+            (keys & EventKey_OutputState) ? get_or_compute_canonical_hash(output_state) : 0,
+            canonical_out_state.step, rule_index,
+            consumed_ranks, num_consumed, produced_ranks, num_produced);
 
         // Try to insert this signature
         auto [existing_or_new, was_inserted] = canonical_event_map_.insert_if_absent_waiting(sig_key, eid);
