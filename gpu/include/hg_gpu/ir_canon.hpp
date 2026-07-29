@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 
+#include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/types.hpp"
 
@@ -18,9 +19,10 @@ namespace hg_gpu {
 // Each thread owns one slot of a device scratch pool, holding the flattened state and the
 // core's working buffers.
 //
-// A state that exceeds the slot's bounds (kMaxIRVerts / kMaxIREdges / kMaxIROccs in the .cu)
-// or whose individualization search wants more depth than the pool is sized for falls back to
-// the 1-WL hash, and that hash then serves as the state's DEDUP KEY.
+// The range entry point sizes its slot to the largest state in the range, so size alone does
+// not force a fallback. A state whose individualization search wants more depth than the pool
+// is sized for, or a range whose single slot exceeds the whole pool budget, falls back to the
+// 1-WL hash, and that hash then serves as the state's DEDUP KEY.
 //
 // That is a correctness exposure, not a tuning knob. Isomorphism-invariance is one
 // directional: WL never separates two isomorphic states, but it does MERGE non-isomorphic
@@ -40,5 +42,26 @@ uint32_t last_ir_degraded_states();
 void compute_state_ir_hashes_range(const EngineState& engine,
                                    uint32_t lo, uint32_t hi,
                                    uint64_t* out_hashes_device);
+
+// Exact hash of ONE state, for callers with no batch to measure.
+//
+// The range entry point above sizes its slot on the host from the largest state in the range.
+// A device-resident loop has no range: states arrive continuously and the largest is not
+// knowable before the launch. This sizes the slot from THIS state's own edge and occurrence
+// counts and claims it from a device arena, so the exact path has no per-state ceiling and
+// therefore no 1-WL fallback -- the fallback's merge hazard is the reason the ceiling had to
+// go.
+//
+// `slot`/`slot_words` are the caller's scratch, carried across items: a worker reuses its slot
+// and claims again only when the next state needs a larger one. Initialise them to
+// {nullptr, 0}.
+//
+// Returns false when the arena is exhausted or the search wants more depth than the device
+// attempts. Both are capacity overflows -- record the warning and return partial work, never a
+// coarser hash, and never a host round trip to grow.
+__device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
+                                        DeviceArena::View arena,
+                                        uint32_t*& slot, uint64_t& slot_words,
+                                        uint64_t& out_hash);
 
 }  // namespace hg_gpu

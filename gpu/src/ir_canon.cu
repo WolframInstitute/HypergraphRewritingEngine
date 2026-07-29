@@ -1,4 +1,5 @@
 #include "hg_gpu/ir_canon.hpp"
+#include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/wl_hash.hpp"   // wl_hash_state_device — the size-tolerant fallback
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
 
@@ -11,8 +12,13 @@ namespace hg_gpu {
 
 namespace {
 
-// Slot geometry for one thread, sized from the batch rather than fixed. Every field a
-// flattened state needs, then the shared core's scratch behind it.
+// Slot geometry for one thread: every field a flattened state needs, then the shared core's
+// scratch behind it. Sized from the states that will use it, never from a constant, because a
+// state past a fixed bound would have to be keyed by the 1-WL hash and that MERGES
+// non-isomorphic states.
+//
+// The slot lives in global memory: shared memory cannot hold the search's per-level
+// partitions, and the core wants one contiguous span.
 struct IrSlotShape {
     uint32_t cap_verts = 0;
     uint32_t cap_edges = 0;
@@ -30,32 +36,6 @@ struct IrSlotShape {
     // Even, so every slot base keeps the 8-byte alignment the pool starts with.
     HG_HD uint64_t stride() const { return (words() + 1ull) & ~1ull; }
 };
-
-// Legacy fast-path bounds, retained only as the DEFAULT shape when a batch's size is not
-// known -- e.g. the single-state host entry point.
-constexpr uint32_t kMaxIRVerts = 128;
-constexpr uint32_t kMaxIREdges = 128;
-constexpr uint32_t kMaxIROccs  = 256;
-// Per-thread global-memory slot: the flattened state, then the shared core's scratch.
-// Shared memory cannot hold the search's per-level partitions, and the core wants one
-// contiguous span, so the slot is carved from a device pool the launcher owns.
-HG_HD inline uint64_t ir_slot_words(uint32_t max_verts, uint32_t max_edges,
-                                    uint32_t max_occs, uint32_t depth) {
-    return (max_edges + 3) / 4          // ea, as bytes rounded to a word
-         + (max_edges + 1)              // eoff
-         + max_occs                     // ev
-         + max_verts                    // verts_local: the thread's local-index table
-         + hgcommon::ir_scratch_words(max_verts, max_edges, max_occs, depth,
-                                      hgcommon::IR_DEVICE_GENERATORS)
-         + 8;                           // alignment slack
-}
-
-// Slot stride, rounded so every slot base keeps the 8-byte alignment the pool starts with --
-// a uint64 view of a 4-byte-aligned slot faults on the device.
-HG_HD inline uint64_t ir_slot_stride(uint32_t max_verts, uint32_t max_edges,
-                                     uint32_t max_occs, uint32_t depth) {
-    return (ir_slot_words(max_verts, max_edges, max_occs, depth) + 1ull) & ~1ull;
-}
 
 // Depth the device attempts. A state discrete after refinement needs none of it; this bounds
 // what a state that does search may use, and the pool is sized for it.
@@ -198,6 +178,77 @@ void check(cudaError_t err, const char* what) {
 }
 
 }  // namespace
+
+// Exact canonical hash of ONE state, sized and allocated entirely on device.
+//
+// The batched entry point measures a range on the host and shapes one slot to the largest
+// state in it. A persistent loop has no range -- states arrive continuously and the largest is
+// not knowable before the run -- so this sizes the slot from THIS state's own edge and
+// occurrence counts and takes it from a device arena. No host in the loop, and no fixed
+// per-state ceiling, which is what keeps the 1-WL fallback out of the exact path entirely.
+//
+// `slot` and `slot_words` are the caller's reusable scratch, carried across items so a worker
+// claims again only when it needs a LARGER slot. Returns false when the arena is exhausted;
+// the caller records that as a capacity overflow and returns partial work, because growing the
+// arena would need the host.
+__device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
+                                        DeviceArena::View arena,
+                                        uint32_t*& slot, uint64_t& slot_words,
+                                        uint64_t& out_hash) {
+    // Measure this state: exact counts, not a bound. Occurrences are summed rather than taken
+    // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
+    uint32_t n_edges = 0, total_occ = 0;
+    {
+        if (sid >= ds.max_states) { out_hash = 0; return true; }
+        StateEdgeSlice sl = ds.state_edge_slices[sid];
+        const uint32_t live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+        for (uint32_t k = 0; k < sl.count; ++k) {
+            EdgeId eid = ds.state_edge_ids[sl.offset + k];
+            if (eid >= live || eid >= ds.edge_pool.capacity) continue;
+            const Edge& e = ds.edge_pool.at(eid);
+            if (e.arity == 0 || e.arity > kMaxArity) continue;
+            ++n_edges; total_occ += e.arity;
+        }
+    }
+    if (n_edges == 0) { out_hash = 0; return true; }
+
+    IrSlotShape shape;
+    shape.cap_edges = n_edges + 1;
+    shape.cap_occs  = total_occ + 1;
+    shape.cap_verts = total_occ + 1;   // every occurrence could be a distinct vertex
+    shape.depth     = kIRDeviceDepth;
+
+    const uint64_t need = shape.stride();
+    if (need > slot_words) {
+        // Grow. The previous slot is abandoned rather than freed -- a bump arena has no free,
+        // and with each block growing at most to its own peak the waste is bounded.
+        uint32_t* bigger = arena.claim(need);
+        if (!bigger) return false;
+        slot = bigger;
+        slot_words = need;
+    }
+
+    uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
+    uint32_t fn_edges, n_verts, fn_occ;
+    if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
+                       verts_local)) {
+        // Cannot happen: the shape was sized from this state's own counts. Treated as an
+        // arena failure rather than silently hashing something else.
+        return false;
+    }
+
+    uint32_t* scratch = verts_local + shape.cap_verts;
+    hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
+    for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
+        r = hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
+                                        scratch, depth, nullptr,
+                                        hgcommon::IR_DEVICE_GENERATORS);
+        if (r.status != hgcommon::IR_NEED_DEPTH) break;
+    }
+    if (r.status == hgcommon::IR_NEED_DEPTH) return false;
+    out_hash = r.hash;
+    return true;
+}
 
 // Memory the scratch pool may take. Slot size grows with state size, so this trades
 // concurrency against state size rather than refusing large states: a batch of big states

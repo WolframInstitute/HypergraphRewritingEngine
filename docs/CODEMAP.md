@@ -121,13 +121,14 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`hash_table.hpp`** -- `ConcurrentMap<K,V,EMPTY,LOCKED>` (open-addressing linear probe; `DeviceView::lookup[_waiting]`/`insert_if_absent`)
 - **`ring_buffer.hpp`** -- `RingBuffer<T>` (MPMC ring for inter-kernel work queues)
 - **`termination.hpp`** -- `TerminationDetector` (per-role quiescence for a persistent-kernel model)
+- **`device_arena.hpp`** -- `DeviceArena` (bump allocator the device claims from; scratch whose size is only known once the work is in hand)
 - **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
 - **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
 - **`warp_ops.hpp`** -- `VWarp<N>` (cooperative-groups tile ops: ballot/reduce/scan/compact/sorted-intersect)
 - **`partial_match.hpp`** -- `PartialMatch` (per-warp DFS match frame in registers/shared)
 - **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
 - **`rewrite.hpp`** -- host `run_rewrite_kernel[_with][_nosync]`
-- **`wl_hash.hpp` / `ir_canon.hpp`** -- device `wl_hash_state_device`; host `compute_state_wl/ir_hashes*`
+- **`wl_hash.hpp` / `ir_canon.hpp`** -- device `wl_hash_state_device`, `state_exact_hash_device` (arena-backed, sized per state); host `compute_state_wl/ir_hashes*`
 - **`initial_upload.hpp`** -- host `rebuild_indices`/`upload_initial_state[s]`
 - **`engine_state.hpp`** -- `DeviceState` (POD passed to kernels) + `EngineState` (host owner of all device pools/indices, readback helpers)
 - **`evolve.hpp`** -- the public host API: DTOs `RewriteRule`/`EvolveInput`/`CanonicalState`/`Event`/`CausalEdge`/`BranchialEdge`/`EvolveResult`, `EngineConfig`; classes `Engine` (`run`/`reset`) and `PersistentEvolver` (grow-and-retry reusing one Engine); `evolve()`, `config_from_input()`, `estimated_device_bytes()`
@@ -137,7 +138,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_dedup_and_append`/`k_fill_unique_keys`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
 - **`match.cu`** -- match kernels `k_match_one_state`, `k_match_batch` (DFS binding LHS edges, Wolfram non-distinct semantics, CSR-slice/signature/pivot-inverted candidate seeding); host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
 - **`rewrite.cu`** -- `k_rewrite` (preflight-reserve pools, build RHS/new-state CSR, write Event, causal+branchial rendezvous with online TR); host `run_rewrite_kernel*`
-- **`ir_canon.cu`** -- `k_ir_canon_range` (one block per state -> shared `IRBlock`, 1-WL refinement, discrete labelling, canonical hash; WL fallback); host `compute_state_ir_hashes_range`
+- **`ir_canon.cu`** -- `k_ir_canon_range` (one thread per state over a batch-sized slot pool, exact IR via `hgcommon`, 1-WL fallback with a degraded count) + device `state_exact_hash_device` (arena-claimed slot sized per state, no fallback); host `compute_state_ir_hashes_range`
 - **`wl_hash.cu`** -- device `wl_hash_state_device`/`content_hash_state_device` (delegates to `hgcommon::wl_canonical_hash`); kernels `k_wl_hash_states`/`k_content_hash_range`
 - **`initial_upload.cu`** -- `k_init_indices`; host `upload_initial_states`/`rebuild_indices`
 
