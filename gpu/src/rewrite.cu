@@ -243,14 +243,14 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
 // same implementation rather than growing a second copy; the helpers it calls stay file-local,
 // which is fine since they are defined above it here.
 //
-// Returns the state it created, or INVALID_ID when a capacity claim failed -- which a scheduler
-// that must hash and re-enqueue its own output needs, and which the level-synchronous one
-// ignores because it takes the whole [before, after) range of the step instead.
+// Returns the state it created AND the event it wrote, or a default-constructed AppliedMatch
+// when a capacity claim failed. A scheduler that finishes the work itself needs both: the state
+// to hash and re-enqueue, the event to stamp an identity onto once that hash exists.
 // See docs/GPU_PERSISTENT_DESIGN.md.
-__device__ StateId apply_one_match(DeviceState       ds,
-                                   const DeviceRule* rules,
-                                   const MatchRecord& m,
-                                   uint32_t          step) {
+__device__ AppliedMatch apply_one_match(DeviceState       ds,
+                                        const DeviceRule* rules,
+                                        const MatchRecord& m,
+                                        uint32_t          step) {
     const DeviceRule&  rule = rules[m.rule_id];
 
 
@@ -296,7 +296,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
         for (;;) {
             if (cur >= ds.max_states) {
                 ds.errors.record(ErrorKind::kStatePoolFull);
-                return INVALID_ID;
+                return AppliedMatch{};
             }
             uint32_t prev = atomicCAS(ds.state_count, cur, cur + 1u);
             if (prev == cur) { new_sid = cur; break; }
@@ -308,7 +308,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
     EventId my_event = ds.event_pool.claim();
     if (my_event == Pool<DeviceEvent>::kInvalid) {
         ds.errors.record(ErrorKind::kEventPoolFull);
-        return INVALID_ID;
+        return AppliedMatch{};
     }
 
     // Reserve all RHS edges in one consecutive run.
@@ -317,7 +317,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
         : ds.edge_pool.claim_n(rule.num_rhs_edges);
     if (rule.num_rhs_edges > 0 && first_eid == Pool<Edge>::kInvalid) {
         ds.errors.record(ErrorKind::kEdgePoolFull);
-        return INVALID_ID;
+        return AppliedMatch{};
     }
     // Reserve the new state's CSR edge-list slice up front. Size is
     // parent.count - n_consumed + n_produced. Failure to reserve means
@@ -332,7 +332,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
     if (new_slice_count > 0 &&
         new_slice_offset + new_slice_count > ds.state_edge_ids_capacity) {
         ds.errors.record(ErrorKind::kStatePoolFull);
-        return INVALID_ID;
+        return AppliedMatch{};
     }
 
     // Reserve all vertex slots in one consecutive run.
@@ -341,7 +341,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
         : ds.vertex_pool.claim_n(vert_slots_needed);
     if (vert_slots_needed > 0 && first_vert_off == Pool<VertexId>::kInvalid) {
         ds.errors.record(ErrorKind::kVertexPoolFull);
-        return INVALID_ID;
+        return AppliedMatch{};
     }
 
     // Reserve fresh vertex IDs (vertex_high_water bump).
@@ -352,7 +352,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
         // vertex_inverted_index keys range over [0, num_keys).
         if (vid_base + num_new_vars > ds.vertex_inverted_index.list.num_keys) {
             ds.errors.record(ErrorKind::kVertexPoolFull);
-            return INVALID_ID;
+            return AppliedMatch{};
         }
         // The fresh ids are consecutive from the high-water bump; which variable takes which
         // is the rewrite's rule and lives in hgcommon.
@@ -390,7 +390,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
         if (!hgcommon::resolve_rhs_vertices(re.vars, re.arity, local_binding, local_binding,
                                             local_verts)) {
             ds.errors.record(ErrorKind::kVertexPoolFull);
-            return INVALID_ID;
+            return AppliedMatch{};
         }
         for (uint8_t i = 0; i < re.arity; ++i) {
             ds.vertex_pool.at(vert_off + i) = local_verts[i];
@@ -544,7 +544,7 @@ __device__ StateId apply_one_match(DeviceState       ds,
     register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
     #endif
 
-    return new_sid;
+    return AppliedMatch{new_sid, my_event};
 }
 
 namespace {

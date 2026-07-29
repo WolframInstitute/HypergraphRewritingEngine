@@ -196,7 +196,7 @@ __global__ void k_persistent_match_rewrite(
             if (threadIdx.x == 0) {
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
-                apply_one_match(ds, rules, rec, rec.step);
+                (void)apply_one_match(ds, rules, rec, rec.step);
             }
             __syncthreads();
             continue;
@@ -253,6 +253,7 @@ __global__ void k_persistent_evolve(
         uint32_t explore_threshold_u32,
         uint64_t explore_seed,
         uint32_t max_steps,
+        EventSignatureKeys event_keys,
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term) {
 
@@ -296,6 +297,7 @@ __global__ void k_persistent_evolve(
     __shared__ bool     have;
     __shared__ uint32_t claimed;
     __shared__ uint32_t child_sid;
+    __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
     __shared__ bool     expand_child;
     __shared__ bool     run_rule_inline;
@@ -316,7 +318,9 @@ __global__ void k_persistent_evolve(
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
                 const uint32_t step = rec.step;
-                child_sid    = apply_one_match(ds, rules, rec, step);
+                const AppliedMatch applied = apply_one_match(ds, rules, rec, step);
+                child_sid    = applied.state;
+                child_event  = applied.event;
                 child_step   = step + 1u;
                 expand_child = false;
 
@@ -334,11 +338,21 @@ __global__ void k_persistent_evolve(
                         // needs it as an input hash, and that read happens on another block.
                         ds.state_canonical_hash[child_sid] = h;
 
-                        // Both halves an event identity needs now exist here: the input hash,
-                        // published when the parent was created, and the output hash just
-                        // computed. Stamping the signature is the remaining half of #52 and
-                        // needs apply_one_match to report the EVENT it wrote, not only the
-                        // state -- it currently reports the state alone.
+                        // The event identity, at the only point where both halves exist: the
+                        // input hash, published when the parent was created, and the output
+                        // hash just computed. The rewrite wrote this event BEFORE its output
+                        // state was canonicalized, which is precisely why a scheduler with a
+                        // phase boundary between rewriting and hashing cannot fill it in --
+                        // and why the persistent one can.
+                        if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
+                            ds.event_pool.at(child_event).signature =
+                                hgcommon::event_signature(
+                                    event_keys,
+                                    ds.state_canonical_hash[rec.state_id], h,
+                                    step, rec.rule_id,
+                                    /*consumed_ranks=*/nullptr, 0,
+                                    /*produced_ranks=*/nullptr, 0);
+                        }
 
                         expand_child = child_step < max_steps &&
                                        state_survives_dedup(child_sid, h, dedup_map, dedup,
@@ -525,6 +539,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             bool dedup,
                                             uint32_t explore_threshold_u32,
                                             uint64_t explore_seed,
+                                            EventSignatureKeys event_keys,
                                             uint32_t blocks) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
@@ -592,7 +607,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     k_persistent_evolve<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
-        explore_threshold_u32, explore_seed, max_steps, arena.view(), term.view());
+        explore_threshold_u32, explore_seed, max_steps, event_keys, arena.view(), term.view());
     check(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();

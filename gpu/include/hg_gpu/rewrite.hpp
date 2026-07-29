@@ -27,11 +27,17 @@ namespace hg_gpu {
 // emits the event. Exposed so a scheduler in another translation unit drives this
 // implementation rather than growing a second copy of it.
 //
-// Returns the state it created, or INVALID_ID when a capacity claim failed. A scheduler that
-// must hash and re-enqueue its own output needs the id; the level-synchronous one discards it
-// and takes the whole [before, after) state range of the step instead.
-__device__ StateId apply_one_match(DeviceState ds, const DeviceRule* rules,
-                                   const MatchRecord& m, uint32_t step);
+// What one application produced. Both halves are needed by a scheduler that finishes the work
+// itself: the STATE to hash and re-enqueue, and the EVENT to stamp an identity onto once that
+// hash exists. The level-synchronous scheduler discards both and takes the step's whole
+// [before, after) range instead.
+struct AppliedMatch {
+    StateId state = INVALID_ID;
+    EventId event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed
+};
+
+__device__ AppliedMatch apply_one_match(DeviceState ds, const DeviceRule* rules,
+                                        const MatchRecord& m, uint32_t step);
 
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,

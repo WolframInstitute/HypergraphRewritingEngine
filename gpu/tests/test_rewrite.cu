@@ -319,6 +319,83 @@ TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
         << "out of an unhashed state would have no input hash to build an event identity from";
 }
 
+// The device computes an event identity, and it is the one hgcommon defines.
+//
+// The level-synchronous scheduler cannot do this at all: it writes the event in the rewrite
+// kernel, before the output state has been canonicalized, and by the time the hash exists the
+// kernel that knew which event it belonged to has returned. The persistent scheduler has both
+// at one point -- the input hash published when the parent was created, the output hash just
+// computed for dedup -- which is what makes the identity reachable rather than merely desirable.
+//
+// Checked against hgcommon::event_signature recomputed on the host from the same inputs, so
+// this compares the device against the SHARED RULE rather than against itself. A device that
+// invented its own mixing would satisfy any self-consistency check and fail this one.
+TEST(Rewrite, PersistentEvolveStampsTheSharedEventIdentity) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+    const uint32_t kSteps = 3;
+
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = init;
+    in.num_steps = kSteps;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    hg_gpu::EngineState engine(cfg);
+    hg_gpu::upload_initial_state(engine, init);
+
+    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+    hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+    matches.reset();
+    hg_gpu::DeviceArena arena(64ull << 20);
+
+    hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+                                  /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                  hgcommon::EVENT_SIG_FULL, /*blocks=*/9);
+
+    const uint32_t ne = engine.num_events_host();
+    ASSERT_GT(ne, 1u) << "no events, so the comparison is vacuous";
+
+    std::vector<hg_gpu::DeviceEvent> events(ne);
+    cudaMemcpy(events.data(), engine.device().event_pool.data,
+               sizeof(hg_gpu::DeviceEvent) * ne, cudaMemcpyDeviceToHost);
+
+    const uint32_t ns = engine.num_states_host();
+    std::vector<uint64_t> hashes(ns);
+    cudaMemcpy(hashes.data(), engine.device().state_canonical_hash,
+               sizeof(uint64_t) * ns, cudaMemcpyDeviceToHost);
+
+    size_t stamped = 0;
+    for (uint32_t e = 0; e < ne; ++e) {
+        const auto& ev = events[e];
+        if (ev.id == hg_gpu::INVALID_ID) continue;
+        ASSERT_LT(ev.input_state, ns);
+        ASSERT_LT(ev.output_state, ns);
+        const uint64_t expect = hgcommon::event_signature(
+            hgcommon::EVENT_SIG_FULL, hashes[ev.input_state], hashes[ev.output_state],
+            ev.step, ev.rule, nullptr, 0, nullptr, 0);
+        EXPECT_EQ(ev.signature, expect)
+            << "event " << e << ": the device's identity is not the shared rule's";
+        ++stamped;
+    }
+    EXPECT_EQ(stamped, ne) << "some events carry no identity at all";
+
+    // Isomorphic transitions must SHARE an identity -- that is what the identity is for. With a
+    // branching rule at this depth the run necessarily reaches the same canonical state by more
+    // than one route, so distinct events must collapse to fewer distinct signatures.
+    std::set<uint64_t> distinct;
+    for (const auto& ev : events) if (ev.id != hg_gpu::INVALID_ID) distinct.insert(ev.signature);
+    EXPECT_LT(distinct.size(), static_cast<size_t>(ne))
+        << "every event got its own identity, so the signature is distinguishing something it "
+        << "should not -- an identity that never collapses is a serial number";
+}
+
 TEST(Rewrite, WolframCanonicalRuleOneStep) {
     // {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}}
     hg_gpu::RewriteRule r;

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "hgcommon/core.hpp"
+#include "hgcommon/event_core.hpp"
 
 namespace hg_gpu {
 
@@ -11,6 +12,14 @@ using hgcommon::StateId;
 using hgcommon::EventId;
 using hgcommon::MatchId;
 using hgcommon::INVALID_ID;
+
+// The event-identity lattice, shared with the host so a signature means the same thing on
+// either device. See hgcommon/event_core.hpp.
+using hgcommon::EventSignatureKeys;
+using hgcommon::EVENT_SIG_NONE;
+using hgcommon::EVENT_SIG_FULL;
+using hgcommon::EVENT_SIG_AUTOMATIC;
+using hgcommon::EVENT_SIG_TRANSITION;
 using RuleId = uint32_t;  // GPU-local width (host engine uses a 16-bit RuleIndex)
 
 // =============================================================================
@@ -59,6 +68,11 @@ constexpr uint32_t kMaxWlRefineIters = 16;
 struct DeviceEvent {
     EventId id              = INVALID_ID;
     EventId canonical_id    = INVALID_ID;  // INVALID_ID when this event is itself canonical
+    // Isomorphism-invariant identity, from hgcommon::event_signature. 0 until stamped, and it
+    // can only be stamped AFTER the output state is canonicalized -- the rewrite writes the
+    // event before that hash exists, which is why a scheduler with a phase boundary between
+    // rewriting and hashing cannot fill this in at all.
+    uint64_t signature      = 0;
     StateId input_state     = INVALID_ID;
     StateId output_state    = INVALID_ID;
     RuleId  rule            = 0;
