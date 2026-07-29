@@ -422,17 +422,6 @@ class ParallelEvolutionEngine {
     // point mass, destroying the feature the sample exists to preserve.
     double transition_rate_{1.0};
 
-    // Reservoir size for sampled evolution, 0 = no sampling. The population is the matches of
-    // ONE STATE -- a population that completes locally, which is what lets sampling run with no
-    // step barrier at all (docs/ASYNC_SAMPLING_DESIGN.md). A per-step count is not expressible
-    // without one.
-    size_t matches_per_state_{0};
-
-    // Early termination: stop pattern matching for a job when its reservoir is full
-    // Trades strict uniform sampling (over ALL matches) for speed
-    // When true: uniform over matches found before termination (faster, less uniform)
-    // When false: uniform over ALL possible matches (slower, strictly uniform)
-    bool early_terminate_on_reservoir_full_{false};
 
     // Genesis events: create synthetic events for initial states that produce
     // all initial edges. This enables causal edges from initial state to gen 1.
@@ -498,26 +487,12 @@ class ParallelEvolutionEngine {
     // nothing global is consulted.
     static constexpr uint64_t MATCH_JOIN_EMPTY  = (1ULL << 62) + 700;
     static constexpr uint64_t MATCH_JOIN_LOCKED = (1ULL << 62) + 701;
-    // One retained draw. Position and payload move together under a single pointer CAS: the
-    // two cannot be separate atomics, because a lower-positioned writer could publish its
-    // position first and its payload second, leaving the slot holding a winning position
-    // beside a losing match.
-    struct ReservoirDraw {
-        size_t position;
-        const MatchCore* core;
-    };
-    using ReservoirSlot = std::atomic<ReservoirDraw*>;
-
     struct MatchJoin {
         std::atomic<size_t> pushed{0};
         std::atomic<size_t> completed{0};
-        // Matches this state has accepted (post-dedup). The reservoir needs it as Algorithm R's
-        // stream position; the drain gate needs it to show it fired after the last one.
+        // Matches this state has accepted, post-dedup. The drain gate needs it to show the
+        // drain fired after the last one rather than merely once.
         std::atomic<size_t> matches{0};
-        // k slots, allocated on first use when matches_per_state_ > 0. A slot is won by the
-        // HIGHEST stream position that draws it, never by whoever stores last -- which is what
-        // makes the sample independent of the schedule rather than merely unbiased on average.
-        std::atomic<ReservoirSlot*> reservoir{nullptr};
     };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 
@@ -652,25 +627,9 @@ public:
     void set_transition_rate(double q) { transition_rate_ = q; }
     double transition_rate() const { return transition_rate_; }
 
-    // DOMAIN: exact only with match forwarding DISABLED. A forwarded match reaches a state
-    // through push_match_to_children / forward_matches_from_single_ancestor_eager, which submit
-    // a rewrite directly, so the reservoir sees only the matches this state DISCOVERED. With
-    // forwarding on and k=4, a 24-edge path at depth 5 produces 2,038,505 states instead of
-    // 1365 (docs/ASYNC_SAMPLING_DESIGN.md §3a).
-    //
-    // Routing forwarded matches through it would not repair that: an ancestor keeps forwarding
-    // to a state long after that state's own match tree drained, so the population closes only
-    // when the whole ancestor chain has, and it stops being local. Use set_match_rate for the
-    // general case -- a rate needs no population at all.
-    //
-    // Not to be confused with the hard caps: set_max_states_per_step and
-    // set_max_successor_states_per_parent truncate by arrival order and are not samples.
-    void set_matches_per_state(size_t k) { matches_per_state_ = k; }
-    size_t matches_per_state() const { return matches_per_state_; }
-
     // Called once per state, after that state's last match task and before any of its matches
-    // could be superseded. This is where anything keyed on "the matches of one state" as a set
-    // belongs -- a reservoir first of all. Set it before evolve(); it runs on a worker thread.
+    // could be superseded. Anything keyed on "the matches of one state" as a set belongs here.
+    // Set it before evolve(); it runs on a worker thread.
     void set_on_state_matches_complete(std::function<void(StateId, uint32_t)> cb) {
         on_state_matches_complete_ = std::move(cb);
     }
@@ -679,10 +638,6 @@ public:
     // Matches this state has accepted so far. Read inside the drain callback it is that state's
     // final count, which is what makes "the drain fired after the last match" checkable.
     size_t matches_found_for_state(StateId state) const;
-
-    void set_early_terminate_on_reservoir_full(bool enable) {
-        early_terminate_on_reservoir_full_ = enable;
-    }
 
     // Quotient exploration: expand each canonical state exactly once, at the
     // shortest depth that reaches it (maintained by lock-free depth relaxation
@@ -792,25 +747,6 @@ public:
     // Overload for multiple initial states (without abort callback)
     // Each initial state is evolved from independently, exploring the full multiway system
     void evolve(const std::vector<std::vector<std::vector<VertexId>>>& initial_states, size_t steps);
-
-    // =========================================================================
-    // Uniform Random Evolution - Step-Synchronized
-    // =========================================================================
-    // Evolves by completing all MATCH tasks at each step, collecting all matches,
-    // randomly selecting which to apply, then completing all REWRITEs before
-    // moving to the next step. This enables uniform random sampling across the
-    // entire multiway system at each generation.
-    //
-    // Parameters:
-    //   initial_edges: Initial hypergraph edges
-    //   steps: Maximum number of evolution steps
-    //   matches_per_step: How many matches to randomly select per step (0 = all)
-
-    void evolve_uniform_random(
-        const std::vector<std::vector<VertexId>>& initial_edges,
-        size_t steps,
-        size_t matches_per_step = 1
-    );
 
 private:
     // Raise whatever a worker latched during the run. wait_for_completion() returns the
@@ -988,10 +924,6 @@ private:
     // forwarding paths -- consults exactly this.
     bool transition_survives(uint64_t transition_key) const;
 
-    bool offer_to_reservoir(StateId state, const MatchRecord& match, size_t n);
-    // Submit rewrites for whatever the reservoir retained. Called only from the drain, so the
-    // population is complete and no later match can displace one of these.
-    void rewrite_reservoir(StateId state, uint32_t step);
 
     // Books one match task's completion however its function exits.
     class MatchTaskGuard {

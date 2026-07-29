@@ -328,9 +328,6 @@ EvolutionResult EvolutionRunner::run_evolution(
     // Batched matching mode
     engine_->set_batched_matching(config.batched_matching);
 
-    // Early termination: stop pattern matching when reservoir is full (speed vs uniformity tradeoff)
-    engine_->set_early_terminate_on_reservoir_full(config.early_terminate_reservoir);
-
     // Parse and add rule
     if (!parse_rule(config.rule)) {
         std::cerr << "Failed to parse rule: " << config.rule << std::endl;
@@ -344,17 +341,14 @@ EvolutionResult EvolutionRunner::run_evolution(
 
     auto evolution_start = std::chrono::high_resolution_clock::now();
 
-    // Run evolution - use uniform random mode if configured
-    if (config.uniform_random) {
-        std::cout << "  Using uniform random mode, matches_per_step=" << config.matches_per_step << std::endl;
-        engine_->evolve_uniform_random(
-            initial_edges,
-            config.max_steps,
-            config.matches_per_step > 0 ? static_cast<size_t>(config.matches_per_step) : 0
-        );
-    } else {
-        engine_->evolve(initial_edges, config.max_steps);
+    // Sampled evolution runs on the one evolve(), with no scheduler of its own: matches_per_step
+    // caps how many states a depth may produce, which is what the step-synchronised path
+    // delivered under that name, and the sampling itself is the transition rate.
+    if (config.uniform_random && config.matches_per_step > 0) {
+        std::cout << "  Sampled mode, states per step <= " << config.matches_per_step << std::endl;
+        engine_->set_max_states_per_step(static_cast<size_t>(config.matches_per_step));
     }
+    engine_->evolve(initial_edges, config.max_steps);
 
     auto evolution_end = std::chrono::high_resolution_clock::now();
     auto evolution_ms = std::chrono::duration<double, std::milli>(evolution_end - evolution_start).count();

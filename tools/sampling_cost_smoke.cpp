@@ -7,7 +7,7 @@
 //   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
 //       -I lockfree_deque/include -I common/include tools/sampling_cost_smoke.cpp \
 //       hypergraph/src/*.cpp -o /tmp/smoke
-// Run: /tmp/smoke <arm: cap|res|fwdon|fwdoff> <rule: growth|pair> <edges> <steps> <threads> <k>
+// Run: /tmp/smoke <arm: cap|rate|ratenofwd|fwdon|fwdoff> <rule> <edges> <steps> <threads> <k>
 
 #include "hypergraph/parallel_evolution.hpp"
 
@@ -45,15 +45,17 @@ int main(int argc, char** argv) {
     e.set_random_seed(12345);
     e.add_rule(r);
     if      (arm == "cap")    e.set_max_successor_states_per_parent(k);
-    else if (arm == "res")    e.set_matches_per_state(k);
+    else if (arm == "rate")   e.set_transition_rate(1.0 / static_cast<double>(k));
     else if (arm == "fwdon")  e.set_match_forwarding(true);
     else if (arm == "fwdoff") e.set_match_forwarding(false);
-    // The reservoir with forwarding disabled. Forwarded matches reach a state through
-    // push_match_to_children / forward_matches_from_single_ancestor_eager, both of which call
-    // submit_rewrite_task directly and so never pass the sampler. Turning forwarding off is
-    // what isolates that: if the reservoir bounds the run here and not with it on, the sampler
-    // is not seeing a state's whole match population.
-    else if (arm == "resnofwd") { e.set_matches_per_state(k); e.set_match_forwarding(false); }
+    // The rate with forwarding disabled. Forwarded matches reach a state through
+    // push_match_to_children / forward_matches_from_single_ancestor_eager, and a sampler that
+    // did not reach those dispatches would bound the run here and not with forwarding on --
+    // which is how the per-state reservoir this arm replaced was caught.
+    else if (arm == "ratenofwd") {
+        e.set_transition_rate(1.0 / static_cast<double>(k));
+        e.set_match_forwarding(false);
+    }
 
     std::printf("evolving...\n");
     const auto t0 = std::chrono::steady_clock::now();

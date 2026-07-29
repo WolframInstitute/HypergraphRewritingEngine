@@ -2,11 +2,12 @@
 //
 // A. WHAT UNIFORMITY COSTS. A uniform k-of-M sample of a state's matches cannot be applied
 //    eagerly: exactly-k needs the rank, the rank needs the population, and an eager decision
-//    knows only its own position. So MatchesPerState defers a state's rewrites to the moment
-//    its match tree drains. The control that isolates exactly that -- and nothing else -- is
-//    MaxSuccessorStatesPerParent at the same k: it also keeps k per parent, but takes the
-//    first k by arrival and applies them eagerly. Same children per parent, same downstream
-//    work; the difference is the deferral and the (biased vs uniform) choice.
+//    knows only its own position. TransitionRate is the shape that survives that -- a rate
+//    decides per transition and needs no population -- and the control is
+//    MaxSuccessorStatesPerParent at the matching expected width: it also bounds successors,
+//    but by arrival order rather than by an independent draw. What separates them is not
+//    speed but what they preserve: a rate keeps the offspring DISTRIBUTION, a cap clips it to
+//    a point mass.
 //
 // B. WHETHER MATCH FORWARDING PAYS. A child inherits its parent's still-valid matches instead
 //    of re-matching. It is the single largest source of concurrency subtlety in the engine
@@ -161,16 +162,16 @@ int main(int argc, char** argv) {
         {"wide/pair/d3",       {pair_rule()}, path(24),     3},
     };
 
-    std::printf("=== A. what uniformity costs: eager first-k cap vs deferred uniform k ===\n");
+    std::printf("=== A. cap vs rate: same expected width, different offspring distribution ===\n");
     std::printf("    cap: MaxSuccessorStatesPerParent=%zu, eager, first-k by arrival\n", k);
-    std::printf("    res: MatchesPerState=%zu, deferred to the state's drain, uniform\n\n", k);
+    std::printf("    rte: TransitionRate=1/%zu, eager, independent per transition\n\n", k);
     for (const auto& w : workloads) {
         compare("A/eagerness", w, threads, reps,
                 "cap", [&](ParallelEvolutionEngine& e) {
                     e.set_max_successor_states_per_parent(k);
                 },
-                "res", [&](ParallelEvolutionEngine& e) {
-                    e.set_matches_per_state(k);
+                "rte", [&](ParallelEvolutionEngine& e) {
+                    e.set_transition_rate(1.0 / static_cast<double>(k));
                 });
     }
 

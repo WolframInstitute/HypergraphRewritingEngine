@@ -187,337 +187,6 @@ void ParallelEvolutionEngine::evolve(
     finalize_evolution();
 }
 
-// =============================================================================
-// Uniform Random Evolution
-// =============================================================================
-
-void ParallelEvolutionEngine::evolve_uniform_random(
-    const std::vector<std::vector<VertexId>>& initial_edges,
-    size_t steps,
-    size_t matches_per_step
-) {
-    if (!hg_ || rules_.empty()) return;
-
-    // Orchestrator-owned buffers (the maps/vectors below) draw from this per-call
-    // arena instead of the system allocator: redirecting THIS (main) thread's
-    // persistent target routes every PVec/PUMap allocation into orch_arena, which is
-    // bulk-freed when the function returns. Worker threads keep their own persistent
-    // target and are unaffected. The redirect covers rewriter_.apply too: on this path
-    // the child hash uses the full WL / IR hash (worker_scratch + hg_->arena), never
-    // worker_persistent (incremental WL is off by default here and self-scopes its own
-    // PersistTarget when enabled), so orch_arena never captures hash state.
-    ConcurrentHeterogeneousArena orch_arena;
-    PersistTarget orch_target(orch_arena);
-
-    max_steps_ = steps;
-    should_stop_.store(false, std::memory_order_relaxed);
-
-    // Create initial state
-    StateId initial_state = create_initial_state_only(initial_edges);
-    if (initial_state == INVALID_ID) return;
-
-    // Tracing for pruning / reservoir-sampling work; compile with
-    // -DHG_TRACE_UNIFORM_RANDOM to enable. Off by default in all builds.
-#ifdef HG_TRACE_UNIFORM_RANDOM
-    fprintf(stderr, "[uniform_random] Initial: arena=%zu bytes, edges=%u, states=%u\n",
-            hg_->arena().bytes_allocated(), hg_->num_edges(), hg_->num_states());
-#endif
-
-    // The step-synchronized uniform-random path is self-contained: its matches are
-    // never stored in state_matches_ nor forwarded through the dataflow rendezvous,
-    // so it keeps a plain value record rather than the shared-core MatchRecord.
-    struct SampleMatch {
-        uint16_t rule_index;
-        uint8_t num_edges;
-        EdgeId matched_edges[MAX_PATTERN_EDGES];
-        VariableBinding binding;
-        StateId source_state;
-    };
-
-    PVec<StateId> current_states;
-    current_states.push_back(initial_state);
-
-    PVec<SampleMatch> step_matches;
-    step_matches.reserve(matches_per_step * 10);
-
-    PVec<StateId> next_states;
-    next_states.reserve(matches_per_step);
-
-    // Sampling RNG seeded once. random_seed_==0 draws a fresh random_device seed
-    // (every run differs); a nonzero seed makes the Monte-Carlo sample reproducible.
-    std::mt19937 rng(random_seed_ ? random_seed_ : std::random_device{}());
-
-    auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
-    auto get_signature = [this](EdgeId eid) -> const EdgeSignature& { return hg_->edge_signature(eid); };
-
-    [[maybe_unused]] size_t total_rewrites_applied = 0;
-    [[maybe_unused]] size_t total_states_created = 0;
-
-    // Match forwarding data structures
-    // state_matches: matches found for each state in current frontier (cleared each step)
-    PUMap<StateId, PVec<SampleMatch>> state_matches;
-
-    // Child creation info for match forwarding
-    struct ChildInfo {
-        StateId parent;
-        EdgeId consumed_edges[16];
-        uint8_t num_consumed;
-        EdgeId new_edges[16];
-        uint8_t num_new;
-    };
-    PUMap<StateId, ChildInfo> child_info;
-    PUMap<StateId, ChildInfo> next_child_info;
-
-    // Per-step match buffers, hoisted so their capacity is reused across steps
-    // (cleared at the top of each step) instead of being reallocated every step.
-    PUMap<StateId, PVec<SampleMatch>> next_state_matches;
-    // job_outputs stays std:: — its inner vectors are push_back'd by WORKER threads,
-    // which must not touch the orchestrator's persistent target.
-    std::vector<std::vector<SampleMatch>> job_outputs;
-
-    for (size_t step = 1; step <= steps && !current_states.empty(); ++step) {
-        if (should_stop_.load(std::memory_order_relaxed)) break;
-
-        step_matches.clear();
-
-        // Prepare per-state match storage for this step (reuse hoisted capacity).
-        next_state_matches.clear();
-
-        const size_t num_jobs = current_states.size() * rules_.size();
-        const size_t max_matches_per_job = std::max(size_t(16), (matches_per_step + num_jobs - 1) / num_jobs);
-
-        job_outputs.resize(num_jobs);
-        for (auto& v : job_outputs) {
-            v.clear();
-            v.reserve(std::min(max_matches_per_job, size_t(100)));
-        }
-
-        // Seed for each job (deterministic from step to avoid random_device in jobs)
-        uint64_t step_seed = rng();
-
-        size_t job_idx = 0;
-        for (StateId state : current_states) {
-            if (should_stop_.load(std::memory_order_relaxed)) break;
-
-            // Check if we have parent info for match forwarding
-            auto ci_it = child_info.find(state);
-            bool has_parent = (ci_it != child_info.end());
-
-            // Get parent's matches if available
-            const PVec<SampleMatch>* parent_matches = nullptr;
-            const ChildInfo* ci = nullptr;
-            if (has_parent) {
-                ci = &ci_it->second;
-                auto pm_it = state_matches.find(ci->parent);
-                if (pm_it != state_matches.end()) {
-                    parent_matches = &pm_it->second;
-                }
-            }
-
-            for (uint16_t r = 0; r < rules_.size(); ++r) {
-                std::vector<SampleMatch>* output = &job_outputs[job_idx];
-                uint64_t job_seed = step_seed ^ (job_idx * 0x9e3779b97f4a7c15ULL);
-                job_idx++;
-
-                // Copy data needed for forwarding (avoid dangling pointers in lambda).
-                // Built + filled on the main thread (data lives in orch_arena); moved
-                // into the job closure, which only READS it. orch_arena outlives all
-                // jobs (wait_for_completion precedes its destruction).
-                PVec<SampleMatch> forwarded_matches;
-                // Bounded by ci->num_new (<= MAX_PATTERN_EDGES): a stack buffer copied by
-                // value into the job closure, so no per-job heap allocation is needed.
-                std::array<EdgeId, MAX_PATTERN_EDGES> new_edge_list{};
-                uint8_t new_edge_count = 0;
-
-                if (parent_matches && ci) {
-                    // Forward parent matches for this rule, filtering consumed edges
-                    for (const auto& pm : *parent_matches) {
-                        if (pm.rule_index != r) continue;
-
-                        // Check if any matched edge was consumed
-                        bool uses_consumed = false;
-                        for (uint8_t i = 0; i < pm.num_edges && !uses_consumed; ++i) {
-                            for (uint8_t j = 0; j < ci->num_consumed; ++j) {
-                                if (pm.matched_edges[i] == ci->consumed_edges[j]) {
-                                    uses_consumed = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!uses_consumed) {
-                            // Match is still valid - update source state
-                            SampleMatch fwd = pm;
-                            fwd.source_state = state;
-                            forwarded_matches.push_back(fwd);
-                        }
-                    }
-
-                    // Collect new edges for delta matching
-                    for (uint8_t i = 0; i < ci->num_new; ++i) {
-                        new_edge_list[new_edge_count++] = ci->new_edges[i];
-                    }
-                }
-
-                job_system_->submit_function(
-                    [this, output, &get_edge, &get_signature,
-                     state, r, max_matches_per_job, job_seed,
-                     forwarded = std::move(forwarded_matches),
-                     new_edges = new_edge_list, new_edge_count,
-                     has_parent]() {
-                        if (should_stop_.load(std::memory_order_relaxed)) return;
-
-                        const State& s = hg_->get_state(state);
-                        output->reserve(std::min(max_matches_per_job, size_t(128)));
-
-                        std::mt19937 local_rng(job_seed);
-                        size_t match_count = 0;
-
-                        auto on_match = [&](uint16_t rule_index, const EdgeId* edges, uint8_t num_edges,
-                                           const VariableBinding& binding, StateId /*src*/) {
-                            SampleMatch match;
-                            match.rule_index = rule_index;
-                            match.num_edges = num_edges;
-                            match.binding = binding;
-                            match.source_state = state;
-                            for (uint8_t i = 0; i < num_edges; ++i) {
-                                match.matched_edges[i] = edges[i];
-                            }
-
-                            // Reservoir sampling
-                            if (output->size() < max_matches_per_job) {
-                                output->push_back(match);
-                            } else {
-                                std::uniform_int_distribution<size_t> dist(0, match_count);
-                                size_t j = dist(local_rng);
-                                if (j < max_matches_per_job) {
-                                    (*output)[j] = match;
-                                }
-                            }
-                            match_count++;
-                        };
-
-                        if (has_parent && !forwarded.empty()) {
-                            // Add forwarded matches first
-                            for (const auto& fm : forwarded) {
-                                on_match(fm.rule_index, fm.matched_edges, fm.num_edges,
-                                        fm.binding, fm.source_state);
-                            }
-
-                            // Delta match: only search for matches involving new edges
-                            if (new_edge_count > 0) {
-                                find_delta_matches(
-                                    rules_[r], r, state, s.edges,
-                                    hg_->signature_index(), hg_->inverted_index(),
-                                    get_edge, get_signature, on_match,
-                                    new_edges.data(), new_edge_count
-                                );
-                            }
-                        } else {
-                            // Full pattern matching (initial state or no parent info)
-                            find_matches(
-                                rules_[r], r, state, s.edges,
-                                hg_->signature_index(), hg_->inverted_index(),
-                                get_edge, get_signature, on_match
-                            );
-                        }
-                    },
-                    EvolutionJobType::MATCH
-                );
-            }
-        }
-
-        job_system_->wait_for_completion();
-        raise_worker_error();
-
-        // Merge job outputs and store per-state
-        size_t job_i = 0;
-        for (StateId state : current_states) {
-            auto& state_match_vec = next_state_matches[state];
-            for (uint16_t r = 0; r < rules_.size(); ++r) {
-                for (auto& m : job_outputs[job_i]) {
-                    step_matches.push_back(m);
-                    state_match_vec.push_back(std::move(m));
-                }
-                job_i++;
-            }
-        }
-
-        if (step_matches.empty()) {
-#ifdef HG_TRACE_UNIFORM_RANDOM
-            fprintf(stderr, "[uniform_random] Step %zu: no matches, stopping\n", step);
-#endif
-            break;
-        }
-
-        // Shuffle for uniform random selection
-        std::shuffle(step_matches.begin(), step_matches.end(), rng);
-
-        // Apply matches
-        next_states.clear();
-        next_child_info.clear();
-        size_t matches_tried = 0;
-        [[maybe_unused]] size_t duplicates_rejected = 0;
-        size_t target_states = (matches_per_step == 0) ? SIZE_MAX : matches_per_step;
-        size_t max_attempts = target_states * 5;
-
-        for (size_t i = 0; i < step_matches.size() && next_states.size() < target_states && matches_tried < max_attempts; ++i) {
-            const auto& match = step_matches[i];
-            matches_tried++;
-
-            RewriteResult rr = rewriter_.apply(
-                rules_[match.rule_index],
-                match.source_state,
-                match.matched_edges,
-                match.num_edges,
-                match.binding,
-                static_cast<uint32_t>(step)
-            );
-
-            if (rr.raw_state != INVALID_ID) {
-                total_rewrites_applied++;
-                auto [existing, inserted] = matched_raw_states_.insert_if_absent_waiting(rr.raw_state, true);
-                if (inserted) {
-                    next_states.push_back(rr.raw_state);
-                    total_states_created++;
-
-                    // Record child info for match forwarding
-                    ChildInfo ci;
-                    ci.parent = match.source_state;
-                    ci.num_consumed = match.num_edges;
-                    for (uint8_t j = 0; j < match.num_edges && j < 16; ++j) {
-                        ci.consumed_edges[j] = match.matched_edges[j];
-                    }
-                    ci.num_new = std::min(rr.num_produced, uint8_t(16));
-                    for (uint8_t j = 0; j < ci.num_new; ++j) {
-                        ci.new_edges[j] = rr.produced_edges[j];
-                    }
-                    next_child_info[rr.raw_state] = ci;
-                } else {
-                    duplicates_rejected++;
-                }
-            }
-        }
-
-#ifdef HG_TRACE_UNIFORM_RANDOM
-        fprintf(stderr, "[uniform_random] Step %zu: %zu matches, tried %zu, accepted %zu (dup %zu), forwarding %zu\n",
-                step, step_matches.size(), matches_tried, next_states.size(), duplicates_rejected, next_child_info.size());
-#endif
-
-        // Move to next step
-        current_states.swap(next_states);
-        state_matches.swap(next_state_matches);
-        child_info.swap(next_child_info);
-    }
-
-#ifdef HG_TRACE_UNIFORM_RANDOM
-    fprintf(stderr, "[uniform_random] Complete: %zu steps, %zu rewrites, %zu states, arena=%.2f MB\n",
-            steps, total_rewrites_applied, total_states_created,
-            hg_->arena().bytes_allocated() / (1024.0 * 1024.0));
-#endif
-
-    finalize_evolution();
-}
 
 // =============================================================================
 // Private Helper Methods
@@ -1463,82 +1132,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
-    // The population is complete here and only here, so this is the one point at which a
-    // sample over it can be acted on: nothing arriving later can displace what it retained.
-    if (matches_per_state_ > 0) rewrite_reservoir(state, step);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
-}
-
-// Algorithm R over one state's matches, resolved by stream position.
-//
-// The position comes from an atomic bump, so every accepted match gets a distinct one and the
-// algorithm is correct for whatever order the workers happen to impose -- Algorithm R does not
-// care about input order. What it does care about is that the winner of a slot is the highest
-// position that drew it, which is what a sequential run gives by overwriting in order. Under
-// concurrency "last to store" is not "highest position", so the slot is won by comparing
-// positions and the retained set is the same on 1 worker and on 32.
-bool ParallelEvolutionEngine::offer_to_reservoir(StateId state, const MatchRecord& match,
-                                                 size_t n) {
-    const size_t k = matches_per_state_;
-    if (k == 0) return false;
-
-    MatchJoin* join = match_join_for(state);
-
-    // Install the slot array once. A loser frees nothing: the arena is bulk-reclaimed, and k
-    // pointers is a rounding error against the matches it is there to discard.
-    ReservoirSlot* slots = join->reservoir.load(std::memory_order_acquire);
-    if (slots == nullptr) {
-        auto* fresh = hg_->arena().template allocate_array<ReservoirSlot>(k);
-        for (size_t i = 0; i < k; ++i) new (&fresh[i]) ReservoirSlot(nullptr);
-        if (join->reservoir.compare_exchange_strong(slots, fresh,
-                                                    std::memory_order_acq_rel,
-                                                    std::memory_order_acquire)) {
-            slots = fresh;
-        }
-        // On failure `slots` now holds the winner's array.
-    }
-
-    // `n` is this match's position in the state's stream, already claimed by the caller's
-    // single bump of join->matches. Algorithm R's decision for that position:
-    size_t target;
-    if (n < k) {
-        target = n;                     // still filling: position n owns slot n outright
-    } else {
-        std::uniform_int_distribution<size_t> dist(0, n);
-        target = dist(sampling_rng());
-        if (target >= k) return true;   // discarded, and the caller must not rewrite it
-    }
-
-    auto* mine = hg_->arena().template create<ReservoirDraw>(ReservoirDraw{n, match.core});
-    ReservoirDraw* cur = slots[target].load(std::memory_order_acquire);
-    while (cur == nullptr || cur->position < n) {
-        if (slots[target].compare_exchange_weak(cur, mine,
-                                                std::memory_order_acq_rel,
-                                                std::memory_order_acquire)) {
-            break;
-        }
-        // compare_exchange_weak refreshed `cur`; re-test whether we still outrank it.
-    }
-    return true;
-}
-
-void ParallelEvolutionEngine::rewrite_reservoir(StateId state, uint32_t step) {
-    MatchJoin* join = match_join_for(state);
-    ReservoirSlot* slots = join->reservoir.load(std::memory_order_acquire);
-    if (slots == nullptr) return;   // this state produced no matches
-
-    const size_t k = matches_per_state_;
-    SVec<MatchRecord> retained;
-    retained.reserve(k);
-    for (size_t i = 0; i < k; ++i) {
-        ReservoirDraw* draw = slots[i].load(std::memory_order_acquire);
-        if (draw == nullptr) continue;   // fewer matches than slots
-        MatchRecord m;
-        m.core = draw->core;
-        m.source_state = state;
-        retained.push_back(m);
-    }
-    dispatch_expansion(state, step, retained.data(), retained.size());
 }
 
 bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
@@ -1913,8 +1507,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
-        const size_t position =
-            match_join_for(state)->matches.fetch_add(1, std::memory_order_acq_rel);
+        match_join_for(state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
 
@@ -1922,11 +1515,6 @@ void ParallelEvolutionEngine::execute_match_task(
             store_match_for_state(state, match, true);
             push_match_to_children(state, match, step);
         }
-
-        // Under sampling the reservoir owns whether this match is ever applied, and only the
-        // drain may act on that. Forwarding above is unaffected: a child inherits its parent's
-        // MATCHES, and which of them the parent chose to rewrite is a separate question.
-        if (offer_to_reservoir(state, match, position)) return;
 
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
         // transition (S -> S') does not drop the match, and the same match at a different
@@ -2340,8 +1928,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
     stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
-    const size_t position =
-        match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
+    match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
@@ -2351,10 +1938,8 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
         push_match_to_children(data.state, match, data.step);
     }
 
-    // Under sampling the reservoir decides, and only the drain may act on that decision, so
-    // the caller gets nothing to expand. Returning false here is not "duplicate" -- it is
-    // "not yours to rewrite", which is the same instruction to the caller.
-    if (offer_to_reservoir(data.state, match, position)) return false;
+    // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
+    // -- it is "not yours to rewrite", which is the same instruction to the caller.
     if (transition_rate_ < 1.0 &&
         !transition_survives(canonical_transition_key(data.state, match))) return false;
 

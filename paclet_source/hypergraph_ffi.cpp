@@ -833,15 +833,16 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
         auto evolution_start = std::chrono::steady_clock::now();
 
-        if (uniform_random) {
-            if (!initial_states.empty()) {
-                engine.evolve_uniform_random(initial_states[0],
-                                             static_cast<size_t>(steps),
-                                             matches_per_step);
-            }
-        } else {
-            engine.evolve(initial_states, static_cast<size_t>(steps));
+        // MatchesPerStep is a per-DEPTH count, and a count over a depth cannot be sampled
+        // without a barrier. What the step-synchronised path actually did with it was stop
+        // applying once that many states existed for the step -- a cap by arrival order, which
+        // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
+        // always was, and the uniformity it used to claim moves to TransitionRate, which is a
+        // rate and needs no depth to be defined over.
+        if (uniform_random && matches_per_step > 0) {
+            engine.set_max_states_per_step(matches_per_step);
         }
+        engine.evolve(initial_states, static_cast<size_t>(steps));
 
         if (show_progress) {
             auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -409,15 +409,16 @@ TEST(FeatureMatrix, MultipleInitialStatesOracleAndDeterministic) {
 // repeated runs must draw the identical sample (all count invariants equal). This pins
 // the sampling RNG re-seed path (sampling_generation_) under the lock-free engine.
 // -----------------------------------------------------------------------------
-TEST(FeatureMatrix, UniformRandomReproducibleSameSeed) {
+TEST(FeatureMatrix, SampledEvolutionReproducibleSameSeed) {
     for (const auto& c : oracle::corpus()) {
         auto run = [&]() {
             Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine engine(&hg, 1);
             engine.set_random_seed(0xC0FFEEu);
+            engine.set_transition_rate(0.5);
             for (const auto& r : c.rules) engine.add_rule(r);
-            engine.evolve_uniform_random(c.init, c.measure_steps, /*matches_per_step=*/1);
+            engine.evolve(c.init, c.measure_steps);
             oracle::Counts ct;
             ct.canonical_states   = hg.num_canonical_states();
             ct.events             = hg.num_events();
