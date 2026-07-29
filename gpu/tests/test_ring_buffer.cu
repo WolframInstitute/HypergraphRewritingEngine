@@ -143,4 +143,83 @@ TEST(RingBuffer, ConcurrentProducersConsumersAllItemsExactlyOnce) {
     }
 }
 
+// =============================================================================
+// The regime a device-resident scheduler actually runs in
+// =============================================================================
+
+// Every thread both produces and consumes, in ONE kernel, through a queue far smaller than the
+// item count. That combination is what the persistent scheduler does, and it is what the test
+// above does not reach: there, producers finish before consumers start and the queue is large
+// enough never to wrap.
+//
+// Three things only bite here. The queue WRAPS, so slot reuse has to be exact. Pushes and pops
+// on the same slot INTERLEAVE, so a protocol that lets a losing thread write a slot it did not
+// win corrupts or drops an item. And backpressure is REAL, so try_push failing must mean "full
+// right now" rather than "gave up", or the caller's retry never ends.
+//
+// The failure signature is asymmetric and worth naming: a duplicate shows up as a wrong count,
+// but a LOST item shows up as a hang in the real scheduler, because its termination detector
+// waits for a completion that can no longer happen.
+__global__ void k_produce_and_consume(Ring::DeviceView v,
+                                      uint32_t  per_thread,
+                                      uint32_t* seen,          // [total], incremented per item
+                                      uint32_t* consumed_count,
+                                      uint64_t  total) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t base = tid * per_thread;
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> done_ref(*consumed_count);
+
+    uint32_t produced = 0;
+    for (;;) {
+        // Drain whatever is available before producing more, so the queue stays near full and
+        // the wrap is exercised rather than avoided.
+        uint32_t x = 0;
+        if (v.try_pop(x)) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> slot_ref(seen[x]);
+            slot_ref.fetch_add(1u, cuda::memory_order_relaxed);
+            done_ref.fetch_add(1u, cuda::memory_order_acq_rel);
+            continue;
+        }
+        if (produced < per_thread) {
+            if (v.try_push(base + produced)) ++produced;
+            continue;
+        }
+        if (done_ref.load(cuda::memory_order_acquire) >= total) return;
+        __nanosleep(64);
+    }
+}
+
+TEST(RingBuffer, ProducersThatAreAlsoConsumersLoseNothingAcrossWraps) {
+    constexpr uint32_t kThreads   = 512;
+    constexpr uint32_t kPerThread = 16;
+    constexpr uint64_t kTotal     = uint64_t(kThreads) * kPerThread;   // 8192
+    constexpr uint32_t kCapacity  = 64;                                // 128 laps of the ring
+
+    Ring ring(kCapacity);
+
+    uint32_t* d_seen = nullptr;  cudaMalloc(&d_seen, sizeof(uint32_t) * kTotal);
+    cudaMemset(d_seen, 0, sizeof(uint32_t) * kTotal);
+    uint32_t* d_done = nullptr;  cudaMalloc(&d_done, sizeof(uint32_t));
+    cudaMemset(d_done, 0, sizeof(uint32_t));
+
+    const int block = 128;
+    k_produce_and_consume<<<(int)(kThreads / block), block>>>(
+        ring.view(), kPerThread, d_seen, d_done, kTotal);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    uint32_t done = 0;
+    cudaMemcpy(&done, d_done, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    std::vector<uint32_t> seen(kTotal);
+    cudaMemcpy(seen.data(), d_seen, sizeof(uint32_t) * kTotal, cudaMemcpyDeviceToHost);
+    cudaFree(d_seen); cudaFree(d_done);
+
+    EXPECT_EQ(done, kTotal);
+    EXPECT_EQ(ring.head_host(), kTotal);
+    EXPECT_EQ(ring.tail_host(), kTotal);
+    for (uint32_t i = 0; i < kTotal; ++i) {
+        ASSERT_EQ(seen[i], 1u) << (seen[i] == 0 ? "item lost at i=" : "item duplicated at i=")
+                               << i;
+    }
+}
+
 }  // namespace
