@@ -3,6 +3,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
 
 #include <cuda_runtime.h>
@@ -107,6 +108,75 @@ TEST(Rewrite, SparseVariableNumberingBindsTheRightNewVariable) {
     EXPECT_EQ(e1_verts, (std::vector<VertexId>{0u, 1u}));   // {x,z}
     auto e2_verts = engine.edge_vertices_host(2);
     EXPECT_EQ(e2_verts, (std::vector<VertexId>{1u, 2u}));   // {z,y}, y fresh
+}
+
+// Match and rewrite running as two persistent roles must produce exactly what the
+// level-synchronous match-then-rewrite produces.
+//
+// Stage 2 of retiring the step loop. The roles feed each other with no barrier: a match is
+// applied as soon as some worker claims it, not after every match in the step has been found.
+// Both schedulers drive the same match_state_rule and apply_one_match, so any difference is in
+// the scheduling, and scheduling must not change the result.
+//
+// The failure mode this guards against is not a wrong answer but a HANG: a detector that
+// signals exit during a lull loses work, and one that never signals never returns. Run under a
+// timeout.
+TEST(Rewrite, PersistentTwoRoleSchedulerMatchesTheLevelSynchronousResult) {
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}};
+
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+    const std::vector<hg_gpu::StateId> states = {0u};
+
+    auto edge_multiset = [](hg_gpu::EngineState& eng) {
+        std::multiset<std::vector<VertexId>> out;
+        for (uint32_t e = 0; e < eng.num_edges_host(); ++e) {
+            auto v = eng.edge_vertices_host(e);
+            out.insert(std::vector<VertexId>(v.begin(), v.end()));
+        }
+        return out;
+    };
+
+    // Level-synchronous: find every match, then apply every match.
+    hg_gpu::EngineState lockstep(small_cfg());
+    hg_gpu::upload_initial_state(lockstep, init);
+    hg_gpu::Pool<hg_gpu::MatchRecord> ls_matches(256);
+    ls_matches.reset();
+    // run_match_kernel_batch, not run_match_kernel: the latter drives k_match_one_state, a
+    // third match implementation used only by tests. The comparison is only worth anything
+    // against the path the engine actually runs.
+    hg_gpu::DeviceRule* d_rules = nullptr;
+    cudaMalloc(&d_rules, sizeof(hg_gpu::DeviceRule) * rules.size());
+    cudaMemcpy(d_rules, rules.data(), sizeof(hg_gpu::DeviceRule) * rules.size(),
+               cudaMemcpyHostToDevice);
+    hg_gpu::StateId* d_states = nullptr;
+    cudaMalloc(&d_states, sizeof(hg_gpu::StateId) * states.size());
+    cudaMemcpy(d_states, states.data(), sizeof(hg_gpu::StateId) * states.size(),
+               cudaMemcpyHostToDevice);
+    const uint32_t ls_n = hg_gpu::run_match_kernel_batch(
+        lockstep, d_rules, static_cast<uint32_t>(rules.size()), d_states,
+        static_cast<uint32_t>(states.size()), ls_matches);
+    cudaFree(d_states);
+    cudaFree(d_rules);
+    ASSERT_GT(ls_n, 0u) << "workload found no matches, so the comparison is vacuous";
+    hg_gpu::run_rewrite_kernel(lockstep, rules, ls_matches, ls_n, /*step=*/1);
+
+    // Persistent: the two roles interleave, with block 0 deciding when they are finished.
+    hg_gpu::EngineState persistent(small_cfg());
+    hg_gpu::upload_initial_state(persistent, init);
+    hg_gpu::Pool<hg_gpu::MatchRecord> p_matches(256);
+    p_matches.reset();
+    const auto stats = hg_gpu::run_persistent_match_rewrite(
+        persistent, rules, states, /*step=*/1, p_matches, /*blocks=*/5);
+
+    EXPECT_EQ(stats.matches_found, ls_n);
+    EXPECT_EQ(persistent.num_states_host(), lockstep.num_states_host());
+    EXPECT_EQ(persistent.num_edges_host(), lockstep.num_edges_host());
+    EXPECT_EQ(edge_multiset(persistent), edge_multiset(lockstep));
 }
 
 TEST(Rewrite, WolframCanonicalRuleOneStep) {

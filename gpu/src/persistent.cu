@@ -1,10 +1,11 @@
-// Device-resident scheduling, stage 1: the MATCH role over a queue seeded once.
-// See gpu/include/hg_gpu/persistent.hpp and docs/GPU_PERSISTENT_DESIGN.md.
+// Device-resident scheduling: workers that pull work from a queue rather than being launched
+// once per phase per step. See gpu/include/hg_gpu/persistent.hpp and
+// docs/GPU_PERSISTENT_DESIGN.md.
 //
 // Its own translation unit, not appended to match.cu, and that is a memory decision rather
-// than a stylistic one: match.cu already costs about 5 GB to compile, and adding one more
+// than a stylistic one: match.cu already costs several GB to compile, and adding one more
 // kernel to it took a single nvcc to 8 GB. This machine is shared, so a translation unit that
-// cannot be compiled within a safe ceiling is a defect regardless of whether it links.
+// cannot be compiled within a safe ceiling is a defect whether or not it links.
 
 #include "hg_gpu/persistent.hpp"
 
@@ -36,13 +37,13 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
+// ---- stage 1: the match role alone ------------------------------------------------------
+//
 // One block per popped item -- the shape match_state_rule already wants. Only thread 0 touches
 // the queue, so a pop is one claim per block rather than a race between its threads.
 //
 // Exit when the queue is empty. That is exact for a queue seeded once and never grown: no work
-// can appear after a failed pop. It is NOT the rule the full model uses, where a failed pop may
-// only mean a lull -- that is what TerminationDetector's stable-observation window is for, and
-// it wires in when the roles start feeding each other.
+// can appear after a failed pop. It is NOT the rule stage 2 uses.
 __global__ void k_persistent_match(DeviceState ds,
                                    const DeviceRule* rules,
                                    typename RingBuffer<MatchWorkItem>::DeviceView queue,
@@ -56,6 +57,97 @@ __global__ void k_persistent_match(DeviceState ds,
         if (!have) return;
 
         match_state_rule(ds, rules, item.state_id, item.rule_id, out);
+        __syncthreads();
+    }
+}
+
+// ---- stage 2: match and rewrite as two roles --------------------------------------------
+//
+// The match POOL is the queue between them. Matches appear in it as they are found, and a
+// rewrite worker claims the next unconsumed index the moment it exists -- there is no barrier
+// between finding a match and applying it, which is the whole point.
+//
+// A cursor rather than a second RingBuffer because a match's slot in the pool is assigned by
+// match_state_rule, whose contract is shared with the level-synchronous scheduler and must not
+// change. Blocks match concurrently, so no block can say which pool slots are its own: a
+// before/after counter delta is not attributable to one block. The cursor sidesteps that
+// entirely -- consumers claim indices, not ranges.
+constexpr uint32_t kRoleMatch = 0;
+
+__global__ void k_persistent_match_rewrite(
+        DeviceState ds,
+        const DeviceRule* rules,
+        typename RingBuffer<MatchWorkItem>::DeviceView match_q,
+        typename Pool<MatchRecord>::DeviceView found,
+        uint32_t* consume_cursor,
+        typename TerminationDetector::DeviceView term,
+        uint32_t step) {
+
+    if (blockIdx.x == 0) {
+        // Detector. Only thread 0 observes; the rest of the block idles, which costs one block
+        // of occupancy and buys a termination test that cannot race with its own workers.
+        if (threadIdx.x != 0) return;
+        uint64_t pushed[TerminationDetector::kMaxRoles];
+        uint64_t completed[TerminationDetector::kMaxRoles];
+        for (;;) {
+            // Finished means BOTH: every seeded match item accounted for, and every match that
+            // matching produced already consumed. Checking only the match role would exit with
+            // rewrites outstanding; checking only the cursor would exit before matching had
+            // produced anything at all.
+            const bool matches_done = term.snapshot_quiescent(pushed, completed);
+            const uint32_t produced = *found.counter;
+            const uint32_t consumed = *consume_cursor;
+            if (matches_done && consumed >= produced) {
+                // Quiescent once is not enough: an in-flight match may have just completed
+                // without its matches yet being visible. Look again after a backoff, and only
+                // signal when it held across both observations.
+                __nanosleep(4000);
+                if (term.snapshot_quiescent(pushed, completed) &&
+                    *consume_cursor >= *found.counter) {
+                    term.signal_exit();
+                    return;
+                }
+            }
+            __nanosleep(2000);
+        }
+    }
+
+    __shared__ MatchWorkItem mitem;
+    __shared__ bool have;
+    __shared__ uint32_t claimed;
+
+    for (;;) {
+        // Rewrite first: it drains what matching produced, and letting the pool run ahead
+        // unboundedly is what makes it overflow.
+        if (threadIdx.x == 0) {
+            claimed = atomicAdd(consume_cursor, 1u);
+            if (claimed >= *found.counter) {
+                // Nothing to consume; give the index back so it is not skipped once matching
+                // produces more.
+                atomicSub(consume_cursor, 1u);
+                claimed = 0xFFFFFFFFu;
+            }
+        }
+        __syncthreads();
+        if (claimed != 0xFFFFFFFFu) {
+            if (threadIdx.x == 0) apply_one_match(ds, rules, found.at(claimed), step);
+            __syncthreads();
+            continue;
+        }
+
+        if (threadIdx.x == 0) have = match_q.try_pop(mitem);
+        __syncthreads();
+        if (have) {
+            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, found);
+            __syncthreads();
+            if (threadIdx.x == 0) term.mark_completed(kRoleMatch);
+            __syncthreads();
+            continue;
+        }
+
+        // Nothing available in either role. Empty does NOT mean finished here -- the other
+        // role may still be producing -- so only the detector decides.
+        if (term.exit_requested()) return;
         __syncthreads();
     }
 }
@@ -105,6 +197,63 @@ uint32_t run_persistent_match(const EngineState& engine,
     cudaFree(d_states);
     cudaFree(d_rules);
     return out.size_host();
+}
+
+PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
+                                                const std::vector<DeviceRule>& rules,
+                                                const std::vector<StateId>& states,
+                                                uint32_t step,
+                                                Pool<MatchRecord>& scratch_matches,
+                                                uint32_t blocks) {
+    PersistentRunStats stats;
+    if (rules.empty() || states.empty()) return stats;
+
+    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
+    const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
+
+    DeviceRule* d_rules = nullptr;
+    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+                     cudaMemcpyHostToDevice), "rules copy");
+
+    StateId* d_states = nullptr;
+    check(cudaMalloc(&d_states, sizeof(StateId) * states.size()), "states alloc");
+    check(cudaMemcpy(d_states, states.data(), sizeof(StateId) * states.size(),
+                     cudaMemcpyHostToDevice), "states copy");
+
+    uint32_t cap = 1;
+    while (cap < num_items) cap <<= 1;
+    RingBuffer<MatchWorkItem> match_q(cap);
+    match_q.clear();
+    {
+        const uint32_t block = 128;
+        const uint32_t grid = (num_items + block - 1) / block;
+        k_seed_match_queue<<<grid, block>>>(match_q.view(), d_states,
+                                            static_cast<uint32_t>(states.size()), num_rules);
+        check(cudaDeviceSynchronize(), "seed sync");
+    }
+
+    uint32_t* d_cursor = nullptr;
+    check(cudaMalloc(&d_cursor, sizeof(uint32_t)), "cursor alloc");
+    check(cudaMemset(d_cursor, 0, sizeof(uint32_t)), "cursor clear");
+
+    TerminationDetector term(/*num_roles=*/1);
+    term.clear();
+    term.mark_pushed_host(kRoleMatch, num_items);
+
+    // Block 0 is the detector, so at least two blocks are needed for any work to happen.
+    const uint32_t grid = blocks ? blocks : 33;
+    k_persistent_match_rewrite<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
+        engine.device(), d_rules, match_q.view(), scratch_matches.view(),
+        d_cursor, term.view(), step);
+    check(cudaDeviceSynchronize(), "persistent match+rewrite sync");
+
+    stats.matches_found = scratch_matches.size_host();
+
+    cudaFree(d_cursor);
+    cudaFree(d_states);
+    cudaFree(d_rules);
+    return stats;
 }
 
 }  // namespace hg_gpu

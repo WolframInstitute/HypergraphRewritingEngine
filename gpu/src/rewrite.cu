@@ -236,9 +236,12 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
     }
 }
 
+}  // namespace
+
 // One match, applied by one THREAD: consumes the matched edges, produces the RHS edges, and
-// emits the event. Callable rather than a kernel body so a scheduler other than the level-
-// synchronous one can drive it -- a persistent worker pops a match and calls this.
+// emits the event. EXTERNAL linkage, so a scheduler in another translation unit drives this
+// same implementation rather than growing a second copy; the helpers it calls stay file-local,
+// which is fine since they are defined above it here.
 // See docs/GPU_PERSISTENT_DESIGN.md.
 __device__ void apply_one_match(DeviceState       ds,
                                 const DeviceRule* rules,
@@ -537,6 +540,8 @@ __device__ void apply_one_match(DeviceState       ds,
     register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
     #endif
 }
+
+namespace {
 
 // Level-synchronous driver: one thread per match found this step.
 __global__ void k_rewrite(DeviceState              ds,

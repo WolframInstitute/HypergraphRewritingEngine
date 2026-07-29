@@ -117,6 +117,19 @@ public:
         check(cudaMemset(should_exit_, 0, sizeof(uint8_t)),              "TD clear should_exit");
     }
 
+    // Record work the HOST enqueued before launching, so the counters start balanced against
+    // what the workers will complete. Without it the detector sees pushed == completed == 0 at
+    // launch and signals exit before a worker has claimed anything.
+    void mark_pushed_host(uint32_t role, uint64_t n) {
+        if (role >= num_roles_) throw std::invalid_argument("TD mark_pushed_host bad role");
+        uint64_t v = 0;
+        check(cudaMemcpy(&v, pushed_ + role, sizeof(uint64_t), cudaMemcpyDeviceToHost),
+              "TD read pushed");
+        v += n;
+        check(cudaMemcpy(pushed_ + role, &v, sizeof(uint64_t), cudaMemcpyHostToDevice),
+              "TD write pushed");
+    }
+
     bool exit_requested_host() const {
         uint8_t v = 0;
         cudaMemcpy(&v, should_exit_, sizeof(uint8_t), cudaMemcpyDeviceToHost);

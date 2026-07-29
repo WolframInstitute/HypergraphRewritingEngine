@@ -16,7 +16,9 @@
 
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/ring_buffer.hpp"
+#include "hg_gpu/termination.hpp"
 #include "hg_gpu/types.hpp"
 
 #include <vector>
@@ -38,5 +40,37 @@ uint32_t run_persistent_match(const EngineState& engine,
                               const std::vector<StateId>& states,
                               Pool<MatchRecord>& out,
                               uint32_t blocks = 0);
+
+// Stage 2: MATCH and REWRITE as two roles feeding each other, with no barrier between them.
+// A match found by one worker is rewritten by another as soon as it is picked up, rather than
+// after every match in the step has been found.
+//
+// This is where the two hazards the design names actually bite, and both are handled here
+// rather than left to be discovered:
+//
+//   PREMATURE EXIT. A rewrite worker finding its queue empty cannot conclude it is finished --
+//   match workers may still be producing. That is exactly what TerminationDetector's stable
+//   observation window is for, and stage 2 is the first point at which it earns its keep.
+//
+// The queue between the roles is the match POOL plus a consume cursor, not a second ring.
+// A match's slot is assigned by match_state_rule, whose contract is shared with the
+// level-synchronous scheduler and must not change; and since blocks match concurrently, no
+// block can say which pool slots are its own -- a before/after counter delta is not
+// attributable to one block. Consumers claim indices instead, which sidesteps that entirely.
+//
+// The remaining hazard, a FULL pool, is the pre-existing capacity-overflow path
+// (ErrorKind::kMatchPoolFull) and keeps its existing behaviour: record and return partial
+// work, never throw. The "must not block on full" rule still binds and is satisfied trivially
+// here, because nothing blocks -- a worker that finds nothing to claim loops and re-checks.
+struct PersistentRunStats {
+    uint32_t matches_found = 0;
+};
+
+PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
+                                                const std::vector<DeviceRule>& rules,
+                                                const std::vector<StateId>& states,
+                                                uint32_t step,
+                                                Pool<MatchRecord>& scratch_matches,
+                                                uint32_t blocks = 0);
 
 }  // namespace hg_gpu

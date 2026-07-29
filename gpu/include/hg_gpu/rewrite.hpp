@@ -23,6 +23,12 @@ namespace hg_gpu {
 // new edges. No events / causal / branchial structures yet (M6).
 //
 // Returns the number of new states produced (== num_matches, one per match).
+// One match, applied by ONE THREAD: consumes the matched edges, produces the RHS edges, and
+// emits the event. Exposed so a scheduler in another translation unit drives this
+// implementation rather than growing a second copy of it.
+__device__ void apply_one_match(DeviceState ds, const DeviceRule* rules,
+                                const MatchRecord& m, uint32_t step);
+
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,
                             const Pool<MatchRecord>&       matches,
