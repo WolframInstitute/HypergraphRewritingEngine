@@ -1401,7 +1401,82 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
+    // The population is complete here and only here, so this is the one point at which a
+    // sample over it can be acted on: nothing arriving later can displace what it retained.
+    if (matches_per_state_ > 0) rewrite_reservoir(state, step);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
+}
+
+// Algorithm R over one state's matches, resolved by stream position.
+//
+// The position comes from an atomic bump, so every accepted match gets a distinct one and the
+// algorithm is correct for whatever order the workers happen to impose -- Algorithm R does not
+// care about input order. What it does care about is that the winner of a slot is the highest
+// position that drew it, which is what a sequential run gives by overwriting in order. Under
+// concurrency "last to store" is not "highest position", so the slot is won by comparing
+// positions and the retained set is the same on 1 worker and on 32.
+bool ParallelEvolutionEngine::offer_to_reservoir(StateId state, const MatchRecord& match,
+                                                 size_t n) {
+    const size_t k = matches_per_state_;
+    if (k == 0) return false;
+
+    MatchJoin* join = match_join_for(state);
+
+    // Install the slot array once. A loser frees nothing: the arena is bulk-reclaimed, and k
+    // pointers is a rounding error against the matches it is there to discard.
+    ReservoirSlot* slots = join->reservoir.load(std::memory_order_acquire);
+    if (slots == nullptr) {
+        auto* fresh = hg_->arena().template allocate_array<ReservoirSlot>(k);
+        for (size_t i = 0; i < k; ++i) new (&fresh[i]) ReservoirSlot(nullptr);
+        if (join->reservoir.compare_exchange_strong(slots, fresh,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
+            slots = fresh;
+        }
+        // On failure `slots` now holds the winner's array.
+    }
+
+    // `n` is this match's position in the state's stream, already claimed by the caller's
+    // single bump of join->matches. Algorithm R's decision for that position:
+    size_t target;
+    if (n < k) {
+        target = n;                     // still filling: position n owns slot n outright
+    } else {
+        std::uniform_int_distribution<size_t> dist(0, n);
+        target = dist(sampling_rng());
+        if (target >= k) return true;   // discarded, and the caller must not rewrite it
+    }
+
+    auto* mine = hg_->arena().template create<ReservoirDraw>(ReservoirDraw{n, match.core});
+    ReservoirDraw* cur = slots[target].load(std::memory_order_acquire);
+    while (cur == nullptr || cur->position < n) {
+        if (slots[target].compare_exchange_weak(cur, mine,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire)) {
+            break;
+        }
+        // compare_exchange_weak refreshed `cur`; re-test whether we still outrank it.
+    }
+    return true;
+}
+
+void ParallelEvolutionEngine::rewrite_reservoir(StateId state, uint32_t step) {
+    MatchJoin* join = match_join_for(state);
+    ReservoirSlot* slots = join->reservoir.load(std::memory_order_acquire);
+    if (slots == nullptr) return;   // this state produced no matches
+
+    const size_t k = matches_per_state_;
+    SVec<MatchRecord> retained;
+    retained.reserve(k);
+    for (size_t i = 0; i < k; ++i) {
+        ReservoirDraw* draw = slots[i].load(std::memory_order_acquire);
+        if (draw == nullptr) continue;   // fewer matches than slots
+        MatchRecord m;
+        m.core = draw->core;
+        m.source_state = state;
+        retained.push_back(m);
+    }
+    dispatch_expansion(state, step, retained.data(), retained.size());
 }
 
 bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
@@ -1746,17 +1821,24 @@ void ParallelEvolutionEngine::execute_match_task(
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
-        match_join_for(state)->matches.fetch_add(1, std::memory_order_release);
+        const size_t position =
+            match_join_for(state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
+
+        if (enable_match_forwarding_ && !batched_matching_) {
+            store_match_for_state(state, match, true);
+            push_match_to_children(state, match, step);
+        }
+
+        // Under sampling the reservoir owns whether this match is ever applied, and only the
+        // drain may act on that. Forwarding above is unaffected: a child inherits its parent's
+        // MATCHES, and which of them the parent chose to rewrite is a separate question.
+        if (offer_to_reservoir(state, match, position)) return;
 
         if (batched_matching_) {
             batch.push_back(match);
         } else {
-            if (enable_match_forwarding_) {
-                store_match_for_state(state, match, true);
-                push_match_to_children(state, match, step);
-            }
             submit_rewrite_task(match, step);
         }
     };
@@ -2160,7 +2242,8 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
     stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
-    match_join_for(data.state)->matches.fetch_add(1, std::memory_order_release);
+    const size_t position =
+        match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
@@ -2169,6 +2252,11 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
         store_match_for_state(data.state, match, true);
         push_match_to_children(data.state, match, data.step);
     }
+
+    // Under sampling the reservoir decides, and only the drain may act on that decision, so
+    // the caller gets nothing to expand. Returning false here is not "duplicate" -- it is
+    // "not yours to rewrite", which is the same instruction to the caller.
+    if (offer_to_reservoir(data.state, match, position)) return false;
 
     out = match;
     return true;

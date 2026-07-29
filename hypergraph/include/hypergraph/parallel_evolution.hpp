@@ -413,6 +413,12 @@ class ParallelEvolutionEngine {
     std::atomic<size_t> validation_mismatches_{0};
 
 
+    // Reservoir size for sampled evolution, 0 = no sampling. The population is the matches of
+    // ONE STATE -- a population that completes locally, which is what lets sampling run with no
+    // step barrier at all (docs/ASYNC_SAMPLING_DESIGN.md). A per-step count is not expressible
+    // without one.
+    size_t matches_per_state_{0};
+
     // Early termination: stop pattern matching for a job when its reservoir is full
     // Trades strict uniform sampling (over ALL matches) for speed
     // When true: uniform over matches found before termination (faster, less uniform)
@@ -483,12 +489,26 @@ class ParallelEvolutionEngine {
     // nothing global is consulted.
     static constexpr uint64_t MATCH_JOIN_EMPTY  = (1ULL << 62) + 700;
     static constexpr uint64_t MATCH_JOIN_LOCKED = (1ULL << 62) + 701;
+    // One retained draw. Position and payload move together under a single pointer CAS: the
+    // two cannot be separate atomics, because a lower-positioned writer could publish its
+    // position first and its payload second, leaving the slot holding a winning position
+    // beside a losing match.
+    struct ReservoirDraw {
+        size_t position;
+        const MatchCore* core;
+    };
+    using ReservoirSlot = std::atomic<ReservoirDraw*>;
+
     struct MatchJoin {
         std::atomic<size_t> pushed{0};
         std::atomic<size_t> completed{0};
         // Matches this state has accepted (post-dedup). The reservoir needs it as Algorithm R's
         // stream position; the drain gate needs it to show it fired after the last one.
         std::atomic<size_t> matches{0};
+        // k slots, allocated on first use when matches_per_state_ > 0. A slot is won by the
+        // HIGHEST stream position that draws it, never by whoever stores last -- which is what
+        // makes the sample independent of the schedule rather than merely unbiased on average.
+        std::atomic<ReservoirSlot*> reservoir{nullptr};
     };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 
@@ -592,6 +612,20 @@ public:
     void set_random_seed(uint64_t seed) {
         random_seed_ = seed;
     }
+    // Keep k of each state's matches, chosen uniformly at random from ALL of that state's
+    // matches, and rewrite only those. 0 disables sampling entirely.
+    //
+    // The population is one state's matches, and saying so is the point: it is a population
+    // that completes locally, so the sample can be finalised the moment that state's match tree
+    // drains, with no step barrier and no other state waiting. Selection is Algorithm R keyed
+    // on the stream position, so the retained set is the same whatever the schedule and
+    // whichever worker sees which match.
+    //
+    // Not to be confused with the hard caps: set_max_states_per_step and
+    // set_max_successor_states_per_parent truncate by arrival order and are not samples.
+    void set_matches_per_state(size_t k) { matches_per_state_ = k; }
+    size_t matches_per_state() const { return matches_per_state_; }
+
     // Called once per state, after that state's last match task and before any of its matches
     // could be superseded. This is where anything keyed on "the matches of one state" as a set
     // belongs -- a reservoir first of all. Set it before evolve(); it runs on a worker thread.
@@ -889,6 +923,18 @@ private:
     MatchJoin* match_join_for(StateId state);
     void note_match_task_pushed(StateId state);
     void note_match_task_done(StateId state, uint32_t step);
+
+    // Offer an accepted match to this state's reservoir. Returns true when the caller must NOT
+    // rewrite it itself, because the reservoir now owns the decision and the drain will submit
+    // whatever survives. False when sampling is off, and then the caller rewrites eagerly as
+    // it always has.
+    // `n` is the match's position in this state's stream, from the caller's single bump of
+    // MatchJoin::matches -- one owner for that counter, so the position and the accepted-match
+    // count cannot disagree.
+    bool offer_to_reservoir(StateId state, const MatchRecord& match, size_t n);
+    // Submit rewrites for whatever the reservoir retained. Called only from the drain, so the
+    // population is complete and no later match can displace one of these.
+    void rewrite_reservoir(StateId state, uint32_t step);
 
     // Books one match task's completion however its function exits.
     class MatchTaskGuard {
