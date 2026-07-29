@@ -26,8 +26,12 @@ namespace hg_gpu {
 // One match, applied by ONE THREAD: consumes the matched edges, produces the RHS edges, and
 // emits the event. Exposed so a scheduler in another translation unit drives this
 // implementation rather than growing a second copy of it.
-__device__ void apply_one_match(DeviceState ds, const DeviceRule* rules,
-                                const MatchRecord& m, uint32_t step);
+//
+// Returns the state it created, or INVALID_ID when a capacity claim failed. A scheduler that
+// must hash and re-enqueue its own output needs the id; the level-synchronous one discards it
+// and takes the whole [before, after) state range of the step instead.
+__device__ StateId apply_one_match(DeviceState ds, const DeviceRule* rules,
+                                   const MatchRecord& m, uint32_t step);
 
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,
