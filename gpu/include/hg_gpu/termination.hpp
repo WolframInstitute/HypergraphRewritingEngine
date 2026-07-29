@@ -46,7 +46,10 @@ public:
     struct DeviceView {
         uint64_t* pushed;       // [kMaxRoles]
         uint64_t* completed;    // [kMaxRoles]
-        uint8_t*  should_exit;  // single boolean
+        // A device WORD, not a byte. cuda::atomic_ref<uint8_t> is serviced by a 16-bit access
+        // on this architecture, so a one-byte allocation is read past its end -- which
+        // compute-sanitizer reports as an invalid 2-byte global read on a 1-byte allocation.
+        uint32_t* should_exit;
         uint32_t  num_roles;
 
         __device__ void mark_pushed(uint32_t role, uint64_t n = 1) const {
@@ -60,7 +63,7 @@ public:
         }
 
         __device__ bool exit_requested() const {
-            cuda::atomic_ref<uint8_t, cuda::thread_scope_device> ref(*should_exit);
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> ref(*should_exit);
             return ref.load(cuda::memory_order_acquire) != 0;
         }
 
@@ -83,8 +86,8 @@ public:
         }
 
         __device__ void signal_exit() const {
-            cuda::atomic_ref<uint8_t, cuda::thread_scope_device> ref(*should_exit);
-            ref.store(1, cuda::memory_order_release);
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> ref(*should_exit);
+            ref.store(1u, cuda::memory_order_release);
         }
     };
 
@@ -94,7 +97,7 @@ public:
         }
         check(cudaMalloc(&pushed_,      sizeof(uint64_t) * kMaxRoles), "TD pushed alloc");
         check(cudaMalloc(&completed_,   sizeof(uint64_t) * kMaxRoles), "TD completed alloc");
-        check(cudaMalloc(&should_exit_, sizeof(uint8_t)),              "TD should_exit alloc");
+        check(cudaMalloc(&should_exit_, sizeof(uint32_t)),             "TD should_exit alloc");
         clear();
     }
 
@@ -114,7 +117,7 @@ public:
     void clear() {
         check(cudaMemset(pushed_,      0, sizeof(uint64_t) * kMaxRoles), "TD clear pushed");
         check(cudaMemset(completed_,   0, sizeof(uint64_t) * kMaxRoles), "TD clear completed");
-        check(cudaMemset(should_exit_, 0, sizeof(uint8_t)),              "TD clear should_exit");
+        check(cudaMemset(should_exit_, 0, sizeof(uint32_t)),             "TD clear should_exit");
     }
 
     // Record work the HOST enqueued before launching, so the counters start balanced against
@@ -131,8 +134,8 @@ public:
     }
 
     bool exit_requested_host() const {
-        uint8_t v = 0;
-        cudaMemcpy(&v, should_exit_, sizeof(uint8_t), cudaMemcpyDeviceToHost);
+        uint32_t v = 0;
+        cudaMemcpy(&v, should_exit_, sizeof(uint32_t), cudaMemcpyDeviceToHost);
         return v != 0;
     }
 
@@ -148,7 +151,7 @@ private:
 
     uint64_t* pushed_      = nullptr;
     uint64_t* completed_   = nullptr;
-    uint8_t*  should_exit_ = nullptr;
+    uint32_t* should_exit_ = nullptr;
     uint32_t  num_roles_   = 0;
 };
 
