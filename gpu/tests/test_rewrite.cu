@@ -715,6 +715,88 @@ TEST(Rewrite, AutomaticEventIdentityIsTheSameAtEveryBlockCountOnRigidStates) {
     }
 }
 
+// An identity mode has to CHANGE THE ANSWER, not merely be accepted.
+//
+// The device computed hgcommon::event_signature per event and then dropped it: there was no
+// signature map, canonical_id was written INVALID_ID at its one assignment site and never
+// updated, so every event read as canonical and the reported count was the raw application
+// count whatever mode was asked for. Nothing caught it because every gate compared signature
+// VALUES, and the values were being computed correctly -- they just were not applied.
+//
+// The check is a strict ordering rather than fixed numbers, so it stays meaningful if the
+// workload changes: the key sets form a refinement lattice, so a finer key set can only split
+// events, never merge them.
+//
+//   None       computes no signature; every application is its own event  -> the raw count
+//   Automatic  endpoints + step + rule-free + consumed/produced ranks      -> finest
+//   Full       endpoints alone                                            -> coarsest
+//
+// so  canonical(Full) <= canonical(Automatic) <= raw,  with at least one strict on a workload
+// that reaches the same state by two different applications.
+TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
+    const uint32_t kSteps = 3;
+
+    struct Result { uint32_t raw; uint32_t canonical; };
+    auto run = [&](hgcommon::EventSignatureKeys keys) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = kSteps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+        if (keys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))
+            engine.ensure_edge_ranks();
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(64ull << 20);
+
+        auto st = hg_gpu::run_persistent_evolve(
+            engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+            /*dedup=*/true, 0xFFFFFFFFu, 0,
+            hg_gpu::CanonicalizationMode::Full, keys, /*blocks=*/9);
+        return Result{engine.num_events_host(), st.canonical_events};
+    };
+
+    const Result none = run(hgcommon::EVENT_SIG_NONE);
+    const Result full = run(hgcommon::EVENT_SIG_FULL);
+    const Result automatic = run(hgcommon::EVENT_SIG_AUTOMATIC);
+
+    // Printed, not only asserted: the ordering can hold while nothing merges, and the numbers
+    // are what show the modes are separated rather than merely ordered.
+    std::printf("[ identity ] applications=%u  canonical: None=%u Automatic=%u Full=%u\n",
+                none.raw, none.raw, automatic.canonical, full.canonical);
+
+    ASSERT_GT(none.raw, 1u) << "no events, so the comparison is vacuous";
+    EXPECT_EQ(none.canonical, 0u)
+        << "None computes no signature, so nothing can have won a signature slot";
+
+    EXPECT_GT(full.canonical, 0u) << "Full stamped signatures but none were applied";
+    EXPECT_LE(full.canonical, full.raw);
+    EXPECT_LE(automatic.canonical, automatic.raw);
+    EXPECT_LE(full.canonical, automatic.canonical)
+        << "Full (" << full.canonical << ") distinguished MORE events than Automatic ("
+        << automatic.canonical << "), but its key set is a strict subset";
+
+    // The workload is a 4-cycle under a rule that reaches the same state by several
+    // applications, so at least one mode has to merge something. Without this the ordering
+    // above is satisfied by a device that merges nothing at all -- which is the defect.
+    EXPECT_LT(full.canonical, full.raw)
+        << "Full merged nothing: " << full.raw << " applications, " << full.canonical
+        << " events. The signature is being computed and not applied.";
+}
+
 // The limit of edge ranks, pinned on the state that reaches it.
 //
 // A canonical rank is a position in a canonical LABELLING. When a state has a nontrivial

@@ -104,6 +104,9 @@ struct PersistentEvolveStats {
     uint32_t matches_found = 0;
     uint32_t states_after  = 0;
     uint64_t arena_words_used = 0;
+    // Events that won their signature slot. 0 under EventSignatureKeys None, where no signature
+    // is computed and the raw application count is the answer.
+    uint32_t canonical_events = 0;
 };
 
 PersistentEvolveStats run_persistent_evolve(EngineState& engine,

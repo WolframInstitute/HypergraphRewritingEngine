@@ -79,6 +79,11 @@ struct DeviceState {
     // what lets a caller comparing event counts across devices see that it happened.
     uint32_t* event_sig_raw_fallbacks;
 
+    // Events that won their signature slot, which is the count a caller means by "how many
+    // events" once an identity mode is selected. Null under EventSignatureKeys None, where no
+    // signature is computed and every application is its own event.
+    uint32_t* canonical_event_count;
+
     // Vertex allocator (atomic-bumped fresh-vertex counter)
     uint32_t* vertex_high_water;      // monotonic max VertexId issued + 1
 
@@ -198,6 +203,7 @@ public:
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
         if (event_sig_fallbacks_)    cudaFree(event_sig_fallbacks_);
+        if (canonical_event_count_)  cudaFree(canonical_event_count_);
         if (vertex_high_water_)      cudaFree(vertex_high_water_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
@@ -220,6 +226,27 @@ public:
               "EngineState init state_edge_rank");
         check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
               "EngineState init event_sig_raw_fallbacks");
+    }
+
+    // Take the canonical-event counter. Called once the event mode is known, alongside the
+    // signature map the scheduler carries; under EventSignatureKeys None no signature is
+    // computed and every application is its own event, so nothing counts.
+    void ensure_event_identity() {
+        if (canonical_event_count_) return;
+        check(cudaMalloc(&canonical_event_count_, sizeof(uint32_t)),
+              "EngineState canonical_event_count alloc");
+        check(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
+              "EngineState init canonical_event_count");
+    }
+
+    // Events that won their signature slot. Under an identity mode this is what "how many
+    // events" means; 0 when no mode is selected, where the raw count is the answer.
+    uint32_t canonical_event_count() const {
+        if (!canonical_event_count_) return 0;
+        uint32_t n = 0;
+        check(cudaMemcpy(&n, canonical_event_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+              "EngineState read canonical_event_count");
+        return n;
     }
 
     // Consumed or produced edges stamped with a raw edge id because no rank was available.
@@ -246,6 +273,7 @@ public:
         d.state_exact_hash        = state_exact_hash_;
         d.state_edge_rank         = state_edge_rank_;
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
+        d.canonical_event_count   = canonical_event_count_;
         d.vertex_high_water       = vertex_high_water_;
         d.signature_index         = signature_index_.view();
         d.vertex_inverted_index   = vertex_inverted_index_.view();
@@ -321,6 +349,10 @@ public:
         if (event_sig_fallbacks_) {
             check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
                   "EngineState clear event_sig_raw_fallbacks");
+        }
+        if (canonical_event_count_) {
+            check(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
+                  "EngineState clear canonical_event_count");
         }
         check(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
         check(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
@@ -466,6 +498,7 @@ private:
     uint64_t*                          state_exact_hash_       = nullptr;
     uint32_t*                          state_edge_rank_        = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;
+    uint32_t*                          canonical_event_count_  = nullptr;
     uint32_t*                          vertex_high_water_      = nullptr;
     SignatureIndex                     signature_index_;
     VertexInvertedIndex                vertex_inverted_index_;

@@ -85,4 +85,11 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         ${CMAKE_CURRENT_SOURCE_DIR}/../tools/bench_gpu_evolve.cpp
     )
     target_link_libraries(bench_gpu_evolve PRIVATE hg_gpu hypergraph)
+
+    # Separates a presentation-order cause from a rank-assignment one when the device's
+    # canonical edge ranks move between block counts.
+    add_executable(gpu_rank_order_probe
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/gpu_rank_order_probe.cu
+    )
+    target_link_libraries(gpu_rank_order_probe PRIVATE hg_gpu)
 endif()

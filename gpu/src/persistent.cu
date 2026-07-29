@@ -86,14 +86,20 @@ __device__ __forceinline__ uint32_t edge_rank_in_state_device(DeviceState ds, St
     return UINT32_MAX;
 }
 
-// Stamp one event with the identity the run's key set asks for. Ranks are resolved in the
-// states they belong to -- consumed in the input, produced in the output -- because a rank is
-// a position in THAT state's canonical labeling and means nothing in any other.
+// Stamp one event with the identity the run's key set asks for, and APPLY that identity: two
+// applications whose signatures agree are the same event, so the second to arrive records the
+// first as its canonical id. Without the insert the signature would be computed and dropped,
+// and the mode would be accepted while changing nothing about the result.
+//
+// Ranks are resolved in the states they belong to -- consumed in the input, produced in the
+// output -- because a rank is a position in THAT state's canonical labeling and means nothing
+// in any other.
 __device__ void stamp_event_signature(DeviceState ds, EventId eid,
                                       EventSignatureKeys keys,
                                       uint64_t in_hash, uint64_t out_hash,
                                       StateId in_state, StateId out_state,
-                                      uint32_t step, RuleId rule) {
+                                      uint32_t step, RuleId rule,
+                                      DedupMap::DeviceView event_map) {
     DeviceEvent& ev = ds.event_pool.at(eid);
     uint32_t consumed_ranks[kMaxPatternEdges];
     uint32_t produced_ranks[kMaxPatternEdges];
@@ -116,9 +122,21 @@ __device__ void stamp_event_signature(DeviceState ds, EventId eid,
     if (fallbacks && ds.event_sig_raw_fallbacks)
         atomicAdd(ds.event_sig_raw_fallbacks, fallbacks);
 
-    ev.signature = hgcommon::event_signature(
+    const uint64_t sig = hgcommon::event_signature(
         keys, in_hash, out_hash, step, rule,
         consumed_ranks, ev.num_consumed, produced_ranks, ev.num_produced);
+    ev.signature = sig;
+
+    // event_signature never returns 0 or the bare FNV offset, which is what keeps a signature
+    // from colliding with the map's EMPTY and LOCKED sentinels -- a key equal to either is
+    // silently never stored.
+    auto r = event_map.insert_if_absent(sig, eid);
+    if (r.inserted) {
+        ev.canonical_id = INVALID_ID;
+        if (ds.canonical_event_count) atomicAdd(ds.canonical_event_count, 1u);
+    } else {
+        ev.canonical_id = r.value;
+    }
 }
 
 // Insert every root's canonical hash into the map before the loop starts, so a child isomorphic
@@ -354,6 +372,7 @@ __global__ void k_persistent_evolve(
         uint32_t max_steps,
         CanonicalizationMode state_mode,
         EventSignatureKeys event_keys,
+        DedupMap::DeviceView event_map,
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term) {
 
@@ -472,7 +491,8 @@ __global__ void k_persistent_evolve(
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
                             stamp_event_signature(ds, child_event, event_keys,
                                                   ds.state_exact_hash[rec.state_id], exact,
-                                                  rec.state_id, child_sid, step, rec.rule_id);
+                                                  rec.state_id, child_sid, step, rec.rule_id,
+                                                  event_map);
                         }
 
                         expand_child = child_step < max_steps &&
@@ -706,6 +726,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     DedupMap canonical(engine.config().max_states * 2u);
     canonical.clear();
 
+    // Signature -> first event with it. Sized off the event budget rather than the state one:
+    // an evolution has as many applications as it has matches, which is not bounded by its
+    // state count. Allocated whatever the mode, since an unused map costs one clear and the
+    // alternative is a null view every stamp site has to test.
+    DedupMap event_ids(engine.config().max_events * 2u);
+    event_ids.clear();
+    if (event_keys != EVENT_SIG_NONE) engine.ensure_event_identity();
+
     arena.reset();
     {
         const uint32_t block = 64;
@@ -734,12 +762,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        arena.view(), term.view());
+        event_ids.view(), arena.view(), term.view());
     check(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();
     stats.states_after     = engine.num_states_host();
     stats.arena_words_used = arena.used_words_host();
+    stats.canonical_events = engine.canonical_event_count();
 
     cudaFree(d_cursor);
     cudaFree(d_states);
