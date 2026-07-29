@@ -129,15 +129,42 @@ TEST(SamplingReproducibility, ExplorationProbabilityReproducible) {
     EXPECT_EQ(a.branchial_edges, b.branchial_edges);
 }
 
-// Multi-threaded sampling is not required to be bit-reproducible (task scheduling
-// perturbs which successor gets which draw), but it must not crash and must stay
-// bounded under the exploration probability.
-TEST(SamplingReproducibility, MultiThreadExplorationBounded) {
-    RunMetrics r = run_exploration(/*seed=*/2024, /*probability=*/0.5,
-                                   /*steps=*/4, /*num_threads=*/4);
-    EXPECT_GE(r.canonical_states, 1u);
-    EXPECT_LT(r.canonical_states, 2000u)
-        << "Multi-threaded exploration must remain bounded";
+// ExplorationProbability keeps the SAME states at any worker count.
+//
+// This used to assert only that a multi-threaded run stayed bounded, because the draw came
+// from a per-worker RNG and which state survived depended on which worker got there. The draw
+// is keyed on isomorphism-invariant identity now -- the class's canonical hash under quotient,
+// and the canonical key of the creating transition under full capture, a raw state having no
+// other invariant name -- so the surviving set is a property of the run and not of the
+// schedule, and the test can say so.
+TEST(SamplingReproducibility, ExplorationProbabilityKeepsTheSameStatesAtEveryWorkerCount) {
+    for (bool quotient : {false, true}) {
+        auto run = [&](size_t threads) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.set_explore_from_canonical_states_only(quotient);
+            e.set_exploration_probability(0.5);
+            e.set_random_seed(2024);
+            e.add_rule(make_growth_rule());
+            e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 5);
+            std::multiset<uint64_t> hashes;
+            for (uint32_t s = 0; s < hg.num_states(); ++s) {
+                if (hg.get_state(s).id == INVALID_ID) continue;
+                hashes.insert(hg.get_or_compute_canonical_hash(s));
+            }
+            return hashes;
+        };
+
+        const auto one = run(1);
+        ASSERT_GT(one.size(), 5u)
+            << "quotient=" << quotient << ": too small a sample to compare";
+        for (size_t threads : {size_t(2), size_t(4), size_t(8)}) {
+            EXPECT_EQ(run(threads), one)
+                << "quotient=" << quotient << ": the explored set differs at " << threads
+                << " workers, so the coin is keyed on something the schedule decides";
+        }
+    }
 }
 
 // Unbiasedness: the whole point of reservoir sampling is a UNIFORM subsample,

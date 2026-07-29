@@ -1012,6 +1012,20 @@ private:
     void release_successor_slot(StateId parent);
     bool try_reserve_step_slot(uint32_t step);
     void release_step_slot(uint32_t step);
+    // Keep this state, with probability exploration_probability_, drawn on an
+    // isomorphism-invariant key so the surviving set is the same at any worker count.
+    //
+    // WHICH key differs by exploration mode, and the difference is the semantics:
+    //   quotient      the canonical state hash -- one draw per CLASS, so a class reached by N
+    //                 transitions is kept with probability p rather than 1-(1-p)^N.
+    //   full capture  the canonical key of the transition that CREATED the state. Raw states
+    //                 stand in bijection with the events that make them, so a per-raw-state
+    //                 coin and a per-transition coin are the same decision there -- which is
+    //                 why ExplorationProbability is only a distinct knob under quotient.
+    bool should_explore(uint64_t invariant_key) const;
+
+    // Worker-RNG draw. Reachable only where no invariant key exists; the surviving set it
+    // produces depends on which worker drew, so it cannot be reproduced across worker counts.
     bool should_explore();
 
     // Disables causal transitive reduction under quotient exploration; see the definition.

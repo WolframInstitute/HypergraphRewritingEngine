@@ -1169,7 +1169,13 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
         const uint32_t d = pending[i].second;
         if (s == INVALID_ID) continue;
         if (!hg_->try_lower_explore_depth(s, d)) continue;
-        if (d < budget && hg_->try_claim_expanded(s) && should_explore()) {
+        // exploration_probability_ is tested BEFORE the key is built: the key costs an
+        // individualization-refinement pass on first use for a state, and at p == 1 the answer
+        // is yes regardless. An argument evaluated eagerly here would put that pass on the
+        // default, unsampled path.
+        if (d < budget && hg_->try_claim_expanded(s) &&
+            (exploration_probability_ >= 1.0 ||
+             should_explore(hg_->get_or_compute_canonical_hash(s)))) {
             submit_match_task(s, d + 1);  // a canonical state is its own representative
         }
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -1601,6 +1607,23 @@ void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
     }
 }
 
+bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
+    if (exploration_probability_ >= 1.0) return true;
+    if (exploration_probability_ <= 0.0) return false;
+
+    // Same construction as the transition draw, on a separate stream. The two samplers must
+    // not correlate: under full capture they are keyed on the same object, so sharing a stream
+    // would make "explored" and "transition kept" the same coin rather than two.
+    constexpr uint64_t kStateStream = 0xD1B54A32D192ED03ULL;
+    uint64_t x = (invariant_key ^ kStateStream) ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    x ^= (x >> 31);
+    const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
+    return u < exploration_probability_;
+}
+
 bool ParallelEvolutionEngine::should_explore() {
     if (exploration_probability_ >= 1.0) return true;
     if (exploration_probability_ <= 0.0) return false;
@@ -1769,7 +1792,12 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                 // transitions is kept with probability p, not 1-(1-p)^N. Matches the
                 // GPU, which flips once per deduped state. A pruned state stays
                 // claimed, so no later transition re-flips for it.
-                if (should_explore()) {
+                //
+                // Keyed on the class's canonical hash, so WHICH classes survive is the same
+                // at any worker count -- and so it stays one draw per class even though the
+                // claim that reaches here is whichever transition won the race.
+                if (exploration_probability_ >= 1.0 ||
+                    should_explore(hg_->get_or_compute_canonical_hash(rr.new_state))) {
                     if (enable_match_forwarding_) {
                         register_child_with_parent(
                             match.source_state, rr.raw_state,
@@ -1783,9 +1811,17 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             return;
         }
 
-        // Exploration-probability pruning: full multiway expands every raw state,
-        // so one coin flip per raw state is one per state.
-        if (!should_explore()) {
+        // Exploration-probability pruning: full multiway expands every raw state, so one coin
+        // flip per raw state is one per state.
+        //
+        // Keyed on the transition that created this state, because that is the only
+        // isomorphism-invariant name a RAW state has -- its own id is an allocation order.
+        // Raw states stand in bijection with the events that create them, so this is also the
+        // exact sense in which ExplorationProbability and TransitionRate are one knob under
+        // full capture and two only under quotient; the separate stream inside should_explore
+        // is what keeps them from being literally the same coin.
+        if (exploration_probability_ < 1.0 &&
+            !should_explore(canonical_transition_key(match.source_state, match))) {
             return;
         }
 
