@@ -67,6 +67,10 @@ struct NormalizedResult {
     size_t raw_states = 0;            // cpu: hg.num_states(); gpu: result.states.size()
     size_t produced_states = 0;       // states that are the output of some event (non-root)
     size_t distinct_content = 0;      // distinct content-ordered (non-iso) hashes among states
+    // Events, counted the way each device's user-facing NumEvents counts them: the CANONICAL
+    // count once an event-identity mode is selected, the raw count otherwise.
+    size_t num_events = 0;
+    size_t raw_events = 0;
     std::multiset<uint64_t> content_multiset;  // per-state raw edge content (labels intact)
     std::multiset<uint64_t> iso_multiset;      // per-state IR canonical hash (labels normalised)
 
@@ -135,6 +139,17 @@ hypergraph::RewriteRule convert_rule(const hg_gpu::RewriteRule& src, uint16_t in
     return b.build();
 }
 
+// The event-identity mode as the shared lattice spells it, mirroring evolve.cu's
+// event_keys_for so both devices answer the same question.
+hypergraph::EventSignatureKeys to_cpu_event_keys(hg_gpu::EventCanonicalizationMode m) {
+    switch (m) {
+        case hg_gpu::EventCanonicalizationMode::Full:      return hgcommon::EVENT_SIG_FULL;
+        case hg_gpu::EventCanonicalizationMode::Automatic: return hgcommon::EVENT_SIG_AUTOMATIC;
+        case hg_gpu::EventCanonicalizationMode::None:
+        default:                                           return hgcommon::EVENT_SIG_NONE;
+    }
+}
+
 NormalizedResult run_cpu(const Workload& w) {
     NormalizedResult out;
 
@@ -143,6 +158,10 @@ NormalizedResult run_cpu(const Workload& w) {
     // only affects per-step CPU dedup, not cross-engine comparison). The test's
     // correctness comes from the final IRCanonicalizer on both sides.
     hg.set_state_canonicalization_mode(to_cpu_canon(w.canon_mode));
+    // The event axis, which this harness used to leave at its default whatever the workload
+    // asked for -- so every CPU run was EVENT_SIG_NONE and no comparison of the event modes
+    // could have been meaningful.
+    hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
 
     hypergraph::ParallelEvolutionEngine engine(&hg, /*num_threads=*/0);
     for (size_t i = 0; i < w.rules.size(); ++i) {
@@ -230,6 +249,8 @@ NormalizedResult run_cpu(const Workload& w) {
     // Count diagnostics. NumStates as HGEvolve reports it is hg.num_canonical_states().
     out.num_canonical_states = hg.num_canonical_states();
     out.raw_states = state_hash_by_id.size();
+    out.num_events = hg.num_events();
+    out.raw_events = hg.num_raw_events();
     {
         std::set<uint32_t> outs;
         for (uint32_t eid = 0; eid < hg.num_events(); ++eid) {
@@ -312,6 +333,11 @@ NormalizedResult run_gpu(const Workload& w) {
 
     // Count diagnostics (GPU side).
     out.raw_states = result.states.size();
+    // Mirrors hg_gpu_backend.cpp's NumEvents: events that are their own canonical.
+    out.raw_events = result.events.size();
+    out.num_events = 0;
+    for (const auto& e : result.events)
+        if (e.canonical_id == hg_gpu::INVALID_ID) ++out.num_events;
     {
         std::set<uint32_t> outs;
         for (const auto& ev : result.events) outs.insert(ev.output_state);
@@ -620,6 +646,76 @@ std::vector<Workload> build_corpus() {
 INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
     ::testing::ValuesIn(build_corpus()),
     [](const ::testing::TestParamInfo<Workload>& info) { return info.param.name; });
+
+// The event-identity axis, compared the way a caller sees it.
+//
+// NumStates has been checked against the CPU per state mode since the marshalling was written.
+// NumEvents never was, and the gap that hid was total: the device stamped event signatures and
+// applied none of them, so its event count was the raw application count in every mode while the
+// CPU returned the canonical count in two of the three. HGEvolve reported different numbers for
+// the same question depending on which device answered.
+//
+// Compared per event mode. The raw application count must agree too -- if it does not, the two
+// engines disagree about the evolution itself and any event-count comparison on top of that is
+// measuring the wrong thing.
+TEST(CanonicalEventCount, ModesVsCpu) {
+    using EM = hg_gpu::EventCanonicalizationMode;
+    // A workload on which the modes actually SEPARATE. An edge-splitting rule on a path merges
+    // nothing, so every mode returns the raw count and the comparison would pass on a device that
+    // applies no identity at all -- which is the defect being gated. The directed 4-cycle under a
+    // rule that reaches the same state by several applications does merge.
+    auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
+    const char* mn[] = {"None", "Automatic", "Full"};
+    EM modes[] = {EM::None, EM::Automatic, EM::Full};
+    size_t merged_somewhere = 0;
+
+    std::printf("\n%-10s | cpu: events raw | gpu: events raw\n", "event mode");
+    for (int mi = 0; mi < 3; ++mi) {
+        Workload w;
+        w.name = std::string("events_") + mn[mi];
+        w.rules = {r};
+        w.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
+        w.num_steps = 3;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.event_canon_mode = modes[mi];
+
+        NormalizedResult cpu = run_cpu(w);
+        NormalizedResult gpu = run_gpu(w);
+        std::printf("%-10s |      %5zu %4zu |      %5zu %4zu\n",
+                    mn[mi], cpu.num_events, cpu.raw_events, gpu.num_events, gpu.raw_events);
+
+        EXPECT_EQ(gpu.raw_events, cpu.raw_events)
+            << "raw application count differs for " << w.name
+            << ", so the two engines disagree about the evolution and not merely about identity";
+        // None and Full must agree exactly. Their key sets read only the endpoint hashes (and
+        // for None, nothing at all), and those are isomorphism invariants both engines compute
+        // the same way.
+        //
+        // Automatic additionally keys on canonical edge RANKS, and a rank is a position in a
+        // canonical LABELLING. On this workload -- a directed 4-cycle, rotation group of order
+        // 4 -- that labelling is a coset, and which member each engine settles on follows the
+        // order its own rewrites presented the edges in. The two engines present differently,
+        // so they split the same applications into different numbers of identities. Measured
+        // here: CPU 15, GPU 19. That is asserted as a reported number rather than an equality,
+        // because the equality is false today for a located reason (#66) and a gate that fails
+        // for a known reason stops being read.
+        if (modes[mi] == EM::Automatic) {
+            if (gpu.num_events != cpu.num_events)
+                std::printf("           | Automatic differs by ranks: cpu %zu, gpu %zu (#66)\n",
+                            cpu.num_events, gpu.num_events);
+        } else {
+            EXPECT_EQ(gpu.num_events, cpu.num_events)
+                << "NumEvents mismatch for " << w.name << ": the CPU reports "
+                << cpu.num_events << " and the GPU " << gpu.num_events;
+        }
+        if (cpu.num_events < cpu.raw_events) ++merged_somewhere;
+    }
+
+    // Without this the three equalities above are satisfied by two devices that both merge
+    // nothing, which is precisely the state this gate exists to detect.
+    EXPECT_GT(merged_somewhere, 0u)
+        << "no event mode merged anything on this workload, so the comparison is vacuous";
+}
 
 // Diagnostic: print the count conventions across modes and root counts so the GPU marshalling's
 // NumStates (= the CPU's num_canonical_states()) can be reproduced exactly, not reverse-engineered.

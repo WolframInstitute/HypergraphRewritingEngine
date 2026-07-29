@@ -7,6 +7,7 @@
 // kernel to it took a single nvcc to 8 GB. This machine is shared, so a translation unit that
 // cannot be compiled within a safe ceiling is a defect whether or not it links.
 
+#include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/wl_hash.hpp"
 
@@ -67,75 +68,6 @@ __device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMo
         default:
             return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
                                            want_ranks);
-    }
-}
-
-// Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan
-// over the state's own slice: slices are the size of a state's edge set and a rule consumes at
-// most kMaxPatternEdges of them, so this is bounded by the rule rather than by the run.
-//
-// UINT32_MAX when the state has no ranks or the edge is not in it. The caller substitutes the
-// raw edge id and counts it, because a signature built from an id is not an isomorphism
-// invariant and a silent substitution would make that invisible.
-__device__ __forceinline__ uint32_t edge_rank_in_state_device(DeviceState ds, StateId sid,
-                                                              EdgeId edge) {
-    if (!ds.state_edge_rank || sid >= ds.max_states) return UINT32_MAX;
-    StateEdgeSlice sl = ds.state_edge_slices[sid];
-    for (uint32_t k = 0; k < sl.count; ++k)
-        if (ds.state_edge_ids[sl.offset + k] == edge) return ds.state_edge_rank[sl.offset + k];
-    return UINT32_MAX;
-}
-
-// Stamp one event with the identity the run's key set asks for, and APPLY that identity: two
-// applications whose signatures agree are the same event, so the second to arrive records the
-// first as its canonical id. Without the insert the signature would be computed and dropped,
-// and the mode would be accepted while changing nothing about the result.
-//
-// Ranks are resolved in the states they belong to -- consumed in the input, produced in the
-// output -- because a rank is a position in THAT state's canonical labeling and means nothing
-// in any other.
-__device__ void stamp_event_signature(DeviceState ds, EventId eid,
-                                      EventSignatureKeys keys,
-                                      uint64_t in_hash, uint64_t out_hash,
-                                      StateId in_state, StateId out_state,
-                                      uint32_t step, RuleId rule,
-                                      DedupMap::DeviceView event_map) {
-    DeviceEvent& ev = ds.event_pool.at(eid);
-    uint32_t consumed_ranks[kMaxPatternEdges];
-    uint32_t produced_ranks[kMaxPatternEdges];
-    uint32_t fallbacks = 0;
-
-    if (keys & hgcommon::EventKey_ConsumedEdges) {
-        for (uint8_t i = 0; i < ev.num_consumed && i < kMaxPatternEdges; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, in_state, ev.consumed_edges[i]);
-            if (r == UINT32_MAX) { ++fallbacks; r = ev.consumed_edges[i]; }
-            consumed_ranks[i] = r;
-        }
-    }
-    if (keys & hgcommon::EventKey_ProducedEdges) {
-        for (uint8_t i = 0; i < ev.num_produced && i < kMaxPatternEdges; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, out_state, ev.produced_edges[i]);
-            if (r == UINT32_MAX) { ++fallbacks; r = ev.produced_edges[i]; }
-            produced_ranks[i] = r;
-        }
-    }
-    if (fallbacks && ds.event_sig_raw_fallbacks)
-        atomicAdd(ds.event_sig_raw_fallbacks, fallbacks);
-
-    const uint64_t sig = hgcommon::event_signature(
-        keys, in_hash, out_hash, step, rule,
-        consumed_ranks, ev.num_consumed, produced_ranks, ev.num_produced);
-    ev.signature = sig;
-
-    // event_signature never returns 0 or the bare FNV offset, which is what keeps a signature
-    // from colliding with the map's EMPTY and LOCKED sentinels -- a key equal to either is
-    // silently never stored.
-    auto r = event_map.insert_if_absent(sig, eid);
-    if (r.inserted) {
-        ev.canonical_id = INVALID_ID;
-        if (ds.canonical_event_count) atomicAdd(ds.canonical_event_count, 1u);
-    } else {
-        ev.canonical_id = r.value;
     }
 }
 
@@ -376,11 +308,7 @@ __global__ void k_persistent_evolve(
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term) {
 
-    // Per-edge ranks are wanted only by the two key bits that read them. Derived here rather
-    // than passed, so the flag cannot disagree with the key set it is supposed to describe.
-    const bool need_ranks =
-        (event_keys & (hgcommon::EventKey_ConsumedEdges |
-                       hgcommon::EventKey_ProducedEdges)) != 0;
+    const bool need_ranks = event_keys_need_ranks(event_keys);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -741,8 +669,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             engine.device(), d_states, n, canonical.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
-            (event_keys & (hgcommon::EventKey_ConsumedEdges |
-                           hgcommon::EventKey_ProducedEdges)) != 0,
+            event_keys_need_ranks(event_keys),
             arena.view());
         check(cudaDeviceSynchronize(), "root hash seed sync");
     }

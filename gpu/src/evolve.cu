@@ -1,6 +1,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/evolve.hpp"
+#include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/initial_upload.hpp"
@@ -357,6 +358,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         explore_threshold_u32 = static_cast<uint32_t>(
             static_cast<double>(clamped_p) * 4294967296.0);
     }
+    // Event identity, shared with the persistent scheduler. The map is keyed by signature and
+    // sized off the event budget: an evolution has as many applications as matches, which its
+    // state count does not bound. The arena backs the individualization passes that produce the
+    // exact hashes and ranks; both are inert under EventCanonicalizationMode::None.
+    const EventSignatureKeys ekeys_step = event_keys_for(in.event_canonicalization);
+    DeviceArena identity_arena(ekeys_step == EVENT_SIG_NONE
+                                   ? 1024ull
+                                   : static_cast<uint64_t>(cfg.max_states) * 64ull);
+    DedupMap event_identity_map(ekeys_step == EVENT_SIG_NONE ? 8u : cfg.max_events * 2u);
+    event_identity_map.clear();
+
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
         std::random_device rd;
@@ -367,6 +379,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // Seed the frontier with the initial (root) states 0..num_roots-1. Roots are
     // never coin-flipped — they always enter the frontier so step 0 has work.
     compute_state_dedup_keys(engine, 0, num_roots, d_state_hashes, in.canonicalization);
+    // The roots' exact hashes, which an event leaving a root reads as its input hash. Separate
+    // from the dedup key above because event identity is defined over isomorphism classes
+    // whatever the state mode is (SPEC.md sec 4); in Full the two coincide and this is free.
+    const bool key_is_exact = (in.canonicalization == CanonicalizationMode::Full);
+    fill_event_identity_inputs(engine, 0, num_roots, ekeys_step, key_is_exact, identity_arena);
     if (in.explore_from_canonical_states_only) {
         uint32_t zero32c = 0;
         check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
@@ -470,6 +487,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // warning. The kernel still runs on whatever budget remains —
         // partial work is fine, the result still self-consistent.
         uint32_t state_before = state_count_host;
+        const uint32_t event_before = engine.num_events_host();
         run_rewrite_kernel_with_nosync(engine, d_rules, matches, nm, step + 1);
         std::snprintf(ctx_buf, sizeof(ctx_buf), "rewrite kernel step %u", step);
         engine.collect_warnings_into(out.warnings, ctx_buf);
@@ -482,6 +500,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // (3) WL-hash only the new states. Writes into d_state_hashes[lo..hi).
         compute_state_dedup_keys(engine, state_before, state_after,
                                  d_state_hashes + state_before, in.canonicalization);
+        // (3b) Event identity. The rewrite kernel wrote each event BEFORE its output state was
+        // canonicalized, so the signature cannot be filled inline there; it is filled here,
+        // once both endpoint hashes exist and before the frontier moves on.
+        fill_event_identity_inputs(engine, state_before, state_after, ekeys_step, key_is_exact,
+                                   identity_arena);
+        stamp_event_identity_range(engine, event_before, engine.num_events_host(), ekeys_step,
+                                   event_identity_map);
+
         auto t3 = std::chrono::steady_clock::now();
         t_hash += std::chrono::duration<double, std::milli>(t3 - t2).count();
 

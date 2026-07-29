@@ -268,8 +268,15 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // create_or_get_canonical_state, so no adjustment is needed here.)
     full_result.push_back({wxf::WXFValue("NumStates"),
                            wxf::WXFValue(static_cast<int64_t>(class_reps.size()))});
-    full_result.push_back({wxf::WXFValue("NumEvents"),
-                           wxf::WXFValue(static_cast<int64_t>(result.events.size()))});
+    // NumEvents mirrors the CPU's num_events(), which returns the CANONICAL count once an
+    // event-identity mode is selected and the raw count otherwise. Counting events whose
+    // canonical_id is INVALID_ID gives both without a mode test: under None no signature is
+    // computed, so every event is its own canonical and this is the raw count; under Full or
+    // Automatic the losers of a signature slot carry the winner's id and drop out.
+    int64_t num_events = 0;
+    for (const auto& e : result.events)
+        if (e.canonical_id == hg_gpu::INVALID_ID) ++num_events;
+    full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(num_events)});
     full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(num_causal)});
     full_result.push_back({wxf::WXFValue("NumBranchialEdges"),
                            wxf::WXFValue(static_cast<int64_t>(result.branchial_edges.size()))});

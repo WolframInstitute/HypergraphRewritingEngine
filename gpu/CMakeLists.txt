@@ -10,6 +10,7 @@ add_library(hg_gpu STATIC
     src/initial_upload.cu
     src/ir_canon.cu
     src/match.cu
+    src/event_identity.cu
     src/persistent.cu
     src/rewrite.cu
     src/wl_hash.cu
