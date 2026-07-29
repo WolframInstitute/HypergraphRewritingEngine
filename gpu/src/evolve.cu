@@ -417,7 +417,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // (1) Match all (frontier, rule) pairs in one kernel.
         matches.reset();
         run_match_kernel_batch_nosync(engine, d_rules, num_rules,
-                                      d_frontier, frontier_count, matches);
+                                      d_frontier, frontier_count, matches, step);
         std::snprintf(ctx_buf, sizeof(ctx_buf), "match kernel step %u", step);
         engine.collect_warnings_into(out.warnings, ctx_buf);
         auto t1 = std::chrono::steady_clock::now();

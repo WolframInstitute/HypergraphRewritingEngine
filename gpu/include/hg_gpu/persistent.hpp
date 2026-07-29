@@ -27,9 +27,14 @@ namespace hg_gpu {
 
 // One unit of matching work: a (state, rule) pair, which is the granularity
 // match_state_rule already wants -- one block, its threads striping the depth-0 candidates.
+//
+// `step` rides on the ITEM. That is what makes a step budget a predicate rather than a loop
+// bound, and it is already how the host carries depth (ExpandChunk::step): with no phases there
+// is nothing else that could hold it.
 struct MatchWorkItem {
     StateId  state_id = INVALID_ID;
     uint32_t rule_id  = 0;
+    uint32_t step     = 0;
 };
 
 // Match every (state, rule) pair through persistent workers rather than one block per pair.

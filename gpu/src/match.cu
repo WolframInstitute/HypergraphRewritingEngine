@@ -168,6 +168,7 @@ __device__ void match_state_rule(DeviceState       ds,
                                  const DeviceRule* rules,
                                  StateId           state_id,
                                  uint32_t          rid,
+                                 uint32_t          step,
                                  typename Pool<MatchRecord>::DeviceView out) {
     const DeviceRule& rule = rules[rid];
 
@@ -203,6 +204,7 @@ __device__ void match_state_rule(DeviceState       ds,
             MatchRecord& m = out.at(idx);
             m.rule_id   = rid;
             m.state_id  = state_id;
+            m.step      = step;
             m.num_edges = 1;
             m.matched_edges[0] = root_cand;
             for (uint8_t i = 1; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
@@ -222,6 +224,7 @@ __device__ void match_state_rule(DeviceState       ds,
                 MatchRecord& m = out.at(idx);
                 m.rule_id   = rid;
                 m.state_id  = state_id;
+                m.step      = step;
                 m.num_edges = depth;
                 for (uint8_t i = 0; i < depth; ++i) m.matched_edges[i] = pm.matched_edges[i];
                 for (uint8_t i = depth; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
@@ -361,14 +364,15 @@ __global__ void k_match_batch(DeviceState      ds,
                               const StateId*    state_ids,
                               uint32_t          num_state_ids,
                               typename Pool<MatchRecord>::DeviceView out,
-                              uint32_t          bid_offset) {
+                              uint32_t          bid_offset,
+                              uint32_t          step) {
     uint32_t bid = blockIdx.x + bid_offset;
     uint32_t total = num_rules * num_state_ids;
     if (bid >= total) return;
 
     uint32_t state_idx = bid / num_rules;
     uint32_t rid       = bid - state_idx * num_rules;
-    match_state_rule(ds, rules, state_ids[state_idx], rid, out);
+    match_state_rule(ds, rules, state_ids[state_idx], rid, step, out);
 }
 
 }  // namespace
@@ -500,10 +504,11 @@ uint32_t run_match_kernel_batch(const EngineState& engine,
                                 uint32_t           num_rules,
                                 const StateId*     d_state_ids,
                                 uint32_t           num_state_ids,
-                                Pool<MatchRecord>& out_matches) {
+                                Pool<MatchRecord>& out_matches,
+                                uint32_t           step) {
     if (num_rules == 0 || num_state_ids == 0) return 0;
     run_match_kernel_batch_nosync(engine, d_rules, num_rules,
-                                  d_state_ids, num_state_ids, out_matches);
+                                  d_state_ids, num_state_ids, out_matches, step);
     return out_matches.size_host();
 }
 
@@ -512,7 +517,8 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
                                    uint32_t           num_rules,
                                    const StateId*     d_state_ids,
                                    uint32_t           num_state_ids,
-                                   Pool<MatchRecord>& out_matches) {
+                                   Pool<MatchRecord>& out_matches,
+                                   uint32_t           step) {
     if (num_rules == 0 || num_state_ids == 0) return;
     // One block per (state, rule); threads inside the block parallelise
     // pattern-edge-0 candidate enumeration.
@@ -521,12 +527,13 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
     uint32_t cap   = engine.config().max_blocks_per_launch;
     if (cap == 0 || grid <= cap) {
         k_match_batch<<<grid, block>>>(engine.device(), d_rules, num_rules,
-                                       d_state_ids, num_state_ids, out_matches.view(), 0u);
+                                       d_state_ids, num_state_ids, out_matches.view(), 0u, step);
     } else {
         for (uint32_t off = 0; off < grid; off += cap) {
             uint32_t n = (grid - off < cap) ? (grid - off) : cap;
             k_match_batch<<<n, block>>>(engine.device(), d_rules, num_rules,
-                                        d_state_ids, num_state_ids, out_matches.view(), off);
+                                        d_state_ids, num_state_ids, out_matches.view(), off,
+                                        step);
             check(cudaDeviceSynchronize(), "k_match_batch chunk sync");
         }
     }
@@ -536,7 +543,8 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
 uint32_t run_match_kernel(const EngineState&             engine,
                           const std::vector<DeviceRule>& rules,
                           StateId                        state_id,
-                          Pool<MatchRecord>&             out_matches) {
+                          Pool<MatchRecord>&             out_matches,
+                          uint32_t                       step) {
     if (rules.empty()) return 0;
 
     DeviceRule* d_rules = nullptr;
@@ -547,18 +555,15 @@ uint32_t run_match_kernel(const EngineState&             engine,
     out_matches.reset();
 
     // One block per rule, over match_state_rule -- the same implementation the batched driver
-    // and the persistent scheduler use. This entry point previously had its OWN inline DFS
-    // (k_match_one_state, one thread per rule), which nothing kept in step with the production
-    // matcher and which faulted with an illegal memory access on a path-shaped LHS. A
-    // test-only rival implementation is worse than none: tests written against it prove
-    // nothing about what ships.
+    // and the persistent scheduler use, so a test written against this entry point constrains
+    // what ships.
     const StateId* d_state = nullptr;
     check(cudaMalloc((void**)&d_state, sizeof(StateId)), "state alloc");
     check(cudaMemcpy((void*)d_state, &state_id, sizeof(StateId), cudaMemcpyHostToDevice),
           "state copy");
     k_match_batch<<<(uint32_t)rules.size(), kMatchBlockThreads>>>(
         engine.device(), d_rules, (uint32_t)rules.size(), d_state, 1u,
-        out_matches.view(), /*bid_offset=*/0);
+        out_matches.view(), /*bid_offset=*/0, step);
     check(cudaDeviceSynchronize(), "run_match_kernel sync");
     cudaFree((void*)d_state);
     cudaFree(d_rules);

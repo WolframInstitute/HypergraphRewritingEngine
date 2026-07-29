@@ -28,12 +28,13 @@ void check(cudaError_t err, const char* what) {
 // through its own device API rather than by a host write assuming its layout.
 __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceView queue,
                                    const StateId* states, uint32_t num_states,
-                                   uint32_t num_rules) {
+                                   uint32_t num_rules, uint32_t step) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_states * num_rules) return;
     MatchWorkItem item;
     item.state_id = states[tid / num_rules];
     item.rule_id  = tid - (tid / num_rules) * num_rules;
+    item.step     = step;
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
@@ -84,7 +85,7 @@ __global__ void k_persistent_match(DeviceState ds,
         __syncthreads();
         if (!have) return;
 
-        match_state_rule(ds, rules, item.state_id, item.rule_id, out);
+        match_state_rule(ds, rules, item.state_id, item.rule_id, item.step, out);
         __syncthreads();
     }
 }
@@ -153,7 +154,7 @@ __global__ void k_persistent_match_rewrite(
             if (threadIdx.x == 0) {
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
-                apply_one_match(ds, rules, rec, step);
+                apply_one_match(ds, rules, rec, rec.step);
             }
             __syncthreads();
             continue;
@@ -162,7 +163,7 @@ __global__ void k_persistent_match_rewrite(
         if (threadIdx.x == 0) have = match_q.try_pop(mitem);
         __syncthreads();
         if (have) {
-            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, found);
+            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
             __syncthreads();
             if (threadIdx.x == 0) term.mark_completed(kRoleMatch);
             __syncthreads();
@@ -207,7 +208,8 @@ uint32_t run_persistent_match(const EngineState& engine,
         const uint32_t block = 128;
         const uint32_t grid = (num_items + block - 1) / block;
         k_seed_match_queue<<<grid, block>>>(queue.view(), d_states,
-                                            static_cast<uint32_t>(states.size()), num_rules);
+                                            static_cast<uint32_t>(states.size()), num_rules,
+                                            /*step=*/0u);
         check(cudaDeviceSynchronize(), "seed sync");
     }
 
@@ -257,7 +259,8 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
         const uint32_t block = 128;
         const uint32_t grid = (num_items + block - 1) / block;
         k_seed_match_queue<<<grid, block>>>(match_q.view(), d_states,
-                                            static_cast<uint32_t>(states.size()), num_rules);
+                                            static_cast<uint32_t>(states.size()), num_rules,
+                                            step);
         check(cudaDeviceSynchronize(), "seed sync");
     }
 

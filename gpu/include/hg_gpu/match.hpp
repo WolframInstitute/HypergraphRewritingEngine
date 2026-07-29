@@ -72,6 +72,11 @@ struct DeviceRule {
 
 // One match found during pattern matching.
 //
+// `step` is the depth of the state this match was found in, carried on the RECORD so the
+// rewrite that consumes it needs nothing from its scheduler. The level-synchronous loop could
+// take it from the loop variable; a device-resident one has no loop, and its records from
+// several depths are live in the pool at once.
+//
 // `published` is the record's own publication flag, stored LAST with release ordering.
 // Claiming a pool index bumps the pool counter before the record is filled, so a consumer
 // running concurrently with the producer -- which is what a device-resident scheduler does --
@@ -81,6 +86,7 @@ struct DeviceRule {
 struct MatchRecord {
     RuleId   rule_id   = 0;
     StateId  state_id  = INVALID_ID;
+    uint32_t step      = 0;
     uint32_t published = 0;
     uint8_t  num_edges = 0;
     EdgeId   matched_edges[kMaxPatternEdges] = {INVALID_ID};
@@ -113,15 +119,16 @@ __device__ __forceinline__ void await_match(const MatchRecord& m) {
 // scheduler in another translation unit drives this implementation rather than growing a
 // second copy of it.
 __device__ void match_state_rule(DeviceState ds, const DeviceRule* rules,
-                                 StateId state_id, uint32_t rid,
+                                 StateId state_id, uint32_t rid, uint32_t step,
                                  typename Pool<MatchRecord>::DeviceView out);
 
 // Run the match kernel for (state_id, all rules), populating out_matches.
-// Returns the number of matches written.
+// Returns the number of matches written. `step` is stamped on every record.
 uint32_t run_match_kernel(const EngineState&            engine,
                           const std::vector<DeviceRule>& rules,
                           StateId                        state_id,
-                          Pool<MatchRecord>&             out_matches);
+                          Pool<MatchRecord>&             out_matches,
+                          uint32_t                       step = 0);
 
 // Batched variant: process all (state_id, rule) pairs across `state_ids` in
 // a single kernel launch. Much faster than calling run_match_kernel per
@@ -134,7 +141,8 @@ uint32_t run_match_kernel_batch(const EngineState& engine,
                                 uint32_t           num_rules,
                                 const StateId*     d_state_ids,
                                 uint32_t           num_state_ids,
-                                Pool<MatchRecord>& out_matches);
+                                Pool<MatchRecord>& out_matches,
+                                uint32_t           step = 0);
 
 // Variant that skips the final size_host D2H — caller reads the count
 // separately (e.g. via Pool::counter pointer) to avoid per-step D2H.
@@ -143,6 +151,7 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
                                    uint32_t           num_rules,
                                    const StateId*     d_state_ids,
                                    uint32_t           num_state_ids,
-                                   Pool<MatchRecord>& out_matches);
+                                   Pool<MatchRecord>& out_matches,
+                                   uint32_t           step = 0);
 
 }  // namespace hg_gpu
