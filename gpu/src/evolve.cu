@@ -1,6 +1,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/evolve.hpp"
+#include "hg_gpu/exploration.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/ir_canon.hpp"
@@ -94,13 +95,6 @@ EngineConfig config_from_input(const EvolveInput& in) {
 
 namespace {  // re-open anon namespace for kernel + helper definitions
 
-// Device-side dedup kernel: for each new state in [lo, hi), look up its WL
-// hash in canonical_state_map. First-writer wins → that state's id is
-// appended to out_ids via an atomic counter. Duplicates are silently
-// dropped. Reuses the same ConcurrentMap primitive already in EngineState
-// but allocated transiently here.
-using DedupMap = ConcurrentMap<uint64_t, uint32_t>;
-
 // splitmix64 — deterministic, header-quality scalar hash. Used to derive
 // a per-(seed, step, sid) coin-flip value for stochastic exploration
 // pruning. Cheap (~1 ns) and avoids needing a curand state per thread.
@@ -129,17 +123,9 @@ __global__ void k_seed_roots(uint32_t num_roots, const uint64_t* hashes,
     if (pos < out_cap) out_ids[pos] = tid;
 }
 
-// `dedup` selects the exploration semantics. True: only the first state of each
-// canonical hash enters the frontier (explore_from_canonical_states_only). False:
-// every new state is explored, so `map` is unused and must not be consulted --
-// deduplicating against a scratch map would silently drop states on collision.
 }  // namespace
 
-// Does this state survive dedup and the exploration coin, and therefore get expanded?
-//
-// The whole rule for one state, so a scheduler other than the level-synchronous one asks the
-// same question rather than reimplementing it. Getting this wrong in a second copy would not
-// crash -- it would silently explore a different state set.
+// Declared in hg_gpu/exploration.hpp, which carries the contract.
 __device__ bool state_survives_dedup(StateId sid, uint64_t hash,
                                      DedupMap::DeviceView map, bool dedup,
                                      uint32_t explore_threshold_u32,
