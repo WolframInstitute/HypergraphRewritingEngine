@@ -63,6 +63,22 @@ struct DeviceState {
     // state bought for nobody.
     uint64_t* state_exact_hash;
 
+    // Canonical rank of each edge WITHIN its own state, laid out parallel to state_edge_ids so
+    // slot i holds the rank of the edge in slot i. [state_edge_ids_capacity], UINT32_MAX where
+    // no rank exists. Written by the same individualization-refinement pass that produces
+    // state_exact_hash, so the ranks are free once that pass runs.
+    //
+    // Null unless the run's event identity keys on consumed or produced edges
+    // (EVENT_SIG_AUTOMATIC). It is four bytes per edge SLOT rather than per state, so on a
+    // large configuration it is the biggest single allocation here and is not worth taking for
+    // a run whose events are identified by their endpoint states alone.
+    uint32_t* state_edge_rank;
+
+    // Consumed or produced edges whose rank was unavailable when an event was stamped, so the
+    // raw edge id stood in. Such a signature is not an isomorphism invariant; counting them is
+    // what lets a caller comparing event counts across devices see that it happened.
+    uint32_t* event_sig_raw_fallbacks;
+
     // Vertex allocator (atomic-bumped fresh-vertex counter)
     uint32_t* vertex_high_water;      // monotonic max VertexId issued + 1
 
@@ -180,12 +196,41 @@ public:
         if (state_count_)            cudaFree(state_count_);
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
+        if (state_edge_rank_)        cudaFree(state_edge_rank_);
+        if (event_sig_fallbacks_)    cudaFree(event_sig_fallbacks_);
         if (vertex_high_water_)      cudaFree(vertex_high_water_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
 
     EngineState(const EngineState&)            = delete;
     EngineState& operator=(const EngineState&) = delete;
+
+    // Take the per-edge rank array, which only a run keying events on consumed or produced
+    // edges reads. Four bytes per edge SLOT, so on a large configuration this is the biggest
+    // allocation the engine makes and taking it up front would charge every run for a mode
+    // most do not select. Idempotent; call before launching, never from a kernel.
+    void ensure_edge_ranks() {
+        if (state_edge_rank_) return;
+        check(cudaMalloc(&state_edge_rank_, sizeof(uint32_t) * cfg_.max_state_edge_total),
+              "EngineState state_edge_rank alloc");
+        check(cudaMalloc(&event_sig_fallbacks_, sizeof(uint32_t)),
+              "EngineState event_sig_raw_fallbacks alloc");
+        check(cudaMemset(state_edge_rank_, 0xFF,
+              sizeof(uint32_t) * cfg_.max_state_edge_total),
+              "EngineState init state_edge_rank");
+        check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
+              "EngineState init event_sig_raw_fallbacks");
+    }
+
+    // Consumed or produced edges stamped with a raw edge id because no rank was available.
+    // Nonzero means some event signature is not an isomorphism invariant.
+    uint32_t event_sig_raw_fallbacks() const {
+        if (!event_sig_fallbacks_) return 0;
+        uint32_t n = 0;
+        check(cudaMemcpy(&n, event_sig_fallbacks_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+              "EngineState read event_sig_raw_fallbacks");
+        return n;
+    }
 
     DeviceState device() const {
         DeviceState d;
@@ -199,6 +244,8 @@ public:
         d.state_count             = state_count_;
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;
+        d.state_edge_rank         = state_edge_rank_;
+        d.event_sig_raw_fallbacks = event_sig_fallbacks_;
         d.vertex_high_water       = vertex_high_water_;
         d.signature_index         = signature_index_.view();
         d.vertex_inverted_index   = vertex_inverted_index_.view();
@@ -264,6 +311,17 @@ public:
               "EngineState clear state_canonical_hash");
         check(cudaMemset(state_exact_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
               "EngineState clear state_exact_hash");
+        if (state_edge_rank_) {
+            // UINT32_MAX, not 0: 0 is a valid rank (the canonically first edge), so a zeroed
+            // array would read as "every edge ranks first" instead of "no ranks yet".
+            check(cudaMemset(state_edge_rank_, 0xFF,
+                  sizeof(uint32_t) * cfg_.max_state_edge_total),
+                  "EngineState clear state_edge_rank");
+        }
+        if (event_sig_fallbacks_) {
+            check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
+                  "EngineState clear event_sig_raw_fallbacks");
+        }
         check(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
         check(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
         // edge_producer init to INVALID_ID (0xFF bytes).
@@ -406,6 +464,8 @@ private:
     uint32_t*                          state_count_            = nullptr;
     uint64_t*                          state_canonical_hash_   = nullptr;
     uint64_t*                          state_exact_hash_       = nullptr;
+    uint32_t*                          state_edge_rank_        = nullptr;
+    uint32_t*                          event_sig_fallbacks_    = nullptr;
     uint32_t*                          vertex_high_water_      = nullptr;
     SignatureIndex                     signature_index_;
     VertexInvertedIndex                vertex_inverted_index_;

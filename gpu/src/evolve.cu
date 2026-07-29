@@ -413,15 +413,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // and reads the same per-state hash array either scheduler filled, which is what makes one
     // assembly path serve both.
     if (in.persistent_scheduler) {
-        // Refused, not degraded. Automatic event identity needs the canonical RANKS of the
-        // consumed and produced edges, which the device does not compute; a persistent run
-        // could only answer with a coarser identity, and quietly returning a different answer
-        // than the caller asked for is the defect class d86b5d0 already had to fix once.
-        if (in.event_canonicalization == EventCanonicalizationMode::Automatic) {
-            throw std::invalid_argument(
-                "hg_gpu: persistent_scheduler does not support EventCanonicalizationMode::"
-                "Automatic -- it needs canonical edge ranks the device does not yet compute. "
-                "Use Full or None, or the level-synchronous scheduler.");
+        const EventSignatureKeys ekeys = event_keys_for(in.event_canonicalization);
+
+        // Automatic event identity keys on the canonical ranks of the consumed and produced
+        // edges, which live in a per-edge-slot array no other mode reads. Taken here, once the
+        // mode is known, so a run identifying events by their endpoint states alone is not
+        // charged four bytes per edge slot for it.
+        if (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges)) {
+            engine.ensure_edge_ranks();
         }
 
         std::vector<StateId> roots(num_roots);
@@ -437,7 +436,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             engine, rules, roots, in.num_steps, matches, arena,
             /*dedup=*/in.explore_from_canonical_states_only,
             explore_threshold_u32, resolved_seed,
-            in.canonicalization, event_keys_for(in.event_canonicalization));
+            in.canonicalization, ekeys);
 
         state_count_host = engine.num_states_host();
         engine.collect_warnings_into(out.warnings, "persistent evolve");

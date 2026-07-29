@@ -48,9 +48,12 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
 //   Full       the exact isomorphism hash, which is the expensive one.
 //
 // Only the Full arm touches the arena, so a run in the other two modes never claims IR scratch.
+// `want_ranks` is passed through to the Full arm so that when the run also needs per-edge ranks
+// the single pass produces both, rather than the key here and the ranks in a repeat pass.
 __device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMode mode,
                                  DeviceArena::View arena,
-                                 uint32_t*& slot, uint64_t& slot_words, uint64_t& out_key) {
+                                 uint32_t*& slot, uint64_t& slot_words, uint64_t& out_key,
+                                 bool want_ranks) {
     switch (mode) {
         case CanonicalizationMode::None:
             // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
@@ -62,8 +65,60 @@ __device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMo
             return true;
         case CanonicalizationMode::Full:
         default:
-            return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key);
+            return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
+                                           want_ranks);
     }
+}
+
+// Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan
+// over the state's own slice: slices are the size of a state's edge set and a rule consumes at
+// most kMaxPatternEdges of them, so this is bounded by the rule rather than by the run.
+//
+// UINT32_MAX when the state has no ranks or the edge is not in it. The caller substitutes the
+// raw edge id and counts it, because a signature built from an id is not an isomorphism
+// invariant and a silent substitution would make that invisible.
+__device__ __forceinline__ uint32_t edge_rank_in_state_device(DeviceState ds, StateId sid,
+                                                              EdgeId edge) {
+    if (!ds.state_edge_rank || sid >= ds.max_states) return UINT32_MAX;
+    StateEdgeSlice sl = ds.state_edge_slices[sid];
+    for (uint32_t k = 0; k < sl.count; ++k)
+        if (ds.state_edge_ids[sl.offset + k] == edge) return ds.state_edge_rank[sl.offset + k];
+    return UINT32_MAX;
+}
+
+// Stamp one event with the identity the run's key set asks for. Ranks are resolved in the
+// states they belong to -- consumed in the input, produced in the output -- because a rank is
+// a position in THAT state's canonical labeling and means nothing in any other.
+__device__ void stamp_event_signature(DeviceState ds, EventId eid,
+                                      EventSignatureKeys keys,
+                                      uint64_t in_hash, uint64_t out_hash,
+                                      StateId in_state, StateId out_state,
+                                      uint32_t step, RuleId rule) {
+    DeviceEvent& ev = ds.event_pool.at(eid);
+    uint32_t consumed_ranks[kMaxPatternEdges];
+    uint32_t produced_ranks[kMaxPatternEdges];
+    uint32_t fallbacks = 0;
+
+    if (keys & hgcommon::EventKey_ConsumedEdges) {
+        for (uint8_t i = 0; i < ev.num_consumed && i < kMaxPatternEdges; ++i) {
+            uint32_t r = edge_rank_in_state_device(ds, in_state, ev.consumed_edges[i]);
+            if (r == UINT32_MAX) { ++fallbacks; r = ev.consumed_edges[i]; }
+            consumed_ranks[i] = r;
+        }
+    }
+    if (keys & hgcommon::EventKey_ProducedEdges) {
+        for (uint8_t i = 0; i < ev.num_produced && i < kMaxPatternEdges; ++i) {
+            uint32_t r = edge_rank_in_state_device(ds, out_state, ev.produced_edges[i]);
+            if (r == UINT32_MAX) { ++fallbacks; r = ev.produced_edges[i]; }
+            produced_ranks[i] = r;
+        }
+    }
+    if (fallbacks && ds.event_sig_raw_fallbacks)
+        atomicAdd(ds.event_sig_raw_fallbacks, fallbacks);
+
+    ev.signature = hgcommon::event_signature(
+        keys, in_hash, out_hash, step, rule,
+        consumed_ranks, ev.num_consumed, produced_ranks, ev.num_produced);
 }
 
 // Insert every root's canonical hash into the map before the loop starts, so a child isomorphic
@@ -75,7 +130,7 @@ __device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMo
 // roots are distinct entry points even when isomorphic.
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
-                                   bool need_exact, DeviceArena::View arena) {
+                                   bool need_exact, bool need_ranks, DeviceArena::View arena) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -83,7 +138,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     uint64_t  slot_words = 0;
 
     uint64_t key = 0;
-    if (!state_key_device(ds, sid, state_mode, arena, slot, slot_words, key)) {
+    if (!state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks)) {
         ds.errors.record(ErrorKind::kScratchOverflow);
         return;
     }
@@ -94,7 +149,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     if (need_exact) {
         uint64_t exact = key;
         if (state_mode != CanonicalizationMode::Full &&
-            !state_exact_hash_device(ds, sid, arena, slot, slot_words, exact)) {
+            !state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks)) {
             ds.errors.record(ErrorKind::kScratchOverflow);
             return;
         }
@@ -302,6 +357,12 @@ __global__ void k_persistent_evolve(
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term) {
 
+    // Per-edge ranks are wanted only by the two key bits that read them. Derived here rather
+    // than passed, so the flag cannot disagree with the key set it is supposed to describe.
+    const bool need_ranks =
+        (event_keys & (hgcommon::EventKey_ConsumedEdges |
+                       hgcommon::EventKey_ProducedEdges)) != 0;
+
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
         uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
@@ -376,7 +437,7 @@ __global__ void k_persistent_evolve(
                 if (child_sid != INVALID_ID) {
                     uint64_t h = 0;
                     if (!state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                          ir_slot_words, h)) {
+                                          ir_slot_words, h, need_ranks)) {
                         ds.errors.record(ErrorKind::kScratchOverflow);
                     } else {
                         // Publish before anything reads it: a transition OUT of this state
@@ -391,7 +452,7 @@ __global__ void k_persistent_evolve(
                         if (event_keys != EVENT_SIG_NONE) {
                             if (state_mode != CanonicalizationMode::Full &&
                                 !state_exact_hash_device(ds, child_sid, arena, ir_slot,
-                                                         ir_slot_words, exact)) {
+                                                         ir_slot_words, exact, need_ranks)) {
                                 ds.errors.record(ErrorKind::kScratchOverflow);
                                 exact = 0;
                             }
@@ -409,13 +470,9 @@ __global__ void k_persistent_evolve(
                         // being identified (SPEC.md sec 4). Keying it off the mode's hash is
                         // the defect b82049f fixed on the host.
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
-                            ds.event_pool.at(child_event).signature =
-                                hgcommon::event_signature(
-                                    event_keys,
-                                    ds.state_exact_hash[rec.state_id], exact,
-                                    step, rec.rule_id,
-                                    /*consumed_ranks=*/nullptr, 0,
-                                    /*produced_ranks=*/nullptr, 0);
+                            stamp_event_signature(ds, child_event, event_keys,
+                                                  ds.state_exact_hash[rec.state_id], exact,
+                                                  rec.state_id, child_sid, step, rec.rule_id);
                         }
 
                         expand_child = child_step < max_steps &&
@@ -655,7 +712,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const uint32_t n = static_cast<uint32_t>(roots.size());
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             engine.device(), d_states, n, canonical.view(), state_mode,
-            event_keys != EVENT_SIG_NONE, arena.view());
+            event_keys != EVENT_SIG_NONE,
+            (event_keys & (hgcommon::EventKey_ConsumedEdges |
+                           hgcommon::EventKey_ProducedEdges)) != 0,
+            arena.view());
         check(cudaDeviceSynchronize(), "root hash seed sync");
     }
 

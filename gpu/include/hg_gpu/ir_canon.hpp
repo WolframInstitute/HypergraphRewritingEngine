@@ -62,6 +62,6 @@ void compute_state_ir_hashes_range(const EngineState& engine,
 __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
                                         DeviceArena::View arena,
                                         uint32_t*& slot, uint64_t& slot_words,
-                                        uint64_t& out_hash);
+                                        uint64_t& out_hash, bool want_ranks = false);
 
 }  // namespace hg_gpu

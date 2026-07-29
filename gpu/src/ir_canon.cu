@@ -27,8 +27,13 @@ struct IrSlotShape {
 
     HG_HD uint32_t ea_words()   const { return (cap_edges + 3) / 4; }
     HG_HD uint32_t eoff_words() const { return cap_edges + 1; }
+    // Two cap_edges spans sit between the flattened state and the core's scratch: the ranks the
+    // core reports, and the CSR slot each flattened edge came from. The second exists because
+    // flattening skips edges the slice still holds, so flat index j and slot k diverge and a
+    // rank cannot be scattered back without the map. Both are dwarfed by ir_scratch_words.
+    HG_HD uint32_t rank_words() const { return 2u * cap_edges; }
     HG_HD uint64_t words() const {
-        return ea_words() + eoff_words() + cap_occs + cap_verts
+        return ea_words() + eoff_words() + cap_occs + cap_verts + rank_words()
              + hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth,
                                           hgcommon::IR_DEVICE_GENERATORS)
              + 8;
@@ -44,11 +49,14 @@ constexpr uint32_t kIRDeviceDepth = 8;
 // Flatten a state's CSR slice to the core's convention: local vertex indices in encounter
 // order (which the core's result does not depend on -- the tie-break it uses only orders
 // vertices inside a cell). Returns false if the state exceeds the slot's bounds.
+//
+// `flat_to_slot`, when non-null, receives the CSR slot each flattened edge came from, which is
+// what lets a caller scatter the core's per-edge ranks back onto the slice.
 __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
                               const IrSlotShape& shape,
                               uint8_t*& ea, uint32_t*& eoff, uint32_t*& ev,
                               uint32_t& n_edges, uint32_t& n_verts, uint32_t& total_occ,
-                              VertexId*& verts_local)
+                              VertexId*& verts_local, uint32_t* flat_to_slot = nullptr)
 {
     ea   = reinterpret_cast<uint8_t*>(slot);
     eoff = slot + shape.ea_words();
@@ -72,6 +80,7 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
 
         eoff[n_edges] = total_occ;
         ea[n_edges]   = e.arity;
+        if (flat_to_slot) flat_to_slot[n_edges] = k;
         ++n_edges;
         for (uint8_t p = 0; p < e.arity; ++p) {
             if (total_occ >= shape.cap_occs) return false;
@@ -128,7 +137,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         }
         if (n_edges == 0) { out[i - lo] = 0; continue; }
 
-        uint32_t* scratch = verts_local + shape.cap_verts;
+        uint32_t* scratch = verts_local + shape.cap_verts + shape.rank_words();
         hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
         for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
             r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
@@ -191,10 +200,15 @@ void check(cudaError_t err, const char* what) {
 // claims again only when it needs a LARGER slot. Returns false when the arena is exhausted;
 // the caller records that as a capacity overflow and returns partial work, because growing the
 // arena would need the host.
+//
+// `want_ranks` additionally writes each edge's canonical RANK into ds.state_edge_rank at the
+// edge's own CSR slot. It rides on the pass the hash already runs, so Automatic event identity
+// costs no extra canonicalization -- only the scatter. Slots the flattening skipped keep
+// UINT32_MAX, which the signature site counts rather than silently substitutes.
 __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
                                         DeviceArena::View arena,
                                         uint32_t*& slot, uint64_t& slot_words,
-                                        uint64_t& out_hash) {
+                                        uint64_t& out_hash, bool want_ranks) {
     // Measure this state: exact counts, not a bound. Occurrences are summed rather than taken
     // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
     uint32_t n_edges = 0, total_occ = 0;
@@ -228,25 +242,40 @@ __device__ bool state_exact_hash_device(DeviceState ds, StateId sid,
         slot_words = need;
     }
 
+    // The slot's layout follows from the shape alone, so the two rank spans can be addressed
+    // before the flattening runs and filled by that same pass.
+    const bool ranks = want_ranks && ds.state_edge_rank != nullptr;
+    uint32_t* rank_buf = slot + shape.ea_words() + shape.eoff_words()
+                       + shape.cap_occs + shape.cap_verts;
+    uint32_t* flat_to_slot = rank_buf + shape.cap_edges;
+
     uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
     uint32_t fn_edges, n_verts, fn_occ;
     if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                       verts_local)) {
+                       verts_local, ranks ? flat_to_slot : nullptr)) {
         // Cannot happen: the shape was sized from this state's own counts. Treated as an
         // arena failure rather than silently hashing something else.
         return false;
     }
 
-    uint32_t* scratch = verts_local + shape.cap_verts;
+    uint32_t* scratch = flat_to_slot + shape.cap_edges;
     hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
     for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
         r = hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                                        scratch, depth, nullptr,
+                                        scratch, depth, ranks ? rank_buf : nullptr,
                                         hgcommon::IR_DEVICE_GENERATORS);
         if (r.status != hgcommon::IR_NEED_DEPTH) break;
     }
     if (r.status == hgcommon::IR_NEED_DEPTH) return false;
     out_hash = r.hash;
+
+    if (ranks) {
+        StateEdgeSlice sl = ds.state_edge_slices[sid];
+        for (uint32_t k = 0; k < sl.count; ++k) ds.state_edge_rank[sl.offset + k] = UINT32_MAX;
+        for (uint32_t j = 0; j < fn_edges; ++j)
+            ds.state_edge_rank[sl.offset + flat_to_slot[j]] = rank_buf[j];
+        __threadfence();
+    }
     return true;
 }
 

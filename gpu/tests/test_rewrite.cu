@@ -580,23 +580,207 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
 }
 
 // Automatic event identity must be refused rather than answered coarsely.
-TEST(Rewrite, PersistentSchedulerRefusesAutomaticEventIdentity) {
+// Automatic event identity keys on the canonical RANKS of the consumed and produced edges, on
+// top of the two endpoint hashes, the step and the rule. Two properties make it worth having,
+// and both are checked here:
+//
+//   - it SEPARATES applications that Full merges. Two rewrites out of one state into isomorphic
+//     children are one event under Full and two under Automatic when they consumed different
+//     edges, so Automatic's distinct-signature count is >= Full's on the same run.
+//   - every rank resolved. A rank that was unavailable falls back to the raw edge id, which is
+//     run-local, so a nonzero fallback count means some signature is not an isomorphism
+//     invariant -- that is what the counter exists to make visible.
+TEST(Rewrite, PersistentEvolveSeparatesApplicationsUnderAutomaticEventIdentity) {
     hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}};
-    r.rhs = {{0, 1}, {1, 2}};
-    r.num_lhs_vars = 2;
-    r.num_rhs_vars = 3;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
 
-    hg_gpu::EvolveInput in;
-    in.rules = {r};
-    in.initial_state = {{0u, 1u}};
-    in.num_steps = 2;
-    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
-    in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
-    in.persistent_scheduler = true;
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
+    const uint32_t kSteps = 3;
 
-    hg_gpu::Engine e(hg_gpu::config_from_input(in));
-    EXPECT_THROW(e.run(in), std::invalid_argument)
-        << "Automatic was accepted; the device cannot compute its identity, so accepting it "
-        << "means returning a coarser answer than the caller asked for";
+    auto run = [&](hgcommon::EventSignatureKeys keys, uint32_t& fallbacks) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = kSteps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+        if (keys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))
+            engine.ensure_edge_ranks();
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(64ull << 20);
+
+        hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      hg_gpu::CanonicalizationMode::Full, keys, /*blocks=*/9);
+
+        const uint32_t ne = engine.num_events_host();
+        std::vector<hg_gpu::DeviceEvent> events(ne);
+        cudaMemcpy(events.data(), engine.device().event_pool.data,
+                   sizeof(hg_gpu::DeviceEvent) * ne, cudaMemcpyDeviceToHost);
+
+        fallbacks = engine.event_sig_raw_fallbacks();
+        std::set<uint64_t> sigs;
+        for (const auto& ev : events)
+            if (ev.id != hg_gpu::INVALID_ID && ev.signature != 0) sigs.insert(ev.signature);
+        return sigs.size();
+    };
+
+    uint32_t fb_full = 0, fb_auto = 0;
+    const size_t n_full = run(hgcommon::EVENT_SIG_FULL, fb_full);
+    const size_t n_auto = run(hgcommon::EVENT_SIG_AUTOMATIC, fb_auto);
+
+    ASSERT_GT(n_full, 0u) << "no signatures stamped, so the comparison is vacuous";
+    EXPECT_EQ(fb_auto, 0u)
+        << fb_auto << " edges had no canonical rank and were stamped with their raw edge id, "
+        << "so those signatures are not isomorphism invariants";
+    EXPECT_GE(n_auto, n_full)
+        << "Automatic distinguished FEWER applications than Full (" << n_auto << " vs "
+        << n_full << "), but its key set is a strict superset of Full's";
+}
+
+// Ranks are a property of a state's canonical labeling, so on a state whose canonical labeling
+// is UNIQUE they cannot depend on how many blocks raced to produce it. The initial state here
+// is a directed path, whose automorphism group is trivial; see the companion test below for
+// what changes when it is not.
+//
+// Checked per key COMPONENT rather than only on the whole signature, so a failure names the
+// component that carries the schedule dependence.
+TEST(Rewrite, AutomaticEventIdentityIsTheSameAtEveryBlockCountOnRigidStates) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+    const uint32_t kSteps = 3;
+
+    auto signatures = [&](uint32_t blocks, hgcommon::EventSignatureKeys keys) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = kSteps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+        engine.ensure_edge_ranks();
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(64ull << 20);
+
+        hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      hg_gpu::CanonicalizationMode::Full, keys, blocks);
+
+        const uint32_t ne = engine.num_events_host();
+        std::vector<hg_gpu::DeviceEvent> events(ne);
+        cudaMemcpy(events.data(), engine.device().event_pool.data,
+                   sizeof(hg_gpu::DeviceEvent) * ne, cudaMemcpyDeviceToHost);
+        std::multiset<uint64_t> sigs;
+        for (const auto& ev : events)
+            if (ev.id != hg_gpu::INVALID_ID && ev.signature != 0) sigs.insert(ev.signature);
+        return sigs;
+    };
+
+    // Checked per COMPONENT, so a failure names the key that carries the schedule dependence
+    // instead of only reporting that the whole signature moved.
+    struct Cell { const char* name; hgcommon::EventSignatureKeys keys; };
+    const Cell cells[] = {
+        {"endpoints",              hgcommon::EVENT_SIG_FULL},
+        {"endpoints+rule",         hgcommon::EVENT_SIG_FULL | hgcommon::EventKey_Rule},
+        {"endpoints+consumed",     hgcommon::EVENT_SIG_FULL | hgcommon::EventKey_ConsumedEdges},
+        {"endpoints+produced",     hgcommon::EVENT_SIG_FULL | hgcommon::EventKey_ProducedEdges},
+        {"endpoints+step",         hgcommon::EVENT_SIG_FULL | hgcommon::EventKey_Step},
+        {"Automatic",              hgcommon::EVENT_SIG_AUTOMATIC},
+    };
+    for (const Cell& c : cells) {
+        const auto a = signatures(3, c.keys);
+        const auto b = signatures(17, c.keys);
+        ASSERT_FALSE(a.empty()) << c.name << ": no signatures stamped, comparison is vacuous";
+        EXPECT_EQ(b, a) << c.name << ": the same evolution stamped different identities at 3 "
+                        << "blocks (" << a.size() << ") and at 17 (" << b.size() << ")";
+    }
+}
+
+// The limit of edge ranks, pinned on the state that reaches it.
+//
+// A canonical rank is a position in a canonical LABELLING. When a state has a nontrivial
+// automorphism group the canonical labelling is not one labelling but a coset of them: the
+// canonical FORM is unique, and so is the state's hash, but which of several interchangeable
+// edges lands at a given position depends on the order the edges were presented in -- and that
+// order is the order the rewrites allocated them, which is the schedule. So an individual
+// edge's rank is well defined only up to the automorphism group.
+//
+// The consequence for the identity lattice: EventKey_ConsumedEdges and EventKey_ProducedEdges,
+// and therefore EVENT_SIG_AUTOMATIC, are isomorphism invariants on states with a trivial
+// automorphism group and only orbit-wise invariants otherwise. That is a property of what the
+// mode identifies events by, not of this scheduler -- SPEC.md sec 4.2 records the same limit
+// for the reference implementation's Positional identity and defaults event identity to
+// Canonical for it.
+//
+// What survives on such a state, and what this pins: the COUNT of distinct identities. The
+// automorphism permutes which signature each event gets; it does not merge or split them.
+//
+// The initial state is a directed 4-cycle, whose automorphism group is the rotations, order 4.
+TEST(Rewrite, AutomorphicStatesPermuteEdgeRanksButKeepTheIdentityCount) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
+    const uint32_t kSteps = 3;
+
+    auto run = [&](uint32_t blocks) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = kSteps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+        engine.ensure_edge_ranks();
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(64ull << 20);
+
+        hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
+                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      hg_gpu::CanonicalizationMode::Full,
+                                      hgcommon::EVENT_SIG_AUTOMATIC, blocks);
+
+        const uint32_t ne = engine.num_events_host();
+        std::vector<hg_gpu::DeviceEvent> events(ne);
+        cudaMemcpy(events.data(), engine.device().event_pool.data,
+                   sizeof(hg_gpu::DeviceEvent) * ne, cudaMemcpyDeviceToHost);
+        std::set<uint64_t> sigs;
+        for (const auto& ev : events)
+            if (ev.id != hg_gpu::INVALID_ID && ev.signature != 0) sigs.insert(ev.signature);
+        return sigs.size();
+    };
+
+    const size_t a = run(3);
+    const size_t b = run(17);
+    ASSERT_GT(a, 0u) << "no signatures stamped, so the comparison is vacuous";
+    EXPECT_EQ(b, a) << "the automorphism changed HOW MANY distinct event identities the run "
+                    << "produced (" << a << " at 3 blocks, " << b << " at 17), which it cannot "
+                    << "do by permuting ranks alone -- something other than the labelling moved";
 }
