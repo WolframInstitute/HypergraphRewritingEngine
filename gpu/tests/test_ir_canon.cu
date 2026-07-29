@@ -178,3 +178,50 @@ TEST(IRCanonGPU, K4RelabellingsAgree) {
     };
     EXPECT_EQ(gpu_ir_hash(make_k4(0)), gpu_ir_hash(make_k4(100)));
 }
+
+// A state larger than the old fixed slot bounds must still get an EXACT hash.
+//
+// The bounds used to be compile-time constants (128 verts / 128 edges / 256 occurrences), and
+// a state past any of them was deduplicated by the 1-WL hash instead. That is a wrong dedup
+// key, not a coarser one: 1-WL never separates isomorphic states but it does MERGE
+// non-isomorphic ones, which tools/ir_vs_wl demonstrates on six-vertex graphs. The slot is now
+// sized from the batch, so size alone no longer forces the fallback --
+// last_ir_degraded_states() reports zero and the hash is iso-invariant.
+TEST(IrCanon, StateLargerThanTheOldFixedBoundsIsStillExact) {
+    const uint32_t kEdges = 400;   // well past the old 128-edge cap
+
+    hg_gpu::EngineConfig cfg;
+    cfg.max_edges            = kEdges * 2;
+    cfg.max_state_edge_total = kEdges * 4;
+    cfg.max_states           = 8;
+    cfg.max_vertex_slots     = kEdges * 4;
+    cfg.max_vertices         = kEdges * 4;
+    cfg.sig_index_buckets    = 64;
+    cfg.sig_index_pool       = kEdges * 4;
+    cfg.inverted_pool        = kEdges * 4;
+
+    // A long path: enough structure that refinement discretises, and far past the old cap.
+    EdgeList edges;
+    for (uint32_t i = 0; i < kEdges; ++i)
+        edges.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+
+    hg_gpu::EngineState eng(cfg);
+    hg_gpu::upload_initial_state(eng, edges);
+    const uint64_t h = hg_gpu::compute_state_ir_hash_host(eng, /*sid=*/0);
+    EXPECT_EQ(hg_gpu::last_ir_degraded_states(), 0u)
+        << "a state of " << kEdges << " edges fell back to the 1-WL hash";
+    EXPECT_NE(h, 0u);
+
+    // Same graph, vertices relabelled by a shift: an exact canonical hash is invariant.
+    EdgeList shifted;
+    for (const auto& e : edges)
+        shifted.push_back({static_cast<VertexId>(e[0] + 1000), static_cast<VertexId>(e[1] + 1000)});
+    hg_gpu::EngineConfig cfg2 = cfg;
+    cfg2.max_vertices     = kEdges * 4 + 2000;
+    cfg2.max_vertex_slots = kEdges * 4 + 2000;
+    hg_gpu::EngineState eng2(cfg2);
+    hg_gpu::upload_initial_state(eng2, shifted);
+    const uint64_t h2 = hg_gpu::compute_state_ir_hash_host(eng2, /*sid=*/0);
+    EXPECT_EQ(hg_gpu::last_ir_degraded_states(), 0u);
+    EXPECT_EQ(h, h2) << "relabelling changed the exact hash";
+}

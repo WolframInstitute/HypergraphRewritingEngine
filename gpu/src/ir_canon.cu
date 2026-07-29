@@ -9,15 +9,30 @@
 
 namespace hg_gpu {
 
-// States in the last range whose exact hash could not be produced within the device
-// scratch bounds, so they carry the coarser 1-WL hash instead. Read via
-// last_ir_degraded_states so a caller can report the degradation rather than absorb it.
-static uint32_t g_last_degraded_states = 0;
-
 namespace {
 
-// Per-state bounds a scratch slot is sized for. A state past any of them takes the 1-WL
-// fallback and is counted (see the header).
+// Slot geometry for one thread, sized from the batch rather than fixed. Every field a
+// flattened state needs, then the shared core's scratch behind it.
+struct IrSlotShape {
+    uint32_t cap_verts = 0;
+    uint32_t cap_edges = 0;
+    uint32_t cap_occs  = 0;
+    uint32_t depth     = 0;
+
+    HG_HD uint32_t ea_words()   const { return (cap_edges + 3) / 4; }
+    HG_HD uint32_t eoff_words() const { return cap_edges + 1; }
+    HG_HD uint64_t words() const {
+        return ea_words() + eoff_words() + cap_occs + cap_verts
+             + hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth,
+                                          hgcommon::IR_DEVICE_GENERATORS)
+             + 8;
+    }
+    // Even, so every slot base keeps the 8-byte alignment the pool starts with.
+    HG_HD uint64_t stride() const { return (words() + 1ull) & ~1ull; }
+};
+
+// Legacy fast-path bounds, retained only as the DEFAULT shape when a batch's size is not
+// known -- e.g. the single-state host entry point.
 constexpr uint32_t kMaxIRVerts = 128;
 constexpr uint32_t kMaxIREdges = 128;
 constexpr uint32_t kMaxIROccs  = 256;
@@ -50,14 +65,15 @@ constexpr uint32_t kIRDeviceDepth = 8;
 // order (which the core's result does not depend on -- the tie-break it uses only orders
 // vertices inside a cell). Returns false if the state exceeds the slot's bounds.
 __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
+                              const IrSlotShape& shape,
                               uint8_t*& ea, uint32_t*& eoff, uint32_t*& ev,
                               uint32_t& n_edges, uint32_t& n_verts, uint32_t& total_occ,
                               VertexId*& verts_local)
 {
     ea   = reinterpret_cast<uint8_t*>(slot);
-    eoff = slot + (kMaxIREdges + 3) / 4;
-    ev   = eoff + (kMaxIREdges + 1);
-    verts_local = ev + kMaxIROccs;
+    eoff = slot + shape.ea_words();
+    ev   = eoff + shape.eoff_words();
+    verts_local = ev + shape.cap_occs;
 
     n_edges = 0; n_verts = 0; total_occ = 0;
     if (sid >= ds.max_states) return false;
@@ -65,7 +81,7 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
     const uint32_t num_edges_live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
 
     for (uint32_t k = 0; k < sl.count; ++k) {
-        if (n_edges >= kMaxIREdges) return false;
+        if (n_edges >= shape.cap_edges) return false;
         EdgeId eid = ds.state_edge_ids[sl.offset + k];
         if (eid >= num_edges_live) continue;
         if (eid >= ds.edge_pool.capacity) continue;
@@ -78,12 +94,12 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
         ea[n_edges]   = e.arity;
         ++n_edges;
         for (uint8_t p = 0; p < e.arity; ++p) {
-            if (total_occ >= kMaxIROccs) return false;
+            if (total_occ >= shape.cap_occs) return false;
             VertexId v = ds.vertex_pool.at(e.vertex_offset + p);
             uint32_t vi = 0xFFFFFFFFu;
             for (uint32_t i = 0; i < n_verts; ++i) if (verts_local[i] == v) { vi = i; break; }
             if (vi == 0xFFFFFFFFu) {
-                if (n_verts >= kMaxIRVerts) return false;
+                if (n_verts >= shape.cap_verts) return false;
                 vi = n_verts++;
                 verts_local[vi] = v;
             }
@@ -98,10 +114,18 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
 // states, and the pool is bounded by the grid rather than by the range.
 __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
                                  uint64_t* out, uint32_t* pool, uint64_t slot_words,
-                                 uint32_t* degraded)
+                                 IrSlotShape shape, uint32_t* degraded)
 {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
+
+    // A null pool means the host could not afford even one slot for this batch's state size.
+    // Every state then keeps the 1-WL hash, and the host has already counted them.
+    if (pool == nullptr) {
+        for (uint32_t i = lo + tid; i < hi; i += stride)
+            out[i - lo] = wl_hash_state_device(ds, i);
+        return;
+    }
     uint32_t* slot = pool + tid * slot_words;
 
     for (uint32_t i = lo + tid; i < hi; i += stride) {
@@ -109,7 +133,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
         uint32_t n_edges, n_verts, total_occ;
 
-        if (!flatten_state(ds, sid, slot, ea, eoff, ev, n_edges, n_verts, total_occ,
+        if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, n_edges, n_verts, total_occ,
                            verts_local)) {
             // Larger than the slot's bounds, so the dedup key for this state is the 1-WL
             // hash. That is NOT a correct dedup key. Isomorphism-invariance is one
@@ -124,9 +148,9 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         }
         if (n_edges == 0) { out[i - lo] = 0; continue; }
 
-        uint32_t* scratch = verts_local + kMaxIRVerts;
+        uint32_t* scratch = verts_local + shape.cap_verts;
         hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
-        for (uint32_t depth = 1; depth <= kIRDeviceDepth; depth *= kIRDeviceDepth) {
+        for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
             r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
                                             scratch, depth, nullptr,
                                             hgcommon::IR_DEVICE_GENERATORS);
@@ -143,6 +167,29 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
     }
 }
 
+// Largest (edge count, occurrence count) over a state range, so the slot can be sized to the
+// batch instead of to a constant. One cheap pass: the alternative is bounding occurrences by
+// edges * kMaxArity, which is 8x loose on the arity-2 edges that dominate real rules.
+__global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t stride = gridDim.x * blockDim.x;
+    const uint32_t num_edges_live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    for (uint32_t i = lo + tid; i < hi; i += stride) {
+        if (i >= ds.max_states) continue;
+        StateEdgeSlice sl = ds.state_edge_slices[i];
+        uint32_t n = 0, occ = 0;
+        for (uint32_t k = 0; k < sl.count; ++k) {
+            EdgeId eid = ds.state_edge_ids[sl.offset + k];
+            if (eid >= num_edges_live || eid >= ds.edge_pool.capacity) continue;
+            const Edge& e = ds.edge_pool.at(eid);
+            if (e.arity == 0 || e.arity > kMaxArity) continue;
+            ++n; occ += e.arity;
+        }
+        atomicMax(&out_max[0], n);
+        atomicMax(&out_max[1], occ);
+    }
+}
+
 void check(cudaError_t err, const char* what) {
     if (err != cudaSuccess) {
         throw std::runtime_error(std::string("hg_gpu::ir_canon ") + what + ": " +
@@ -152,29 +199,77 @@ void check(cudaError_t err, const char* what) {
 
 }  // namespace
 
-// Threads resident at once. The scratch pool is one slot per thread, so this trades memory
-// (about 48 KB a slot at kIRDeviceDepth) against occupancy.
-static constexpr uint32_t kIRMaxThreads = 1024;
+// Memory the scratch pool may take. Slot size grows with state size, so this trades
+// concurrency against state size rather than refusing large states: a batch of big states
+// runs with fewer resident threads, not with a coarser hash.
+static constexpr uint64_t kIRPoolBudgetBytes = 512ull << 20;   // 512 MB
+static constexpr uint32_t kIRMaxThreads      = 1024;
+
+static uint32_t g_last_degraded_states = 0;
 
 void compute_state_ir_hashes_range(const EngineState& engine,
                                    uint32_t lo, uint32_t hi,
                                    uint64_t* out_hashes_device) {
     if (hi <= lo) return;
     const uint32_t n = hi - lo;
-    const uint32_t threads = n < kIRMaxThreads ? n : kIRMaxThreads;
-    const uint64_t slot_words = ir_slot_stride(kMaxIRVerts, kMaxIREdges, kMaxIROccs,
-                                               kIRDeviceDepth);
+
+    // Measure the batch, then size the slot to it. The previous fixed bounds meant any state
+    // past them was deduplicated by the 1-WL hash, which MERGES non-isomorphic states -- a
+    // wrong dedup key, not a coarser one (tools/ir_vs_wl collides on six-vertex graphs). A
+    // state's size is knowable here, so nothing has to be given up for it.
+    uint32_t* d_max = nullptr;
+    check(cudaMalloc(&d_max, sizeof(uint32_t) * 2), "measure alloc");
+    check(cudaMemset(d_max, 0, sizeof(uint32_t) * 2), "measure clear");
+    {
+        const uint32_t block = 128;
+        const uint32_t grid = (n + block - 1) / block;
+        k_measure_states<<<grid ? grid : 1, block>>>(engine.device(), lo, hi, d_max);
+        check(cudaDeviceSynchronize(), "measure sync");
+    }
+    uint32_t h_max[2] = {0, 0};
+    check(cudaMemcpy(h_max, d_max, sizeof(h_max), cudaMemcpyDeviceToHost), "measure copy");
+    cudaFree(d_max);
+
+    const uint32_t max_edges = h_max[0], max_occs = h_max[1];
+    if (max_edges == 0) {
+        // Every state in the range is empty; nothing to canonicalize.
+        check(cudaMemset(out_hashes_device, 0, sizeof(uint64_t) * n), "empty range clear");
+        g_last_degraded_states = 0;
+        return;
+    }
+
+    IrSlotShape shape;
+    shape.cap_edges = max_edges + 1;
+    shape.cap_occs  = max_occs + 1;
+    shape.cap_verts = max_occs + 1;      // every occurrence could be a distinct vertex
+    shape.depth     = kIRDeviceDepth;
+
+    const uint64_t slot_words = shape.stride();
+    const uint64_t slot_bytes = slot_words * sizeof(uint32_t);
+
+    uint32_t threads = n < kIRMaxThreads ? n : kIRMaxThreads;
+    const uint64_t affordable = kIRPoolBudgetBytes / (slot_bytes ? slot_bytes : 1);
+    if (affordable == 0) {
+        // A single slot exceeds the whole budget. Rather than silently hand back a wrong
+        // dedup key, refuse: the caller sees the count and the states keep the 1-WL hash.
+        k_ir_canon_range<<<1, 1>>>(engine.device(), lo, hi, out_hashes_device,
+                                   nullptr, 0, IrSlotShape{}, nullptr);
+        check(cudaDeviceSynchronize(), "degenerate range sync");
+        g_last_degraded_states = n;
+        return;
+    }
+    if (threads > affordable) threads = static_cast<uint32_t>(affordable);
 
     uint32_t* pool = nullptr;
-    check(cudaMalloc(&pool, size_t(threads) * slot_words * sizeof(uint32_t)), "pool alloc");
+    check(cudaMalloc(&pool, size_t(threads) * slot_bytes), "pool alloc");
     uint32_t* degraded = nullptr;
     check(cudaMalloc(&degraded, sizeof(uint32_t)), "degraded alloc");
     check(cudaMemset(degraded, 0, sizeof(uint32_t)), "degraded clear");
 
-    const uint32_t block = 64;
+    const uint32_t block = threads < 64 ? threads : 64;
     const uint32_t grid = (threads + block - 1) / block;
     k_ir_canon_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device,
-                                      pool, slot_words, degraded);
+                                      pool, slot_words, shape, degraded);
     check(cudaDeviceSynchronize(), "k_ir_canon_range sync");
 
     uint32_t h_degraded = 0;
