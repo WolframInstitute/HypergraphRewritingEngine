@@ -138,6 +138,12 @@ add_executable(event_signature_stability_probe tools/event_signature_stability_p
 target_include_directories(event_signature_stability_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(event_signature_stability_probe PRIVATE hypergraph)
 
+# Host counterpart of gpu_rank_order_probe: separates a stable presentation order from an
+# order-independent rank rule as the reason the CPU's event identities do not move.
+add_executable(cpu_rank_order_probe tools/cpu_rank_order_probe.cpp)
+target_include_directories(cpu_rank_order_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cpu_rank_order_probe PRIVATE hypergraph)
+
 # Benchmarks - Performance measurement tools
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 if(BUILD_BENCHMARKS)
