@@ -145,6 +145,15 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
         const oracle::Case* c = find_case(corpus, r.case_name);
         ASSERT_NE(c, nullptr);
 
+        // Both axes of the cell, not just the state one. An event-identity mode can be
+        // schedule-dependent while the state set is perfectly stable -- the two are separate
+        // questions and only comparing both asks the second one.
+        struct Shot {
+            uint64_t state_fingerprint;
+            uint64_t events;
+            uint64_t causal_edges;
+            uint64_t branchial_edges;
+        };
         auto run = [&](unsigned threads) {
             Hypergraph hg;
             hg.set_state_canonicalization_mode(r.state_mode);
@@ -153,18 +162,32 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
             e.set_explore_from_canonical_states_only(r.quotient);
             for (const auto& rule : c->rules) e.add_rule(rule);
             e.evolve(c->init, r.steps);
-            uint64_t fp = 0;
+            Shot s{};
             for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
                 if (hg.get_state(sid).id == INVALID_ID) continue;
-                fp = golden::fold_fingerprint(fp, hg.get_or_compute_canonical_hash(sid));
+                s.state_fingerprint =
+                    golden::fold_fingerprint(s.state_fingerprint,
+                                             hg.get_or_compute_canonical_hash(sid));
             }
-            return fp;
+            s.events          = hg.num_events();
+            s.causal_edges    = hg.causal_graph().num_causal_edges();
+            s.branchial_edges = hg.causal_graph().num_branchial_edges();
+            return s;
         };
 
         const std::string where = r.case_name + std::string(" state=") +
             golden::state_mode_name(r.state_mode) + " event=" +
             golden::event_keys_name(r.event_keys) + (r.quotient ? " quotient" : "");
-        const uint64_t one = run(1);
-        EXPECT_EQ(run(8), one) << where << ": the state set depends on the worker count";
+        const Shot one = run(1);
+        const Shot eight = run(8);
+        EXPECT_EQ(eight.state_fingerprint, one.state_fingerprint)
+            << where << ": the state set depends on the worker count";
+        EXPECT_EQ(eight.events, one.events)
+            << where << ": the event count depends on the worker count (" << one.events
+            << " at 1 worker, " << eight.events << " at 8)";
+        EXPECT_EQ(eight.causal_edges, one.causal_edges)
+            << where << ": the causal edge count depends on the worker count";
+        EXPECT_EQ(eight.branchial_edges, one.branchial_edges)
+            << where << ": the branchial edge count depends on the worker count";
     }
 }

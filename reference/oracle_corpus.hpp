@@ -279,6 +279,27 @@ inline std::vector<Case> corpus() {
     c.push_back({"arity1-with-binary", "arity1/mixed",
                  R(make_rule(0).lhs({0}).lhs({0,1}).rhs({1}).rhs({0,1}).rhs({0,2}).build()),
                  {{0},{0,1}}, 3, 5});
+    // AUTOMORPHISM axis. Every case above starts from a graph whose canonical labelling is a
+    // single labelling, which is the case where an edge's canonical RANK is well defined. On a
+    // state with a nontrivial automorphism group the canonical labelling is a coset: the
+    // canonical form and the state hash stay unique, but interchangeable edges can take each
+    // other's positions, so a rank is defined only up to that group. Event identity modes that
+    // key on consumed or produced edges read those ranks, which makes this the state class
+    // where the event axis and the state axis can disagree about stability.
+    //
+    // A directed 4-cycle: rotation group of order 4. Directed, so the reflections that would
+    // make an undirected cycle's group dihedral are not automorphisms here.
+    c.push_back({"cycle4-automorphic", "automorphism",
+                 R(make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build()),
+                 {{0,1},{1,2},{2,3},{3,0}}, 3, 6});
+
+    // A state whose automorphism group acts on VERTICES rather than on a cycle: a star, where
+    // every leaf is interchangeable. The symmetric group on the leaves is larger than any cycle
+    // group, so if orbit size is what governs rank stability this is the harder case.
+    c.push_back({"star4-automorphic", "automorphism",
+                 R(make_rule(0).lhs({0,1}).rhs({0,1}).rhs({1,2}).build()),
+                 {{0,1},{0,2},{0,3},{0,4}}, 2, 6});
+
     // Multi-rule (two productive rules together).
     c.push_back({"multi-rule", "multi-rule",
                  std::vector<RewriteRule>{
