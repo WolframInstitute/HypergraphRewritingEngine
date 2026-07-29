@@ -79,6 +79,17 @@ struct MatchRecord {
 // Build DeviceRule from the host EvolveInput rule. Pads arrays to kMax*.
 DeviceRule make_device_rule(const RewriteRule& rule);
 
+// Threads per block for match_state_rule. Its body stripes the depth-0 candidates across
+// exactly these threads, so every scheduler that calls it must launch with this shape.
+constexpr uint32_t kMatchBlockThreads = 32;
+
+// One (state, rule) pair, matched by ONE BLOCK of kMatchBlockThreads threads. Exposed so a
+// scheduler in another translation unit drives this implementation rather than growing a
+// second copy of it.
+__device__ void match_state_rule(DeviceState ds, const DeviceRule* rules,
+                                 StateId state_id, uint32_t rid,
+                                 typename Pool<MatchRecord>::DeviceView out);
+
 // Run the match kernel for (state_id, all rules), populating out_matches.
 // Returns the number of matches written.
 uint32_t run_match_kernel(const EngineState&            engine,

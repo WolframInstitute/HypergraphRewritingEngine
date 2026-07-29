@@ -264,12 +264,21 @@ __global__ void k_match_one_state(DeviceState ds,
 // "emit one MatchRecord per candidate", which still benefits because the
 // emit-to-output is the only contended atomic and threads parallelise
 // the candidate filter / variable-binding work.
-constexpr uint32_t kMatchBlockThreads = 32;
+// kMatchBlockThreads is declared in match.hpp: match_state_rule's body stripes the depth-0
+// candidates across exactly these threads, so every scheduler calling it must launch with this
+// shape. That makes it part of the contract, not a detail private to this file.
+
+}  // namespace
 
 // One (state, rule) pair, matched by one BLOCK -- threads inside it stripe the depth-0
-// candidates. Callable rather than a kernel body so a scheduler other than the level-
-// synchronous one can drive it: a persistent worker pops a (state, rule) item and calls this
-// with exactly the same block shape. See docs/GPU_PERSISTENT_DESIGN.md.
+// candidates. EXTERNAL linkage, so a scheduler in another translation unit drives this same
+// implementation rather than growing a second copy. The helpers it calls stay file-local,
+// which is fine: they are defined above it in this file.
+//
+// It sits outside the anonymous namespace for that reason alone. The alternative -- putting
+// the other scheduler in THIS file -- was measured and rejected: match.cu already costs about
+// 5 GB to compile on its own, and adding one more kernel took a single nvcc to 8 GB.
+// See docs/GPU_PERSISTENT_DESIGN.md.
 __device__ void match_state_rule(DeviceState       ds,
                                  const DeviceRule* rules,
                                  StateId           state_id,
@@ -455,6 +464,8 @@ __device__ void match_state_rule(DeviceState       ds,
         }
     }
 }
+
+namespace {
 
 // Level-synchronous driver: one block per (state, rule) pair of the frontier.
 __global__ void k_match_batch(DeviceState      ds,
