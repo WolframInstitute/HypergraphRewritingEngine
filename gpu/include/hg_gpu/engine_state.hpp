@@ -103,6 +103,9 @@ struct DeviceState {
 
 class EngineState {
 public:
+    // Per-thread device stack. See the constructor for why the default is not enough.
+    static constexpr size_t kDeviceStackBytes = 32u * 1024u;
+
     explicit EngineState(EngineConfig cfg)
         : cfg_(cfg)
         , vertex_pool_(cfg.max_vertex_slots)
@@ -122,6 +125,13 @@ public:
         , desc_set_(cfg.tr_desc_slots)
         , anc_set_(cfg.tr_anc_slots)
     {
+        // Every kernel that runs against an EngineState needs more per-thread stack than the
+        // 1 KB default: match_state_rule's DFS recurses to the LHS edge count, apply_one_match
+        // holds several kMaxPatternEdges arrays, and a scheduler that calls both from one
+        // kernel carries the sum. Raising it here rather than in one scheduler's constructor
+        // is what makes it hold for every entry point -- a scheduler that missed it would fail
+        // as a stack overflow reported as an illegal memory access.
+        cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes);
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;
         check(cudaMalloc(&state_edge_slices_,
               sizeof(StateEdgeSlice) * cfg_.max_states),

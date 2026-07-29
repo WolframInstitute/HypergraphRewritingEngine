@@ -209,7 +209,6 @@ struct Engine::Impl {
         , matches_(cfg.max_states * 8u)
         , canonical_map_(cfg.max_states * 4u)
     {
-        cudaDeviceSetLimit(cudaLimitStackSize, 32u * 1024u);
         check(cudaMalloc(&d_frontier_,      sizeof(StateId) * cfg.max_states), "d_frontier");
         check(cudaMalloc(&d_next_frontier_, sizeof(StateId) * cfg.max_states), "d_next_frontier");
         check(cudaMalloc(&d_next_count_,    sizeof(uint32_t)),                 "d_next_count");
