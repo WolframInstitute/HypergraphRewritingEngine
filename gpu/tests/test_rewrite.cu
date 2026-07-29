@@ -2,6 +2,7 @@
 
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/initial_upload.hpp"
+#include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
@@ -17,6 +18,23 @@ namespace {
 using hg_gpu::EdgeId;
 using hg_gpu::StateId;
 using hg_gpu::VertexId;
+
+// Every state's exact canonical hash, as a multiset. This is the observable a scheduler must
+// preserve: it is invariant under the vertex labelling and under the order states were created
+// in, and both are things a scheduler is free to change.
+std::multiset<uint64_t> canonical_hash_multiset(hg_gpu::EngineState& eng) {
+    const uint32_t n = eng.num_states_host();
+    std::multiset<uint64_t> out;
+    if (n == 0) return out;
+    uint64_t* d = nullptr;
+    cudaMalloc(&d, sizeof(uint64_t) * n);
+    hg_gpu::compute_state_ir_hashes_range(eng, 0, n, d);
+    std::vector<uint64_t> h(n);
+    cudaMemcpy(h.data(), d, sizeof(uint64_t) * n, cudaMemcpyDeviceToHost);
+    cudaFree(d);
+    out.insert(h.begin(), h.end());
+    return out;
+}
 
 hg_gpu::EngineConfig small_cfg() {
     hg_gpu::EngineConfig cfg;
@@ -118,6 +136,11 @@ TEST(Rewrite, SparseVariableNumberingBindsTheRightNewVariable) {
 // Both schedulers drive the same match_state_rule and apply_one_match, so any difference is in
 // the scheduling, and scheduling must not change the result.
 //
+// "The result" is the CANONICAL form, which is the whole reason removing the barrier is sound
+// (docs/GPU_PERSISTENT_DESIGN.md §2). Raw vertex ids are not part of it: fresh vertices come
+// from a high-water bump, so which rewrite gets which id follows execution order, and the two
+// schedulers legitimately produce the same hypergraph under a different labelling.
+//
 // The failure mode this guards against is not a wrong answer but a HANG: a detector that
 // signals exit during a lull loses work, and one that never signals never returns. Run under a
 // timeout.
@@ -132,23 +155,11 @@ TEST(Rewrite, PersistentTwoRoleSchedulerMatchesTheLevelSynchronousResult) {
     std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
     const std::vector<hg_gpu::StateId> states = {0u};
 
-    auto edge_multiset = [](hg_gpu::EngineState& eng) {
-        std::multiset<std::vector<VertexId>> out;
-        for (uint32_t e = 0; e < eng.num_edges_host(); ++e) {
-            auto v = eng.edge_vertices_host(e);
-            out.insert(std::vector<VertexId>(v.begin(), v.end()));
-        }
-        return out;
-    };
-
     // Level-synchronous: find every match, then apply every match.
     hg_gpu::EngineState lockstep(small_cfg());
     hg_gpu::upload_initial_state(lockstep, init);
     hg_gpu::Pool<hg_gpu::MatchRecord> ls_matches(256);
     ls_matches.reset();
-    // run_match_kernel_batch, not run_match_kernel: the latter drives k_match_one_state, a
-    // third match implementation used only by tests. The comparison is only worth anything
-    // against the path the engine actually runs.
     hg_gpu::DeviceRule* d_rules = nullptr;
     cudaMalloc(&d_rules, sizeof(hg_gpu::DeviceRule) * rules.size());
     cudaMemcpy(d_rules, rules.data(), sizeof(hg_gpu::DeviceRule) * rules.size(),
@@ -176,7 +187,7 @@ TEST(Rewrite, PersistentTwoRoleSchedulerMatchesTheLevelSynchronousResult) {
     EXPECT_EQ(stats.matches_found, ls_n);
     EXPECT_EQ(persistent.num_states_host(), lockstep.num_states_host());
     EXPECT_EQ(persistent.num_edges_host(), lockstep.num_edges_host());
-    EXPECT_EQ(edge_multiset(persistent), edge_multiset(lockstep));
+    EXPECT_EQ(canonical_hash_multiset(persistent), canonical_hash_multiset(lockstep));
 }
 
 TEST(Rewrite, WolframCanonicalRuleOneStep) {
