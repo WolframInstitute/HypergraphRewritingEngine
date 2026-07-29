@@ -62,6 +62,28 @@ int main(int argc, char** argv) {
     e.evolve(init, steps);
     const auto t1 = std::chrono::steady_clock::now();
 
+    // Per-depth width and the branching factor between depths. A fixed thinning rate q makes
+    // the expected width evolve as the product of m(d)*q, so whether q must depend on depth is
+    // entirely the question of whether m does -- which is this histogram, not an argument.
+    {
+        std::vector<size_t> width;
+        for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+            const auto& st = hg.get_state(sid);
+            if (st.id == INVALID_ID) continue;
+            if (st.step >= width.size()) width.resize(st.step + 1, 0);
+            width[st.step]++;
+        }
+        std::printf("depth  width      m(d)=width(d+1)/width(d)\n");
+        for (size_t d = 0; d < width.size(); ++d) {
+            if (d + 1 < width.size() && width[d] > 0) {
+                std::printf("%5zu  %-9zu %.2f\n", d, width[d],
+                            static_cast<double>(width[d + 1]) / width[d]);
+            } else {
+                std::printf("%5zu  %-9zu -\n", d, width[d]);
+            }
+        }
+    }
+
     std::printf("done %.2f ms  states=%zu canon=%zu events=%zu matches=%zu drained=%zu\n",
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
                 hg.num_states(), hg.num_canonical_states(), hg.num_events(),
