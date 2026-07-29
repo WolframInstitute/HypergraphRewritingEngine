@@ -164,6 +164,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_repeated_invocation.cpp
     ../hypergraph/tests/test_reference_oracle.cpp
     ../hypergraph/tests/test_oracle_corpus.cpp
+    ../hypergraph/tests/test_golden_matrix.cpp
     ../hypergraph/tests/test_feature_matrix.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp
