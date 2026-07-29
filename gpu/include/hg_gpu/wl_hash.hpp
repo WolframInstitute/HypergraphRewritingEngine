@@ -12,6 +12,12 @@ namespace hg_gpu {
 // has the DeviceState. See gpu/src/wl_hash.cu for the algorithm comments.
 __device__ uint64_t wl_hash_state_device(DeviceState ds, StateId sid);
 
+// Content-ordered hash: the edge tuples as they stand, in edge order. This is what
+// CanonicalizationMode::Automatic identifies states by -- NOT an isomorphism invariant, which
+// is the point of the mode. Exposed so a device-resident scheduler can compute the key its
+// caller's mode asks for instead of always computing the exact one.
+__device__ uint64_t content_hash_state_device(DeviceState ds, StateId sid);
+
 // Compute 1-WL canonical hashes for every state in [0, num_states) on the
 // device. Writes hashes into `out_hashes` (device pointer, caller-allocated,
 // size num_states * sizeof(uint64_t)).

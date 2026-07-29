@@ -115,11 +115,18 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             bool dedup,
                                             uint32_t explore_threshold_u32 = 0xFFFFFFFFu,
                                             uint64_t explore_seed = 0,
+                                            // How states are identified. The device twin of
+                                            // compute_state_dedup_keys: the two schedulers
+                                            // deduplicating different equivalences is not a
+                                            // performance difference, it is a different
+                                            // evolution.
+                                            CanonicalizationMode state_mode =
+                                                CanonicalizationMode::Full,
                                             // Which components the event identity is built
-                                            // from. EVENT_SIG_FULL needs only the two state
-                                            // hashes and works today; EVENT_SIG_AUTOMATIC also
+                                            // from, and it is built from the EXACT hashes
+                                            // whatever state_mode is. EVENT_SIG_AUTOMATIC also
                                             // needs canonical edge ranks, which the device does
-                                            // not yet produce, so it would silently degrade.
+                                            // not yet produce.
                                             EventSignatureKeys event_keys = EVENT_SIG_NONE,
                                             uint32_t blocks = 0);
 

@@ -221,7 +221,8 @@ TEST(Rewrite, PersistentEvolveStepBudgetStopsAtOne) {
 
     const auto stats = hg_gpu::run_persistent_evolve(
         persistent, rules, /*roots=*/{0u}, /*max_steps=*/1u, matches, arena, /*dedup=*/true,
-        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0, /*blocks=*/5);
+        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0,
+        hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE, /*blocks=*/5);
 
     // Two matches in the root (one per edge), so two children and no further expansion.
     EXPECT_EQ(stats.matches_found, 2u);
@@ -277,7 +278,8 @@ TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
 
     const auto stats = hg_gpu::run_persistent_evolve(
         persistent, rules, /*roots=*/{0u}, kSteps, matches, arena, /*dedup=*/true,
-        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0, /*blocks=*/9);
+        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0,
+        hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE, /*blocks=*/9);
 
     EXPECT_EQ(stats.states_after, ref.states.size());
     EXPECT_EQ(persistent.num_events_host(), ref.events.size());
@@ -358,6 +360,7 @@ TEST(Rewrite, PersistentEvolveStampsTheSharedEventIdentity) {
 
     hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
                                   /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                  hg_gpu::CanonicalizationMode::Full,
                                   hgcommon::EVENT_SIG_FULL, /*blocks=*/9);
 
     const uint32_t ne = engine.num_events_host();
@@ -524,10 +527,9 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
     // both event modes it can answer. A spot check on one cell cannot distinguish "the routing
     // works" from "the routing works for Full" -- and the state modes differ precisely in which
     // states they identify, which is the thing a scheduler must not change.
-    // Full only: the persistent path is refused on None/Automatic because it deduplicates and
-    // reports by the isomorphism invariant rather than by those modes' own keys. This loop
-    // stays a loop so the cells come back as they are supported.
-    for (auto sm : {hg_gpu::CanonicalizationMode::Full})
+    for (auto sm : {hg_gpu::CanonicalizationMode::None,
+                    hg_gpu::CanonicalizationMode::Automatic,
+                    hg_gpu::CanonicalizationMode::Full})
     for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
                     hg_gpu::EventCanonicalizationMode::Full}) {
         hg_gpu::EvolveInput in;
@@ -554,33 +556,26 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
         for (const auto& s : b.states) hb.insert(s.canonical_hash);
         const std::string cell = "state=" + std::to_string(static_cast<int>(sm)) +
                                  " event=" + std::to_string(static_cast<int>(ev));
-        EXPECT_EQ(hb, ha) << cell << ": the persistent scheduler found a different state SET";
+
+        // Compared in every cell: the SIZE of the evolution. Whatever a mode identifies states
+        // by, both schedulers must find the same number of them and the same number of events.
+        EXPECT_EQ(b.states.size(), a.states.size()) << cell << ": state count differs";
         EXPECT_EQ(b.events.size(), a.events.size()) << cell << ": event count differs";
-    }
-}
 
-// Every mode the persistent path cannot answer must be refused, not answered differently.
-// Both refusals exist because the alternative is returning a different evolution than the
-// caller asked for, which no downstream check would catch -- the result looks well-formed.
-TEST(Rewrite, PersistentSchedulerRefusesStateModesItCannotAnswer) {
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}};
-    r.rhs = {{0, 1}, {1, 2}};
-    r.num_lhs_vars = 2;
-    r.num_rhs_vars = 3;
-
-    for (auto sm : {hg_gpu::CanonicalizationMode::None,
-                    hg_gpu::CanonicalizationMode::Automatic}) {
-        hg_gpu::EvolveInput in;
-        in.rules = {r};
-        in.initial_state = {{0u, 1u}};
-        in.num_steps = 2;
-        in.canonicalization = sm;
-        in.persistent_scheduler = true;
-        hg_gpu::Engine e(hg_gpu::config_from_input(in));
-        EXPECT_THROW(e.run(in), std::invalid_argument)
-            << "state mode " << static_cast<int>(sm) << " was accepted; measured, it produces a "
-            << "different state set and different event count than the step loop";
+        // The reported hashes are only comparable across schedulers in FULL mode, and the
+        // reason is the modes' own definitions rather than a limitation here:
+        //
+        //   None       reports a per-state unique key (id+1). Comparing {1..N} to {1..N} is
+        //              vacuous -- it says the counts match, which is checked above.
+        //   Automatic  reports the CONTENT hash, which includes concrete vertex ids. Fresh
+        //              vertices come from an atomic high-water bump, so two schedulers build
+        //              the same evolution with different numbering and therefore different
+        //              content hashes. Requiring equality would be requiring Automatic to be
+        //              isomorphism-invariant, which is the one thing it is defined not to be.
+        //   Full       reports the isomorphism invariant, which is exactly what must agree.
+        if (sm == hg_gpu::CanonicalizationMode::Full) {
+            EXPECT_EQ(hb, ha) << cell << ": the persistent scheduler found a different state SET";
+        }
     }
 }
 

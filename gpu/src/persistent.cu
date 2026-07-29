@@ -8,6 +8,7 @@
 // cannot be compiled within a safe ceiling is a defect whether or not it links.
 
 #include "hg_gpu/persistent.hpp"
+#include "hg_gpu/wl_hash.hpp"
 
 #include <cuda_runtime.h>
 
@@ -38,6 +39,33 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
+// The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
+// must stay the twin: the two schedulers deduplicating different equivalences is not a
+// performance difference, it is a different evolution.
+//
+//   None       a per-state unique value, so nothing ever deduplicates. Costs no hashing at all.
+//   Automatic  the content-ordered hash. Cheap, and deliberately NOT isomorphism-invariant.
+//   Full       the exact isomorphism hash, which is the expensive one.
+//
+// Only the Full arm touches the arena, so a run in the other two modes never claims IR scratch.
+__device__ bool state_key_device(DeviceState ds, StateId sid, CanonicalizationMode mode,
+                                 DeviceArena::View arena,
+                                 uint32_t*& slot, uint64_t& slot_words, uint64_t& out_key) {
+    switch (mode) {
+        case CanonicalizationMode::None:
+            // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
+            // dedup map's EMPTY sentinel.
+            out_key = static_cast<uint64_t>(sid) + 1ull;
+            return true;
+        case CanonicalizationMode::Automatic:
+            out_key = content_hash_state_device(ds, sid);
+            return true;
+        case CanonicalizationMode::Full:
+        default:
+            return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key);
+    }
+}
+
 // Insert every root's canonical hash into the map before the loop starts, so a child isomorphic
 // to a root deduplicates against it rather than being explored a second time. Runs pre-launch,
 // which the no-host-in-the-loop constraint permits: the constraint is on evolution, not on
@@ -46,18 +74,34 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
 // Every root is enqueued regardless of the result, which is the reference semantics: provided
 // roots are distinct entry points even when isomorphic.
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
-                                   DedupMap::DeviceView map, DeviceArena::View arena) {
+                                   DedupMap::DeviceView map, CanonicalizationMode state_mode,
+                                   bool need_exact, DeviceArena::View arena) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
+    const StateId sid = roots[tid];
     uint32_t* slot = nullptr;
     uint64_t  slot_words = 0;
-    uint64_t  h = 0;
-    if (!state_exact_hash_device(ds, roots[tid], arena, slot, slot_words, h)) {
+
+    uint64_t key = 0;
+    if (!state_key_device(ds, sid, state_mode, arena, slot, slot_words, key)) {
         ds.errors.record(ErrorKind::kScratchOverflow);
         return;
     }
-    ds.state_canonical_hash[roots[tid]] = h;
-    map.insert_if_absent(h == 0 ? 1 : h, roots[tid]);
+    ds.state_canonical_hash[sid] = key;
+
+    // The exact hash is a SECOND quantity, and only in Full mode is it the same one. Computed
+    // here only if an event identity will read it; under event mode None nobody does.
+    if (need_exact) {
+        uint64_t exact = key;
+        if (state_mode != CanonicalizationMode::Full &&
+            !state_exact_hash_device(ds, sid, arena, slot, slot_words, exact)) {
+            ds.errors.record(ErrorKind::kScratchOverflow);
+            return;
+        }
+        ds.state_exact_hash[sid] = exact;
+    }
+
+    map.insert_if_absent(key == 0 ? 1 : key, sid);
 }
 
 // Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim
@@ -253,6 +297,7 @@ __global__ void k_persistent_evolve(
         uint32_t explore_threshold_u32,
         uint64_t explore_seed,
         uint32_t max_steps,
+        CanonicalizationMode state_mode,
         EventSignatureKeys event_keys,
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term) {
@@ -330,13 +375,28 @@ __global__ void k_persistent_evolve(
                 // under a coarser one -- 1-WL merges non-isomorphic states.
                 if (child_sid != INVALID_ID) {
                     uint64_t h = 0;
-                    if (!state_exact_hash_device(ds, child_sid, arena, ir_slot, ir_slot_words,
-                                                 h)) {
+                    if (!state_key_device(ds, child_sid, state_mode, arena, ir_slot,
+                                          ir_slot_words, h)) {
                         ds.errors.record(ErrorKind::kScratchOverflow);
                     } else {
                         // Publish before anything reads it: a transition OUT of this state
                         // needs it as an input hash, and that read happens on another block.
                         ds.state_canonical_hash[child_sid] = h;
+
+                        // The exact isomorphism hash is a different question from the mode's
+                        // key and coincides with it only in Full. Computed only when an event
+                        // identity will read it -- otherwise this is an
+                        // individualization-refinement pass per state bought for nobody.
+                        uint64_t exact = h;
+                        if (event_keys != EVENT_SIG_NONE) {
+                            if (state_mode != CanonicalizationMode::Full &&
+                                !state_exact_hash_device(ds, child_sid, arena, ir_slot,
+                                                         ir_slot_words, exact)) {
+                                ds.errors.record(ErrorKind::kScratchOverflow);
+                                exact = 0;
+                            }
+                            ds.state_exact_hash[child_sid] = exact;
+                        }
 
                         // The event identity, at the only point where both halves exist: the
                         // input hash, published when the parent was created, and the output
@@ -344,11 +404,15 @@ __global__ void k_persistent_evolve(
                         // state was canonicalized, which is precisely why a scheduler with a
                         // phase boundary between rewriting and hashing cannot fill it in --
                         // and why the persistent one can.
+                        // Built from the EXACT hashes, never the mode's key: event identity is
+                        // defined over isomorphism classes independently of how states are
+                        // being identified (SPEC.md sec 4). Keying it off the mode's hash is
+                        // the defect b82049f fixed on the host.
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
                             ds.event_pool.at(child_event).signature =
                                 hgcommon::event_signature(
                                     event_keys,
-                                    ds.state_canonical_hash[rec.state_id], h,
+                                    ds.state_exact_hash[rec.state_id], exact,
                                     step, rec.rule_id,
                                     /*consumed_ranks=*/nullptr, 0,
                                     /*produced_ranks=*/nullptr, 0);
@@ -539,6 +603,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             bool dedup,
                                             uint32_t explore_threshold_u32,
                                             uint64_t explore_seed,
+                                            CanonicalizationMode state_mode,
                                             EventSignatureKeys event_keys,
                                             uint32_t blocks) {
     PersistentEvolveStats stats;
@@ -589,7 +654,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const uint32_t block = 64;
         const uint32_t n = static_cast<uint32_t>(roots.size());
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
-            engine.device(), d_states, n, canonical.view(), arena.view());
+            engine.device(), d_states, n, canonical.view(), state_mode,
+            event_keys != EVENT_SIG_NONE, arena.view());
         check(cudaDeviceSynchronize(), "root hash seed sync");
     }
 
@@ -607,7 +673,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     k_persistent_evolve<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
-        explore_threshold_u32, explore_seed, max_steps, event_keys, arena.view(), term.view());
+        explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
+        arena.view(), term.view());
     check(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();
