@@ -193,6 +193,34 @@ TEST(Match, NonDistinctBindingAllowedWhenPatternUsesSameVar) {
 // when to stop -- and none of those may change what a match is. Deliberately fewer blocks than
 // items, so every worker loops rather than handling one item and exiting; a bug in the claim
 // would show up as a duplicated or dropped match.
+// run_match_kernel on a path-shaped LHS.
+//
+// This exact call used to throw "an illegal memory access was encountered". The cause was
+// k_match_one_state, a third match implementation reachable only from tests, carrying its own
+// inline DFS that nothing kept in step with the production matcher. run_match_kernel is now a
+// thin wrapper over match_state_rule, the same implementation the batched driver and the
+// persistent scheduler use.
+//
+// The test is kept because the fault needed a verdict either way: if it had reproduced through
+// the shared implementation it would have been a live bug in the production matcher that the
+// batched path merely fails to trigger, which is far more serious than a dead rival.
+TEST(Match, PathShapedLhsThroughTheSingleStateEntryPoint) {
+    hg_gpu::EngineState engine(small_cfg());
+    hg_gpu::upload_initial_state(engine, {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}});
+
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 3;
+
+    hg_gpu::Pool<hg_gpu::MatchRecord> out(256);
+    const uint32_t n = hg_gpu::run_match_kernel(engine, {hg_gpu::make_device_rule(r)}, 0, out);
+
+    // Three consecutive pairs along a four-edge path.
+    EXPECT_EQ(n, 3u);
+}
+
 TEST(Match, PersistentSchedulerFindsTheSameMatchesAsTheBatchKernel) {
     hg_gpu::EngineState engine(small_cfg());
     hg_gpu::upload_initial_state(engine, {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}});

@@ -104,13 +104,15 @@ __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
     return false;
 }
 
-// One thread per (state, rule). Recursive DFS extending PartialMatch one
-// pattern edge at a time. Per pattern edge: union over every compatible
-// signature bucket (Wolfram non-distinct binding allows distinct vars to
-// collapse to the same data vertex, so the data signature may be coarser
-// than the pattern's signature). For each candidate: filter exact compat,
-// arity, in-state, not-consumed; bind vars (saving/restoring on backtrack);
-// recurse; emit on full match.
+// How match_state_rule enumerates, below.
+//
+// Recursive DFS extending PartialMatch one pattern edge at a time. Per pattern
+// edge: union over every compatible signature bucket (Wolfram non-distinct
+// binding allows distinct vars to collapse to the same data vertex, so the data
+// signature may be coarser than the pattern's signature). For each candidate:
+// filter exact compat, arity, in-state, not-consumed; bind vars (saving and
+// restoring on backtrack); recurse; emit on full match.
+//
 // Candidate enumeration is adaptive on state size. Multiway states are small
 // (tens of edges) while the signature and vertex-inverted indices are global
 // across the whole evolution, so their buckets grow with total edge count and
@@ -122,123 +124,6 @@ __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
 // running both would enumerate a candidate twice and emit duplicate matches.
 // The threshold lives in DeviceState::slice_scan_max_edges (EngineConfig knob),
 // and also gates lazy index maintenance: below it the indices are never read.
-
-__global__ void k_match_one_state(DeviceState ds,
-                                  const DeviceRule* rules,
-                                  uint32_t          num_rules,
-                                  StateId           state_id,
-                                  typename Pool<MatchRecord>::DeviceView out) {
-    uint32_t rid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (rid >= num_rules) return;
-
-    PartialMatch pm;
-    pm.reset(rules[rid].num_lhs_edges, rules[rid].num_lhs_vars);
-
-    auto& rule = rules[rid];
-
-    auto recurse = [&] (auto& self_ref, uint8_t depth) -> void {
-        if (depth == rule.num_lhs_edges) {
-            uint32_t idx = out.claim();
-            if (idx == Pool<MatchRecord>::kInvalid) return;
-            MatchRecord& m = out.at(idx);
-            m.rule_id   = rid;
-            m.state_id  = state_id;
-            m.num_edges = depth;
-            for (uint8_t i = 0; i < depth; ++i) m.matched_edges[i] = pm.matched_edges[i];
-            for (uint8_t i = depth; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
-            return;
-        }
-
-        const DevicePatternEdge& pe = rule.lhs[depth];
-
-        auto try_candidate = [&] (EdgeId cand) {
-            const Edge& e = ds.edge_pool.at(cand);
-            if (!state_contains(ds, state_id, cand)) return;
-            if (pm.is_consumed(cand))             return;
-
-            uint32_t saved_bound_mask = pm.bound_mask;
-            VertexId saved_bindings[kMaxVars];
-            #pragma unroll
-            for (uint32_t v = 0; v < kMaxVars; ++v) saved_bindings[v] = pm.var_binding[v];
-
-            // Arity check and variable binding are one rule, and it lives in hgcommon so the
-            // host runs the same one. The pool is a flat array, so an edge's vertices are a
-            // contiguous span from its offset.
-            const bool ok = hgcommon::bind_pattern_edge(
-                &ds.vertex_pool.at(e.vertex_offset), e.arity,
-                pe.vars, pe.arity, pm.var_binding, pm.bound_mask);
-
-            if (ok) {
-                pm.bind_pattern_edge(depth, cand);
-                pm.set_consumed(cand);
-                self_ref(self_ref, depth + 1);
-                pm.clear_consumed(cand);
-                pm.unbind_pattern_edge(depth);
-            }
-
-            uint32_t newly_bound = pm.bound_mask & ~saved_bound_mask;
-            while (newly_bound) {
-                int v = __ffs(newly_bound) - 1;
-                pm.var_binding[v] = saved_bindings[v];
-                pm.bound_mask &= ~(1u << v);
-                newly_bound &= newly_bound - 1;
-            }
-        };
-
-        // At depth 0 (no bindings yet): seed from signature_index. At depth
-        // ≥ 1 with a bound pivot_var: seed from vertex_inverted_index with
-        // per-iteration dedup (see k_match_batch comment).
-        StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
-        if (sl_.count <= ds.slice_scan_max_edges) {
-            for (uint32_t i = 0; i < sl_.count; ++i) {
-                try_candidate(ds.state_edge_ids[sl_.offset + i]);
-            }
-        } else if (depth > 0 && pe.pivot_var != kNoPivotVar) {
-            VertexId pivot_vert = pm.var_binding[pe.pivot_var];
-            // Per-iteration "seen" buffer for duplicate suppression; 256
-            // keeps high-degree vertices in evolved states on the fast path.
-            // Candidates are collected FIRST and tried only if the buffer
-            // holds them all: exactly one of the two enumerators ever calls
-            // try_candidate, because a candidate tried during collection
-            // would be tried again by the signature walk after an overflow,
-            // emitting duplicate match records (and the bucket order under
-            // concurrent inserts would make the duplicate count vary run to
-            // run). The signature walk is exact on its own: each edge
-            // appears in its bucket exactly once, no dedup needed.
-            constexpr uint32_t kMaxIncidentSeen = 256;
-            EdgeId   seen[kMaxIncidentSeen];
-            uint32_t n_seen = 0;
-            bool     overflowed = false;
-            ds.vertex_inverted_index.for_each_incident(
-                pivot_vert,
-                [&] (EdgeId cand) {
-                    if (overflowed) return;
-                    for (uint32_t i = 0; i < n_seen; ++i) {
-                        if (seen[i] == cand) return;
-                    }
-                    if (n_seen >= kMaxIncidentSeen) { overflowed = true; return; }
-                    seen[n_seen++] = cand;
-                });
-            if (overflowed) {
-                for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
-                    ds.signature_index.list.for_each(
-                        static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
-                        try_candidate);
-                }
-            } else {
-                for (uint32_t i = 0; i < n_seen; ++i) try_candidate(seen[i]);
-            }
-        } else {
-            for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
-                ds.signature_index.list.for_each(
-                    static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
-                    try_candidate);
-            }
-        }
-    };
-
-    recurse(recurse, 0);
-}
 
 // Batched variant: one BLOCK per (state, rule) pair. Threads within the
 // block cooperate by striding over candidates for pattern edge 0 — each
@@ -659,11 +544,21 @@ uint32_t run_match_kernel(const EngineState&             engine,
 
     out_matches.reset();
 
-    int block = 32;
-    int grid  = (int)((rules.size() + block - 1) / block);
-    k_match_one_state<<<grid, block>>>(engine.device(), d_rules, (uint32_t)rules.size(),
-                                       state_id, out_matches.view());
-    check(cudaDeviceSynchronize(), "k_match_one_state sync");
+    // One block per rule, over match_state_rule -- the same implementation the batched driver
+    // and the persistent scheduler use. This entry point previously had its OWN inline DFS
+    // (k_match_one_state, one thread per rule), which nothing kept in step with the production
+    // matcher and which faulted with an illegal memory access on a path-shaped LHS. A
+    // test-only rival implementation is worse than none: tests written against it prove
+    // nothing about what ships.
+    const StateId* d_state = nullptr;
+    check(cudaMalloc((void**)&d_state, sizeof(StateId)), "state alloc");
+    check(cudaMemcpy((void*)d_state, &state_id, sizeof(StateId), cudaMemcpyHostToDevice),
+          "state copy");
+    k_match_batch<<<(uint32_t)rules.size(), kMatchBlockThreads>>>(
+        engine.device(), d_rules, (uint32_t)rules.size(), d_state, 1u,
+        out_matches.view(), /*bid_offset=*/0);
+    check(cudaDeviceSynchronize(), "run_match_kernel sync");
+    cudaFree((void*)d_state);
     cudaFree(d_rules);
 
     return out_matches.size_host();
