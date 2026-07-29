@@ -287,6 +287,36 @@ TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
     std::multiset<uint64_t> ref_hashes;
     for (const auto& s : ref.states) ref_hashes.insert(s.canonical_hash);
     EXPECT_EQ(canonical_hash_multiset(persistent), ref_hashes);
+
+    // The hash the device KEPT for each state must be the hash that state actually has.
+    //
+    // This is the prerequisite for a device-side event identity: an event's signature needs its
+    // INPUT state's hash, computed when that state was created and read back much later, from
+    // another block, for every transition out of it. If what was stored is not what the state
+    // hashes to, every event identity built on it is wrong in a way no state-level check can
+    // see -- the state set would still be right.
+    const uint32_t n = persistent.num_states_host();
+    std::vector<uint64_t> stored(n);
+    cudaMemcpy(stored.data(), persistent.device().state_canonical_hash,
+               sizeof(uint64_t) * n, cudaMemcpyDeviceToHost);
+
+    uint64_t* d_fresh = nullptr;
+    cudaMalloc(&d_fresh, sizeof(uint64_t) * n);
+    hg_gpu::compute_state_ir_hashes_range(persistent, 0, n, d_fresh);
+    std::vector<uint64_t> fresh(n);
+    cudaMemcpy(fresh.data(), d_fresh, sizeof(uint64_t) * n, cudaMemcpyDeviceToHost);
+    cudaFree(d_fresh);
+
+    size_t published = 0;
+    for (uint32_t s = 0; s < n; ++s) {
+        if (stored[s] == 0) continue;   // 0 means never computed
+        ++published;
+        EXPECT_EQ(stored[s], fresh[s])
+            << "state " << s << ": the hash the device stored is not the hash it recomputes";
+    }
+    EXPECT_EQ(published, n)
+        << "only " << published << " of " << n << " states carry a stored hash; a transition "
+        << "out of an unhashed state would have no input hash to build an event identity from";
 }
 
 TEST(Rewrite, WolframCanonicalRuleOneStep) {

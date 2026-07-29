@@ -43,6 +43,14 @@ struct DeviceState {
     // State allocator (atomic-bumped)
     uint32_t* state_count;            // device atomic; current num_states
 
+    // Exact canonical hash per state, 0 until computed. [max_states]
+    //
+    // A state's hash is computed once, when the state is created; an EVENT identity needs the
+    // hash of its INPUT state, which was computed long before that event existed. Without
+    // somewhere to keep it, a device-resident scheduler would have to recanonicalize the parent
+    // for every transition out of it -- which is the same state hashed once per child.
+    uint64_t* state_canonical_hash;
+
     // Vertex allocator (atomic-bumped fresh-vertex counter)
     uint32_t* vertex_high_water;      // monotonic max VertexId issued + 1
 
@@ -142,6 +150,8 @@ public:
         check(cudaMalloc(&state_edge_ids_counter_, sizeof(uint32_t)),
               "EngineState state_edge_ids_counter alloc");
         check(cudaMalloc(&state_count_,       sizeof(uint32_t)), "EngineState state_count alloc");
+        check(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
+              "EngineState state_canonical_hash alloc");
         check(cudaMalloc(&needs_indices_,     sizeof(uint32_t)), "EngineState needs_indices alloc");
         check(cudaMalloc(&vertex_high_water_, sizeof(uint32_t)), "EngineState vertex_high_water alloc");
         check(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
@@ -154,6 +164,7 @@ public:
         if (state_edge_ids_)         cudaFree(state_edge_ids_);
         if (state_edge_ids_counter_) cudaFree(state_edge_ids_counter_);
         if (state_count_)            cudaFree(state_count_);
+        if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (vertex_high_water_)      cudaFree(vertex_high_water_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
@@ -171,6 +182,7 @@ public:
         d.state_edge_ids_capacity = cfg_.max_state_edge_total;
         d.max_states              = cfg_.max_states;
         d.state_count             = state_count_;
+        d.state_canonical_hash    = state_canonical_hash_;
         d.vertex_high_water       = vertex_high_water_;
         d.signature_index         = signature_index_.view();
         d.vertex_inverted_index   = vertex_inverted_index_.view();
@@ -230,6 +242,10 @@ public:
         check(cudaMemset(state_edge_ids_counter_, 0, sizeof(uint32_t)),
               "EngineState clear state_edge_ids_counter");
         check(cudaMemset(state_count_,       0, sizeof(uint32_t)), "EngineState clear state_count");
+        // 0 means "not yet computed", which is why the empty state has its own reserved hash
+        // rather than 0 -- see EMPTY_STATE_CANONICAL_HASH.
+        check(cudaMemset(state_canonical_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
+              "EngineState clear state_canonical_hash");
         check(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
         check(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
         // edge_producer init to INVALID_ID (0xFF bytes).
@@ -370,6 +386,7 @@ private:
     EdgeId*                            state_edge_ids_         = nullptr;
     uint32_t*                          state_edge_ids_counter_ = nullptr;
     uint32_t*                          state_count_            = nullptr;
+    uint64_t*                          state_canonical_hash_   = nullptr;
     uint32_t*                          vertex_high_water_      = nullptr;
     SignatureIndex                     signature_index_;
     VertexInvertedIndex                vertex_inverted_index_;

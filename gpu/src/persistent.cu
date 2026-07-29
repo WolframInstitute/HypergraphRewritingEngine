@@ -56,6 +56,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
         ds.errors.record(ErrorKind::kScratchOverflow);
         return;
     }
+    ds.state_canonical_hash[roots[tid]] = h;
     map.insert_if_absent(h == 0 ? 1 : h, roots[tid]);
 }
 
@@ -323,13 +324,24 @@ __global__ void k_persistent_evolve(
                 // hash is computable, and the exploration rule keeps it. The hash is the
                 // dedup KEY, so a state whose hash could not be computed is not enqueued
                 // under a coarser one -- 1-WL merges non-isomorphic states.
-                if (child_sid != INVALID_ID && child_step < max_steps) {
+                if (child_sid != INVALID_ID) {
                     uint64_t h = 0;
                     if (!state_exact_hash_device(ds, child_sid, arena, ir_slot, ir_slot_words,
                                                  h)) {
                         ds.errors.record(ErrorKind::kScratchOverflow);
                     } else {
-                        expand_child = state_survives_dedup(child_sid, h, dedup_map, dedup,
+                        // Publish before anything reads it: a transition OUT of this state
+                        // needs it as an input hash, and that read happens on another block.
+                        ds.state_canonical_hash[child_sid] = h;
+
+                        // Both halves an event identity needs now exist here: the input hash,
+                        // published when the parent was created, and the output hash just
+                        // computed. Stamping the signature is the remaining half of #52 and
+                        // needs apply_one_match to report the EVENT it wrote, not only the
+                        // state -- it currently reports the state alone.
+
+                        expand_child = child_step < max_steps &&
+                                       state_survives_dedup(child_sid, h, dedup_map, dedup,
                                                             explore_threshold_u32,
                                                             explore_seed, child_step);
                     }
