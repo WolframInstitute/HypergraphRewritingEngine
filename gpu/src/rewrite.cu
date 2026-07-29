@@ -236,17 +236,16 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
     }
 }
 
-__global__ void k_rewrite(DeviceState              ds,
-                          const DeviceRule*        rules,
-                          const MatchRecord*       matches,
-                          uint32_t                 num_matches,
-                          uint32_t                 step,
-                          uint32_t                 tid_offset) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x + tid_offset;
-    if (tid >= num_matches) return;
-
-    const MatchRecord& m = matches[tid];
+// One match, applied by one THREAD: consumes the matched edges, produces the RHS edges, and
+// emits the event. Callable rather than a kernel body so a scheduler other than the level-
+// synchronous one can drive it -- a persistent worker pops a match and calls this.
+// See docs/GPU_PERSISTENT_DESIGN.md.
+__device__ void apply_one_match(DeviceState       ds,
+                                const DeviceRule* rules,
+                                const MatchRecord& m,
+                                uint32_t          step) {
     const DeviceRule&  rule = rules[m.rule_id];
+
 
     // 1. Re-derive var bindings from matched_edges. volatile to defeat an
     //    observed miscompile on nvcc with this kernel's register pressure
@@ -537,6 +536,18 @@ __global__ void k_rewrite(DeviceState              ds,
     // 10. Branchial scan: our sibling events in the same input state.
     register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
     #endif
+}
+
+// Level-synchronous driver: one thread per match found this step.
+__global__ void k_rewrite(DeviceState              ds,
+                          const DeviceRule*        rules,
+                          const MatchRecord*       matches,
+                          uint32_t                 num_matches,
+                          uint32_t                 step,
+                          uint32_t                 tid_offset) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x + tid_offset;
+    if (tid >= num_matches) return;
+    apply_one_match(ds, rules, matches[tid], step);
 }
 
 }  // namespace

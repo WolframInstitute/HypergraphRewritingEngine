@@ -266,20 +266,15 @@ __global__ void k_match_one_state(DeviceState ds,
 // the candidate filter / variable-binding work.
 constexpr uint32_t kMatchBlockThreads = 32;
 
-__global__ void k_match_batch(DeviceState      ds,
-                              const DeviceRule* rules,
-                              uint32_t          num_rules,
-                              const StateId*    state_ids,
-                              uint32_t          num_state_ids,
-                              typename Pool<MatchRecord>::DeviceView out,
-                              uint32_t          bid_offset) {
-    uint32_t bid = blockIdx.x + bid_offset;
-    uint32_t total = num_rules * num_state_ids;
-    if (bid >= total) return;
-
-    uint32_t state_idx = bid / num_rules;
-    uint32_t rid       = bid - state_idx * num_rules;
-    StateId  state_id  = state_ids[state_idx];
+// One (state, rule) pair, matched by one BLOCK -- threads inside it stripe the depth-0
+// candidates. Callable rather than a kernel body so a scheduler other than the level-
+// synchronous one can drive it: a persistent worker pops a (state, rule) item and calls this
+// with exactly the same block shape. See docs/GPU_PERSISTENT_DESIGN.md.
+__device__ void match_state_rule(DeviceState       ds,
+                                 const DeviceRule* rules,
+                                 StateId           state_id,
+                                 uint32_t          rid,
+                                 typename Pool<MatchRecord>::DeviceView out) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
@@ -459,6 +454,23 @@ __global__ void k_match_batch(DeviceState      ds,
                 });
         }
     }
+}
+
+// Level-synchronous driver: one block per (state, rule) pair of the frontier.
+__global__ void k_match_batch(DeviceState      ds,
+                              const DeviceRule* rules,
+                              uint32_t          num_rules,
+                              const StateId*    state_ids,
+                              uint32_t          num_state_ids,
+                              typename Pool<MatchRecord>::DeviceView out,
+                              uint32_t          bid_offset) {
+    uint32_t bid = blockIdx.x + bid_offset;
+    uint32_t total = num_rules * num_state_ids;
+    if (bid >= total) return;
+
+    uint32_t state_idx = bid / num_rules;
+    uint32_t rid       = bid - state_idx * num_rules;
+    match_state_rule(ds, rules, state_ids[state_idx], rid, out);
 }
 
 }  // namespace
