@@ -669,20 +669,29 @@ TEST(CanonicalEventCount, ModesVsCpu) {
     EM modes[] = {EM::None, EM::Automatic, EM::Full};
     size_t merged_somewhere = 0;
 
-    std::printf("\n%-10s | cpu: events raw | gpu: events raw\n", "event mode");
+    // Run under full capture AND under quotient exploration. Under full capture a canonical
+    // class holds many raw states, each ranked from its own presentation; under quotient there
+    // is one. If the device's Automatic over-count is raw states of one class disagreeing about
+    // ranks, it appears in the first and not the second -- which is why both are here rather
+    // than only the default.
+    std::printf("\n%-10s %-8s | cpu: events raw | gpu: events raw\n", "event mode", "explore");
+    for (bool quotient : {false, true})
     for (int mi = 0; mi < 3; ++mi) {
         Workload w;
-        w.name = std::string("events_") + mn[mi];
+        w.name = std::string("events_") + mn[mi] + (quotient ? "_quotient" : "_full");
         w.rules = {r};
         w.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
         w.num_steps = 3;
         w.canon_mode = hg_gpu::CanonicalizationMode::Full;
         w.event_canon_mode = modes[mi];
+        w.explore_from_canonical_states_only = quotient;
 
         NormalizedResult cpu = run_cpu(w);
         NormalizedResult gpu = run_gpu(w);
-        std::printf("%-10s |      %5zu %4zu |      %5zu %4zu\n",
-                    mn[mi], cpu.num_events, cpu.raw_events, gpu.num_events, gpu.raw_events);
+        std::printf("%-10s %-8s |      %5zu %4zu |      %5zu %4zu%s\n",
+                    mn[mi], quotient ? "quotient" : "full",
+                    cpu.num_events, cpu.raw_events, gpu.num_events, gpu.raw_events,
+                    gpu.num_events != cpu.num_events ? "   <-- differs" : "");
 
         EXPECT_EQ(gpu.raw_events, cpu.raw_events)
             << "raw application count differs for " << w.name
