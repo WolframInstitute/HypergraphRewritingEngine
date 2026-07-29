@@ -124,6 +124,13 @@ if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+# Regenerates reference/golden_matrix.txt, which the identity-matrix tests read. A build target
+# rather than an ad-hoc compile: the file it writes is the expected output of 216 runs, so
+# reproducing it has to be one command with the project's own include paths and flags.
+add_executable(generate_golden_matrix tools/generate_golden_matrix.cpp)
+target_include_directories(generate_golden_matrix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(generate_golden_matrix PRIVATE hypergraph)
+
 # Benchmarks - Performance measurement tools
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 if(BUILD_BENCHMARKS)
