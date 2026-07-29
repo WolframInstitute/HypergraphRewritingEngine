@@ -817,7 +817,7 @@ TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
 // automorphism permutes which signature each event gets; it does not merge or split them.
 //
 // The initial state is a directed 4-cycle, whose automorphism group is the rotations, order 4.
-TEST(Rewrite, AutomorphicStatesPermuteEdgeRanksButKeepTheIdentityCount) {
+TEST(Rewrite, AutomorphicStateEventIdentityIsTheSameAtEveryBlockCount) {
     hg_gpu::RewriteRule r;
     r.lhs = {{0, 1}, {1, 2}};
     r.rhs = {{0, 1}, {1, 3}, {3, 2}};
@@ -853,16 +853,44 @@ TEST(Rewrite, AutomorphicStatesPermuteEdgeRanksButKeepTheIdentityCount) {
         std::vector<hg_gpu::DeviceEvent> events(ne);
         cudaMemcpy(events.data(), engine.device().event_pool.data,
                    sizeof(hg_gpu::DeviceEvent) * ne, cudaMemcpyDeviceToHost);
-        std::set<uint64_t> sigs;
+
+        // CANONICAL events only -- the ones that won their signature slot. Folding every
+        // application instead would compare the raw application set, which is a different
+        // question from what identities the run produced, and it is the comparison that made
+        // an earlier reading of this look like a rank permutation.
+        std::multiset<uint64_t> sigs;
         for (const auto& ev : events)
-            if (ev.id != hg_gpu::INVALID_ID && ev.signature != 0) sigs.insert(ev.signature);
-        return sigs.size();
+            if (ev.id != hg_gpu::INVALID_ID && ev.signature != 0 &&
+                ev.canonical_id == hg_gpu::INVALID_ID)
+                sigs.insert(ev.signature);
+        return sigs;
     };
 
-    const size_t a = run(3);
-    const size_t b = run(17);
-    ASSERT_GT(a, 0u) << "no signatures stamped, so the comparison is vacuous";
-    EXPECT_EQ(b, a) << "the automorphism changed HOW MANY distinct event identities the run "
-                    << "produced (" << a << " at 3 blocks, " << b << " at 17), which it cannot "
-                    << "do by permuting ranks alone -- something other than the labelling moved";
+    const auto a = run(3);
+    const auto b = run(17);
+    ASSERT_FALSE(a.empty()) << "no signatures stamped, so the comparison is vacuous";
+
+    // THE INVARIANT. An automorphism permutes which edge holds which canonical rank; it cannot
+    // create or destroy an identity. So however the ranks land, the number of distinct event
+    // identities is the same.
+    EXPECT_EQ(b.size(), a.size())
+        << "the run produced a different NUMBER of distinct event identities at 3 blocks ("
+        << a.size() << ") and at 17 (" << b.size() << "), which a permutation of ranks cannot "
+        << "do -- something other than the labelling moved";
+
+    // NOT asserted, because it is measured to be false: over 15 runs the VALUES differed in 3,
+    // and in a captured failure 14 of 15 signatures matched with exactly one differing. Ranks
+    // are positions in a canonical LABELLING, and on a state whose automorphism group is
+    // nontrivial that labelling is a coset -- which member the search settles on follows the
+    // presentation order, and the presentation order is the order the rewrites appended edges.
+    //
+    // Asserting it here would make a gate that fails one run in five while the engine is doing
+    // what it is defined to do. It is reported instead, so the rate stays visible, and the work
+    // to make the presentation order itself canonical is tracked rather than hidden.
+    if (a != b) {
+        size_t common = 0;
+        for (uint64_t s : a) if (b.count(s)) ++common;
+        std::printf("[ automorphism ] same count (%zu) but %zu of %zu identity values differ "
+                    "between 3 and 17 blocks\n", a.size(), a.size() - common, a.size());
+    }
 }
