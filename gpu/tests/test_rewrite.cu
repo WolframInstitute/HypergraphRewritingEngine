@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace {
@@ -519,13 +520,21 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
     r.num_lhs_vars = 3;
     r.num_rhs_vars = 4;
 
+    // The full matrix of what the persistent path CLAIMS to support: every state mode, and
+    // both event modes it can answer. A spot check on one cell cannot distinguish "the routing
+    // works" from "the routing works for Full" -- and the state modes differ precisely in which
+    // states they identify, which is the thing a scheduler must not change.
+    // Full only: the persistent path is refused on None/Automatic because it deduplicates and
+    // reports by the isomorphism invariant rather than by those modes' own keys. This loop
+    // stays a loop so the cells come back as they are supported.
+    for (auto sm : {hg_gpu::CanonicalizationMode::Full})
     for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
                     hg_gpu::EventCanonicalizationMode::Full}) {
         hg_gpu::EvolveInput in;
         in.rules = {r};
         in.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
         in.num_steps = 3;
-        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+        in.canonicalization = sm;
         in.event_canonicalization = ev;
 
         hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
@@ -543,14 +552,39 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
         std::multiset<uint64_t> ha, hb;
         for (const auto& s : a.states) ha.insert(s.canonical_hash);
         for (const auto& s : b.states) hb.insert(s.canonical_hash);
-        EXPECT_EQ(hb, ha) << "event mode " << static_cast<int>(ev)
-                          << ": the persistent scheduler found a different state SET";
-        EXPECT_EQ(b.events.size(), a.events.size())
-            << "event mode " << static_cast<int>(ev) << ": event count differs";
+        const std::string cell = "state=" + std::to_string(static_cast<int>(sm)) +
+                                 " event=" + std::to_string(static_cast<int>(ev));
+        EXPECT_EQ(hb, ha) << cell << ": the persistent scheduler found a different state SET";
+        EXPECT_EQ(b.events.size(), a.events.size()) << cell << ": event count differs";
     }
 }
 
-// Automatic must be refused rather than answered coarsely.
+// Every mode the persistent path cannot answer must be refused, not answered differently.
+// Both refusals exist because the alternative is returning a different evolution than the
+// caller asked for, which no downstream check would catch -- the result looks well-formed.
+TEST(Rewrite, PersistentSchedulerRefusesStateModesItCannotAnswer) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}};
+    r.rhs = {{0, 1}, {1, 2}};
+    r.num_lhs_vars = 2;
+    r.num_rhs_vars = 3;
+
+    for (auto sm : {hg_gpu::CanonicalizationMode::None,
+                    hg_gpu::CanonicalizationMode::Automatic}) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = {{0u, 1u}};
+        in.num_steps = 2;
+        in.canonicalization = sm;
+        in.persistent_scheduler = true;
+        hg_gpu::Engine e(hg_gpu::config_from_input(in));
+        EXPECT_THROW(e.run(in), std::invalid_argument)
+            << "state mode " << static_cast<int>(sm) << " was accepted; measured, it produces a "
+            << "different state set and different event count than the step loop";
+    }
+}
+
+// Automatic event identity must be refused rather than answered coarsely.
 TEST(Rewrite, PersistentSchedulerRefusesAutomaticEventIdentity) {
     hg_gpu::RewriteRule r;
     r.lhs = {{0, 1}};

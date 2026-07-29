@@ -423,6 +423,20 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                 "Automatic -- it needs canonical edge ranks the device does not yet compute. "
                 "Use Full or None, or the level-synchronous scheduler.");
         }
+        // MEASURED disagreement, not a suspicion: on CanonicalizationMode::None the two
+        // schedulers report different state sets and different event counts -- the step loop
+        // gave 10 states / 9 events where this gave 32 events, and the hashes it reported were
+        // the mode's dedup keys (1,2,3,...) rather than hashes at all. state_exact_hash_device
+        // computes the ISOMORPHISM invariant unconditionally, while these modes identify states
+        // by something else, so the persistent path is answering a different question than it
+        // was asked. Refused until it asks the mode's question.
+        if (in.canonicalization != CanonicalizationMode::Full) {
+            throw std::invalid_argument(
+                "hg_gpu: persistent_scheduler currently supports CanonicalizationMode::Full "
+                "only -- on None/Automatic it deduplicates and reports by the isomorphism "
+                "invariant rather than by the mode's own key, which is a different evolution. "
+                "Use Full, or the level-synchronous scheduler.");
+        }
 
         std::vector<StateId> roots(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) roots[i] = i;
