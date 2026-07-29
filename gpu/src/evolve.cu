@@ -133,6 +133,40 @@ __global__ void k_seed_roots(uint32_t num_roots, const uint64_t* hashes,
 // canonical hash enters the frontier (explore_from_canonical_states_only). False:
 // every new state is explored, so `map` is unused and must not be consulted --
 // deduplicating against a scratch map would silently drop states on collision.
+}  // namespace
+
+// Does this state survive dedup and the exploration coin, and therefore get expanded?
+//
+// The whole rule for one state, so a scheduler other than the level-synchronous one asks the
+// same question rather than reimplementing it. Getting this wrong in a second copy would not
+// crash -- it would silently explore a different state set.
+__device__ bool state_survives_dedup(StateId sid, uint64_t hash,
+                                     DedupMap::DeviceView map, bool dedup,
+                                     uint32_t explore_threshold_u32,
+                                     uint64_t explore_seed, uint32_t step) {
+    if (dedup) {
+        auto r = map.insert_if_absent(hash == 0 ? 1 : hash, sid);
+        if (!r.inserted) return false;
+    }
+
+    // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
+    // (the threshold encoding for probability 1.0); skip the hash work
+    // entirely on that fast path so the existing all-deterministic
+    // workloads pay zero overhead.
+    if (explore_threshold_u32 != 0xFFFFFFFFu) {
+        if (explore_threshold_u32 == 0u) return false;  // probability 0.0
+        uint64_t mix = splitmix64(explore_seed
+                                  ^ (static_cast<uint64_t>(step) << 32)
+                                  ^ static_cast<uint64_t>(sid));
+        uint32_t draw = static_cast<uint32_t>(mix);
+        if (draw >= explore_threshold_u32) return false;
+    }
+    return true;
+}
+
+namespace {
+
+// Level-synchronous driver: one thread per state created this step.
 __global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
                                    const uint64_t* hashes,
                                    DedupMap::DeviceView map,
@@ -146,24 +180,8 @@ __global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
     uint32_t n = hi - lo;
     if (tid >= n) return;
     StateId sid = lo + tid;
-    if (dedup) {
-        uint64_t h = hashes[tid];
-        auto r = map.insert_if_absent(h == 0 ? 1 : h, sid);
-        if (!r.inserted) return;
-    }
-
-    // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
-    // (the threshold encoding for probability 1.0); skip the hash work
-    // entirely on that fast path so the existing all-deterministic
-    // workloads pay zero overhead.
-    if (explore_threshold_u32 != 0xFFFFFFFFu) {
-        if (explore_threshold_u32 == 0u) return;  // probability 0.0
-        uint64_t mix = splitmix64(explore_seed
-                                  ^ (static_cast<uint64_t>(step) << 32)
-                                  ^ static_cast<uint64_t>(sid));
-        uint32_t draw = static_cast<uint32_t>(mix);
-        if (draw >= explore_threshold_u32) return;
-    }
+    if (!state_survives_dedup(sid, hashes[tid], map, dedup,
+                              explore_threshold_u32, explore_seed, step)) return;
 
     uint32_t pos = atomicAdd(out_count, 1u);
     if (pos < out_cap) out_ids[pos] = sid;
