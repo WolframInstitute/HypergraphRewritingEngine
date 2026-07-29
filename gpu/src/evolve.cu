@@ -198,7 +198,6 @@ struct Engine::Impl {
         check(cudaMalloc(&d_frontier_,      sizeof(StateId) * cfg.max_states), "d_frontier");
         check(cudaMalloc(&d_next_frontier_, sizeof(StateId) * cfg.max_states), "d_next_frontier");
         check(cudaMalloc(&d_next_count_,    sizeof(uint32_t)),                 "d_next_count");
-        check(cudaMalloc(&d_state_hashes_,  sizeof(uint64_t) * cfg.max_states),"d_state_hashes");
     }
 
     ~Impl() {
@@ -206,7 +205,6 @@ struct Engine::Impl {
         if (d_frontier_)      cudaFree(d_frontier_);
         if (d_next_frontier_) cudaFree(d_next_frontier_);
         if (d_next_count_)    cudaFree(d_next_count_);
-        if (d_state_hashes_)  cudaFree(d_state_hashes_);
     }
 
     void reset() {
@@ -224,7 +222,6 @@ struct Engine::Impl {
     StateId*                           d_frontier_       = nullptr;
     StateId*                           d_next_frontier_  = nullptr;
     uint32_t*                          d_next_count_     = nullptr;
-    uint64_t*                          d_state_hashes_   = nullptr;
     DeviceRule*                        d_rules_          = nullptr;
     uint32_t                           d_rules_capacity_ = 0;
 };
@@ -324,7 +321,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     StateId*  d_frontier      = d_frontier_;
     StateId*  d_next_frontier = d_next_frontier_;
     uint32_t* d_next_count    = d_next_count_;
-    uint64_t* d_state_hashes  = d_state_hashes_;
+    // The per-state hash lives on DeviceState, not in this scheduler. Both schedulers write it
+    // -- the step loop below, and the persistent kernel when it hashes a child for dedup -- so
+    // the readback at the end reads one array whichever produced the run. A buffer owned by
+    // Engine::Impl would have made that assembly the step loop's private business.
+    uint64_t* d_state_hashes  = engine.device().state_canonical_hash;
 
     // Canonical-state dedup map: hash → first-seen StateId. Cleared in reset().
     DedupMap& canonical_map = canonical_map_;
@@ -713,7 +714,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
-    b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + d_state_hashes
+    b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
     return b + b / 6;   // ~17% headroom
 }
 
