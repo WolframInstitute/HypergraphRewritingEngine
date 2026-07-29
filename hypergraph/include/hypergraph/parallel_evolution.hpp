@@ -621,6 +621,17 @@ public:
     // on the stream position, so the retained set is the same whatever the schedule and
     // whichever worker sees which match.
     //
+    // DOMAIN: exact only with match forwarding DISABLED. A forwarded match reaches a state
+    // through push_match_to_children / forward_matches_from_single_ancestor_eager, which submit
+    // a rewrite directly, so the reservoir sees only the matches this state DISCOVERED. With
+    // forwarding on and k=4, a 24-edge path at depth 5 produces 2,038,505 states instead of
+    // 1365 (docs/ASYNC_SAMPLING_DESIGN.md §3a).
+    //
+    // Routing forwarded matches through it would not repair that: an ancestor keeps forwarding
+    // to a state long after that state's own match tree drained, so the population closes only
+    // when the whole ancestor chain has, and it stops being local. Use set_match_rate for the
+    // general case -- a rate needs no population at all.
+    //
     // Not to be confused with the hard caps: set_max_states_per_step and
     // set_max_successor_states_per_parent truncate by arrival order and are not samples.
     void set_matches_per_state(size_t k) { matches_per_state_ = k; }
