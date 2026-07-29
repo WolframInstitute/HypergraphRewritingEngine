@@ -79,6 +79,63 @@ inline size_t engine_full_count(const std::vector<RewriteRule>& rules,
     return engine.num_canonical_states();
 }
 
+// Independent content-ordered canonical form: the edge tuples as they stand, in edge order,
+// serialized. No relabelling -- Automatic identifies states by content, not up to isomorphism.
+//
+// Independent of the engine in the way that matters: it compares the CONTENT, where the engine
+// compares a hash of the content. A collision, or a field hashed that should not have been,
+// shows up here and cannot show up in a check that hashes the same way.
+inline std::string content_canonical(const std::vector<std::vector<uint32_t>>& edges) {
+    std::string s;
+    for (const auto& e : edges) {
+        s += '(';
+        for (uint32_t v : e) { s += std::to_string(v); s += ','; }
+        s += ')';
+    }
+    return s;
+}
+
+// The refinement lattice, checked rather than assumed.
+//
+// None keeps every raw state; Automatic merges those with equal content; Full merges those that
+// are isomorphic. So quotienting the None-mode state set by an INDEPENDENT content map must
+// give exactly Automatic's state count, and by an independent isomorphism map exactly Full's.
+// Dedup only ever merges states with identical futures, so pruning re-expansion cannot change
+// which classes are reachable -- the counts have to agree.
+//
+// This is what gives the non-Full cells an oracle at all. The brute-force isomorphism count
+// answers only for Full, because isomorphism is what Full MEANS.
+struct LatticeCounts {
+    size_t raw;            // None-mode states
+    size_t by_content;     // distinct under the independent content map
+    size_t by_iso;         // distinct under the independent isomorphism map
+    bool   all_small;      // false if any state exceeded the brute force's vertex bound
+};
+
+inline LatticeCounts brute_force_lattice(const std::vector<RewriteRule>& rules,
+                                         const std::vector<std::vector<VertexId>>& initial,
+                                         int steps) {
+    Hypergraph hg;  // None mode: no dedup -> the full raw state set
+    ParallelEvolutionEngine engine(&hg, 1);
+    for (const auto& r : rules) engine.add_rule(r);
+    engine.evolve(initial, steps);
+
+    LatticeCounts lc{0, 0, 0, true};
+    std::set<std::string> content, iso;
+    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+        auto edges = state_edges(hg, sid);
+        if (edges.empty()) continue;
+        ++lc.raw;
+        content.insert(content_canonical(edges));
+        std::string c = brute_canonical(edges);
+        if (c.empty()) { lc.all_small = false; continue; }
+        iso.insert(std::move(c));
+    }
+    lc.by_content = content.size();
+    lc.by_iso = iso.size();
+    return lc;
+}
+
 // Brute-force iso-distinct count of the full raw exploration (None mode).
 inline size_t brute_force_iso_count(const std::vector<RewriteRule>& rules,
                                     const std::vector<std::vector<VertexId>>& initial,
@@ -182,6 +239,46 @@ inline std::vector<Case> corpus() {
     c.push_back({"disconnected-lhs", "disconnected",
                  R(make_rule(0).lhs({0,1}).lhs({2,3}).rhs({0,2}).rhs({1,3}).build()),
                  {{0,1},{2,3}}, 3, 6});
+
+    // ---- the arity axis ----------------------------------------------------------------
+    //
+    // MAX_ARITY is 16 and the cases above reach 3, all with edges of ONE arity per state and
+    // per rule side. Arity is not a passive parameter: it sets the width of every signature,
+    // the branching of the match join, and the vertex-tuple layout, and a hyperedge of arity 4
+    // is not merely a longer arity-2 edge. Rules and initial states that MIX arities are the
+    // case least like anything already covered, since a matcher can be right on uniform input
+    // by construction and wrong the moment two arities have to be told apart.
+
+    // Pure arity 4: past every corpus case, and past the arity-3 special-casing that a
+    // hand-tuned matcher tends to accumulate.
+    c.push_back({"arity4-growth", "arity4",
+                 R(make_rule(0).lhs({0,1,2,3}).rhs({0,1,2,4}).rhs({1,2,3,4}).build()),
+                 {{0,1,2,3}}, 3, 4});
+
+    // LHS mixing arities: the join has to bind across edges of different widths, so a
+    // candidate filter keyed on a single arity cannot pass this.
+    c.push_back({"mixed-arity-lhs", "mixed-arity/join",
+                 R(make_rule(0).lhs({0,1}).lhs({0,1,2}).rhs({0,2}).rhs({1,2,3}).build()),
+                 {{0,1},{0,1,2}}, 3, 5});
+
+    // Initial state mixing arities, with a rule that consumes either: state identity and the
+    // signature index now have to separate edges by arity as well as by content.
+    c.push_back({"mixed-arity-init", "mixed-arity/init",
+                 R(make_rule(0).lhs({0,1}).rhs({0,1,2}).build()),
+                 {{0,1},{1,2,3},{2,3}}, 3, 5});
+
+    // Arity-REDUCING: 3 -> 2. The reductive cases above shrink the edge count at fixed arity;
+    // this shrinks the arity itself, which is the direction that leaves stale wider tuples
+    // behind if anything indexes on the old width.
+    c.push_back({"arity3-to-2", "arity-reductive",
+                 R(make_rule(0).lhs({0,1,2}).rhs({0,1}).rhs({1,2}).build()),
+                 {{0,1,2},{1,2,3}}, 3, 6});
+
+    // Unary edges alongside binary: arity 1 is the degenerate end, where an edge has no
+    // internal structure to distinguish and everything rests on which vertex it names.
+    c.push_back({"arity1-with-binary", "arity1/mixed",
+                 R(make_rule(0).lhs({0}).lhs({0,1}).rhs({1}).rhs({0,1}).rhs({0,2}).build()),
+                 {{0},{0,1}}, 3, 5});
     // Multi-rule (two productive rules together).
     c.push_back({"multi-rule", "multi-rule",
                  std::vector<RewriteRule>{

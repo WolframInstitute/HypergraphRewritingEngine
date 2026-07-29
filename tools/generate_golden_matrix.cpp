@@ -58,16 +58,30 @@ Measured run(const oracle::Case& c, StateCanonicalizationMode sm, EventSignature
     return m;
 }
 
-// The independent check, available only where it applies. It counts isomorphism classes over
-// the raw exploration, which is what Full-mode state identity means -- so it can validate the
-// Full cell and has nothing to say about None or Automatic, whose whole difference from Full is
-// that they identify states by something other than isomorphism.
-bool oracle_agrees(const oracle::Case& c, int steps, uint64_t engine_states, bool* applicable) {
-    bool all_small = true;
-    const size_t brute = oracle::brute_force_iso_count(c.rules, c.init, steps, &all_small);
-    *applicable = all_small;
-    if (!all_small) return false;
-    return brute == engine_states;
+// What an independent map says this cell's state count must be, or "no opinion".
+//
+// The three state modes are a refinement lattice over the same raw exploration, so quotienting
+// the None-mode state set by an independent map gives each mode's expected count: the identity
+// for None, content-equality for Automatic, isomorphism for Full. That is what gives the
+// non-Full cells an oracle -- the isomorphism count alone answers only for Full, because
+// isomorphism is what Full means.
+//
+// The isomorphism map has a vertex bound; the content map does not, so a workload too large for
+// the former can still be checked in None and Automatic.
+struct Expectation { bool applicable; size_t states; };
+
+Expectation independent_expectation(const oracle::LatticeCounts& lc,
+                                    StateCanonicalizationMode sm, bool quotient) {
+    // Quotient expands one representative per class rather than every raw state; the count it
+    // reports is the class count, but which states EXIST differs, so the lattice argument above
+    // does not transfer and this abstains rather than guessing.
+    if (quotient) return {false, 0};
+    switch (sm) {
+        case StateCanonicalizationMode::None:      return {true, lc.raw};
+        case StateCanonicalizationMode::Automatic: return {true, lc.by_content};
+        case StateCanonicalizationMode::Full:      return {lc.all_small, lc.by_iso};
+    }
+    return {false, 0};
 }
 
 }  // namespace
@@ -92,6 +106,11 @@ int main() {
     size_t oracle_rows = 0, pin_rows = 0, unreachable = 0;
 
     for (const auto& c : oracle::corpus()) {
+        // One raw exploration per workload, quotiented three ways. The brute force is the
+        // expensive part, so it runs once per case rather than once per cell.
+        const oracle::LatticeCounts lattice =
+            oracle::brute_force_lattice(c.rules, c.init, c.oracle_steps);
+
         for (StateCanonicalizationMode sm : state_modes) {
             for (EventSignatureKeys ek : event_modes) {
                 for (bool quotient : {false, true}) {
@@ -104,26 +123,23 @@ int main() {
                     const Measured m = run(c, sm, ek, quotient, steps, /*threads=*/4);
 
                     Provenance p = Provenance::Pin;
-                    if (sm == StateCanonicalizationMode::Full && !quotient) {
-                        bool applicable = false;
-                        const bool agrees = oracle_agrees(c, steps, m.states, &applicable);
-                        if (applicable) {
-                            if (!agrees) {
-                                std::fprintf(stderr,
-                                    "REFUSING: %s Full/%s disagrees with the brute-force "
-                                    "oracle; the engine is wrong or the oracle is, and either "
-                                    "way this must not be cached as an expectation\n",
-                                    c.name, golden::event_keys_name(ek));
-                                return 1;
-                            }
-                            p = Provenance::Oracle;
-                            ++oracle_rows;
-                        } else {
-                            ++unreachable;
-                            ++pin_rows;
+                    const Expectation exp = independent_expectation(lattice, sm, quotient);
+                    if (exp.applicable) {
+                        if (exp.states != m.states) {
+                            std::fprintf(stderr,
+                                "REFUSING: %s %s/%s%s -- engine says %llu states, the "
+                                "independent map says %zu. One of them is wrong and neither "
+                                "may be cached as an expectation.\n",
+                                c.name, golden::state_mode_name(sm),
+                                golden::event_keys_name(ek), quotient ? "/quotient" : "",
+                                (unsigned long long)m.states, exp.states);
+                            return 1;
                         }
+                        p = Provenance::Oracle;
+                        ++oracle_rows;
                     } else {
                         ++pin_rows;
+                        if (!quotient) ++unreachable;
                     }
 
                     std::printf("%s %s %s %d %d %llu %llu %llu %llu %llu %llu %s\n",
