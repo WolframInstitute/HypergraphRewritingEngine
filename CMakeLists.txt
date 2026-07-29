@@ -131,6 +131,13 @@ add_executable(generate_golden_matrix tools/generate_golden_matrix.cpp)
 target_include_directories(generate_golden_matrix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(generate_golden_matrix PRIVATE hypergraph)
 
+# Repeat-count instrument for event identity stability. The gate compares one worker count
+# against one other; this asks the same question many times over a spread of worker counts, which
+# is what makes a "stable" reading evidence rather than a single agreement.
+add_executable(event_signature_stability_probe tools/event_signature_stability_probe.cpp)
+target_include_directories(event_signature_stability_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(event_signature_stability_probe PRIVATE hypergraph)
+
 # Benchmarks - Performance measurement tools
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 if(BUILD_BENCHMARKS)

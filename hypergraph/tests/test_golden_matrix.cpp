@@ -150,6 +150,7 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
         // questions and only comparing both asks the second one.
         struct Shot {
             uint64_t state_fingerprint;
+            uint64_t event_fingerprint;
             uint64_t events;
             uint64_t causal_edges;
             uint64_t branchial_edges;
@@ -169,6 +170,15 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
                     golden::fold_fingerprint(s.state_fingerprint,
                                              hg.get_or_compute_canonical_hash(sid));
             }
+            // Order-independent over the CANONICAL events' signature VALUES. A permutation of
+            // signatures across events leaves every count intact, so the counts below cannot
+            // ask whether the two runs agree on which event is which -- only this can.
+            for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
+                const Event& ev = hg.get_event(eid);
+                if (ev.id == INVALID_ID || !ev.is_canonical()) continue;
+                s.event_fingerprint =
+                    golden::fold_fingerprint(s.event_fingerprint, ev.signature);
+            }
             s.events          = hg.num_events();
             s.causal_edges    = hg.causal_graph().num_causal_edges();
             s.branchial_edges = hg.causal_graph().num_branchial_edges();
@@ -185,6 +195,9 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
         EXPECT_EQ(eight.events, one.events)
             << where << ": the event count depends on the worker count (" << one.events
             << " at 1 worker, " << eight.events << " at 8)";
+        EXPECT_EQ(eight.event_fingerprint, one.event_fingerprint)
+            << where << ": the event count matches but the SIGNATURES differ, so the two runs "
+            << "disagree about which event is which";
         EXPECT_EQ(eight.causal_edges, one.causal_edges)
             << where << ": the causal edge count depends on the worker count";
         EXPECT_EQ(eight.branchial_edges, one.branchial_edges)

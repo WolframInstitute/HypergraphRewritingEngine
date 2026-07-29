@@ -431,6 +431,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
 
     bool is_canonical = true;
     EventId canonical_eid = eid;
+    uint64_t event_signature_value = 0;
 
     // Event canonicalization: check if this event signature already exists
     if (event_signature_keys_ != EVENT_SIG_NONE) {
@@ -484,6 +485,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
         } else {
             canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
         }
+        event_signature_value = sig_key;
     }
 
     // Allocate and copy edge arrays
@@ -497,6 +499,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
                        cons, num_consumed, prod, num_produced, canonical_id_for_event);
+    events_[eid].signature = event_signature_value;
 
     // CRITICAL: Release fence to ensure event data is visible
     std::atomic_thread_fence(std::memory_order_release);

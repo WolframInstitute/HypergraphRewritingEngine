@@ -305,6 +305,15 @@ struct Event {
     uint8_t num_produced;
     EventId canonical_event_id;  // Points to canonical event if this is a duplicate, INVALID_ID if this is canonical
 
+    // The identity this run computed for the event, from hgcommon::event_signature. 0 under
+    // EventSignatureKeys None, where events are kept distinct by computing no signature at all.
+    //
+    // Retained rather than discarded after it has served as the canonical_event_map_ key,
+    // because whether two runs agree on event identity is a question about the VALUES and not
+    // about how many distinct ones there were: a permutation of signatures across events leaves
+    // every count intact. DeviceEvent carries the same field for the same reason.
+    uint64_t signature;
+
     // The match's VariableBinding is NOT stored on the event: it is consumed during
     // RHS instantiation and never read from a persistent event afterwards (the event
     // records consumed/produced edges explicitly). Keeping it cost 132 B per event,
@@ -322,6 +331,7 @@ struct Event {
         , num_consumed(n_consumed)
         , num_produced(n_produced)
         , canonical_event_id(canonical_id)
+        , signature(0)
     {}
 
     // Default constructor for array allocation
@@ -335,6 +345,7 @@ struct Event {
         , num_consumed(0)
         , num_produced(0)
         , canonical_event_id(INVALID_ID)
+        , signature(0)
     {}
 
     // Check if this event is canonical (not a duplicate)
