@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <vector>
+#include <map>
 #include <set>
+#include <string>
 #include <tuple>
 #include <algorithm>
 
@@ -124,7 +126,41 @@ std::vector<Workload> workloads() {
 }
 
 // Collect the distinct value of each fingerprint component over runs × threads × seeds.
-struct Spread { std::set<uint64_t> states, causal, branchial; std::set<long> ns, ne, nc, nb; };
+//
+// Each divergent fingerprint keeps the configuration that produced it and the counts that came
+// with it, because this gate fails about once in thirty invocations and has resisted being
+// reproduced on demand -- 1560 targeted runs across both suspect workloads, every thread count
+// and both seeds, all deterministic. A gate that can only say "these differed" spends the rare
+// firing telling us nothing we did not already know. Saying WHICH configurations differed, and
+// whether the COUNTS moved with the hashes, splits the two faults a bare mismatch conflates:
+// equal counts with differing hashes is canonicalization, differing counts is exploration.
+struct Variant {
+    uint64_t fingerprint;
+    std::string config;     // first configuration observed to produce it
+    long ns, ne, nc, nb;
+};
+struct Spread {
+    std::set<uint64_t> states, causal, branchial;
+    std::set<long> ns, ne, nc, nb;
+    std::map<uint64_t, Variant> states_v, causal_v, branchial_v;
+};
+
+std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v, const char* what) {
+    if (v.size() < 2) return {};
+    std::string out = std::string("\n  ") + what + " took " + std::to_string(v.size()) +
+                      " distinct values:";
+    for (const auto& [fp, var] : v) {
+        out += "\n    " + var.config +
+               "  states=" + std::to_string(var.ns) + " events=" + std::to_string(var.ne) +
+               " causal=" + std::to_string(var.nc) + " branchial=" + std::to_string(var.nb);
+    }
+    out += std::string("\n  counts ") + (s.ns.size() == 1 ? "AGREE" : "DIFFER") +
+           " across variants -> fault is in " +
+           (s.ns.size() == 1 ? "CANONICALIZATION (same states, hashed differently)"
+                             : "EXPLORATION (a state exists in one run and not another)");
+    return out;
+}
+
 Spread spread(const Workload& w, bool quotient) {
     Spread s;
     for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})   // fixed then random
@@ -134,6 +170,15 @@ Spread spread(const Workload& w, bool quotient) {
                 s.states.insert(f.states); s.causal.insert(f.causal); s.branchial.insert(f.branchial);
                 s.ns.insert(f.num_states); s.ne.insert(f.num_events);
                 s.nc.insert(f.num_causal); s.nb.insert(f.num_branchial);
+
+                const std::string cfg = "threads=" + std::to_string(th) +
+                                        " seed=" + (seed ? "fixed" : "random") +
+                                        " rep=" + std::to_string(rep);
+                const Variant var{0, cfg, f.num_states, f.num_events,
+                                  f.num_causal, f.num_branchial};
+                s.states_v.emplace(f.states, var);
+                s.causal_v.emplace(f.causal, var);
+                s.branchial_v.emplace(f.branchial, var);
             }
     return s;
 }
@@ -144,9 +189,12 @@ Spread spread(const Workload& w, bool quotient) {
 TEST(CausalDeterminism, NonQuotientFullyDeterministic) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/false);
-        EXPECT_EQ(s.states.size(), 1u)    << w.name << ": state set non-deterministic";
-        EXPECT_EQ(s.causal.size(), 1u)    << w.name << ": causal graph non-deterministic";
-        EXPECT_EQ(s.branchial.size(), 1u) << w.name << ": branchial graph non-deterministic";
+        EXPECT_EQ(s.states.size(), 1u)    << w.name << ": state set non-deterministic"
+                                          << describe(s, s.states_v, "state fingerprint");
+        EXPECT_EQ(s.causal.size(), 1u)    << w.name << ": causal graph non-deterministic"
+                                          << describe(s, s.causal_v, "causal fingerprint");
+        EXPECT_EQ(s.branchial.size(), 1u) << w.name << ": branchial graph non-deterministic"
+                                          << describe(s, s.branchial_v, "branchial fingerprint");
     }
 }
 
