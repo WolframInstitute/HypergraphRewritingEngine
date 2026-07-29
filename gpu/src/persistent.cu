@@ -245,7 +245,12 @@ __global__ void k_persistent_match_rewrite(
             if (threadIdx.x == 0) {
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
-                (void)apply_one_match(ds, rules, rec, rec.step);
+                // rec.step + 1, not rec.step: an event is stamped with the depth of the state
+                // it PRODUCES, which is what the level-synchronous loop writes
+                // (run_rewrite_kernel_with_nosync is called with step + 1) and what the CPU
+                // uses (the canonical OUTPUT state's step). Writing the parent's depth here
+                // made every event's reported step differ between the two schedulers.
+                (void)apply_one_match(ds, rules, rec, rec.step + 1u);
             }
             __syncthreads();
             continue;
@@ -371,7 +376,9 @@ __global__ void k_persistent_evolve(
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
                 const uint32_t step = rec.step;
-                const AppliedMatch applied = apply_one_match(ds, rules, rec, step);
+                // The event carries the depth of the state it PRODUCES -- see the note in
+                // k_persistent_match_rewrite. The exploration depth below is the same value.
+                const AppliedMatch applied = apply_one_match(ds, rules, rec, step + 1u);
                 child_sid    = applied.state;
                 child_event  = applied.event;
                 child_step   = step + 1u;
@@ -419,8 +426,8 @@ __global__ void k_persistent_evolve(
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
                             stamp_event_signature(ds, child_event, event_keys,
                                                   ds.state_exact_hash[rec.state_id], exact,
-                                                  rec.state_id, child_sid, step, rec.rule_id,
-                                                  event_map);
+                                                  rec.state_id, child_sid, step + 1u,
+                                                  rec.rule_id, event_map);
                         }
 
                         expand_child = child_step < max_steps &&

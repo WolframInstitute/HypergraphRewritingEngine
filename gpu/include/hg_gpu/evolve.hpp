@@ -103,6 +103,12 @@ struct CanonicalState {
 struct Event {
     EventId id = INVALID_ID;
     EventId canonical_id = INVALID_ID;
+    // The identity this run computed, from hgcommon::event_signature. 0 under
+    // EventCanonicalizationMode::None, where no signature is computed at all. Carried out of the
+    // device rather than left there because whether two runs agree on event identity is a
+    // question about the VALUES: a permutation of signatures across events leaves every count
+    // intact. hypergraph::Event carries the same field for the same reason.
+    uint64_t signature = 0;
     StateId input_state  = INVALID_ID;
     StateId output_state = INVALID_ID;
     RuleId  rule = 0;

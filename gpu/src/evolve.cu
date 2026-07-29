@@ -578,6 +578,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         Event e;
         e.id            = de.id;
         e.canonical_id  = de.canonical_id;
+        e.signature     = de.signature;
         e.input_state   = de.input_state;
         e.output_state  = de.output_state;
         e.rule          = de.rule;

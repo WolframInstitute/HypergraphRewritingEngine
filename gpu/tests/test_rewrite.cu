@@ -531,6 +531,7 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
                     hg_gpu::CanonicalizationMode::Automatic,
                     hg_gpu::CanonicalizationMode::Full})
     for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
+                    hg_gpu::EventCanonicalizationMode::Automatic,
                     hg_gpu::EventCanonicalizationMode::Full}) {
         hg_gpu::EvolveInput in;
         in.rules = {r};
@@ -576,6 +577,41 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
         if (sm == hg_gpu::CanonicalizationMode::Full) {
             EXPECT_EQ(hb, ha) << cell << ": the persistent scheduler found a different state SET";
         }
+
+        // The two schedulers compute the event identity's INPUTS by different code -- the
+        // persistent loop fills state_exact_hash inline as each child is created, the step loop
+        // fills it in a phase between hashing and dedup. Only the signature rule itself is
+        // shared. So the raw event count agreeing says nothing about whether they identify the
+        // same events, and that is what these check.
+        auto canonical_of = [](const hg_gpu::EvolveResult& res) {
+            std::multiset<uint64_t> sigs;
+            size_t n = 0;
+            for (const auto& e : res.events)
+                if (e.canonical_id == hg_gpu::INVALID_ID) { ++n; sigs.insert(e.signature); }
+            return std::make_pair(n, sigs);
+        };
+        const auto [na, sa] = canonical_of(a);
+        const auto [nb, sb] = canonical_of(b);
+
+        EXPECT_EQ(nb, na) << cell << ": canonical event count differs (" << na
+                          << " level-synchronous, " << nb << " persistent)";
+
+        // Under event mode Full the signature is built from the two endpoint EXACT hashes,
+        // which are isomorphism invariants whatever the state mode is -- so the values, not
+        // merely the count, must agree. Automatic also keys on canonical edge ranks, which
+        // follow the presentation order and so can differ between schedulers on a state with a
+        // nontrivial automorphism group (#66); reported there rather than asserted.
+        // The VALUES, not merely the count. This workload's initial state is a directed path,
+        // whose automorphism group is trivial, so the coset freedom that makes ranks ambiguous
+        // on symmetric states (#66) does not arise -- every component of every key set is
+        // determined, and the two schedulers must agree on all of them.
+        //
+        // This is what caught the schedulers disagreeing about what STEP an event carries: the
+        // level-synchronous loop wrote the produced state's depth and the persistent loop wrote
+        // the parent's, so under Automatic -- which keys on the step -- 0 of 9 signatures were
+        // shared while Full, which does not key on it, matched perfectly.
+        EXPECT_EQ(sb, sa) << cell << ": same canonical event COUNT, different signature VALUES "
+                          << "-- the two schedulers identify different events";
     }
 }
 
