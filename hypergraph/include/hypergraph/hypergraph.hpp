@@ -563,6 +563,12 @@ public:
     // twice for them is the difference between one pass per state and two per event.
     uint64_t cache_state_edge_ranks(StateId state_id, const SparseBitset& edges);
 
+    // cache_state_edge_ranks, skipped when the table is already there. cache_ runs a full IR
+    // pass every call and only then discards the result on a losing insert, so a caller that
+    // may ask repeatedly for the same state -- a sampler keyed on canonical ranks does, once
+    // per match -- must ask through this instead.
+    void ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges);
+
     // Canonical rank of `edge` within `state`, or UINT32_MAX when the state has no table.
     uint32_t edge_rank_in_state(StateId state_id, EdgeId edge) const;
 

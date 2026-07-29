@@ -342,6 +342,11 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
     return hash;
 }
 
+void Hypergraph::ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
+    if (state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1).has_value()) return;
+    cache_state_edge_ranks(state_id, edges);
+}
+
 StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
         if (raw_state == INVALID_ID) return INVALID_ID;
 

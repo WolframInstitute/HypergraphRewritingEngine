@@ -41,6 +41,18 @@ constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
     EventKey_InputState | EventKey_OutputState | EventKey_Step |
     EventKey_ConsumedEdges | EventKey_ProducedEdges;
 
+// The identity of a transition BEFORE it is applied: which state, which rule, which edges.
+//
+// It is the only point of this lattice available at MATCH time, since the output state does
+// not exist yet -- so it is the key a sampler must use. Every component is
+// isomorphism-invariant, which is the property that matters: a sampler keyed on it selects the
+// same subgraph however the run was scheduled, on however many threads, on either device.
+// Keyed on anything run-local (a raw state id, a worker's RNG) it would select a different
+// subgraph each run, and a sample that cannot be reproduced cannot be compared against the
+// evolution it claims to represent.
+constexpr EventSignatureKeys EVENT_SIG_TRANSITION =
+    EventKey_InputState | EventKey_Rule | EventKey_ConsumedEdges;
+
 // Signature of one application. Ranks are consumed IN ORDER -- match order for the consumed
 // edges, RHS order for the produced -- because Positional identity distinguishes which role an
 // edge played, not merely which edges took part.

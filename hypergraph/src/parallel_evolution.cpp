@@ -847,7 +847,9 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // as the pull side: the match stays available further down, where it is a different
         // transition with its own draw. Only the (this child, this match) transition is at
         // stake here.
-        if (!transition_survives(h)) return;
+        if (transition_rate_ < 1.0 &&
+            !transition_survives(canonical_transition_key(child_info.child_state, forwarded)))
+            return;
 
         // Spawn REWRITE task for this forwarded match
         submit_rewrite_task(forwarded, child_step);
@@ -1130,7 +1132,8 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         // stops a state's match population from ever closing. Storing and propagating above
         // are deliberately upstream of it: the match stays available to this child's own
         // children, where it is a different transition and gets its own draw.
-        if (!transition_survives(h)) return;
+        if (transition_rate_ < 1.0 &&
+            !transition_survives(canonical_transition_key(child, forwarded))) return;
 
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
@@ -1394,7 +1397,28 @@ ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(Stat
     return inserted ? join : existing;   // another thread installed one first
 }
 
-bool ParallelEvolutionEngine::transition_survives(uint64_t match_hash) const {
+uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
+                                                          const MatchRecord& match) {
+    const State& s = hg_->get_state(state);
+
+    // Ranks come from the same individualization-refinement pass as the state's canonical
+    // hash, so asking for them costs one IR pass per state and nothing per match after that.
+    hg_->ensure_state_edge_ranks(state, s.edges);
+    const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
+
+    uint32_t ranks[MAX_PATTERN_EDGES];
+    const uint8_t n = match.num_edges();
+    for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i) {
+        ranks[i] = hg_->edge_rank_in_state(state, match.matched_edges()[i]);
+    }
+
+    return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
+                                     input_hash, /*output_state_hash=*/0,
+                                     /*step=*/0, match.rule_index(),
+                                     ranks, n, /*produced_ranks=*/nullptr, 0);
+}
+
+bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key) const {
     if (transition_rate_ >= 1.0) return true;
     if (transition_rate_ <= 0.0) return false;
 
@@ -1402,7 +1426,7 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t match_hash) const {
     // state would make the surviving subgraph depend on which thread happened to reach the
     // transition, so the same run would sample differently at a different thread count and
     // "representative" would have nothing to be reproducible about.
-    uint64_t x = match_hash ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
+    uint64_t x = transition_key ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
     x += 0x9E3779B97F4A7C15ULL;
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -1871,7 +1895,8 @@ void ParallelEvolutionEngine::execute_match_task(
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
         // transition (S -> S') does not drop the match, and the same match at a different
         // source state is a DIFFERENT transition that gets its own independent draw.
-        if (!transition_survives(h)) return;
+        if (transition_rate_ < 1.0 &&
+            !transition_survives(canonical_transition_key(state, match))) return;
 
         if (batched_matching_) {
             batch.push_back(match);
@@ -2294,7 +2319,8 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // the caller gets nothing to expand. Returning false here is not "duplicate" -- it is
     // "not yours to rewrite", which is the same instruction to the caller.
     if (offer_to_reservoir(data.state, match, position)) return false;
-    if (!transition_survives(h)) return false;
+    if (transition_rate_ < 1.0 &&
+        !transition_survives(canonical_transition_key(data.state, match))) return false;
 
     out = match;
     return true;

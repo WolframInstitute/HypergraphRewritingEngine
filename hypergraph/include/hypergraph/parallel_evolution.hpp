@@ -973,10 +973,20 @@ private:
     // `n` is the match's position in this state's stream, from the caller's single bump of
     // MatchJoin::matches -- one owner for that counter, so the position and the accepted-match
     // count cannot disagree.
-    // The transition-level draw. Keyed on the transition's own hash so the same transition
-    // gets the same verdict however the run is scheduled, and every acceptance point -- both
-    // discovery paths and both forwarding paths -- consults exactly this.
-    bool transition_survives(uint64_t match_hash) const;
+    // Isomorphism-invariant identity of the transition (state, rule, consumed edges), from the
+    // shared EVENT_SIG_TRANSITION lattice point. Builds the state's canonical rank table on
+    // first use, which is why it is not const.
+    //
+    // This is the key the sampler draws on, and every component of it has to be invariant: a
+    // raw state id or an edge id is assigned by whichever worker got there first, so a draw
+    // keyed on one selects a different subgraph every run and there is nothing to compare
+    // against the unpruned evolution.
+    uint64_t canonical_transition_key(StateId state, const MatchRecord& match);
+
+    // The transition-level draw, on the key above, so the same transition gets the same verdict
+    // however the run is scheduled. Every acceptance point -- both discovery paths and both
+    // forwarding paths -- consults exactly this.
+    bool transition_survives(uint64_t transition_key) const;
 
     bool offer_to_reservoir(StateId state, const MatchRecord& match, size_t n);
     // Submit rewrites for whatever the reservoir retained. Called only from the drain, so the

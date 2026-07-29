@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 using namespace hypergraph;
@@ -239,6 +240,48 @@ TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
         EXPECT_NEAR(kept, q, 0.05)
             << "at q=" << q << " the run kept " << kept << " of its transitions; a rate that "
             << "misses the forwarding dispatches reads high, one applied twice reads low";
+    }
+}
+
+// The sample must be the SAME SUBGRAPH at any worker count.
+//
+// This is the property that makes a sparse sample checkable at all: it is compared against the
+// unpruned evolution it claims to represent, and a subgraph that differs every run has nothing
+// to compare. It is also strictly stronger than same-seed reproducibility, and it is what the
+// draw's key has to earn -- keyed on a raw state id it fails, because work-stealing assigns
+// those in whatever order the workers arrived. The key is the isomorphism-invariant transition
+// identity (input state's canonical hash, rule, canonical ranks of the consumed edges), which
+// is the same object on any schedule and, being hgcommon's, on either device.
+TEST(SamplingReproducibility, SampledSubgraphIsTheSameAtEveryWorkerCount) {
+    RewriteRule rule = make_growth_rule();
+    std::vector<std::vector<VertexId>> init;
+    for (int i = 0; i < 12; ++i)
+        init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+
+    // Compare the CANONICAL content, not the counts: two runs could agree on how many states
+    // they kept while keeping different ones.
+    auto run = [&](size_t threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_random_seed(20260729);
+        e.set_transition_rate(0.4);
+        e.add_rule(rule);
+        e.evolve(init, 4);
+        std::multiset<uint64_t> hashes;
+        for (uint32_t s = 0; s < hg.num_states(); ++s) {
+            if (hg.get_state(s).id == INVALID_ID) continue;
+            hashes.insert(hg.get_or_compute_canonical_hash(s));
+        }
+        return hashes;
+    };
+
+    const auto one = run(1);
+    ASSERT_GT(one.size(), 20u) << "too small a sample for the comparison to mean anything";
+    for (size_t threads : {size_t(2), size_t(4), size_t(8)}) {
+        EXPECT_EQ(run(threads), one)
+            << "the sampled subgraph differs at " << threads << " workers, so the draw is "
+            << "keyed on something the schedule decides rather than on the transition";
     }
 }
 
