@@ -471,6 +471,32 @@ class ParallelEvolutionEngine {
     static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
     ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
 
+    // Per-state match-task join. See docs/ASYNC_SAMPLING_DESIGN.md §5.
+    //
+    // Matching one state is a tree of MATCH/SCAN/EXPAND tasks, so no single task sees all of
+    // that state's matches. Anything that has to act on the state's matches AS A SET -- a
+    // reservoir, whose population is exactly "the matches of this state" -- needs to know when
+    // that tree has drained.
+    //
+    // Two monotone counters and the task that equalises them is the drainer. This is a JOIN
+    // over one state's own tasks, not a barrier: every other state runs through untouched, and
+    // nothing global is consulted.
+    static constexpr uint64_t MATCH_JOIN_EMPTY  = (1ULL << 62) + 700;
+    static constexpr uint64_t MATCH_JOIN_LOCKED = (1ULL << 62) + 701;
+    struct MatchJoin {
+        std::atomic<size_t> pushed{0};
+        std::atomic<size_t> completed{0};
+        // Matches this state has accepted (post-dedup). The reservoir needs it as Algorithm R's
+        // stream position; the drain gate needs it to show it fired after the last one.
+        std::atomic<size_t> matches{0};
+    };
+    ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
+
+    // Fires once per state, after that state's last match task. Set by tests today; the
+    // per-state reservoir hangs off it.
+    std::function<void(StateId, uint32_t)> on_state_matches_complete_;
+    std::atomic<size_t> states_drained_{0};
+
     // Statistics (atomics for thread-safety)
     // Four hot counters in 32 bytes would share a line; one each (see EvolutionStats).
     alignas(64) std::atomic<size_t> total_matches_found_{0};
@@ -566,6 +592,18 @@ public:
     void set_random_seed(uint64_t seed) {
         random_seed_ = seed;
     }
+    // Called once per state, after that state's last match task and before any of its matches
+    // could be superseded. This is where anything keyed on "the matches of one state" as a set
+    // belongs -- a reservoir first of all. Set it before evolve(); it runs on a worker thread.
+    void set_on_state_matches_complete(std::function<void(StateId, uint32_t)> cb) {
+        on_state_matches_complete_ = std::move(cb);
+    }
+    size_t states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
+
+    // Matches this state has accepted so far. Read inside the drain callback it is that state's
+    // final count, which is what makes "the drain fired after the last match" checkable.
+    size_t matches_found_for_state(StateId state) const;
+
     void set_early_terminate_on_reservoir_full(bool enable) {
         early_terminate_on_reservoir_full_ = enable;
     }
@@ -836,6 +874,35 @@ private:
     // Ancestor-chain-scoped epoch for the pull-side retry; see the definition.
     static constexpr uint32_t kMaxAncestorHops = 1u << 20;   // guards a malformed parent cycle
     uintptr_t ancestor_match_epoch(StateId parent) const;
+
+    // Per-state match join. The two ordering rules below are what make the drain exact, and
+    // both are invariants rather than observations:
+    //
+    //   note_match_task_pushed  runs BEFORE the task it counts can be seen. Pushing after would
+    //                           let the drain fire on a tree that is still growing, so the
+    //                           reservoir would be finalised over part of its population.
+    //   note_match_task_done    runs AFTER every effect of its task is visible -- which is what
+    //                           a scope guard buys, since the match tasks have many exits.
+    //
+    // Together they give exactly-one drain per state: when completed equals pushed, every
+    // counted task has finished, and only a running task could push another.
+    MatchJoin* match_join_for(StateId state);
+    void note_match_task_pushed(StateId state);
+    void note_match_task_done(StateId state, uint32_t step);
+
+    // Books one match task's completion however its function exits.
+    class MatchTaskGuard {
+    public:
+        MatchTaskGuard(ParallelEvolutionEngine& engine, StateId state, uint32_t step)
+            : engine_(engine), state_(state), step_(step) {}
+        ~MatchTaskGuard() { engine_.note_match_task_done(state_, step_); }
+        MatchTaskGuard(const MatchTaskGuard&) = delete;
+        MatchTaskGuard& operator=(const MatchTaskGuard&) = delete;
+    private:
+        ParallelEvolutionEngine& engine_;
+        StateId state_;
+        uint32_t step_;
+    };
 
     static bool try_claim_budget(std::atomic<size_t>* counter, size_t limit);
     bool try_reserve_successor_slot(StateId parent);

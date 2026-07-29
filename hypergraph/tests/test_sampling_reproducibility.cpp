@@ -3,6 +3,8 @@
 
 #include <array>
 #include <cstddef>
+#include <mutex>
+#include <unordered_map>
 
 using namespace hypergraph;
 
@@ -187,6 +189,47 @@ TEST(SamplingReproducibility, ReservoirUniformWithinStratum) {
     EXPECT_LT(chisq, 2.0 * (M - 1))
         << "within-stratum reservoir selection is non-uniform; chi-square=" << chisq
         << " for df=" << (M - 1);
+}
+
+// The per-state match join: a state's drain must fire exactly once, and strictly after that
+// state's last match. It is what lets anything be keyed on "the matches of one state" AS A SET
+// -- a reservoir first of all -- without a step barrier (docs/ASYNC_SAMPLING_DESIGN.md §5).
+//
+// Both halves are load-bearing and fail differently. Firing twice would finalise a population
+// twice and rewrite the second sample on top of the first. Firing early would finalise over
+// part of the population, which is invisible in the output -- the run still looks complete,
+// it just explored a subset -- so it is checked here rather than left to be noticed.
+//
+// Run multi-threaded: with one worker every task drains in submission order and the ordering
+// invariants are never tested.
+TEST(SamplingReproducibility, StateMatchJoinDrainsOncePerStateAfterTheLastMatch) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 4);
+    e.add_rule(make_growth_rule());
+
+    std::mutex m;
+    std::unordered_map<StateId, int> drains;
+    std::unordered_map<StateId, size_t> matches_at_drain;
+    e.set_on_state_matches_complete([&](StateId s, uint32_t) {
+        std::lock_guard<std::mutex> lock(m);
+        drains[s]++;
+        matches_at_drain[s] = e.matches_found_for_state(s);
+    });
+
+    e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 4);
+
+    ASSERT_FALSE(drains.empty()) << "no state drained, so the join was never exercised";
+    EXPECT_EQ(e.states_drained(), drains.size())
+        << "the engine counted a different number of drains than the callback saw";
+
+    for (const auto& [state, count] : drains) {
+        EXPECT_EQ(count, 1) << "state " << state << " drained " << count << " times";
+        EXPECT_EQ(matches_at_drain[state], e.matches_found_for_state(state))
+            << "state " << state << " drained with " << matches_at_drain[state]
+            << " matches but finished with " << e.matches_found_for_state(state)
+            << ", so the drain fired before its match tree had finished";
+    }
 }
 
 // exploration_probability=p must keep each CANONICAL state with probability p

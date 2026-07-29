@@ -34,6 +34,7 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     missing_match_hashes_.set_arena(arena);
     parent_successor_count_.set_arena(arena);
     states_per_step_.set_arena(arena);
+    match_join_.set_arena(arena);
 
     job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(num_threads_);
     // Recycle each worker's scratch arena after every job — temporaries allocated
@@ -1171,6 +1172,7 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
+    note_match_task_pushed(state);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step]() {
             execute_match_task(state, step, MatchContext{});
@@ -1193,6 +1195,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
+    note_match_task_pushed(state);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step, ctx]() {
             execute_match_task(state, step, ctx);
@@ -1278,6 +1281,7 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
 
+    note_match_task_pushed(data.state);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, data]() {
             execute_scan_task(data);
@@ -1297,6 +1301,7 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
+    note_match_task_pushed(data.state);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, data]() {
             execute_expand_task(data);
@@ -1360,6 +1365,43 @@ bool ParallelEvolutionEngine::try_claim_budget(std::atomic<size_t>* counter, siz
         }
     }
     return false;
+}
+
+// =============================================================================
+// Per-State Match Join
+// =============================================================================
+
+ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
+    const uint64_t key = static_cast<uint64_t>(state);
+    auto result = match_join_.lookup(key);
+    if (result.has_value()) return *result;
+
+    auto* join = hg_->arena().template create<MatchJoin>();
+    auto [existing, inserted] = match_join_.insert_if_absent(key, join);
+    return inserted ? join : existing;   // another thread installed one first
+}
+
+size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
+    auto result = match_join_.lookup(static_cast<uint64_t>(state));
+    if (!result.has_value()) return 0;
+    return (*result)->matches.load(std::memory_order_acquire);
+}
+
+void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
+    match_join_for(state)->pushed.fetch_add(1, std::memory_order_release);
+}
+
+void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step) {
+    MatchJoin* join = match_join_for(state);
+    const size_t done = join->completed.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    // Read `pushed` AFTER booking the completion. A task that will still spawn more has not
+    // reached its own guard, so anything it pushes is already counted here; and if `pushed`
+    // has moved on since, this task is simply not the last one and whichever is will fire.
+    if (done != join->pushed.load(std::memory_order_acquire)) return;
+
+    states_drained_.fetch_add(1, std::memory_order_relaxed);
+    if (on_state_matches_complete_) on_state_matches_complete_(state, step);
 }
 
 bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
@@ -1638,6 +1680,10 @@ void ParallelEvolutionEngine::execute_match_task(
     uint32_t step,
     const MatchContext& ctx
 ) {
+    // First statement, so every exit below books this task's completion. The push happened at
+    // submit time, so an early return here still has to be accounted for.
+    MatchTaskGuard join_guard(*this, state, step);
+
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (max_steps_ > 0 && step > max_steps_) return;
 
@@ -1700,6 +1746,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+        match_join_for(state)->matches.fetch_add(1, std::memory_order_release);
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
 
@@ -1862,6 +1909,8 @@ void ParallelEvolutionEngine::execute_match_task(
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
+    MatchTaskGuard join_guard(*this, data.state, data.step);
+
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (max_steps_ > 0 && data.step > max_steps_) return;
 
@@ -1983,6 +2032,8 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
+    MatchTaskGuard join_guard(*this, data.state, data.step);
+
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (max_steps_ > 0 && data.step > max_steps_) return;
 
@@ -2109,6 +2160,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
     stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+    match_join_for(data.state)->matches.fetch_add(1, std::memory_order_release);
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
