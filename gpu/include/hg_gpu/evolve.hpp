@@ -34,6 +34,20 @@ struct EvolveInput {
     CanonicalizationMode      canonicalization     = CanonicalizationMode::Full;
     EventCanonicalizationMode event_canonicalization = EventCanonicalizationMode::None;
     bool transitive_reduction = true;
+
+    // Run the whole evolution in ONE launch, with the device deciding what work exists, who
+    // takes it, and when it is finished -- instead of a host-driven loop that matches, rewrites,
+    // hashes and deduplicates as four phases per step with a device barrier between each.
+    //
+    // Default false. The level-synchronous loop remains the shipping path until the persistent
+    // one has been shown equal across the mode matrix; this makes it reachable so that can be
+    // measured rather than argued.
+    //
+    // REFUSES EventCanonicalizationMode::Automatic. That mode's identity needs the canonical
+    // RANKS of the consumed and produced edges, which the device does not yet compute, so a
+    // persistent run could only answer it with a coarser identity. Returning a wrong answer
+    // quietly is the defect class this project keeps paying for, so it is an error instead.
+    bool persistent_scheduler = false;
     // Quotient exploration: expand each canonical state exactly once, at its
     // shortest depth, so the run costs the canonical closure rather than the
     // provenance count. The level-synchronised step loop gives the shortest

@@ -501,3 +501,73 @@ TEST(Rewrite, TriangleRuleIntroducesNewEdge) {
 }
 
 }  // namespace
+
+// The persistent scheduler, reached the way a user reaches it: through Engine::run.
+//
+// Everything before this gated run_persistent_evolve directly. This gates the ROUTE -- the
+// option, the branch around the step loop, and the shared readback -- which is the part that
+// decides whether any of it is reachable. Compares canonical state hashes rather than counts,
+// because two runs can agree on how many states they found while finding different ones.
+//
+// Run-to-run ORDER varies by construction here: there are no phases, so states are created in
+// whatever order the queues hand them out. Only the canonical identities are invariant, which
+// is exactly the claim removing the barrier rests on, so it is what gets compared.
+TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
+                    hg_gpu::EventCanonicalizationMode::Full}) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+        in.num_steps = 3;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+        in.event_canonicalization = ev;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+
+        hg_gpu::Engine lockstep(cfg);
+        const auto a = lockstep.run(in);
+
+        in.persistent_scheduler = true;
+        hg_gpu::Engine persistent(cfg);
+        const auto b = persistent.run(in);
+
+        ASSERT_TRUE(a.warnings.empty()) << "the level-synchronous reference overflowed";
+        ASSERT_GT(a.states.size(), 1u) << "workload never branched; the comparison is vacuous";
+
+        std::multiset<uint64_t> ha, hb;
+        for (const auto& s : a.states) ha.insert(s.canonical_hash);
+        for (const auto& s : b.states) hb.insert(s.canonical_hash);
+        EXPECT_EQ(hb, ha) << "event mode " << static_cast<int>(ev)
+                          << ": the persistent scheduler found a different state SET";
+        EXPECT_EQ(b.events.size(), a.events.size())
+            << "event mode " << static_cast<int>(ev) << ": event count differs";
+    }
+}
+
+// Automatic must be refused rather than answered coarsely.
+TEST(Rewrite, PersistentSchedulerRefusesAutomaticEventIdentity) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}};
+    r.rhs = {{0, 1}, {1, 2}};
+    r.num_lhs_vars = 2;
+    r.num_rhs_vars = 3;
+
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = {{0u, 1u}};
+    in.num_steps = 2;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
+    in.persistent_scheduler = true;
+
+    hg_gpu::Engine e(hg_gpu::config_from_input(in));
+    EXPECT_THROW(e.run(in), std::invalid_argument)
+        << "Automatic was accepted; the device cannot compute its identity, so accepting it "
+        << "means returning a coarser answer than the caller asked for";
+}

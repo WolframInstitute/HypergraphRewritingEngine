@@ -6,6 +6,7 @@
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
 
 #include <cuda_runtime.h>
@@ -91,6 +92,16 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.tr_desc_slots          = expected_events * 16u;
     cfg.tr_anc_slots           = expected_events * 16u;
     return cfg;
+}
+
+// Which components of the shared event-identity lattice a mode asks for.
+EventSignatureKeys event_keys_for(EventCanonicalizationMode m) {
+    switch (m) {
+        case EventCanonicalizationMode::Full:      return EVENT_SIG_FULL;
+        case EventCanonicalizationMode::Automatic: return EVENT_SIG_AUTOMATIC;
+        case EventCanonicalizationMode::None:
+        default:                                   return EVENT_SIG_NONE;
+    }
 }
 
 namespace {  // re-open anon namespace for kernel + helper definitions
@@ -397,7 +408,48 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // Reused across all four phases per step.
     char ctx_buf[64];
 
-    for (uint32_t step = 0; step < in.num_steps && frontier_count > 0; ++step) {
+    // The whole evolution in ONE launch: the device decides what work exists, who takes it, and
+    // when it is finished. Everything below the loop is unchanged -- the readback is post-hoc
+    // and reads the same per-state hash array either scheduler filled, which is what makes one
+    // assembly path serve both.
+    if (in.persistent_scheduler) {
+        // Refused, not degraded. Automatic event identity needs the canonical RANKS of the
+        // consumed and produced edges, which the device does not compute; a persistent run
+        // could only answer with a coarser identity, and quietly returning a different answer
+        // than the caller asked for is the defect class d86b5d0 already had to fix once.
+        if (in.event_canonicalization == EventCanonicalizationMode::Automatic) {
+            throw std::invalid_argument(
+                "hg_gpu: persistent_scheduler does not support EventCanonicalizationMode::"
+                "Automatic -- it needs canonical edge ranks the device does not yet compute. "
+                "Use Full or None, or the level-synchronous scheduler.");
+        }
+
+        std::vector<StateId> roots(num_roots);
+        for (uint32_t i = 0; i < num_roots; ++i) roots[i] = i;
+
+        // The device arena the exact hash claims its IR scratch from. Sized from the state
+        // budget rather than a constant: it holds one slot per concurrently-hashing block, and
+        // a slot is shaped by the state it hashes. Exhaustion is a recorded capacity overflow,
+        // never a coarser hash.
+        DeviceArena arena(static_cast<uint64_t>(cfg.max_states) * 64ull);
+
+        PersistentEvolveStats st = run_persistent_evolve(
+            engine, rules, roots, in.num_steps, matches, arena,
+            /*dedup=*/in.explore_from_canonical_states_only,
+            explore_threshold_u32, resolved_seed,
+            event_keys_for(in.event_canonicalization));
+
+        state_count_host = engine.num_states_host();
+        engine.collect_warnings_into(out.warnings, "persistent evolve");
+        if (dbg) {
+            std::fprintf(stderr, "[persistent] states=%u matches=%u arena_words=%llu\n",
+                         st.states_after, st.matches_found,
+                         (unsigned long long)st.arena_words_used);
+        }
+        frontier_count = 0;   // nothing left for the step loop to do
+    }
+
+    for (uint32_t step = 0; !in.persistent_scheduler && step < in.num_steps && frontier_count > 0; ++step) {
         auto t0 = std::chrono::steady_clock::now();
         if (dbg) std::fprintf(stderr, "[step %u] frontier=%u state_count=%u\n",
                               step, frontier_count, state_count_host);
