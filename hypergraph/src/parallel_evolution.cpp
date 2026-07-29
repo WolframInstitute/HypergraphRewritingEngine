@@ -843,6 +843,12 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // RECURSIVE: Push to child's existing children (grandchildren)
         push_match_to_children(child_info.child_state, forwarded, child_step);
 
+        // Thin this transition, downstream of the store and the recursion for the same reason
+        // as the pull side: the match stays available further down, where it is a different
+        // transition with its own draw. Only the (this child, this match) transition is at
+        // stake here.
+        if (!transition_survives(h)) return;
+
         // Spawn REWRITE task for this forwarded match
         submit_rewrite_task(forwarded, child_step);
     });
@@ -1119,6 +1125,13 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         store_match_for_state(child, forwarded, true);
         push_match_to_children(child, forwarded, step);
 
+        // Thin this transition. A forwarded match takes the SAME draw as a discovered one --
+        // that is the property a per-state count could not have, because forwarding is what
+        // stops a state's match population from ever closing. Storing and propagating above
+        // are deliberately upstream of it: the match stays available to this child's own
+        // children, where it is a different transition and gets its own draw.
+        if (!transition_survives(h)) return;
+
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
     });
@@ -1379,6 +1392,25 @@ ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(Stat
     auto* join = hg_->arena().template create<MatchJoin>();
     auto [existing, inserted] = match_join_.insert_if_absent(key, join);
     return inserted ? join : existing;   // another thread installed one first
+}
+
+bool ParallelEvolutionEngine::transition_survives(uint64_t match_hash) const {
+    if (transition_rate_ >= 1.0) return true;
+    if (transition_rate_ <= 0.0) return false;
+
+    // splitmix64 of (seed, transition). Deliberately NOT a worker RNG: drawing from thread
+    // state would make the surviving subgraph depend on which thread happened to reach the
+    // transition, so the same run would sample differently at a different thread count and
+    // "representative" would have nothing to be reproducible about.
+    uint64_t x = match_hash ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    x ^= (x >> 31);
+
+    // Compare in [0,1) via the top 53 bits, so the threshold means the same thing at any q.
+    const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
+    return u < transition_rate_;
 }
 
 size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
@@ -1836,6 +1868,11 @@ void ParallelEvolutionEngine::execute_match_task(
         // MATCHES, and which of them the parent chose to rewrite is a separate question.
         if (offer_to_reservoir(state, match, position)) return;
 
+        // Thin this transition. Same reason forwarding above is unaffected: dropping the
+        // transition (S -> S') does not drop the match, and the same match at a different
+        // source state is a DIFFERENT transition that gets its own independent draw.
+        if (!transition_survives(h)) return;
+
         if (batched_matching_) {
             batch.push_back(match);
         } else {
@@ -2257,6 +2294,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // the caller gets nothing to expand. Returning false here is not "duplicate" -- it is
     // "not yours to rewrite", which is the same instruction to the caller.
     if (offer_to_reservoir(data.state, match, position)) return false;
+    if (!transition_survives(h)) return false;
 
     out = match;
     return true;

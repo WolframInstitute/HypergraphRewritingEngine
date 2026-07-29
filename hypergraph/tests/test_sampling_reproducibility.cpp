@@ -191,6 +191,87 @@ TEST(SamplingReproducibility, ReservoirUniformWithinStratum) {
         << " for df=" << (M - 1);
 }
 
+// TransitionRate thins the multiway graph and must keep doing so AT DEPTH, with match
+// forwarding on. That last clause is the whole test: a match reaches a state either by
+// discovery in its own SCAN/EXPAND tree or by forwarding from an ancestor, forwarding
+// dominates in a deep run, and a sampler that only sees discoveries bounds nothing. The
+// per-state reservoir failed exactly here -- 2,038,505 states instead of 1,365 on this shape --
+// while passing a one-step uniformity test, so depth with forwarding on is the discriminating
+// case and not an extra one.
+TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
+    RewriteRule rule = make_growth_rule();
+    std::vector<std::vector<VertexId>> init;
+    for (int i = 0; i < 24; ++i)
+        init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+
+    // Measure the KEPT FRACTION rather than a size. A size can collapse to the root by chance
+    // when the root has few matches, which says nothing about whether the rate is reaching
+    // every acceptance point; events/matches is the rate itself. If forwarding bypassed the
+    // sampler the ratio would sit far above q, since forwarded matches dominate at depth.
+    struct Kept { size_t matches; size_t events; };
+    auto run = [&](double q, uint64_t seed) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.set_random_seed(seed);
+        e.set_match_forwarding(true);      // the condition under test, stated not assumed
+        e.set_transition_rate(q);
+        e.add_rule(rule);
+        e.evolve(init, 4);
+        return Kept{e.total_matches(), hg.num_events()};
+    };
+
+    const Kept full = run(1.0, 1);
+    ASSERT_GT(full.matches, 1000u) << "the unthinned run is too small to measure a rate against";
+    EXPECT_NEAR(static_cast<double>(full.events) / full.matches, 1.0, 0.02)
+        << "q=1 dropped transitions, so the sampler is not a no-op at its identity";
+
+    // Several seeds: one seed's root can die by chance, an average over seeds cannot.
+    for (double q : {0.25, 0.5}) {
+        size_t matches = 0, events = 0;
+        for (uint64_t seed = 1; seed <= 12; ++seed) {
+            const Kept k = run(q, seed);
+            matches += k.matches;
+            events += k.events;
+        }
+        ASSERT_GT(matches, 0u);
+        const double kept = static_cast<double>(events) / matches;
+        EXPECT_NEAR(kept, q, 0.05)
+            << "at q=" << q << " the run kept " << kept << " of its transitions; a rate that "
+            << "misses the forwarding dispatches reads high, one applied twice reads low";
+    }
+}
+
+// Thinning must be a property of the TRANSITION, not of the worker that happened to reach it.
+// Drawing from a per-thread RNG would make the surviving subgraph depend on the schedule, and
+// a sample nobody can reproduce cannot be checked against the full evolution it claims to
+// represent. Same seed and same thread count must give the same graph, every time.
+TEST(SamplingReproducibility, TransitionRateIsReproducibleForAGivenSeed) {
+    RewriteRule rule = make_growth_rule();
+    // Wide enough that the root survives thinning: a run that dies at the root is trivially
+    // reproducible and would prove nothing.
+    std::vector<std::vector<VertexId>> init;
+    for (int i = 0; i < 12; ++i)
+        init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+
+    auto run = [&]() {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 1);
+        e.set_random_seed(777);
+        e.set_transition_rate(0.35);
+        e.add_rule(rule);
+        e.evolve(init, 4);
+        return std::make_pair(hg.num_states(), hg.num_events());
+    };
+
+    const auto first = run();
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(run(), first) << "the sampled subgraph changed between identical runs";
+    }
+    EXPECT_GT(first.first, 1u) << "the run produced nothing, so equality is vacuous";
+}
+
 // MatchesPerState is a UNIFORM subsample of one state's matches, taken with no barrier
 // anywhere. Same measurement as the strided-reservoir gate above, on the path that replaces it:
 // M available, k kept, each chosen with probability k/M. Initial state = M disconnected edges;

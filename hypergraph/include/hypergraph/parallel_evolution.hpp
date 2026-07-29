@@ -413,6 +413,15 @@ class ParallelEvolutionEngine {
     std::atomic<size_t> validation_mismatches_{0};
 
 
+    // Transition-level thinning: keep each transition with this probability. 1.0 = keep all.
+    //
+    // This is the sampler for "a sparse subgraph whose observables match the full graph's".
+    // Thinning transitions INDEPENDENTLY yields a sub-branching-process whose offspring
+    // distribution is the thinned original, so the branching factor's shape and variance
+    // survive. A fixed count per state does not: it collapses the offspring distribution to a
+    // point mass, destroying the feature the sample exists to preserve.
+    double transition_rate_{1.0};
+
     // Reservoir size for sampled evolution, 0 = no sampling. The population is the matches of
     // ONE STATE -- a population that completes locally, which is what lets sampling run with no
     // step barrier at all (docs/ASYNC_SAMPLING_DESIGN.md). A per-step count is not expressible
@@ -621,6 +630,28 @@ public:
     // on the stream position, so the retained set is the same whatever the schedule and
     // whichever worker sees which match.
     //
+    // Keep each transition with probability q, drawn independently per transition. 1.0 keeps
+    // everything. This is the general sampler.
+    //
+    // Independent thinning is what makes the sample representative: the result is a
+    // sub-branching-process whose offspring distribution is the thinned original, so branching
+    // shape and variance survive. It also needs no population and no completion, which is why
+    // it is eager, needs no join, and applies identically to a match this state discovered and
+    // one forwarded to it from an ancestor -- the two failures that a per-state count could not
+    // survive (docs/ASYNC_SAMPLING_DESIGN.md §3a).
+    //
+    // The draw is keyed on the transition's identity rather than on a worker's RNG, so it does
+    // not depend on WHICH thread drew or on the order matches arrived. It does still depend on
+    // the raw source-state id, which work-stealing assigns nondeterministically, so the sample
+    // is reproducible run to run at one worker and not yet across thread counts. Keying on the
+    // canonical transition identity is what closes that.
+    //
+    // Each path of length L survives with probability q^L, so deep structure thins faster than
+    // shallow. That is inherent to online thinning -- a deep path cannot be kept without its
+    // prefix -- and the answer is a depth-dependent q, not a different mechanism.
+    void set_transition_rate(double q) { transition_rate_ = q; }
+    double transition_rate() const { return transition_rate_; }
+
     // DOMAIN: exact only with match forwarding DISABLED. A forwarded match reaches a state
     // through push_match_to_children / forward_matches_from_single_ancestor_eager, which submit
     // a rewrite directly, so the reservoir sees only the matches this state DISCOVERED. With
@@ -942,6 +973,11 @@ private:
     // `n` is the match's position in this state's stream, from the caller's single bump of
     // MatchJoin::matches -- one owner for that counter, so the position and the accepted-match
     // count cannot disagree.
+    // The transition-level draw. Keyed on the transition's own hash so the same transition
+    // gets the same verdict however the run is scheduled, and every acceptance point -- both
+    // discovery paths and both forwarding paths -- consults exactly this.
+    bool transition_survives(uint64_t match_hash) const;
+
     bool offer_to_reservoir(StateId state, const MatchRecord& match, size_t n);
     // Submit rewrites for whatever the reservoir retained. Called only from the drain, so the
     // population is complete and no later match can displace one of these.
