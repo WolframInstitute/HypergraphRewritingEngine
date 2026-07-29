@@ -38,6 +38,27 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
+// Insert every root's canonical hash into the map before the loop starts, so a child isomorphic
+// to a root deduplicates against it rather than being explored a second time. Runs pre-launch,
+// which the no-host-in-the-loop constraint permits: the constraint is on evolution, not on
+// seeding. Mirrors what k_seed_roots does for the level-synchronous scheduler.
+//
+// Every root is enqueued regardless of the result, which is the reference semantics: provided
+// roots are distinct entry points even when isomorphic.
+__global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
+                                   DedupMap::DeviceView map, DeviceArena::View arena) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_roots) return;
+    uint32_t* slot = nullptr;
+    uint64_t  slot_words = 0;
+    uint64_t  h = 0;
+    if (!state_exact_hash_device(ds, roots[tid], arena, slot, slot_words, h)) {
+        ds.errors.record(ErrorKind::kScratchOverflow);
+        return;
+    }
+    map.insert_if_absent(h == 0 ? 1 : h, roots[tid]);
+}
+
 // Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim
 // past the end returns kInvalid without writing, so the counter can exceed the capacity while
 // only the first `capacity` slots hold anything. Reading up to the raw counter would read past
@@ -54,7 +75,7 @@ __device__ __forceinline__ uint32_t readable_records(
 // a bump has nothing to undo with: a block that bumped past the end and then subtracted can
 // have its subtraction cancel a DIFFERENT block's successful claim, which both hands the same
 // record to two blocks and strands the one in between. A stranded record is never rewritten,
-// so the run does not terminate.
+// so `rewrites_done` never reaches the record count and the run does not terminate.
 __device__ __forceinline__ uint32_t claim_next_record(
         uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found) {
     uint32_t cur = *cursor;
@@ -177,6 +198,166 @@ __global__ void k_persistent_match_rewrite(
     }
 }
 
+// ---- stage 3: the loop closes ------------------------------------------------------------
+//
+// A rewrite's output state is hashed, tested against the exploration rule, and its (state,
+// rule) items pushed back into the same match queue. A whole evolution then runs inside one
+// launch: no step loop, no host in the middle, no barrier between depths.
+//
+// Termination cannot be "queue empty" any more, and cannot be a single quiescent snapshot
+// either. The exact condition is that NOTHING MADE PROGRESS across an observation window while
+// both roles read as drained, so the detector compares a four-counter snapshot against itself:
+//
+//   pushed[match] / completed[match]   a match item exists but has not finished
+//   readable records / rewrites_done   a match record exists but has not been rewritten
+//
+// Each counter is monotone, and a worker cannot start and finish inside the window without
+// moving one of them. So equality of all four across the window, plus both drained conditions,
+// means quiescent -- where either condition alone, or either snapshot alone, does not.
+//
+// Ordering the workers must keep, and the reason:
+//   mark_pushed BEFORE try_push        an item is never visible while uncounted
+//   rewrites_done LAST                 a rewrite that will still push, or is still running an
+//                                      item inline, reads as unfinished
+__global__ void k_persistent_evolve(
+        DeviceState ds,
+        const DeviceRule* rules,
+        uint32_t num_rules,
+        typename RingBuffer<MatchWorkItem>::DeviceView match_q,
+        typename Pool<MatchRecord>::DeviceView found,
+        uint32_t* consume_cursor,
+        uint32_t* rewrites_done,
+        DedupMap::DeviceView dedup_map,
+        bool dedup,
+        uint32_t explore_threshold_u32,
+        uint64_t explore_seed,
+        uint32_t max_steps,
+        DeviceArena::View arena,
+        typename TerminationDetector::DeviceView term) {
+
+    if (blockIdx.x == 0) {
+        if (threadIdx.x != 0) return;
+        uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
+        uint64_t p2[TerminationDetector::kMaxRoles], c2[TerminationDetector::kMaxRoles];
+        for (;;) {
+            const bool q1  = term.snapshot_quiescent(p1, c1);
+            const uint32_t prod1 = readable_records(found);
+            const uint32_t done1 = *rewrites_done;
+            if (q1 && done1 >= prod1) {
+                __nanosleep(4000);
+                const bool q2 = term.snapshot_quiescent(p2, c2);
+                const uint32_t prod2 = readable_records(found);
+                const uint32_t done2 = *rewrites_done;
+                bool unchanged = (prod1 == prod2) && (done1 == done2);
+                for (uint32_t r = 0; r < term.num_roles && unchanged; ++r)
+                    unchanged = (p1[r] == p2[r]) && (c1[r] == c2[r]);
+                if (q2 && done2 >= prod2 && unchanged) {
+                    term.signal_exit();
+                    return;
+                }
+            }
+            __nanosleep(2000);
+        }
+    }
+
+    // Per-block IR scratch, carried across items: claimed on first use and re-claimed only
+    // when a larger state arrives. Thread 0 does the hashing, so the slot is its own.
+    __shared__ uint32_t* ir_slot;
+    __shared__ uint64_t  ir_slot_words;
+    __shared__ MatchWorkItem mitem;
+    __shared__ bool     have;
+    __shared__ uint32_t claimed;
+    __shared__ uint32_t child_sid;
+    __shared__ uint32_t child_step;
+    __shared__ bool     expand_child;
+    __shared__ bool     run_rule_inline;
+
+    if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; }
+    __syncthreads();
+
+    for (;;) {
+        // Rewrite first: it drains what matching produced, and letting the pool run ahead
+        // unboundedly is what makes it overflow.
+        if (threadIdx.x == 0) claimed = claim_next_record(consume_cursor, found);
+        __syncthreads();
+
+        if (claimed != INVALID_ID) {
+            if (threadIdx.x == 0) {
+                const MatchRecord& rec = found.at(claimed);
+                await_match(rec);
+                const uint32_t step = rec.step;
+                child_sid    = apply_one_match(ds, rules, rec, step);
+                child_step   = step + 1u;
+                expand_child = false;
+
+                // Expand the child only if it exists, the step budget allows it, its exact
+                // hash is computable, and the exploration rule keeps it. The hash is the
+                // dedup KEY, so a state whose hash could not be computed is not enqueued
+                // under a coarser one -- 1-WL merges non-isomorphic states.
+                if (child_sid != INVALID_ID && child_step < max_steps) {
+                    uint64_t h = 0;
+                    if (!state_exact_hash_device(ds, child_sid, arena, ir_slot, ir_slot_words,
+                                                 h)) {
+                        ds.errors.record(ErrorKind::kScratchOverflow);
+                    } else {
+                        expand_child = state_survives_dedup(child_sid, h, dedup_map, dedup,
+                                                            explore_threshold_u32,
+                                                            explore_seed, child_step);
+                    }
+                }
+            }
+            __syncthreads();
+
+            for (uint32_t r = 0; expand_child && r < num_rules; ++r) {
+                if (threadIdx.x == 0) {
+                    MatchWorkItem it;
+                    it.state_id = child_sid;
+                    it.rule_id  = r;
+                    it.step     = child_step;
+                    term.mark_pushed(kRoleMatch);
+                    run_rule_inline = !match_q.try_push(it);
+                    if (run_rule_inline) {
+                        // Full queue. The producers here are the same workers that consume,
+                        // so waiting for room would be waiting on ourselves -- job_system.hpp
+                        // solves it the same way, by running the item on the pusher. It
+                        // terminates because matching only writes to the match pool, never
+                        // back into this ring.
+                        //
+                        // The item never entered the queue, so its completion is booked here
+                        // and the block runs it below; leaving it counted as outstanding
+                        // would stall termination forever.
+                        term.mark_completed(kRoleMatch);
+                    }
+                }
+                __syncthreads();
+                if (run_rule_inline)
+                    match_state_rule(ds, rules, child_sid, r, child_step, found);
+                __syncthreads();
+            }
+
+            if (threadIdx.x == 0) {
+                __threadfence();
+                atomicAdd(rewrites_done, 1u);
+            }
+            __syncthreads();
+            continue;
+        }
+
+        if (threadIdx.x == 0) have = match_q.try_pop(mitem);
+        __syncthreads();
+        if (have) {
+            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
+            __syncthreads();
+            if (threadIdx.x == 0) term.mark_completed(kRoleMatch);
+            __syncthreads();
+            continue;
+        }
+
+        if (term.exit_requested()) return;
+        __syncthreads();
+    }
+}
+
 }  // namespace
 
 uint32_t run_persistent_match(const EngineState& engine,
@@ -280,6 +461,95 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     check(cudaDeviceSynchronize(), "persistent match+rewrite sync");
 
     stats.matches_found = scratch_matches.size_host();
+
+    cudaFree(d_cursor);
+    cudaFree(d_states);
+    cudaFree(d_rules);
+    return stats;
+}
+
+PersistentEvolveStats run_persistent_evolve(EngineState& engine,
+                                            const std::vector<DeviceRule>& rules,
+                                            const std::vector<StateId>& roots,
+                                            uint32_t max_steps,
+                                            Pool<MatchRecord>& scratch_matches,
+                                            DeviceArena& arena,
+                                            bool dedup,
+                                            uint32_t explore_threshold_u32,
+                                            uint64_t explore_seed,
+                                            uint32_t blocks) {
+    PersistentEvolveStats stats;
+    if (rules.empty() || roots.empty() || max_steps == 0) return stats;
+
+    // Records are consumed while they are still being produced, so their publication flags
+    // must start clear. The scheduler that relies on the flag is the one that clears it.
+    scratch_matches.reset_and_clear();
+
+    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
+    const uint32_t num_seed  = static_cast<uint32_t>(num_rules * roots.size());
+
+    DeviceRule* d_rules = nullptr;
+    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+                     cudaMemcpyHostToDevice), "rules copy");
+
+    StateId* d_states = nullptr;
+    check(cudaMalloc(&d_states, sizeof(StateId) * roots.size()), "states alloc");
+    check(cudaMemcpy(d_states, roots.data(), sizeof(StateId) * roots.size(),
+                     cudaMemcpyHostToDevice), "states copy");
+
+    // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
+    // fail, it runs the excess inline on the pushing block. Sized to the match pool so the
+    // inline path is an escape valve rather than the normal case.
+    uint32_t cap = 1;
+    while (cap < num_seed) cap <<= 1;
+    while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
+    RingBuffer<MatchWorkItem> match_q(cap);
+    match_q.clear();
+    {
+        const uint32_t block = 128;
+        const uint32_t grid = (num_seed + block - 1) / block;
+        k_seed_match_queue<<<grid, block>>>(match_q.view(), d_states,
+                                            static_cast<uint32_t>(roots.size()), num_rules,
+                                            /*step=*/0u);
+        check(cudaDeviceSynchronize(), "seed sync");
+    }
+
+    // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
+    // entry per state is the worst case, and the map must not fill, because a full map would
+    // silently start admitting duplicates.
+    DedupMap canonical(engine.config().max_states * 2u);
+    canonical.clear();
+
+    arena.reset();
+    {
+        const uint32_t block = 64;
+        const uint32_t n = static_cast<uint32_t>(roots.size());
+        k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
+            engine.device(), d_states, n, canonical.view(), arena.view());
+        check(cudaDeviceSynchronize(), "root hash seed sync");
+    }
+
+    uint32_t* d_cursor = nullptr;
+    check(cudaMalloc(&d_cursor, sizeof(uint32_t) * 2), "cursor alloc");
+    check(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
+    uint32_t* d_rewrites_done = d_cursor + 1;
+
+    TerminationDetector term(/*num_roles=*/1);
+    term.clear();
+    term.mark_pushed_host(kRoleMatch, num_seed);
+
+    // Block 0 is the detector, so at least two blocks are needed for any work to happen.
+    const uint32_t grid = blocks ? blocks : 33;
+    k_persistent_evolve<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
+        engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
+        d_cursor, d_rewrites_done, canonical.view(), dedup,
+        explore_threshold_u32, explore_seed, max_steps, arena.view(), term.view());
+    check(cudaDeviceSynchronize(), "persistent evolve sync");
+
+    stats.matches_found    = scratch_matches.size_host();
+    stats.states_after     = engine.num_states_host();
+    stats.arena_words_used = arena.used_words_host();
 
     cudaFree(d_cursor);
     cudaFree(d_states);

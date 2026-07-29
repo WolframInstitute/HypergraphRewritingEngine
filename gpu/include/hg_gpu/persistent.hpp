@@ -2,19 +2,22 @@
 // Device-resident scheduling: workers that PULL work from a queue, instead of being launched
 // once per phase per step. See docs/GPU_PERSISTENT_DESIGN.md.
 //
-// Stage 1, which is what exists here: the MATCH role only, over a queue seeded once. It buys
-// no speed and is not on the shipping path -- Engine::Impl still runs the level-synchronous
-// loop. What it buys is that the risky parts (queue mechanics, one block claiming one item,
-// workers that decide for themselves when to stop) are exercised against a kernel whose
-// output is already trusted, before any of it carries semantics.
+// Three entry points, each adding one thing to the one before, so a failure lands in the stage
+// that introduced it rather than in the whole model at once. Engine::Impl still runs the
+// level-synchronous loop; none of these is on the shipping path yet.
 //
-// TerminationDetector is deliberately NOT used yet. Its stable-observation window exists to
-// stop a worker exiting during a lull, when in-flight items have finished but not yet emitted
-// their follow-ups. A queue seeded once and never grown has no lull: empty means finished, so
-// wiring the detector here would exercise none of what it is for. It wires in at stage 2, when
-// the roles start feeding each other.
+//   run_persistent_match          the MATCH role alone, over a queue seeded once. Empty means
+//                                 finished, because nothing can push after the seed.
+//   run_persistent_match_rewrite  match and rewrite as two roles feeding each other, so empty
+//                                 no longer means finished and TerminationDetector's stable
+//                                 observation window starts earning its keep.
+//   run_persistent_evolve         the loop closes: output states are hashed, deduplicated and
+//                                 re-enqueued on device, so a whole evolution is one launch.
 
+#include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/exploration.hpp"
+#include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/ring_buffer.hpp"
@@ -77,5 +80,41 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
                                                 uint32_t step,
                                                 Pool<MatchRecord>& scratch_matches,
                                                 uint32_t blocks = 0);
+
+// Stage 3: the loop closes. A rewrite's output state is hashed, tested against the exploration
+// rule, and its (state, rule) items pushed back into the same match queue -- so a whole
+// evolution runs inside ONE launch, with no host in the loop and no per-step barrier.
+//
+// Three things only bind once the loop is closed:
+//
+//   THE STEP BUDGET IS A PREDICATE. `max_steps` bounds the depth carried on the item, not a
+//   number of kernel launches. An item at the budget is rewritten and its children are not
+//   re-enqueued.
+//
+//   A FULL QUEUE MUST NOT BLOCK. The producers here are the same workers that consume, so a
+//   worker waiting for room would wait for itself. On a failed push the pusher runs the match
+//   INLINE -- the host's rule in job_system.hpp, and terminating for the same reason: matching
+//   writes to the match pool, never back into this ring.
+//
+//   HASHING HAS NO BATCH TO MEASURE. States arrive continuously, so the IR scratch is claimed
+//   per state from a device arena sized from that state's own counts
+//   (state_exact_hash_device). Arena exhaustion is a capacity overflow: recorded, partial work
+//   returned, never a coarser hash that would merge non-isomorphic states.
+struct PersistentEvolveStats {
+    uint32_t matches_found = 0;
+    uint32_t states_after  = 0;
+    uint64_t arena_words_used = 0;
+};
+
+PersistentEvolveStats run_persistent_evolve(EngineState& engine,
+                                            const std::vector<DeviceRule>& rules,
+                                            const std::vector<StateId>& roots,
+                                            uint32_t max_steps,
+                                            Pool<MatchRecord>& scratch_matches,
+                                            DeviceArena& arena,
+                                            bool dedup,
+                                            uint32_t explore_threshold_u32 = 0xFFFFFFFFu,
+                                            uint64_t explore_seed = 0,
+                                            uint32_t blocks = 0);
 
 }  // namespace hg_gpu

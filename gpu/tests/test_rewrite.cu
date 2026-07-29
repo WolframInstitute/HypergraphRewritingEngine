@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/evolve.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
@@ -188,6 +189,104 @@ TEST(Rewrite, PersistentTwoRoleSchedulerMatchesTheLevelSynchronousResult) {
     EXPECT_EQ(persistent.num_states_host(), lockstep.num_states_host());
     EXPECT_EQ(persistent.num_edges_host(), lockstep.num_edges_host());
     EXPECT_EQ(canonical_hash_multiset(persistent), canonical_hash_multiset(lockstep));
+}
+
+// The step budget is a PREDICATE on the item, not a loop bound. At max_steps == 1 only the
+// roots are expanded, so the run must stop after one round of rewriting even though the
+// children it produced are matchable.
+TEST(Rewrite, PersistentEvolveStepBudgetStopsAtOne) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}};
+    r.rhs = {{0, 1}, {1, 2}};
+    r.num_lhs_vars = 2;
+    r.num_rhs_vars = 3;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
+
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = init;
+    in.num_steps = 1;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    hg_gpu::EngineState persistent(cfg);
+    hg_gpu::upload_initial_state(persistent, init);
+
+    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+    hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+    matches.reset();
+    hg_gpu::DeviceArena arena(8ull << 20);
+
+    const auto stats = hg_gpu::run_persistent_evolve(
+        persistent, rules, /*roots=*/{0u}, /*max_steps=*/1u, matches, arena, /*dedup=*/true,
+        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0, /*blocks=*/5);
+
+    // Two matches in the root (one per edge), so two children and no further expansion.
+    EXPECT_EQ(stats.matches_found, 2u);
+    EXPECT_EQ(stats.states_after, 3u);
+}
+
+// A whole multi-step evolution inside ONE launch must produce exactly what the level-
+// synchronous Engine produces for the same input.
+//
+// Stage 3: the rewrite's output is hashed, deduplicated and re-enqueued on device, so there is
+// no step loop and no host in the middle. That makes three things load-bearing that stages 1
+// and 2 never exercised, and each has its own failure signature:
+//
+//   THE STEP BUDGET. Depth rides on the item, so `max_steps` is a predicate. Getting it off by
+//   one shows up as a state count above or below the reference.
+//   THE EXACT HASH. Dedup uses the arena-backed IR hash, computed with no batch to size the
+//   scratch from. A wrong key merges non-isomorphic states, which shows up as too FEW states.
+//   TERMINATION. There is no phase boundary to fall back on, so a detector that fires early
+//   truncates the run and one that never fires hangs. Both are caught here, the second only by
+//   the test not returning.
+TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
+    // {{x,y},{y,z}} -> {{x,y},{y,w},{w,z}}: branches, and its children are not all distinct,
+    // so dedup does work rather than passing everything through.
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+    const uint32_t kSteps = 3;
+
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = init;
+    in.num_steps = kSteps;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.explore_from_canonical_states_only = true;
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    hg_gpu::Engine reference(cfg);
+    const auto ref = reference.run(in);
+    ASSERT_TRUE(ref.warnings.empty()) << "reference run overflowed, so the comparison is unsound";
+    ASSERT_GT(ref.states.size(), 1u) << "workload never branched, so the comparison is vacuous";
+
+    hg_gpu::EngineState persistent(cfg);
+    hg_gpu::upload_initial_state(persistent, init);
+
+    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+    hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+    matches.reset();
+    hg_gpu::DeviceArena arena(64ull << 20);   // words, so 256 MB of scratch
+
+    const auto stats = hg_gpu::run_persistent_evolve(
+        persistent, rules, /*roots=*/{0u}, kSteps, matches, arena, /*dedup=*/true,
+        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0, /*blocks=*/9);
+
+    EXPECT_EQ(stats.states_after, ref.states.size());
+    EXPECT_EQ(persistent.num_events_host(), ref.events.size());
+    EXPECT_GT(stats.arena_words_used, 0u) << "no scratch was claimed, so no state was hashed";
+
+    // The counts alone would pass on a run that explored a different state set of the same
+    // size, so compare the canonical hashes themselves.
+    std::multiset<uint64_t> ref_hashes;
+    for (const auto& s : ref.states) ref_hashes.insert(s.canonical_hash);
+    EXPECT_EQ(canonical_hash_multiset(persistent), ref_hashes);
 }
 
 TEST(Rewrite, WolframCanonicalRuleOneStep) {

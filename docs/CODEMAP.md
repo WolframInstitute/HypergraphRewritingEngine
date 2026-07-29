@@ -119,15 +119,17 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`atomic_pool.hpp`** -- `Pool<T>` (pre-allocated device array + atomic bump counter; `DeviceView::claim`/`claim_n`/`at`)
 - **`lock_free_list.hpp`** -- `LockFreeList<T>` (per-key linked-stack over a node Pool; `DeviceView::push`/`for_each`)
 - **`hash_table.hpp`** -- `ConcurrentMap<K,V,EMPTY,LOCKED>` (open-addressing linear probe; `DeviceView::lookup[_waiting]`/`insert_if_absent`)
-- **`ring_buffer.hpp`** -- `RingBuffer<T>` (MPMC ring for inter-kernel work queues)
+- **`ring_buffer.hpp`** -- `RingBuffer<T>` (bounded MPMC ring; per-slot sequence numbers + CAS reservation, so producers that are also consumers neither lose nor duplicate an item across wraps)
 - **`termination.hpp`** -- `TerminationDetector` (per-role quiescence for a persistent-kernel model)
 - **`device_arena.hpp`** -- `DeviceArena` (bump allocator the device claims from; scratch whose size is only known once the work is in hand)
 - **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
 - **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
 - **`warp_ops.hpp`** -- `VWarp<N>` (cooperative-groups tile ops: ballot/reduce/scan/compact/sorted-intersect)
 - **`partial_match.hpp`** -- `PartialMatch` (per-warp DFS match frame in registers/shared)
-- **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
-- **`rewrite.hpp`** -- host `run_rewrite_kernel[_with][_nosync]`
+- **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord` (carries its `step` and a `published` flag); device `match_state_rule`/`publish_match`/`await_match`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
+- **`rewrite.hpp`** -- device `apply_one_match` (returns the state it created); host `run_rewrite_kernel[_with][_nosync]`
+- **`exploration.hpp`** -- `DedupMap` + device `state_survives_dedup` (which new states get expanded; one predicate for both schedulers)
+- **`persistent.hpp`** -- `MatchWorkItem`, `PersistentRunStats`/`PersistentEvolveStats`; host `run_persistent_match`/`run_persistent_match_rewrite`/`run_persistent_evolve` (the device-resident schedulers)
 - **`wl_hash.hpp` / `ir_canon.hpp`** -- device `wl_hash_state_device`, `state_exact_hash_device` (arena-backed, sized per state); host `compute_state_wl/ir_hashes*`
 - **`initial_upload.hpp`** -- host `rebuild_indices`/`upload_initial_state[s]`
 - **`engine_state.hpp`** -- `DeviceState` (POD passed to kernels) + `EngineState` (host owner of all device pools/indices, readback helpers)
@@ -135,9 +137,10 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `gpu/src/` -- CUDA kernels + drivers
 
-- **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_dedup_and_append`/`k_fill_unique_keys`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
-- **`match.cu`** -- match kernels `k_match_one_state`, `k_match_batch` (DFS binding LHS edges, Wolfram non-distinct semantics, CSR-slice/signature/pivot-inverted candidate seeding); host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
-- **`rewrite.cu`** -- `k_rewrite` (preflight-reserve pools, build RHS/new-state CSR, write Event, causal+branchial rendezvous with online TR); host `run_rewrite_kernel*`
+- **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_dedup_and_append`/`k_fill_unique_keys`; device `state_survives_dedup`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
+- **`match.cu`** -- device `match_state_rule` + kernel `k_match_batch` (DFS binding LHS edges, Wolfram non-distinct semantics, CSR-slice/signature/pivot-inverted candidate seeding); host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
+- **`rewrite.cu`** -- device `apply_one_match` + kernel `k_rewrite` (preflight-reserve pools, build RHS/new-state CSR, write Event, causal+branchial rendezvous with online TR); host `run_rewrite_kernel*`
+- **`persistent.cu`** -- the device-resident schedulers: `k_persistent_match` (match role alone), `k_persistent_match_rewrite` (two roles, no barrier), `k_persistent_evolve` (whole evolution in one launch: rewrite -> exact hash -> dedup -> re-enqueue, block 0 detecting quiescence); host `run_persistent_*`
 - **`ir_canon.cu`** -- `k_ir_canon_range` (one thread per state over a batch-sized slot pool, exact IR via `hgcommon`, 1-WL fallback with a degraded count) + device `state_exact_hash_device` (arena-claimed slot sized per state, no fallback); host `compute_state_ir_hashes_range`
 - **`wl_hash.cu`** -- device `wl_hash_state_device`/`content_hash_state_device` (delegates to `hgcommon::wl_canonical_hash`); kernels `k_wl_hash_states`/`k_content_hash_range`
 - **`initial_upload.cu`** -- `k_init_indices`; host `upload_initial_states`/`rebuild_indices`
