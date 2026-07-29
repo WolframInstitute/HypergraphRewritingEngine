@@ -41,6 +41,12 @@ enum class ErrorKind : uint32_t {
     kFrontierCapFull     = 18,
     kScratchOverflow     = 19,   // bounded local scratch (TR closure, WL)
     kDeviceOutOfMemory   = 21,   // host-side: an engine of the grown size no longer fits in VRAM
+    // A device-resident scheduler ran past its spin budget. It means a defect -- the
+    // termination detector should have fired -- and it exists so that defect costs a partial
+    // result and a warning rather than a GPU occupied until the machine is rebooted. On a box
+    // whose GPU also drives the display that distinction is the difference between a failed
+    // run and a lost session.
+    kPersistentStall     = 22,
     kCount
 };
 
@@ -67,6 +73,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
+        case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         default:                              return "unknown";
     }
 }

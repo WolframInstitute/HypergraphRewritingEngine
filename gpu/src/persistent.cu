@@ -69,6 +69,21 @@ __device__ __forceinline__ uint32_t readable_records(
     return claimed < found.capacity ? claimed : found.capacity;
 }
 
+// Spin budgets. Nothing in a correct run reaches them -- the detector fires and the workers
+// leave -- so hitting one means a DEFECT, and that is exactly why they exist.
+//
+// A device-resident scheduler has no host in the loop to notice it is stuck, and a kernel that
+// never returns holds the device until the context is destroyed. On a machine whose GPU also
+// drives the display, that is not a slow run, it is a lost session. So a stall costs a warning
+// and a partial result, which is already this project's contract for anything it cannot
+// complete, rather than the machine.
+//
+// Sized far past any real run: the detector's rounds are ~2 us apart, so ~20 s of quiescence
+// checking, and a worker's idle spins are cheaper still. Both are ceilings on PATHOLOGY, not
+// tuning parameters, and neither should ever be reached often enough to be worth tuning.
+constexpr uint32_t kMaxDetectorRounds = 10u * 1000u * 1000u;
+constexpr uint32_t kMaxWorkerIdleSpins = 20u * 1000u * 1000u;
+
 // Reserve the next unconsumed record index, or INVALID_ID when there is none yet.
 //
 // The reservation is a CAS rather than an unconditional bump, because the cursor is shared and
@@ -139,7 +154,12 @@ __global__ void k_persistent_match_rewrite(
         if (threadIdx.x != 0) return;
         uint64_t pushed[TerminationDetector::kMaxRoles];
         uint64_t completed[TerminationDetector::kMaxRoles];
-        for (;;) {
+        for (uint32_t round = 0; ; ++round) {
+            if (round >= kMaxDetectorRounds) {
+                ds.errors.record(ErrorKind::kPersistentStall);
+                term.signal_exit();
+                return;
+            }
             // Finished means BOTH: every seeded match item accounted for, and every match that
             // matching produced already consumed. Checking only the match role would exit with
             // rewrites outstanding; checking only the cursor would exit before matching had
@@ -239,7 +259,14 @@ __global__ void k_persistent_evolve(
         if (threadIdx.x != 0) return;
         uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
         uint64_t p2[TerminationDetector::kMaxRoles], c2[TerminationDetector::kMaxRoles];
-        for (;;) {
+        for (uint32_t round = 0; ; ++round) {
+            if (round >= kMaxDetectorRounds) {
+                // Quiescence never held. Signal exit anyway so the workers leave and the
+                // launch returns: a recorded defect with partial work beats holding the device.
+                ds.errors.record(ErrorKind::kPersistentStall);
+                term.signal_exit();
+                return;
+            }
             const bool q1  = term.snapshot_quiescent(p1, c1);
             const uint32_t prod1 = readable_records(found);
             const uint32_t done1 = *rewrites_done;
@@ -271,8 +298,10 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_step;
     __shared__ bool     expand_child;
     __shared__ bool     run_rule_inline;
+    __shared__ bool     stalled;
+    uint32_t idle_spins = 0;
 
-    if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; }
+    if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
     __syncthreads();
 
     for (;;) {
@@ -354,7 +383,14 @@ __global__ void k_persistent_evolve(
         }
 
         if (term.exit_requested()) return;
+        // Idle, and the detector has not released us. Counted, because a worker that can
+        // neither find work nor be told to stop is the same defect from the other side.
+        if (threadIdx.x == 0 && ++idle_spins >= kMaxWorkerIdleSpins) {
+            ds.errors.record(ErrorKind::kPersistentStall);
+            stalled = true;
+        }
         __syncthreads();
+        if (stalled) return;
     }
 }
 
