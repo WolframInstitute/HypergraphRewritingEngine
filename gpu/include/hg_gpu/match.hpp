@@ -5,6 +5,8 @@
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/types.hpp"
 
+#include <cuda/atomic>
+
 #include <cstdint>
 #include <vector>
 
@@ -69,9 +71,17 @@ struct DeviceRule {
 };
 
 // One match found during pattern matching.
+//
+// `published` is the record's own publication flag, stored LAST with release ordering.
+// Claiming a pool index bumps the pool counter before the record is filled, so a consumer
+// running concurrently with the producer -- which is what a device-resident scheduler does --
+// can see the index and read an unwritten record. A kernel boundary hides that for the
+// level-synchronous scheduler; nothing hides it without one. Consumers wait for this flag;
+// producers set it once the rest of the record is written.
 struct MatchRecord {
-    RuleId   rule_id  = 0;
-    StateId  state_id = INVALID_ID;
+    RuleId   rule_id   = 0;
+    StateId  state_id  = INVALID_ID;
+    uint32_t published = 0;
     uint8_t  num_edges = 0;
     EdgeId   matched_edges[kMaxPatternEdges] = {INVALID_ID};
 };
@@ -82,6 +92,22 @@ DeviceRule make_device_rule(const RewriteRule& rule);
 // Threads per block for match_state_rule. Its body stripes the depth-0 candidates across
 // exactly these threads, so every scheduler that calls it must launch with this shape.
 constexpr uint32_t kMatchBlockThreads = 32;
+
+// Publish a filled record: the release store that makes everything written before it visible
+// to a consumer that observes the flag.
+__device__ __forceinline__ void publish_match(MatchRecord& m) {
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> ref(m.published);
+    ref.store(1u, cuda::memory_order_release);
+}
+
+// Wait until record `m` is fully written, then read it. Returns immediately for a scheduler
+// that separates matching from rewriting with a kernel boundary, because the flag is already
+// set by then. The wait always ends: a producer that claimed an index below the pool capacity
+// always finishes writing it.
+__device__ __forceinline__ void await_match(const MatchRecord& m) {
+    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> ref(m.published);
+    while (ref.load(cuda::memory_order_acquire) == 0u) __nanosleep(64);
+}
 
 // One (state, rule) pair, matched by ONE BLOCK of kMatchBlockThreads threads. Exposed so a
 // scheduler in another translation unit drives this implementation rather than growing a

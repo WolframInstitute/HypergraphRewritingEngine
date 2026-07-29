@@ -76,6 +76,15 @@ public:
         check(cudaMemset(counter_, 0, sizeof(uint32_t)), "Pool reset");
     }
 
+    // Zero the payload as well as the counter. Needed by a consumer that reads records
+    // concurrently with their producers and therefore relies on a per-record publication flag:
+    // the flag has to start clear, and reset() alone leaves the previous run's bytes in place.
+    // O(capacity), so it belongs at run setup rather than between steps.
+    void reset_and_clear() {
+        reset();
+        check(cudaMemset(data_, 0, sizeof(T) * capacity_), "Pool clear data");
+    }
+
 private:
     static void check(cudaError_t err, const char* what) {
         if (err != cudaSuccess) {

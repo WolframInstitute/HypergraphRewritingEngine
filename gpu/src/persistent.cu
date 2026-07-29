@@ -37,6 +37,34 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
+// Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim
+// past the end returns kInvalid without writing, so the counter can exceed the capacity while
+// only the first `capacity` slots hold anything. Reading up to the raw counter would read past
+// the allocation.
+__device__ __forceinline__ uint32_t readable_records(
+        const typename Pool<MatchRecord>::DeviceView& found) {
+    const uint32_t claimed = *found.counter;
+    return claimed < found.capacity ? claimed : found.capacity;
+}
+
+// Reserve the next unconsumed record index, or INVALID_ID when there is none yet.
+//
+// The reservation is a CAS rather than an unconditional bump, because the cursor is shared and
+// a bump has nothing to undo with: a block that bumped past the end and then subtracted can
+// have its subtraction cancel a DIFFERENT block's successful claim, which both hands the same
+// record to two blocks and strands the one in between. A stranded record is never rewritten,
+// so the run does not terminate.
+__device__ __forceinline__ uint32_t claim_next_record(
+        uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found) {
+    uint32_t cur = *cursor;
+    for (;;) {
+        if (cur >= readable_records(found)) return INVALID_ID;
+        const uint32_t prev = atomicCAS(cursor, cur, cur + 1u);
+        if (prev == cur) return cur;
+        cur = prev;
+    }
+}
+
 // ---- stage 1: the match role alone ------------------------------------------------------
 //
 // One block per popped item -- the shape match_state_rule already wants. Only thread 0 touches
@@ -95,7 +123,7 @@ __global__ void k_persistent_match_rewrite(
             // rewrites outstanding; checking only the cursor would exit before matching had
             // produced anything at all.
             const bool matches_done = term.snapshot_quiescent(pushed, completed);
-            const uint32_t produced = *found.counter;
+            const uint32_t produced = readable_records(found);
             const uint32_t consumed = *consume_cursor;
             if (matches_done && consumed >= produced) {
                 // Quiescent once is not enough: an in-flight match may have just completed
@@ -103,7 +131,7 @@ __global__ void k_persistent_match_rewrite(
                 // signal when it held across both observations.
                 __nanosleep(4000);
                 if (term.snapshot_quiescent(pushed, completed) &&
-                    *consume_cursor >= *found.counter) {
+                    *consume_cursor >= readable_records(found)) {
                     term.signal_exit();
                     return;
                 }
@@ -119,18 +147,14 @@ __global__ void k_persistent_match_rewrite(
     for (;;) {
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
         // unboundedly is what makes it overflow.
-        if (threadIdx.x == 0) {
-            claimed = atomicAdd(consume_cursor, 1u);
-            if (claimed >= *found.counter) {
-                // Nothing to consume; give the index back so it is not skipped once matching
-                // produces more.
-                atomicSub(consume_cursor, 1u);
-                claimed = 0xFFFFFFFFu;
-            }
-        }
+        if (threadIdx.x == 0) claimed = claim_next_record(consume_cursor, found);
         __syncthreads();
-        if (claimed != 0xFFFFFFFFu) {
-            if (threadIdx.x == 0) apply_one_match(ds, rules, found.at(claimed), step);
+        if (claimed != INVALID_ID) {
+            if (threadIdx.x == 0) {
+                const MatchRecord& rec = found.at(claimed);
+                await_match(rec);
+                apply_one_match(ds, rules, rec, step);
+            }
             __syncthreads();
             continue;
         }
@@ -207,6 +231,10 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
                                                 uint32_t blocks) {
     PersistentRunStats stats;
     if (rules.empty() || states.empty()) return stats;
+
+    // Records are consumed while they are still being produced, so their publication flags
+    // must start clear. The scheduler that relies on the flag is the one that clears it.
+    scratch_matches.reset_and_clear();
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
     const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());

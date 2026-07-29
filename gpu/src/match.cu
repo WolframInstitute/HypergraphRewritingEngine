@@ -206,6 +206,7 @@ __device__ void match_state_rule(DeviceState       ds,
             m.num_edges = 1;
             m.matched_edges[0] = root_cand;
             for (uint8_t i = 1; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
+            publish_match(m);
             return;
         }
 
@@ -224,6 +225,7 @@ __device__ void match_state_rule(DeviceState       ds,
                 m.num_edges = depth;
                 for (uint8_t i = 0; i < depth; ++i) m.matched_edges[i] = pm.matched_edges[i];
                 for (uint8_t i = depth; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
+                publish_match(m);
                 return;
             }
 
