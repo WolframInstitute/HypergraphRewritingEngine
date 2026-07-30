@@ -884,6 +884,60 @@ TEST(Rewrite, TheEvolveWrapperCarriesThePersistentSelector) {
     }
 }
 
+// quotient_initial_states must mean the same thing to both schedulers.
+//
+// It asks that isomorphic ROOTS collapse: given the same initial state twice, an evolution should
+// start from one entry point rather than two. The reference semantics without it are the opposite
+// -- provided roots are distinct entry points even when isomorphic -- so the option changes the
+// state set, not merely its labelling.
+//
+// The level-synchronous path passes it to k_seed_roots as `quotient_roots`, which drops the
+// duplicate. The persistent branch built its root list as every index 0..num_roots-1 and never
+// read the flag, so it explored both. Defaulting the persistent scheduler on would have changed
+// what this option does with no diagnostic.
+TEST(Rewrite, QuotientInitialStatesMeansTheSameToBothSchedulers) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}};
+    r.rhs = {{0, 1}, {1, 2}};
+    r.num_lhs_vars = 2;
+    r.num_rhs_vars = 3;
+
+    // The same state twice, up to vertex labelling: isomorphic but not identical, so collapsing
+    // them is an isomorphism test rather than an equality test.
+    const std::vector<std::vector<std::vector<VertexId>>> roots = {
+        {{0u, 1u}, {1u, 2u}},
+        {{5u, 6u}, {6u, 7u}},
+    };
+
+    for (bool quotient_roots : {false, true}) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_states = roots;
+        in.quotient_initial_states = quotient_roots;
+        in.num_steps = 2;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::Engine lockstep(cfg);
+        const auto a = lockstep.run(in);
+
+        in.persistent_scheduler = true;
+        hg_gpu::Engine persistent(cfg);
+        const auto b = persistent.run(in);
+
+        const std::string cell = quotient_roots ? "quotient_initial_states=true"
+                                                : "quotient_initial_states=false";
+        ASSERT_TRUE(a.warnings.empty()) << cell << ": the level-synchronous reference overflowed";
+        ASSERT_TRUE(b.warnings.empty()) << cell << ": the persistent run overflowed";
+
+        std::multiset<uint64_t> ha, hb;
+        for (const auto& s : a.states) ha.insert(s.canonical_hash);
+        for (const auto& s : b.states) hb.insert(s.canonical_hash);
+        EXPECT_EQ(hb, ha) << cell << ": the two schedulers explored a different state SET";
+        EXPECT_EQ(b.states.size(), a.states.size()) << cell << ": state count differs";
+    }
+}
+
 // Arena exhaustion is a RECOVERABLE capacity failure, and must be reported as one.
 //
 // The persistent scheduler claims IR scratch from a DeviceArena sized as a multiple of

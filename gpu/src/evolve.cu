@@ -447,22 +447,19 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         std::vector<StateId> roots(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) roots[i] = i;
 
-        // The device arena the exact hash claims its IR scratch from. Sized from the state
-        // budget rather than a constant: it holds one slot per concurrently-hashing block, and
-        // a slot is shaped by the state it hashes. Exhaustion is a recorded capacity overflow,
-        // never a coarser hash.
-        // Sized from the GRID, not from the state budget alone. Each resident worker holds its
-        // own IR slot and grows it to the largest state it personally canonicalizes, so arena
-        // demand scales with the worker count. Sizing it off max_states alone was correct only
-        // while the grid was a constant: raising the grid to one block per SM raised demand with
-        // it, and the wide workloads then exhausted the arena and paid a grow-and-retry.
+        // The device arena the exact hash claims its IR scratch from. Sized from the GRID: each
+        // resident worker holds one slot at a time and grows it to the largest state it
+        // personally canonicalizes, so demand scales with the worker count rather than with the
+        // state budget. Exhaustion is a recorded capacity overflow (kIRArenaExhausted, which the
+        // wrapper can grow and retry), never a coarser hash.
         DeviceArena arena(persistent_arena_words(cfg.max_states, default_persistent_grid()));
 
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
             /*dedup=*/in.explore_from_canonical_states_only,
             explore_threshold_u32, resolved_seed,
-            in.canonicalization, ekeys);
+            in.canonicalization, ekeys, /*blocks=*/0,
+            /*quotient_roots=*/in.quotient_initial_states);
 
         state_count_host = engine.num_states_host();
         engine.collect_warnings_into(out.warnings, "persistent evolve");

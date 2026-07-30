@@ -148,9 +148,17 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // Which components the event identity is built
                                             // from, and it is built from the EXACT hashes
                                             // whatever state_mode is. EVENT_SIG_AUTOMATIC also
-                                            // needs canonical edge ranks, which the device does
-                                            // not yet produce.
+                                            // keys on canonical edge ranks, which ride the same
+                                            // individualization pass as the exact hash.
                                             EventSignatureKeys event_keys = EVENT_SIG_NONE,
-                                            uint32_t blocks = 0);
+                                            uint32_t blocks = 0,
+                                            // Collapse isomorphic ROOTS to one entry point.
+                                            // Default false is the reference semantics: provided
+                                            // roots are distinct entry points even when
+                                            // isomorphic. This must agree with what
+                                            // k_seed_roots does for the level-synchronous
+                                            // scheduler, or the option changes the state set on
+                                            // one and not the other.
+                                            bool quotient_roots = false);
 
 }  // namespace hg_gpu

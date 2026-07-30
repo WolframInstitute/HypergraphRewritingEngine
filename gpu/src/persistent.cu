@@ -77,11 +77,21 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 // which the no-host-in-the-loop constraint permits: the constraint is on evolution, not on
 // seeding. Mirrors what k_seed_roots does for the level-synchronous scheduler.
 //
-// Every root is enqueued regardless of the result, which is the reference semantics: provided
-// roots are distinct entry points even when isomorphic.
+// Surviving roots are compacted into out_ids/out_count, and the queue is seeded from those rather
+// than from the caller's list, because `quotient_roots` is decided here:
+//
+//   false  every root is kept whether or not it won its map slot. That is the reference
+//          semantics -- provided roots are distinct entry points even when isomorphic.
+//   true   a root whose key another root already claimed is still hashed and mapped, but is not
+//          appended, so it never enters the queue.
+//
+// The level-synchronous path decides the same thing in k_seed_roots. Deciding it in only one of
+// them made the option change the state set on one scheduler and not the other.
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
-                                   bool need_exact, bool need_ranks, DeviceArena::View arena) {
+                                   bool need_exact, bool need_ranks, DeviceArena::View arena,
+                                   bool quotient_roots,
+                                   StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -114,7 +124,12 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
         ds.state_exact_hash[sid] = exact;
     }
 
-    map.insert_if_absent(key == 0 ? 1 : key, sid);
+    const auto r = map.insert_if_absent(key == 0 ? 1 : key, sid);
+    // Reference semantics without the option: provided roots are distinct entry points even when
+    // isomorphic, so every root is kept regardless of whether it won the map slot.
+    if (quotient_roots && !r.inserted) return;
+    const uint32_t pos = atomicAdd(out_count, 1u);
+    if (pos < out_cap) out_ids[pos] = sid;
 }
 
 // Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim
@@ -663,7 +678,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             uint64_t explore_seed,
                                             CanonicalizationMode state_mode,
                                             EventSignatureKeys event_keys,
-                                            uint32_t blocks) {
+                                            uint32_t blocks,
+                                            bool quotient_roots) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
 
@@ -692,14 +708,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
     RingBuffer<MatchWorkItem> match_q(cap);
     match_q.clear();
-    {
-        const uint32_t block = 128;
-        const uint32_t grid = (num_seed + block - 1) / block;
-        k_seed_match_queue<<<grid, block>>>(match_q.view(), d_states,
-                                            static_cast<uint32_t>(roots.size()), num_rules,
-                                            /*step=*/0u);
-        check(cudaDeviceSynchronize(), "seed sync");
-    }
 
     // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
     // entry per state is the worst case, and the map must not fill, because a full map would
@@ -720,6 +728,19 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     event_ids.clear();
     if (want_event_ids) engine.ensure_event_identity();
 
+    // Root hashing BEFORE the queue is seeded, because under quotient_roots the hashing is what
+    // decides which roots survive: it maps each root's key and compacts the winners into
+    // d_kept/d_kept_count, and the queue is seeded from those. Seeding the queue first would
+    // enqueue every root before dedup had an opinion.
+    //
+    // This is a host round trip, which the no-host-in-the-loop constraint permits: the constraint
+    // is on evolution, not on seeding.
+    StateId* d_kept = nullptr;
+    uint32_t* d_kept_count = nullptr;
+    check(cudaMalloc(&d_kept, sizeof(StateId) * roots.size()), "kept roots alloc");
+    check(cudaMalloc(&d_kept_count, sizeof(uint32_t)), "kept count alloc");
+    check(cudaMemset(d_kept_count, 0, sizeof(uint32_t)), "kept count clear");
+
     arena.reset();
     {
         const uint32_t block = 64;
@@ -728,8 +749,24 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             engine.device(), d_states, n, canonical.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
             event_keys_need_ranks(event_keys),
-            arena.view());
+            arena.view(), quotient_roots, d_kept, d_kept_count, n);
         check(cudaDeviceSynchronize(), "root hash seed sync");
+    }
+
+    uint32_t kept = 0;
+    check(cudaMemcpy(&kept, d_kept_count, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+          "read kept count");
+    if (kept > roots.size()) kept = static_cast<uint32_t>(roots.size());
+
+    {
+        const uint32_t block = 128;
+        const uint32_t items = kept * num_rules;
+        if (items) {
+            const uint32_t grid = (items + block - 1) / block;
+            k_seed_match_queue<<<grid, block>>>(match_q.view(), d_kept, kept, num_rules,
+                                                /*step=*/0u);
+            check(cudaDeviceSynchronize(), "seed sync");
+        }
     }
 
     uint32_t* d_cursor = nullptr;
@@ -739,7 +776,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
-    term.mark_pushed_host(kRoleMatch, num_seed);
+    term.mark_pushed_host(kRoleMatch, kept * num_rules);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
     const uint32_t grid = blocks ? blocks : default_persistent_grid();
@@ -757,6 +794,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     cudaFree(d_cursor);
     cudaFree(d_states);
+    cudaFree(d_kept);
+    cudaFree(d_kept_count);
     cudaFree(d_rules);
     return stats;
 }
