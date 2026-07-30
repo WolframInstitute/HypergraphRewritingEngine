@@ -511,6 +511,39 @@ __global__ void k_persistent_evolve(
 
 }  // namespace
 
+// Declared in hg_gpu/persistent.hpp, which carries the contract. One resident block per SM: a
+// persistent kernel's blocks do not retire and get replaced, so the grid IS the worker count, and
+// a grid smaller than the device leaves SMs idle for the whole run rather than for one launch.
+//
+// Measured (tools/bench_persistent_blocks.cu, RTX 4090, 128 SMs, min-of-5, ratio against the
+// level-synchronous scheduler on the same workload):
+//
+//     blocks   wide (width 160, 3 steps)   deep (width 3, 32 steps)
+//         33        87.09 ms   0.86x            15.78 ms   3.32x
+//         64        53.65 ms   1.39x            15.35 ms   3.42x
+//        128        35.63 ms   2.10x            15.71 ms   3.34x
+//        256        40.48 ms   1.84x            17.98 ms   2.91x
+//       1024        46.07 ms   1.62x            28.75 ms   1.82x
+//
+// The constant this replaces was 33, which is where the wide shape LOST to the step loop. At one
+// block per SM it wins instead -- a 2.4x swing on that shape from this number alone.
+//
+// The curve turns back up past the SM count, and that is the queue: every worker CASes the same
+// head and tail, so oversubscribing adds contention without adding throughput. The SM count is
+// not merely a floor to clear, it is near the optimum, and more is actively worse.
+uint32_t default_persistent_grid() {
+    static uint32_t cached = 0;
+    if (cached) return cached;
+    int sms = 0;
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
+        sms <= 0) {
+        cudaGetLastError();   // do not leave a sticky status behind for the next launch
+        sms = 32;             // a plausible small device; the caller's floor still applies
+    }
+    cached = static_cast<uint32_t>(sms);
+    return cached;
+}
+
 uint32_t run_persistent_match(const EngineState& engine,
                               const std::vector<DeviceRule>& rules,
                               const std::vector<StateId>& states,
@@ -605,7 +638,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     term.mark_pushed_host(kRoleMatch, num_items);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid = blocks ? blocks : 33;
+    const uint32_t grid = blocks ? blocks : default_persistent_grid();
     k_persistent_match_rewrite<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, match_q.view(), scratch_matches.view(),
         d_cursor, term.view(), step);
@@ -676,11 +709,16 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     // Signature -> first event with it. Sized off the event budget rather than the state one:
     // an evolution has as many applications as it has matches, which is not bounded by its
-    // state count. Allocated whatever the mode, since an unused map costs one clear and the
-    // alternative is a null view every stamp site has to test.
-    DedupMap event_ids(engine.config().max_events * 2u);
+    // state count.
+    //
+    // Sized to nothing when no event identity is being computed. At the default config this map
+    // is 2^18 slots, and allocating plus clearing it is milliseconds on runs that take tens --
+    // a cost charged to every run for a mode most do not select. The stamp sites are all behind
+    // `event_keys != EVENT_SIG_NONE`, so the small map is never touched.
+    const bool want_event_ids = (event_keys != EVENT_SIG_NONE);
+    DedupMap event_ids(want_event_ids ? engine.config().max_events * 2u : 8u);
     event_ids.clear();
-    if (event_keys != EVENT_SIG_NONE) engine.ensure_event_identity();
+    if (want_event_ids) engine.ensure_event_identity();
 
     arena.reset();
     {
@@ -704,7 +742,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     term.mark_pushed_host(kRoleMatch, num_seed);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid = blocks ? blocks : 33;
+    const uint32_t grid = blocks ? blocks : default_persistent_grid();
     k_persistent_evolve<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,

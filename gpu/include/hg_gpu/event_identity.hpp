@@ -16,6 +16,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
 #include "hg_gpu/ir_canon.hpp"
+#include "hg_gpu/persistent.hpp"    // default_persistent_grid — the arena's slot-holder bound
 #include "hg_gpu/types.hpp"
 
 #include "hgcommon/event_core.hpp"

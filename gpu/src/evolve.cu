@@ -363,9 +363,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // state count does not bound. The arena backs the individualization passes that produce the
     // exact hashes and ranks; both are inert under EventCanonicalizationMode::None.
     const EventSignatureKeys ekeys_step = event_keys_for(in.event_canonicalization);
-    DeviceArena identity_arena(ekeys_step == EVENT_SIG_NONE
-                                   ? 1024ull
-                                   : static_cast<uint64_t>(cfg.max_states) * 64ull);
+    // Same grid-derived sizing as the persistent path, and for the same reason: the identity
+    // kernel's threads each hold their own slot, and its grid is capped to the resident worker
+    // count so demand is bounded by the device rather than by how many states a step produced.
+    DeviceArena identity_arena(
+        ekeys_step == EVENT_SIG_NONE
+            ? 1024ull
+            : persistent_arena_words(cfg.max_states, default_persistent_grid()));
     DedupMap event_identity_map(ekeys_step == EVENT_SIG_NONE ? 8u : cfg.max_events * 2u);
     event_identity_map.clear();
 
@@ -447,7 +451,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // budget rather than a constant: it holds one slot per concurrently-hashing block, and
         // a slot is shaped by the state it hashes. Exhaustion is a recorded capacity overflow,
         // never a coarser hash.
-        DeviceArena arena(static_cast<uint64_t>(cfg.max_states) * 64ull);
+        // Sized from the GRID, not from the state budget alone. Each resident worker holds its
+        // own IR slot and grows it to the largest state it personally canonicalizes, so arena
+        // demand scales with the worker count. Sizing it off max_states alone was correct only
+        // while the grid was a constant: raising the grid to one block per SM raised demand with
+        // it, and the wide workloads then exhausted the arena and paid a grow-and-retry.
+        DeviceArena arena(persistent_arena_words(cfg.max_states, default_persistent_grid()));
 
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
