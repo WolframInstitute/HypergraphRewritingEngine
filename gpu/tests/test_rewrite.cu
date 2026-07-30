@@ -542,6 +542,10 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
 
         hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
 
+        // Explicit, not inherited from the default: if the default becomes `true` this arm has to
+        // stay level-synchronous or the comparison silently becomes persistent-against-persistent
+        // and passes without testing anything.
+        in.persistent_scheduler = false;
         hg_gpu::Engine lockstep(cfg);
         const auto a = lockstep.run(in);
 
@@ -595,6 +599,16 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
 
         EXPECT_EQ(nb, na) << cell << ": canonical event count differs (" << na
                           << " level-synchronous, " << nb << " persistent)";
+
+        // Causal and branchial output, which nothing compared across schedulers: the differential
+        // suite checks them against the CPU but only ever runs the level-synchronous path, so a
+        // persistent run that produced none of them would have looked fine everywhere.
+        EXPECT_EQ(b.causal_edges.size(), a.causal_edges.size())
+            << cell << ": causal edge count differs (" << a.causal_edges.size()
+            << " level-synchronous, " << b.causal_edges.size() << " persistent)";
+        EXPECT_EQ(b.branchial_edges.size(), a.branchial_edges.size())
+            << cell << ": branchial edge count differs (" << a.branchial_edges.size()
+            << " level-synchronous, " << b.branchial_edges.size() << " persistent)";
 
         // Under event mode Full the signature is built from the two endpoint EXACT hashes,
         // which are isomorphism invariants whatever the state mode is -- so the values, not
@@ -861,6 +875,8 @@ TEST(Rewrite, TheEvolveWrapperCarriesThePersistentSelector) {
         in.canonicalization = hg_gpu::CanonicalizationMode::Full;
         in.event_canonicalization = ev;
 
+        // Explicit for the same reason as above.
+        in.persistent_scheduler = false;
         const auto lockstep = hg_gpu::evolve(in);
         in.persistent_scheduler = true;
         const auto persistent = hg_gpu::evolve(in);
@@ -918,6 +934,7 @@ TEST(Rewrite, QuotientInitialStatesMeansTheSameToBothSchedulers) {
         in.canonicalization = hg_gpu::CanonicalizationMode::Full;
 
         hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        in.persistent_scheduler = false;   // explicit; see the note in the cross-scheduler gate
         hg_gpu::Engine lockstep(cfg);
         const auto a = lockstep.run(in);
 

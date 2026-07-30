@@ -33,6 +33,7 @@ struct Workload {
     uint32_t num_steps = 0;
     hg_gpu::CanonicalizationMode canon_mode = hg_gpu::CanonicalizationMode::Full;
     hg_gpu::EventCanonicalizationMode event_canon_mode = hg_gpu::EventCanonicalizationMode::None;
+    bool persistent = false;
     bool transitive_reduction = true;
     // Reference semantics (reference/MultiwayReference.wl): every state is
     // expanded. The engine reproduces the reference exactly on this path
@@ -289,6 +290,10 @@ NormalizedResult run_gpu(const Workload& w) {
     in.num_steps              = w.num_steps;
     in.canonicalization       = w.canon_mode;
     in.event_canonicalization = w.event_canon_mode;
+    // The scheduler is part of the workload, so it is stated rather than inherited: this suite's
+    // job is to validate the GPU against the CPU, and which GPU scheduler answered has to be a
+    // property of the case rather than of whatever the default happens to be.
+    in.persistent_scheduler   = w.persistent;
     in.transitive_reduction   = w.transitive_reduction;
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
     in.slice_scan_max_edges = w.slice_scan_max_edges;
@@ -643,6 +648,30 @@ std::vector<Workload> build_corpus() {
     return ws;
 }
 
+// Every corpus workload against the CPU on BOTH GPU schedulers.
+//
+// The suite validated only the level-synchronous path, which was the default when it was written.
+// The persistent scheduler is now the default, so leaving this at one scheduler would validate
+// the path that no longer ships while the one that does went unchecked against the authority.
+// Running both is also what makes the CPU -- not the other GPU scheduler -- the reference for
+// each, which matters because the two GPU paths share code and could agree while both being wrong.
+std::vector<Workload> build_corpus_both_schedulers() {
+    std::vector<Workload> out;
+    for (bool persistent : {false, true}) {
+        for (Workload w : build_corpus()) {
+            w.persistent = persistent;
+            w.name += persistent ? "_persistent" : "_lockstep";
+            out.push_back(std::move(w));
+        }
+    }
+    return out;
+}
+
+// Running build_corpus_both_schedulers() here is the next step and is NOT yet green: it exposes a
+// persistent-path defect on index_regime_all_three_triangle (quotient + 3 rules), where the event
+// multiset is 106 against the CPU's 75 while the state set matches. See the task notes for #70 for
+// the reproducer. Wired but not instantiated, rather than instantiated with that case excluded,
+// because an exclusion list is how a known failure becomes invisible.
 INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
     ::testing::ValuesIn(build_corpus()),
     [](const ::testing::TestParamInfo<Workload>& info) { return info.param.name; });

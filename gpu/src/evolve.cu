@@ -444,6 +444,24 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             engine.ensure_edge_ranks();
         }
 
+        // Indices built up front and maintained from the first rewrite, unconditionally.
+        //
+        // Index maintenance is otherwise LAZY: small states are matched by scanning their own CSR
+        // slice, and the indices are only built once some state exceeds slice_scan_max_edges --
+        // which the step loop notices between steps and answers with a host-side rebuild.
+        //
+        // A single launch cannot do that. The rewrite kernel would raise needs_indices and nobody
+        // would ever act on it, so every state past the threshold would be matched through
+        // indices that were never built: no matches, and the evolution stops dead. Measured on
+        // index_regime_wolfram_steps5 (threshold 2, so the step-1 children already exceed it):
+        // 2 states where the CPU finds 302, 2 events against 1174, and no causal edges at all.
+        //
+        // So the persistent path pays the index build always. It is cheap here -- only the root
+        // edges exist yet -- and the device maintains them incrementally from then on, which is
+        // what removes the host from the loop rather than merely moving it.
+        rebuild_indices(engine, engine.num_edges_host());
+        engine.set_maintain_indices(true);
+
         std::vector<StateId> roots(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) roots[i] = i;
 
