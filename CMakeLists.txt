@@ -232,3 +232,17 @@ foreach(tool_src ${HG_TOOL_SOURCES})
     endif()
 endforeach()
 
+# Probes that already decide a verdict and exit non-zero become CTest gates.
+#
+# quotient_reconstruction_probe verifies the KEYSTONE claim of the quotient optimisation --
+# that the full-expansion causal multiset is recoverable from the quotient skeleton -- across 24
+# workloads, and returns 1 if any of them disagrees with the oracle. It ran in 0.04 s and nothing
+# in the suite asserted it: the claim was checked by hand, when someone remembered.
+#
+# It stays EXCLUDE_FROM_ALL as a tool; `ctest` builds and runs it. A probe that already computes
+# a pass/fail is a gate that was never wired up, not a tool.
+enable_testing()
+add_test(NAME quotient_reconstruction
+         COMMAND $<TARGET_FILE:quotient_reconstruction_probe>)
+set_tests_properties(quotient_reconstruction PROPERTIES TIMEOUT 300)
+add_dependencies(host_tools quotient_reconstruction_probe)
