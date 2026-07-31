@@ -56,7 +56,7 @@ rules + initial state + steps + options
   │               pattern position  (:1719-1732)            │
   │     EXPAND  : extend one edge at a time                 │
   │     complete_match                                      │
-  │     dedup   : seen_match_hashes_   ◀── INVARIANT AT RISK│
+  │     dedup   : claim_match() -- content, not hash        │
   └─────────────────────────────────────────────────────────┘
       │
       ▼
