@@ -1,0 +1,134 @@
+// A key equal to a reserved sentinel must still be stored and found, and a rule the device cannot
+// represent must be refused rather than truncated.
+//
+// SENTINELS. The device map marks a free slot with EMPTY and a slot mid-publication with LOCKED.
+// A genuine key equal to either is not merely mis-hashed, it is INVISIBLE: inserting EMPTY leaves
+// the slot reading as free so the entry is silently never stored, and inserting LOCKED leaves
+// readers waiting on a publication that already happened. Nothing reports it -- the run just
+// behaves as though that state, causal triple or branchial pair did not exist.
+//
+// The keys are 64-bit hashes (canonical state hashes, hash_causal_triple), so both values are
+// reachable rather than merely representable, and this class already cost four correctness bugs
+// on the host before its map began rejecting them. Device code cannot throw, so the map folds the
+// two values onto neighbours instead -- and folds them INSIDE, because a normalisation that
+// insert applies and lookup forgets stores the entry where nothing will look for it.
+//
+// RULE DIMENSIONS. DeviceRule holds lhs[] and rhs[] at kMaxPatternEdges with uint8_t counts, so an
+// oversized rule truncated on the cast and was then written past the end of the array -- a
+// host-side buffer overflow reached from caller data, before any kernel launched. A variable
+// index at or above MAX_VARS shifted a 32-bit mask by its own width, which is undefined. These
+// are programmer errors in the caller's rule, so they throw; the partial-work-plus-warning
+// contract covers a run that outgrows its pools, not a rule that cannot be represented at all.
+
+#include <gtest/gtest.h>
+
+#include "hg_gpu/evolve.hpp"
+#include "hg_gpu/hash_table.hpp"
+#include "hg_gpu/match.hpp"
+
+#include <vector>
+
+namespace {
+
+using Map = hg_gpu::ConcurrentMap<uint64_t, uint32_t>;
+
+__global__ void k_insert(Map::DeviceView m, const uint64_t* keys, uint32_t n,
+                         uint32_t* inserted_flags) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    inserted_flags[i] = m.insert_if_absent(keys[i], i + 1u).inserted ? 1u : 0u;
+}
+
+__global__ void k_lookup(Map::DeviceView m, const uint64_t* keys, uint32_t n,
+                         uint32_t* found_values) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const auto r = m.lookup(keys[i]);
+    found_values[i] = r.found ? r.value : 0u;
+}
+
+}  // namespace
+
+// Both sentinels, plus ordinary neighbours, inserted then read back.
+TEST(DeviceMapSentinels, ReservedKeysAreStoredAndFound) {
+    const std::vector<uint64_t> keys = {
+        0ull,                       // EMPTY
+        ~0ull,                      // LOCKED
+        1ull,                       // the neighbour EMPTY folds onto
+        ~0ull - 1ull,               // the neighbour LOCKED folds onto
+        0x0123456789ABCDEFull,      // an ordinary key, as a control
+    };
+    const uint32_t n = static_cast<uint32_t>(keys.size());
+
+    Map map(1024);
+    uint64_t* d_keys = nullptr;
+    uint32_t* d_ins = nullptr;
+    uint32_t* d_found = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_keys, sizeof(uint64_t) * n), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_ins, sizeof(uint32_t) * n), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_found, sizeof(uint32_t) * n), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(d_keys, keys.data(), sizeof(uint64_t) * n, cudaMemcpyHostToDevice),
+              cudaSuccess);
+
+    // One thread per key so the inserts do not race each other; the question here is
+    // representability, not concurrency.
+    k_insert<<<1, n>>>(map.view(), d_keys, n, d_ins);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    k_lookup<<<1, n>>>(map.view(), d_keys, n, d_found);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    std::vector<uint32_t> ins(n), found(n);
+    ASSERT_EQ(cudaMemcpy(ins.data(), d_ins, sizeof(uint32_t) * n, cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(found.data(), d_found, sizeof(uint32_t) * n, cudaMemcpyDeviceToHost),
+              cudaSuccess);
+
+    const char* names[] = {"EMPTY (0)", "LOCKED (~0)", "1", "~0-1", "ordinary"};
+    for (uint32_t i = 0; i < n; ++i) {
+        // Folding makes 0 and 1 the same key, and ~0 and ~0-1 the same key, so the SECOND of each
+        // pair legitimately reports not-inserted. What must never happen is a key that is neither
+        // stored nor findable.
+        EXPECT_NE(found[i], 0u)
+            << "key " << names[i] << " was inserted and then could not be found, so it is stored "
+            << "where nothing will look for it -- or was never stored at all";
+    }
+    cudaFree(d_keys); cudaFree(d_ins); cudaFree(d_found);
+}
+
+// An oversized or unrepresentable rule must be refused at the boundary.
+TEST(DeviceRuleValidation, UnrepresentableRulesAreRefusedNotTruncated) {
+    // Rule edges are lists of VARIABLE indices (uint8_t), not vertex ids.
+    auto edge = [](uint8_t a, uint8_t b) { return std::vector<uint8_t>{a, b}; };
+
+    {   // more LHS edges than the fixed array holds
+        hg_gpu::RewriteRule r;
+        for (int i = 0; i < static_cast<int>(hg_gpu::kMaxPatternEdges) + 4; ++i)
+            r.lhs.push_back(edge(static_cast<uint8_t>(i % 8), static_cast<uint8_t>((i + 1) % 8)));
+        r.rhs.push_back(edge(0, 1));
+        r.num_lhs_vars = 8; r.num_rhs_vars = 8;
+        EXPECT_THROW(hg_gpu::make_device_rule(r), std::runtime_error)
+            << "an oversized LHS truncated on the uint8_t cast and was written past the array";
+    }
+    {   // a variable index at or above MAX_VARS, which would shift a 32-bit mask by its width
+        hg_gpu::RewriteRule r;
+        r.lhs.push_back(edge(0, 1));
+        r.rhs.push_back(edge(0, static_cast<uint8_t>(hgcommon::MAX_VARS + 1)));
+        r.num_lhs_vars = 2; r.num_rhs_vars = 40;
+        EXPECT_THROW(hg_gpu::make_device_rule(r), std::runtime_error)
+            << "a variable index at or above MAX_VARS is undefined in new_var_mask";
+    }
+    {   // an empty LHS matches everywhere and has no binding to apply
+        hg_gpu::RewriteRule r;
+        r.rhs.push_back(edge(0, 1));
+        r.num_lhs_vars = 0; r.num_rhs_vars = 2;
+        EXPECT_THROW(hg_gpu::make_device_rule(r), std::runtime_error);
+    }
+    {   // the control: an ordinary rule still builds
+        hg_gpu::RewriteRule r;
+        r.lhs.push_back(edge(0, 1));
+        r.rhs.push_back(edge(0, 1));
+        r.rhs.push_back(edge(1, 2));
+        r.num_lhs_vars = 2; r.num_rhs_vars = 3;
+        EXPECT_NO_THROW(hg_gpu::make_device_rule(r));
+    }
+}

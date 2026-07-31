@@ -52,6 +52,28 @@ public:
     };
 
     struct DeviceView {
+        // Fold the two reserved sentinels onto neighbouring keys.
+        //
+        // EMPTY marks a free slot and LOCKED marks one mid-publication, so a genuine key equal to
+        // either is not merely mis-hashed -- it is INVISIBLE. An insert of EMPTY leaves the slot
+        // reading as free and the entry is silently never stored; an insert of LOCKED leaves
+        // readers waiting on a publication that already happened. The host map answers this by
+        // throwing (reject_sentinel_key); device code cannot, so it folds instead.
+        //
+        // The keys here are 64-bit hashes -- canonical state hashes, hash_causal_triple -- so both
+        // values are reachable, not merely representable. This same class cost four correctness
+        // bugs on the host before the guard existed.
+        //
+        // Applied inside the map rather than at each call site, because a normalisation that
+        // insert applies and lookup forgets is worse than none: the entry is stored where nothing
+        // will ever look for it. Folding costs one comparison and collides two keys with their
+        // neighbours, which is what a hash table already handles.
+        __device__ static K normalize(K key) {
+            if (key == EMPTY)  return static_cast<K>(EMPTY + K{1});
+            if (key == LOCKED) return static_cast<K>(LOCKED - K{1});
+            return key;
+        }
+
         K*       keys;
         V*       values;
         uint32_t capacity;
@@ -75,6 +97,7 @@ public:
         // if a concurrent insert is mid-publish; callers needing strong
         // visibility should use lookup_waiting.
         __device__ LookupResult lookup(K key) const {
+            key = normalize(key);
             uint32_t slot = initial_slot(key);
             for (uint32_t i = 0; i < capacity; ++i) {
                 cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);
@@ -94,6 +117,7 @@ public:
         // either matches our key — found — or doesn't, in which case we
         // continue probing).
         __device__ LookupResult lookup_waiting(K key) const {
+            key = normalize(key);
             uint32_t slot = initial_slot(key);
             for (uint32_t i = 0; i < capacity; ++i) {
                 cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);
@@ -122,6 +146,7 @@ public:
         // The outer loop only advances when the slot is firmly held by a
         // different key.
         __device__ InsertResult insert_if_absent(K key, V value) {
+            key = normalize(key);
             uint32_t slot = initial_slot(key);
             for (uint32_t i = 0; i < capacity; ++i) {
                 cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);

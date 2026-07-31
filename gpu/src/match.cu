@@ -455,6 +455,48 @@ std::vector<ScheduledEdge> schedule_lhs_edges(const RewriteRule& rule) {
 }  // namespace
 
 DeviceRule make_device_rule(const RewriteRule& rule) {
+    // Validate BEFORE anything is written. DeviceRule's lhs[] and rhs[] are fixed at
+    // kMaxPatternEdges and the counts are uint8_t, so an oversized rule would truncate on the
+    // cast and then be written past the end of the array -- a host-side buffer overflow reached
+    // from caller data, before a single kernel launches. new_var_mask is 32 bits, so a variable
+    // index at or above MAX_VARS would shift by the width of the type, which is undefined.
+    //
+    // These are programmer errors in the caller's rule, not capacity overflows in an evolution,
+    // so they throw. The overflow contract (partial work plus a warning) covers a run that
+    // outgrows its pools; it does not cover a rule that cannot be represented at all.
+    if (rule.lhs.size() > kMaxPatternEdges || rule.rhs.size() > kMaxPatternEdges) {
+        throw std::runtime_error(
+            "make_device_rule: rule has " + std::to_string(rule.lhs.size()) + " LHS and " +
+            std::to_string(rule.rhs.size()) + " RHS edges, above kMaxPatternEdges (" +
+            std::to_string(kMaxPatternEdges) + ")");
+    }
+    if (rule.lhs.empty()) {
+        throw std::runtime_error("make_device_rule: rule has an empty LHS, which matches "
+                                 "everywhere and has no binding to apply");
+    }
+    for (const auto& e : rule.lhs) {
+        if (e.size() > kMaxArity)
+            throw std::runtime_error("make_device_rule: LHS edge arity " +
+                                     std::to_string(e.size()) + " above kMaxArity (" +
+                                     std::to_string(kMaxArity) + ")");
+        for (uint8_t v : e)
+            if (v >= hgcommon::MAX_VARS)
+                throw std::runtime_error("make_device_rule: LHS variable index " +
+                                         std::to_string(v) + " at or above MAX_VARS (" +
+                                         std::to_string(hgcommon::MAX_VARS) + ")");
+    }
+    for (const auto& e : rule.rhs) {
+        if (e.size() > kMaxArity)
+            throw std::runtime_error("make_device_rule: RHS edge arity " +
+                                     std::to_string(e.size()) + " above kMaxArity (" +
+                                     std::to_string(kMaxArity) + ")");
+        for (uint8_t v : e)
+            if (v >= hgcommon::MAX_VARS)
+                throw std::runtime_error("make_device_rule: RHS variable index " +
+                                         std::to_string(v) + " at or above MAX_VARS (" +
+                                         std::to_string(hgcommon::MAX_VARS) + ")");
+    }
+
     DeviceRule d;
     d.num_lhs_edges = static_cast<uint8_t>(rule.lhs.size());
     d.num_lhs_vars  = rule.num_lhs_vars;
