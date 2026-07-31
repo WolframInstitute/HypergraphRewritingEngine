@@ -174,7 +174,19 @@ public:
         // kernel carries the sum. Raising it here rather than in one scheduler's constructor
         // is what makes it hold for every entry point -- a scheduler that missed it would fail
         // as a stack overflow reported as an illegal memory access.
-        cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes);
+        // Checked, and then READ BACK. A driver may clamp the request rather than refuse it, so a
+        // successful return does not mean the stack is the size that was asked for -- and the
+        // failure mode either way is a stack overflow surfacing as an illegal memory access,
+        // which reads like a pointer bug and is diagnosed as one.
+        check(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes), "set device stack size");
+        size_t actual_stack = 0;
+        check(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
+        if (actual_stack < kDeviceStackBytes) {
+            throw std::runtime_error(
+                "EngineState: device stack is " + std::to_string(actual_stack) +
+                " bytes after requesting " + std::to_string(kDeviceStackBytes) +
+                "; match_state_rule's DFS would overflow it and report an illegal memory access");
+        }
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;
         check(cudaMalloc(&state_edge_slices_,
               sizeof(StateEdgeSlice) * cfg_.max_states),
