@@ -1,0 +1,4 @@
+commit,subject,workload,mode,instructions,d1_misses,lld_misses,dram_bytes
+92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,full,55034936,1451159,81371,5207744
+92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,auto,65282459,1484864,81489,5215296
+92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,none,64098344,1485859,81489,5215296
