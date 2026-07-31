@@ -646,10 +646,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 parsed_rules_raw,
                 initial_states_raw,
                 steps,
-                (event_signature_keys == hypergraph::EVENT_SIG_NONE) ? 0 : 1,
+                // 0 None, 1 Full, 2 Automatic -- GpuJob::event_canon_mode's own order, which is
+                // NOT the state order below and is not the enum order either. Collapsing this to
+                // "0 if None else 1" sent code 1 for an AUTOMATIC request, and the backend reads
+                // 1 as FULL: the caller silently got a coarser event identity than asked for, and
+                // code 2 was never sent at all.
+                (event_signature_keys == hypergraph::EVENT_SIG_NONE)      ? GpuJob::EventCanonCode::kNone :
+                (event_signature_keys == hypergraph::EVENT_SIG_AUTOMATIC) ? GpuJob::EventCanonCode::kAutomatic
+                                                                          : GpuJob::EventCanonCode::kFull,
                 // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? 2 :
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? 1 : 0,
+                (state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? GpuJob::StateCanonCode::kFull :
+                (state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? GpuJob::StateCanonCode::kAutomatic
+                                                                                       : GpuJob::StateCanonCode::kNone,
                 causal_transitive_reduction,
                 explore_from_canonical_states_only,
                 quotient_initial_states,

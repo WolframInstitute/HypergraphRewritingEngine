@@ -73,13 +73,13 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     // State dedup / class collapse is done host-side in the marshaller, keyed by the
     // requested mode (None per-provenance, Automatic edge-content, Full IR class).
     in.canonicalization =
-        job.state_canon_mode == 0 ? hg_gpu::CanonicalizationMode::None :
-        job.state_canon_mode == 1 ? hg_gpu::CanonicalizationMode::Automatic :
-                                    hg_gpu::CanonicalizationMode::Full;
+        job.state_canon_mode == GpuJob::StateCanonCode::kNone      ? hg_gpu::CanonicalizationMode::None :
+        job.state_canon_mode == GpuJob::StateCanonCode::kAutomatic ? hg_gpu::CanonicalizationMode::Automatic :
+                                                                     hg_gpu::CanonicalizationMode::Full;
     in.event_canonicalization =
-        job.event_canon_mode == 1 ? hg_gpu::EventCanonicalizationMode::Full :
-        job.event_canon_mode == 2 ? hg_gpu::EventCanonicalizationMode::Automatic :
-                                    hg_gpu::EventCanonicalizationMode::None;
+        job.event_canon_mode == GpuJob::EventCanonCode::kFull      ? hg_gpu::EventCanonicalizationMode::Full :
+        job.event_canon_mode == GpuJob::EventCanonCode::kAutomatic ? hg_gpu::EventCanonicalizationMode::Automatic :
+                                                                     hg_gpu::EventCanonicalizationMode::None;
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
     in.quotient_initial_states = job.quotient_initial_states;

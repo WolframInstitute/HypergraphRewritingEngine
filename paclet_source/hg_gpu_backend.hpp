@@ -20,9 +20,18 @@ struct GpuJob {
     // Each entry is one initial (root) state: a list of edges.
     const std::vector<std::vector<std::vector<int64_t>>>& initial_states;
 
+    // THE TWO MODE CODES DO NOT SHARE AN ORDER, and that is the whole reason they are named.
+    // event is None/Full/Automatic; state is None/Automatic/Full, following
+    // hg_gpu::CanonicalizationMode. Written as bare integers in one file and read as bare
+    // integers in another, the two orders look interchangeable and are not: the encoder collapsed
+    // an Automatic request to 1, the decoder read 1 as Full, and a caller asking for Automatic
+    // event identity silently received a coarser one.
+    struct EventCanonCode { static constexpr int kNone = 0, kFull = 1, kAutomatic = 2; };
+    struct StateCanonCode { static constexpr int kNone = 0, kAutomatic = 1, kFull = 2; };
+
     int steps = 0;
-    int event_canon_mode = 0;   // 0 None, 1 Full, 2 Automatic
-    int state_canon_mode = 2;   // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
+    int event_canon_mode = EventCanonCode::kNone;
+    int state_canon_mode = StateCanonCode::kFull;
     bool transitive_reduction = true;
     bool explore_from_canonical_states_only = false;
     bool quotient_initial_states = false;
