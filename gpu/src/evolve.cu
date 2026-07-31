@@ -300,7 +300,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             : std::vector<std::vector<std::vector<VertexId>>>{in.initial_state};
     size_t max_root_edges = 0;
     for (const auto& r : roots) max_root_edges = std::max(max_root_edges, r.size());
-    engine.set_maintain_indices(max_root_edges > engine.config_slice_scan_max_edges());
+    // The persistent scheduler maintains indices from the start whatever the root size, because
+    // it cannot rebuild mid-run: one launch, no host in the loop, so the lazy flip the step loop
+    // performs between steps has nowhere to happen.
+    //
+    // Decided HERE, before the upload, and that placement is the point. upload_initial_states
+    // populates the indices only when maintenance is already on, and rebuild_indices INSERTS
+    // without clearing -- so turning maintenance on after the upload and rebuilding puts every
+    // root edge in its bucket twice, which surfaces as duplicate candidates, duplicate matches
+    // and duplicate events on any state large enough to be matched through the indices.
+    engine.set_maintain_indices(in.persistent_scheduler ||
+                                max_root_edges > engine.config_slice_scan_max_edges());
     const uint32_t num_roots = upload_initial_states(engine, roots);
 
     // Upload rules. Resize the device-side rules buffer if this run has more
@@ -443,24 +453,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         if (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges)) {
             engine.ensure_edge_ranks();
         }
-
-        // Indices built up front and maintained from the first rewrite, unconditionally.
-        //
-        // Index maintenance is otherwise LAZY: small states are matched by scanning their own CSR
-        // slice, and the indices are only built once some state exceeds slice_scan_max_edges --
-        // which the step loop notices between steps and answers with a host-side rebuild.
-        //
-        // A single launch cannot do that. The rewrite kernel would raise needs_indices and nobody
-        // would ever act on it, so every state past the threshold would be matched through
-        // indices that were never built: no matches, and the evolution stops dead. Measured on
-        // index_regime_wolfram_steps5 (threshold 2, so the step-1 children already exceed it):
-        // 2 states where the CPU finds 302, 2 events against 1174, and no causal edges at all.
-        //
-        // So the persistent path pays the index build always. It is cheap here -- only the root
-        // edges exist yet -- and the device maintains them incrementally from then on, which is
-        // what removes the host from the loop rather than merely moving it.
-        rebuild_indices(engine, engine.num_edges_host());
-        engine.set_maintain_indices(true);
 
         std::vector<StateId> roots(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) roots[i] = i;

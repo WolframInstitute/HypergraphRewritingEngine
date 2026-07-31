@@ -673,7 +673,7 @@ std::vector<Workload> build_corpus_both_schedulers() {
 // the reproducer. Wired but not instantiated, rather than instantiated with that case excluded,
 // because an exclusion list is how a known failure becomes invisible.
 INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
-    ::testing::ValuesIn(build_corpus()),
+    ::testing::ValuesIn(build_corpus_both_schedulers()),
     [](const ::testing::TestParamInfo<Workload>& info) { return info.param.name; });
 
 // The event-identity axis, compared the way a caller sees it.
