@@ -696,6 +696,7 @@ TEST(CanonicalEventCount, ModesVsCpu) {
     auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
     const char* mn[] = {"None", "Automatic", "Full"};
     EM modes[] = {EM::None, EM::Automatic, EM::Full};
+    const char* mode_names[] = {"None", "Automatic", "Full"};
     size_t merged_somewhere = 0;
 
     // Run under full capture AND under quotient exploration. Under full capture a canonical
@@ -725,27 +726,22 @@ TEST(CanonicalEventCount, ModesVsCpu) {
         EXPECT_EQ(gpu.raw_events, cpu.raw_events)
             << "raw application count differs for " << w.name
             << ", so the two engines disagree about the evolution and not merely about identity";
-        // None and Full must agree exactly. Their key sets read only the endpoint hashes (and
-        // for None, nothing at all), and those are isomorphism invariants both engines compute
-        // the same way.
+        // ALL THREE identity modes must agree exactly, Automatic included.
         //
-        // Automatic additionally keys on canonical edge RANKS, and a rank is a position in a
-        // canonical LABELLING. On this workload -- a directed 4-cycle, rotation group of order
-        // 4 -- that labelling is a coset, and which member each engine settles on follows the
-        // order its own rewrites presented the edges in. The two engines present differently,
-        // so they split the same applications into different numbers of identities. Measured
-        // here: CPU 15, GPU 19. That is asserted as a reported number rather than an equality,
-        // because the equality is false today for a located reason (#66) and a gate that fails
-        // for a known reason stops being read.
-        if (modes[mi] == EM::Automatic) {
-            if (gpu.num_events != cpu.num_events)
-                std::printf("           | Automatic differs by ranks: cpu %zu, gpu %zu (#66)\n",
-                            cpu.num_events, gpu.num_events);
-        } else {
-            EXPECT_EQ(gpu.num_events, cpu.num_events)
-                << "NumEvents mismatch for " << w.name << ": the CPU reports "
-                << cpu.num_events << " and the GPU " << gpu.num_events;
-        }
+        // Automatic keys on canonical edge RANKS, and a rank is a position in a canonical
+        // LABELLING. On this workload -- a directed 4-cycle, rotation group of order 4 -- that
+        // labelling is a COSET, so which member an engine settles on is decided by its
+        // within-cell tie-break, which reads the vertex numbering it was handed. The device
+        // numbered vertices in encounter order while the host numbered them by sorted id, the
+        // two picked different coset representatives, and the GPU reported 19 against the CPU's
+        // 15 (f72ed00). Both flatteners now number by sorted id.
+        //
+        // So this is an equality and not a printed number. A rank-keyed identity that agrees
+        // across devices is the whole claim; if it regresses, the coset is being chosen by
+        // presentation again.
+        EXPECT_EQ(gpu.num_events, cpu.num_events)
+            << "NumEvents mismatch for " << w.name << " in mode " << mode_names[mi]
+            << ": the CPU reports " << cpu.num_events << " and the GPU " << gpu.num_events;
         if (cpu.num_events < cpu.raw_events) ++merged_somewhere;
     }
 
