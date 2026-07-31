@@ -39,15 +39,21 @@ struct EvolveInput {
     // takes it, and when it is finished -- instead of a host-driven loop that matches, rewrites,
     // hashes and deduplicates as four phases per step with a device barrier between each.
     //
-    // Default false. The level-synchronous loop remains the shipping path until the persistent
-    // one has been shown equal across the mode matrix; this makes it reachable so that can be
-    // measured rather than argued.
+    // Default TRUE, on the evidence rather than on the design's merits:
     //
-    // REFUSES EventCanonicalizationMode::Automatic. That mode's identity needs the canonical
-    // RANKS of the consumed and produced edges, which the device does not yet compute, so a
-    // persistent run could only answer it with a coarser identity. Returning a wrong answer
-    // quietly is the defect class this project keeps paying for, so it is an error instead.
-    bool persistent_scheduler = false;
+    //   gpu_differential_tests runs the whole corpus against the CPU on BOTH schedulers and
+    //   passes, all nine state x event identity cells agree across schedulers on counts and on
+    //   signature VALUES, and quotient_initial_states now means the same thing to both.
+    //
+    //   Throughput, warm engine (one Engine, repeated run(), which is how a session drives it):
+    //   1.68x on a wide shallow evolution and 1.72x on a deep narrow one, so both ends of the
+    //   shape axis win. A cold one-shot run of a trivial evolution is slower, because it pays
+    //   the IR arena allocation against almost no work -- a bounded cost on runs that are
+    //   already milliseconds.
+    //
+    // Setting it false selects the level-synchronous loop, which is kept as the differential
+    // reference the persistent path is compared against, not as a fallback.
+    bool persistent_scheduler = true;
     // Quotient exploration: expand each canonical state exactly once, at its
     // shortest depth, so the run costs the canonical closure rather than the
     // provenance count. The level-synchronised step loop gives the shortest
