@@ -19,6 +19,7 @@
 // device, which is the confound that made the earlier rank hypothesis look plausible.
 
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #include "hypergraph/hypergraph.hpp"
@@ -30,13 +31,15 @@ namespace {
 
 struct Counts { size_t canonical_events; size_t raw_events; };
 
-Counts run(hgcommon::EventSignatureKeys keys, bool quotient) {
+Counts run(hgcommon::EventSignatureKeys keys, bool quotient,
+           const std::vector<std::vector<VertexId>>* init_override = nullptr) {
     // The directed 4-cycle: the adjudicated case, and the one with a nontrivial automorphism
     // group, which is where a class is reached at several depths.
     // Exactly the corpus case cycle4-automorphic (reference/oracle_corpus.hpp), including its
     // oracle depth -- an invented workload does not reproduce the adjudicated 15 and its numbers
     // are not comparable to the GPU's 19.
-    std::vector<std::vector<VertexId>> init = {{0,1},{1,2},{2,3},{3,0}};
+    std::vector<std::vector<VertexId>> init = init_override ? *init_override
+                                          : std::vector<std::vector<VertexId>>{{0,1},{1,2},{2,3},{3,0}};
     RewriteRule rule =
         make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build();
 
@@ -73,6 +76,33 @@ int main() {
     std::printf("# capture; the reference adjudicates 15. Does dropping Step move the CPU to 19?\n\n");
     std::printf("%-24s | %-18s | %-18s\n", "key set", "full capture", "quotient");
     std::printf("%-24s | %8s %9s | %8s %9s\n", "", "canon", "raw", "canon", "raw");
+
+    // IS THE RANK AN ISOMORPHISM INVARIANT, or does it depend on how the state was PRESENTED?
+    //
+    // A canonical edge rank is a position in a canonical LABELLING, and on a state with a
+    // nontrivial automorphism group that labelling is a COSET -- interchangeable edges can take
+    // each other's positions. If the engine's within-cell tie-break falls back on input order,
+    // then presenting the SAME graph differently selects a different coset representative, the
+    // ranks move, and an event identity keyed on them is not an invariant at all.
+    //
+    // Every presentation below is the same directed 4-cycle. An invariant identity must return
+    // the same count for all of them. This is the check that says whether the CPU's agreement
+    // with the reference is BY CONSTRUCTION or merely luck on one presentation -- and if it is
+    // luck, #66 is a defect in both engines rather than a GPU defect.
+    const std::vector<std::pair<const char*, std::vector<std::vector<VertexId>>>> presentations = {
+        {"as written",        {{0,1},{1,2},{2,3},{3,0}}},
+        {"edges rotated",     {{1,2},{2,3},{3,0},{0,1}}},
+        {"edges reversed",    {{3,0},{2,3},{1,2},{0,1}}},
+        {"vertices +10",      {{10,11},{11,12},{12,13},{13,10}}},
+        {"vertices relabel",  {{7,3},{3,9},{9,5},{5,7}}},
+    };
+    std::printf("\n# same 4-cycle, presented differently. Automatic, full capture.\n");
+    std::printf("# an isomorphism-invariant identity gives ONE number down this column.\n");
+    std::printf("%-20s | %8s %9s\n", "presentation", "canon", "raw");
+    for (const auto& pr : presentations) {
+        const Counts c = run(automatic, /*quotient=*/false, &pr.second);
+        std::printf("%-20s | %8zu %9zu\n", pr.first, c.canonical_events, c.raw_events);
+    }
 
     for (const Row& r : rows) {
         const Counts f = run(r.keys, /*quotient=*/false);
