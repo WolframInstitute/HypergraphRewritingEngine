@@ -91,6 +91,10 @@ Sample time_once(const EvolveInput& in) {
     return s;
 }
 
+float min_of(const std::vector<float>& v) {
+    return *std::min_element(v.begin(), v.end());
+}
+
 struct Stats { float lo, med, hi; };
 
 Stats summarize(std::vector<float> v) {
@@ -102,6 +106,8 @@ Stats summarize(std::vector<float> v) {
 
 int main(int argc, char** argv) {
     const int reps = argc > 1 ? std::atoi(argv[1]) : 7;
+    // "warm" skips the cold table, which is long enough to crowd out the warm pass.
+    const bool warm_only = argc > 2 && std::string(argv[2]) == "warm";
 
     // Shapes are built by trading depth against initial width at roughly comparable total work,
     // so the comparison is across SHAPE and not merely across size.
@@ -150,6 +156,7 @@ int main(int argc, char** argv) {
                 "level-sync ms lo/med/hi", "persistent ms lo/med/hi", "ratio");
 
     for (const Shape& sh : shapes) {
+        if (warm_only) break;
         EvolveInput base;
         base.rules = {r};
         base.initial_state = sh.init;
@@ -198,5 +205,57 @@ int main(int argc, char** argv) {
 
     std::printf("\n# why each shape is here:\n");
     for (const Shape& sh : shapes) std::printf("#   %-14s %s\n", sh.name, sh.why);
+
+    // WARM ENGINE. Every row above builds a fresh Engine per timed run, so it measures
+    // cold-start and charges each arm its full allocation every time. That is not how the
+    // engine is used interactively: PersistentEvolver reuses one Engine across calls, and the
+    // paclet drives it that way, so the allocation is paid once and amortised over a session.
+    //
+    // The two regimes answer different questions and the cold one cannot see a change that
+    // moves cost out of the per-call path. Timed from the SECOND call onward, since the first
+    // is the one that allocates.
+    std::printf("\n# warm engine: one Engine, repeated run() calls, first call excluded\n");
+    std::printf("%-14s %6s | %-14s | %-14s | %6s\n",
+                "shape", "steps", "level-sync ms", "persistent ms", "ratio");
+
+    for (const Shape& sh : shapes) {
+        // One representative from each end. The full-capture shapes are skipped because they
+        // outgrow the pools and pay a grow-and-retry, which is not a scheduling measurement.
+        const bool representative = std::string(sh.name) == "wide-3" ||
+                                    std::string(sh.name) == "narrow-16";
+        if (!representative) continue;
+        EvolveInput base;
+        base.rules = {r};
+        base.initial_state = sh.init;
+        base.num_steps = sh.steps;
+        base.canonicalization = CanonicalizationMode::Full;
+        base.explore_from_canonical_states_only = sh.quotient;
+
+        auto warm = [&](bool persistent) {
+            EvolveInput in = base;
+            in.persistent_scheduler = persistent;
+            EngineConfig cfg = config_from_input(in);
+            Engine engine(cfg);
+            engine.run(in);                       // first call: allocates, not timed
+            std::vector<float> v;
+            for (int i = 0; i < reps; ++i) {
+                cudaEvent_t b, e;
+                cudaEventCreate(&b); cudaEventCreate(&e);
+                cudaEventRecord(b);
+                engine.run(in);
+                cudaEventRecord(e);
+                cudaEventSynchronize(e);
+                float ms = 0.0f; cudaEventElapsedTime(&ms, b, e);
+                cudaEventDestroy(b); cudaEventDestroy(e);
+                v.push_back(ms);
+            }
+            return min_of(v);
+        };
+
+        const float ls = warm(false), ps = warm(true);
+        std::printf("%-14s %6u | %14.2f | %14.2f | %6.2fx\n",
+                    sh.name, sh.steps, ls, ps, ps > 0.0f ? ls / ps : 0.0f);
+        std::fflush(stdout);
+    }
     return 0;
 }

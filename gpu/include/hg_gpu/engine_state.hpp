@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hg_gpu/atomic_pool.hpp"
+#include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/errors.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/hash_table.hpp"
@@ -12,6 +13,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -247,6 +249,25 @@ public:
         check(cudaMemcpy(&n, canonical_event_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "EngineState read canonical_event_count");
         return n;
+    }
+
+    // The IR scratch arena, owned by the ENGINE rather than by a run.
+    //
+    // It is the largest single allocation the engine makes: sized from the grid times the state
+    // budget, which is 134 MB at the default configuration and measured to be genuinely needed
+    // (a wide workload consumed 87% of it). Constructing it per run charged that cudaMalloc to
+    // every call, which is the whole of the persistent scheduler's loss on short and interactive
+    // runs -- and interactive use reuses one Engine across many calls, so it was being paid over
+    // and over for a buffer whose contents never outlive a run.
+    //
+    // Grows but never shrinks: a later run wanting more gets a bigger one, a later run wanting
+    // less reuses what is there. reset() is a single cursor store, so reuse costs nothing.
+    DeviceArena& ir_arena(uint64_t needed_words) {
+        if (!ir_arena_ || ir_arena_->capacity_words() < needed_words) {
+            ir_arena_ = std::make_unique<DeviceArena>(needed_words);
+        }
+        ir_arena_->reset();
+        return *ir_arena_;
     }
 
     // Consumed or produced edges stamped with a raw edge id because no rank was available.
@@ -499,6 +520,8 @@ private:
     uint32_t*                          state_edge_rank_        = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;
     uint32_t*                          canonical_event_count_  = nullptr;
+    // Owned by the engine, not by a run. See ir_arena().
+    std::unique_ptr<DeviceArena>       ir_arena_;
     uint32_t*                          vertex_high_water_      = nullptr;
     SignatureIndex                     signature_index_;
     VertexInvertedIndex                vertex_inverted_index_;

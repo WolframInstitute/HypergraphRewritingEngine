@@ -376,7 +376,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // Same grid-derived sizing as the persistent path, and for the same reason: the identity
     // kernel's threads each hold their own slot, and its grid is capped to the resident worker
     // count so demand is bounded by the device rather than by how many states a step produced.
-    DeviceArena identity_arena(
+    DeviceArena& identity_arena = engine.ir_arena(
         ekeys_step == EVENT_SIG_NONE
             ? 1024ull
             : persistent_arena_words(cfg.max_states, default_persistent_grid()));
@@ -462,7 +462,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // personally canonicalizes, so demand scales with the worker count rather than with the
         // state budget. Exhaustion is a recorded capacity overflow (kIRArenaExhausted, which the
         // wrapper can grow and retry), never a coarser hash.
-        DeviceArena arena(persistent_arena_words(cfg.max_states, default_persistent_grid()));
+        DeviceArena& arena = engine.ir_arena(
+            persistent_arena_words(cfg.max_states, default_persistent_grid()));
 
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
