@@ -1605,6 +1605,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         // VALIDATION: Compare forwarded+delta vs full matching
         if (validate_match_forwarding_) {
+            validations_performed_.fetch_add(1, std::memory_order_relaxed);
             size_t missing = 0;
             auto count_missing = [&, state](
                 uint16_t rule_index,
@@ -1625,8 +1626,15 @@ void ParallelEvolutionEngine::execute_match_task(
                 match.core = &core_tmp;
                 match.source_state = state;
                 uint64_t h = match.hash();
-                if (!seen_match_hashes_.contains(h)) {
+                if (!contains_match(h, match)) {
                     ++missing;
+                    // Attribute the miss: does it touch an edge this rewrite produced?
+                    bool touches_produced = false;
+                    for (uint8_t i = 0; i < num_edges && !touches_produced; ++i)
+                        for (uint8_t j = 0; j < ctx.num_produced; ++j)
+                            if (edges[i] == ctx.produced_edges[j]) { touches_produced = true; break; }
+                    if (touches_produced) missing_owed_by_delta_.fetch_add(1, std::memory_order_relaxed);
+                    else missing_owed_by_forwarding_.fetch_add(1, std::memory_order_relaxed);
                     uint64_t debug_info = (static_cast<uint64_t>(state) << 16) | rule_index;
                     missing_match_hashes_.insert_if_absent(h, debug_info);
                 }

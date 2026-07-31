@@ -254,8 +254,32 @@ void expand_match(
         return;
     }
 
-    // Next pattern edge to match, in the rule's optimized join order.
-    uint8_t pattern_idx = ctx.rule->match_order[partial.num_matched];
+    // Next pattern edge to match: the first position in the rule's join order that is not bound
+    // yet.
+    //
+    // Selecting it as match_order[num_matched] instead -- by COUNT -- assumes the search began at
+    // match_order[0]. That holds for a full scan, which always starts there. It does NOT hold for
+    // DELTA matching, which anchors a produced edge at EVERY pattern position in turn
+    // (find_delta_matches), precisely so that a match using the produced edge anywhere in the
+    // pattern is found. When the anchor sits at a position other than match_order[0], counting
+    // starts the walk at match_order[1] and match_order[0] is never bound at all, so those
+    // matches are never completed and the delta scan silently returns fewer matches than exist.
+    //
+    // Since forwarding is inductive, each such miss removes a whole subtree, and the run stays
+    // self-consistent while being wrong.
+    //
+    // When the anchor IS match_order[0] this selects exactly what counting selected, so the full
+    // scan is unaffected.
+    uint8_t pattern_idx = 0xFFu;
+    {
+        uint32_t bound_positions = 0;
+        for (uint8_t i = 0; i < partial.num_matched; ++i)
+            bound_positions |= (1u << partial.match_order[i]);
+        for (uint8_t i = 0; i < ctx.rule->num_lhs_edges; ++i) {
+            const uint8_t cand = ctx.rule->match_order[i];
+            if (!(bound_positions & (1u << cand))) { pattern_idx = cand; break; }
+        }
+    }
     if (pattern_idx >= ctx.rule->num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_idx];

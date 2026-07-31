@@ -411,6 +411,21 @@ public:
     // only when the match may actually be new. True duplicates are answered from the lookup and
     // never reach it, which matters because they are routine: delta matching finds a match on k
     // produced edges k times, once anchored on each.
+    // True when an equal match has already been claimed.
+    //
+    // The read-only twin of claim_match: it walks the SAME probe chain and decides by the SAME
+    // content comparison. A presence check written as "is this hash in the set" would answer yes
+    // when a DIFFERENT match occupies the slot, which is the very error the completeness
+    // validator exists to detect -- so the check cannot itself be written that way.
+    bool contains_match(uint64_t h, const MatchRecord& rec) const {
+        for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
+            auto seen = seen_match_hashes_.lookup(dedup_probe_key(h, n));
+            if (!seen) return false;      // an empty slot terminates the chain
+            if (*seen && match_records_equal(**seen, rec)) return true;
+        }
+        return false;
+    }
+
     template <typename MakeStable>
     bool claim_match(uint64_t h, const MatchRecord& rec, MakeStable&& make_stable) {
         const MatchRecord* stable = nullptr;
@@ -498,6 +513,15 @@ private:
     // Validation mode: cross-check forwarded+delta matches against a full scan
     bool validate_match_forwarding_{false};
     std::atomic<size_t> validation_mismatches_{0};
+    // How many times the validator actually EXECUTED. A mismatch count of zero means nothing
+    // unless this is nonzero, and the task-based path returns before reaching the check.
+    std::atomic<size_t> validations_performed_{0};
+    // Attribution of a missed match to the obligation that should have supplied it.
+    // A match using ONLY edges that survived from the parent was already a match in the
+    // parent, so FORWARDING owed it. A match touching a produced edge could not have existed
+    // in the parent, so DELTA owed it. The two have different causes and different fixes.
+    std::atomic<size_t> missing_owed_by_forwarding_{0};
+    std::atomic<size_t> missing_owed_by_delta_{0};
 
 
     // Transition-level thinning: keep each transition with this probability. 1.0 = keep all.
@@ -756,6 +780,9 @@ public:
     size_t max_states_per_step() const { return max_states_per_step_; }
 
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
+    size_t validations_performed() const { return validations_performed_.load(); }
+    size_t missing_owed_by_forwarding() const { return missing_owed_by_forwarding_.load(); }
+    size_t missing_owed_by_delta() const { return missing_owed_by_delta_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
         // Count how many "missing" matches never arrived
