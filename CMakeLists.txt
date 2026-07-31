@@ -242,7 +242,16 @@ endforeach()
 # It stays EXCLUDE_FROM_ALL as a tool; `ctest` builds and runs it. A probe that already computes
 # a pass/fail is a gate that was never wired up, not a tool.
 enable_testing()
+#
+# causal_tr_exactness_probe is the second: it checks that online transitive reduction emits
+# exactly the minimal edge set, at every thread count, and likewise returns non-zero on any
+# disagreement. Also 0.06 s, also previously unasserted.
+#
+# The other reconstruction probes (events, matrix, observables) PRINT rather than decide, so they
+# stay tools -- a probe with no verdict cannot be a gate without first being given one.
 add_test(NAME quotient_reconstruction
          COMMAND $<TARGET_FILE:quotient_reconstruction_probe>)
-set_tests_properties(quotient_reconstruction PROPERTIES TIMEOUT 300)
-add_dependencies(host_tools quotient_reconstruction_probe)
+add_test(NAME causal_tr_exactness
+         COMMAND $<TARGET_FILE:causal_tr_exactness_probe>)
+set_tests_properties(quotient_reconstruction causal_tr_exactness PROPERTIES TIMEOUT 300)
+add_dependencies(host_tools quotient_reconstruction_probe causal_tr_exactness_probe)
