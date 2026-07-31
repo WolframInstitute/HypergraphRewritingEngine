@@ -527,6 +527,9 @@ private:
     // draw on -- and the count is what shows that without dumping every key.
     mutable std::atomic<size_t> draws_taken_{0};
     mutable std::atomic<size_t> draws_survived_{0};
+    // Draws attributed to each call site, so a mode difference names its site instead of
+    // being inferred from call order. 0 push, 1 batched pull, 2 eager pull, 3 collect, 4 sink.
+    mutable std::atomic<size_t> draws_by_site_[5]{};
 
 
     // Transition-level thinning: keep each transition with this probability. 1.0 = keep all.
@@ -790,6 +793,7 @@ public:
     size_t missing_owed_by_delta() const { return missing_owed_by_delta_.load(); }
     size_t draws_taken() const { return draws_taken_.load(); }
     size_t draws_survived() const { return draws_survived_.load(); }
+    size_t draws_at_site(int i) const { return draws_by_site_[i].load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
         // Count how many "missing" matches never arrived
@@ -1043,7 +1047,7 @@ private:
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both
     // forwarding paths -- consults exactly this.
-    bool transition_survives(uint64_t transition_key) const;
+    bool transition_survives(uint64_t transition_key, int site = -1) const;
 
 
     // Books one match task's completion however its function exits.

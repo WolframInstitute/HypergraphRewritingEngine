@@ -519,7 +519,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // transition with its own draw. Only the (this child, this match) transition is at
         // stake here.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child_info.child_state, forwarded)))
+            !transition_survives(canonical_transition_key(child_info.child_state, forwarded), 0))
             return;
 
         // Spawn REWRITE task for this forwarded match
@@ -648,7 +648,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         // Without this the sampled subgraph depends on which submission mode is in use, since
         // forwarded matches would enter the batch unthinned while discovered ones are thinned.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded))) return;
+            !transition_survives(canonical_transition_key(child, forwarded), 1)) return;
 
         batch.push_back(forwarded);
     });
@@ -817,7 +817,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         // are deliberately upstream of it: the match stays available to this child's own
         // children, where it is a different transition and gets its own draw.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded))) return;
+            !transition_survives(canonical_transition_key(child, forwarded), 2)) return;
 
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
@@ -1108,10 +1108,11 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
-bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key) const {
+bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site) const {
     if (transition_rate_ >= 1.0) return true;
     if (transition_rate_ <= 0.0) return false;
     draws_taken_.fetch_add(1, std::memory_order_relaxed);
+    if (site >= 0 && site < 5) draws_by_site_[site].fetch_add(1, std::memory_order_relaxed);
 
     // splitmix64 of (seed, transition). Deliberately NOT a worker RNG: drawing from thread
     // state would make the surviving subgraph depend on which thread happened to reach the
@@ -1545,7 +1546,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // transition (S -> S') does not drop the match, and the same match at a different
         // source state is a DIFFERENT transition that gets its own independent draw.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(state, match))) return;
+            !transition_survives(canonical_transition_key(state, match), 3)) return;
 
         if (batched_matching_) {
             batch.push_back(match);
@@ -1976,7 +1977,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
     // -- it is "not yours to rewrite", which is the same instruction to the caller.
     if (transition_rate_ < 1.0 &&
-        !transition_survives(canonical_transition_key(data.state, match))) return false;
+        !transition_survives(canonical_transition_key(data.state, match), 4)) return false;
 
     out = match;
     return true;

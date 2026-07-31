@@ -18,11 +18,12 @@ int main() {
     std::vector<std::vector<VertexId>> init;
     for (int i = 0; i < 24; ++i) init.push_back({(VertexId)i, (VertexId)(i+1)});
 
-    std::printf("%-9s %5s | %8s %8s %8s | %8s %8s | %7s\n",
-                "mode","q","draws","survived","d_ratio","matches","events","kept");
+    std::printf("%-9s %5s | %8s %8s | %8s %8s | %7s | %8s %8s %8s %8s %8s\n",
+                "mode","q","draws","survived","matches","events","kept",
+                "push","batPull","eagPull","collect","sink");
     for (bool batched : {false, true}) {
         for (double q : {0.25, 0.5}) {
-            size_t draws=0, surv=0, matches=0, events=0;
+            size_t draws=0, surv=0, matches=0, events=0; size_t site[5]={0,0,0,0,0};
             for (uint64_t seed = 1; seed <= 12; ++seed) {
                 Hypergraph hg;
                 hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -34,12 +35,13 @@ int main() {
                 e.add_rule(rule);
                 e.evolve(init, 4);
                 draws += e.draws_taken(); surv += e.draws_survived();
+                for (int k = 0; k < 5; ++k) site[k] += e.draws_at_site(k);
                 matches += e.total_matches(); events += hg.num_events();
             }
-            std::printf("%-9s %5.2f | %8zu %8zu %8.3f | %8zu %8zu | %7.4f\n",
-                        batched?"batched":"eager", q, draws, surv,
-                        draws? (double)surv/draws : 0.0, matches, events,
-                        matches? (double)events/matches : 0.0);
+            std::printf("%-9s %5.2f | %8zu %8zu | %8zu %8zu | %7.4f | %8zu %8zu %8zu %8zu %8zu\n",
+                        batched?"batched":"eager", q, draws, surv, matches, events,
+                        matches? (double)events/matches : 0.0,
+                        site[0],site[1],site[2],site[3],site[4]);
         }
     }
     return 0;
