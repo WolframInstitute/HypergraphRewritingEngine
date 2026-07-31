@@ -15,6 +15,7 @@ static R run(const std::vector<RewriteRule>& rules,
              std::vector<std::vector<VertexId>> init, int steps, bool quotient) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    if (quotient) hg.set_quotient_reconstruction(true);   // the default-off gate
     ParallelEvolutionEngine e(&hg, 4);
     e.set_explore_from_canonical_states_only(quotient);
     for (auto& r : rules) e.add_rule(r);
@@ -45,9 +46,12 @@ int main() {
             (q.rec_ev == f.events && q.rec_causal == f.causal) ? "<= MATCHES FULL" : "");
     }
     std::printf("\n# The reconstructed columns are the engine's own num_reconstructed_*(),\n"
-                "# documented as \"the full-capture counts\". They read ZERO: the per-instance\n"
-                "# replay (qc_instances_/qc_apply, built by S1-S3) is WIRED but DORMANT.\n"
-                "# So #4 is not a port of the 345-line DP -- the machinery exists and produces\n"
-                "# nothing. Find why it is silent before writing any new propagation code.\n");
+                "# and they MATCH FULL CAPTURE exactly -- but only because this probe calls\n"
+                "# set_quotient_reconstruction(true). That flag defaults FALSE, and nothing in\n"
+                "# the engine ever sets it: only tests and probes do. So the exact reconstruction\n"
+                "# is built, wired, correct, and switched off in every real run, while the causal\n"
+                "# output users receive comes from the multiplicity-free qc_emit.\n"
+                "# Located by counters on every silent early-return: capture ran 6/6 clean and\n"
+                "# qc_apply was called ZERO times -- the rendezvous returns on the flag.\n");
     return 0;
 }
