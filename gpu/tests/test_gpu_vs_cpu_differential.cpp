@@ -687,6 +687,71 @@ INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
 // Compared per event mode. The raw application count must agree too -- if it does not, the two
 // engines disagree about the evolution itself and any event-count comparison on top of that is
 // measuring the wrong thing.
+// A CANONICAL RANK MUST NOT DEPEND ON HOW THE STATE WAS PRESENTED, on either device.
+//
+// A rank is a position in a canonical LABELLING, and on a state with a nontrivial automorphism
+// group that labelling is a COSET: interchangeable edges can take each other's positions. Which
+// member an engine settles on is decided by its within-cell tie-break, and that tie-break reads
+// the vertex numbering it was handed. So an engine that numbers vertices from the order the
+// edges happened to arrive will return a DIFFERENT rank assignment for the same graph presented
+// differently -- each internally consistent, and none of them an isomorphism invariant.
+//
+// That is exactly the defect #66 turned out to be: the device numbered vertices in encounter
+// order where the host numbered them by sorted id, so the two picked different representatives
+// and Automatic reported 19 against 15. Four other hypotheses were measured and refuted before
+// that one, and this check would have named it immediately -- an equality between devices can be
+// satisfied by two engines that are both presentation-dependent in the same way, whereas this
+// cannot be satisfied by any engine that is presentation-dependent at all.
+//
+// Every presentation below is the same directed 4-cycle.
+TEST(CanonicalEventCount, RanksAreIndependentOfPresentation) {
+    using EM = hg_gpu::EventCanonicalizationMode;
+    auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
+
+    struct Presentation {
+        const char* name;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+    };
+    const std::vector<Presentation> presentations = {
+        {"as written",       {{0,1},{1,2},{2,3},{3,0}}},
+        {"edges rotated",    {{1,2},{2,3},{3,0},{0,1}}},
+        {"edges reversed",   {{3,0},{2,3},{1,2},{0,1}}},
+        {"vertices +10",     {{10,11},{11,12},{12,13},{13,10}}},
+        {"vertices relabel", {{7,3},{3,9},{9,5},{5,7}}},
+    };
+
+    size_t cpu_baseline = 0, gpu_baseline = 0;
+    for (size_t i = 0; i < presentations.size(); ++i) {
+        Workload w;
+        w.name = std::string("presentation/") + presentations[i].name;
+        w.rules = {r};
+        w.initial_state = presentations[i].init;
+        w.num_steps = 3;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.event_canon_mode = EM::Automatic;   // the only mode that keys on ranks
+
+        const NormalizedResult cpu = run_cpu(w);
+        const NormalizedResult gpu = run_gpu(w);
+
+        if (i == 0) {
+            cpu_baseline = cpu.num_events;
+            gpu_baseline = gpu.num_events;
+            ASSERT_GT(cpu_baseline, 0u);
+        }
+        EXPECT_EQ(cpu.num_events, cpu_baseline)
+            << "CPU: presenting the same 4-cycle as \"" << presentations[i].name
+            << "\" changed the Automatic event count from " << cpu_baseline << " to "
+            << cpu.num_events << ", so its ranks follow the presentation and are not an "
+            << "isomorphism invariant";
+        EXPECT_EQ(gpu.num_events, gpu_baseline)
+            << "GPU: presenting the same 4-cycle as \"" << presentations[i].name
+            << "\" changed the Automatic event count from " << gpu_baseline << " to "
+            << gpu.num_events << ", so its ranks follow the presentation";
+        EXPECT_EQ(gpu.num_events, cpu.num_events)
+            << "devices disagree on " << presentations[i].name;
+    }
+}
+
 TEST(CanonicalEventCount, ModesVsCpu) {
     using EM = hg_gpu::EventCanonicalizationMode;
     // A workload on which the modes actually SEPARATE. An edge-splitting rule on a path merges
