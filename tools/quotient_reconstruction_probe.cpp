@@ -26,6 +26,18 @@ static Rules pSplit(){ return { make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).bu
 static Rules pWolfram(){ return { make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build() }; }
 static Rules pArity3(){ return { make_rule(0).lhs({0,1}).rhs({0,1,2}).rhs({2,0}).build() }; }
 static Rules pDupe(){ return { make_rule(0).lhs({0,1}).rhs({0,1}).rhs({0,1}).build() }; }
+// The ORACLE CORPUS cases, copied verbatim from reference/oracle_corpus.hpp.
+//
+// They are here because the probe's own corpus and the oracle corpus are DISJOINT, and the
+// quotient/full-capture disagreement measured by tools/golden_quotient_twin_check.py lives
+// entirely in the oracle corpus. "Reconstruction is exact" was true only of the workloads below
+// the divider; whether it holds where the disagreement actually is had never been asked.
+static Rules oBinaryGrowth(){ return { make_rule(0).lhs({0,1}).rhs({0,2}).rhs({1,2}).build() }; }
+static Rules oWolfram2to4(){ return { make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build() }; }
+static Rules oReductive2to1(){ return { make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,2}).build() }; }
+static Rules oIdempotent2to2(){ return { make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,2}).rhs({2,1}).build() }; }
+static Rules oDisconnectedLhs(){ return { make_rule(0).lhs({0,1}).lhs({2,3}).rhs({0,2}).rhs({1,3}).build() }; }
+
 // idempotent: |rhs| == |lhs|
 static Rules iFlip(){ return { make_rule(0).lhs({0,1}).rhs({1,0}).build() }; }
 static Rules iShift(){ return { make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,2}).rhs({2,1}).build() }; }
@@ -309,6 +321,14 @@ static bool check(const WL& w){
 }
 
 int main(){
+    // Oracle-corpus initial states, verbatim from reference/oracle_corpus.hpp.
+    Init oInitBG={{0u,1u}},
+         oInitW={{0u,1u},{1u,2u}},
+         oInitRed={{0u,1u},{1u,2u},{2u,3u},{3u,4u}},
+         oInitIdem={{0u,1u},{1u,2u}},
+         oInitDis={{0u,1u},{1u,2u},{2u,3u},{3u,4u}},
+         oInitCyc={{0u,1u},{1u,2u},{2u,3u},{3u,0u}},
+         oInitStar={{0u,1u},{0u,2u},{0u,3u},{0u,4u}};
     Init I1={{0u,1u}}, I2={{0u,1u},{0u,2u}}, I3={{0u,1u},{1u,2u},{2u,0u}},
          I4={{0u,1u},{0u,1u}}, I5={{0u,0u}}, I6={{0u,1u},{2u,3u}}, I7={{0u,1u,2u}};
     WL wls[] = {
@@ -336,6 +356,16 @@ int main(){
         {"mAllThree/I2", "mixed",      mAllThree, I2, 3},
         {"mDupeDedup/I4","mixed",      mDupeDedup,I4, 3},
         {"mWolframRed/I2","mixed",     mWolframRed,I2, 3},
+
+        // The oracle-corpus cases where quotient and full capture DISAGREE in the golden matrix,
+        // at the corpus's own initial states and oracle depths.
+        {"o/binary-growth",    "productive", oBinaryGrowth,    oInitBG,   3},
+        {"o/wolfram-2to4",     "productive", oWolfram2to4,     oInitW,    3},
+        {"o/reductive-2to1",   "reductive",  oReductive2to1,   oInitRed,  3},
+        {"o/idempotent-2to2",  "idempotent", oIdempotent2to2,  oInitIdem, 3},
+        {"o/disconnected-lhs", "disconnected", oDisconnectedLhs, oInitDis, 3},
+        {"o/cycle4-automorphic","automorphism", oWolfram2to4,   oInitCyc,  3},
+        {"o/star4-automorphic","automorphism", pSplit,          oInitStar, 2},
     };
     bool all=true; size_t n=0;
     for (auto& w : wls){ all &= check(w); ++n; }
