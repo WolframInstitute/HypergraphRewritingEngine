@@ -165,7 +165,7 @@ TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
     // when the root has few matches, which says nothing about whether the rate is reaching
     // every acceptance point; events/matches is the rate itself. If forwarding bypassed the
     // sampler the ratio would sit far above q, since forwarded matches dominate at depth.
-    struct Kept { size_t matches; size_t events; };
+    struct Kept { size_t matches; size_t events; size_t draws; size_t survived; };
     auto run = [&](double q, uint64_t seed) {
         Hypergraph hg;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -175,27 +175,54 @@ TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
         e.set_transition_rate(q);
         e.add_rule(rule);
         e.evolve(init, 4);
-        return Kept{e.total_matches(), hg.num_events()};
+        return Kept{e.total_matches(), hg.num_events(), e.draws_taken(), e.draws_survived()};
     };
 
     const Kept full = run(1.0, 1);
     ASSERT_GT(full.matches, 1000u) << "the unthinned run is too small to measure a rate against";
-    EXPECT_NEAR(static_cast<double>(full.events) / full.matches, 1.0, 0.02)
-        << "q=1 dropped transitions, so the sampler is not a no-op at its identity";
+    ASSERT_GT(full.events, 0u);
+    // q = 1 must be a no-op, stated as what that MEANS rather than as a ratio: no thinning
+    // decision is taken at all, because transition_survives returns on the >= 1.0 fast path
+    // before it ever counts a draw. A ratio here would be reading total_matches(), which counts
+    // push-path bookkeeping and is not comparable across submission modes.
+    EXPECT_EQ(full.draws, 0u)
+        << "q=1 took " << full.draws << " thinning draws, so the identity rate is not a no-op";
 
-    // Several seeds: one seed's root can die by chance, an average over seeds cannot.
+    // Two assertions, because "the sampler works" is two claims and only one of them is a rate.
+    //
+    // MEASURE THE SAMPLER, NOT A PROXY. events/total_matches was the original metric and it is
+    // NOT comparable across submission modes: total_matches() counts push-path work, and
+    // push_match_to_children draws 112 times under eager against 89,523 under batched on this
+    // very workload while producing byte-identical events. The ratio therefore reads ~q under
+    // eager and ~q/2 under batched for a sampler that is exactly correct in both.
+    // draws_survived/draws_taken is the rate itself and lands on q in either mode.
+    //
+    // NO DISPATCH MAY BYPASS THE SAMPLER. That is what the original metric was really guarding,
+    // and it is the point of this test: a match reaches a state either by discovery or by
+    // forwarding from an ancestor, forwarding dominates at depth, and a sampler that only saw
+    // discoveries would bound nothing. Every event must be preceded by a SURVIVING draw, so
+    // survivors can exceed events (one transition drawn at two sites agrees with itself and
+    // rewrites once) but can never fall short. A bypassed dispatch shows up immediately as
+    // events outrunning survivors.
     for (double q : {0.25, 0.5}) {
-        size_t matches = 0, events = 0;
+        size_t draws = 0, survived = 0, events = 0;
         for (uint64_t seed = 1; seed <= 12; ++seed) {
             const Kept k = run(q, seed);
-            matches += k.matches;
+            draws += k.draws;
+            survived += k.survived;
             events += k.events;
         }
-        ASSERT_GT(matches, 0u);
-        const double kept = static_cast<double>(events) / matches;
-        EXPECT_NEAR(kept, q, 0.05)
-            << "at q=" << q << " the run kept " << kept << " of its transitions; a rate that "
-            << "misses the forwarding dispatches reads high, one applied twice reads low";
+        ASSERT_GT(draws, 0u) << "no draw was taken at all, so the sampler never ran";
+
+        const double rate = static_cast<double>(survived) / draws;
+        EXPECT_NEAR(rate, q, 0.02)
+            << "at q=" << q << " the sampler kept " << rate << " of the transitions it drew on";
+
+        EXPECT_GE(survived, events)
+            << "at q=" << q << " there were " << events << " events but only " << survived
+            << " surviving draws, so some dispatch produced a rewrite without consulting the "
+            << "sampler -- forwarding dominates at depth and a sampler that only sees "
+            << "discoveries bounds nothing";
     }
 }
 
