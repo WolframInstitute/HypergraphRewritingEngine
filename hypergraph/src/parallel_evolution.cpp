@@ -640,7 +640,16 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         store_match_for_state(child, forwarded, true);
         push_match_to_children(child, forwarded, step);
 
-        // Add to batch
+        // Thin this transition, on the SAME terms as the eager pull and as a discovered match.
+        // A forwarded match takes its own draw because it is its own transition; storing and
+        // propagating above are deliberately upstream of it, so the match stays available to this
+        // child's own children where it is a different transition and draws again.
+        //
+        // Without this the sampled subgraph depends on which submission mode is in use, since
+        // forwarded matches would enter the batch unthinned while discovered ones are thinned.
+        if (transition_rate_ < 1.0 &&
+            !transition_survives(canonical_transition_key(child, forwarded))) return;
+
         batch.push_back(forwarded);
     });
 }
