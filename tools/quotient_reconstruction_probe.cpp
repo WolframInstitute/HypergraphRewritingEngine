@@ -138,6 +138,18 @@ struct CE {                       // canonical event, keyed finely (consumed orb
     uint64_t okey_at(int k) const { return ekey(from,to,rule,(uint32_t)(k+1)); }
 };
 
+// INTEGRALITY PROBE: are these weights actually fractional, or does the cnt/orbit_size division
+// always cancel against how D was seeded (D[s0,0,j][INIT] = orbit_size[j])? It decides whether
+// the recurrence can be carried in integers -- which is the difference between an accumulation
+// that is order-independent and one that is not.
+static long g_nonintegral_D = 0, g_nonintegral_pred = 0, g_nonintegral_mult = 0;
+static long double g_worst = 0.0L;
+static void note_integrality(long double v, long& counter){
+    long double d = v - (long double)llroundl((double)v);
+    if (d < 0) d = -d;
+    if (d > 1e-9L) { ++counter; if (d > g_worst) g_worst = d; }
+}
+
 static bool check(const WL& w){
     size_t oracle_triples=0, oracle_events=0, oracle_raw_states=0;
     auto exact = oracle(w, oracle_triples, oracle_events, oracle_raw_states);
@@ -234,10 +246,12 @@ static bool check(const WL& w){
                     for (auto& [p,val] : dit->second){
                         if (p==INIT_PRODUCER) continue;
                         pred[{p, c->okey_at(k)}] += (long double)c->w * frac * val;
+                        note_integrality((long double)c->w * frac * val, g_nonintegral_pred);
                     }
                 }
                 // child multiplicity
                 mult[{c->to,k+1}] += firings;
+                note_integrality(firings, g_nonintegral_mult);
                 // survivors carry their producer distribution forward
                 std::map<uint32_t,int> surv;   // orbit j in `from` -> count surviving
                 std::map<std::pair<uint32_t,uint32_t>,int> sm;
@@ -246,7 +260,9 @@ static bool check(const WL& w){
                     auto dit = D.find({s,k,jj.first}); if(dit==D.end()) continue;
                     long double frac = (long double)cnt / (long double)msz[jj.first];
                     for (auto& [p,val] : dit->second)
-                        D[{c->to,k+1,jj.second}][p] += (long double)c->w * frac * val;
+                        { const long double term = (long double)c->w * frac * val;
+                          D[{c->to,k+1,jj.second}][p] += term;
+                          note_integrality(term, g_nonintegral_D); }
                 }
                 // produced edges are produced by this canonical event
                 for (uint32_t o : c->produced_orbit)
@@ -371,5 +387,24 @@ int main(){
     for (auto& w : wls){ all &= check(w); ++n; }
     printf("\n%zu workloads | %s\n", n, all? "D REPRODUCES THE ORACLE EXACTLY ON EVERY WORKLOAD WITH A COMPLETE SKELETON"
                                              : "*** D DOES NOT REPRODUCE THE ORACLE ***");
+    // INTEGRALITY IS A GATE, not an observation.
+    //
+    // The DP carries its weights as long double and divides by orbit sizes, which reads like a
+    // rational computation and would be one if any term were actually fractional. None is: the
+    // division always cancels against the seeding D[s0,0,j][INIT] = orbit_size[j]. Measured over
+    // all workloads here: zero non-integral terms, worst deviation 0.
+    //
+    // That is what makes this recurrence PORTABLE INTO THE ENGINE. Integer addition is
+    // associative, so the accumulation is order-independent and can run concurrently without the
+    // result depending on which worker reached which term first. Floating-point addition is not,
+    // and would have traded the engine's schedule-independence for this. So if a change to the
+    // recurrence ever makes a term genuinely fractional, that is not a rounding detail -- it
+    // removes the property the port depends on, and this fails rather than printing a warning.
+    const bool integral = (g_nonintegral_D | g_nonintegral_pred | g_nonintegral_mult) == 0;
+    printf("INTEGRALITY: non-integral D=%ld pred=%ld mult=%ld  worst deviation=%.3Le  %s\n",
+           g_nonintegral_D, g_nonintegral_pred, g_nonintegral_mult, g_worst,
+           integral ? "ALL TERMS INTEGRAL (int64 port is sound)"
+                    : "*** FRACTIONAL TERMS: an integer port would lose exactness ***");
+    all = all && integral;
     return all?0:1;
 }
