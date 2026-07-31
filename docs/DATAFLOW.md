@@ -138,7 +138,7 @@ makes the persistent default defensible.
 
 | # | invariant | upheld by | guarded? |
 |---|---|---|---|
-| I1 | no match is ever missed | forwarding + delta partition | **NO** — validator defaults off, commented out in the fuzzer (#75) |
+| I1 | no match is ever missed | forwarding + delta partition | gated by `test_match_completeness.cpp` (rate, with attribution). Batched 0/51 clean; eager has a residual race at <2% of runs (#76) |
 | I2 | no two distinct matches are conflated | `seen_match_hashes_`, decided by `MatchRecord::operator==` | yes — `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
 | I3 | isomorphic states share identity | canonical hash (IR exact / WL fast) | yes — oracle corpus + 204-row matrix |
 | I4 | WL is never a dedup key | IR on the exact path | yes on CPU; GPU degrades to WL above slot bounds and COUNTS it |
@@ -147,7 +147,7 @@ makes the persistent default defensible.
 | I7 | causal/branchial exact under quotient | reconstruction from the skeleton | yes, verified edge-for-edge across 204 configs |
 | I8 | TR is order-independent | — | **NO** — force-disabled under quotient, blocked on a canonical slot tie-break |
 
-**I1 is the remaining root.** Every downstream artifact — states, events, causal edges, branchial
+**I1 is gated but not yet clean.** Every downstream artifact — states, events, causal edges, branchial
 edges, transitive reduction — is computed from the match set. A dropped or conflated match
 corrupts all of them silently and self-consistently: the run simply produces less and looks fine.
 Nothing else in this table can be trusted above them.
