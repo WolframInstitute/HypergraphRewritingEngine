@@ -74,10 +74,17 @@ rules + initial state + steps + options
   artifacts marshalled out (WXF → FFI → paclet, or EvolveResult)
 ```
 
-**Incremental matching is the two-branch partition.** For a child `C = P − consumed + produced`,
-every match in `C` either uses only edges surviving from `P` — hence was already a match in `P`,
-so it is FORWARDED — or uses at least one produced edge, so DELTA finds it. The partition is
-exhaustive, which is what makes incremental matching sound in principle.
+**Incremental matching is the two-branch partition — ON THE CPU.** For a child
+`C = P − consumed + produced`, every match in `C` either uses only edges surviving from `P` —
+hence was already a match in `P`, so it is FORWARDED — or uses at least one produced edge, so
+DELTA finds it. The partition is exhaustive, which is what makes incremental matching sound.
+
+**The GPU does none of this.** `match_state_rule` takes no produced-edge list and no delta flag:
+every (state, rule) pair is matched by a FULL scan. So the two devices run different matching
+algorithms, and any statement about matching complexity has to name which one (#78). One
+consequence is benign — with no delta path the device cannot find a match twice, so it needs no
+match dedup — and one is not: on a deep evolution the host exploits that a child shares almost
+all its parent's matches and the device redoes the scan.
 
 ---
 
@@ -139,7 +146,7 @@ makes the persistent default defensible.
 | # | invariant | upheld by | guarded? |
 |---|---|---|---|
 | I1 | no match is ever missed | forwarding + delta partition | gated by `test_match_completeness.cpp` (rate, with attribution). Batched 0/51 clean; eager has a residual race at <2% of runs (#76) |
-| I2 | no two distinct matches are conflated | `seen_match_hashes_`, decided by `MatchRecord::operator==` | yes — `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
+| I2 | no two distinct matches are conflated (CPU; the GPU cannot find one twice, see #78) | `seen_match_hashes_`, decided by `MatchRecord::operator==` | yes — `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
 | I3 | isomorphic states share identity | canonical hash (IR exact / WL fast) | yes — oracle corpus + 204-row matrix |
 | I4 | WL is never a dedup key | IR on the exact path | yes on CPU; GPU degrades to WL above slot bounds and COUNTS it |
 | I5 | output independent of worker count | canonical identity | partially — determinism gate fails ~1/30 (#65) |
