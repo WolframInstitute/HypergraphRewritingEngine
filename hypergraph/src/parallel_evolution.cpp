@@ -1111,6 +1111,7 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
 bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key) const {
     if (transition_rate_ >= 1.0) return true;
     if (transition_rate_ <= 0.0) return false;
+    draws_taken_.fetch_add(1, std::memory_order_relaxed);
 
     // splitmix64 of (seed, transition). Deliberately NOT a worker RNG: drawing from thread
     // state would make the surviving subgraph depend on which thread happened to reach the
@@ -1124,7 +1125,9 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key) const
 
     // Compare in [0,1) via the top 53 bits, so the threshold means the same thing at any q.
     const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
-    return u < transition_rate_;
+    const bool survives = u < transition_rate_;
+    if (survives) draws_survived_.fetch_add(1, std::memory_order_relaxed);
+    return survives;
 }
 
 size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {

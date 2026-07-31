@@ -522,6 +522,11 @@ private:
     // in the parent, so DELTA owed it. The two have different causes and different fixes.
     std::atomic<size_t> missing_owed_by_forwarding_{0};
     std::atomic<size_t> missing_owed_by_delta_{0};
+    // How many thinning draws were TAKEN and how many survived. A draw is deterministic in its
+    // key, so two modes that disagree on the kept fraction must disagree on the SET of keys they
+    // draw on -- and the count is what shows that without dumping every key.
+    mutable std::atomic<size_t> draws_taken_{0};
+    mutable std::atomic<size_t> draws_survived_{0};
 
 
     // Transition-level thinning: keep each transition with this probability. 1.0 = keep all.
@@ -783,6 +788,8 @@ public:
     size_t validations_performed() const { return validations_performed_.load(); }
     size_t missing_owed_by_forwarding() const { return missing_owed_by_forwarding_.load(); }
     size_t missing_owed_by_delta() const { return missing_owed_by_delta_.load(); }
+    size_t draws_taken() const { return draws_taken_.load(); }
+    size_t draws_survived() const { return draws_survived_.load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
     size_t still_missing() const {
         // Count how many "missing" matches never arrived
