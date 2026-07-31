@@ -73,7 +73,7 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
     n_edges = 0; n_verts = 0; total_occ = 0;
     if (sid >= ds.max_states) return false;
     StateEdgeSlice sl = ds.state_edge_slices[sid];
-    const uint32_t num_edges_live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    const uint32_t num_edges_live = ds.edge_pool.size();
 
     for (uint32_t k = 0; k < sl.count; ++k) {
         if (n_edges >= shape.cap_edges) return false;
@@ -195,7 +195,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
 __global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
-    const uint32_t num_edges_live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    const uint32_t num_edges_live = ds.edge_pool.size();
     for (uint32_t i = lo + tid; i < hi; i += stride) {
         if (i >= ds.max_states) continue;
         StateEdgeSlice sl = ds.state_edge_slices[i];
@@ -248,7 +248,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     {
         if (sid >= ds.max_states) { out_hash = 0; return ExactHashStatus::kOk; }
         StateEdgeSlice sl = ds.state_edge_slices[sid];
-        const uint32_t live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+        const uint32_t live = ds.edge_pool.size();
         for (uint32_t k = 0; k < sl.count; ++k) {
             EdgeId eid = ds.state_edge_ids[sl.offset + k];
             if (eid >= live || eid >= ds.edge_pool.capacity) continue;

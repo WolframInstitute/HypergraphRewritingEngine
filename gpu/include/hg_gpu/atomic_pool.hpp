@@ -16,6 +16,10 @@ namespace hg_gpu {
 // claim() returns kInvalid when the pool is exhausted; callers are expected to
 // have sized the pool via the auto-tuner so this only fires under genuine
 // overflow that should abort the evolution.
+//
+// The counter is bumped BEFORE exhaustion is reported, so under overflow it keeps rising past
+// capacity and is NOT a count of valid entries. Ask size() for that; reading the counter raw is
+// how a caller ends up iterating past the allocation.
 template <typename T>
 class Pool {
 public:
@@ -36,6 +40,18 @@ public:
             return ((uint64_t)idx + n <= capacity) ? idx : kInvalid;
         }
 
+        // How many entries are VALID. Not *counter: claim() bumps the counter unconditionally
+        // and only then reports exhaustion, so on overflow the counter runs PAST capacity and a
+        // caller that read it raw would walk off the allocation. Every "how many are there"
+        // question goes through this.
+        __device__ uint32_t size() const {
+            const uint32_t c = counter ? *counter : 0u;
+            return c < capacity ? c : capacity;
+        }
+
+        // Unchecked, and deliberately so on the hot path -- callers index with a slot they
+        // claimed or with an id they have already tested against size(). Nothing here can
+        // establish validity that the caller does not already know.
         __device__ T&       at(uint32_t idx)       { return data[idx]; }
         __device__ const T& at(uint32_t idx) const { return data[idx]; }
     };

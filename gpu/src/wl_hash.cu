@@ -40,7 +40,7 @@ __device__ uint64_t wl_hash_state_device(DeviceState ds, StateId sid) {
     // 1. Collect edges in this state from the CSR slice.
     EdgeId   local_edges[kMaxWlEdges];
     uint32_t n_edges = 0;
-    uint32_t num_edges_live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    uint32_t num_edges_live = ds.edge_pool.size();
     for (uint32_t k = 0; k < sl.count && n_edges < kMaxWlEdges; ++k) {
         EdgeId eid = ds.state_edge_ids[sl.offset + k];
         if (eid >= num_edges_live) continue;
@@ -149,7 +149,7 @@ uint64_t compute_state_wl_hash_host(const EngineState& engine, StateId sid) {
 __device__ uint64_t content_hash_state_device(DeviceState ds, StateId sid) {
     if (sid >= ds.max_states) return 0;
     StateEdgeSlice sl = ds.state_edge_slices[sid];
-    uint32_t live = ds.edge_pool.counter ? *ds.edge_pool.counter : 0u;
+    uint32_t live = ds.edge_pool.size();
     uint32_t ne = 0;
     for (uint32_t k = 0; k < sl.count; ++k) {
         EdgeId eid = ds.state_edge_ids[sl.offset + k];

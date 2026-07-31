@@ -53,6 +53,7 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     add_executable(hg_gpu_tests
         tests/test_smoke.cu
         tests/test_atomic_pool.cu
+        tests/test_capacity_overflow.cu
         tests/test_hash_table.cu
         tests/test_ring_buffer.cu
         tests/test_lock_free_list.cu

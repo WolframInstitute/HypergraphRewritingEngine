@@ -48,7 +48,7 @@ __global__ void k_stamp_events(DeviceState ds, uint32_t lo, uint32_t hi,
                                EventSignatureKeys keys, DedupMap::DeviceView event_map) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
-    const uint32_t live = ds.event_pool.counter ? *ds.event_pool.counter : 0u;
+    const uint32_t live = ds.event_pool.size();
 
     for (uint32_t eid = lo + tid; eid < hi; eid += stride) {
         if (eid >= live || eid >= ds.event_pool.capacity) continue;
