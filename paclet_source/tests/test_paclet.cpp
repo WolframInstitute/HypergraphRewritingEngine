@@ -75,10 +75,31 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
     // wolframscript.exe invoked from WSL exits with a benign license error at
     // shutdown, so the exit status is unreliable. The marker is printed only after
     // HGEvolve returns a valid Debug association.
-    std::string out = test_utils::executeWolframScriptCapture(code);
+    // Retry only a VERDICTLESS run, and never a verdict.
+    //
+    // The script prints exactly one of two markers, so their joint absence means it never got far
+    // enough to evaluate HGEvolve at all -- a Windows wolframscript.exe invoked from WSL
+    // intermittently fails to acquire a licence and produces no output. That is the environment,
+    // not the paclet, and retrying it is what stops an unrelated flake from reading as a
+    // regression.
+    //
+    // PACLET_TEST_FAIL is a verdict: HGEvolve ran and returned the wrong thing. It is never
+    // retried, because retrying a real defect until it passes is how a suite stops meaning
+    // anything.
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    int attempts = 0;
+    for (; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("PACLET_TEST_OK") != std::string::npos ||
+                             out.find("PACLET_TEST_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+
     EXPECT_NE(out.find("PACLET_TEST_OK"), std::string::npos)
-        << "Paclet basic functionality test failed - HGEvolve did not return a Debug "
-           "association. WolframScript output:\n" << out;
+        << "Paclet basic functionality test failed after " << (attempts + 1) << " attempt(s) - "
+           "HGEvolve did not return a Debug association. If neither marker appears at all, "
+           "wolframscript never evaluated it. WolframScript output:\n" << out;
     EXPECT_EQ(out.find("PACLET_TEST_FAIL"), std::string::npos)
         << "HGEvolve returned a non-association result. WolframScript output:\n" << out;
 }
