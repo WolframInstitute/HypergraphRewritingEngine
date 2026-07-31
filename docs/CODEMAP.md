@@ -1,5 +1,10 @@
 # Code map
 
+**This file is the INVENTORY: where code lives.** For what flows through it, who runs
+concurrently, and which invariant each stage upholds, see `DATAFLOW.md`. For the CPU/GPU
+boundary in detail see `../gpu/ARCHITECTURE.md`; for the observable contract see `SPEC.md`.
+
+
 Per-file guide to the code-bearing tree: what each file is, and the classes /
 structs / functions it contains. For the data-flow and the "start reading here"
 path see [ARCHITECTURE.md](ARCHITECTURE.md); for using the paclet see
