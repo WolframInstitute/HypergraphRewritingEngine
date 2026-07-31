@@ -130,6 +130,10 @@ endif()
 # The exactness-and-cost harness. It proves output EXACT against the brute-force oracle while
 # reporting arena bytes_allocated(), which is durable and noise-free where RSS is not -- so a
 # change can be shown to preserve correctness and to move memory in a reproducible direction.
+add_executable(event_key_decomposition_probe tools/event_key_decomposition_probe.cpp)
+target_include_directories(event_key_decomposition_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(event_key_decomposition_probe PRIVATE hypergraph)
+
 add_executable(thinning_mode_probe tools/thinning_mode_probe.cpp)
 target_include_directories(thinning_mode_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(thinning_mode_probe PRIVATE hypergraph)

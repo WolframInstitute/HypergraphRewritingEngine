@@ -1,0 +1,84 @@
+// Which COMPONENT of the Automatic event key makes the CPU and the GPU disagree?
+//
+// On the directed 4-cycle under full capture the CPU reports 15 canonical events and the GPU
+// reports 19. The reference adjudicates 15 for Automatic-Positional, so the CPU is right. Under
+// QUOTIENT the two agree at 15, and that split is the whole clue: a canonical class holds exactly
+// one raw state under quotient and many under full capture.
+//
+// EventKey_Step is the component that behaves differently between those two regimes. The CPU
+// signs with canonical_out_state.step -- the depth of the class REPRESENTATIVE, one value per
+// class. The GPU signs with the raw child's own depth, and a class reached at several depths
+// therefore gets several values, splitting events the CPU merges. 19 > 15 is the right direction.
+//
+// This drives the CPU alone across subsets of the key lattice. If dropping Step from the CPU's
+// key set moves it 15 -> 19, then Step is what merges on the CPU, the GPU's raw-depth convention
+// is what fails to merge, and the ranks are innocent. If it does not move, the hypothesis is
+// wrong and the ranks are back in scope.
+//
+// The CPU is used on both sides deliberately: it isolates the COMPONENT without also varying the
+// device, which is the confound that made the earlier rank hypothesis look plausible.
+
+#include <cstdio>
+#include <vector>
+
+#include "hypergraph/hypergraph.hpp"
+#include "hypergraph/parallel_evolution.hpp"
+
+using namespace hypergraph;
+
+namespace {
+
+struct Counts { size_t canonical_events; size_t raw_events; };
+
+Counts run(hgcommon::EventSignatureKeys keys, bool quotient) {
+    // The directed 4-cycle: the adjudicated case, and the one with a nontrivial automorphism
+    // group, which is where a class is reached at several depths.
+    // Exactly the corpus case cycle4-automorphic (reference/oracle_corpus.hpp), including its
+    // oracle depth -- an invented workload does not reproduce the adjudicated 15 and its numbers
+    // are not comparable to the GPU's 19.
+    std::vector<std::vector<VertexId>> init = {{0,1},{1,2},{2,3},{3,0}};
+    RewriteRule rule =
+        make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build();
+
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(keys);
+    ParallelEvolutionEngine e(&hg, 1);
+    e.set_explore_from_canonical_states_only(quotient);
+    e.add_rule(rule);
+    e.evolve(init, 3);   // the corpus oracle depth
+
+    return Counts{hg.num_events(), hg.num_raw_events()};
+}
+
+struct Row { const char* name; hgcommon::EventSignatureKeys keys; };
+
+}  // namespace
+
+int main() {
+    using namespace hgcommon;
+    const EventSignatureKeys automatic = EVENT_SIG_AUTOMATIC;
+    const EventSignatureKeys no_step   = automatic & ~EventKey_Step;
+    const EventSignatureKeys no_ranks  = automatic & ~(EventKey_ConsumedEdges | EventKey_ProducedEdges);
+
+    const std::vector<Row> rows = {
+        {"Automatic (all)",          automatic},
+        {"Automatic minus Step",     no_step},
+        {"Automatic minus ranks",    no_ranks},
+        {"endpoints only (Full)",    EVENT_SIG_FULL},
+        {"endpoints + Step",         (EventSignatureKeys)(EVENT_SIG_FULL | EventKey_Step)},
+    };
+
+    std::printf("# CPU only, corpus case cycle4-automorphic (3 steps). GPU reports 19 for Automatic under full\n");
+    std::printf("# capture; the reference adjudicates 15. Does dropping Step move the CPU to 19?\n\n");
+    std::printf("%-24s | %-18s | %-18s\n", "key set", "full capture", "quotient");
+    std::printf("%-24s | %8s %9s | %8s %9s\n", "", "canon", "raw", "canon", "raw");
+
+    for (const Row& r : rows) {
+        const Counts f = run(r.keys, /*quotient=*/false);
+        const Counts q = run(r.keys, /*quotient=*/true);
+        std::printf("%-24s | %8zu %9zu | %8zu %9zu\n",
+                    r.name, f.canonical_events, f.raw_events, q.canonical_events, q.raw_events);
+    }
+    return 0;
+}
