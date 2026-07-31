@@ -152,6 +152,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_causal_determinism.cpp
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../hypergraph/tests/test_pattern_matching.cpp
+    ../hypergraph/tests/test_match_dedup_exactness.cpp
     ../hypergraph/tests/test_parallel_evolution.cpp
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp
@@ -211,6 +212,7 @@ create_test_executable(evolution_tests
     main.cpp
     test_helpers.hpp
     ../hypergraph/tests/test_pattern_matching.cpp
+    ../hypergraph/tests/test_match_dedup_exactness.cpp
     ../hypergraph/tests/test_parallel_evolution.cpp
     ../hypergraph/tests/test_multiple_initial_states.cpp
     ../hypergraph/tests/test_evolution_limits.cpp

@@ -352,7 +352,94 @@ class ParallelEvolutionEngine {
     // Use non-zero EMPTY/LOCKED keys to avoid conflicts with valid hash values
     static constexpr uint64_t MATCH_MAP_EMPTY = 1ULL << 63;
     static constexpr uint64_t MATCH_MAP_LOCKED = (1ULL << 63) | 1;
-    ConcurrentMap<uint64_t, bool, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED> seen_match_hashes_;
+    // Match dedup, keyed by hash but DECIDED by content.
+    //
+    // The value is the match itself, not a bool, because the hash alone cannot answer the
+    // question being asked. Two DISTINCT matches whose 64-bit hashes collide are
+    // indistinguishable to a key-only set, so the second is discarded as a duplicate and never
+    // rewritten -- and every downstream artifact (states, events, causal edges, branchial edges,
+    // transitive reduction) is computed from the match set, so the loss is silent and
+    // self-consistent: the run simply produces less and looks internally fine.
+    //
+    // The probability is n^2 / 2^65, which is unreachable on the test corpus (~5e-8 at a million
+    // matches) and reachable at the scale this engine claims (~3e-2 at a billion). It is the same
+    // defect class already proved fatal for STATES, where a hash was likewise trusted to stand in
+    // for the object.
+    //
+    // So on equal hash the stored record is COMPARED against the candidate. Equal means a true
+    // duplicate. Unequal means a collision, and the candidate probes the next key rather than
+    // being dropped. See claim_match().
+    // The value is a POINTER, not the record. A MatchRecord is 16 bytes, and a 16-byte atomic
+    // is not lock-free on this target -- it links against __atomic_load_16 and takes a lock.
+    // The engine is lock-free throughout, so the map stores an 8-byte pointer to an
+    // arena-resident record instead.
+    ConcurrentMap<uint64_t, const MatchRecord*, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED>
+        seen_match_hashes_;
+
+    // Probes attempted before a collision is treated as unresolvable. A single collision is
+    // already astronomically unlikely; needing this many consecutive ones is not a scenario that
+    // occurs, and the counter below exists so the assumption is measured rather than believed.
+    static constexpr uint32_t kMaxDedupProbes = 8;
+    std::atomic<size_t> hash_collisions_{0};
+    std::atomic<size_t> dedup_probe_exhaustions_{0};
+
+    // True when the two records denote the same match: same source state, rule, edge tuple and
+    // binding. This is the predicate the dedup is defined by; the hash only selects where to
+    // look.
+    static bool match_records_equal(const MatchRecord& a, const MatchRecord& b) {
+        if (a.core == b.core) return a.source_state == b.source_state;  // forwarded copies share
+        if (!a.core || !b.core) return false;
+        return a == b;   // MatchRecord::operator== is the definition; do not restate it here
+    }
+
+    // Derive the key for probe attempt `n`, skipping the map's reserved sentinels.
+    static uint64_t dedup_probe_key(uint64_t h, uint32_t n) {
+        uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
+        if (k == MATCH_MAP_EMPTY || k == MATCH_MAP_LOCKED) k += 0x9E3779B97F4A7C15ull;
+        return k;
+    }
+
+public:
+    // Claim `rec` for processing. Returns true when it is NEW and the caller must process it,
+    // false when an equal match was already claimed.
+    //
+    // Public because the hash is a PARAMETER, which is what makes the collision path reachable
+    // from a test: passing one hash with two distinct records is exactly the case a key-only set
+    // answers wrongly, and it cannot be provoked through the evolution API at any workload size.
+    //
+    // `make_stable` returns a pointer that outlives this map, and is invoked AT MOST ONCE and
+    // only when the match may actually be new. True duplicates are answered from the lookup and
+    // never reach it, which matters because they are routine: delta matching finds a match on k
+    // produced edges k times, once anchored on each.
+    template <typename MakeStable>
+    bool claim_match(uint64_t h, const MatchRecord& rec, MakeStable&& make_stable) {
+        const MatchRecord* stable = nullptr;
+        for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
+            const uint64_t key = dedup_probe_key(h, n);
+            if (auto seen = seen_match_hashes_.lookup(key)) {
+                if (*seen && match_records_equal(**seen, rec)) return false;   // true duplicate
+                // Same key, a different match: a hash collision. Probing rather than discarding
+                // is the whole point -- discarding here is what silently loses work.
+                hash_collisions_.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            if (!stable) stable = make_stable();
+            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(key, stable);
+            if (inserted) return true;
+            if (existing && match_records_equal(*existing, rec)) return false;
+            hash_collisions_.fetch_add(1, std::memory_order_relaxed);
+        }
+        dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed);
+        return true;   // process it: a redundant rewrite is recoverable, a lost one is not
+    }
+
+    // Distinct matches that landed on an equal key, and claims that ran out of probes. Both are
+    // expected to be 0; they are counted so "collisions do not happen here" is a measurement.
+    size_t hash_collisions() const { return hash_collisions_.load(std::memory_order_relaxed); }
+    size_t dedup_probe_exhaustions() const {
+        return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
+    }
+private:
 
     // Track which raw states have been matched (lock-free)
     // Prevents duplicate MATCH tasks for the same raw state
@@ -674,7 +761,7 @@ public:
         // Count how many "missing" matches never arrived
         size_t count = 0;
         missing_match_hashes_.for_each([&](uint64_t h, bool) {
-            if (!seen_match_hashes_.contains(h)) {
+            if (!seen_match_hashes_.contains(dedup_probe_key(h, 0))) {
                 ++count;
             }
         });
@@ -684,7 +771,7 @@ public:
     void dump_still_missing() const {
         DEBUG_LOG("STILL MISSING HASHES:");
         missing_match_hashes_.for_each([&](uint64_t h, uint64_t debug_info) {
-            if (!seen_match_hashes_.contains(h)) {
+            if (!seen_match_hashes_.contains(dedup_probe_key(h, 0))) {
                 [[maybe_unused]] uint32_t state_id = debug_info >> 16;
                 [[maybe_unused]] uint16_t rule_index = debug_info & 0xFFFF;
                 DEBUG_LOG("  hash=%lu state=%u rule=%u", h, state_id, rule_index);

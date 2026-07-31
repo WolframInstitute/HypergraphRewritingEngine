@@ -489,7 +489,9 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
 
         // Deduplicate
         uint64_t h = forwarded.hash();
-        auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
+        const bool inserted = claim_match(h, forwarded, [&] {
+            return hg_->arena().template create<MatchRecord>(forwarded);
+        });
         if (!inserted) {
             return;  // Already processed
         }
@@ -611,7 +613,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
 
         // Deduplicate
         uint64_t h = forwarded.hash();
-        auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
+        const bool inserted = claim_match(h, forwarded, [&] {
+            return hg_->arena().template create<MatchRecord>(forwarded);
+        });
         if (!inserted) {
             DEBUG_LOG("FWD_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
                       ancestor, child, ancestor_match.rule_index(), h);
@@ -769,7 +773,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
 
         // Deduplicate - seen_match_hashes_ protects against both push and pull duplicates
         uint64_t h = forwarded.hash();
-        auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
+        const bool inserted = claim_match(h, forwarded, [&] {
+            return hg_->arena().template create<MatchRecord>(forwarded);
+        });
         if (!inserted) {
             DEBUG_LOG("FWD_EAGER_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
                       ancestor, child, ancestor_match.rule_index(), h);
@@ -1494,16 +1500,23 @@ void ParallelEvolutionEngine::execute_match_task(
         match.core = &core_tmp;
         match.source_state = state;
 
-        // Deduplicate
+        // Deduplicate on CONTENT, not on the hash alone.
+        //
+        // The map must hold a pointer that outlives this frame so other threads can compare
+        // against it, and it has no claim-then-publish protocol -- so the core is promoted
+        // before the insert rather than after winning it. A true duplicate would then waste an
+        // arena slot, and true duplicates are routine (delta matching finds a match on k
+        // produced edges k times, once anchored on each), so they are answered by a lookup
+        // first and never reach the promotion.
         uint64_t h = match.hash();
-        auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
-        if (!inserted) {
+        if (!claim_match(h, match, [&] {
+                // Reached only when the match may be new, so a duplicate never promotes.
+                match.core = hg_->arena().template create<MatchCore>(core_tmp);
+                return hg_->arena().template create<MatchRecord>(match);
+            })) {
             rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-
-        // Won the dedup: promote the core into the arena so it outlives this frame.
-        match.core = hg_->arena().template create<MatchCore>(core_tmp);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
@@ -1917,14 +1930,16 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     // Deduplicate using lock-free ConcurrentMap
     uint64_t h = match.hash();
-    auto [existing, inserted] = seen_match_hashes_.insert_if_absent_waiting(h, true);
-    if (!inserted) {
+    // Content dedup, with the same shape as the other claim sites: answer a true duplicate from
+    // a lookup so it costs no arena, and only promote when the match may be new.
+    if (!claim_match(h, match, [&] {
+            // Reached only when the match may be new, so a duplicate never promotes.
+            match.core = hg_->arena().template create<MatchCore>(core_tmp);
+            return hg_->arena().template create<MatchRecord>(match);
+        })) {
         rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
         return false;  // Already seen
     }
-
-    // Won the dedup: promote the core into the arena so it outlives this frame.
-    match.core = hg_->arena().template create<MatchCore>(core_tmp);
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
     stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
