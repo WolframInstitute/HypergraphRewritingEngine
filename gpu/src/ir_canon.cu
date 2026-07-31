@@ -46,9 +46,16 @@ struct IrSlotShape {
 // what a state that does search may use, and the pool is sized for it.
 constexpr uint32_t kIRDeviceDepth = 8;
 
-// Flatten a state's CSR slice to the core's convention: local vertex indices in encounter
-// order (which the core's result does not depend on -- the tie-break it uses only orders
-// vertices inside a cell). Returns false if the state exceeds the slot's bounds.
+// Flatten a state's CSR slice to the core's convention: local vertex indices assigned in SORTED
+// VERTEX ID order, which is what the host does. Returns false if the state exceeds the slot's
+// bounds.
+//
+// The numbering is load-bearing and encounter order is NOT sufficient. It yields the same HASH,
+// because the hash is taken over the winning canonical form, but it does not yield the same
+// RANKS: on a state with a nontrivial automorphism group the canonical labelling is a COSET, and
+// the core's within-cell tie-break is what picks a representative out of it. That tie-break reads
+// the vertex numbering, so two numberings pick two different representatives -- each internally
+// valid, and disagreeing about which edge holds which rank.
 //
 // `flat_to_slot`, when non-null, receives the CSR slot each flattened edge came from, which is
 // what lets a caller scatter the core's per-edge ranks back onto the slice.
@@ -92,8 +99,34 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
                 vi = n_verts++;
                 verts_local[vi] = v;
             }
-            ev[total_occ++] = vi;
+            ev[total_occ++] = v;   // raw id; renumbered below, once the vertex set is known
         }
+    }
+
+    // Renumber vertices by SORTED id, which is what the host does
+    // (hypergraph.cpp: sort, unique, lower_bound). Encounter order would be cheaper and gives
+    // the same HASH, but it does not give the same RANKS: on a state with a nontrivial
+    // automorphism group the canonical labelling is a coset, the core's within-cell tie-break is
+    // what selects a representative from it, and that tie-break reads the vertex numbering. Two
+    // numberings pick two different representatives, so the ranks differ while both are
+    // internally valid -- and an event identity keyed on ranks then disagrees between devices.
+    //
+    // Insertion sort because n_verts is a state's vertex count, the array is already in the
+    // slot, and one thread owns it.
+    for (uint32_t i = 1; i < n_verts; ++i) {
+        const VertexId key = verts_local[i];
+        uint32_t j = i;
+        while (j > 0 && verts_local[j - 1] > key) { verts_local[j] = verts_local[j - 1]; --j; }
+        verts_local[j] = key;
+    }
+    for (uint32_t i = 0; i < total_occ; ++i) {
+        // Binary search: verts_local is sorted and holds every vertex that appears.
+        uint32_t lo = 0, hi = n_verts;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) >> 1;
+            if (verts_local[mid] < ev[i]) lo = mid + 1; else hi = mid;
+        }
+        ev[i] = lo;
     }
     return true;
 }
