@@ -508,7 +508,24 @@ private:
     // Batching eliminates race conditions in match forwarding, but eager may have
     // better cache locality for some workloads. When disabled with match forwarding,
     // requires push-based forwarding to cover race windows.
-    bool batched_matching_{false};  // false: submit each match eagerly; true: batch per step
+    // Default TRUE, on the completeness measurement rather than on cache locality.
+    //
+    // Eager submission creates children while their parent is still matching, so a match the
+    // parent discovers afterwards has to reach that child by push, and the push window does not
+    // fully cover it. Measured over the oracle corpus x workers {1,2,4,8} x 3 reps:
+    //
+    //     eager     1 to 7 of 204 runs lose at least one match
+    //     batched   0 of 51, every time
+    //
+    // Forwarding is INDUCTIVE, so a lost match removes the whole subtree below it and the run
+    // stays self-consistent while being wrong. A rate of a few percent of RUNS is therefore not a
+    // few percent of error.
+    //
+    // It costs 13.52% more arena (cost_matrix, 17 cases; worst case star4-automorphic at
+    // 20.88%), because push_match_to_children walks a populated child registry here where under
+    // eager it finds an empty one. That overlap is skippable in principle and is tracked as #77;
+    // the memory is recoverable, the lost matches are not.
+    bool batched_matching_{true};  // false: submit each match eagerly; true: batch per step
 
     // Validation mode: cross-check forwarded+delta matches against a full scan
     bool validate_match_forwarding_{false};
