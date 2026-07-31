@@ -74,6 +74,11 @@ struct NormalizedResult {
     size_t raw_events = 0;
     std::multiset<uint64_t> content_multiset;  // per-state raw edge content (labels intact)
     std::multiset<uint64_t> iso_multiset;      // per-state IR canonical hash (labels normalised)
+    // The hash each ENGINE reports for itself, as opposed to iso_multiset, which this harness
+    // recomputes on the host from the returned edges. Recomputing on the host checks that the two
+    // engines explored the same STATES; it cannot check that the device computed the same HASH
+    // for them -- and the device's hash is what it deduplicates on and what a caller reads back.
+    std::multiset<uint64_t> engine_state_hashes;
 
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
@@ -226,6 +231,7 @@ NormalizedResult run_cpu(const Workload& w) {
         out.canonical_state_hashes.insert(h);
         out.content_multiset.insert(content_key(edges));
         out.iso_multiset.insert(h);
+        out.engine_state_hashes.insert(hg.get_or_compute_canonical_hash(sid));
     }
 
     // EventId → event_key (input_hash, output_hash, rule, step).
@@ -324,6 +330,7 @@ NormalizedResult run_gpu(const Workload& w) {
         out.canonical_state_hashes.insert(h);
         out.content_multiset.insert(content_key(s.edges));
         out.iso_multiset.insert(h);
+        out.engine_state_hashes.insert(s.canonical_hash);
     }
 
     std::unordered_map<uint32_t, uint64_t> event_key_by_id;
@@ -704,6 +711,53 @@ INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
 // cannot be satisfied by any engine that is presentation-dependent at all.
 //
 // Every presentation below is the same directed 4-cycle.
+// THE DEVICE'S OWN CANONICAL HASH must equal the host's, not merely partition the states the
+// same way.
+//
+// Everywhere else this harness recomputes each state's hash ON THE HOST from the edges the run
+// returned. That checks the two engines explored the same STATES, and it is deliberately blind to
+// what the device actually computed: a device whose canonical hash was wrong in a
+// label-consistent way would still return the same edge sets and still pass.
+//
+// The device hash is not a diagnostic. It is what the device DEDUPLICATES on, and it is what a
+// caller reads back from CanonicalState::canonical_hash, so two devices that disagree about it
+// give different answers to "is this the same state as that one" across a session. Under Full
+// canonicalization it is the exact IR hash on both sides and must agree VALUE for VALUE.
+//
+// A multiset, not a set: two states sharing a hash is the thing being asserted about, so
+// collapsing duplicates would hide a device that merged a class the host split.
+TEST(CanonicalHash, DeviceHashEqualsHostHash) {
+    auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
+
+    struct Case { const char* name; std::vector<std::vector<hg_gpu::VertexId>> init; uint32_t steps; };
+    const std::vector<Case> cases = {
+        {"path",              {{0,1},{1,2},{2,3}},          3},
+        {"cycle4-automorphic",{{0,1},{1,2},{2,3},{3,0}},     3},
+        {"star4-automorphic", {{0,1},{0,2},{0,3},{0,4}},     2},
+    };
+
+    for (const Case& c : cases) {
+        for (bool quotient : {false, true}) {
+            Workload w;
+            w.name = std::string("hash/") + c.name + (quotient ? "/quotient" : "/full");
+            w.rules = {r};
+            w.initial_state = c.init;
+            w.num_steps = c.steps;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;   // exact IR on both sides
+            w.explore_from_canonical_states_only = quotient;
+
+            const NormalizedResult cpu = run_cpu(w);
+            const NormalizedResult gpu = run_gpu(w);
+
+            ASSERT_FALSE(cpu.engine_state_hashes.empty()) << w.name;
+            EXPECT_EQ(gpu.engine_state_hashes, cpu.engine_state_hashes)
+                << w.name << ": the device's own canonical hashes differ from the host's. The "
+                << "state SETS may still match -- this compares what each engine COMPUTED, which "
+                << "is what it deduplicates on and what a caller reads back.";
+        }
+    }
+}
+
 TEST(CanonicalEventCount, RanksAreIndependentOfPresentation) {
     using EM = hg_gpu::EventCanonicalizationMode;
     auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
