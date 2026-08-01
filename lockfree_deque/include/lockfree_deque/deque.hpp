@@ -5,7 +5,6 @@
 #include <optional>
 #include <type_traits>
 #include <vector>
-#include <thread>
 
 namespace lockfree {
 
@@ -69,9 +68,6 @@ private:
     const std::uint32_t mask_;
     alignas(64) std::atomic<std::uint64_t> ht_{0};   // packed {tag, head, tail}
     std::vector<std::atomic<Slot>> buffer_;
-
-    // Brief busy-spin then yield, for the blocking variants only. yield() is portable,
-    // so there is no architecture-specific pause instruction.
 
     bool is_full(std::uint64_t v) const {
         return static_cast<std::uint16_t>(tail_of(v) - head_of(v)) >= capacity_;

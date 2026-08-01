@@ -105,11 +105,34 @@ these substitutions and needs a different approach.
 | Harness | Property | Bound | Result |
 |---|---|---|---|
 | `concurrent_map_agreement` | Two threads offering different values for one key agree on the winner: exactly one reports `was_inserted`, both return the same value, that value is one of the two offered, the winner's own value is what is stored, and a later `lookup` returns it | 2 threads, 1 key, 2 values, capacity 4, no resize | **No errors, 32 complete executions** |
+| `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
 
 The bound is part of the result. `concurrent_map_agreement` says nothing about three concurrent
 inserters, about two different keys colliding in one probe run, or about a resize running
 underneath an insert — that last one is a distinct algorithm (rehash, then CAS-install) and belongs
-in its own harness rather than inflating this one's state space.
+in its own harness rather than inflating this one's state space. `deque_no_double_extraction` says
+nothing about a push running concurrently with a pop.
+
+### Choose the configuration that actually contends
+
+`deque_no_double_extraction` uses **one** item deliberately. With head=0 and tail=1, `pop_front`
+resolves to slot 0 and `pop_back` to slot `(1-1)&mask` = 0 — the same slot. Push *two* items and
+the two ends address slots 0 and 1, never meet, and the harness explores a handful of trivially
+independent executions while appearing to test the race. Exhaustive exploration of the wrong
+configuration is still the wrong configuration.
+
+### Every harness is mutation-checked
+
+A harness that cannot fail proves nothing, and an exhaustive checker reporting "no errors" is
+exactly the output a vacuous harness produces. Each one here has been run with its central
+assertion inverted, and the checker must report a safety violation:
+
+| Harness | Inverted assertion | Result |
+|---|---|---|
+| `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
+| `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
+
+Do this for any harness added here, before believing its clean run.
 
 ## Adding a harness
 
