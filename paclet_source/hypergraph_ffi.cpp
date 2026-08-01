@@ -2090,10 +2090,27 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 sections.write(static_cast<int64_t>(state.step == 0));
 
                 if (include_canonical_hashes) {
-                    // IR canonical hash (the value the dedup map is keyed on): identical for isomorphic
-                    // states within and across runs. Reinterpreted to int64 (bijective, so equality and
-                    // grouping are preserved); a hash with the top bit set surfaces as a negative integer.
-                    put_i64("CanonicalHash", static_cast<int64_t>(state.canonical_hash));
+                    // The option's contract is the IR canonical hash: identical for isomorphic
+                    // states within and across runs, so it can key cross-run fusion. The dedup
+                    // map's own key (state.canonical_hash) IS that hash under Full but the WL
+                    // hash otherwise -- WL is isomorphism-invariant yet INCOMPLETE, so WL
+                    // equality does not imply isomorphism and would silently merge
+                    // non-isomorphic states in a fusion. Outside Full the exact hash is
+                    // computed here, per serialized state, priced only under the option.
+                    // The empty state keeps its dedicated engine hash in every mode.
+                    uint64_t exact_hash = state.canonical_hash;
+                    if (!full_canonicalization && state.edges.count() > 0) {
+                        std::vector<std::vector<hypergraph::VertexId>> hash_edges;
+                        state.edges.for_each([&](hypergraph::EdgeId eid) {
+                            const hypergraph::Edge& edge = hg.get_edge(eid);
+                            hash_edges.emplace_back(edge.vertices, edge.vertices + edge.arity);
+                        });
+                        hypergraph::IRCanonicalizer ir;
+                        exact_hash = ir.compute_canonical_hash(hash_edges);
+                    }
+                    // Reinterpreted to int64 (bijective, so equality and grouping are
+                    // preserved); a hash with the top bit set surfaces as a negative integer.
+                    put_i64("CanonicalHash", static_cast<int64_t>(exact_hash));
                 }
             }
             ++streamed_top_sections;
