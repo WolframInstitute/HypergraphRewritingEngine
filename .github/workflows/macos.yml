@@ -1,0 +1,35 @@
+name: macOS
+
+# ARM64 correctness leg (macos-14 = Apple Silicon). Same OFF flags as the Linux
+# gate: no LibraryLink headers, no CUDA, no Vulkan on a bare runner. This is the
+# first macOS compile+run signal the project has; clang/libc++ and the ARM64
+# memory model are exactly what the Linux leg cannot see.
+on:
+  workflow_dispatch:        # manual until validated on a real Actions run, then add push
+  pull_request:
+
+jobs:
+  macos-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: brew install cmake ninja
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+
+      - name: Build tests
+        run: cmake --build build --target all_tests
+
+      - name: Run tests
+        run: ./build/all_tests --gtest_filter=-PacletTest.*
+
+      - name: Run ctest suite
+        run: ctest --test-dir build -E genmc --output-on-failure

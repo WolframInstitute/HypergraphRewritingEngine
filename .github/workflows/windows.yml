@@ -1,0 +1,38 @@
+name: Windows
+
+# MSVC correctness leg. The engine's GCC intrinsics are abstracted behind
+# hgcommon/portable_intrinsics.hpp with MSVC twins; this leg is what keeps that
+# true. Same OFF flags as the other legs. The MinGW cross-build used for the
+# bundled paclet exe is a different toolchain -- this one is native cl.exe.
+on:
+  workflow_dispatch:        # manual until validated on a real Actions run, then add push
+  pull_request:
+
+jobs:
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+
+      - name: Build tests
+        run: cmake --build build --target all_tests --config Release
+
+      - name: Run tests
+        shell: bash
+        run: |
+          # Multi-config generators put the exe under a config subdir unless the
+          # project pins the output directory; take whichever exists.
+          exe=build/all_tests.exe
+          [ -f "$exe" ] || exe=build/Release/all_tests.exe
+          "$exe" --gtest_filter=-PacletTest.*
+
+      - name: Run ctest suite
+        run: ctest --test-dir build -C Release -E genmc --output-on-failure
