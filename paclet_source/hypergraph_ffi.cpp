@@ -827,6 +827,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // The engine handles multiplicity - if the same canonical state appears multiple
         // times, it spawns MATCH tasks for each instance.
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
+        std::unordered_map<int64_t, hypergraph::VertexId> initial_vertex_map;
 
         for (const auto& state_raw : initial_states_raw) {
             // Create a per-state vertex mapping: input_vertex -> canonical_vertex
@@ -855,6 +856,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             if (!state_edges.empty()) {
+                // GeodesicSources are given in the USER'S labels; the engine sees only the
+                // dense renumbering above. Keep the first state's map so the sources can be
+                // translated at the geodesic block (initial vertices keep their engine ids
+                // through the evolution, so the translation stays valid on evolved states).
+                if (initial_states.empty()) initial_vertex_map = vertex_map;
                 initial_states.push_back(std::move(state_edges));
             }
         }
@@ -1031,6 +1037,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         std::unordered_map<uint32_t, float> state_geodesic_mean_deflection;
         std::unordered_map<uint32_t, bh::VertexId> state_geodesic_lensing_center;
 
+        // One warning per run, not per state: the translation is the same every iteration.
+        bool geodesic_source_warned = false;
         if (compute_geodesics) {
             if (show_progress) {
                 core_progress(host,"HGEvolve: Computing geodesic analysis...");
@@ -1063,10 +1071,24 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         ? bh::GeodesicDirection::DimensionGradient
                         : bh::GeodesicDirection::Random;
 
-                    // Get geodesic sources
+                    // Geodesic sources arrive in the USER'S initial-state labels and are
+                    // translated through the renumbering the engine actually saw. A label
+                    // absent from the initial state cannot name a vertex; it goes on the
+                    // warning trail and is skipped (all-skipped falls back to auto-select,
+                    // which is also the empty-option behavior).
                     std::vector<bh::VertexId> sources;
                     for (int64_t src : geodesic_sources) {
-                        sources.push_back(static_cast<bh::VertexId>(src));
+                        auto src_it = initial_vertex_map.find(src);
+                        if (src_it != initial_vertex_map.end()) {
+                            sources.push_back(static_cast<bh::VertexId>(src_it->second));
+                        } else if (!geodesic_source_warned) {
+                            geodesic_source_warned = true;
+                            ffi_warnings.push_back(
+                                {"GeodesicSourceUnknown", 1,
+                                 "GeodesicSources entry " + std::to_string(src) +
+                                 " is not a vertex of the initial state; unknown sources are "
+                                 "skipped (auto-select if none remain)."});
+                        }
                     }
 
                     // Use dimension data if available for auto-selection and gradient following
