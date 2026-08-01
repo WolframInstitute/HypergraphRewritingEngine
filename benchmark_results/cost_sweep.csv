@@ -2,3 +2,6 @@ commit,subject,workload,mode,instructions,d1_misses,lld_misses,dram_bytes
 92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,full,55034936,1451159,81371,5207744
 92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,auto,65282459,1484864,81489,5215296
 92bb47e,test: prove the reconstruction recurrence is integral  which unblocks the port,wolfram-5step,none,64098344,1485859,81489,5215296
+5dccfdd+dirty,verify: model-check that two pops racing for the deque's last item cannot both win,wolfram-5step,full,56045626,1452087,82397,5273408
+5dccfdd+dirty,verify: model-check that two pops racing for the deque's last item cannot both win,wolfram-5step,auto,66632701,1485836,82514,5280896
+5dccfdd+dirty,verify: model-check that two pops racing for the deque's last item cannot both win,wolfram-5step,none,65448704,1486860,82514,5280896
