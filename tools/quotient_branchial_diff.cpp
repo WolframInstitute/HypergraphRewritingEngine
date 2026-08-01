@@ -61,6 +61,13 @@ std::vector<Workload> workloads() {
     w.push_back({"WPP",
         {make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
         {{0,1},{0,2}}});
+    // Two rules whose applications can coincide up to canonical form. The authority's Automatic
+    // key set carries no rule index (MultiwaySystem.m:365), so such applications MERGE there;
+    // the single-rule workloads above cannot exercise that. Authority per step: 1, 5, 21.
+    w.push_back({"two-rules-overlap",
+        {make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
+         make_rule(1).lhs({0,1}).rhs({1,2}).rhs({2,0}).build()},
+        {{0,1}}});
     return w;
 }
 

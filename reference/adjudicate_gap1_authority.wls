@@ -54,7 +54,16 @@ cases = {
     "init" -> {{1, 2}, {1, 3}}, "steps" -> 4|>,
   <|"name" -> "binary-growth",
     "rules" -> {{{{1, 2}}, {{1, 3}, {3, 2}}}},
-    "init" -> {{1, 2}}, "steps" -> 4|>
+    "init" -> {{1, 2}}, "steps" -> 4|>,
+  (* MULTI-RULE, and deliberately containing two rules with IDENTICAL rewrite effect on some
+     matches. The paclet's Automatic key set is {"Input", "Output", "Step"} -- NO rule index
+     (MultiwaySystem.m:365) -- so two different rules producing the same canonical
+     (input, output, tokens, step) MERGE there. The engine replay's signature includes the rule.
+     The three cases above are all single-rule, where that difference cannot show; this one is
+     what decides whether the engine's Automatic signature must drop the rule to match. *)
+  <|"name" -> "two-rules-overlap",
+    "rules" -> {{{{1, 2}}, {{1, 3}, {3, 2}}}, {{{1, 2}}, {{2, 3}, {3, 1}}}},
+    "init" -> {{1, 2}}, "steps" -> 3|>
 };
 
 mwRules[r_] := (#[[1]] -> #[[2]]) & /@ r;
