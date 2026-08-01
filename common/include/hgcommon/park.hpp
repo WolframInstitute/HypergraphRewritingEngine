@@ -39,6 +39,11 @@
 #    define NOMINMAX   // windows.h's min/max macros poison std::numeric_limits<T>::max() etc.
 #  endif
 #  include <windows.h>
+#  if defined(_MSC_VER)
+     // WaitOnAddress/WakeByAddress* live in Synchronization.lib, which MSVC does
+     // not link by default (MinGW's default library set resolves them).
+#    pragma comment(lib, "synchronization")
+#  endif
 #  define HG_PARK_WAIT_ON_ADDRESS 1
 #elif defined(__APPLE__) && __has_include(<os/os_sync_wait_on_address.h>)
 #  include <os/os_sync_wait_on_address.h>
