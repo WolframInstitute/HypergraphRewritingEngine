@@ -692,7 +692,7 @@ uint32_t default_persistent_grid() {
         cudaGetLastError();   // do not leave a sticky status behind for the next launch
         sms = 32;             // a plausible small device; the caller's floor still applies
     }
-    cached = static_cast<uint32_t>(sms);
+    cached = static_cast<uint32_t>(sms) * 8u;
     return cached;
 }
 

@@ -101,7 +101,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
 //   per state from a device arena sized from that state's own counts
 //   (state_exact_hash_device). Arena exhaustion is a capacity overflow: recorded, partial work
 //   returned, never a coarser hash that would merge non-isomorphic states.
-// Blocks a persistent kernel launches when the caller does not choose: one per SM.
+// Blocks a persistent kernel launches when the caller does not choose: eight per SM.
 //
 // A persistent kernel's blocks do not retire and get replaced -- they live for the whole
 // evolution -- so the grid IS the worker count. Exposed because the IR arena has to be sized
