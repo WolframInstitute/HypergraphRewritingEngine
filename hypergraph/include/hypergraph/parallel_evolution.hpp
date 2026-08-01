@@ -178,6 +178,9 @@ struct EvolutionStats {
     alignas(64) std::atomic<size_t> push_discovery_empty{0};
     alignas(64) std::atomic<size_t> push_forwarding_calls{0};
     alignas(64) std::atomic<size_t> push_forwarding_empty{0};
+    // Transitions kept by the spine rather than by a passing draw (drain minimum-key spawns plus
+    // late spines). draws_survived_ does not include these, so kept = survived + spine_forced.
+    alignas(64) std::atomic<size_t> spine_forced{0};
 };
 
 // =============================================================================

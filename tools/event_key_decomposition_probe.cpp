@@ -1,5 +1,13 @@
 // Which COMPONENT of the Automatic event key makes the CPU and the GPU disagree?
 //
+// AUDIT NOTE (post-adjudication). "The reference adjudicates 15... so the CPU is right" below is
+// our own oracle's Positional column. The two-oracle adjudication that followed
+// (reference/adjudicate_gap1_authority.wls) redefined engine-Automatic to the
+// Wolfram/Multicomputation linked convention, computed by the reconstruction; the per-raw signing
+// this probe drives survives as CanonicalizeEvents -> "Positional". The key-subset lattice below
+// therefore characterises the POSITIONAL signing (subset key sets do not trigger the
+// reconstruction), and 15-vs-19 remains the Positional-consistency fact it always was.
+//
 // On the directed 4-cycle under full capture the CPU reports 15 canonical events and the GPU
 // reports 19. The reference adjudicates 15 for Automatic-Positional, so the CPU is right. Under
 // QUOTIENT the two agree at 15, and that split is the whole clue: a canonical class holds exactly

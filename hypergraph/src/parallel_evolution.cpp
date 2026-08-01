@@ -1141,6 +1141,7 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     if (join->drained.load(std::memory_order_acquire) &&
         join->spawned_any.load(std::memory_order_acquire) == 0) {
         join->spawned_any.store(1, std::memory_order_release);
+        stats_.spine_forced.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
     return false;
@@ -1163,6 +1164,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     });
     if (!found) return;
 
+    stats_.spine_forced.fetch_add(1, std::memory_order_relaxed);
     join->spawned_any.store(1, std::memory_order_release);
     submit_rewrite_task(best, step);
 }

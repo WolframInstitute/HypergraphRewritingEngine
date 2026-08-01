@@ -1,5 +1,10 @@
 // Why does the kept fraction read LOW under batched submission?
 //
+// AUDIT NOTE (post-spine). Spine-forced survivals (the drain's minimum-key spawn and the late
+// spine) pass OUTSIDE the draw, so draws_survived_ undercounts kept transitions by the spine
+// count on sampled runs; stats_.spine_forced carries that number. The set-vs-repeat inference
+// below is unaffected -- it compares draw denominators, which the spine does not touch.
+//
 // The draw is deterministic in canonical_transition_key, the denominators were verified
 // symmetric, and the forwarded prefix takes exactly one draw. So a low numerator means the two
 // modes are drawing on DIFFERENT SETS of keys, not drawing more often on the same ones. Counting
