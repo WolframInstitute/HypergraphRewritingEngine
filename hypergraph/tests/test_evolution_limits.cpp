@@ -167,3 +167,23 @@ TEST(UnifiedEvolutionLimits, EarlyTerminationWithLimits) {
     // With canonicalization, cyclic rules should produce limited unique states
     EXPECT_LT(hg.num_events(), 100) << "Evolution should be bounded";
 }
+
+// Test 9: steps is a literal generation budget -- steps == 0 yields the initial state
+// alone and RETURNS (the budget guards compare `step > max_steps_` directly, so a zero
+// budget rejects the very first match task instead of running unbounded).
+TEST(UnifiedEvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
+    for (int threads : {1, 4}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.set_explore_from_canonical_states_only(true);
+        engine.add_rule(create_growth_rule());
+
+        std::vector<std::vector<VertexId>> initial = {{0, 1}, {0, 2}};
+        engine.evolve(initial, 0);
+
+        EXPECT_EQ(hg.num_states(), 1u) << "threads=" << threads;
+        EXPECT_EQ(hg.num_canonical_states(), 1u) << "threads=" << threads;
+        EXPECT_EQ(hg.num_events(), 0u) << "threads=" << threads;
+    }
+}

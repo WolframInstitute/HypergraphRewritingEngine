@@ -94,7 +94,8 @@ void ParallelEvolutionEngine::evolve(
     // whenever quotient_causal is on -- which includes full capture under Automatic identity --
     // so the seed follows that switch, not the exploration strategy.
     if (hg_->quotient_causal())
-        hg_->quotient_causal_seed(canonical_state, static_cast<int>(steps));
+        hg_->quotient_causal_seed(
+            canonical_state, static_cast<int>(std::min<size_t>(steps, std::numeric_limits<int>::max())));
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -281,7 +282,8 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     // whenever quotient_causal is on -- which includes full capture under Automatic identity --
     // so the seed follows that switch, not the exploration strategy.
     if (hg_->quotient_causal())
-        hg_->quotient_causal_seed(canonical_state, static_cast<int>(max_steps_));
+        hg_->quotient_causal_seed(
+            canonical_state, static_cast<int>(std::min<size_t>(max_steps_, std::numeric_limits<int>::max())));
 
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);
@@ -859,7 +861,8 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
     const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
     if (!kids) return;
 
-    const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
+    const uint32_t budget =
+        static_cast<uint32_t>(std::min<size_t>(max_steps_, INVALID_ID));
 
     // The worklist draws from the per-worker scratch arena and is reclaimed in bulk. It is
     // walked as a queue with a cursor, which is the breadth-first order relaxation wants.
@@ -890,7 +893,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
 
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -912,7 +915,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     const MatchContext& ctx
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -931,7 +934,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
     // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(match.source_state)) return;
@@ -967,7 +970,7 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
                                                  const MatchRecord* matches, size_t count) {
     if (count == 0) return;
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
     if (!can_create_states_at_step(step + 1)) return;
@@ -998,7 +1001,7 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (data.step > max_steps_) return;
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
 
@@ -1018,7 +1021,7 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
 
 void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (data.step > max_steps_) return;
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
 
@@ -1358,7 +1361,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     if (should_stop_.load(std::memory_order_relaxed)) return;
 
     // Check step limit - don't spawn REWRITEs past max_steps
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
 
     // Check limits before applying
     if (max_states_ > 0 && hg_->num_states() >= max_states_) {
@@ -1492,7 +1495,8 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
             if (!hg_->try_lower_explore_depth(rr.new_state, child_depth)) return;
 
-            const uint32_t budget = max_steps_ > 0 ? static_cast<uint32_t>(max_steps_) : INVALID_ID;
+            const uint32_t budget =
+        static_cast<uint32_t>(std::min<size_t>(max_steps_, INVALID_ID));
             if (child_depth < budget && hg_->try_claim_expanded(rr.new_state)) {
                 // Exploration-probability pruning: flip the coin ONCE per canonical
                 // state, at its first (shortest-depth) claim, so a state reached by N
@@ -1559,7 +1563,7 @@ void ParallelEvolutionEngine::execute_match_task(
     MatchTaskGuard join_guard(*this, state, step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && step > max_steps_) return;
+    if (step > max_steps_) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(step + 1)) return;
@@ -1808,7 +1812,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
     MatchTaskGuard join_guard(*this, data.state, data.step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (data.step > max_steps_) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
@@ -1931,7 +1935,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     MatchTaskGuard join_guard(*this, data.state, data.step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (max_steps_ > 0 && data.step > max_steps_) return;
+    if (data.step > max_steps_) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
@@ -2017,7 +2021,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
 bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRecord& out) {
     if (should_stop_.load(std::memory_order_relaxed)) return false;
-    if (max_steps_ > 0 && data.step > max_steps_) return false;
+    if (data.step > max_steps_) return false;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return false;

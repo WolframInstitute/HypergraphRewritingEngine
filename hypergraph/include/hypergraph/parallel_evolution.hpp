@@ -966,6 +966,9 @@ public:
     // Work proceeds continuously as dependencies are satisfied.
     // The job system work-steals to keep all CPUs busy.
 
+    // `steps` is the exact generation budget: events fire at generations 1..steps, and
+    // steps == 0 yields the initial state alone. A run to closure (terminating rule
+    // systems only) passes SIZE_MAX.
     void evolve(const std::vector<std::vector<VertexId>>& initial_edges, size_t steps);
 
     // Overload for multiple initial states (without abort callback)
