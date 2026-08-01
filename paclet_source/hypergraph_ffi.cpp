@@ -3792,6 +3792,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
         std::vector<uint8_t> wxf_data = wxf_writer.release_data();
 
+        // Wire-size instrument: per-top-level-key serialized bytes, written to the file
+        // HG_FFI_PAYLOAD_FILE names. Each value is re-serialized into a throwaway writer, so
+        // the cost exists only when the instrument is on; the streamed States/Events sections
+        // are reported as one line (they never pass through full_result).
+        if (const char* payload_file = std::getenv("HG_FFI_PAYLOAD_FILE")) {
+            if (std::FILE* pf = std::fopen(payload_file, "w")) {
+                std::fprintf(pf, "TOTAL\t%zu\n", wxf_data.size());
+                std::fprintf(pf, "States+Events(streamed)\t%zu\n", sections.size());
+                for (const auto& [key, value] : full_result) {
+                    wxf::Writer wv;
+                    wv.write(value);
+                    const std::string name =
+                        key.holds<std::string>() ? key.get<std::string>() : std::string("?");
+                    std::fprintf(pf, "%s\t%zu\n", name.c_str(), wv.release_data().size());
+                }
+                std::fclose(pf);
+            }
+        }
+
         if (show_progress) {
             core_progress(host, "HGEvolve: Serialization complete.");
         }

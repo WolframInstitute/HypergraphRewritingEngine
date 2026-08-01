@@ -233,8 +233,15 @@ hgGpuBinaryAvailableQ[] := StringQ[$HypergraphEngineBinaryGPU] && FileExistsQ[$H
    result from its stdout. Progress/diagnostics arrive on stderr. stdout carries
    raw bytes; RunProcess returns them as a string decoded one byte per character,
    recovered with ToCharacterCode[..., "ISO8859-1"]. *)
+(* The engine runs with a clean environment except for HG_*-prefixed variables, which are the
+   engine's own instrument/debug channel (e.g. HG_FFI_PAYLOAD_FILE writes a per-key wire-size
+   breakdown, HG_GPU_DBG_TIME prints phase attribution). *)
+hgEngineEnvironment[] := Association @ Select[
+  Normal @ GetEnvironment[],
+  StringQ[First[#]] && StringStartsQ[First[#], "HG_"] &];
+
 hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
-  proc = RunProcess[{exe}, All, wxfBytes, ProcessEnvironment -> <||>];
+  proc = RunProcess[{exe}, All, wxfBytes, ProcessEnvironment -> hgEngineEnvironment[]];
   If[!AssociationQ[proc],
     Message[HGEvolve::enginefail, "spawn"]; Return[$Failed]];
   stderr = proc["StandardError"];
@@ -434,26 +441,28 @@ formatEdgesForDisplay[stateEdges_List, maxEdges_Integer:5] := Module[
 ];
 
 (* Format state tooltip with full info *)
-formatStateTooltip[stateData_Association] := Column[{
-  Row[{Style["State", Bold]}],
-  Grid[{
-    {"Id:", stateData["Id"]},
-    {"CanonicalId:", stateData["CanonicalId"]},
-    {"Step:", stateData["Step"]},
-    {"IsInitial:", stateData["IsInitial"]},
-    {Row[{"Edges (", Length[stateData["Edges"]], "):"}], formatEdgesForDisplay[stateData["Edges"]]}
-  }, Alignment -> Left, Spacings -> {1, 0.5}]
-}, Spacings -> 0.5];
+(* Rows appear only for fields the payload carries: Structure variants ship lean payloads
+   (a state carries Id and Step; an event carries Id and its endpoint states), so every
+   field except Id is conditional. *)
+formatStateTooltip[stateData_Association] := Module[
+  {rows = {{"Id:", stateData["Id"]}}},
+  If[!MissingQ[stateData["CanonicalId"]], AppendTo[rows, {"CanonicalId:", stateData["CanonicalId"]}]];
+  If[!MissingQ[stateData["Step"]], AppendTo[rows, {"Step:", stateData["Step"]}]];
+  If[!MissingQ[stateData["IsInitial"]], AppendTo[rows, {"IsInitial:", stateData["IsInitial"]}]];
+  If[!MissingQ[stateData["Edges"]],
+    AppendTo[rows, {Row[{"Edges (", Length[stateData["Edges"]], "):"}], formatEdgesForDisplay[stateData["Edges"]]}]];
+  Column[{
+    Row[{Style["State", Bold]}],
+    Grid[rows, Alignment -> Left, Spacings -> {1, 0.5}]
+  }, Spacings -> 0.5]
+];
 
-(* Format event tooltip with full info *)
 formatEventTooltip[eventData_Association] := Module[
-  {rows = {
-    {"Id:", eventData["Id"]},
-    {"CanonicalId:", eventData["CanonicalId"]},
-    {"RuleIndex:", eventData["RuleIndex"]},
-    {"InputState:", eventData["InputState"]},
-    {"OutputState:", eventData["OutputState"]}
-  }},
+  {rows = {{"Id:", eventData["Id"]}}},
+  If[!MissingQ[eventData["CanonicalId"]], AppendTo[rows, {"CanonicalId:", eventData["CanonicalId"]}]];
+  If[!MissingQ[eventData["RuleIndex"]], AppendTo[rows, {"RuleIndex:", eventData["RuleIndex"]}]];
+  If[!MissingQ[eventData["InputState"]], AppendTo[rows, {"InputState:", eventData["InputState"]}]];
+  If[!MissingQ[eventData["OutputState"]], AppendTo[rows, {"OutputState:", eventData["OutputState"]}]];
   If[!MissingQ[eventData["ConsumedEdges"]], AppendTo[rows, {"ConsumedEdges:", eventData["ConsumedEdges"]}]];
   If[!MissingQ[eventData["ProducedEdges"]], AppendTo[rows, {"ProducedEdges:", eventData["ProducedEdges"]}]];
   Column[{
@@ -496,7 +505,10 @@ graphDataEdgeStyles = <|
 |>;
 
 (* Check if vertex data represents a state (has Edges but no RuleIndex) *)
-isStateVertexData[data_Association] := KeyExistsQ[data, "Edges"] && !KeyExistsQ[data, "RuleIndex"];
+(* Events carry "InputState" in both their full and lean (Structure-variant) payloads; states
+   never do. Keying on content fields would misclassify lean state payloads, which carry only
+   Id and Step. *)
+isStateVertexData[data_Association] := !KeyExistsQ[data, "InputState"];
 
 (* State vertex shape function for styled mode using GraphData *)
 makeStyledStateVertexShapeFn[vertexData_] := Function[{pos, v, size},

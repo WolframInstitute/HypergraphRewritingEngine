@@ -75,6 +75,44 @@ wxf::WXFValue build_graph_data(const Source& src,
         const bool is_evolution = graph_property.find("Evolution") != std::string::npos;
         const bool has_causal    = is_evolution && graph_property.find("Causal") != std::string::npos;
         const bool has_branchial = is_evolution && graph_property.find("Branchial") != std::string::npos;
+        // Structure variants are TOPOLOGY: their vertex payloads carry ids and steps, never
+        // hypergraph contents (edge lists, bindings, consumed/produced sets). The Wolfram side
+        // renders them with plain styles and id-level tooltips, so shipping the contents would
+        // buy nothing and costs the bulk of the frame on content-heavy evolutions. The lean
+        // shapes keep the fields the front end keys on: a state carries Id and Step, an event
+        // carries Id and its endpoint state ids (InputState doubles as the state/event vertex
+        // discriminator), a states-graph edge carries the event id its tooltip names.
+        const bool is_structure = graph_property.find("Structure") != std::string::npos;
+
+        auto lean_state_data = [&](uint32_t raw_sid) {
+            wxf::WXFValueAssociation d;
+            d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(src.effective_state_id(raw_sid))});
+            d.push_back({wxf::WXFValue("Step"),
+                         wxf::WXFValue(static_cast<int64_t>(src.state_step(raw_sid)))});
+            return d;
+        };
+        auto lean_event_data = [&](uint32_t raw_eid) {
+            wxf::WXFValueAssociation d;
+            d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(src.effective_event_id(raw_eid))});
+            d.push_back({wxf::WXFValue("InputState"),
+                         wxf::WXFValue(src.effective_state_id(src.event_input_state(raw_eid)))});
+            d.push_back({wxf::WXFValue("OutputState"),
+                         wxf::WXFValue(src.effective_state_id(src.event_output_state(raw_eid)))});
+            return d;
+        };
+        auto state_payload = [&](uint32_t raw_sid) {
+            return is_structure ? lean_state_data(raw_sid) : src.serialize_state_data(raw_sid);
+        };
+        auto event_payload = [&](uint32_t raw_eid) {
+            return is_structure ? lean_event_data(raw_eid) : src.serialize_event_data(raw_eid);
+        };
+        auto states_edge_payload = [&](uint32_t raw_eid) {
+            if (!is_structure) return src.serialize_event_data(raw_eid);
+            wxf::WXFValueAssociation d;
+            d.push_back({wxf::WXFValue("EventId"),
+                         wxf::WXFValue(src.effective_event_id(raw_eid))});
+            return d;
+        };
 
         auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
                                   wxf::WXFValueAssociation data = {}) {
@@ -120,13 +158,13 @@ wxf::WXFValue build_graph_data(const Source& src,
             }
             for (auto& [eff, raw] : state_verts) {
                 vertices.push_back(wxf::WXFValue(eff));
-                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(src.serialize_state_data(raw))});
+                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
             }
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
                 add_graph_edge(wxf::WXFValue(src.effective_state_id(src.event_input_state(eid))),
                                wxf::WXFValue(src.effective_state_id(src.event_output_state(eid))),
-                               "Directed", src.serialize_event_data(eid));
+                               "Directed", states_edge_payload(eid));
             }
         }
         else if (is_causal) {
@@ -139,7 +177,7 @@ wxf::WXFValue build_graph_data(const Source& src,
             for (auto& [eff, raw] : event_verts) {
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(src.serialize_event_data(raw))});
+                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
             }
             add_causal_edges();
         }
@@ -158,7 +196,7 @@ wxf::WXFValue build_graph_data(const Source& src,
             }
             for (auto& [eff, raw] : state_verts) {
                 vertices.push_back(wxf::WXFValue(eff));
-                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(src.serialize_state_data(raw))});
+                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
             }
             for (const auto& [e1, e2] : pairs) {
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
@@ -188,12 +226,12 @@ wxf::WXFValue build_graph_data(const Source& src,
             for (int64_t sid : state_ids) {
                 wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(src.serialize_state_data(raw_states[sid]))});
+                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(state_payload(raw_states[sid]))});
             }
             for (auto& [eff, raw] : event_verts) {
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(src.serialize_event_data(raw))});
+                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
             }
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
