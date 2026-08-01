@@ -13,13 +13,33 @@ namespace lockfree {
 // State is one 64-bit atomic packed as {tag:32, head:16, tail:16}. A single
 // compare-exchange commits both ends at once, so the two ends are safe against each
 // other: a pop_front and a pop_back racing for the last element see the same word and
-// only one CAS wins. Because both ends move in both directions (push_front decrements
-// head, pop_front increments it), the (head,tail) pair recurs, so a monotonic tag is
-// incremented on every successful operation: a CAS commits only when nothing changed
-// since the load, which defeats ABA (a stale item pointer can never be claimed twice).
+// only one CAS wins -- checked exhaustively in verification/genmc, where that race is
+// reachable only at size 1, because at size 2 the two ends address different slots.
+// Because both ends move in both directions (push_front decrements head, pop_front
+// increments it), the (head,tail) pair recurs, so a monotonic tag is incremented on
+// every successful operation: a CAS commits only when nothing changed since the load.
 // std::atomic<uint64_t> CAS is lock-free on x86-64 and arm64 alike -- no double-width
 // CAS and no architecture-specific code. Capacity is limited to 32768 by the 16-bit
 // indices, which is ample for a work queue.
+//
+// THE TAG'S BOUND. 32 bits wrap after 2^32 successful operations, so the ABA defence is
+// conditional and the condition is worth stating. A popper reads the packed word, reads the
+// item pointer out of the slot, then exchanges the word; for a stale pointer to be claimed
+// twice, the tag must complete a FULL cycle AND head/tail must return to what that popper
+// read, all inside its own load-to-exchange window. That window is a handful of
+// instructions, so it takes a deschedule, and tools/deque_aba_headroom.cpp measures how long
+// one: at 8 threads the queue sustains 8.16e6 operations per second, so 2^32 of them take
+// about 527 seconds of continuous stall while the other threads run flat out.
+//
+// The three fields share one word because a 128-bit compare-exchange is not lock-free on the
+// supported targets, and the indices need 16 bits each -- the injector queue is built at
+// 32768 entries and `tail - head` is computed in 16-bit arithmetic so the difference is
+// unambiguous. 64 - 16 - 16 = 32 is what remains for the tag.
+//
+// CONTENTION. All ends share that one word, so throughput on a SHARED instance falls as
+// threads are added: the same tool measures 1.332e8 operations per second at one thread and
+// 8.157e6 at eight. Per-worker deques are near-exclusive to their owner and do not pay it;
+// the injector is shared by every thread and does.
 //
 // Each slot holds one pointer whose non-null value marks the slot published and null
 // marks it free. When the payload T is itself a pointer, that payload is stored INLINE
