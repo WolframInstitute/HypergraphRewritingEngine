@@ -16,8 +16,13 @@ target_link_libraries(test_lockfree_deque
     GTest::gtest_main
     GTest::gtest
     Threads::Threads
-    atomic
 )
+
+# libatomic is a separate library only in the GNU toolchain; Apple's clang and
+# MSVC provide atomics in the compiler runtime and have no 'atomic' to link.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(test_lockfree_deque PRIVATE atomic)
+endif()
 
 # Static linking for MinGW to avoid DLL dependencies during test discovery
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
