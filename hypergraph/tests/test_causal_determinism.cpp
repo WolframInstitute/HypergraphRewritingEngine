@@ -143,14 +143,23 @@ struct Spread {
     std::set<uint64_t> states, causal, branchial;
     std::set<long> ns, ne, nc, nb;
     std::map<uint64_t, Variant> states_v, causal_v, branchial_v;
+    // How many of the `runs` configurations produced each fingerprint. A bare count of DISTINCT
+    // fingerprints cannot separate "one run in twenty-four went wrong" from "the runs split evenly",
+    // and those two demand different investigations: the first is a race that fires rarely, the
+    // second is a configuration axis (thread count, seed) changing the answer every time.
+    std::map<uint64_t, int> states_n, causal_n, branchial_n;
+    int runs = 0;
 };
 
-std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v, const char* what) {
+std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
+                     const std::map<uint64_t, int>& n, const char* what) {
     if (v.size() < 2) return {};
     std::string out = std::string("\n  ") + what + " took " + std::to_string(v.size()) +
-                      " distinct values:";
+                      " distinct values over " + std::to_string(s.runs) + " runs:";
     for (const auto& [fp, var] : v) {
-        out += "\n    " + var.config +
+        const auto it = n.find(fp);
+        const int c = it == n.end() ? 0 : it->second;
+        out += "\n    " + std::to_string(c) + "/" + std::to_string(s.runs) + " runs  " + var.config +
                "  states=" + std::to_string(var.ns) + " events=" + std::to_string(var.ne) +
                " causal=" + std::to_string(var.nc) + " branchial=" + std::to_string(var.nb);
     }
@@ -179,6 +188,10 @@ Spread spread(const Workload& w, bool quotient) {
                 s.states_v.emplace(f.states, var);
                 s.causal_v.emplace(f.causal, var);
                 s.branchial_v.emplace(f.branchial, var);
+                ++s.states_n[f.states];
+                ++s.causal_n[f.causal];
+                ++s.branchial_n[f.branchial];
+                ++s.runs;
             }
     return s;
 }
@@ -190,11 +203,11 @@ TEST(CausalDeterminism, NonQuotientFullyDeterministic) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/false);
         EXPECT_EQ(s.states.size(), 1u)    << w.name << ": state set non-deterministic"
-                                          << describe(s, s.states_v, "state fingerprint");
+                                          << describe(s, s.states_v, s.states_n, "state fingerprint");
         EXPECT_EQ(s.causal.size(), 1u)    << w.name << ": causal graph non-deterministic"
-                                          << describe(s, s.causal_v, "causal fingerprint");
+                                          << describe(s, s.causal_v, s.causal_n, "causal fingerprint");
         EXPECT_EQ(s.branchial.size(), 1u) << w.name << ": branchial graph non-deterministic"
-                                          << describe(s, s.branchial_v, "branchial fingerprint");
+                                          << describe(s, s.branchial_v, s.branchial_n, "branchial fingerprint");
     }
 }
 
