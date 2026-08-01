@@ -420,6 +420,7 @@ HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Us
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
 HGEvolve::overflow = "The GPU engine reached a capacity limit (`1`; `2` overflow event(s)) and returned a PARTIAL result. Raise the device-memory cap / reduce the workload, or evaluate on the CPU.";
+HGEvolve::warn = "The engine returned warnings (`1`): `2`";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -1148,12 +1149,26 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   wxfData = BinaryDeserialize[resultBytes];
   If[!AssociationQ[wxfData], Return[$Failed]];
 
-  (* Surface a capacity overflow: the GPU engine returns a flagged partial result
-     rather than failing (see docs/feedback on overflow -> partial result). *)
+  (* Surface the engine's warning trail. Both backends serve it under "Warnings"
+     (Kind/Count/Context): GPU capacity overflows flag a PARTIAL result; engine
+     option conflicts and analysis refusals report why an output is absent or
+     reduced. Overflow kinds keep their dedicated message. *)
   If[KeyExistsQ[wxfData, "Warnings"] && Length[wxfData["Warnings"]] > 0,
-    Module[{kinds = DeleteDuplicates[Lookup[wxfData["Warnings"], "Kind", "?"]],
-            total = Total[Lookup[wxfData["Warnings"], "Count", 0]]},
-      Message[HGEvolve::overflow, kinds, total]]];
+    Module[{warns = wxfData["Warnings"], advisoryKinds, advisories, overflows},
+      (* Advisory kinds are minted by the CPU FFI (engine option conflicts, analysis
+         refusals); every other kind is a GPU capacity flag on a PARTIAL result. *)
+      advisoryKinds = {"Engine", "NonBinaryEdgesRefused", "BranchIdUndefined"};
+      advisories = Select[warns, MemberQ[advisoryKinds, Lookup[#, "Kind", ""]] &];
+      overflows = Complement[warns, advisories];
+      If[Length[overflows] > 0,
+        Message[HGEvolve::overflow,
+          DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
+          Total[Lookup[overflows, "Count", 0]]]];
+      If[Length[advisories] > 0,
+        Message[HGEvolve::warn,
+          DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
+          StringRiffle[DeleteDuplicates[Lookup[advisories, "Context", ""]], " | "]]];
+    ]];
 
   (* Extract data - validate that requested data was returned *)
   (* Only use defaults for data we didn't request *)

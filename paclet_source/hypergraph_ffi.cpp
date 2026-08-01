@@ -885,6 +885,56 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         float global_dim_min = std::numeric_limits<float>::max();
         float global_dim_max = std::numeric_limits<float>::lowest();
 
+        // Warning trail served under the "Warnings" result key, schema shared with the GPU
+        // backend (Kind/Count/Context) so the WL formatter handles both backends.
+        struct FfiWarning { std::string kind; int64_t count; std::string context; };
+        std::vector<FfiWarning> ffi_warnings;
+        for (const auto& w : engine.warnings())
+            ffi_warnings.push_back({"Engine", 1, w});
+
+        // The blackhole analyses (dimension, geodesic, Hilbert, branchial, multispace,
+        // equilibrium) are defined on binary graphs: their graph builders read only
+        // arity-2 edges. Answering about the arity-2 subgraph of a hypergraph is a
+        // different question than the one asked, so a state set containing any other
+        // arity REFUSES the whole family, with the refusal on the warning trail.
+        if (compute_dimensions || compute_geodesics || compute_hilbert_space ||
+            compute_branchial || compute_multispace || compute_equilibrium) {
+            int64_t nonbinary = 0;
+            uint8_t seen_min = 255, seen_max = 0;
+            const uint32_t total_edges = hg.num_edges();
+            for (uint32_t eid = 0; eid < total_edges; ++eid) {
+                const hypergraph::Edge& edge = hg.get_edge(eid);
+                if (edge.arity != 2) {
+                    ++nonbinary;
+                    seen_min = std::min(seen_min, edge.arity);
+                    seen_max = std::max(seen_max, edge.arity);
+                }
+            }
+            if (nonbinary > 0) {
+                compute_dimensions = compute_geodesics = compute_hilbert_space =
+                    compute_branchial = compute_multispace = compute_equilibrium = false;
+                std::ostringstream ctx;
+                ctx << "Blackhole analyses refused: they are defined on binary graphs and the "
+                       "evolution contains "
+                    << nonbinary << " non-binary edges (arity "
+                    << static_cast<int>(seen_min) << ".." << static_cast<int>(seen_max)
+                    << "). No analysis was computed on the reduced graph.";
+                ffi_warnings.push_back({"NonBinaryEdgesRefused", nonbinary, ctx.str()});
+            } else if (compute_hilbert_space || compute_branchial || compute_multispace ||
+                       compute_equilibrium) {
+                // The branchial family keys states by branch_id, which has no definition on
+                // the multiway DAG and is stamped 0 for every state: cross-branch outputs
+                // (branch count, branch entropy, cross-branch pairs) are single-branch
+                // degenerate. Served with that on the record; per-vertex outputs that do not
+                // read the branch id are unaffected.
+                ffi_warnings.push_back(
+                    {"BranchIdUndefined", 1,
+                     "branch_id has no definition on the multiway DAG (every state is branch "
+                     "0): branch-keyed outputs are single-branch degenerate; per-vertex "
+                     "outputs are unaffected."});
+            }
+        }
+
         if (compute_dimensions) {
             if (show_progress) {
                 core_progress(host,"HGEvolve: Computing dimension analysis...");
@@ -3772,6 +3822,19 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Topology -> String (for metadata)
         if (!topology_type.empty() && topology_type != "Flat") {
             full_result.push_back(std::make_pair(wxf::WXFValue("Topology"), wxf::WXFValue(topology_type)));
+        }
+
+        // Warning trail (engine warnings + analysis refusals), same schema as the GPU backend.
+        if (!ffi_warnings.empty()) {
+            wxf::WXFValueList warn;
+            for (const auto& w : ffi_warnings) {
+                wxf::WXFValueAssociation wa;
+                wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(w.kind)});
+                wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(w.count)});
+                wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(w.context)});
+                warn.push_back(wxf::WXFValue(wa));
+            }
+            full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
         }
 
         // Write the final top-level association: the streamed States/Events section
