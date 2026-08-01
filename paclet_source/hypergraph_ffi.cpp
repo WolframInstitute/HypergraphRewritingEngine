@@ -584,6 +584,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (initial_condition_type == "Sprinkling") {
             namespace bh = viz::blackhole;
 
+            // The density is a user option cast to uint32_t below: a negative value would
+            // wrap to ~4e9 points and size a multi-gigabyte allocation from a typo.
+            if (sprinkling_density <= 0 || sprinkling_density > 10'000'000) {
+                throw std::runtime_error(
+                    "SprinklingDensity must be in [1, 10000000], got " +
+                    std::to_string(sprinkling_density));
+            }
+
             // Generate Minkowski sprinkling
             bh::SprinklingConfig sconfig;
             sconfig.spatial_dim = 2;
@@ -621,6 +629,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Generate grid initial condition if requested
         if (initial_condition_type == "Grid") {
             namespace bh = viz::blackhole;
+
+            // Both dimensions are user options; the generator allocates width x height
+            // vertices, so unchecked values size an allocation from a typo.
+            if (grid_width <= 0 || grid_height <= 0 ||
+                static_cast<int64_t>(grid_width) * grid_height > 16'000'000) {
+                throw std::runtime_error(
+                    "GridWidth x GridHeight must be positive and at most 16000000 vertices, "
+                    "got " + std::to_string(grid_width) + " x " + std::to_string(grid_height));
+            }
 
             // Create a minimal BHConfig (no black holes, just a box)
             bh::BHConfig config;
