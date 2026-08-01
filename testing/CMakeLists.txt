@@ -175,19 +175,9 @@ create_test_executable(all_tests
     # Paclet tests
     ../paclet_source/tests/test_paclet.cpp
     # FFI WXF serialization pin test: exercises run_rewriting_core end to end.
-    # Pulls in the FFI marshaling TU (compiled in standalone mode, no Wolfram SDK)
-    # plus the blackhole analysis sources it references.
+    # Pulls in the FFI marshaling TU (compiled in standalone mode, no Wolfram SDK).
     ../paclet_source/tests/test_wxf_serialization.cpp
     ../paclet_source/hypergraph_ffi.cpp
-    ../visualisation/blackhole/src/hausdorff_analysis.cpp
-    ../visualisation/blackhole/src/bh_initial_condition.cpp
-    ../visualisation/blackhole/src/geodesic_analysis.cpp
-    ../visualisation/blackhole/src/particle_detection.cpp
-    ../visualisation/blackhole/src/entropy_analysis.cpp
-    ../visualisation/blackhole/src/curvature_analysis.cpp
-    ../visualisation/blackhole/src/branchial_analysis.cpp
-    ../visualisation/blackhole/src/equilibrium_analysis.cpp
-    ../visualisation/blackhole/src/branch_alignment.cpp
 )
 # run_rewriting_core is the standalone-binary marshaling path (WXF over the FFI):
 # no Wolfram SDK, process-kill abort. HG_STANDALONE_BINARY only guards code in the
@@ -195,7 +185,6 @@ create_test_executable(all_tests
 target_compile_definitions(all_tests PRIVATE HG_STANDALONE_BINARY)
 target_include_directories(all_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/paclet_source
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 
 # =============================================================================
@@ -305,39 +294,3 @@ add_custom_target(run_integration_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running integration tests..."
 )
-
-# =============================================================================
-# Quantum Analysis Tests (geodesic tracing + particle detection)
-# =============================================================================
-# Standalone test for geodesic/particle analysis (doesn't need GoogleTest)
-# Only build if viz_blackhole is available (requires BUILD_VISUALIZATION=ON)
-if(TARGET viz_blackhole)
-    add_executable(test_quantum_analysis
-        ../visualisation/tests/test_quantum_analysis.cpp
-    )
-
-    target_link_libraries(test_quantum_analysis
-        PRIVATE
-        viz_blackhole
-        hypergraph
-        Threads::Threads
-    )
-
-    target_include_directories(test_quantum_analysis PRIVATE
-        ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
-        ${CMAKE_SOURCE_DIR}/hypergraph/include
-    )
-
-    # Static linking for MinGW
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
-        target_link_options(test_quantum_analysis PRIVATE -static-libgcc -static-libstdc++)
-    endif()
-
-    # Test target
-    add_custom_target(run_quantum_tests
-        COMMAND test_quantum_analysis
-        DEPENDS test_quantum_analysis
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        COMMENT "Running quantum analysis tests (geodesics + particles)..."
-    )
-endif()

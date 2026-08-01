@@ -13,21 +13,7 @@ if(NOT WolframLanguage_FOUND)
 endif()
 
 # Source files - relative to LibraryResources directory
-# Blackhole analysis sources, compiled directly (without the layout dependency)
-# into both the DLL and the standalone binary.
-set(BLACKHOLE_SOURCES
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/hausdorff_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/bh_initial_condition.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/geodesic_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/particle_detection.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/entropy_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/curvature_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branchial_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/equilibrium_analysis.cpp
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/src/branch_alignment.cpp
-)
-
-set(SOURCES hypergraph_ffi.cpp ${BLACKHOLE_SOURCES})
+set(SOURCES hypergraph_ffi.cpp)
 
 # Create the library
 add_library(HypergraphRewriting SHARED ${SOURCES})
@@ -41,7 +27,6 @@ add_library(HypergraphRewriting SHARED ${SOURCES})
 add_executable(hg_evolve
     hg_evolve_main.cpp
     hypergraph_ffi.cpp
-    ${BLACKHOLE_SOURCES}
 )
 target_compile_definitions(hg_evolve PRIVATE HG_STANDALONE_BINARY)
 target_include_directories(hg_evolve PRIVATE
@@ -49,7 +34,6 @@ target_include_directories(hg_evolve PRIVATE
     ${CMAKE_SOURCE_DIR}/hypergraph/include
     ${CMAKE_SOURCE_DIR}/job_system/include
     ${CMAKE_SOURCE_DIR}/lockfree_deque/include
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 target_link_libraries(hg_evolve hypergraph wxf)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -93,7 +77,6 @@ if(TARGET hg_gpu)
         hg_evolve_main.cpp
         hypergraph_ffi.cpp
         hg_gpu_backend.cpp
-        ${BLACKHOLE_SOURCES}
     )
     target_compile_definitions(hg_evolve_gpu PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND)
     target_include_directories(hg_evolve_gpu PRIVATE
@@ -101,8 +84,7 @@ if(TARGET hg_gpu)
         ${CMAKE_SOURCE_DIR}/hypergraph/include
         ${CMAKE_SOURCE_DIR}/job_system/include
         ${CMAKE_SOURCE_DIR}/lockfree_deque/include
-        ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
-        ${CMAKE_SOURCE_DIR}/gpu/include
+            ${CMAKE_SOURCE_DIR}/gpu/include
         ${CMAKE_SOURCE_DIR}/common/include
     )
     target_link_libraries(hg_evolve_gpu hg_gpu hypergraph wxf)
@@ -129,7 +111,6 @@ endif()
 # Link against our existing targets
 # Note: Wolfram Language libraries are NOT needed at link time for LibraryLink
 # LibraryLink is header-only - the Wolfram Language loads our library and calls our exports
-# Note: viz_blackhole is NOT linked - we compile the needed sources directly above
 # to avoid requiring BUILD_VISUALIZATION=ON
 target_link_libraries(HypergraphRewriting
     hypergraph
@@ -142,7 +123,6 @@ target_include_directories(HypergraphRewriting PRIVATE
     ${CMAKE_SOURCE_DIR}/hypergraph/include
     ${CMAKE_SOURCE_DIR}/job_system/include
     ${CMAKE_SOURCE_DIR}/lockfree_deque/include
-    ${CMAKE_SOURCE_DIR}/visualisation/blackhole/include
 )
 
 # Progress reporting and abort run over the process-isolation transport: the engine

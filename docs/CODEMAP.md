@@ -181,7 +181,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `paclet/` -- the Wolfram Language paclet
 
 - **`PacletInfo.wl`** -- manifest for `WolframInstitute/HypergraphRewriteEngine` v0.0.1 (Kernel context, LibraryLink resources, Documentation, 6 SystemIDs)
-- **`Kernel/HypergraphRewriting.wl`** -- the WL layer. Public: `HGEvolve`; analysis/plots `HGHausdorffAnalysis`/`HGStateDimensionPlot`/`HGTimestepUnionPlot`/`HGDimensionFilmstrip`/`HGGeodesicPlot`/`HGGeodesicFilmstrip`/`HGLensingPlot`/`HGBranchAlignmentBatch`; `HGToGraph`/`EdgeId`; IC generators `HGGrid`/`HGGridWithHoles`/`HGCylinder`/`HGTorus`/`HGSphere`/`HGKleinBottle`/`HGMobiusStrip`/`HGMinkowskiSprinkling`/`HGBrillLindquist`/`HGPoissonDisk`/`HGUniformRandom`; plus `SyntaxInformation` for all of them
+- **`Kernel/HypergraphRewriting.wl`** -- the WL layer. Public surface: `HGEvolve` alone. The initial-condition generators (`HGGrid`, topologies, sprinkling, Brill-Lindquist, Poisson, uniform) remain as internal helpers behind HGEvolve's string initial conditions; the physics analyses live in ../hypergraph_viz
 - **`Documentation/Source/*.md`** -- markdown doc sources (Symbol/Guide/TechNote) -> notebooks via `tools/build_docs.wls`
 
 ## `reference/` -- validation oracle
