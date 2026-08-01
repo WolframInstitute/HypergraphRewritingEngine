@@ -107,6 +107,7 @@ these substitutions and needs a different approach.
 | `concurrent_map_agreement` | Two threads offering different values for one key agree on the winner: exactly one reports `was_inserted`, both return the same value, that value is one of the two offered, the winner's own value is what is stored, and a later `lookup` returns it | 2 threads, 1 key, 2 values, capacity 4, no resize | **No errors, 32 complete executions** |
 | `concurrent_map_resize` | The same agreement holds across a table replacement, both pre-existing keys survive the rehash, and no key acquires a second entry | 2 threads, capacity 2→4, 3 keys, one resize round | **No errors, 176 complete executions** — after the fix below |
 | `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
+| `job_system_no_lost_wakeup` | A submitter that skips the wake because nobody reads as idle never leaves a worker parked with the job still queued | 1 worker, 1 submitter, 1 job | **No errors, 5 complete executions** — after the fix below |
 
 ### What this found
 
@@ -129,6 +130,29 @@ records a head-re-check alternative that cost +1.9% instructions and did **not**
 This is the point of the exercise. That interleaving needs two installations to straddle one
 thread's claim; no stress test on this machine had produced it, and the class had been in use
 long enough to produce four correctness bugs of the neighbouring kind.
+
+`job_system_no_lost_wakeup` then reported `Non-terminating spinloop: thread 1` on ITS first run.
+`wake_one_worker()` skips the wake when `idle_workers_` reads zero, and the header justified that
+by "at least one of them must observe the other". The two sides write different locations and read
+the other's — store buffering — and that outcome is forbidden only with a sequentially consistent
+fence on *both* sides. `idle_workers_` was seq_cst, but the job becomes reachable through the
+deque's acquire/release compare-exchange, so both threads could read stale: the submitter skips
+the wake, the worker parks, and the job sits queued with nobody awake to take it. Fixed by adding
+the two fences; the checker goes from a spinloop to 5 clean executions, and removing either fence
+brings the spinloop back.
+
+### One harness is a transcription, not an include
+
+`job_system_no_lost_wakeup` is the exception to the rule above. The protocol lives in JobSystem's
+worker loop, which spawns its own threads and blocks in `park_if_equal`, and the interpreter can
+run neither libstdc++'s `std::thread` machinery nor `syscall(SYS_futex, ...)`. So the two sides
+are transcribed with the same memory orders as `job_system.hpp`, and the park is transcribed as a
+spin on the same condition the futex tests — `--check-liveness` reports a spin that can never
+exit, which is exactly a worker asleep with a job queued.
+
+Those memory orders are the entire content of the property. If they change in `job_system.hpp` and
+not here, this harness verifies something the engine no longer does. Both sides carry a comment
+pointing at the other.
 
 The bound is part of the result. `concurrent_map_agreement` says nothing about three concurrent
 inserters, about two different keys colliding in one probe run, or about a resize running

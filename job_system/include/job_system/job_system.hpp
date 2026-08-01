@@ -115,13 +115,23 @@ private:
     // Publish that the world changed. Bumping before notifying is what makes the park
     // lost-wakeup-free: a worker that sampled the old value finds it stale and does not sleep.
     //
-    // The idle check is sequentially consistent against the worker's own sequentially
-    // consistent increment, and that pairing is what allows it to be skipped safely. The two
-    // sides are a store-then-load on different locations: the submitter pushes then reads
-    // idle_workers_; a parking worker increments idle_workers_ then looks for work. At least
-    // one of them must observe the other, so a worker that this call skips is a worker whose
-    // own final look for work happens after the push and therefore finds it.
+    // Skipping the wake when nobody is idle is safe only because of the fence below.
+    //
+    // The two sides are a store-then-load on DIFFERENT locations: the submitter pushes the job
+    // then reads idle_workers_, while a parking worker increments idle_workers_ then takes its
+    // last look for work. For "at least one observes the other" to hold, both sides need a
+    // sequentially consistent fence between their write and their read. Sequential consistency on
+    // idle_workers_ alone does not supply it -- the job becomes reachable through the deque's
+    // acquire/release compare-exchange, so without the fences both threads may read stale and
+    // both conclude there is nothing to do: the submitter skips the wake, the worker parks, and
+    // the job sits in a deque with nobody awake to take it. Verified in
+    // verification/genmc/job_system_no_lost_wakeup.cpp, which reports a non-terminating spinloop
+    // when either fence is removed.
+    //
+    // The caller pushes immediately before calling this, so the fence sits between the push and
+    // the read. The worker's matching fence is in the park path.
     void wake_one_worker() {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
         work_seq_.fetch_add(1, std::memory_order_release);
         hgcommon::unpark_one(work_seq_);
@@ -232,7 +242,14 @@ private:
             // Announce the park BEFORE sampling the counter and taking the last look for
             // work, so a submitter either sees this worker as parked and wakes it, or is
             // ordered before that last look and is found by it.
+            //
+            // The fence is what makes that hold. It pairs with the one in wake_one_worker: the
+            // two threads write different locations and then read the other's, and only a
+            // sequentially consistent fence on BOTH sides forbids them from both reading stale.
+            // Without it the submitter can read this worker as not-yet-idle while this worker
+            // reads the deque as still empty, and the job is left queued with the worker parked.
             idle_workers_.fetch_add(1, std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             const uint32_t seq = work_seq_.load(std::memory_order_acquire);
             if (JobRaw job = find_work_exhaustive(data)) {
                 idle_workers_.fetch_sub(1, std::memory_order_relaxed);
