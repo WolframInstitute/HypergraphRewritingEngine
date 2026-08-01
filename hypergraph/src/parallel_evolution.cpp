@@ -1126,7 +1126,7 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
-bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t transition_key,
+bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t canonical_key,
                                                          int site) {
     // Own-found draws only. Track the running minimum own key -- complete exactly at the
     // state's drain, because its own matching is what the drain joins on -- and mark whether
@@ -1134,11 +1134,17 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     // neither: their arrival order races the drain, and a spine that read them decided WHICH
     // transition survives by schedule (caught at 8 workers by SamplingReproducibility).
     MatchJoin* join = match_join_for(source);
+    // The spine's order is SEEDED: min over splitmix(key ^ seed), not over the bare key.
+    // A seed-independent spine keeps the same skeleton every run, so the union over seeds
+    // saturates at skeleton-plus-bushes; seeding it makes each seed explore a different
+    // skeleton, which is what lets repeated sampling recover the graph. Still a pure
+    // function of (transition, seed): schedule-stable, device-stable.
+    const uint64_t ranked = spine_rank(canonical_key);
     uint64_t seen = join->own_min_key.load(std::memory_order_relaxed);
-    while (transition_key < seen &&
-           !join->own_min_key.compare_exchange_weak(seen, transition_key,
+    while (ranked < seen &&
+           !join->own_min_key.compare_exchange_weak(seen, ranked,
                                                     std::memory_order_relaxed)) {}
-    if (transition_survives(transition_key, site)) {
+    if (transition_survives(canonical_key, site)) {
         join->own_spawned.store(1, std::memory_order_release);
         return true;
     }
@@ -1153,11 +1159,13 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     if (!stored.has_value()) return;
 
     // The own-minimum's record is in the stored list (every site stores before drawing);
-    // find it by key.
+    // find it by its seeded rank.
     bool found = false;
     MatchRecord best{};
     (*stored)->for_each([&](const MatchRecord& m) {
-        if (!found && canonical_transition_key(state, m) == want) { found = true; best = m; }
+        if (!found && spine_rank(canonical_transition_key(state, m)) == want) {
+            found = true; best = m;
+        }
     });
     if (!found) return;
 

@@ -608,6 +608,7 @@ private:
     double transition_rate_{1.0};
 
 
+
     // Genesis events: create synthetic events for initial states that produce
     // all initial edges. This enables causal edges from initial state to gen 1.
     // Disabled by default.
@@ -830,6 +831,18 @@ public:
     // prefix -- and the answer is a depth-dependent q, not a different mechanism.
     void set_transition_rate(double q) { transition_rate_ = q; }
     double transition_rate() const { return transition_rate_; }
+    // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
+    // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving
+    // ancestor class both left the union-recovery curve unchanged, because recovery is limited
+    // by REACHABILITY (a coin cannot fire on a transition whose source was never created), not
+    // by per-transition survival. Seeding the spine attacks reachability directly: each seed
+    // keeps a different one-per-state skeleton.
+    uint64_t spine_rank(uint64_t canonical_key) const {
+        uint64_t x = canonical_key ^ (random_seed_ * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        return x ^ (x >> 31);
+    }
 
     // Called once per state, after that state's last match task and before any of its matches
     // could be superseded. Anything keyed on "the matches of one state" as a set belongs here.
@@ -1139,7 +1152,7 @@ private:
     // The sampling draw with the spine guarantee: a passing draw records that its source state
     // has a survivor; a failing draw on a state that has already drained with NO survivor is
     // forced through instead (the late spine). See MatchJoin.
-    bool transition_survives_spined(StateId source, uint64_t transition_key, int site);
+    bool transition_survives_spined(StateId source, uint64_t canonical_key, int site);
 
     // At a state's drain with sampling active and no survivor spawned: submit the stored match
     // with the minimum canonical transition key, so every reachable state keeps at least one
