@@ -127,6 +127,19 @@ struct PersistentEvolveStats {
     // Events that won their signature slot. 0 under EventSignatureKeys None, where no signature
     // is computed and the raw application count is the answer.
     uint32_t canonical_events = 0;
+    // Where the worker blocks' time went, as clock64() deltas measured by each block's thread 0
+    // and summed across blocks at exit. SM clocks tick independently, so these attribute as
+    // FRACTIONS of their sum, not as wall time. canon covers the exact-hash/dedup/stamp stretch
+    // of the rewrite branch; wait is the await_match spin on a claimed-but-unpublished record;
+    // idle covers failed-pop iterations including their backoff sleep.
+    uint64_t cycles_match   = 0;
+    uint64_t cycles_rewrite = 0;
+    uint64_t cycles_canon   = 0;
+    uint64_t cycles_idle    = 0;
+    uint64_t cycles_wait    = 0;
+    // apply_one_match's six sub-stretches of cycles_rewrite, in rewrite.hpp's order:
+    // reserve, emit, csr, event, causal, branchial.
+    uint64_t cycles_rw_sub[6] = {0, 0, 0, 0, 0, 0};
 };
 
 PersistentEvolveStats run_persistent_evolve(EngineState& engine,

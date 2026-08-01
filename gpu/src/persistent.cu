@@ -343,7 +343,8 @@ __global__ void k_persistent_evolve(
         EventSignatureKeys event_keys,
         DedupMap::DeviceView event_map,
         DeviceArena::View arena,
-        typename TerminationDetector::DeviceView term) {
+        typename TerminationDetector::DeviceView term,
+        unsigned long long* phase_cycles) {
 
     const bool need_ranks = event_keys_need_ranks(event_keys);
 
@@ -395,6 +396,20 @@ __global__ void k_persistent_evolve(
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
 
+    // Phase attribution, accumulated in thread 0's registers and flushed once at exit so the
+    // hot loop carries no extra atomics. See PersistentEvolveStats for what the four mean.
+    unsigned long long acc_match = 0, acc_rewrite = 0, acc_canon = 0, acc_idle = 0,
+                       acc_wait = 0;
+    auto flush_cycles = [&] {
+        if (threadIdx.x == 0 && phase_cycles) {
+            atomicAdd(&phase_cycles[0], acc_match);
+            atomicAdd(&phase_cycles[1], acc_rewrite);
+            atomicAdd(&phase_cycles[2], acc_canon);
+            atomicAdd(&phase_cycles[3], acc_idle);
+            atomicAdd(&phase_cycles[4], acc_wait);
+        }
+    };
+
     if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
     __syncthreads();
 
@@ -407,16 +422,23 @@ __global__ void k_persistent_evolve(
         if (claimed != INVALID_ID) {
             if (threadIdx.x == 0) {
                 idle_ns = 64;
+                const unsigned long long t0 = clock64();
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
+                const unsigned long long t0b = clock64();
+                acc_wait += t0b - t0;
                 const uint32_t step = rec.step;
                 // The event carries the depth of the state it PRODUCES -- see the note in
                 // k_persistent_match_rewrite. The exploration depth below is the same value.
-                const AppliedMatch applied = apply_one_match(ds, rules, rec, step + 1u);
+                const AppliedMatch applied = apply_one_match(
+                    ds, rules, rec, step + 1u,
+                    phase_cycles ? phase_cycles + 5 : nullptr);
                 child_sid    = applied.state;
                 child_event  = applied.event;
                 child_step   = step + 1u;
                 expand_child = false;
+                acc_rewrite += clock64() - t0b;
+                const unsigned long long t1 = clock64();
 
                 // Expand the child only if it exists, the step budget allows it, its exact
                 // hash is computable, and the exploration rule keeps it. The hash is the
@@ -475,6 +497,7 @@ __global__ void k_persistent_evolve(
                                                             explore_seed, child_step);
                     }
                 }
+                acc_canon += clock64() - t1;
             }
             __syncthreads();
 
@@ -500,9 +523,12 @@ __global__ void k_persistent_evolve(
                     }
                 }
                 __syncthreads();
+                const unsigned long long tA =
+                    (threadIdx.x == 0 && run_rule_inline) ? clock64() : 0;
                 if (run_rule_inline)
                     match_state_rule(ds, rules, child_sid, r, child_step, found);
                 __syncthreads();
+                if (threadIdx.x == 0 && run_rule_inline) acc_match += clock64() - tA;
             }
 
             if (threadIdx.x == 0) {
@@ -516,14 +542,19 @@ __global__ void k_persistent_evolve(
         if (threadIdx.x == 0) have = match_q.try_pop(mitem);
         __syncthreads();
         if (have) {
+            const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
             __syncthreads();
-            if (threadIdx.x == 0) { term.mark_completed(kRoleMatch); idle_ns = 64; }
+            if (threadIdx.x == 0) {
+                term.mark_completed(kRoleMatch);
+                idle_ns = 64;
+                acc_match += clock64() - tA;
+            }
             __syncthreads();
             continue;
         }
 
-        if (term.exit_requested()) return;
+        if (term.exit_requested()) { flush_cycles(); return; }
         // Idle, and the detector has not released us. Counted, because a worker that can
         // neither find work nor be told to stop is the same defect from the other side.
         //
@@ -540,6 +571,7 @@ __global__ void k_persistent_evolve(
         // the SM-count grid through 8x oversubscription (128 blocks 10.2, 256 9.9, 512 10.2,
         // 1024 11.3).
         if (threadIdx.x == 0) {
+            const unsigned long long tA = clock64();
             if (++idle_spins >= kMaxWorkerIdleSpins) {
                 ds.errors.record(ErrorKind::kPersistentStall);
                 stalled = true;
@@ -547,9 +579,10 @@ __global__ void k_persistent_evolve(
                 __nanosleep(idle_ns);
                 if (idle_ns < 4096u) idle_ns <<= 1;
             }
+            acc_idle += clock64() - tA;
         }
         __syncthreads();
-        if (stalled) return;
+        if (stalled) { flush_cycles(); return; }
     }
 }
 
@@ -799,6 +832,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     check(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
     uint32_t* d_rewrites_done = d_cursor + 1;
 
+    // 5 top-level phases + apply_one_match's 6 sub-stretches (see rewrite.hpp).
+    unsigned long long* d_phase_cycles = nullptr;
+    check(cudaMalloc(&d_phase_cycles, sizeof(unsigned long long) * 11), "phase cycles alloc");
+    check(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 11), "phase cycles clear");
+
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
     term.mark_pushed_host(kRoleMatch, kept * num_rules);
@@ -810,7 +848,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        event_ids.view(), arena.view(), term.view());
+        event_ids.view(), arena.view(), term.view(), d_phase_cycles);
     check(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();
@@ -818,6 +856,17 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.arena_words_used = arena.used_words_host();
     stats.canonical_events = engine.canonical_event_count();
 
+    unsigned long long phase[11] = {};
+    check(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),
+          "phase cycles read");
+    stats.cycles_match   = phase[0];
+    stats.cycles_rewrite = phase[1];
+    stats.cycles_canon   = phase[2];
+    stats.cycles_idle    = phase[3];
+    stats.cycles_wait    = phase[4];
+    for (int i = 0; i < 6; ++i) stats.cycles_rw_sub[i] = phase[5 + i];
+
+    cudaFree(d_phase_cycles);
     cudaFree(d_cursor);
     cudaFree(d_states);
     cudaFree(d_kept);

@@ -36,8 +36,13 @@ struct AppliedMatch {
     EventId event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed
 };
 
+// `sub`, when non-null, receives clock64()-cycle attribution for the six stretches of one
+// application, atomicAdd-ed per call: [0] bind+preflight reservations, [1] RHS edge emission
+// (+ index inserts), [2] CSR merge-copy of the child's edge list, [3] event record write,
+// [4] causal rendezvous (producer + consumer sides), [5] branchial scan.
 __device__ AppliedMatch apply_one_match(DeviceState ds, const DeviceRule* rules,
-                                        const MatchRecord& m, uint32_t step);
+                                        const MatchRecord& m, uint32_t step,
+                                        unsigned long long* sub = nullptr);
 
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,

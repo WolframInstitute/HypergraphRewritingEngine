@@ -250,8 +250,10 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
 __device__ AppliedMatch apply_one_match(DeviceState       ds,
                                         const DeviceRule* rules,
                                         const MatchRecord& m,
-                                        uint32_t          step) {
+                                        uint32_t          step,
+                                        unsigned long long* sub) {
     const DeviceRule&  rule = rules[m.rule_id];
+    const unsigned long long t_start = clock64();
 
 
     // 1. Re-derive var bindings from matched_edges. volatile to defeat an
@@ -368,6 +370,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     // Commit: every reservation above succeeded, so from here on we write
     // freely into our reserved slots without further capacity checks.
     // -------------------------------------------------------------------
+    const unsigned long long t_reserved = clock64();
 
     // For each RHS edge: claim edge record + indices. `produced[r]` is the
     // EdgeId we assigned to RHS edge r (equals first_eid + r by claim_n).
@@ -425,6 +428,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 
         if (r < kMaxPatternEdges) produced[r] = new_eid;
     }
+    const unsigned long long t_emitted = clock64();
 
     // Build the new state's CSR edge-list slice by merge-filtering parent
     // edges (dropping consumed ones) then appending produced edges.
@@ -472,6 +476,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     if (!ds.maintain_indices && cursor > ds.slice_scan_max_edges) {
         atomicExch(ds.needs_indices, 1u);
     }
+    const unsigned long long t_csr = clock64();
 
     // 7. Write the Event record.
     DeviceEvent& ev = ds.event_pool.at(my_event);
@@ -493,6 +498,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         ev.produced_edges[i] = INVALID_ID;
 
     __threadfence();  // make the event visible before any rendezvous reads it
+    const unsigned long long t_event = clock64();
 
     // [DIAGNOSIS] disabled temporarily
     #if 1
@@ -539,10 +545,20 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         EdgeId eid = consumed_sorted[p];
         if (eid != INVALID_ID) register_as_consumer(ds, my_event, eid);
     }
+    const unsigned long long t_causal = clock64();
 
     // 10. Branchial scan: our sibling events in the same input state.
     register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
     #endif
+
+    if (sub) {
+        atomicAdd(&sub[0], t_reserved - t_start);
+        atomicAdd(&sub[1], t_emitted - t_reserved);
+        atomicAdd(&sub[2], t_csr - t_emitted);
+        atomicAdd(&sub[3], t_event - t_csr);
+        atomicAdd(&sub[4], t_causal - t_event);
+        atomicAdd(&sub[5], clock64() - t_causal);
+    }
 
     return AppliedMatch{new_sid, my_event};
 }

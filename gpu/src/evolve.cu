@@ -475,9 +475,28 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         state_count_host = engine.num_states_host();
         engine.collect_warnings_into(out.warnings, "persistent evolve");
         if (dbg) {
-            std::fprintf(stderr, "[persistent] states=%u matches=%u arena_words=%llu\n",
+            const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +
+                               double(st.cycles_canon) + double(st.cycles_idle) +
+                               double(st.cycles_wait);
+            const double pct = tot > 0 ? 100.0 / tot : 0.0;
+            std::fprintf(stderr,
+                         "[persistent] states=%u matches=%u arena_words=%llu cycles: "
+                         "match=%.1f%% rewrite=%.1f%% canon=%.1f%% idle=%.1f%% wait=%.1f%%\n",
                          st.states_after, st.matches_found,
-                         (unsigned long long)st.arena_words_used);
+                         (unsigned long long)st.arena_words_used,
+                         st.cycles_match * pct, st.cycles_rewrite * pct,
+                         st.cycles_canon * pct, st.cycles_idle * pct,
+                         st.cycles_wait * pct);
+            const double rw = double(st.cycles_rw_sub[0]) + double(st.cycles_rw_sub[1]) +
+                              double(st.cycles_rw_sub[2]) + double(st.cycles_rw_sub[3]) +
+                              double(st.cycles_rw_sub[4]) + double(st.cycles_rw_sub[5]);
+            const double rpct = rw > 0 ? 100.0 / rw : 0.0;
+            std::fprintf(stderr,
+                         "[persistent rw] reserve=%.1f%% emit=%.1f%% csr=%.1f%% event=%.1f%% "
+                         "causal=%.1f%% branchial=%.1f%%\n",
+                         st.cycles_rw_sub[0] * rpct, st.cycles_rw_sub[1] * rpct,
+                         st.cycles_rw_sub[2] * rpct, st.cycles_rw_sub[3] * rpct,
+                         st.cycles_rw_sub[4] * rpct, st.cycles_rw_sub[5] * rpct);
         }
         frontier_count = 0;   // nothing left for the step loop to do
     }
