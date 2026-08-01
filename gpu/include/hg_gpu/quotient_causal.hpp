@@ -87,10 +87,12 @@ struct QcView {
 
 // Host-side owner of the DP's device structures, shared by both schedulers so one run's
 // registrations and producer sets are a single body of state whichever loop drives them.
-// Token-sized when the route is off.
+// Token-sized when the route is off. Owned by the ENGINE and cleared between runs rather than
+// rebuilt: the maps and pools total tens of MB of cudaMalloc, which an interactive caller
+// would otherwise pay on every evolve.
 class QcState {
 public:
-    QcState(bool on, uint32_t max_events, uint32_t max_steps)
+    QcState(bool on, uint32_t max_events)
         : transitions_(on ? max_events : 1u),
           trans_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           seen_(on ? max_events * 2u : 8u),
@@ -98,11 +100,10 @@ public:
           dsup_seen_(on ? max_events * 16u : 8u),
           reached_(on ? (1u << 20) : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
-          max_steps_(max_steps), on_(on) {
-        seen_.clear(); dsup_seen_.clear(); reached_.clear();
+          on_(on) {
         check(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QcState arr alloc");
         check(cudaMalloc(&cursor_, sizeof(uint32_t)), "QcState cursor alloc");
-        check(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
+        clear();
     }
     ~QcState() {
         if (arr_)    cudaFree(arr_);
@@ -113,7 +114,19 @@ public:
 
     bool enabled() const { return on_; }
 
-    QcView view() {
+    // Between runs: every map, list and record pool starts empty. The orbit-array words need
+    // no wipe -- records reference them by offset and the cursor restarts at zero.
+    void clear() {
+        seen_.clear();
+        dsup_seen_.clear();
+        reached_.clear();
+        trans_from_.clear();
+        dsup_.clear();
+        transitions_.reset();
+        check(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
+    }
+
+    QcView view(uint32_t max_steps) {
         QcView q{};
         q.transitions      = transitions_.view();
         q.trans_from       = trans_from_.view();
@@ -124,7 +137,7 @@ public:
         q.dsup             = dsup_.view();
         q.dsup_seen        = dsup_seen_.view();
         q.reached          = reached_.view();
-        q.max_steps        = max_steps_;
+        q.max_steps        = max_steps;
         q.enabled          = on_ ? 1u : 0u;
         return q;
     }
@@ -146,7 +159,6 @@ private:
     uint32_t*                       arr_ = nullptr;
     uint32_t*                       cursor_ = nullptr;
     uint32_t                        arr_cap_ = 0;
-    uint32_t                        max_steps_ = 0;
     bool                            on_ = false;
 };
 

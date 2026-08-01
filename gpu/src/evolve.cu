@@ -229,6 +229,9 @@ struct Engine::Impl {
     EngineState                        state_;
     Pool<MatchRecord>                  matches_;
     DedupMap                           canonical_map_;
+    // Engine-lifetime, cleared per run: rebuilding its maps costs tens of MB of cudaMalloc
+    // per evolve. Constructed on the first run that routes quotient causal.
+    std::unique_ptr<QcState>           qc_state_;
     StateId*                           d_frontier_       = nullptr;
     StateId*                           d_next_frontier_  = nullptr;
     uint32_t*                          d_next_count_     = nullptr;
@@ -403,9 +406,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     event_identity_map.clear();
 
     // The quotient-causal DP's device structures, one body of state whichever scheduler
-    // drives it; token-sized when the route is off.
-    QcState qc_state(qc_route, cfg.max_events, in.num_steps);
-    QcView qc_view = qc_state.view();
+    // drives it; token-sized when the route is off, engine-lifetime and cleared per run.
+    if (!qc_state_ || qc_state_->enabled() != qc_route)
+        qc_state_ = std::make_unique<QcState>(qc_route, cfg.max_events);
+    else
+        qc_state_->clear();
+    QcView qc_view = qc_state_->view(in.num_steps);
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
