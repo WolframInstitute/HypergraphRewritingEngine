@@ -60,7 +60,9 @@ result["NumEvents"]      (* uint: number of events *)
 result["States"]         (* association State -> state edges *)
 result["Events"]         (* list of rewriting events *)
 result["CausalEdges"]    (* list of (producer, consumer) event pairs *)
-result["BranchialEdges"] (* list of event pairs sharing an input state *)
+result["BranchialEdges"] (* event pairs that share an input state AND consume a
+                            common edge -- two events out of one state that
+                            consume disjoint edges are not branchially adjacent *)
 
 (* Graph properties evaluate directly to Graph objects: *)
 HGEvolve[rule, init, 5, "StatesGraph"]

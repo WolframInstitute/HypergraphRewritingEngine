@@ -412,6 +412,15 @@ Every option accepted by `HGEvolve`, with its default and a one-line description
 
 **Branchial analysis** (distribution sharpness and branch entropy)
 
+> **The branch-partitioned outputs of this analysis are degenerate.** Every state is assigned
+> branch 0, because the branch id is not yet derived from the multiway structure
+> (`hypergraph_ffi.cpp`, `bs.branch_id = 0`). Two consequences follow mechanically: the analysis
+> pairs states only when their branch ids DIFFER, so it finds no pairs at all and its branchial
+> graph comes back empty; and the branch count is always 1, so **branch entropy is identically
+> zero**. The per-vertex sharpness data does not depend on the branch id and is unaffected.
+> Use `"BranchialGraph"` / `"BranchialEdges"` for branchial structure — those are computed from
+> the evolution itself and are not affected by this.
+
 | Option | Default | Description |
 |---|---|---|
 | `"BranchialAnalysis"` | `False` | Enable branchial analysis. |
@@ -483,7 +492,11 @@ Every option accepted by `HGEvolve`, with its default and a one-line description
 - `"States"` - Association of state IDs to state edges
 - `"Events"` - List of rewriting events
 - `"CausalEdges"` - Pairs of causally connected event IDs
-- `"BranchialEdges"` - Pairs of branchially connected event IDs
+- `"BranchialEdges"` - Pairs of branchially connected event IDs: two events are adjacent when they
+  share an input state AND consume a common edge. Events out of one state that consume disjoint
+  edges are NOT adjacent, so this is not simply every sibling pair. (`"BranchialGraph"` is a
+  different relation — it connects output STATES that share an input state, with no overlap
+  condition.)
 - `"NumStates"` - Total number of states
 - `"NumEvents"` - Total number of events
 - `"NumCausalEdges"` - Number of causal edges
