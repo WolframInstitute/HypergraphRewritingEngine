@@ -28,7 +28,7 @@ reference/       Validation oracle (brute-force ground truth) + golden corpus + 
 tools/           Standalone research / validation / profiling probes
 testing/         gtest aggregation -> all_tests
 benchmarks/ + benchmarking/   Per-area benchmarks + the framework lib
-visualisation/   Optional interactive 3D Vulkan viewer + physics analysis (non-core)
+visualisation/   Viz-event interface + blackhole analysis library (renderer lives in ../hypergraph_viz)
 ```
 
 The natural reading path for a new developer: `common/core.hpp` ->
@@ -211,6 +211,6 @@ Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown
 - **`benchmarks/*.cpp`** -> the `benchmark_suite` exe: `canonicalization_`, `pattern_matching_`, `state_management_`, `event_relationship_`, `evolution_`, `job_system_`, `wxf_`, `wolfram_integration_benchmarks`.
 - **`benchmarking/`** -- the reusable framework: `benchmark_framework.hpp`, `benchmark_main.cpp` (lib `benchmark_framework`), `random_hypergraph_generator.hpp`, `plot_benchmarks.py`.
 
-## `visualisation/` -- optional 3D viewer (non-core, BUILD_VISUALIZATION only)
+## `visualisation/` -- viz-event interface + blackhole analyses (renderer split to ../hypergraph_viz)
 
-Sub-modules: `app/` (executables) · `gal/` (graphics abstraction layer, Vulkan backend) · `scene/` · `camera/` · `events/` · `layout/` (+ optional CUDA backend) · `math/` · `platform/` · `shaders/` (GLSL + SPIR-V) · `blackhole/` (geodesic tracing / particle detection + WL reference) · `tools/` · `tests/`.
+Sub-modules: `events/` (viz_event_sink -- the stream the engine emits under BUILD_VISUALIZATION and the external renderer consumes) · `blackhole/` (geodesic tracing / particle detection + WL reference; the paclet FFI compiles these sources directly) · `tools/` (analyze_bhdata) · `tests/` (test_quantum_analysis, builds only when a viz_blackhole target exists). The interactive renderer (app/gal/scene/camera/layout/math/platform/shaders) lives in `../hypergraph_viz`, split 2026-08-01 with filtered history.

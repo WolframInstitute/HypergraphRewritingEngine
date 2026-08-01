@@ -188,11 +188,13 @@ if(BUILD_WOLFRAM_LANGUAGE_PACLET)
     add_subdirectory(paclet_source)
 endif()
 
-# Optional: Build interactive visualization
-option(BUILD_VISUALIZATION "Build interactive hypergraph visualization" OFF)
-if(BUILD_VISUALIZATION)
-    add_subdirectory(visualisation)
-endif()
+# Viz-event emission. The interactive renderer lives in its own repo
+# (../hypergraph_viz, split with history 2026-08-01); this switch builds the
+# event-stream side it consumes: viz_events (above) plus the engine's
+# VIZ_EMIT_* instrumentation (hypergraph/CMakeLists.txt). visualisation/ here
+# retains only that interface (events/) and the blackhole analysis library the
+# paclet compiles directly.
+option(BUILD_VISUALIZATION "Emit visualization events for the external renderer" OFF)
 
 # Every host tool gets a build target, automatically.
 #
