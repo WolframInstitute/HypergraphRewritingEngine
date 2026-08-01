@@ -920,6 +920,12 @@ void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     if (static_cast<int>(depth) > maxs) return;
     if (!qc_reached_.insert_if_absent(qc_rkey(state_hash, depth), true).second) return;
+
+    // Publish (the insert above) before scanning; pairs with the fence in
+    // register_quotient_transition. The two sides write different locations and then read the
+    // other's, so without a sequentially consistent fence on BOTH of them a thread reaching
+    // (state, depth) and a thread registering a transition out of that state can each read
+    // the other as absent, and the (transition, depth) pair is processed by neither.
     std::atomic_thread_fence(std::memory_order_seq_cst);
     for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
         qc_process_transition(t, state_hash, depth);
