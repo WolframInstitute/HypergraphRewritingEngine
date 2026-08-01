@@ -36,6 +36,14 @@ jobs:
 
       # all_tests is NOT the whole suite: ctest carries the concurrency tests
       # (lock-free deque, job system, work-stealing deque) plus the standing
-      # probe gates. genmc needs a local toolchain and is excluded.
+      # probe gates. Their binaries must be BUILT first -- gtest_discover_tests
+      # registers a _NOT_BUILT failure for a missing binary, it does not build
+      # it. genmc needs a local toolchain and is excluded.
+      - name: Build ctest binaries
+        run: >
+          cmake --build build --target
+          test_lockfree_deque test_job_system test_work_stealing_deque
+          quotient_reconstruction_probe causal_tr_exactness_probe
+
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure

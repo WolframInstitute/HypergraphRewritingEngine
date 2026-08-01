@@ -95,7 +95,7 @@ void ParallelEvolutionEngine::evolve(
     // so the seed follows that switch, not the exploration strategy.
     if (hg_->quotient_causal())
         hg_->quotient_causal_seed(
-            canonical_state, static_cast<int>(std::min<size_t>(steps, std::numeric_limits<int>::max())));
+            canonical_state, static_cast<int>(std::min<size_t>(steps, (std::numeric_limits<int>::max)())));
 
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -283,7 +283,7 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     // so the seed follows that switch, not the exploration strategy.
     if (hg_->quotient_causal())
         hg_->quotient_causal_seed(
-            canonical_state, static_cast<int>(std::min<size_t>(max_steps_, std::numeric_limits<int>::max())));
+            canonical_state, static_cast<int>(std::min<size_t>(max_steps_, (std::numeric_limits<int>::max)())));
 
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert_if_absent_waiting(raw_state, true);

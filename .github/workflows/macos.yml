@@ -31,5 +31,12 @@ jobs:
       - name: Run tests
         run: ./build/all_tests --gtest_filter=-PacletTest.*
 
+      # gtest_discover_tests registers _NOT_BUILT failures for missing binaries.
+      - name: Build ctest binaries
+        run: >
+          cmake --build build --target
+          test_lockfree_deque test_job_system test_work_stealing_deque
+          quotient_reconstruction_probe causal_tr_exactness_probe
+
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure

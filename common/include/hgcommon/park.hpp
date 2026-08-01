@@ -33,6 +33,9 @@
 #  include <unistd.h>
 #  define HG_PARK_FUTEX 1
 #elif defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX   // windows.h's min/max macros poison std::numeric_limits<T>::max() etc.
+#  endif
 #  include <windows.h>
 #  define HG_PARK_WAIT_ON_ADDRESS 1
 #endif
