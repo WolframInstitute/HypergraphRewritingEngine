@@ -402,6 +402,12 @@ class ParallelEvolutionEngine {
     static constexpr uint32_t kMaxDedupProbes = 8;
     std::atomic<size_t> hash_collisions_{0};
     std::atomic<size_t> dedup_probe_exhaustions_{0};
+    // Stable MatchRecord copies allocated inside claim_match, and how many of those lost the
+    // claim. A loser is permanent arena: the allocator is a bump pointer with no per-object
+    // free, so the copy is never reclaimed. This is the number the batched default's extra
+    // arena is made of.
+    std::atomic<size_t> dedup_allocs_{0};
+    std::atomic<size_t> dedup_allocs_wasted_{0};
 
     // True when the two records denote the same match: same source state, rule, edge tuple and
     // binding. This is the predicate the dedup is defined by; the hash only selects where to
@@ -458,10 +464,21 @@ public:
                 hash_collisions_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
-            if (!stable) stable = make_stable();
+            // The stable copy has to exist before the exchange that publishes it, so it is
+            // allocated on the strength of a lookup that just missed. Another thread can claim
+            // the key in that window, and the arena is bump-allocated with no per-object free,
+            // so a copy that loses is a permanent cost. Counted rather than assumed: this is the
+            // arena the batched default pays for over eager, and a fix has to move THIS number.
+            if (!stable) {
+                stable = make_stable();
+                dedup_allocs_.fetch_add(1, std::memory_order_relaxed);
+            }
             auto [existing, inserted] = seen_match_hashes_.insert_if_absent(key, stable);
             if (inserted) return true;
-            if (existing && match_records_equal(*existing, rec)) return false;
+            if (existing && match_records_equal(*existing, rec)) {
+                dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
             hash_collisions_.fetch_add(1, std::memory_order_relaxed);
         }
         dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed);
@@ -473,6 +490,10 @@ public:
     size_t hash_collisions() const { return hash_collisions_.load(std::memory_order_relaxed); }
     size_t dedup_probe_exhaustions() const {
         return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
+    }
+    size_t dedup_allocs() const { return dedup_allocs_.load(std::memory_order_relaxed); }
+    size_t dedup_allocs_wasted() const {
+        return dedup_allocs_wasted_.load(std::memory_order_relaxed);
     }
 private:
 

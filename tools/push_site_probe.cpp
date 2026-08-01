@@ -1,12 +1,12 @@
-// Does push_match_to_children have anything to do when it is called at DISCOVERY?
+// Where does the batched default's extra cost actually go?
 //
 // WHY THIS EXISTS. Batched submission costs 13.52% more arena than eager (cost_matrix, 17 cases;
 // worst case star4-automorphic at 20.88%) and produces identical output. Batched is the default
 // regardless, because eager LOSES MATCHES -- 1 to 7 of 204 runs against 0 of 51 -- and forwarding
 // is inductive, so a lost match deletes its whole subtree while the run stays self-consistent.
-// The memory is recoverable; the lost matches are not. #77 is the recovery.
+// The memory is recoverable; the lost matches are not. #77 is the recovery, and this locates it.
 //
-// THE HYPOTHESIS UNDER TEST. Two mechanisms forward matches, covering complementary windows:
+// TWO MECHANISMS FORWARD MATCHES, covering complementary windows:
 //
 //   PULL   at child creation, the child walks its ancestor chain and takes each ancestor's
 //          matches, filtering by the consumed edges accumulated along the path. Covers matches
@@ -14,19 +14,27 @@
 //   PUSH   a match arriving in a state is forwarded to that state's registered children,
 //          recursively. Covers matches arriving AFTER the child exists.
 //
-// Under batched submission a state's matching COMPLETES before any of its rewrites are submitted,
-// so no child of that state should exist while its matches are being discovered. If that holds,
-// the DISCOVERY-time push always finds an empty child registry and is a no-op, and everything it
-// would have delivered is delivered instead by the child's pull at creation -- when the parent's
-// match set is already complete. Only the FORWARDING-time push can find children.
+// WHAT THIS MEASURED, AND WHAT IT REFUTED. The reasoning going in was that under batched
+// submission a state's matching completes before any of its rewrites are submitted, so no child
+// exists during discovery, so the DISCOVERY-time push is a no-op the child's pull would cover.
+// The first run reported a discovery-site empty fraction of 0.062: 93.8% of discovery pushes DO
+// find children, so children become visible earlier than that argument claims and the call cannot
+// be removed. The waste is at the FORWARDING site, which finds nothing 92.2% of the time.
 //
-// WHAT WOULD FALSIFY IT. A discovery-site empty fraction below 1.0. That would mean children
-// become visible earlier than the batching argument says, and the 13.52% has a different cause --
-// in which case DO NOT skip the call on the strength of the argument.
+// SO THE COLUMNS BELOW ARE THE ANSWER, NOT THE QUESTION:
 //
-// This measures; it does not change behaviour. Removing the call is a separate step gated on
-// this number, on cost_matrix over the same 17 cases, and on test_match_completeness holding at
-// zero misses.
+//   empty/calls per site -- how often a push has anything to push to. Cheap to fix (a probe that
+//   returns), but it is not where the arena goes.
+//
+//   dedup allocs and WASTED allocs -- where the arena DOES go. claim_match must have a stable
+//   MatchRecord copy before the exchange that publishes it, so it allocates on the strength of a
+//   lookup that just missed; another thread can claim the key in that window. The arena is a bump
+//   pointer with no per-object free, so every copy that loses is permanent. A fix for the 13.52%
+//   has to move the wasted count, and nothing else in this output is that number.
+//
+// This measures; it does not change behaviour. Removing or reordering anything is a separate step
+// gated on these numbers, on cost_matrix over the same 17 cases, and on test_match_completeness
+// holding at zero misses across the corpus x workers {1,2,4,8} x 3 reps.
 //
 // Usage: push_site_probe [steps]
 
@@ -67,7 +75,8 @@ std::vector<Workload> workloads() {
 struct Row {
     std::string name;
     int threads;
-    size_t d_calls, d_empty, f_calls, f_empty, matches;
+    size_t d_calls, d_empty, f_calls, f_empty;
+    size_t allocs, allocs_wasted;
 };
 
 Row run(const Workload& w, int threads, int steps, bool batched) {
@@ -82,26 +91,35 @@ Row run(const Workload& w, int threads, int steps, bool batched) {
     return {w.name, threads,
             s.push_discovery_calls.load(), s.push_discovery_empty.load(),
             s.push_forwarding_calls.load(), s.push_forwarding_empty.load(),
-            s.matches_found.load()};
+            e.dedup_allocs(), e.dedup_allocs_wasted()};
 }
+
+double frac(size_t part, size_t whole) { return whole ? double(part) / double(whole) : 0.0; }
 
 void report(const char* mode, const std::vector<Row>& rows) {
     std::printf("\n=== %s ===\n", mode);
-    std::printf("%-20s %-4s %-22s %-22s %s\n",
-                "workload", "thr", "discovery empty/calls", "forwarding empty/calls", "matches");
-    size_t td = 0, tde = 0, tf = 0, tfe = 0;
+    std::printf("%-20s %-4s %-21s %-21s %s\n",
+                "workload", "thr", "discovery empty/calls", "forwarding empty/calls",
+                "dedup wasted/allocs");
+    size_t td = 0, tde = 0, tf = 0, tfe = 0, ta = 0, taw = 0;
     for (const Row& r : rows) {
-        auto frac = [](size_t e, size_t c) { return c ? double(e) / double(c) : 1.0; };
-        std::printf("%-20s %-4d %8zu/%-8zu %.3f  %8zu/%-8zu %.3f  %zu\n",
+        std::printf("%-20s %-4d %7zu/%-7zu %.3f  %7zu/%-7zu %.3f  %7zu/%-7zu %.3f\n",
                     r.name.c_str(), r.threads,
                     r.d_empty, r.d_calls, frac(r.d_empty, r.d_calls),
                     r.f_empty, r.f_calls, frac(r.f_empty, r.f_calls),
-                    r.matches);
-        td += r.d_calls; tde += r.d_empty; tf += r.f_calls; tfe += r.f_empty;
+                    r.allocs_wasted, r.allocs, frac(r.allocs_wasted, r.allocs));
+        td += r.d_calls; tde += r.d_empty;
+        tf += r.f_calls; tfe += r.f_empty;
+        ta += r.allocs;  taw += r.allocs_wasted;
     }
-    std::printf("%-20s %-4s %8zu/%-8zu %.3f  %8zu/%-8zu %.3f\n", "TOTAL", "",
-                tde, td, td ? double(tde) / double(td) : 1.0,
-                tfe, tf, tf ? double(tfe) / double(tf) : 1.0);
+    std::printf("%-20s %-4s %7zu/%-7zu %.3f  %7zu/%-7zu %.3f  %7zu/%-7zu %.3f\n", "TOTAL", "",
+                tde, td, frac(tde, td), tfe, tf, frac(tfe, tf), taw, ta, frac(taw, ta));
+}
+
+size_t total_allocs(const std::vector<Row>& rows, bool wasted) {
+    size_t t = 0;
+    for (const Row& r : rows) t += wasted ? r.allocs_wasted : r.allocs;
+    return t;
 }
 
 }  // namespace
@@ -117,16 +135,19 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("push_match_to_children: does it find children, split by call site (steps=%d)\n",
-                steps);
+    std::printf("push_match_to_children and claim_match, by call site (steps=%d)\n", steps);
     report("BATCHED (the default)", batched);
     report("EAGER (for contrast)", eager);
 
-    size_t d = 0, de = 0;
-    for (const Row& r : batched) { d += r.d_calls; de += r.d_empty; }
-    std::printf("\nBatched discovery-site empty fraction: %.4f over %zu calls.\n",
-                d ? double(de) / double(d) : 1.0, d);
-    std::printf("1.0000 means the discovery-time push never has anything to do under batched,\n"
-                "so it can be skipped. Anything less falsifies that and the 13.52%% is elsewhere.\n");
+    const size_t ba = total_allocs(batched, false), bw = total_allocs(batched, true);
+    const size_t ea = total_allocs(eager, false),   ew = total_allocs(eager, true);
+    std::printf("\nStable MatchRecord copies allocated inside claim_match:\n");
+    std::printf("  batched  %zu allocated, %zu lost the claim (%.1f%%)\n",
+                ba, bw, 100.0 * frac(bw, ba));
+    std::printf("  eager    %zu allocated, %zu lost the claim (%.1f%%)\n",
+                ea, ew, 100.0 * frac(ew, ea));
+    std::printf("A lost copy is permanent arena -- the allocator is a bump pointer with no\n"
+                "per-object free. The difference between these two rows is what the batched\n"
+                "default's extra 13.52%% is made of, and what a fix has to move.\n");
     return 0;
 }
