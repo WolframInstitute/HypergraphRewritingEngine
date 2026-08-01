@@ -105,7 +105,30 @@ these substitutions and needs a different approach.
 | Harness | Property | Bound | Result |
 |---|---|---|---|
 | `concurrent_map_agreement` | Two threads offering different values for one key agree on the winner: exactly one reports `was_inserted`, both return the same value, that value is one of the two offered, the winner's own value is what is stored, and a later `lookup` returns it | 2 threads, 1 key, 2 values, capacity 4, no resize | **No errors, 32 complete executions** |
+| `concurrent_map_resize` | The same agreement holds across a table replacement, both pre-existing keys survive the rehash, and no key acquires a second entry | 2 threads, capacity 2→4, 3 keys, one resize round | **No errors, 176 complete executions** — after the fix below |
 | `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
+
+### What this found
+
+`concurrent_map_resize` reported a safety violation on its first run: both callers inserting one
+key across a resize came back with `was_inserted == true` — the split rendezvous the header's
+chain-scan comment exists to prevent.
+
+Two resizes could both install. Thread A takes the head from T0 to T1; thread B, whose own
+`resize()` loaded `table_` after that, takes it from T1 to T2. A is still holding T1, scans its
+ancestors, finds nothing, and claims the key there — while B, working from T2, has already walked
+past T1 in its own chain scan and claims the same key at the head. The chain scan is a
+point-in-time check and a rival's key can land in an older table after it has passed.
+
+B's second installation was never needed: A had already installed a table with twice the capacity.
+`resize()` now grows only if the *current* head still exceeds the load factor, and probe
+exhaustion in a superseded table retries at the head rather than growing. Fixed in `29283f7`,
+which also records the residual (growth genuinely warranted twice over) as a separate item, and
+records a head-re-check alternative that cost +1.9% instructions and did **not** close it.
+
+This is the point of the exercise. That interleaving needs two installations to straddle one
+thread's claim; no stress test on this machine had produced it, and the class had been in use
+long enough to produce four correctness bugs of the neighbouring kind.
 
 The bound is part of the result. `concurrent_map_agreement` says nothing about three concurrent
 inserters, about two different keys colliding in one probe run, or about a resize running
@@ -130,6 +153,7 @@ assertion inverted, and the checker must report a safety violation:
 | Harness | Inverted assertion | Result |
 |---|---|---|
 | `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
+| `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
 
 Do this for any harness added here, before believing its clean run.
