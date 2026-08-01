@@ -131,6 +131,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> parsed_rules_raw;
         int steps = 1;
 
+        // Warning trail served under the "Warnings" result key, schema shared with the GPU
+        // backend (Kind/Count/Context) so the WL formatter handles both backends. Collects
+        // option-parse skips, analysis refusals, and the engine's own warnings.
+        struct FfiWarning { std::string kind; int64_t count; std::string context; };
+        std::vector<FfiWarning> ffi_warnings;
+
         // Option values
         hypergraph::StateCanonicalizationMode state_canon_mode = hypergraph::StateCanonicalizationMode::None;  // Default: tree mode
         hypergraph::EventSignatureKeys event_signature_keys = hypergraph::EVENT_SIG_NONE;  // Default: no event canonicalization
@@ -278,6 +284,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
             else if (key == "Options") {
                 value_parser.read_association([&](const std::string& option_key, wxf::Parser& option_parser) {
+                    // A read that throws mid-value leaves the cursor INSIDE the value, and a
+                    // skip from there consumes the wrong tokens -- every later option then
+                    // parses from a shifted offset. Recovery seeks back here first.
+                    const size_t option_value_start = option_parser.position();
                     try {
                         if (option_key == "MaxSuccessorStatesPerParent") {
                             max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
@@ -415,7 +425,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         } else if (option_key == "CanonicalizeEvents") {
                             // Can be: None, Full, Automatic (symbols), or {"InputState", "OutputState", ...} (list)
                             try {
-                                // Try to read as list first
+                                // Try to read as list first. A failure mid-list (the header
+                                // parses, an element does not) leaves the cursor inside the
+                                // list, so the symbol fallback re-aligns to the value start.
                                 auto keys = option_parser.read<std::vector<std::string>>();
                                 event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 for (const auto& key : keys) {
@@ -427,7 +439,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                     else if (key == "ProducedEdges") event_signature_keys |= hypergraph::EventKey_ProducedEdges;
                                 }
                             } catch (...) {
-                                // Read as symbol
+                                // Read as symbol, from the START of the value.
+                                option_parser.seek(option_value_start);
                                 std::string symbol = option_parser.read<std::string>();
                                 if (symbol == "None") {
                                     event_signature_keys = hypergraph::EVENT_SIG_NONE;
@@ -545,11 +558,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         // narrowing, etc.). Skip the malformed value and continue — the
                         // alternative is aborting the whole evolve call on a single bad
                         // option, which breaks WL callers that pass forward-compatible
-                        // option sets the C++ side doesn't yet know about. Log into the
-                        // debug queue so the frontend can surface the skip.
+                        // option sets the C++ side doesn't yet know about. The failed read
+                        // may have consumed part of the value, so re-align to its start
+                        // before skipping, and put the skip on the warning trail (the
+                        // progress callback is a no-op under performRewriting).
+                        option_parser.seek(option_value_start);
+                        option_parser.skip_value();
+                        ffi_warnings.push_back(
+                            {"OptionSkipped", 1,
+                             "option '" + option_key + "' ignored: " + e.what()});
                         core_progress(host,
                             "FFI: skipping malformed option '" + option_key + "': " + e.what());
-                        option_parser.skip_value();
                     }
                 });
 
@@ -885,10 +904,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         float global_dim_min = std::numeric_limits<float>::max();
         float global_dim_max = std::numeric_limits<float>::lowest();
 
-        // Warning trail served under the "Warnings" result key, schema shared with the GPU
-        // backend (Kind/Count/Context) so the WL formatter handles both backends.
-        struct FfiWarning { std::string kind; int64_t count; std::string context; };
-        std::vector<FfiWarning> ffi_warnings;
         for (const auto& w : engine.warnings())
             ffi_warnings.push_back({"Engine", 1, w});
 

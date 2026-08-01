@@ -209,6 +209,14 @@ public:
     size_t position() const noexcept { return read_position_; }
     size_t remaining() const noexcept { return size_ - read_position_; }
     bool at_end() const noexcept { return read_position_ >= size_; }
+    // Restore the cursor to a position previously obtained from position(). A read that
+    // throws mid-value leaves the cursor inside that value; error recovery seeks back to
+    // the value's start and skip_value()s the whole thing, so the stream stays aligned
+    // for every later read. Seeking anywhere else breaks token alignment.
+    void seek(size_t pos) {
+        if (pos > size_) throw ParseError("seek past end of data", pos);
+        read_position_ = pos;
+    }
     // Skip over any WXF value (atomic or structured).
     //
     // Structured values recurse, and the input decides how deep -- a Rule token costs ONE
