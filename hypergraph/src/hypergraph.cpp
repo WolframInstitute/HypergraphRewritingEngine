@@ -1029,6 +1029,22 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
         qc_event_sig_.emplace_at(ev, arena_, s);
     }
 
+    // The RUN'S event identity, which is a different question from the invariant above. Slots
+    // are positions in the class's canonical frame, so they ARE the canonical ranks the
+    // signature wants, and consumed/produced stay in match/RHS order as it requires.
+    {
+        const auto keys = event_signature_keys();
+        if (keys != hgcommon::EVENT_SIG_NONE) {
+            uint64_t csig = hgcommon::event_signature(
+                keys, state_hash, m.to_hash, depth, m.rule,
+                m.consumed_slots, static_cast<uint8_t>(m.num_consumed),
+                m.produced_slots, static_cast<uint8_t>(m.num_produced));
+            if (csig == 0 || csig == ~0ULL) csig = 1;
+            if (qc_canon_event_seen_.insert_if_absent(csig, true).second)
+                qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     // Causal: one relationship per consumed edge that has a producer. Feed them in DESCENDING
     // producer order so nearer producers enter the kept adjacency before farther ones are
     // tested -- the same discipline the full-capture rendezvous uses, and what makes the

@@ -68,6 +68,10 @@ void ParallelEvolutionEngine::evolve(
     // Causal edges key by canonical edge orbit exactly when states are quotiented; set
     // this before any state (incl. genesis) is created so its edge keys use the right mode.
     hg_->set_quotient_causal(explore_from_canonical_states_only_);
+    // The reconstruction IS the quotient causal path, so it follows the same switch rather than
+    // being a member default -- defaulted on, a FULL-CAPTURE run would take the reconstruction
+    // branch in observable_* and report zeros, because full capture never populates it.
+    hg_->set_quotient_reconstruction(explore_from_canonical_states_only_);
     guard_quotient_transitive_reduction();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
@@ -171,6 +175,10 @@ void ParallelEvolutionEngine::evolve(
     // Causal edges key by canonical edge orbit exactly when states are quotiented; set
     // this before any state (incl. genesis) is created so its edge keys use the right mode.
     hg_->set_quotient_causal(explore_from_canonical_states_only_);
+    // The reconstruction IS the quotient causal path, so it follows the same switch rather than
+    // being a member default -- defaulted on, a FULL-CAPTURE run would take the reconstruction
+    // branch in observable_* and report zeros, because full capture never populates it.
+    hg_->set_quotient_reconstruction(explore_from_canonical_states_only_);
     guard_quotient_transitive_reduction();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);

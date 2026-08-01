@@ -206,6 +206,14 @@ class Hypergraph {
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
     std::atomic<uint32_t> qc_next_instance_{0};
     std::atomic<uint32_t> qc_next_raw_event_{0};
+    // Reconstructed events under the RUN'S event identity, as opposed to the raw count above.
+    // qc_event_sig_ carries a fixed (input, output, rule) triple, which is its own identity and
+    // not the one the caller selected -- EVENT_SIG_FULL keys on the endpoint states alone,
+    // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
+    // observable is the count of DISTINCT identities, so the mode's signature is computed here
+    // and the distinct ones counted.
+    ConcurrentMap<uint64_t, bool> qc_canon_event_seen_{4096};
+    std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
     // Reconstructed causal relation over raw event ids. ONE base with TWO views: every pair is
@@ -808,6 +816,14 @@ public:
     }
     // Raw observables recovered by the reconstruction (the full-capture counts).
     size_t num_reconstructed_events() const {
+        // Under an event-identity mode the observable is the count of distinct identities; with
+        // no identity selected every application is its own event and the raw count IS the
+        // answer. Mirrors num_events() on the full-capture side.
+        if (event_signature_keys() == hgcommon::EVENT_SIG_NONE)
+            return qc_next_raw_event_.load(std::memory_order_relaxed);
+        return qc_num_canon_events_.load(std::memory_order_relaxed);
+    }
+    size_t num_reconstructed_raw_events() const {
         return qc_next_raw_event_.load(std::memory_order_relaxed);
     }
     size_t num_reconstructed_causal_edges() const {
