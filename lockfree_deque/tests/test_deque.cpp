@@ -127,20 +127,23 @@ TEST(LockFreeDequeMultiThreaded, ConcurrentPushFront) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&deque, t, items_per_thread]() {
             for (int i = 0; i < items_per_thread; ++i) {
-                ASSERT_TRUE(deque.try_push_front(t * items_per_thread + i));
+                // The contract reports false on a TRANSIENT slot lag, not only when
+                // full (see deque.hpp's header); with 400 items in a 1024 ring, full
+                // is unreachable, so retry-until-true terminates.
+                while (!deque.try_push_front(t * items_per_thread + i)) {}
             }
         });
     }
-    
+
     for (auto& thread : threads) {
         thread.join();
     }
-    
+
     std::set<int> seen;
     while (auto value = deque.try_pop_front()) {
         seen.insert(*value);
     }
-    
+
     EXPECT_EQ(seen.size(), num_threads * items_per_thread);
 }
 
@@ -154,7 +157,8 @@ TEST(LockFreeDequeMultiThreaded, ConcurrentPushBack) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&deque, t, items_per_thread]() {
             for (int i = 0; i < items_per_thread; ++i) {
-                ASSERT_TRUE(deque.try_push_back(t * items_per_thread + i));
+                // Transient-lag false per the contract; full is unreachable here.
+                while (!deque.try_push_back(t * items_per_thread + i)) {}
             }
         });
     }
@@ -177,10 +181,11 @@ TEST(LockFreeDequeMultiThreaded, ProducerConsumer) {
     
     std::thread producer([&deque, num_items]() {
         for (int i = 0; i < num_items; ++i) {
+            // Racing the consumer's pops opens the same transient-lag window.
             if (i % 2 == 0) {
-                ASSERT_TRUE(deque.try_push_front(i));
+                while (!deque.try_push_front(i)) {}
             } else {
-                ASSERT_TRUE(deque.try_push_back(i));
+                while (!deque.try_push_back(i)) {}
             }
         }
     });
@@ -229,13 +234,14 @@ TEST(LockFreeDequeMultiThreaded, MixedOperations) {
             for (int i = 0; i < operations_per_thread; ++i) {
                 int op = op_dist(gen);
                 switch (op) {
+                    // A push may report false (transient lag, or genuinely full under
+                    // this op mix); the conservation invariant below only needs pushes
+                    // that SUCCEEDED to be counted.
                     case 0:
-                        ASSERT_TRUE(deque.try_push_front(i));
-                        total_pushed.fetch_add(1);
+                        if (deque.try_push_front(i)) total_pushed.fetch_add(1);
                         break;
                     case 1:
-                        ASSERT_TRUE(deque.try_push_back(i));
-                        total_pushed.fetch_add(1);
+                        if (deque.try_push_back(i)) total_pushed.fetch_add(1);
                         break;
                     case 2:
                         if (deque.try_pop_front()) {

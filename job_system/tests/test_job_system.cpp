@@ -320,6 +320,11 @@ TEST_F(JobSystemPerformanceTest, ThroughputBenchmark) {
 }
 
 TEST_F(JobSystemPerformanceTest, ThreadScalingBenchmark) {
+    // A scaling assertion needs real cores to scale ONTO: shared 2-core CI runners
+    // time-slice the "threads" and the ratios measure the scheduler's mood, not this
+    // code. Capability-gated, so the check stands wherever it can mean something.
+    if (std::thread::hardware_concurrency() < 4)
+        GTEST_SKIP() << "scaling assertions need >= 4 hardware threads";
     const int num_jobs = 5000;
     std::vector<size_t> thread_counts = {1, 2, 4};
     
@@ -417,6 +422,11 @@ struct ForkJob {
 };
 
 TEST(JobSystemForkJoin, NestedForkJoinScaling) {
+    // A scaling assertion needs real cores to scale ONTO: shared 2-core CI runners
+    // time-slice the "threads" and the ratios measure the scheduler's mood, not this
+    // code. Capability-gated, so the check stands wherever it can mean something.
+    if (std::thread::hardware_concurrency() < 4)
+        GTEST_SKIP() << "scaling assertions need >= 4 hardware threads";
     const int depth = 15;  // 2^16 - 1 jobs
     std::vector<size_t> thread_counts = {1, 2, 4, 8};
     size_t hw = std::thread::hardware_concurrency();
