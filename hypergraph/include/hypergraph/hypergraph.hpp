@@ -200,6 +200,7 @@ class Hypergraph {
     // would put the two sides on different heads and void the argument above.
     struct QcAppliedMatch {
         uint32_t id;
+        uint32_t event;                   // the raw event this application minted
         uint32_t num_consumed;
         const uint32_t* consumed_slots;   // arena-backed, stable
     };
@@ -230,6 +231,13 @@ class Hypergraph {
     // is what schedule-independence is fingerprinted on, and what a later materialisation of
     // the raw event list would key off.
     SegmentedArray<uint64_t> qc_event_sig_;
+    // The same events under the RUN'S event identity, indexed the same way. The pair accessors
+    // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
+    // relation against full capture is comparing against Event::signature, which is the run's
+    // identity, so emitting the internal triple instead compares two different functions and
+    // every pair looks like a disagreement. Left at 0 when no identity mode is selected, which
+    // is what full capture leaves Event::signature at in that case.
+    SegmentedArray<uint64_t> qc_event_runsig_;
     std::atomic<size_t> qc_num_causal_edges_{0};   // per consumed edge (the T1 multiset)
     std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
     std::atomic<size_t> qc_num_tr_pairs_{0};       // distinct pairs surviving reduction
@@ -852,16 +860,27 @@ public:
         qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
     }
 
+    // The identity a reconstructed PAIR endpoint is reported under: the run's, when one was
+    // selected, so the relation can be set-compared against full capture's, which keys its own
+    // pairs on Event::signature. Falls back to the internal (input, output, rule) triple when no
+    // identity mode is selected -- full capture leaves Event::signature at 0 in that case, so
+    // neither value is comparable then and the internal one at least distinguishes events.
+    uint64_t event_pair_signature(uint32_t e) const {
+        if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
+            const uint64_t* r = qc_event_runsig_.get(e);
+            if (r) return *r;
+        }
+        const uint64_t* s = qc_event_sig_.get(e);
+        return s ? *s : 0;
+    }
+
     // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
     // signatures. `reduced` selects the view: false walks every recorded pair (TR off), true
     // walks only those tagged in-reduction (TR on). Both come from the same online base, so
     // either view is available in any order at no extra cost.
     template <typename F>
     void for_each_reconstructed_causal(bool reduced, F&& f) const {
-        auto sig = [&](uint32_t e) -> uint64_t {
-            const uint64_t* s = qc_event_sig_.get(e);
-            return s ? *s : 0;
-        };
+        auto sig = [&](uint32_t e) -> uint64_t { return event_pair_signature(e); };
         if (reduced) {
             qc_preds_.for_each([&](uint64_t k, LockFreeList<uint32_t>* lst) {
                 const uint32_t c = static_cast<uint32_t>(k - 1);
@@ -872,6 +891,21 @@ public:
                 f(sig(static_cast<uint32_t>(k >> 32)), sig(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
             });
         }
+    }
+
+    // Visit the reconstructed branchial relation as pairs of isomorphism-invariant event
+    // signatures, so it can be set-compared against full capture's branchial edges rather than
+    // only count-compared. Full capture keys its pairs on (e1,e2); these are packed the same way,
+    // so a diff of the two sets names WHICH pair is missing -- which a count cannot.
+    //
+    // The pair key cannot collide with a ConcurrentMap sentinel: the two events of a pair are
+    // distinct, so lo < hi strictly, and neither an all-zero nor an all-ones key is reachable.
+    template <typename F>
+    void for_each_reconstructed_branchial(F&& f) const {
+        auto sig = [&](uint32_t e) -> uint64_t { return event_pair_signature(e); };
+        qc_branchial_pairs_.for_each([&](uint64_t k, bool) {
+            f(sig(static_cast<uint32_t>(k >> 32)), sig(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
+        });
     }
 
     // ==========================================================================

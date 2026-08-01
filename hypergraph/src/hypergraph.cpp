@@ -1056,6 +1056,11 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
                 m.consumed_slots, static_cast<uint8_t>(m.num_consumed),
                 m.produced_slots, static_cast<uint8_t>(m.num_produced));
             if (csig == 0 || csig == ~0ULL) csig = 1;
+            // Kept per event as well as counted, so the causal and branchial pair accessors can
+            // report the relation under the identity the CALLER selected. Reporting the internal
+            // (input, output, rule) triple instead makes every pair look like a disagreement
+            // against full capture, which keys its pairs on Event::signature.
+            qc_event_runsig_.emplace_at(ev, arena_, csig);
             if (qc_canon_event_seen_.insert_if_absent(csig, true).second)
                 qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1106,7 +1111,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     // pushes and scans interleave -- so the unordered pair is claimed and the winner reports.
     if (m.num_consumed) {
         auto& applied = qc_inst_applied_.get_or_default(inst.id, arena_);
-        applied.push(QcAppliedMatch{m.id, m.num_consumed, m.consumed_slots}, arena_);
+        applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, arena_);
         applied.for_each([&](const QcAppliedMatch& other) {
             if (other.id == m.id) return;
             bool overlaps = false;
@@ -1115,13 +1120,15 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
                     if (m.consumed_slots[i] == other.consumed_slots[j]) { overlaps = true; break; }
             if (!overlaps) return;
 
-            const uint32_t lo = m.id < other.id ? m.id : other.id;
-            const uint32_t hi = m.id < other.id ? other.id : m.id;
-            uint64_t bk = 1469598103934665603ULL;
-            bk ^= inst.id;  bk *= 1099511628211ULL;
-            bk ^= lo;       bk *= 1099511628211ULL;
-            bk ^= hi;       bk *= 1099511628211ULL;
-            if (bk == 0 || bk == ~0ULL) bk = 1;
+            // Keyed on the two EVENTS, packed the way qc_causal_pairs_ is, so the pair can be
+            // read back as a pair of event signatures and set-compared against full capture --
+            // which keys its own branchial edges on (e1,e2). A key built from match ids and the
+            // instance carries the same scope, because an application mints one event and
+            // distinct instances mint distinct events, but nothing can be recovered from it:
+            // comparing counts says only THAT the two paths disagree, never about which pair.
+            const uint32_t lo = ev < other.event ? ev : other.event;
+            const uint32_t hi = ev < other.event ? other.event : ev;
+            const uint64_t bk = (static_cast<uint64_t>(lo) << 32) | hi;
             if (qc_branchial_pairs_.insert_if_absent(bk, true).second)
                 qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         });
