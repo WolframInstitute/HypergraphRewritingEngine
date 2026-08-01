@@ -44,6 +44,11 @@ __device__ AppliedMatch apply_one_match(DeviceState ds, const DeviceRule* rules,
                                         const MatchRecord& m, uint32_t step,
                                         unsigned long long* sub = nullptr);
 
+// Insert a causal edge (producer -> consumer via shared edge e), first-writer-wins on the
+// (p, c, e) triple, with online TR when enabled. EXTERNAL because the quotient-causal DP
+// emits its canonical-event pairs through this same machinery (shared edge 0).
+__device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId e);
+
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,
                             const Pool<MatchRecord>&       matches,

@@ -18,7 +18,7 @@ void check(cudaError_t err, const char* what) {
 // One thread per state, grid-stride. Each claims its own arena slot, sized from its own state,
 // and keeps it across iterations so it re-claims only when it needs a larger one.
 __global__ void k_fill_exact_and_ranks(DeviceState ds, uint32_t lo, uint32_t hi,
-                                       bool key_is_exact, bool want_ranks,
+                                       bool key_is_exact, bool want_ranks, bool want_orbits,
                                        DeviceArena::View arena) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
@@ -28,14 +28,16 @@ __global__ void k_fill_exact_and_ranks(DeviceState ds, uint32_t lo, uint32_t hi,
     for (uint32_t sid = lo + tid; sid < hi; sid += stride) {
         if (sid >= ds.max_states) continue;
         uint64_t exact = 0;
-        // Nothing to compute when the state mode already produced the exact hash AND no ranks
-        // are wanted: the key IS the exact hash, so a second pass would recompute it.
-        if (key_is_exact && !want_ranks) {
+        // Nothing to compute when the state mode already produced the exact hash AND neither
+        // ranks nor orbits are wanted: the key IS the exact hash, so a second pass would
+        // recompute it.
+        if (key_is_exact && !want_ranks && !want_orbits) {
             ds.state_exact_hash[sid] = ds.state_canonical_hash[sid];
             continue;
         }
         const ExactHashStatus st =
-            state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, want_ranks);
+            state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, want_ranks,
+                                    want_orbits);
         if (st != ExactHashStatus::kOk) {
             ds.errors.record(error_kind_for(st));
             continue;
@@ -67,8 +69,8 @@ __global__ void k_stamp_events(DeviceState ds, uint32_t lo, uint32_t hi,
 
 void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
                                 EventSignatureKeys keys, bool key_is_exact,
-                                DeviceArena& arena) {
-    if (keys == hgcommon::EVENT_SIG_NONE || hi <= lo) return;
+                                DeviceArena& arena, bool want_orbits) {
+    if ((keys == hgcommon::EVENT_SIG_NONE && !want_orbits) || hi <= lo) return;
     const bool want_ranks = event_keys_need_ranks(keys);
     if (want_ranks) engine.ensure_edge_ranks();
 
@@ -85,7 +87,7 @@ void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
     const int cap   = cap_threads / block > 0 ? cap_threads / block : 1;
     const int grid  = want < 1 ? 1 : (want > cap ? cap : want);
     k_fill_exact_and_ranks<<<grid, block>>>(
-        engine.device(), lo, hi, key_is_exact, want_ranks, arena.view());
+        engine.device(), lo, hi, key_is_exact, want_ranks, want_orbits, arena.view());
     check(cudaDeviceSynchronize(), "fill_event_identity_inputs sync");
 }
 

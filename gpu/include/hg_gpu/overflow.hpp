@@ -36,6 +36,10 @@ enum class ErrorKind : uint32_t {
     // nodes. Sized from the config (one node per unique kept causal pair), so growing is a
     // real remedy.
     kTrPredsNodes        = 25,
+    // A quotient-causal structure (transition records, their orbit-array arena, producer or
+    // transition list nodes) ran out of capacity. Config-sized, so growing is a real remedy;
+    // the causal edges reachable only through the dropped work are missing from the result.
+    kQcNodes             = 26,
     kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
@@ -76,6 +80,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kEdgeConsumerNodes:   return "edge_consumers (node pool)";
         case ErrorKind::kBranchialIndexNodes: return "branchial_index (node pool)";
         case ErrorKind::kTrPredsNodes:        return "tr_preds (node pool)";
+        case ErrorKind::kQcNodes:             return "quotient-causal records/nodes";
         case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";

@@ -76,6 +76,12 @@ struct DeviceState {
     // a run whose events are identified by their endpoint states alone.
     uint32_t* state_edge_rank;
 
+    // Per-slot edge automorphism ORBIT (UINT32_MAX where none) plus per-state orbit counts,
+    // parallel to state_edge_ids / indexed by state. Written by the same IR pass; null unless
+    // the run does quotient-causal reconstruction, whose DP keys on orbits.
+    uint32_t* state_edge_orbit;
+    uint32_t* state_num_orbits;
+
     // Consumed or produced edges whose rank was unavailable when an event was stamped, so the
     // raw edge id stood in. Such a signature is not an isomorphism invariant; counting them is
     // what lets a caller comparing event counts across devices see that it happened.
@@ -128,6 +134,11 @@ struct DeviceState {
 
     // Flags
     bool tr_enabled;
+    // Quotient-causal route: when set, apply_one_match SKIPS the raw-edge producer/consumer
+    // rendezvous -- causal edges come from the orbit-keyed DP instead (quotient_causal.hpp),
+    // which is schedule-independent where the raw rendezvous under quotient is not. Branchial
+    // registration stays on either way, as on the host.
+    bool quotient_causal;
 
     // Index maintenance is lazy. Small states are matched by scanning their own
     // CSR slice, so the signature and vertex-inverted indices are read only once
@@ -213,6 +224,8 @@ public:
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
+        if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
+        if (state_num_orbits_)       cudaFree(state_num_orbits_);
         if (event_sig_fallbacks_)    cudaFree(event_sig_fallbacks_);
         if (canonical_event_count_)  cudaFree(canonical_event_count_);
         if (vertex_high_water_)      cudaFree(vertex_high_water_);
@@ -237,6 +250,21 @@ public:
               "EngineState init state_edge_rank");
         check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
               "EngineState init event_sig_raw_fallbacks");
+    }
+
+    // Take the per-slot edge orbit array and the per-state orbit counts, which only a
+    // quotient-causal run reads (its DP keys on orbits). Idempotent; call before launching.
+    void ensure_edge_orbits() {
+        if (state_edge_orbit_) return;
+        check(cudaMalloc(&state_edge_orbit_, sizeof(uint32_t) * cfg_.max_state_edge_total),
+              "EngineState state_edge_orbit alloc");
+        check(cudaMalloc(&state_num_orbits_, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState state_num_orbits alloc");
+        check(cudaMemset(state_edge_orbit_, 0xFF,
+              sizeof(uint32_t) * cfg_.max_state_edge_total),
+              "EngineState init state_edge_orbit");
+        check(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState init state_num_orbits");
     }
 
     // Take the canonical-event counter. Called once the event mode is known, alongside the
@@ -302,6 +330,8 @@ public:
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;
         d.state_edge_rank         = state_edge_rank_;
+        d.state_edge_orbit        = state_edge_orbit_;
+        d.state_num_orbits        = state_num_orbits_;
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
         d.canonical_event_count   = canonical_event_count_;
         d.vertex_high_water       = vertex_high_water_;
@@ -318,6 +348,7 @@ public:
         d.branchial_pair_dedup    = branchial_pair_dedup_.view();
         d.preds_list              = preds_list_.view();
         d.tr_enabled              = tr_enabled_;
+        d.quotient_causal         = quotient_causal_;
         d.slice_scan_max_edges    = slice_scan_max_edges_;
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
         d.needs_indices           = needs_indices_;
@@ -342,6 +373,8 @@ public:
     void clear_errors() { errors_.clear(); }
 
     void set_tr_enabled(bool enabled) { tr_enabled_ = enabled; }
+    void set_quotient_causal(bool enabled) { quotient_causal_ = enabled; }
+    bool quotient_causal() const { return quotient_causal_; }
 
     uint32_t config_slice_scan_max_edges() const { return slice_scan_max_edges_; }
     void set_maintain_indices(bool on) { maintain_indices_ = on; }
@@ -372,6 +405,13 @@ public:
             check(cudaMemset(state_edge_rank_, 0xFF,
                   sizeof(uint32_t) * cfg_.max_state_edge_total),
                   "EngineState clear state_edge_rank");
+        }
+        if (state_edge_orbit_) {
+            check(cudaMemset(state_edge_orbit_, 0xFF,
+                  sizeof(uint32_t) * cfg_.max_state_edge_total),
+                  "EngineState clear state_edge_orbit");
+            check(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
+                  "EngineState clear state_num_orbits");
         }
         if (event_sig_fallbacks_) {
             check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
@@ -521,6 +561,8 @@ private:
     uint64_t*                          state_canonical_hash_   = nullptr;
     uint64_t*                          state_exact_hash_       = nullptr;
     uint32_t*                          state_edge_rank_        = nullptr;
+    uint32_t*                          state_edge_orbit_       = nullptr;
+    uint32_t*                          state_num_orbits_       = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;
     uint32_t*                          canonical_event_count_  = nullptr;
     // Owned by the engine, not by a run. See ir_arena().
@@ -540,6 +582,7 @@ private:
     LockFreeList<EventId>              preds_list_;
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
+    bool                               quotient_causal_ = false;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

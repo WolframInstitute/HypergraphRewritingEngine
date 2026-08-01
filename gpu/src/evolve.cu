@@ -285,7 +285,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     auto t_total_start = std::chrono::steady_clock::now();
     auto t_init_start = std::chrono::steady_clock::now();
     EngineState& engine = state_;
-    engine.set_tr_enabled(in.transitive_reduction);
+    // Quotient exploration under Full state identity routes causal through the orbit-keyed DP
+    // (quotient_causal.hpp): which raw child wins the canonical slot decides which raw edges
+    // carry the attribution, so the raw rendezvous is schedule-dependent there
+    // (tools/quotient_causal_probe_gpu). TR stays off on that route, mirroring the host's
+    // guard_quotient_transitive_reduction.
+    const bool qc_route = in.explore_from_canonical_states_only &&
+                          in.canonicalization == CanonicalizationMode::Full &&
+                          in.num_steps > 0;
+    engine.set_quotient_causal(qc_route);
+    engine.set_tr_enabled(in.transitive_reduction && !qc_route);
+    if (qc_route) engine.ensure_edge_orbits();
     double t_init = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_init_start).count();
 
@@ -386,11 +396,16 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // kernel's threads each hold their own slot, and its grid is capped to the resident worker
     // count so demand is bounded by the device rather than by how many states a step produced.
     DeviceArena& identity_arena = engine.ir_arena(
-        ekeys_step == EVENT_SIG_NONE
+        (ekeys_step == EVENT_SIG_NONE && !qc_route)
             ? 1024ull
             : persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
     DedupMap event_identity_map(ekeys_step == EVENT_SIG_NONE ? 8u : cfg.max_events * 2u);
     event_identity_map.clear();
+
+    // The quotient-causal DP's device structures, one body of state whichever scheduler
+    // drives it; token-sized when the route is off.
+    QcState qc_state(qc_route, cfg.max_events, in.num_steps);
+    QcView qc_view = qc_state.view();
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
@@ -406,7 +421,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // from the dedup key above because event identity is defined over isomorphism classes
     // whatever the state mode is (SPEC.md sec 4); in Full the two coincide and this is free.
     const bool key_is_exact = (in.canonicalization == CanonicalizationMode::Full);
-    fill_event_identity_inputs(engine, 0, num_roots, ekeys_step, key_is_exact, identity_arena);
+    fill_event_identity_inputs(engine, 0, num_roots, ekeys_step, key_is_exact, identity_arena,
+                               qc_route);
+    if (qc_route && !in.persistent_scheduler) run_qc_seed_roots(engine, qc_view, num_roots);
     if (in.explore_from_canonical_states_only) {
         uint32_t zero32c = 0;
         check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
@@ -479,7 +496,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             /*dedup=*/in.explore_from_canonical_states_only,
             explore_threshold_u32, resolved_seed,
             in.canonicalization, ekeys, /*blocks=*/0,
-            /*quotient_roots=*/in.quotient_initial_states);
+            /*quotient_roots=*/in.quotient_initial_states,
+            qc_route ? &qc_view : nullptr);
 
         state_count_host = engine.num_states_host();
         engine.collect_warnings_into(out.warnings, "persistent evolve");
@@ -549,9 +567,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // canonicalized, so the signature cannot be filled inline there; it is filled here,
         // once both endpoint hashes exist and before the frontier moves on.
         fill_event_identity_inputs(engine, state_before, state_after, ekeys_step, key_is_exact,
-                                   identity_arena);
+                                   identity_arena, qc_route);
         stamp_event_identity_range(engine, event_before, engine.num_events_host(), ekeys_step,
                                    event_identity_map);
+        // Quotient-causal drive: register this step's raw events once both endpoint hashes
+        // and orbit tables exist (the two calls above).
+        if (qc_route)
+            run_qc_register_range(engine, qc_view, event_before, engine.num_events_host());
 
         auto t3 = std::chrono::steady_clock::now();
         t_hash += std::chrono::duration<double, std::milli>(t3 - t2).count();

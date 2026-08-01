@@ -109,10 +109,12 @@ __device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
 // there. Running it between hashing and dedup gives the stamping kernel both endpoint hashes.
 //
 // In Full state mode the exact hash is the mode's key and is already in state_canonical_hash;
-// `key_is_exact` says so, and the pass then only has to produce ranks.
+// `key_is_exact` says so, and the pass then only has to produce ranks. `want_orbits`
+// additionally scatters per-edge automorphism orbits (the quotient-causal DP's keys), and
+// makes the pass run even under EventSignatureKeys None.
 void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
                                 EventSignatureKeys keys, bool key_is_exact,
-                                DeviceArena& arena);
+                                DeviceArena& arena, bool want_orbits = false);
 
 // Stamp and deduplicate events [lo, hi). Reads the exact hashes and ranks the call above filled.
 void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,

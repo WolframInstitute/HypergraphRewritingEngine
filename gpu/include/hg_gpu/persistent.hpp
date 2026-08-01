@@ -19,6 +19,7 @@
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/ring_buffer.hpp"
 #include "hg_gpu/termination.hpp"
@@ -170,6 +171,17 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // k_seed_roots does for the level-synchronous
                                             // scheduler, or the option changes the state set on
                                             // one and not the other.
-                                            bool quotient_roots = false);
+                                            bool quotient_roots = false,
+                                            // The quotient-causal DP's device structures
+                                            // (quotient_causal.hpp), constructed by the
+                                            // caller so both schedulers can drive one body of
+                                            // state. Disabled (enabled == 0) when null.
+                                            const QcView* qc = nullptr);
+
+// The level-synchronous scheduler's quotient-causal drive: seed the roots' INIT producers
+// once, then register each step's raw-event range after its identity phase (both endpoint
+// hashes and orbit tables must exist by then).
+void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots);
+void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi);
 
 }  // namespace hg_gpu

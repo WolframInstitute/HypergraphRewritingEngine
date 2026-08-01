@@ -13,6 +13,7 @@
 // Usage: quotient_causal_probe_gpu [reps]   (HG_GPU_PERSISTENT_BLOCKS picks the grid)
 
 #include "hg_gpu/evolve.hpp"
+#include "hypergraph/parallel_evolution.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +51,27 @@ int main(int argc, char** argv) {
         for (auto& [k, v] : counts) std::printf(" %zu x%d", k, v);
         std::printf("  state counts:");
         for (auto& [k, v] : tallies_states) std::printf(" %zu x%d", k, v);
+        std::printf("\n");
+    }
+
+    // CPU reference on the identical workload, both routes: the quotient DP's canonical-pair
+    // count must agree across devices, and full capture is the sanity anchor.
+    for (bool quotient : {true, false}) {
+        std::map<size_t, int> counts;
+        for (int i = 0; i < reps; ++i) {
+            hypergraph::Hypergraph g;
+            g.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+            g.set_event_signature_keys(hgcommon::EVENT_SIG_FULL);
+            g.causal_graph().set_transitive_reduction(true);
+            hypergraph::ParallelEvolutionEngine e(&g, 4);
+            e.set_explore_from_canonical_states_only(quotient);
+            e.add_rule(hypergraph::make_rule(0).lhs({0, 1}).lhs({1, 2})
+                           .rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build());
+            e.evolve({{0, 1}, {1, 2}, {2, 3}}, 3);
+            counts[g.causal_graph().get_causal_edges().size()]++;
+        }
+        std::printf("cpu quotient=%d reps=%d causal counts:", quotient ? 1 : 0, reps);
+        for (auto& [k, v] : counts) std::printf(" %zu x%d", k, v);
         std::printf("\n");
     }
     return 0;

@@ -78,10 +78,15 @@ enum class ExactHashStatus : uint8_t {
     kMalformedState,
 };
 
+// `want_orbits` additionally scatters each edge's automorphism ORBIT into
+// ds.state_edge_orbit (parallel to the CSR slice, UINT32_MAX where the flattening skipped a
+// slot) and writes the state's orbit count into ds.state_num_orbits -- the quotient-causal
+// DP's keys. Rides the same IR pass as the hash and ranks.
 __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
-                                                   uint64_t& out_hash, bool want_ranks = false);
+                                                   uint64_t& out_hash, bool want_ranks = false,
+                                                   bool want_orbits = false);
 
 // The ErrorKind a failed exact hash should be recorded as. One place, so a new call site cannot
 // pick a different mapping and re-conflate what this separation exists to keep apart.

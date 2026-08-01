@@ -9,6 +9,7 @@
 
 #include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/persistent.hpp"
+#include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/wl_hash.hpp"
 
 #include <cuda_runtime.h>
@@ -67,6 +68,32 @@ __global__ void k_seed_match_queue_counted(
     queue.try_push(item);   // capacity >= kept_cap * num_rules, so this cannot fail here
 }
 
+// Quotient-causal seeding for a scheduler that hashed its roots elsewhere: every orbit of each
+// root gains the INIT sentinel producer (initial edges have no producing event) and the root
+// is marked reached at depth 0. Root state ids are [0, num_roots) on both schedulers.
+__global__ void k_qc_seed_roots(DeviceState ds, QcView qc, uint32_t num_roots) {
+    const uint32_t sid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (sid >= num_roots) return;
+    const uint64_t h = ds.state_canonical_hash[sid];
+    const uint32_t norb = ds.state_num_orbits[sid];
+    for (uint32_t j = 0; j < norb; ++j) qc_add_producer(ds, qc, h, 0, j, INVALID_ID);
+    qc_reach(ds, qc, h, 0);
+}
+
+// Register a range of raw events, one thread each -- the level-synchronous scheduler's
+// per-step drive, run after the step's identity phase so both endpoints' hashes and orbit
+// tables exist.
+__global__ void k_qc_register_range(DeviceState ds, QcView qc, uint32_t lo, uint32_t hi) {
+    const uint32_t eid = lo + blockIdx.x * blockDim.x + threadIdx.x;
+    if (eid >= hi) return;
+    const DeviceEvent& ev = ds.event_pool.at(eid);
+    if (ev.id == INVALID_ID || ev.input_state == INVALID_ID ||
+        ev.output_state == INVALID_ID)
+        return;
+    qc_register_transition(ds, qc, ev.input_state, ev.output_state, eid, ev.rule,
+                           ev.step > 0 ? ev.step - 1 : 0);
+}
+
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
 // must stay the twin: the two schedulers deduplicating different equivalences is not a
 // performance difference, it is a different evolution.
@@ -82,7 +109,8 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
                                             CanonicalizationMode mode,
                                             DeviceArena::View arena,
                                             uint32_t*& slot, uint64_t& slot_words,
-                                            uint64_t& out_key, bool want_ranks) {
+                                            uint64_t& out_key, bool want_ranks,
+                                            bool want_orbits = false) {
     switch (mode) {
         case CanonicalizationMode::None:
             // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
@@ -95,7 +123,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
         case CanonicalizationMode::Full:
         default:
             return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
-                                           want_ranks);
+                                           want_ranks, want_orbits);
     }
 }
 
@@ -117,7 +145,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   bool quotient_roots,
+                                   bool quotient_roots, QcView qc,
                                    StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
@@ -128,7 +156,8 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     uint64_t key = 0;
     {
         const ExactHashStatus st =
-            state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks);
+            state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks,
+                             qc.enabled != 0);
         if (st != ExactHashStatus::kOk) {
             ds.errors.record(error_kind_for(st));
             return;
@@ -149,6 +178,17 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
             }
         }
         ds.state_exact_hash[sid] = exact;
+    }
+
+    // Quotient-causal seed, the device twin of Hypergraph::quotient_causal_seed: every orbit
+    // of a root gains the INIT sentinel producer (initial edges have no producing event), and
+    // the root is marked reached at depth 0. Duplicate roots re-seed the same keys; the DP's
+    // per-(key, producer) dedup makes that idempotent.
+    if (qc.enabled) {
+        const uint32_t norb = ds.state_num_orbits[sid];
+        for (uint32_t j = 0; j < norb; ++j)
+            qc_add_producer(ds, qc, key, 0, j, INVALID_ID);
+        qc_reach(ds, qc, key, 0);
     }
 
     const auto r = map.insert_if_absent(key == 0 ? 1 : key, sid);
@@ -368,6 +408,7 @@ __global__ void k_persistent_evolve(
         DedupMap::DeviceView event_map,
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term,
+        QcView qc,
         unsigned long long* phase_cycles) {
 
     const bool need_ranks = event_keys_need_ranks(event_keys);
@@ -472,7 +513,7 @@ __global__ void k_persistent_evolve(
                     uint64_t h = 0;
                     const ExactHashStatus key_st =
                         state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                         ir_slot_words, h, need_ranks);
+                                         ir_slot_words, h, need_ranks, qc.enabled != 0);
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
@@ -513,6 +554,16 @@ __global__ void k_persistent_evolve(
                                                   ds.state_exact_hash[rec.state_id], exact,
                                                   rec.state_id, child_sid, step + 1u,
                                                   rec.rule_id, event_map);
+                        }
+
+                        // Quotient causal: register this raw event's canonical transition and
+                        // drive the DP. EVERY raw event registers, whether or not the child
+                        // survives dedup below -- the host registers per raw event too. Both
+                        // endpoint hashes and orbit tables exist at this point (the parent's
+                        // from its own canon, the child's from the pass just above).
+                        if (qc.enabled && child_event != INVALID_ID) {
+                            qc_register_transition(ds, qc, rec.state_id, child_sid,
+                                                   child_event, rec.rule_id, step);
                         }
 
                         expand_child = child_step < max_steps &&
@@ -621,15 +672,11 @@ __global__ void k_persistent_evolve(
 //
 // Measured (bench_gpu_evolve, WPP rule, quotient, Full, RTX 4090, 128 SMs, medians): 6 steps
 // -- 128 blocks 8.1 ms, 384 6.6, 768 6.4, 1536 6.3, 3072 6.5; 7 steps -- 128 blocks 65.8 ms,
-// 512 40.3, 1024 37.3, 3072 37.5. A broad plateau from ~6x the SM count up; the idle-path
-// backoff in the kernels above is what makes oversubscription free when work runs short.
-//
-// The default stays ONE per SM even so: under quotient exploration the causal-edge set is
-// schedule-dependent (tools/quotient_causal_probe_gpu -- isomorphic children race for the
-// canonical slot, downstream causal attribution keys on the winner's raw edges; ~1/25 runs at
-// this grid, ~1/5 at 8x), and larger grids widen that window until causal attribution is
-// orbit-keyed. The ~40% at 8x is the payoff waiting on that fix; HG_GPU_PERSISTENT_BLOCKS
-// reaches it today.
+// 512 40.3, 1024 37.3, 3072 37.5. A broad plateau from ~6x the SM count up; 8x sits inside it
+// on both depths, and the idle-path backoff in the kernels above is what makes
+// oversubscription free when work runs short. Quotient causal is orbit-keyed
+// (quotient_causal.hpp), so the causal set is the same at every grid
+// (tools/quotient_causal_probe_gpu holds it constant, and equal to the CPU's).
 uint32_t default_persistent_grid() {
     static uint32_t cached = 0;
     if (cached) return cached;
@@ -647,6 +694,22 @@ uint32_t default_persistent_grid() {
     }
     cached = static_cast<uint32_t>(sms);
     return cached;
+}
+
+void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots) {
+    if (num_roots == 0) return;
+    const uint32_t block = 64;
+    k_qc_seed_roots<<<(num_roots + block - 1) / block, block>>>(engine.device(), qc,
+                                                                num_roots);
+    check(cudaDeviceSynchronize(), "qc seed roots sync");
+}
+
+void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi) {
+    if (hi <= lo) return;
+    const uint32_t block = 64;
+    k_qc_register_range<<<((hi - lo) + block - 1) / block, block>>>(engine.device(), qc, lo,
+                                                                    hi);
+    check(cudaDeviceSynchronize(), "qc register range sync");
 }
 
 uint32_t run_persistent_match(const EngineState& engine,
@@ -769,9 +832,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             CanonicalizationMode state_mode,
                                             EventSignatureKeys event_keys,
                                             uint32_t blocks,
-                                            bool quotient_roots) {
+                                            bool quotient_roots,
+                                            const QcView* qc_in) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
+
+    QcView qc{};
+    if (qc_in) qc = *qc_in;
 
     // Records are consumed while they are still being produced, so their publication flags
     // must start clear. The scheduler that relies on the flag is the one that clears it.
@@ -852,7 +919,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             engine.device(), d_states, n, canonical.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
             event_keys_need_ranks(event_keys),
-            arena.view(), quotient_roots, d_kept, d_kept_count, n);
+            arena.view(), quotient_roots, qc, d_kept, d_kept_count, n);
     }
     {
         const uint32_t block = 128;
@@ -870,7 +937,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        event_ids.view(), arena.view(), term.view(), d_phase_cycles);
+        event_ids.view(), arena.view(), term.view(), qc, d_phase_cycles);
     check(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();

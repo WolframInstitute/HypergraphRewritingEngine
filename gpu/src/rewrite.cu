@@ -100,12 +100,15 @@ __device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
     return false;
 }
 
+}  // namespace
+
 // Try to add a causal edge (p → c via shared edge e). First-writer-wins via
 // the causal_triple_dedup map. Multiplicity is preserved — distinct shared
 // edges between the same (p, c) pair produce distinct triple keys and thus
 // distinct CausalEdge entries. With TR enabled, redundancy is decided by the
 // backward-reachability oracle, and a KEPT edge's only bookkeeping is one
-// preds_list push per unique event pair.
+// preds_list push per unique event pair. EXTERNAL linkage (declared in rewrite.hpp): the
+// quotient-causal DP emits its canonical-event pairs through this same machinery.
 __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId e) {
     if (p == INVALID_ID || c == INVALID_ID || p == c) return;
 
@@ -142,6 +145,8 @@ __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId
         }
     }
 }
+
+namespace {
 
 __device__ void try_add_branchial_edge(DeviceState ds, EventId a, EventId b, EdgeId shared) {
     if (a == INVALID_ID || b == INVALID_ID || a == b) return;
@@ -496,13 +501,15 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     __threadfence();  // make the event visible before any rendezvous reads it
     const unsigned long long t_event = clock64();
 
-    // [DIAGNOSIS] disabled temporarily
-    #if 1
+    // Under the quotient-causal route the raw-edge rendezvous is replaced by the orbit-keyed
+    // DP (quotient_causal.hpp), driven from the scheduler once the child is canonicalized --
+    // which raw child wins the canonical slot must not decide the causal set. Mirrors the
+    // rewriter.cpp gate. Branchial registration below stays on either way, as on the host.
+    if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
         if (produced[r] != INVALID_ID) register_as_producer(ds, my_event, produced[r]);
     }
-    #endif
 
     // 9. Causal rendezvous — consumer side (our consumed edges).
     //
@@ -536,16 +543,15 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         consumed_sorted[j + 1] = key_eid;
     }
 
-    #if 1
     for (uint8_t p = 0; p < n_cons; ++p) {
         EdgeId eid = consumed_sorted[p];
         if (eid != INVALID_ID) register_as_consumer(ds, my_event, eid);
     }
+    }  // end !quotient_causal (raw-edge rendezvous)
     const unsigned long long t_causal = clock64();
 
     // 10. Branchial scan: our sibling events in the same input state.
     register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
-    #endif
 
     if (sub) {
         atomicAdd(&sub[0], t_reserved - t_start);
