@@ -15,6 +15,8 @@
 //
 //   Linux    futex(FUTEX_WAIT_PRIVATE / FUTEX_WAKE_PRIVATE)
 //   Windows  WaitOnAddress / WakeByAddressSingle / WakeByAddressAll
+//   macOS    os_sync_wait_on_address / os_sync_wake_by_address_{any,all}
+//            (public since macOS 14.4; earlier SDKs fall through below)
 //   fallback std::atomic::wait -- WHICH MAY TAKE A LOCK. park_backend() reports it so a build
 //            can assert against shipping on it, rather than discovering it at runtime.
 //
@@ -38,11 +40,14 @@
 #  endif
 #  include <windows.h>
 #  define HG_PARK_WAIT_ON_ADDRESS 1
+#elif defined(__APPLE__) && __has_include(<os/os_sync_wait_on_address.h>)
+#  include <os/os_sync_wait_on_address.h>
+#  define HG_PARK_OS_SYNC 1
 #endif
 
 namespace hgcommon {
 
-enum class ParkBackend { Futex, WaitOnAddress, StdAtomicWait };
+enum class ParkBackend { Futex, WaitOnAddress, OsSync, StdAtomicWait };
 
 // Which primitive this build uses. StdAtomicWait is the only one that may block on a lock.
 constexpr ParkBackend park_backend() {
@@ -50,6 +55,8 @@ constexpr ParkBackend park_backend() {
     return ParkBackend::Futex;
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     return ParkBackend::WaitOnAddress;
+#elif defined(HG_PARK_OS_SYNC)
+    return ParkBackend::OsSync;
 #else
     return ParkBackend::StdAtomicWait;
 #endif
@@ -68,6 +75,10 @@ inline void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) 
     uint32_t compare = expected;
     ::WaitOnAddress(const_cast<volatile void*>(static_cast<const volatile void*>(&addr)),
                     &compare, sizeof(uint32_t), INFINITE);
+#elif defined(HG_PARK_OS_SYNC)
+    ::os_sync_wait_on_address(const_cast<void*>(static_cast<const void*>(&addr)),
+                              static_cast<uint64_t>(expected), sizeof(uint32_t),
+                              OS_SYNC_WAIT_ON_ADDRESS_NONE);
 #else
     addr.wait(expected, std::memory_order_acquire);
 #endif
@@ -79,6 +90,9 @@ inline void unpark_one(const std::atomic<uint32_t>& addr) {
               FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     ::WakeByAddressSingle(const_cast<void*>(static_cast<const void*>(&addr)));
+#elif defined(HG_PARK_OS_SYNC)
+    ::os_sync_wake_by_address_any(const_cast<void*>(static_cast<const void*>(&addr)),
+                                  sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
 #else
     // wait() is const-qualified but notify_one()/notify_all() are not; the wake mutates no
     // atomic value, and this API takes const& to mirror the futex path, so cast it away.
@@ -92,6 +106,9 @@ inline void unpark_all(const std::atomic<uint32_t>& addr) {
               FUTEX_WAKE_PRIVATE, INT32_MAX, nullptr, nullptr, 0);
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     ::WakeByAddressAll(const_cast<void*>(static_cast<const void*>(&addr)));
+#elif defined(HG_PARK_OS_SYNC)
+    ::os_sync_wake_by_address_all(const_cast<void*>(static_cast<const void*>(&addr)),
+                                  sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
 #else
     const_cast<std::atomic<uint32_t>&>(addr).notify_all();
 #endif
