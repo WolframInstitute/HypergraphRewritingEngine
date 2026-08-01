@@ -23,35 +23,66 @@ namespace {
 hg_gpu::EvolveInput build_input(const GpuJob& job) {
     hg_gpu::EvolveInput in;
 
+    // Rule variables are validated BEFORE the uint8_t narrowing: a value at or above
+    // MAX_VARS would wrap through the cast and pass the device-side check as the WRONG
+    // variable, silently merging two distinct pattern variables. The contract mirrors the
+    // CPU FFI exactly -- malformed shape, negative variable, or out-of-domain variable is
+    // an error, an empty RHS is a legitimate deleting rule ({{x,y}} -> {} reaches the
+    // empty state), and only an empty LHS is rejected. make_device_rule re-validates the
+    // dimension counts downstream.
+    size_t rule_index = 0;
     for (const auto& [name, parts] : job.rules) {
         (void)name;
-        if (parts.size() != 2) continue;
+        if (parts.size() != 2) {
+            throw std::runtime_error("rule " + std::to_string(rule_index) +
+                                     " is not lhs -> rhs (expected 2 parts, got " +
+                                     std::to_string(parts.size()) + ")");
+        }
+        auto checked_var = [&](int64_t v, const char* side) -> uint8_t {
+            if (v < 0) {
+                throw std::runtime_error("rule " + std::to_string(rule_index) + " " + side +
+                                         " has a negative pattern variable");
+            }
+            if (v >= static_cast<int64_t>(hgcommon::MAX_VARS)) {
+                throw std::runtime_error(
+                    "rule " + std::to_string(rule_index) + " " + side +
+                    " uses pattern variable " + std::to_string(v) + ", but the maximum is " +
+                    std::to_string(hgcommon::MAX_VARS - 1));
+            }
+            return static_cast<uint8_t>(v);
+        };
         hg_gpu::RewriteRule r;
         uint8_t lhs_max = 0, rhs_max = 0;
         for (const auto& edge : parts[0]) {
             std::vector<uint8_t> e;
             for (int64_t v : edge) {
-                if (v < 0) continue;
-                e.push_back(static_cast<uint8_t>(v));
-                lhs_max = std::max<uint8_t>(lhs_max, static_cast<uint8_t>(v));
+                const uint8_t u = checked_var(v, "LHS");
+                e.push_back(u);
+                lhs_max = std::max<uint8_t>(lhs_max, u);
             }
             if (!e.empty()) r.lhs.push_back(std::move(e));
         }
         for (const auto& edge : parts[1]) {
             std::vector<uint8_t> e;
             for (int64_t v : edge) {
-                if (v < 0) continue;
-                e.push_back(static_cast<uint8_t>(v));
-                rhs_max = std::max<uint8_t>(rhs_max, static_cast<uint8_t>(v));
+                const uint8_t u = checked_var(v, "RHS");
+                e.push_back(u);
+                rhs_max = std::max<uint8_t>(rhs_max, u);
             }
             if (!e.empty()) r.rhs.push_back(std::move(e));
         }
-        if (r.lhs.empty() || r.rhs.empty()) continue;
+        if (r.lhs.empty()) {
+            throw std::runtime_error("rule " + std::to_string(rule_index) +
+                                     " has an empty left-hand side");
+        }
         r.num_lhs_vars = static_cast<uint8_t>(lhs_max + 1);
         r.num_rhs_vars = static_cast<uint8_t>(rhs_max + 1);
         in.rules.push_back(std::move(r));
+        ++rule_index;
     }
 
+    // Initial-state vertices are LABELS, not variables: any int64 (negative included) is
+    // remapped to a dense id, exactly as the CPU FFI's per-state canonical numbering does.
     for (const auto& state : job.initial_states) {
         std::unordered_map<int64_t, hg_gpu::VertexId> vmap;
         hg_gpu::VertexId next = 0;
@@ -59,7 +90,6 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         for (const auto& edge : state) {
             std::vector<hg_gpu::VertexId> e;
             for (int64_t v : edge) {
-                if (v < 0) continue;
                 auto it = vmap.find(v);
                 if (it == vmap.end()) { vmap[v] = next; e.push_back(next); ++next; }
                 else e.push_back(it->second);
