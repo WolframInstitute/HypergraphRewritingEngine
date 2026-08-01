@@ -5,8 +5,10 @@ name: Windows
 # true. Same OFF flags as the other legs. The MinGW cross-build used for the
 # bundled paclet exe is a different toolchain -- this one is native cl.exe.
 on:
-  workflow_dispatch:        # manual until validated on a real Actions run, then add push
+  push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   windows-tests:

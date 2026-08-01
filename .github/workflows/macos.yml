@@ -5,8 +5,10 @@ name: macOS
 # first macOS compile+run signal the project has; clang/libc++ and the ARM64
 # memory model are exactly what the Linux leg cannot see.
 on:
-  workflow_dispatch:        # manual until validated on a real Actions run, then add push
+  push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   macos-tests:
