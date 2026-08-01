@@ -34,6 +34,7 @@ struct Out {
     std::map<uint32_t, size_t> per_depth;
     size_t states = 0;
     uint64_t fp = 0;
+    size_t spine = 0, taken = 0, survived = 0, drained = 0;
 };
 
 Out run(double q, int threads, int steps) {
@@ -59,6 +60,10 @@ Out run(double q, int threads, int steps) {
     }
     o.fp = 1469598103934665603ULL;
     for (uint64_t h : hashes) o.fp = fnv(o.fp, h);
+    o.spine = e.stats().spine_forced.load();
+    o.taken = e.draws_taken();
+    o.survived = e.draws_survived();
+    o.drained = e.states_drained();
     return o;
 }
 
@@ -73,8 +78,9 @@ int main(int argc, char** argv) {
         uint64_t fp1 = 0;
         for (int thr : {1, 4}) {
             Out o = run(q, thr, steps);
-            std::printf("%-6.3f %-4d %-8zu %016llx  ", q, thr, o.states,
-                        static_cast<unsigned long long>(o.fp));
+            std::printf("%-6.3f %-4d %-8zu %016llx sp=%zu dr=%zu %zu/%zu  ", q, thr, o.states,
+                        static_cast<unsigned long long>(o.fp), o.spine, o.drained,
+                        o.survived, o.taken);
             for (auto& [d, n] : o.per_depth) std::printf("%u:%zu ", d, n);
             const uint32_t max_d = o.per_depth.empty() ? 0 : o.per_depth.rbegin()->first;
             if (max_d < static_cast<uint32_t>(steps)) std::printf(" EXTINCT@%u", max_d);

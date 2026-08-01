@@ -683,13 +683,20 @@ private:
         std::atomic<size_t> matches{0};
         // Sampling spine bookkeeping (transition_rate_ < 1 only). A fixed rate is a knife-edge:
         // below 1/branching the sampled evolution goes extinct before reaching depth. The spine
-        // guarantees each state at least one surviving outgoing transition -- if no draw passed
-        // by the state's drain, the minimum-canonical-key stored match is spawned; a draw that
-        // fails AFTER the drain on a state with no survivor forces that transition through
-        // instead (the late spine). Canonical keys keep the fast-path draws schedule-independent;
-        // the spine pick's schedule stability is measured, not assumed.
-        std::atomic<uint32_t> spawned_any{0};
-        std::atomic<uint32_t> drained{0};
+        // keeps the minimum-canonical-key OWN-FOUND transition alive when none of the state's
+        // own draws passed.
+        //
+        // OWN-FOUND ONLY, deliberately: a state's own matching completes exactly at its drain,
+        // so the minimum over own keys is a pure function of the state -- while the stored list
+        // also holds forwarded arrivals, which race the drain, and a spine over the snapshot
+        // made WHICH transition survived depend on the schedule (caught at 8 workers by
+        // SamplingReproducibility). Forwarded draws neither mark nor force: the surviving set is
+        // own-passers, plus forwarded-passers, plus the own-minimum when no own draw passed --
+        // every term key-deterministic. A state with NO own-found matches has no spine and
+        // relies on its forwarded draws; that hole is documented, and measured not to bite on
+        // the corpus.
+        std::atomic<uint32_t> own_spawned{0};
+        std::atomic<uint64_t> own_min_key{~0ULL};
     };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 

@@ -535,7 +535,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // transition with its own draw. Only the (this child, this match) transition is at
         // stake here.
         if (transition_rate_ < 1.0 &&
-            !transition_survives_spined(child_info.child_state, canonical_transition_key(child_info.child_state, forwarded), 0))
+            !transition_survives(canonical_transition_key(child_info.child_state, forwarded), 0))
             return;
 
         // Spawn REWRITE task for this forwarded match
@@ -666,7 +666,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         // Without this the sampled subgraph depends on which submission mode is in use, since
         // forwarded matches would enter the batch unthinned while discovered ones are thinned.
         if (transition_rate_ < 1.0 &&
-            !transition_survives_spined(child, canonical_transition_key(child, forwarded), 1)) return;
+            !transition_survives(canonical_transition_key(child, forwarded), 1)) return;
 
         batch.push_back(forwarded);
     });
@@ -835,7 +835,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         // are deliberately upstream of it: the match stays available to this child's own
         // children, where it is a different transition and gets its own draw.
         if (transition_rate_ < 1.0 &&
-            !transition_survives_spined(child, canonical_transition_key(child, forwarded), 2)) return;
+            !transition_survives(canonical_transition_key(child, forwarded), 2)) return;
 
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
@@ -1128,46 +1128,44 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
 
 bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t transition_key,
                                                          int site) {
+    // Own-found draws only. Track the running minimum own key -- complete exactly at the
+    // state's drain, because its own matching is what the drain joins on -- and mark whether
+    // any own draw passed. Forwarded draws go through transition_survives directly and touch
+    // neither: their arrival order races the drain, and a spine that read them decided WHICH
+    // transition survives by schedule (caught at 8 workers by SamplingReproducibility).
     MatchJoin* join = match_join_for(source);
+    uint64_t seen = join->own_min_key.load(std::memory_order_relaxed);
+    while (transition_key < seen &&
+           !join->own_min_key.compare_exchange_weak(seen, transition_key,
+                                                    std::memory_order_relaxed)) {}
     if (transition_survives(transition_key, site)) {
-        join->spawned_any.store(1, std::memory_order_release);
-        return true;
-    }
-    // Late spine. The drain already ran for this state and found nothing spawned (its own
-    // list-walk found no match, or none had arrived yet), so this failed draw is the state's
-    // only remaining chance at an outgoing transition -- force it through. drained is read
-    // AFTER the draw so a pre-drain failure stays a plain failure: the drain's own walk covers
-    // it, because every site stores the match before drawing.
-    if (join->drained.load(std::memory_order_acquire) &&
-        join->spawned_any.load(std::memory_order_acquire) == 0) {
-        join->spawned_any.store(1, std::memory_order_release);
-        stats_.spine_forced.fetch_add(1, std::memory_order_relaxed);
+        join->own_spawned.store(1, std::memory_order_release);
         return true;
     }
     return false;
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
-    if (join->spawned_any.load(std::memory_order_acquire) != 0) return;
+    if (join->own_spawned.load(std::memory_order_acquire) != 0) return;
+    const uint64_t want = join->own_min_key.load(std::memory_order_acquire);
+    if (want == ~0ULL) return;   // no own-found matches: no spine for this state
     auto stored = state_matches_.lookup(static_cast<uint64_t>(state));
     if (!stored.has_value()) return;
 
-    // Minimum canonical transition key: schedule-independent for a given stored set, and the
-    // keys are pseudo-random in the transition, so the pick is unbiased among the state's
-    // transitions in every way except reproducibility.
+    // The own-minimum's record is in the stored list (every site stores before drawing);
+    // find it by key.
     bool found = false;
-    uint64_t best_key = ~0ULL;
     MatchRecord best{};
     (*stored)->for_each([&](const MatchRecord& m) {
-        const uint64_t k = canonical_transition_key(state, m);
-        if (!found || k < best_key) { found = true; best_key = k; best = m; }
+        if (!found && canonical_transition_key(state, m) == want) { found = true; best = m; }
     });
     if (!found) return;
 
     stats_.spine_forced.fetch_add(1, std::memory_order_relaxed);
-    join->spawned_any.store(1, std::memory_order_release);
+    join->own_spawned.store(1, std::memory_order_release);
     submit_rewrite_task(best, step);
 }
+
 
 bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site) const {
     if (transition_rate_ >= 1.0) return true;
@@ -1212,10 +1210,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
-    // Spine before the drained flag: a late failed draw that observes drained==1 must also
-    // observe whether the spine spawned, or it would force a second survivor through.
     if (transition_rate_ > 0.0 && transition_rate_ < 1.0) spine_at_drain(state, step, join);
-    join->drained.store(1, std::memory_order_release);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
 }
 
