@@ -283,13 +283,19 @@ list lives in `paclet/Kernel/HypergraphRewriting.wl` under `Options[HGEvolve]`.
 | `"DebugFFI"` | `False` | Print FFI data flow before each call. |
 | `"AspectRatio"` | `None` | Graph aspect ratio for `*Graph` properties. |
 
-**Analyses** (all `False` by default; enable to compute additional per-state / per-timestep data; see WL source for full sub-options):
+**Analyses** (all `False` by default; enable to compute additional per-state / per-timestep data):
 
 - `"DimensionAnalysis"` — per-vertex Hausdorff dimension.
 - `"CurvatureAnalysis"` — Ollivier-Ricci / Wolfram-Ricci / dimension-gradient curvature.
 - `"GeodesicAnalysis"` — trace geodesic paths.
 - `"TopologicalAnalysis"` — K5 / K3,3 minor detection.
-- `"EntropyAnalysis"`, `"BranchialAnalysis"`, `"HilbertSpaceAnalysis"`, `"MultispaceAnalysis"`, `"BranchAlignment"`, `"EquilibriumAnalysis"`.
+- `"EntropyAnalysis"`, `"BranchialAnalysis"`, `"HilbertSpaceAnalysis"`, `"MultispaceAnalysis"`,
+  `"BranchAlignment"` (implies `"CurvatureAnalysis"`).
+
+Each analysis's method selection and numeric parameters (which curvature variants run, entropy
+neighbourhood radius, and so on) are fixed at engine defaults — they are not exposed as options.
+The FFI layer parses a further 14 keys for them that no paclet option sends; those are reachable
+only by hand-built WXF and are candidates for deletion in the FFI consolidation.
 
 **Initial conditions** (alternative to passing `initialEdges` directly):
 
