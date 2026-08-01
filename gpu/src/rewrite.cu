@@ -41,80 +41,71 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
     return k;
 }
 
-// Transitive-reduction reachability check. Returns true iff `c` is already
-// in Desc[p] (so causal edge (p → c) would be redundant).
-__device__ bool is_reachable_via_desc(DeviceState ds, EventId p, EventId c) {
-    uint64_t key = (static_cast<uint64_t>(p) << 32) | c;
-    auto r = ds.desc_set.lookup(key);
-    return r.found;
-}
-
-// Transitive closure update on adding causal edge (p, c). Mirrors
-// causal_graph.cpp::update_transitive_closure. Collects ancestors of p
-// (including p) and descendants of c (including c), then cross-inserts
-// every (a, d) pair into Desc[a] and Anc[d]. Each insert is first checked
-// against the set; only first-writer appends to the list.
+// Online-TR redundancy oracle, the device twin of causal_graph.cpp::is_reachable: a candidate
+// edge (p -> c) is redundant iff c is already reachable from p via kept edges, answered by a
+// backward BFS from c over the reduced predecessor adjacency. No closure is stored, so keeping
+// an edge costs one list push instead of an ancestors-x-descendants cross-product of map
+// inserts, and memory is O(kept causal pairs).
 //
-// Uses bounded local scratch — kTrScratch caps the per-call reachability
-// set size. Workloads that exceed the cap still get correct causal edges
-// (add still proceeds), but the closure may be incomplete and some
-// redundant edges may not be filtered. Auto-tuner will raise the cap if
-// profiling shows it matters.
-constexpr uint32_t kTrScratch = 512;
+// Event ids are monotone along every causal edge (a producer's event exists before its
+// consumer's), so the search prunes to ids > p: anything smaller can neither be p nor have p
+// as an ancestor. The search reads a settled sub-DAG: an ancestor completed its own causal
+// registration before any state carrying its produced edges was enqueued, and the queue's
+// release/acquire handshake orders that before c's rewrite.
+//
+// Scratch is a bounded local stack + open-addressed visited table. Overflow records
+// kScratchOverflow and answers "not reachable", which KEEPS the candidate edge: the causal
+// relation stays complete, only the reduction may retain a redundant edge.
+constexpr uint32_t kReachStack   = 256;
+constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
 
-__device__ void update_tr(DeviceState ds, EventId p, EventId c) {
-    EventId ancestors[kTrScratch];
-    uint32_t n_anc = 0;
-    bool anc_truncated = false;
-    ancestors[n_anc++] = p;
-    ds.anc_list.for_each(p, [&](EventId a) {
-        if (n_anc < kTrScratch) ancestors[n_anc++] = a;
-        else                    anc_truncated = true;
-    });
+__device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
+    if (p == c) return true;
+    if (p >= c) return false;
 
-    EventId descendants[kTrScratch];
-    uint32_t n_desc = 0;
-    bool desc_truncated = false;
-    descendants[n_desc++] = c;
-    ds.desc_list.for_each(c, [&](EventId d) {
-        if (n_desc < kTrScratch) descendants[n_desc++] = d;
-        else                     desc_truncated = true;
-    });
-    if (anc_truncated || desc_truncated) {
-        ds.errors.record(ErrorKind::kScratchOverflow);
-    }
+    EventId  stack[kReachStack];
+    uint32_t visited[kReachVisited];
+    for (uint32_t i = 0; i < kReachVisited; ++i) visited[i] = 0;
+    bool overflow = false;
 
-    for (uint32_t i = 0; i < n_anc; ++i) {
-        EventId a = ancestors[i];
-        for (uint32_t j = 0; j < n_desc; ++j) {
-            EventId d = descendants[j];
-            if (a == d) continue;
-
-            uint64_t desc_key = (static_cast<uint64_t>(a) << 32) | d;
-            auto r = ds.desc_set.insert_if_absent(desc_key, 1u);
-            if (r.inserted) {
-                if (ds.desc_list.push(a, d) == INVALID_ID) {
-                    ds.errors.record(ErrorKind::kDescListNodes);
-                }
-            }
-
-            uint64_t anc_key = (static_cast<uint64_t>(d) << 32) | a;
-            auto r2 = ds.anc_set.insert_if_absent(anc_key, 1u);
-            if (r2.inserted) {
-                if (ds.anc_list.push(d, a) == INVALID_ID) {
-                    ds.errors.record(ErrorKind::kAncListNodes);
-                }
-            }
+    auto visit = [&](EventId x) -> bool {   // true iff newly inserted
+        uint32_t slot = (x * 2654435761u) & (kReachVisited - 1u);
+        for (uint32_t probe = 0; probe < kReachVisited; ++probe) {
+            const uint32_t held = visited[slot];
+            if (held == x + 1u) return false;
+            if (held == 0u) { visited[slot] = x + 1u; return true; }
+            slot = (slot + 1u) & (kReachVisited - 1u);
         }
+        overflow = true;   // table full: treat as seen, which can only under-explore
+        return false;
+    };
+
+    uint32_t sp = 0;
+    stack[sp++] = c;
+    visit(c);
+    while (sp > 0) {
+        const EventId x = stack[--sp];
+        bool found = false;
+        ds.preds_list.for_each(x, [&](EventId q) {
+            if (found) return;
+            if (q == p) { found = true; return; }
+            if (q > p && visit(q)) {
+                if (sp < kReachStack) stack[sp++] = q;
+                else overflow = true;
+            }
+        });
+        if (found) return true;
     }
+    if (overflow) ds.errors.record(ErrorKind::kScratchOverflow);
+    return false;
 }
 
 // Try to add a causal edge (p → c via shared edge e). First-writer-wins via
 // the causal_triple_dedup map. Multiplicity is preserved — distinct shared
 // edges between the same (p, c) pair produce distinct triple keys and thus
-// distinct CausalEdge entries. With TR enabled, skips redundant edges by
-// checking reachability first, and updates the transitive closure on each
-// successful add.
+// distinct CausalEdge entries. With TR enabled, redundancy is decided by the
+// backward-reachability oracle, and a KEPT edge's only bookkeeping is one
+// preds_list push per unique event pair.
 __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId e) {
     if (p == INVALID_ID || c == INVALID_ID || p == c) return;
 
@@ -126,7 +117,7 @@ __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId
     uint64_t pair_key = (static_cast<uint64_t>(p) << 32) | c;
     if (ds.tr_enabled) {
         auto pair_lookup = ds.causal_pair_dedup.lookup(pair_key);
-        if (!pair_lookup.found && is_reachable_via_desc(ds, p, c)) return;
+        if (!pair_lookup.found && is_reachable_preds(ds, p, c)) return;
     }
 
     uint64_t key = hash_causal_triple(p, c, e);
@@ -140,10 +131,15 @@ __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId
     ds.causal_edge_pool.at(idx) = DeviceCausalEdge{p, c, e};
 
     if (ds.tr_enabled) {
-        update_tr(ds, p, c);
-        // Mark the pair as seen — subsequent edges between the same (p, c)
-        // skip the reachability check.
-        ds.causal_pair_dedup.insert_if_absent(pair_key, 1u);
+        // Record the kept edge in the reduced adjacency once per unique event pair (so
+        // preds_list holds no duplicate producers), and mark the pair as seen — subsequent
+        // edges between the same (p, c) skip the reachability check.
+        auto pr = ds.causal_pair_dedup.insert_if_absent(pair_key, 1u);
+        if (pr.inserted) {
+            if (ds.preds_list.push(c, p) == INVALID_ID) {
+                ds.errors.record(ErrorKind::kTrPredsNodes);
+            }
+        }
     }
 }
 

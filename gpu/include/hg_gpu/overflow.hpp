@@ -30,12 +30,12 @@ enum class ErrorKind : uint32_t {
     kCausalTripleMapFull = 7,
     kCausalPairMapFull   = 8,
     kBranchialMapFull    = 9,
-    kDescSetFull         = 10,
-    kAncSetFull          = 11,
     kEdgeConsumerNodes   = 12,
     kBranchialIndexNodes = 20,
-    kDescListNodes       = 14,
-    kAncListNodes        = 15,
+    // The reduced predecessor adjacency (online TR's only stored structure) ran out of list
+    // nodes. Sized from the config (one node per unique kept causal pair), so growing is a
+    // real remedy.
+    kTrPredsNodes        = 25,
     kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
@@ -73,12 +73,9 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kCausalTripleMapFull: return "causal_triple_dedup";
         case ErrorKind::kCausalPairMapFull:   return "causal_pair_dedup";
         case ErrorKind::kBranchialMapFull:    return "branchial_pair_dedup";
-        case ErrorKind::kDescSetFull:         return "desc_set";
-        case ErrorKind::kAncSetFull:          return "anc_set";
         case ErrorKind::kEdgeConsumerNodes:   return "edge_consumers (node pool)";
         case ErrorKind::kBranchialIndexNodes: return "branchial_index (node pool)";
-        case ErrorKind::kDescListNodes:       return "desc_list (node pool)";
-        case ErrorKind::kAncListNodes:        return "anc_list (node pool)";
+        case ErrorKind::kTrPredsNodes:        return "tr_preds (node pool)";
         case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";

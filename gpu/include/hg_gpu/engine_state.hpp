@@ -121,10 +121,10 @@ struct DeviceState {
     // Transitive reduction: Desc[event] (events reachable from event) and
     // Anc[event] (events that reach event). Lists are iterable; sets are
     // O(1) "is x in Desc[e]".
-    typename LockFreeList<EventId>::DeviceView    desc_list;
-    typename LockFreeList<EventId>::DeviceView    anc_list;
-    ConcurrentMap<uint64_t, uint32_t>::DeviceView desc_set;
-    ConcurrentMap<uint64_t, uint32_t>::DeviceView anc_set;
+    // Online TR's reduced predecessor adjacency: preds_list[c] holds the producer events of
+    // c's kept causal edges, one node per unique kept (producer, consumer) pair. Reachability
+    // queries walk it backward; no closure is stored. Device twin of CausalGraph::preds_.
+    typename LockFreeList<EventId>::DeviceView    preds_list;
 
     // Flags
     bool tr_enabled;
@@ -163,10 +163,7 @@ public:
         , causal_triple_dedup_(cfg.causal_triple_slots)
         , causal_pair_dedup_(cfg.causal_pair_slots)
         , branchial_pair_dedup_(cfg.branchial_pair_slots)
-        , desc_list_(cfg.max_events, cfg.tr_desc_nodes)
-        , anc_list_(cfg.max_events,  cfg.tr_anc_nodes)
-        , desc_set_(cfg.tr_desc_slots)
-        , anc_set_(cfg.tr_anc_slots)
+        , preds_list_(cfg.max_events, cfg.tr_preds_nodes)
     {
         // Every kernel that runs against an EngineState needs more per-thread stack than the
         // 1 KB default: match_state_rule's DFS recurses to the LHS edge count, apply_one_match
@@ -319,10 +316,7 @@ public:
         d.causal_triple_dedup     = causal_triple_dedup_.view();
         d.causal_pair_dedup       = causal_pair_dedup_.view();
         d.branchial_pair_dedup    = branchial_pair_dedup_.view();
-        d.desc_list               = desc_list_.view();
-        d.anc_list                = anc_list_.view();
-        d.desc_set                = desc_set_.view();
-        d.anc_set                 = anc_set_.view();
+        d.preds_list              = preds_list_.view();
         d.tr_enabled              = tr_enabled_;
         d.slice_scan_max_edges    = slice_scan_max_edges_;
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
@@ -404,10 +398,7 @@ public:
         causal_triple_dedup_.clear();
         causal_pair_dedup_.clear();
         branchial_pair_dedup_.clear();
-        desc_list_.clear();
-        anc_list_.clear();
-        desc_set_.clear();
-        anc_set_.clear();
+        preds_list_.clear();
         errors_.clear();
     }
 
@@ -546,10 +537,7 @@ private:
     ConcurrentMap<uint64_t, uint32_t>  causal_triple_dedup_;
     ConcurrentMap<uint64_t, uint32_t>  causal_pair_dedup_;
     ConcurrentMap<uint64_t, uint32_t>  branchial_pair_dedup_;
-    LockFreeList<EventId>              desc_list_;
-    LockFreeList<EventId>              anc_list_;
-    ConcurrentMap<uint64_t, uint32_t>  desc_set_;
-    ConcurrentMap<uint64_t, uint32_t>  anc_set_;
+    LockFreeList<EventId>              preds_list_;
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
     uint32_t slice_scan_max_edges_ = 256;

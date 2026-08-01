@@ -198,11 +198,10 @@ struct EngineConfig {
     uint32_t branchial_index_buckets = 1u << 16;  // power of two
     uint32_t branchial_index_nodes   = 1u << 18;
 
-    // Transitive-reduction sizing. Desc[e] and Anc[e] per event.
-    uint32_t tr_desc_nodes  = 1u << 20;
-    uint32_t tr_anc_nodes   = 1u << 20;
-    uint32_t tr_desc_slots  = 1u << 20;
-    uint32_t tr_anc_slots   = 1u << 20;
+    // Online transitive reduction stores ONE structure: the reduced predecessor adjacency
+    // (preds[c] = producers of c's kept causal edges), one list node per unique kept causal
+    // pair. Reachability is answered by backward search over it, so no closure is stored.
+    uint32_t tr_preds_nodes = 1u << 20;
 };
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,

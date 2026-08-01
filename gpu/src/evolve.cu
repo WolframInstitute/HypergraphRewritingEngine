@@ -88,10 +88,8 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.edge_consumer_nodes    = expected_edges * 4u;
     cfg.branchial_index_buckets = 1u << 20;
     cfg.branchial_index_nodes   = expected_events * 4u;
-    cfg.tr_desc_nodes          = expected_events * 16u;
-    cfg.tr_anc_nodes           = expected_events * 16u;
-    cfg.tr_desc_slots          = expected_events * 16u;
-    cfg.tr_anc_slots           = expected_events * 16u;
+    // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
+    cfg.tr_preds_nodes         = expected_events * 8u;
     return cfg;
 }
 
@@ -685,8 +683,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             return true;
         case ErrorKind::kEventPoolFull:
             dbl(cfg.max_events);
-            dbl(cfg.tr_desc_nodes);
-            dbl(cfg.tr_anc_nodes);
+            dbl(cfg.tr_preds_nodes);
             return true;
         case ErrorKind::kVertexPoolFull:
             dbl(cfg.max_vertex_slots);
@@ -708,12 +705,9 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
         case ErrorKind::kBranchialMapFull:    dbl(cfg.branchial_pair_slots); return true;
-        case ErrorKind::kDescSetFull:         dbl(cfg.tr_desc_slots);        return true;
-        case ErrorKind::kAncSetFull:          dbl(cfg.tr_anc_slots);         return true;
         case ErrorKind::kEdgeConsumerNodes:   dbl(cfg.edge_consumer_nodes);  return true;
         case ErrorKind::kBranchialIndexNodes: dbl(cfg.branchial_index_nodes); return true;
-        case ErrorKind::kDescListNodes:       dbl(cfg.tr_desc_nodes);        return true;
-        case ErrorKind::kAncListNodes:        dbl(cfg.tr_anc_nodes);         return true;
+        case ErrorKind::kTrPredsNodes:        dbl(cfg.tr_preds_nodes);       return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
@@ -793,10 +787,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(edge_consumer_nodes);
     LOG_FIELD(branchial_index_buckets);
     LOG_FIELD(branchial_index_nodes);
-    LOG_FIELD(tr_desc_nodes);
-    LOG_FIELD(tr_anc_nodes);
-    LOG_FIELD(tr_desc_slots);
-    LOG_FIELD(tr_anc_slots);
+    LOG_FIELD(tr_preds_nodes);
 #undef LOG_FIELD
 }
 
@@ -820,9 +811,8 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     sc(cfg.max_causal_edges, 1u<<12);     sc(cfg.max_branchial_edges, 1u<<12);
     sc(cfg.causal_triple_slots, 1u<<12);  sc(cfg.causal_pair_slots, 1u<<12);
     sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
-    sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_desc_nodes, 1u<<12);
-    sc(cfg.tr_anc_nodes, 1u<<12);         sc(cfg.tr_desc_slots, 1u<<12);
-    sc(cfg.tr_anc_slots, 1u<<12);         sc(cfg.canonical_map_slots, 1u<<12);
+    sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
+    sc(cfg.canonical_map_slots, 1u<<12);
 }
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
@@ -849,10 +839,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.causal_triple_slots) * 12;
     b += u64(cfg.causal_pair_slots)   * 12;
     b += u64(cfg.branchial_pair_slots)* 12;
-    b += u64(cfg.max_events)          * 8  + u64(cfg.tr_desc_nodes) * 8;   // desc_list
-    b += u64(cfg.max_events)          * 8  + u64(cfg.tr_anc_nodes)  * 8;   // anc_list
-    b += u64(cfg.tr_desc_slots)       * 12;
-    b += u64(cfg.tr_anc_slots)        * 12;
+    b += u64(cfg.max_events)          * 4  + u64(cfg.tr_preds_nodes) * 8;  // preds_list
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
