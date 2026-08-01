@@ -168,6 +168,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_oracle_corpus.cpp
     ../hypergraph/tests/test_golden_matrix.cpp
     ../hypergraph/tests/test_event_identity_authority.cpp
+    ../hypergraph/tests/test_sampled_soundness.cpp
     ../hypergraph/tests/test_feature_matrix.cpp
     # WXF tests
     ../wxf/tests/test_wxf.cpp
