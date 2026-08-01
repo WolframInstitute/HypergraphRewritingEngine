@@ -52,6 +52,9 @@ private:
     std::vector<std::unique_ptr<WorkerData>> workers_;
     lockfree::Deque<JobRaw> injector_;
     size_t num_threads_;
+    // Serial execution: no workers; wait_for_completion() drains the injector inline
+    // on the calling thread (see the constructor comment).
+    bool serial_ = false;
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -286,6 +289,16 @@ private:
     // queues again -- and expansion is combinatorial and submits from inside running jobs, so
     // saturating both the local deque and the injector is reachable, not hypothetical.
     void enqueue(JobRaw raw) {
+        // Serial: everything goes through the injector FIFO; the draining thread is the
+        // only executor, so there is nobody to wake. A full injector runs the job right
+        // here -- possibly inside the submitting job, so the scratch arena is not
+        // recycled (the job further out on this stack may hold live allocations in it);
+        // the next drain-loop job recycles as usual.
+        if (serial_) {
+            if (injector_.try_push_back(raw)) return;
+            run_job(nullptr, raw, /*recycle_scratch=*/false);
+            return;
+        }
         const bool on_worker = (t_sys_ == this && t_worker_ != nullptr);
 
         if (on_worker && t_worker_->deque.push(raw)) {        // node-local, the common case
@@ -302,11 +315,22 @@ private:
     }
 
 public:
-    explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = 4096)
+    // SERIAL MODE (serial = true): no worker threads exist and none are ever spawned --
+    // start() only arms the counters, submit() routes to the injector, and
+    // wait_for_completion() drains it inline on the calling thread in FIFO order.
+    // Jobs submitted by a running job land behind it and run in submission order, so a
+    // run is deterministic by construction. This is the single-threaded execution mode
+    // (and the WebAssembly path, where spawning threads is not available): everything
+    // the workers would do happens on the thread that waits.
+    explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = 4096,
+                       bool serial = false)
         : injector_(32768),
-          num_threads_(num_threads == 0 ? std::thread::hardware_concurrency() : num_threads),
-          queue_capacity_(queue_capacity == 0 ? 4096 : queue_capacity) {
-        if (num_threads_ == 0) num_threads_ = 1;
+          num_threads_(serial ? 0
+                              : (num_threads == 0 ? std::thread::hardware_concurrency()
+                                                  : num_threads)),
+          queue_capacity_(queue_capacity == 0 ? 4096 : queue_capacity),
+          serial_(serial) {
+        if (!serial_ && num_threads_ == 0) num_threads_ = 1;
         workers_.reserve(num_threads_);
         for (size_t i = 0; i < num_threads_; ++i) {
             workers_.emplace_back(std::make_unique<WorkerData>(queue_capacity_));
@@ -336,6 +360,20 @@ public:
         }
         is_running_.store(true);
     }
+
+private:
+    // Serial-mode executor: run injector jobs on this thread until nothing remains.
+    // A job's nested submits land behind it in the injector, so the order is the
+    // submission order. Stops early on a latched error, exactly as the workers do.
+    void drain_serial() {
+        while (error_type_.load(std::memory_order_acquire) == ErrorType::None) {
+            auto opt = injector_.try_pop_front();
+            if (!opt) break;
+            run_job(nullptr, *opt, /*recycle_scratch=*/true);
+        }
+    }
+
+public:
 
     void shutdown() {
         if (!is_running_.load()) return;
@@ -380,6 +418,17 @@ public:
     // callback or a worker error), false if completed normally.
     template<typename AbortCheck>
     bool wait_for_completion_with_abort(AbortCheck&& abort_check) {
+        if (serial_) {
+            // Serial: this thread IS the executor; the abort poll runs between jobs,
+            // a strictly finer granularity than the parallel path's bounded sleep.
+            while (error_type_.load(std::memory_order_acquire) == ErrorType::None) {
+                if (abort_check()) return true;
+                auto opt = injector_.try_pop_front();
+                if (!opt) return false;   // drained: serial has no other queue to wait on
+                run_job(nullptr, *opt, /*recycle_scratch=*/true);
+            }
+            return true;
+        }
         // abort_check is a caller-supplied poll, so this one keeps a bounded sleep -- there
         // is nothing to be notified BY when the abort condition lives outside the system.
         completion_waiters_.fetch_add(1, std::memory_order_seq_cst);
@@ -398,6 +447,7 @@ public:
     }
 
     void wait_for_completion() {
+        if (serial_) { drain_serial(); return; }
         // No timeout and no polling: this blocks on the completion counter itself and is
         // woken by the job that moves it. Sampling the counter before the final quiescence
         // check is what closes the race -- a job completing in between changes the value, so

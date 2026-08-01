@@ -515,3 +515,78 @@ TEST_F(JobSystemTest, ParkIsReleasedByUnpark) {
     t.join();
     EXPECT_TRUE(woke.load());
 }
+
+// =============================================================================
+// Serial mode: no workers, wait_for_completion() drains inline, FIFO order.
+// =============================================================================
+
+TEST(JobSystemSerial, DrainsInlineInSubmissionOrder) {
+    job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
+    EXPECT_EQ(js.get_num_workers(), 0u);
+    js.start();
+
+    // Single-threaded by contract: a plain vector records execution order.
+    std::vector<int> order;
+    for (int i = 0; i < 5; ++i) {
+        js.submit(job_system::make_job([&order, i] { order.push_back(i); },
+                                       TestJobType::GRAPHICS));
+    }
+    js.wait_for_completion();
+    EXPECT_EQ(order, (std::vector<int>{0, 1, 2, 3, 4}));
+
+    // Idempotent: nothing left to drain.
+    js.wait_for_completion();
+    EXPECT_EQ(js.get_pending_count(), 0u);
+}
+
+TEST(JobSystemSerial, NestedSubmitsRunAfterTheirSubmitter) {
+    job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
+    js.start();
+
+    std::vector<std::string> order;
+    js.submit(job_system::make_job([&] {
+        order.push_back("parent");
+        js.submit(job_system::make_job([&] { order.push_back("child"); },
+                                       TestJobType::PHYSICS));
+    }, TestJobType::GRAPHICS));
+    js.submit(job_system::make_job([&] { order.push_back("sibling"); },
+                                   TestJobType::AI));
+    js.wait_for_completion();
+
+    // FIFO: the nested child lands BEHIND the already-queued sibling.
+    EXPECT_EQ(order, (std::vector<std::string>{"parent", "sibling", "child"}));
+}
+
+TEST(JobSystemSerial, ErrorLatchesAndStopsTheDrain) {
+    job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
+    js.start();
+
+    std::vector<int> ran;
+    js.submit(job_system::make_job([&] { ran.push_back(1); }, TestJobType::GRAPHICS));
+    js.submit(job_system::make_job([]() -> void {
+        throw std::runtime_error("boom");
+    }, TestJobType::GRAPHICS));
+    js.submit(job_system::make_job([&] { ran.push_back(3); }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+
+    EXPECT_TRUE(js.has_error());
+    EXPECT_EQ(ran, (std::vector<int>{1}));
+    js.shutdown();
+}
+
+TEST(JobSystemSerial, AbortPollRunsBetweenJobs) {
+    job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
+    js.start();
+
+    int executed = 0;
+    for (int i = 0; i < 10; ++i) {
+        js.submit(job_system::make_job([&executed] { ++executed; },
+                                       TestJobType::GRAPHICS));
+    }
+    // Abort after 3 jobs: the poll fires before each job.
+    const bool aborted =
+        js.wait_for_completion_with_abort([&] { return executed >= 3; });
+    EXPECT_TRUE(aborted);
+    EXPECT_EQ(executed, 3);
+    js.shutdown();
+}
