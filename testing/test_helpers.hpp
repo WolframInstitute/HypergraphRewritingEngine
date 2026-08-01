@@ -80,7 +80,10 @@ inline std::string getWolframScriptPath() {
  * Uses bash -c to execute WolframScript from WSL cross-compiled environment
  */
 inline int executeWolframScript(const std::string& code) {
-#if defined(WSL_ENVIRONMENT) && defined(_WIN32)
+// WSL_ENVIRONMENT is always defined, as 0 or 1, so it is tested by VALUE -- a
+// defined() test would take this branch on any native Windows build. The branch
+// also needs the wolframscript path macro, which only exists when CMake found one.
+#if WSL_ENVIRONMENT && defined(_WIN32) && defined(WOLFRAMSCRIPT_EXECUTABLE)
     // Use bash -c with original /mnt/c path - avoid Windows path conversion
     std::string wolfram_path = WOLFRAMSCRIPT_EXECUTABLE;  // Use original path
 
@@ -145,10 +148,20 @@ inline std::string executeWolframScriptCapture(const std::string& code) {
     std::string cmd = "\"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
                     + "' 2>/dev/null || echo '" + tmp + "')\" 2>&1";
     std::string output;
-    if (FILE* pipe = popen(cmd.c_str(), "r")) {
+    // MSVC spells the POSIX pipe pair _popen/_pclose.
+#if defined(_MSC_VER)
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    if (pipe) {
         char buf[4096];
         while (fgets(buf, sizeof(buf), pipe)) output += buf;
+#if defined(_MSC_VER)
+        _pclose(pipe);
+#else
         pclose(pipe);
+#endif
     }
     std::remove(tmp.c_str());
     return output;
