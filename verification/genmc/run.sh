@@ -136,9 +136,24 @@ run_one() {
     local extra
     extra="$(sed -n 's|^// GENMC-ARGS: *||p' "$src" | head -1)"
 
+    # A `// GENMC-EXPECT: violation` harness is a PINNED REPRODUCER of a known-reachable defect:
+    # it passes exactly when the checker still finds the violation, so the suite notices if the
+    # window silently moves or is closed without the marker being flipped.
+    local expect
+    expect="$(sed -n 's|^// GENMC-EXPECT: *||p' "$src" | head -1)"
+
     # shellcheck disable=SC2086
     "$GENMC" $extra "$@" "$WORK/$name.ll"
     local rc=$?
+    if [ "$expect" = "violation" ]; then
+        if [ $rc -eq 42 ]; then
+            echo "--- $name: EXPECTED violation still reachable (pinned reproducer) -> pass"
+            return 0
+        fi
+        echo "--- $name: expected a violation and got exit $rc -- the window moved or closed;"
+        echo "    if it was fixed on purpose, flip the GENMC-EXPECT marker in the harness"
+        return 1
+    fi
     echo "--- $name: genmc exit $rc"
     return $rc
 }

@@ -216,13 +216,17 @@ public:
         }
 
         // A key claimed in a table that is no longer the head can be claimed AGAIN at the head by
-        // a thread whose chain scan walked past that table before this claim landed, and both
-        // callers are then told they inserted. Keeping the chain to a single installation per
-        // growth is what prevents that: see resize(), which grows only when the CURRENT head
-        // needs it, and the probe-exhaustion path, which retries at the head rather than growing
-        // a superseded table. A second installation while a thread still holds the middle table
-        // remains reachable when growth is genuinely warranted twice over -- recorded as an open
-        // item with the configuration that reaches it.
+        // a thread whose chain scan walked past that table before this claim landed. resize()
+        // growing only when the CURRENT head needs it removes every unnecessary second
+        // installation; a second installation that is genuinely warranted -- the count crosses
+        // the threshold again between one installation and the next -- keeps the window open,
+        // and the model checker REACHES it: verification/genmc/concurrent_map_double_growth is
+        // the pinned reproducer (both claimants told was_inserted), kept expected-to-violate so
+        // the suite notices if the window silently moves or closes. Post-claim reconciliation
+        // cannot close it -- whichever entry is designated the winner, there is a one-sided
+        // visibility case in which the loser has already settled its own value and remains what
+        // some reader sees -- so the closure is entry forwarding at the value slot
+        // (seal-and-migrate), a change to this primitive's entry representation.
         return insert_into_table(table, key, value, true);
     }
 
