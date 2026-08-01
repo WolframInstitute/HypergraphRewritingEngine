@@ -89,6 +89,14 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     )
     target_link_libraries(bench_gpu_evolve PRIVATE hg_gpu hypergraph)
 
+    # Pins whether the persistent scheduler's causal-edge count is schedule-dependent, and
+    # whether the quotient expansion race is the mechanism (constant with pruning off, varying
+    # with it on). Companion to Rewrite.PersistentSchedulerThroughEngineRunMatchesTheStepLoop.
+    add_executable(quotient_causal_probe_gpu
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/quotient_causal_probe_gpu.cpp
+    )
+    target_link_libraries(quotient_causal_probe_gpu PRIVATE hg_gpu hypergraph)
+
     # Whether removing the per-step barrier pays, measured across evolution SHAPE rather than as
     # one number -- the barrier's cost is one sync per step against whatever work that step had.
     add_executable(bench_scheduler_shape

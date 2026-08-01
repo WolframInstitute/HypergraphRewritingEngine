@@ -554,6 +554,18 @@ TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
         const auto b = persistent.run(in);
 
         ASSERT_TRUE(a.warnings.empty()) << "the level-synchronous reference overflowed";
+        {
+            std::string wtext;
+            for (const auto& w : b.warnings) {
+                wtext += hg_gpu::error_kind_name(w.kind);
+                wtext += " x";
+                wtext += std::to_string(w.count);
+                wtext += "; ";
+            }
+            ASSERT_TRUE(b.warnings.empty())
+                << "the persistent run overflowed -- its counts are partial, not comparable: "
+                << wtext;
+        }
         ASSERT_GT(a.states.size(), 1u) << "workload never branched; the comparison is vacuous";
 
         std::multiset<uint64_t> ha, hb;
