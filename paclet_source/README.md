@@ -248,7 +248,7 @@ list lives in `paclet/Kernel/HypergraphRewriting.wl` under `Options[HGEvolve]`.
 |---|---|---|---|
 | `"HashStrategy"` | `"WL"` | `"WL"` | Fast Weisfeiler-Leman heuristic for state hashing. Can false-positive on highly symmetric graphs; use `CanonicalizeStates -> Full` for exact IR deduplication. |
 | `"CanonicalizeStates"` | `None`, `Automatic`, `Full` | `None` | `None`: each raw state is its own cell. `Automatic`: no evolution-time dedup; content-ordered ID is computed at output time for display grouping. `Full`: exact isomorphism-based dedup via McKay-style IR canonicalization (no false positives). |
-| `"CanonicalizeEvents"` | `None`, `Full`, `Automatic`, or `{keys...}` | `None` | Event dedup by signature. Key list may contain `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
+| `"CanonicalizeEvents"` | `None`, `Full`, `Automatic`, `"Positional"`, or `{keys...}` | `None` | Event identity. `Automatic` is the Wolfram/Multicomputation linked-hypergraph convention (identical between full-capture and quotient runs). `"Positional"` distinguishes events by each raw state's own canonical edge ranks — this engine's tie-break-relative identity; it requires raw presentations, so it disables quotient exploration with a warning. `Full` keys on endpoint states alone. Key list may contain `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
 
 **Causal / branchial output**
 
@@ -317,7 +317,7 @@ Every option accepted by `HGEvolve`, with its default and a one-line description
 |---|---|---|
 | `"HashStrategy"` | `"WL"` | State hash algorithm: `"WL"` (Weisfeiler-Leman). |
 | `"CanonicalizeStates"` | `None` | `None` / `Automatic` / `Full`. `Full` uses exact IR canonicalization for dedup. |
-| `"CanonicalizeEvents"` | `None` | `None` / `Full` / `Automatic` / `{keys...}`. Keys: `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
+| `"CanonicalizeEvents"` | `None` | `None` / `Full` / `Automatic` / `"Positional"` / `{keys...}`. Keys: `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`. |
 | `"CausalTransitiveReduction"` | `True` | Online Goranci transitive reduction of causal edges. |
 | `"MaxSuccessorStatesPerParent"` | `0` | Cap children per parent; `0` = unlimited. |
 | `"MaxStatesPerStep"` | `0` | Cap states created per generation; `0` = unlimited. |

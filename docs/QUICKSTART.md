@@ -75,13 +75,12 @@ list.
   transitive reduction (default `True`).
 - `"ExploreFromCanonicalStatesOnly" -> True | False` — quotient exploration: expand
   each canonical state once, so the run costs the canonical closure rather than the
-  (exponentially larger) provenance count. Off by default.
-  **The state set is the canonical closure by design, and the causal and branchial
-  output does not yet match a full-capture run of the same model** — it is
-  reconstructed from the quotient rather than observed, and still under-reports on
-  some models. Leave this off when the causal or branchial graph is the result you
-  care about; turn it on when you want the reachable state set at a cost that does
-  not grow with provenance.
+  (exponentially larger) provenance count. Off by default. The observable output —
+  event identities, causal and branchial relations — is identical to a full-capture
+  run of the same model (every golden row is checked equal between the two), so this
+  is purely a cost switch. The one exception is `"CanonicalizeEvents" -> "Positional"`,
+  whose identity needs raw presentations: requesting it turns the quotient off for
+  that run and says so in the result's warnings.
 - `"IncludeCanonicalHashes" -> True` — attach a run-stable isomorphism hash to each
   state, for fusing results across separate runs.
 
