@@ -158,7 +158,13 @@ int main(int argc, char** argv) {
         // two-edge LHS joins over a 24-edge path, so each extra step multiplies the state
         // count by ~26 (14k states at d3, 373k at d4, 11.4 s). d3 is the last depth that
         // leaves the whole probe in the tens of seconds.
-        {"wide/growth/d5",     {growth()},    disjoint(24), 5},
+        //
+        // The wide-growth start is a PATH, not disjoint edges: n identical disjoint edges
+        // have Aut containing S_n, and Full-mode IR on that wall dominates everything this
+        // probe measures (measured: depth-1 canonicalization alone is 0.4 / 5.7 / 178 ms at
+        // n = 6 / 12 / 24, and the tree multiplies it past any budget). A path gives the
+        // same 24-match width with trivial automorphisms.
+        {"wide/growth/d4",     {growth()},    path(24),     4},
         {"wide/pair/d3",       {pair_rule()}, path(24),     3},
     };
 
