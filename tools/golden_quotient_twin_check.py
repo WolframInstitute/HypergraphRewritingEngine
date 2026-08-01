@@ -48,6 +48,8 @@ if examples:
     for c, sm, em, a, b in examples:
         print(f"  {c:<22} {sm:<10} {em:<10} q={a}  full={b}")
 
-# Exit non-zero while any quotient row disagrees with its twin, so this can become a gate the
-# moment #4 lands. Until then the count is the measurement of the gap, not a pass/fail.
-sys.exit(1 if diff_fp else 0)
+# A gate (ctest: quotient_twin_check): SPEC 5.4 requires every quotient row to equal its
+# full-capture twin. Fingerprint drift, any count-column drift, and a quotient row with no twin
+# all fail -- a missing twin would otherwise let a row pass by never being compared.
+total_q = same_fp + diff_fp + missing
+sys.exit(1 if (diff_fp or missing or same_counts < total_q - missing) else 0)

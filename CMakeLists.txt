@@ -267,6 +267,14 @@ add_dependencies(host_tools quotient_reconstruction_probe causal_tr_exactness_pr
 # SKIPPED, not failed, where genmc is absent: it is a separate build against LLVM 18 and is not a
 # dependency of this project. run.sh exits 2 in that case, which is mapped to a skip so a machine
 # without it reports honestly rather than either lying green or failing red.
+# SPEC 5.4 as a standing gate: every quotient golden row must equal its full-capture twin on
+# every count column AND the state fingerprint. Pure python over the checked-in golden file, so
+# it costs milliseconds and cannot drift from what the golden gate itself compares.
+add_test(NAME quotient_twin_check
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/golden_quotient_twin_check.py
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(quotient_twin_check PROPERTIES TIMEOUT 60)
+
 add_test(NAME genmc_harnesses
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/genmc/run.sh all)
 set_tests_properties(genmc_harnesses PROPERTIES
