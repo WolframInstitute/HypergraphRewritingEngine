@@ -678,6 +678,15 @@ private:
         // Matches this state has accepted, post-dedup. The drain gate needs it to show the
         // drain fired after the last one rather than merely once.
         std::atomic<size_t> matches{0};
+        // Sampling spine bookkeeping (transition_rate_ < 1 only). A fixed rate is a knife-edge:
+        // below 1/branching the sampled evolution goes extinct before reaching depth. The spine
+        // guarantees each state at least one surviving outgoing transition -- if no draw passed
+        // by the state's drain, the minimum-canonical-key stored match is spawned; a draw that
+        // fails AFTER the drain on a state with no survivor forces that transition through
+        // instead (the late spine). Canonical keys keep the fast-path draws schedule-independent;
+        // the spine pick's schedule stability is measured, not assumed.
+        std::atomic<uint32_t> spawned_any{0};
+        std::atomic<uint32_t> drained{0};
     };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 
@@ -1116,6 +1125,16 @@ private:
     // keyed on one selects a different subgraph every run and there is nothing to compare
     // against the unpruned evolution.
     uint64_t canonical_transition_key(StateId state, const MatchRecord& match);
+
+    // The sampling draw with the spine guarantee: a passing draw records that its source state
+    // has a survivor; a failing draw on a state that has already drained with NO survivor is
+    // forced through instead (the late spine). See MatchJoin.
+    bool transition_survives_spined(StateId source, uint64_t transition_key, int site);
+
+    // At a state's drain with sampling active and no survivor spawned: submit the stored match
+    // with the minimum canonical transition key, so every reachable state keeps at least one
+    // outgoing transition at any rate.
+    void spine_at_drain(StateId state, uint32_t step, MatchJoin* join);
 
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both

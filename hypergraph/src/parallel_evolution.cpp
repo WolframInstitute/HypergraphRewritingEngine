@@ -535,7 +535,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // transition with its own draw. Only the (this child, this match) transition is at
         // stake here.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child_info.child_state, forwarded), 0))
+            !transition_survives_spined(child_info.child_state, canonical_transition_key(child_info.child_state, forwarded), 0))
             return;
 
         // Spawn REWRITE task for this forwarded match
@@ -666,7 +666,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         // Without this the sampled subgraph depends on which submission mode is in use, since
         // forwarded matches would enter the batch unthinned while discovered ones are thinned.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded), 1)) return;
+            !transition_survives_spined(child, canonical_transition_key(child, forwarded), 1)) return;
 
         batch.push_back(forwarded);
     });
@@ -835,7 +835,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         // are deliberately upstream of it: the match stays available to this child's own
         // children, where it is a different transition and gets its own draw.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded), 2)) return;
+            !transition_survives_spined(child, canonical_transition_key(child, forwarded), 2)) return;
 
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
@@ -1126,6 +1126,47 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
+bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t transition_key,
+                                                         int site) {
+    MatchJoin* join = match_join_for(source);
+    if (transition_survives(transition_key, site)) {
+        join->spawned_any.store(1, std::memory_order_release);
+        return true;
+    }
+    // Late spine. The drain already ran for this state and found nothing spawned (its own
+    // list-walk found no match, or none had arrived yet), so this failed draw is the state's
+    // only remaining chance at an outgoing transition -- force it through. drained is read
+    // AFTER the draw so a pre-drain failure stays a plain failure: the drain's own walk covers
+    // it, because every site stores the match before drawing.
+    if (join->drained.load(std::memory_order_acquire) &&
+        join->spawned_any.load(std::memory_order_acquire) == 0) {
+        join->spawned_any.store(1, std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
+void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
+    if (join->spawned_any.load(std::memory_order_acquire) != 0) return;
+    auto stored = state_matches_.lookup(static_cast<uint64_t>(state));
+    if (!stored.has_value()) return;
+
+    // Minimum canonical transition key: schedule-independent for a given stored set, and the
+    // keys are pseudo-random in the transition, so the pick is unbiased among the state's
+    // transitions in every way except reproducibility.
+    bool found = false;
+    uint64_t best_key = ~0ULL;
+    MatchRecord best{};
+    (*stored)->for_each([&](const MatchRecord& m) {
+        const uint64_t k = canonical_transition_key(state, m);
+        if (!found || k < best_key) { found = true; best_key = k; best = m; }
+    });
+    if (!found) return;
+
+    join->spawned_any.store(1, std::memory_order_release);
+    submit_rewrite_task(best, step);
+}
+
 bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site) const {
     if (transition_rate_ >= 1.0) return true;
     if (transition_rate_ <= 0.0) return false;
@@ -1169,6 +1210,10 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
+    // Spine before the drained flag: a late failed draw that observes drained==1 must also
+    // observe whether the spine spawned, or it would force a second survivor through.
+    if (transition_rate_ > 0.0 && transition_rate_ < 1.0) spine_at_drain(state, step, join);
+    join->drained.store(1, std::memory_order_release);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
 }
 
@@ -1590,7 +1635,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // transition (S -> S') does not drop the match, and the same match at a different
         // source state is a DIFFERENT transition that gets its own independent draw.
         if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(state, match), 3)) return;
+            !transition_survives_spined(state, canonical_transition_key(state, match), 3)) return;
 
         if (batched_matching_) {
             batch.push_back(match);
@@ -2021,7 +2066,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
     // -- it is "not yours to rewrite", which is the same instruction to the caller.
     if (transition_rate_ < 1.0 &&
-        !transition_survives(canonical_transition_key(data.state, match), 4)) return false;
+        !transition_survives_spined(data.state, canonical_transition_key(data.state, match), 4)) return false;
 
     out = match;
     return true;
