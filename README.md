@@ -175,4 +175,10 @@ cd build_linux
 ./core_tests             # Core functionality
 ./evolution_tests        # Evolution and pattern matching
 ./causal_tests           # Causal/branchial graph
+ctest                    # The above plus the probe and model-checking gates
 ```
+
+## License
+
+MIT — see [LICENSE.md](LICENSE.md). The paclet declares the same in its
+`PacletInfo.wl`.
