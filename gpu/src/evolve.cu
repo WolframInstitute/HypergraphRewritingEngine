@@ -300,17 +300,28 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             : std::vector<std::vector<std::vector<VertexId>>>{in.initial_state};
     size_t max_root_edges = 0;
     for (const auto& r : roots) max_root_edges = std::max(max_root_edges, r.size());
-    // The persistent scheduler maintains indices from the start whatever the root size, because
-    // it cannot rebuild mid-run: one launch, no host in the loop, so the lazy flip the step loop
-    // performs between steps has nowhere to happen.
+    // Index maintenance cannot flip on mid-run under the persistent scheduler -- one launch, no
+    // host in the loop, so the lazy flip the step loop performs between steps has nowhere to
+    // happen -- and an index that missed inserts is not stale but WRONG (missed candidates).
+    // So the decision is made up front, and it can be made exactly: a state's edge count along
+    // any path is bounded by root_edges + steps * max(rhs - lhs) over the rules, and the match
+    // kernels read the indices only for states past the slice-scan threshold. When even that
+    // bound cannot reach the threshold, no state in the run can ever be matched through the
+    // indices, and every insert would be bought for nobody.
     //
     // Decided HERE, before the upload, and that placement is the point. upload_initial_states
     // populates the indices only when maintenance is already on, and rebuild_indices INSERTS
     // without clearing -- so turning maintenance on after the upload and rebuilding puts every
     // root edge in its bucket twice, which surfaces as duplicate candidates, duplicate matches
     // and duplicate events on any state large enough to be matched through the indices.
-    engine.set_maintain_indices(in.persistent_scheduler ||
-                                max_root_edges > engine.config_slice_scan_max_edges());
+    size_t max_growth = 0;
+    for (const auto& r : in.rules) {
+        const size_t lhs = r.lhs.size(), rhs = r.rhs.size();
+        if (rhs > lhs) max_growth = std::max(max_growth, rhs - lhs);
+    }
+    const size_t max_state_edges =
+        max_root_edges + max_growth * static_cast<size_t>(in.num_steps);
+    engine.set_maintain_indices(max_state_edges > engine.config_slice_scan_max_edges());
     const uint32_t num_roots = upload_initial_states(engine, roots);
 
     // Upload rules. Resize the device-side rules buffer if this run has more
