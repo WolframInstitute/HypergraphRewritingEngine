@@ -215,6 +215,14 @@ public:
             if (settled.has_value()) return *settled;
         }
 
+        // A key claimed in a table that is no longer the head can be claimed AGAIN at the head by
+        // a thread whose chain scan walked past that table before this claim landed, and both
+        // callers are then told they inserted. Keeping the chain to a single installation per
+        // growth is what prevents that: see resize(), which grows only when the CURRENT head
+        // needs it, and the probe-exhaustion path, which retries at the head rather than growing
+        // a superseded table. A second installation while a thread still holds the middle table
+        // remains reachable when growth is genuinely warranted twice over -- recorded as an open
+        // item with the configuration that reaches it.
         return insert_into_table(table, key, value, true);
     }
 
@@ -348,10 +356,20 @@ private:
             // Different key: keep probing.
         }
 
-        // Table full (should not happen under the load factor). Grow and retry at this level,
-        // preserving increment_count: re-entering through insert_if_absent would force
-        // counting on, double-counting when the caller is resize()'s rehash.
-        resize();
+        // Table full (should not happen under the load factor). Retry at this level, preserving
+        // increment_count: re-entering through insert_if_absent would force counting on,
+        // double-counting when the caller is resize()'s rehash.
+        Table* head = table_.load(std::memory_order_acquire);
+
+        // A probe run exhausted in a SUPERSEDED table calls for the head, not for growth. The
+        // head is already a larger table with room, and growing it would install another one --
+        // and every extra installation is another chance for one key to be claimed in two tables
+        // at once, which is what the head re-check in insert_if_absent exists to catch.
+        if (head != table) return insert_into_table(head, key, value, increment_count);
+
+        // The head itself is full, so grow it regardless of the load factor: capacity elsewhere
+        // in the chain cannot relieve an exhausted probe run here.
+        resize(/*only_if_loaded=*/false);
         return insert_into_table(table_.load(std::memory_order_acquire), key, value,
                                  increment_count);
     }
@@ -455,8 +473,25 @@ private:
         }
     }
 
-    void resize() {
+    void resize(bool only_if_loaded = true) {
         Table* old_table = table_.load(std::memory_order_acquire);
+
+        // Grow only if the CURRENT head still needs it. Callers decide to resize by comparing the
+        // count against the table they were holding, and by the time they get here another thread
+        // may have installed a bigger one that already has room. Growing anyway installs a SECOND
+        // table, and a second installation is what lets one key be claimed twice: a thread that
+        // resolved against the middle table scans its ancestors, finds nothing, and claims there,
+        // while a thread working from the new head has already walked past that middle table in
+        // its own scan and claims the same key at the head. Both are then told they inserted.
+        //
+        // insert_into_table passes false: it calls this because a probe run was exhausted, which
+        // capacity elsewhere in the chain does not relieve.
+        if (only_if_loaded &&
+            count_.load(std::memory_order_relaxed) <=
+                old_table->capacity * LOAD_FACTOR_THRESHOLD) {
+            return;
+        }
+
         size_t new_capacity = old_table->capacity * 2;
 
         Table* new_table = Table::create(new_capacity, old_table, arena_);
