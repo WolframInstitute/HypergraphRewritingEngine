@@ -75,13 +75,14 @@ void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
     // Grid CAPPED, and the kernel is grid-stride so the cap costs coverage nothing.
     //
     // Every thread here claims its own arena slot and grows it to the largest state it handles,
-    // so concurrent slot holders -- and therefore arena demand -- scale with the LAUNCH, not with
-    // the device. One thread per state would ask the arena for one slot per state, which is a
-    // multiple of what it is sized for as soon as a step produces many states. Bounding the grid
-    // to the resident worker count makes demand a property of the hardware instead.
+    // so concurrent slot holders -- and therefore arena demand -- scale with the LAUNCH, not
+    // with the device. The arena this kernel draws from is sized for default_persistent_grid()
+    // holders (see persistent_arena_words), so the launch is bounded to that many THREADS:
+    // grid x block <= the holder budget the arena was sized for.
     const int block = 128;
     const int want  = static_cast<int>(((hi - lo) + block - 1) / block);
-    const int cap   = static_cast<int>(default_persistent_grid());
+    const int cap_threads = static_cast<int>(default_persistent_grid());
+    const int cap   = cap_threads / block > 0 ? cap_threads / block : 1;
     const int grid  = want < 1 ? 1 : (want > cap ? cap : want);
     k_fill_exact_and_ranks<<<grid, block>>>(
         engine.device(), lo, hi, key_is_exact, want_ranks, arena.view());

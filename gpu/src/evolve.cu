@@ -388,7 +388,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     DeviceArena& identity_arena = engine.ir_arena(
         ekeys_step == EVENT_SIG_NONE
             ? 1024ull
-            : persistent_arena_words(cfg.max_states, default_persistent_grid()));
+            : persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
     DedupMap event_identity_map(ekeys_step == EVENT_SIG_NONE ? 8u : cfg.max_events * 2u);
     event_identity_map.clear();
 
@@ -472,7 +472,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // state budget. Exhaustion is a recorded capacity overflow (kIRArenaExhausted, which the
         // wrapper can grow and retry), never a coarser hash.
         DeviceArena& arena = engine.ir_arena(
-            persistent_arena_words(cfg.max_states, default_persistent_grid()));
+            persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
 
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
@@ -712,17 +712,12 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
         case ErrorKind::kIRArenaExhausted:
-            // The device IR arena, which run_persistent_evolve and the step loop's identity
-            // phase both size as a multiple of cfg.max_states. So this IS config-controlled,
-            // and doubling max_states doubles the arena along with it.
-            //
-            // It was previously recorded as kScratchOverflow and inherited that kind's "cannot
-            // retry" policy, which is wrong twice over on the persistent path: there is no
-            // 1-WL fallback there (by design -- a fallback key MERGES non-isomorphic states),
-            // so the work is lost rather than degraded, and growing would have recovered it.
-            // A run that could have completed returned a partial result instead.
-            dbl(cfg.max_states);
-            dbl(cfg.max_state_edge_total);
+            // The device IR arena is sized as holders x cfg.ir_arena_share_words, so this IS
+            // config-controlled and doubling the share doubles the arena. Retryable, and it
+            // must be: the persistent path has no 1-WL fallback (by design -- a fallback key
+            // MERGES non-isomorphic states), so without the retry the work is lost rather
+            // than degraded.
+            dbl(cfg.ir_arena_share_words);
             return true;
         case ErrorKind::kIRDepthExceeded:
             // The individualization search wanted to go deeper than the device attempts. The

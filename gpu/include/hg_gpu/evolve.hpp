@@ -202,6 +202,12 @@ struct EngineConfig {
     // (preds[c] = producers of c's kept causal edges), one list node per unique kept causal
     // pair. Reachability is answered by backward search over it, so no closure is stored.
     uint32_t tr_preds_nodes = 1u << 20;
+
+    // Average IR-arena words per concurrent slot holder (the arena is one shared bump pool, so
+    // the average share is what matters, not a per-worker partition). The default is ~6x the
+    // measured average demand on multiway state sizes; a big-state workload that outgrows the
+    // pool records kIRArenaExhausted, which grow-and-retry answers by doubling THIS.
+    uint32_t ir_arena_share_words = 65536;
 };
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,

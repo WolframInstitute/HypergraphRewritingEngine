@@ -612,17 +612,24 @@ __global__ void k_persistent_evolve(
 
 }  // namespace
 
-// Declared in hg_gpu/persistent.hpp, which carries the contract. One resident block per SM: a
-// persistent kernel's blocks do not retire and get replaced, so the grid IS the worker count, and
-// a grid smaller than the device leaves SMs idle for the whole run rather than for one launch.
+// Declared in hg_gpu/persistent.hpp, which carries the contract. One resident block per SM:
+// a persistent kernel's blocks do not retire and get replaced, so the grid IS the worker count.
+// Each block works one item at a time on thread 0 (the shared match/rewrite/canon routines are
+// single-threaded per item, and warp-bursting them was measured SLOWER -- irregular tasks in
+// one warp serialize on divergence and burst their atomics into the same lines), so the
+// scaling axis is MORE BLOCKS, each an independent serial worker the SM scheduler interleaves.
 //
-// Measured (bench_gpu_evolve, WPP rule, quotient, Full, 6 steps, RTX 4090, 128 SMs, median of
-// 20): 128 blocks 10.2 ms, 256 blocks 9.9 ms, 512 blocks 10.2 ms, 1024 blocks 11.3 ms. The
-// curve is flat past the SM count -- the workers' idle-path backoff in the kernels above is
-// what keeps oversubscribed grids from polling the queue into the ground -- and it never
-// dips below the SM-count point, so extra blocks buy nothing: a queue op carries a whole
-// subgraph match or rewrite, and at that op rate more consumers than SMs just wait in line at
-// the same ring. The SM count is the optimum grid, by measurement not by cap.
+// Measured (bench_gpu_evolve, WPP rule, quotient, Full, RTX 4090, 128 SMs, medians): 6 steps
+// -- 128 blocks 8.1 ms, 384 6.6, 768 6.4, 1536 6.3, 3072 6.5; 7 steps -- 128 blocks 65.8 ms,
+// 512 40.3, 1024 37.3, 3072 37.5. A broad plateau from ~6x the SM count up; the idle-path
+// backoff in the kernels above is what makes oversubscription free when work runs short.
+//
+// The default stays ONE per SM even so: under quotient exploration the causal-edge set is
+// schedule-dependent (tools/quotient_causal_probe_gpu -- isomorphic children race for the
+// canonical slot, downstream causal attribution keys on the winner's raw edges; ~1/25 runs at
+// this grid, ~1/5 at 8x), and larger grids widen that window until causal attribution is
+// orbit-keyed. The ~40% at 8x is the payoff waiting on that fix; HG_GPU_PERSISTENT_BLOCKS
+// reaches it today.
 uint32_t default_persistent_grid() {
     static uint32_t cached = 0;
     if (cached) return cached;

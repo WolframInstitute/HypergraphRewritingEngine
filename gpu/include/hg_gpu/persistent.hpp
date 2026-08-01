@@ -106,18 +106,16 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
 // evolution -- so the grid IS the worker count. Exposed because the IR arena has to be sized
 // from the same number: each resident worker holds its own slot, so arena demand scales with the
 // grid, and a caller sizing the arena off the state budget alone starves it as soon as the grid
-// grows. See gpu/src/persistent.cu for the measurement behind one-per-SM.
+// grows. See gpu/src/persistent.cu for the sweep behind eight-per-SM.
 uint32_t default_persistent_grid();
 
-// Words of IR arena to provide per resident worker, given the state budget. A worker holds one
-// slot at a time and grows it to the largest state it personally canonicalizes, so the arena
-// needs roughly (grid x peak slot) rather than a per-state total.
-//
-// Calibrated to leave the effective per-worker share unchanged from when the grid was a constant
-// 33 and the arena was `max_states * 64`: 64/33 ~ 2. So at the old grid this is the old size, and
-// at a larger grid it scales instead of starving.
-inline uint64_t persistent_arena_words(uint32_t max_states, uint32_t grid) {
-    return static_cast<uint64_t>(grid) * static_cast<uint64_t>(max_states) * 2ull;
+// Words of IR arena to provide for `holders` concurrent slot holders at `share_words` average
+// words each (EngineConfig::ir_arena_share_words). The arena is one shared bump pool; a holder
+// keeps one slot at a time and grows it to the largest state it personally canonicalizes, so
+// the AVERAGE share is what matters, not a per-holder partition. A workload that outgrows the
+// pool records kIRArenaExhausted, which grow-and-retry answers by doubling the share.
+inline uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
+    return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
 }
 
 struct PersistentEvolveStats {
