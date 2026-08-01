@@ -1035,8 +1035,18 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     {
         const auto keys = event_signature_keys();
         if (keys != hgcommon::EVENT_SIG_NONE) {
+            // STEP: the canonical OUTPUT state's step, not this replay's depth.
+            //
+            // Full capture signs with canonical_out_state.step (hypergraph.cpp:476,540) -- one
+            // value per class. The replay's `depth` is where this instance happens to sit, so
+            // the two disagree for every event and the signature sets come out disjoint:
+            // measured, adding EventKey_Step alone took agreement from 5 of 5 to 0 of 5 while
+            // the endpoints alone agreed exactly.
+            uint32_t out_step = depth;
+            if (auto fo = qc_frame_.lookup(m.to_hash))
+                out_step = get_state(static_cast<StateId>(*fo - 1)).step;
             uint64_t csig = hgcommon::event_signature(
-                keys, state_hash, m.to_hash, depth, m.rule,
+                keys, state_hash, m.to_hash, out_step, m.rule,
                 m.consumed_slots, static_cast<uint8_t>(m.num_consumed),
                 m.produced_slots, static_cast<uint8_t>(m.num_produced));
             if (csig == 0 || csig == ~0ULL) csig = 1;
