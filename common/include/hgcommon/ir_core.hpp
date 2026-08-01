@@ -558,11 +558,20 @@ struct IrResult {
 // state's isomorphism class plus the input order, and event identity is defined over them --
 // which is why the device needs them and why they come from the same pass as the hash rather
 // than a second canonicalization.
+//
+// out_edge_orbit / out_edge_class, when non-null, receive each input edge's automorphism
+// ORBIT id and canonical content CLASS id. The class of an edge is the index of its canonical
+// content among the distinct contents in canonical order; two edges share an orbit iff some
+// automorphism of the state maps one's content to the other's. The quotient causal DP keys on
+// orbits, which is why they too come from this pass. Requires every edge to have arity >= 1
+// (both engines' flatteners guarantee it): the orbit scratch overlays cur_form/first_form,
+// whose size covers 2 * n_edges words only then.
 HG_HD inline IrResult ir_canonical_hash(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
     uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
-    uint32_t max_generators = IR_HOST_GENERATORS)
+    uint32_t max_generators = IR_HOST_GENERATORS,
+    uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr)
 {
     IrResult out{0, IR_EMPTY, 0};
     if (n_edges == 0 || n_verts == 0) return out;
@@ -665,9 +674,117 @@ HG_HD inline IrResult ir_canonical_hash(
         for (uint32_t i = 0; i < n_edges; ++i) out_edge_rank[best_order[i]] = i;
     };
 
+    // Per-edge orbit and class of the winning form. Computed in INPUT space: the labeling is a
+    // bijection applied position-wise, so two edges have equal canonical content iff their
+    // input tuples are equal, and a generator (a vertex permutation over input indices) acts on
+    // input tuples directly -- the winning labeling, which the search does not retain, is never
+    // needed. Unions run generator-by-generator in discovery order and class-ascending within
+    // one, and orbit ids follow ascending union-find root class id, so the assignment is a
+    // deterministic function of the state alone. Runs entirely on scratch the search no longer
+    // reads (cur_form, first_form, form_order); see the arity >= 1 requirement above.
+    auto emit_orbits = [&]() {
+        if (!out_edge_orbit && !out_edge_class) return;
+
+        // Class id per canonical position: equal adjacent form runs share a class.
+        uint32_t* pos_class = cur_form;                 // [n_edges]
+        {
+            uint32_t w = 0, prev = 0, cls = 0;
+            for (uint32_t i = 0; i < n_edges; ++i) {
+                const uint32_t len = 1u + best_form[w];
+                if (i > 0) {
+                    const uint32_t plen = 1u + best_form[prev];
+                    bool eq = (plen == len);
+                    for (uint32_t k = 0; eq && k < len; ++k)
+                        eq = best_form[prev + k] == best_form[w + k];
+                    if (!eq) ++cls;
+                }
+                pos_class[i] = cls;
+                prev = w; w += len;
+            }
+        }
+
+        // Per-edge class, and each class's canonical representative edge (first position).
+        uint32_t* klass_of = first_form;                // [n_edges]
+        uint32_t* rep_edge = cur_form + n_edges;        // [n_classes <= n_edges]
+        uint32_t n_classes = 0;
+        for (uint32_t i = 0; i < n_edges; ++i) {
+            const uint32_t c = pos_class[i];
+            klass_of[best_order[i]] = c;
+            if (c + 1 > n_classes) { n_classes = c + 1; rep_edge[c] = best_order[i]; }
+        }
+        if (out_edge_class)
+            for (uint32_t e2 = 0; e2 < n_edges; ++e2) out_edge_class[e2] = klass_of[e2];
+        if (!out_edge_orbit) return;
+
+        uint32_t* ufc = first_form + n_edges;           // [n_classes]
+        for (uint32_t c = 0; c < n_classes; ++c) ufc[c] = c;
+        auto cfind = [&](uint32_t x) {
+            while (ufc[x] != x) { ufc[x] = ufc[ufc[x]]; x = ufc[x]; }
+            return x;
+        };
+
+        if (n_gens > 0 && n_classes > 1) {
+            // Edges sorted by input tuple, for the generator-image lookup. Duplicate tuples
+            // are one class already, so any member of a tie serves.
+            uint32_t* tuple_order = form_order;         // [n_edges]
+            for (uint32_t e2 = 0; e2 < n_edges; ++e2) tuple_order[e2] = e2;
+            struct TupCmp {
+                const uint8_t* ea; const uint32_t* eoff; const uint32_t* ev;
+                HG_HD int operator()(uint32_t a, uint32_t b) const {
+                    const uint32_t la = ea[a], lb = ea[b], m = la < lb ? la : lb;
+                    for (uint32_t k = 0; k < m; ++k) {
+                        const uint32_t x = ev[eoff[a] + k], y = ev[eoff[b] + k];
+                        if (x != y) return x < y ? -1 : 1;
+                    }
+                    if (la != lb) return la < lb ? -1 : 1;
+                    return 0;
+                }
+            };
+            ir_heapsort_idx(tuple_order, n_edges, TupCmp{ea, eoff, ev});
+
+            // Compare edge `cand`'s tuple with g applied to `src`'s tuple, lazily.
+            auto cmp_img = [&](uint32_t cand, const uint32_t* g, uint32_t src) -> int {
+                const uint32_t lc = ea[cand], ls = ea[src], m = lc < ls ? lc : ls;
+                for (uint32_t k = 0; k < m; ++k) {
+                    const uint32_t x = ev[eoff[cand] + k], y = g[ev[eoff[src] + k]];
+                    if (x != y) return x < y ? -1 : 1;
+                }
+                if (lc != ls) return lc < ls ? -1 : 1;
+                return 0;
+            };
+            for (uint32_t gi = 0; gi < n_gens; ++gi) {
+                const uint32_t* g = gens + uint64_t(gi) * n;
+                for (uint32_t c = 0; c < n_classes; ++c) {
+                    const uint32_t src = rep_edge[c];
+                    uint32_t lo = 0, hi = n_edges;
+                    while (lo < hi) {
+                        const uint32_t mid = (lo + hi) >> 1;
+                        if (cmp_img(tuple_order[mid], g, src) < 0) lo = mid + 1; else hi = mid;
+                    }
+                    // g is an automorphism of the state, so the image tuple IS one of its
+                    // edges; the guard covers a truncated generator table only.
+                    if (lo < n_edges && cmp_img(tuple_order[lo], g, src) == 0) {
+                        const uint32_t d2 = klass_of[tuple_order[lo]];
+                        const uint32_t a = cfind(c), b = cfind(d2);
+                        if (a != b) ufc[a] = b;
+                    }
+                }
+            }
+        }
+
+        // Ascending root class id -> orbit id, then per edge through its class. pos_class is
+        // dead by now, so its span holds the root->orbit map.
+        uint32_t* orbit_of = pos_class;                 // [n_classes]
+        uint32_t next = 0;
+        for (uint32_t c = 0; c < n_classes; ++c) if (cfind(c) == c) orbit_of[c] = next++;
+        for (uint32_t e2 = 0; e2 < n_edges; ++e2)
+            out_edge_orbit[e2] = orbit_of[cfind(klass_of[e2])];
+    };
+
     if (pi.is_discrete()) {
         leaf(pi);
         emit_ranks();
+        emit_orbits();
         out.hash = ir_hash_form(best_form, n_edges, n);
         out.status = IR_OK;
         out.n_verts = n;
@@ -751,6 +868,7 @@ HG_HD inline IrResult ir_canonical_hash(
 
     if (!has_best) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }
     emit_ranks();
+    emit_orbits();
     out.hash = ir_hash_form(best_form, n_edges, n);
     out.status = IR_OK;
     out.n_verts = n;

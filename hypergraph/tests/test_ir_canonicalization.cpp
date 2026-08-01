@@ -4,6 +4,8 @@
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <map>
+#include "hgcommon/ir_core.hpp"
 
 using namespace hypergraph;
 
@@ -302,4 +304,99 @@ TEST_F(IRCanonicalizationTest, AreIsomorphicMethod) {
     EXPECT_TRUE(ir.are_isomorphic(path, path2));
     EXPECT_FALSE(ir.are_isomorphic(path, star));
     EXPECT_TRUE(ir.are_isomorphic({}, {}));
+}
+
+// =========================================================================================
+// The shared core's per-edge orbit/class output against the reference implementation
+// (IRCanonicalizer::compute_canonical_hash_with_edge_orbits). Same hash, identical class
+// ids (canonical content classes are implementation-independent), and the same orbit
+// PARTITION -- orbit ids are each implementation's own deterministic numbering over
+// union-find roots, so blocks are compared after first-occurrence normalization.
+// =========================================================================================
+
+namespace {
+
+// Flatten a heap edge list to the shared core's convention (local vertex ids assigned in
+// sorted original-id order, the engines' rule) and run ir_canonical_hash with orbit and
+// class outputs, retrying deeper exactly as the engines do.
+uint64_t shared_core_orbits(const std::vector<std::vector<hypergraph::VertexId>>& edges,
+                            std::vector<uint32_t>& orbit, std::vector<uint32_t>& klass) {
+    const uint32_t e = static_cast<uint32_t>(edges.size());
+    std::vector<hypergraph::VertexId> verts;
+    for (const auto& ed : edges) for (auto v : ed) verts.push_back(v);
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    const uint32_t n = static_cast<uint32_t>(verts.size());
+
+    std::vector<uint8_t> ea(e);
+    std::vector<uint32_t> eoff(e + 1);
+    std::vector<uint32_t> ev;
+    for (uint32_t i = 0; i < e; ++i) {
+        ea[i] = static_cast<uint8_t>(edges[i].size());
+        eoff[i] = static_cast<uint32_t>(ev.size());
+        for (auto v : edges[i]) {
+            const uint32_t vi = static_cast<uint32_t>(
+                std::lower_bound(verts.begin(), verts.end(), v) - verts.begin());
+            ev.push_back(vi);
+        }
+    }
+    eoff[e] = static_cast<uint32_t>(ev.size());
+    const uint32_t occ = static_cast<uint32_t>(ev.size());
+
+    orbit.assign(e, 0u);
+    klass.assign(e, 0u);
+    for (uint32_t depth = 1; depth <= 64; depth *= 8) {
+        std::vector<uint32_t> scratch(
+            hgcommon::ir_scratch_words(n, e, occ, depth, hgcommon::IR_HOST_GENERATORS));
+        hgcommon::IrResult r = hgcommon::ir_canonical_hash(
+            ea.data(), eoff.data(), ev.data(), e, n, occ, scratch.data(), depth,
+            nullptr, hgcommon::IR_HOST_GENERATORS, orbit.data(), klass.data());
+        if (r.status != hgcommon::IR_NEED_DEPTH) return r.hash;
+    }
+    ADD_FAILURE() << "shared core never finished within depth 64";
+    return 0;
+}
+
+std::vector<uint32_t> first_occurrence_normalized(const std::vector<uint32_t>& a) {
+    std::vector<uint32_t> out(a.size());
+    std::map<uint32_t, uint32_t> seen;
+    for (size_t i = 0; i < a.size(); ++i) {
+        auto it = seen.find(a[i]);
+        if (it == seen.end())
+            it = seen.emplace(a[i], static_cast<uint32_t>(seen.size())).first;
+        out[i] = it->second;
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_F(IRCanonicalizationTest, SharedCoreEdgeOrbitsMatchReference) {
+    const std::vector<std::vector<std::vector<VertexId>>> corpus = {
+        {{0, 1}, {1, 2}, {2, 3}},                            // path: trivial Aut
+        {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 0}},    // C6: one edge orbit
+        {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}},    // two identical triangles
+        {{0, 1}, {0, 1}, {1, 2}},                            // duplicate edge (one class)
+        {{0, 1}, {0, 2}, {0, 3}, {0, 4}},                    // star: leaves symmetric
+        {{0, 0}},                                            // self-loop
+        {{0, 1, 2}, {2, 1, 0}, {0, 1, 2}},                   // arity 3, dup + reversal
+        {{0, 1}, {1, 0}},                                    // directed 2-cycle
+        {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}},            // diamond with a tail
+    };
+
+    for (size_t ci = 0; ci < corpus.size(); ++ci) {
+        const auto& edges = corpus[ci];
+        std::vector<uint32_t> orbit_ref, klass_ref;
+        const uint64_t h_ref =
+            ir.compute_canonical_hash_with_edge_orbits(edges, orbit_ref, &klass_ref);
+
+        std::vector<uint32_t> orbit_core, klass_core;
+        const uint64_t h_core = shared_core_orbits(edges, orbit_core, klass_core);
+
+        EXPECT_EQ(h_core, h_ref) << "case " << ci << ": hash differs";
+        EXPECT_EQ(klass_core, klass_ref) << "case " << ci << ": class ids differ";
+        EXPECT_EQ(first_occurrence_normalized(orbit_core),
+                  first_occurrence_normalized(orbit_ref))
+            << "case " << ci << ": orbit partition differs";
+    }
 }
