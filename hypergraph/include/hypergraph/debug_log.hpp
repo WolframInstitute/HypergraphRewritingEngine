@@ -1,9 +1,6 @@
 #pragma once
 
 #include <cstdio>
-#include <thread>
-#include <sstream>
-#include <cstdarg>
 #include <atomic>
 
 namespace hypergraph {
@@ -26,6 +23,26 @@ inline void set_debug_callback(DebugCallback cb) {
 inline void clear_debug_callback() {
     g_debug_callback.store(nullptr, std::memory_order_release);
 }
+
+} // namespace debug
+} // namespace hypergraph
+
+// Debug logging macro - routes to callback if set, otherwise printf
+//
+// The formatter and the three headers it needs are compiled only when debug output is on. With it
+// off DEBUG_LOG is a no-op and nothing names debug_output, so <sstream> and <thread> would drag
+// libstdc++'s iostream and threading machinery into every translation unit that includes this
+// header for a function none of them call. Keeping them inside the guard also lets a translation
+// unit be compiled by a tool that models pthreads itself and cannot satisfy gthr-default.h --
+// see verification/genmc/README.md.
+#ifdef ENABLE_DEBUG_OUTPUT
+
+#include <cstdarg>
+#include <sstream>
+#include <thread>
+
+namespace hypergraph {
+namespace debug {
 
 // Internal: format and output debug message
 inline void debug_output(const char* fmt, ...) {
@@ -54,8 +71,6 @@ inline void debug_output(const char* fmt, ...) {
 } // namespace debug
 } // namespace hypergraph
 
-// Debug logging macro - routes to callback if set, otherwise printf
-#ifdef ENABLE_DEBUG_OUTPUT
     #define DEBUG_LOG(fmt, ...) ::hypergraph::debug::debug_output(fmt, ##__VA_ARGS__)
 #else
     #define DEBUG_LOG(fmt, ...) ((void)0)
