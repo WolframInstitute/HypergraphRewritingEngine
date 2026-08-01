@@ -255,3 +255,20 @@ add_test(NAME causal_tr_exactness
          COMMAND $<TARGET_FILE:causal_tr_exactness_probe>)
 set_tests_properties(quotient_reconstruction causal_tr_exactness PROPERTIES TIMEOUT 300)
 add_dependencies(host_tools quotient_reconstruction_probe causal_tr_exactness_probe)
+
+# The GenMC harnesses, for the same reason as the two probes above: they already decide, and a
+# check nobody runs is a check that stops being true. Two defects reached the tree while the
+# stress tests covering those structures were green, so these run with the rest of the suite.
+#
+# The harnesses transcribe or include memory orders from the engine headers, and one of them
+# (job_system_no_lost_wakeup) proved it can go stale the moment the header it mirrors is fixed
+# without it. Running on every `ctest` is what surfaces that.
+#
+# SKIPPED, not failed, where genmc is absent: it is a separate build against LLVM 18 and is not a
+# dependency of this project. run.sh exits 2 in that case, which is mapped to a skip so a machine
+# without it reports honestly rather than either lying green or failing red.
+add_test(NAME genmc_harnesses
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/genmc/run.sh all)
+set_tests_properties(genmc_harnesses PROPERTIES
+                     TIMEOUT 900
+                     SKIP_RETURN_CODE 2)
