@@ -77,7 +77,9 @@ inline void unpark_one(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     ::WakeByAddressSingle(const_cast<void*>(static_cast<const void*>(&addr)));
 #else
-    addr.notify_one();
+    // wait() is const-qualified but notify_one()/notify_all() are not; the wake mutates no
+    // atomic value, and this API takes const& to mirror the futex path, so cast it away.
+    const_cast<std::atomic<uint32_t>&>(addr).notify_one();
 #endif
 }
 
@@ -88,7 +90,7 @@ inline void unpark_all(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     ::WakeByAddressAll(const_cast<void*>(static_cast<const void*>(&addr)));
 #else
-    addr.notify_all();
+    const_cast<std::atomic<uint32_t>&>(addr).notify_all();
 #endif
 }
 
