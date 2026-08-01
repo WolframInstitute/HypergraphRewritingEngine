@@ -292,6 +292,41 @@ inline ArenaWorkerRegistry& arena_worker_registry() {
     return registry;
 }
 
+#ifdef HG_VERIFICATION
+
+// Under a model checker the index comes from a counter, is claimed on first use, and is never
+// released. Two constraints of the checker's interpreter force this shape, and both are about
+// how it materialises globals rather than about how the code runs.
+//
+// A thread_local of CLASS type cannot be interpreted: every global is built through LLVM's
+// ExecutionEngine, which has no constant representation for an aggregate and stops before the
+// first thread runs. That holds for any class -- an empty one fails the same way -- and a
+// function-local thread_local scalar blocks on its initialisation guard, so the one shape that
+// survives is a constant-initialised scalar at namespace scope, needing neither a guard nor a
+// destructor registration.
+//
+// The registry itself is an aggregate global of MAX_ARENA_WORKERS atomics, which the same
+// machinery faults on rather than diagnoses, so it must not appear in the module at all. Leaving
+// arena_worker_registry() uncalled is what keeps it out: an inline function's local static is
+// emitted only when something reaches it.
+//
+// A counter hands out each index once, so it cannot reproduce the acquire/release recycling. That
+// costs nothing here: a harness runs a fixed, bounded set of threads that outlive their
+// allocations, no index is ever reused, and the free-list behaviour is not among the properties
+// any harness states. verification/genmc/README.md lists this substitution with its argument.
+inline std::atomic<int> g_arena_worker_next{0};
+inline thread_local int t_arena_worker_index = -1;
+
+inline int arena_worker_index() {
+    if (t_arena_worker_index < 0) {
+        const int next = g_arena_worker_next.fetch_add(1, std::memory_order_relaxed);
+        t_arena_worker_index = next < MAX_ARENA_WORKERS ? next : -1;
+    }
+    return t_arena_worker_index;
+}
+
+#else
+
 // Acquires an index on first use by a thread, releases it at thread exit.
 struct ArenaWorkerIndexHolder {
     int index;
@@ -305,6 +340,8 @@ inline int arena_worker_index() {
     static thread_local ArenaWorkerIndexHolder holder;
     return holder.index;
 }
+
+#endif  // HG_VERIFICATION
 
 // =============================================================================
 // ConcurrentHeterogeneousArena: Untyped thread-safe arena allocator

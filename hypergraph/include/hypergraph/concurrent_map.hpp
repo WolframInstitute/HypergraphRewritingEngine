@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
@@ -168,10 +169,20 @@ public:
     static void reject_sentinel_key(K key, const char* op) {
         if (key == EMPTY_KEY || key == LOCKED_KEY) {
             DEBUG_LOG("ConcurrentMap::%s called with a reserved sentinel key", op);
+#ifdef HG_VERIFICATION
+            // A model checker resolves every symbol the module names while it initialises memory,
+            // before any thread runs, and a throw of a standard exception names that exception's
+            // typeinfo -- an external constant with no definition here. Reaching the throw is not
+            // required for it to fault. An assertion states the same precondition, and a violated
+            // one is a safety property the checker reports rather than a crash it dies on.
+            (void)op;
+            assert(false && "ConcurrentMap: key collides with a reserved sentinel (EMPTY/LOCKED)");
+#else
             throw std::logic_error(
                 std::string("ConcurrentMap::") + op +
                 ": key collides with a reserved sentinel (EMPTY/LOCKED). "
                 "Offset dense ids by +1 or use a reserved sentinel band.");
+#endif
         }
     }
 
@@ -351,9 +362,14 @@ private:
         // entry would be invisible to every lookup -- the same silent-disappearance the key
         // sentinels caused four times over, moved to the other field. Report it instead.
         if (value == ABSENT_VALUE) {
+#ifdef HG_VERIFICATION
+            // See reject_sentinel_key for why a model-checked build asserts instead of throwing.
+            assert(false && "ConcurrentMap: stored value collides with ABSENT_VALUE");
+#else
             throw std::logic_error(
                 "ConcurrentMap: stored value collides with ABSENT_VALUE, so the entry would "
                 "read as unpublished. Name a different ABSENT_VALUE for this map.");
+#endif
         }
 
         V current = entry.value.load(std::memory_order_acquire);
