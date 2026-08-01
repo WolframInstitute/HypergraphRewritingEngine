@@ -32,6 +32,43 @@ namespace hypergraph {
 // - EXPAND: Extend partial match with next pattern edge
 // - SINK: Process complete match, spawn REWRITE task
 // - REWRITE: Apply rule, create new state, spawn next evolution step
+//
+// =============================================================================
+// WHAT THIS JOIN COSTS, AND WHERE IT STOPS BEING OPTIMAL
+// =============================================================================
+//
+// This is an edge-at-a-time backtracking join: the rule's match_order fixes which LHS edge is
+// bound at each depth, and each step generates candidates by intersecting the inverted vertex
+// index on the variables already bound. In database terms that is a binary join plan executed
+// depth-first with index lookups, and compute_match_order picks the best plan of that kind --
+// connected, so no step is a cartesian product.
+//
+// FOR ONE OR TWO LHS EDGES, WHICH IS EVERY RULE IN THE TEST CORPUS, THAT IS OPTIMAL. Every
+// two-atom conjunctive query is acyclic (GYO removes each atom's exclusive variables, leaving
+// one atom contained in the other), and with a connected order the work is the number of edge
+// pairs sharing the bound vertex -- the output size -- plus an O(arity) validation per candidate.
+// There is no third atom for a partial match to fail against, so no intermediate result is built
+// that the output does not contain.
+//
+// FOR THREE OR MORE LHS EDGES IT IS NOT OPTIMAL, and MAX_PATTERN_EDGES is 16, so rules can reach
+// that. Two separate gaps open:
+//
+//   Acyclic patterns: a partial match can now fail to extend, so intermediate results are built
+//   that never appear in the output. Yannakakis-style semi-join reduction would restore
+//   O(input + output); this does not do it.
+//
+//   Cyclic patterns: no binary plan is optimal at all, whatever the order. The triangle LHS
+//   {{x,y},{y,z},{z,x}} over a state of N binary edges has at most N^1.5 matches (the AGM bound),
+//   while this join binds N candidates for the first edge and up to N for the second before the
+//   third can prune -- Omega(N^2). The gap is polynomial and grows with N. Closing it needs a
+//   worst-case-optimal join, which enumerates VARIABLE by variable rather than edge by edge,
+//   intersecting the edges that mention the current variable at each step (Leapfrog Triejoin and
+//   its relatives). That is a different algorithm class, not a better order: the ordering work
+//   already reached the best binary plan, so no further ordering effort can close this.
+//
+// A worst-case-optimal join would additionally need per-position sorted access -- "given the
+// binding so far, seek the next vertex value at this position" -- which InvertedVertexIndex does
+// not provide; it answers set containment, not ordered seek.
 
 // PartialMatch is defined in pattern.hpp
 
