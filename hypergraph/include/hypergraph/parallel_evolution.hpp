@@ -158,6 +158,26 @@ struct EvolutionStats {
     // Extra ancestor re-walks / child re-scans the forwarding rendezvous performs
     // when its epoch changes during a push or pull (a measure of cross-worker churn).
     alignas(64) std::atomic<size_t> forwarding_rewalks{0};
+
+    // Whether push_match_to_children finds anything to push to, split by WHEN it is called.
+    // The two sites answer different questions and the split is the measurement:
+    //
+    //   DISCOVERY -- from SINK, as a match is first completed. Under batched submission a
+    //   state's matching finishes before any of its rewrites are submitted, so no child of
+    //   that state should exist yet and every one of these calls should find an empty
+    //   registry. If that holds, the call is a no-op under batched and the work the child
+    //   would have received arrives instead through its pull at creation, when the parent's
+    //   match set is already complete.
+    //
+    //   FORWARDING -- a match arriving from an ancestor, propagated onward. These CAN find
+    //   children, because the state was matched earlier and its children already exist.
+    //
+    // An empty-registry fraction below 1.0 at the discovery site falsifies the reasoning
+    // above about when children become visible, and the cause is then elsewhere.
+    alignas(64) std::atomic<size_t> push_discovery_calls{0};
+    alignas(64) std::atomic<size_t> push_discovery_empty{0};
+    alignas(64) std::atomic<size_t> push_forwarding_calls{0};
+    alignas(64) std::atomic<size_t> push_forwarding_empty{0};
 };
 
 // =============================================================================
@@ -944,10 +964,16 @@ private:
                                      const EdgeId* consumed_edges, uint8_t num_consumed,
                                      uint32_t child_step = 0);
 
-    // Helper: Push a match to immediate children (single-level push)
-    void push_match_to_children(StateId parent, const MatchRecord& match, uint32_t step);
+    // Which moment a push is issued from. The two are counted separately because they answer
+    // different questions about whether the push has anything to do -- see EvolutionStats.
+    enum class PushSite { Discovery, Forwarding };
 
-    void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step);
+    // Helper: Push a match to immediate children (single-level push)
+    void push_match_to_children(StateId parent, const MatchRecord& match, uint32_t step,
+                                PushSite site = PushSite::Forwarding);
+
+    void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step,
+                                     PushSite site);
 
     // Diagnostic: record when a forwarded match had been flagged as missing during
     // validation (validate_match_forwarding_), meaning it arrived after the check.

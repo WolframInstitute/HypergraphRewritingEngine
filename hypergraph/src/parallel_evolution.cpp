@@ -437,11 +437,12 @@ void ParallelEvolutionEngine::note_late_arrival(uint64_t match_hash) {
 void ParallelEvolutionEngine::push_match_to_children(
     StateId parent,
     const MatchRecord& match,
-    uint32_t step
+    uint32_t step,
+    PushSite site
 ) {
     if (batched_matching_) {
         // With batched matching, no retry loop needed
-        push_match_to_children_impl(parent, match, step);
+        push_match_to_children_impl(parent, match, step, site);
         return;
     }
 
@@ -464,12 +465,12 @@ void ParallelEvolutionEngine::push_match_to_children(
     };
 
     uintptr_t before = child_epoch(parent);
-    push_match_to_children_impl(parent, match, step);
+    push_match_to_children_impl(parent, match, step, site);
     uintptr_t after = child_epoch(parent);
     while (after != before) {
         stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
         before = after;
-        push_match_to_children_impl(parent, match, step);
+        push_match_to_children_impl(parent, match, step, site);
         after = child_epoch(parent);
     }
 }
@@ -477,13 +478,30 @@ void ParallelEvolutionEngine::push_match_to_children(
 void ParallelEvolutionEngine::push_match_to_children_impl(
     StateId parent,
     const MatchRecord& match,
-    [[maybe_unused]] uint32_t step
+    [[maybe_unused]] uint32_t step,
+    PushSite site
 ) {
+    // Counted before the early return, so the denominator is every call and not only the ones
+    // that found work. The question this answers is how often the call has anything to do.
+    auto& calls = site == PushSite::Discovery ? stats_.push_discovery_calls
+                                              : stats_.push_forwarding_calls;
+    auto& empty = site == PushSite::Discovery ? stats_.push_discovery_empty
+                                              : stats_.push_forwarding_empty;
+    calls.fetch_add(1, std::memory_order_relaxed);
+
     auto result = state_children_.lookup_waiting(parent);
-    if (!result.has_value()) return;  // No children registered
+    if (!result.has_value()) {
+        empty.fetch_add(1, std::memory_order_relaxed);
+        return;  // No children registered
+    }
 
     LockFreeList<ChildInfo>* children = *result;
+    // A registered-but-empty list counts the same as an absent one: either way there is nothing
+    // to push to. Detected by riding the walk that has to happen anyway rather than by a second
+    // pass, so measuring this costs one stack bool and no extra traversal.
+    bool any_child = false;
     children->for_each([&](const ChildInfo& child_info) {
+        any_child = true;
         // Skip if match overlaps with consumed edges
         if (child_info.match_overlaps_consumed(match.matched_edges(), match.num_edges())) {
             stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
@@ -533,6 +551,8 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // Spawn REWRITE task for this forwarded match
         submit_rewrite_task(forwarded, child_step);
     });
+
+    if (!any_child) empty.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ParallelEvolutionEngine::forward_existing_parent_matches(
@@ -1547,7 +1567,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         if (enable_match_forwarding_ && !batched_matching_) {
             store_match_for_state(state, match, true);
-            push_match_to_children(state, match, step);
+            push_match_to_children(state, match, step, PushSite::Discovery);
         }
 
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
@@ -1979,7 +1999,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     // Store match for collection/forwarding
     if (enable_match_forwarding_) {
         store_match_for_state(data.state, match, true);
-        push_match_to_children(data.state, match, data.step);
+        push_match_to_children(data.state, match, data.step, PushSite::Discovery);
     }
 
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
