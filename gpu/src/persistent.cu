@@ -13,6 +13,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -258,6 +259,7 @@ __global__ void k_persistent_match_rewrite(
     __shared__ MatchWorkItem mitem;
     __shared__ bool have;
     __shared__ uint32_t claimed;
+    uint32_t idle_ns = 64;   // thread 0's backoff state; reset whenever work is found
 
     for (;;) {
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
@@ -266,6 +268,7 @@ __global__ void k_persistent_match_rewrite(
         __syncthreads();
         if (claimed != INVALID_ID) {
             if (threadIdx.x == 0) {
+                idle_ns = 64;
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
                 // rec.step + 1, not rec.step: an event is stamped with the depth of the state
@@ -284,14 +287,20 @@ __global__ void k_persistent_match_rewrite(
         if (have) {
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
             __syncthreads();
-            if (threadIdx.x == 0) term.mark_completed(kRoleMatch);
+            if (threadIdx.x == 0) { term.mark_completed(kRoleMatch); idle_ns = 64; }
             __syncthreads();
             continue;
         }
 
         // Nothing available in either role. Empty does NOT mean finished here -- the other
-        // role may still be producing -- so only the detector decides.
+        // role may still be producing -- so only the detector decides. Backed off, because a
+        // grid of idle blocks re-polling the cursor words in a tight loop starves the blocks
+        // holding work of memory bandwidth.
         if (term.exit_requested()) return;
+        if (threadIdx.x == 0) {
+            __nanosleep(idle_ns);
+            if (idle_ns < 4096u) idle_ns <<= 1;
+        }
         __syncthreads();
     }
 }
@@ -384,6 +393,7 @@ __global__ void k_persistent_evolve(
     __shared__ bool     run_rule_inline;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
+    uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
 
     if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
     __syncthreads();
@@ -396,6 +406,7 @@ __global__ void k_persistent_evolve(
 
         if (claimed != INVALID_ID) {
             if (threadIdx.x == 0) {
+                idle_ns = 64;
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
                 const uint32_t step = rec.step;
@@ -507,7 +518,7 @@ __global__ void k_persistent_evolve(
         if (have) {
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
             __syncthreads();
-            if (threadIdx.x == 0) term.mark_completed(kRoleMatch);
+            if (threadIdx.x == 0) { term.mark_completed(kRoleMatch); idle_ns = 64; }
             __syncthreads();
             continue;
         }
@@ -515,9 +526,27 @@ __global__ void k_persistent_evolve(
         if (term.exit_requested()) return;
         // Idle, and the detector has not released us. Counted, because a worker that can
         // neither find work nor be told to stop is the same defect from the other side.
-        if (threadIdx.x == 0 && ++idle_spins >= kMaxWorkerIdleSpins) {
-            ds.errors.record(ErrorKind::kPersistentStall);
-            stalled = true;
+        //
+        // Backed off, because a grid of idle blocks re-polling the ring's cursor words in a
+        // tight loop contends with the blocks HOLDING work for the very lines their pushes and
+        // pops need -- the seed is often a single item, so the ramp is a window where most
+        // blocks are idle and the few working ones set the pace, and the drain tail is the
+        // same shape. Exponential to a 4 us ceiling: at most one ceiling's latency added to
+        // waking up with work, against orders of magnitude less idle traffic. Idle polling is
+        // the only queue traffic that scales with the grid: every productive op carries a
+        // whole subgraph match or rewrite, so push/pop rates sit orders of magnitude below
+        // what an MPMC ring saturates at. Measured on
+        // bench_gpu_evolve (WPP, quotient, Full, 6 steps, RTX 4090): medians hold ~10 ms from
+        // the SM-count grid through 8x oversubscription (128 blocks 10.2, 256 9.9, 512 10.2,
+        // 1024 11.3).
+        if (threadIdx.x == 0) {
+            if (++idle_spins >= kMaxWorkerIdleSpins) {
+                ds.errors.record(ErrorKind::kPersistentStall);
+                stalled = true;
+            } else {
+                __nanosleep(idle_ns);
+                if (idle_ns < 4096u) idle_ns <<= 1;
+            }
         }
         __syncthreads();
         if (stalled) return;
@@ -530,25 +559,22 @@ __global__ void k_persistent_evolve(
 // persistent kernel's blocks do not retire and get replaced, so the grid IS the worker count, and
 // a grid smaller than the device leaves SMs idle for the whole run rather than for one launch.
 //
-// Measured (tools/bench_persistent_blocks.cu, RTX 4090, 128 SMs, min-of-5, ratio against the
-// level-synchronous scheduler on the same workload):
-//
-//     blocks   wide (width 160, 3 steps)   deep (width 3, 32 steps)
-//         33        87.09 ms   0.86x            15.78 ms   3.32x
-//         64        53.65 ms   1.39x            15.35 ms   3.42x
-//        128        35.63 ms   2.10x            15.71 ms   3.34x
-//        256        40.48 ms   1.84x            17.98 ms   2.91x
-//       1024        46.07 ms   1.62x            28.75 ms   1.82x
-//
-// The constant this replaces was 33, which is where the wide shape LOST to the step loop. At one
-// block per SM it wins instead -- a 2.4x swing on that shape from this number alone.
-//
-// The curve turns back up past the SM count, and that is the queue: every worker CASes the same
-// head and tail, so oversubscribing adds contention without adding throughput. The SM count is
-// not merely a floor to clear, it is near the optimum, and more is actively worse.
+// Measured (bench_gpu_evolve, WPP rule, quotient, Full, 6 steps, RTX 4090, 128 SMs, median of
+// 20): 128 blocks 10.2 ms, 256 blocks 9.9 ms, 512 blocks 10.2 ms, 1024 blocks 11.3 ms. The
+// curve is flat past the SM count -- the workers' idle-path backoff in the kernels above is
+// what keeps oversubscribed grids from polling the queue into the ground -- and it never
+// dips below the SM-count point, so extra blocks buy nothing: a queue op carries a whole
+// subgraph match or rewrite, and at that op rate more consumers than SMs just wait in line at
+// the same ring. The SM count is the optimum grid, by measurement not by cap.
 uint32_t default_persistent_grid() {
     static uint32_t cached = 0;
     if (cached) return cached;
+    // Measurement override, read once. Everything grid-derived (worker count, IR arena slots)
+    // funnels through this function, so an override scales all of it consistently.
+    if (const char* env = std::getenv("HG_GPU_PERSISTENT_BLOCKS")) {
+        const long v = std::atol(env);
+        if (v > 0) { cached = static_cast<uint32_t>(v); return cached; }
+    }
     int sms = 0;
     if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
         sms <= 0) {
@@ -582,20 +608,20 @@ uint32_t run_persistent_match(const EngineState& engine,
     uint32_t cap = 1;
     while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem> queue(cap);
-    queue.clear();
 
     {
         const uint32_t block = 128;
-        const uint32_t grid = (num_items + block - 1) / block;
-        k_seed_match_queue<<<grid, block>>>(queue.view(), d_states,
-                                            static_cast<uint32_t>(states.size()), num_rules,
-                                            /*step=*/0u);
+        const uint32_t seed_grid = (num_items + block - 1) / block;
+        k_seed_match_queue<<<seed_grid, block>>>(queue.view(), d_states,
+                                                 static_cast<uint32_t>(states.size()), num_rules,
+                                                 /*step=*/0u);
         check(cudaDeviceSynchronize(), "seed sync");
     }
 
     // Deliberately FEWER blocks than items: each one loops, which is the whole difference from
     // launching one block per item.
     const uint32_t grid = blocks ? blocks : 64;
+
     k_persistent_match<<<grid, kMatchBlockThreads>>>(engine.device(), d_rules,
                                                      queue.view(), out.view());
     check(cudaDeviceSynchronize(), "persistent match sync");
@@ -634,13 +660,12 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     uint32_t cap = 1;
     while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem> match_q(cap);
-    match_q.clear();
     {
         const uint32_t block = 128;
-        const uint32_t grid = (num_items + block - 1) / block;
-        k_seed_match_queue<<<grid, block>>>(match_q.view(), d_states,
-                                            static_cast<uint32_t>(states.size()), num_rules,
-                                            step);
+        const uint32_t seed_grid = (num_items + block - 1) / block;
+        k_seed_match_queue<<<seed_grid, block>>>(match_q.view(), d_states,
+                                                 static_cast<uint32_t>(states.size()), num_rules,
+                                                 step);
         check(cudaDeviceSynchronize(), "seed sync");
     }
 
@@ -653,8 +678,9 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     term.mark_pushed_host(kRoleMatch, num_items);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid = blocks ? blocks : default_persistent_grid();
-    k_persistent_match_rewrite<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
+    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
+    const uint32_t grid = grid_req < 2 ? 2 : grid_req;
+    k_persistent_match_rewrite<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, match_q.view(), scratch_matches.view(),
         d_cursor, term.view(), step);
     check(cudaDeviceSynchronize(), "persistent match+rewrite sync");
@@ -707,7 +733,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     while (cap < num_seed) cap <<= 1;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
     RingBuffer<MatchWorkItem> match_q(cap);
-    match_q.clear();
 
     // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
     // entry per state is the worst case, and the map must not fill, because a full map would
@@ -779,8 +804,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     term.mark_pushed_host(kRoleMatch, kept * num_rules);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid = blocks ? blocks : default_persistent_grid();
-    k_persistent_evolve<<<grid < 2 ? 2 : grid, kMatchBlockThreads>>>(
+    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
+    const uint32_t grid = grid_req < 2 ? 2 : grid_req;
+    k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
