@@ -108,6 +108,7 @@ these substitutions and needs a different approach.
 | `concurrent_map_resize` | The same agreement holds across a table replacement, both pre-existing keys survive the rehash, and no key acquires a second entry | 2 threads, capacity 2→4, 3 keys, one resize round | **No errors, 176 complete executions** — after the fix below |
 | `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
 | `job_system_no_lost_wakeup` | A submitter that skips the wake because nobody reads as idle never leaves a worker parked with the job still queued | 1 worker, 1 submitter, 1 job | **No errors, 5 complete executions** — after the fix below |
+| `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
 
 ### What this found
 
@@ -179,6 +180,7 @@ assertion inverted, and the checker must report a safety violation:
 | `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
+| `claim_match_rendezvous` | P1 inverted (both claimants win); P2 inverted (a colliding claim loses) | `Error: Safety violation!`, exit 42, both |
 
 Do this for any harness added here, before believing its clean run.
 

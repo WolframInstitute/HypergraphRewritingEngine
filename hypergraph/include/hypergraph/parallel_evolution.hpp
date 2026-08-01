@@ -399,6 +399,11 @@ class ParallelEvolutionEngine {
     // Probes attempted before a collision is treated as unresolvable. A single collision is
     // already astronomically unlikely; needing this many consecutive ones is not a scenario that
     // occurs, and the counter below exists so the assumption is measured rather than believed.
+    //
+    // claim_match's loop, this constant, and dedup_probe_key are TRANSCRIBED in
+    // verification/genmc/claim_match_rendezvous.cpp, which model-checks exactly-once claiming and
+    // no-drop-on-collision over the real ConcurrentMap. A change here must be mirrored there or
+    // the harness verifies a rendezvous the engine no longer runs.
     static constexpr uint32_t kMaxDedupProbes = 8;
     std::atomic<size_t> hash_collisions_{0};
     std::atomic<size_t> dedup_probe_exhaustions_{0};
