@@ -843,6 +843,15 @@ public:
     size_t num_alignment_failures() const { return qc_align_fail_.load(std::memory_order_relaxed); }
     size_t num_bad_correspondences() const { return qc_align_badcorr_.load(std::memory_order_relaxed); }
 
+    // Visit the DISTINCT event identities the reconstruction produced, under the run's
+    // EventCanonicalizationMode. The counterpart of for_each_reconstructed_causal for events:
+    // comparing these against full capture's Event::signature values says WHICH identities the
+    // two paths disagree about, where comparing counts only says that they do.
+    template <typename F>
+    void for_each_reconstructed_event_signature(F&& f) const {
+        qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
+    }
+
     // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
     // signatures. `reduced` selects the view: false walks every recorded pair (TR off), true
     // walks only those tagged in-reduction (TR on). Both come from the same online base, so
