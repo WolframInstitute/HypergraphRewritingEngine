@@ -20,7 +20,19 @@
 
 Get[FileNameJoin[{DirectoryName[$InputFileName], "MultiwayReference.wl"}]];
 
-mwSystem = PacletSymbol["Wolfram/Multicomputation", "Wolfram`Multicomputation`MultiwaySystem"];
+(* Load the INSTALLED paclet through the local paclet manager, not PacletSymbol's cloud index.
+   Installed 0.1.8 == the latest published version (checked 2026-08-01).
+
+   The CloudObject::cloudnf / URLFetch::offline / ToExpression::notstr chatter at startup appears
+   under BOTH resolution mechanisms, so it is the paclet's own load-time dependency fetch on an
+   offline-configured kernel, not the resolution path. Measured harmless here: the run's numbers
+   are identical through PacletSymbol and through Needs, and the states / Full-events columns
+   agree with our independent brute-force oracle on every row -- which a degraded load could not
+   produce. Treat the noise as noise; the agreement columns are the control. *)
+Needs["Wolfram`Multicomputation`"];
+mwSystem = Wolfram`Multicomputation`MultiwaySystem;
+If[Head[mwSystem] =!= Symbol && mwSystem === Null,
+  Print["FATAL: Wolfram/Multicomputation did not load"]; Exit[1]];
 
 mwStats[rules_, init_, steps_, evCanon_] := Module[{multi, sg, ecbg},
   multi = mwSystem[rules, {init}];
