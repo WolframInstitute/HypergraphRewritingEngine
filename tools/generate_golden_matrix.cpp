@@ -46,15 +46,20 @@ Measured run(const oracle::Case& c, StateCanonicalizationMode sm, EventSignature
 
     Measured m{};
     m.states    = hg.num_canonical_states();
-    m.events    = hg.num_events();
-    m.causal    = hg.causal_graph().num_causal_edges();
-    m.pairs     = hg.causal_graph().num_causal_event_pairs();
-    m.branchial = hg.causal_graph().num_branchial_edges();
+    m.events    = hg.observable_num_events();
+    m.causal    = hg.observable_num_causal_edges();
+    m.pairs     = hg.observable_num_causal_pairs(
+        hg.causal_graph().transitive_reduction_enabled());
+    m.branchial = hg.observable_num_branchial();
+    // Fold each DISTINCT canonical hash once. Folding per raw state weights each class by its
+    // member count, which differs between full capture and quotient while the state SET -- the
+    // observable -- is identical; the twin check then fails on a multiplicity artifact.
+    std::set<uint64_t> canon;
     for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
         if (hg.get_state(sid).id == INVALID_ID) continue;
-        m.fingerprint = golden::fold_fingerprint(m.fingerprint,
-                                                 hg.get_or_compute_canonical_hash(sid));
+        canon.insert(hg.get_or_compute_canonical_hash(sid));
     }
+    for (uint64_t h : canon) m.fingerprint = golden::fold_fingerprint(m.fingerprint, h);
     return m;
 }
 

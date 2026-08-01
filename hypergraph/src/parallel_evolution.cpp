@@ -65,14 +65,7 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
-    // Causal edges key by canonical edge orbit exactly when states are quotiented; set
-    // this before any state (incl. genesis) is created so its edge keys use the right mode.
-    hg_->set_quotient_causal(explore_from_canonical_states_only_);
-    // The reconstruction IS the quotient causal path, so it follows the same switch rather than
-    // being a member default -- defaulted on, a FULL-CAPTURE run would take the reconstruction
-    // branch in observable_* and report zeros, because full capture never populates it.
-    hg_->set_quotient_reconstruction(explore_from_canonical_states_only_);
-    guard_quotient_transitive_reduction();
+    configure_identity_and_quotient();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
@@ -97,8 +90,10 @@ void ParallelEvolutionEngine::evolve(
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
 
-    // Seed the quotient causal reconstruction at this root (depth 0).
-    if (explore_from_canonical_states_only_)
+    // Seed the quotient causal reconstruction at this root (depth 0). The reconstruction runs
+    // whenever quotient_causal is on -- which includes full capture under Automatic identity --
+    // so the seed follows that switch, not the exploration strategy.
+    if (hg_->quotient_causal())
         hg_->quotient_causal_seed(canonical_state, static_cast<int>(steps));
 
     // Emit visualization event for initial state
@@ -172,14 +167,7 @@ void ParallelEvolutionEngine::evolve(
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
-    // Causal edges key by canonical edge orbit exactly when states are quotiented; set
-    // this before any state (incl. genesis) is created so its edge keys use the right mode.
-    hg_->set_quotient_causal(explore_from_canonical_states_only_);
-    // The reconstruction IS the quotient causal path, so it follows the same switch rather than
-    // being a member default -- defaulted on, a FULL-CAPTURE run would take the reconstruction
-    // branch in observable_* and report zeros, because full capture never populates it.
-    hg_->set_quotient_reconstruction(explore_from_canonical_states_only_);
-    guard_quotient_transitive_reduction();
+    configure_identity_and_quotient();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
@@ -289,8 +277,10 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
         hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
     }
 
-    // Seed the quotient causal reconstruction at this root (depth 0).
-    if (explore_from_canonical_states_only_)
+    // Seed the quotient causal reconstruction at this root (depth 0). The reconstruction runs
+    // whenever quotient_causal is on -- which includes full capture under Automatic identity --
+    // so the seed follows that switch, not the exploration strategy.
+    if (hg_->quotient_causal())
         hg_->quotient_causal_seed(canonical_state, static_cast<int>(max_steps_));
 
     // Mark initial state as matched and submit for pattern matching
@@ -1227,6 +1217,32 @@ std::mt19937& ParallelEvolutionEngine::sampling_rng() const {
     return rng;
 }
 
+
+void ParallelEvolutionEngine::configure_identity_and_quotient() {
+    // Positional identity reads ranks from each raw state's own canonical labelling, and the
+    // quotient never materialises raw presentations -- the two cannot agree by construction.
+    // The quotient is an optimisation, so the REQUEST wins: full capture runs and the disabled
+    // optimisation is reported.
+    if (hg_->positional_event_identity() && explore_from_canonical_states_only_) {
+        explore_from_canonical_states_only_ = false;
+        warnings_.push_back(
+            "ExploreFromCanonicalStatesOnly disabled: Positional event identity requires raw "
+            "presentations, which quotient exploration does not materialise.");
+    }
+
+    // Automatic identity is the linked-hypergraph convention, computed by the reconstruction's
+    // class-frame signing. It runs under BOTH exploration strategies, so quotient and full
+    // capture produce the same event identities, causal relation and branchial relation by
+    // construction -- adjudicated step-exact against Wolfram/Multicomputation
+    // (reference/adjudicate_gap1_authority.wls). Set before any state (incl. genesis) is
+    // created so edge keys use the right mode.
+    const bool qc = explore_from_canonical_states_only_ ||
+                    (!hg_->positional_event_identity() &&
+                     hg_->event_signature_keys() == hgcommon::EVENT_SIG_AUTOMATIC);
+    hg_->set_quotient_causal(qc);
+    hg_->set_quotient_reconstruction(qc);
+    guard_quotient_transitive_reduction();
+}
 
 void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
     // Quotient emits causal edges between CANONICAL event ids, which are schedule-dependent

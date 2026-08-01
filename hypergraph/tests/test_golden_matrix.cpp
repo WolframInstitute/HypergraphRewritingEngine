@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -100,11 +101,17 @@ TEST(GoldenMatrix, EveryIdentityCellMatchesItsCachedExpectation) {
         for (const auto& rule : c->rules) e.add_rule(rule);
         e.evolve(c->init, r.steps);
 
+        // Fold each DISTINCT canonical hash once: per-raw folding weights each class by its
+        // member count, which differs between exploration strategies while the state SET is
+        // identical. Must mirror the producer's definition exactly.
         uint64_t fingerprint = 0;
-        for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
-            if (hg.get_state(sid).id == INVALID_ID) continue;
-            fingerprint = golden::fold_fingerprint(fingerprint,
-                                                   hg.get_or_compute_canonical_hash(sid));
+        {
+            std::set<uint64_t> canon;
+            for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+                if (hg.get_state(sid).id == INVALID_ID) continue;
+                canon.insert(hg.get_or_compute_canonical_hash(sid));
+            }
+            for (uint64_t h : canon) fingerprint = golden::fold_fingerprint(fingerprint, h);
         }
 
         const std::string where = r.case_name + std::string(" state=") +
@@ -114,11 +121,13 @@ TEST(GoldenMatrix, EveryIdentityCellMatchesItsCachedExpectation) {
             golden::provenance_name(r.provenance) + "]";
 
         EXPECT_EQ(hg.num_canonical_states(), r.states) << where << ": states";
-        EXPECT_EQ(hg.num_events(), r.events) << where << ": events";
-        EXPECT_EQ(hg.causal_graph().num_causal_edges(), r.causal_edges) << where << ": causal";
-        EXPECT_EQ(hg.causal_graph().num_causal_event_pairs(), r.causal_event_pairs)
+        EXPECT_EQ(hg.observable_num_events(), r.events) << where << ": events";
+        EXPECT_EQ(hg.observable_num_causal_edges(), r.causal_edges) << where << ": causal";
+        EXPECT_EQ(hg.observable_num_causal_pairs(
+                      hg.causal_graph().transitive_reduction_enabled()),
+                  r.causal_event_pairs)
             << where << ": causal pairs";
-        EXPECT_EQ(hg.causal_graph().num_branchial_edges(), r.branchial_edges)
+        EXPECT_EQ(hg.observable_num_branchial(), r.branchial_edges)
             << where << ": branchial";
         EXPECT_EQ(fingerprint, r.state_fingerprint)
             << where << ": the state SET differs while its size may not -- this is the check a "
@@ -164,24 +173,37 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
             for (const auto& rule : c->rules) e.add_rule(rule);
             e.evolve(c->init, r.steps);
             Shot s{};
-            for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
-                if (hg.get_state(sid).id == INVALID_ID) continue;
-                s.state_fingerprint =
-                    golden::fold_fingerprint(s.state_fingerprint,
-                                             hg.get_or_compute_canonical_hash(sid));
+            {
+                std::set<uint64_t> canon;
+                for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+                    if (hg.get_state(sid).id == INVALID_ID) continue;
+                    canon.insert(hg.get_or_compute_canonical_hash(sid));
+                }
+                for (uint64_t h : canon)
+                    s.state_fingerprint = golden::fold_fingerprint(s.state_fingerprint, h);
             }
             // Order-independent over the CANONICAL events' signature VALUES. A permutation of
             // signatures across events leaves every count intact, so the counts below cannot
             // ask whether the two runs agree on which event is which -- only this can.
-            for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
-                const Event& ev = hg.get_event(eid);
-                if (ev.id == INVALID_ID || !ev.is_canonical()) continue;
-                s.event_fingerprint =
-                    golden::fold_fingerprint(s.event_fingerprint, ev.signature);
+            if (hg.quotient_reconstruction()) {
+                // Raw content triples, not identity signatures: identity values embed
+                // frame-relative slots and legitimately vary across schedules on symmetric
+                // classes, while the triples are a function of the multiway structure alone.
+                hg.for_each_reconstructed_raw_triple([&](uint64_t sig) {
+                    s.event_fingerprint =
+                        golden::fold_fingerprint(s.event_fingerprint, sig);
+                });
+            } else {
+                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
+                    const Event& ev = hg.get_event(eid);
+                    if (ev.id == INVALID_ID || !ev.is_canonical()) continue;
+                    s.event_fingerprint =
+                        golden::fold_fingerprint(s.event_fingerprint, ev.signature);
+                }
             }
-            s.events          = hg.num_events();
-            s.causal_edges    = hg.causal_graph().num_causal_edges();
-            s.branchial_edges = hg.causal_graph().num_branchial_edges();
+            s.events          = hg.observable_num_events();
+            s.causal_edges    = hg.observable_num_causal_edges();
+            s.branchial_edges = hg.observable_num_branchial();
             return s;
         };
 

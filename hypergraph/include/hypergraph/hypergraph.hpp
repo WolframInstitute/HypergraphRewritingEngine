@@ -285,6 +285,7 @@ class Hypergraph {
     // set is approximate; see the fallback in create_event.
     std::atomic<uint64_t> event_sig_raw_fallbacks_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
+    std::atomic<bool> positional_event_identity_{false};
 
     // Genesis state: the empty state (no edges) from which all initial states originate
     // Created lazily on first call to get_or_create_genesis_state()
@@ -735,6 +736,27 @@ public:
         return event_signature_keys_;
     }
 
+    // WHERE the consumed/produced ranks in an Automatic-keyed signature are read from.
+    //
+    // false (Automatic): the class's pinned frame, via the reconstruction's signing -- the
+    // linked-hypergraph convention of Wolfram/Multicomputation, adjudicated step-exact against
+    // it (reference/adjudicate_gap1_authority.wls: 1,5,12,86 / 52 / 10 / 1,5,21). Runs under
+    // BOTH exploration strategies, so quotient and full capture agree by construction.
+    //
+    // true ("Positional"): each raw state's own canonical labelling, per raw event. Distinguishes
+    // events that differ only by which member of the labelling coset the canonicalizer's
+    // tie-break selected, so it is THIS ENGINE'S positional identity: deterministic across
+    // schedules and devices, but not a function of the abstract multiway system -- measured, it
+    // differs from the reference oracle's like-named column where tie-breaks differ (23 vs 25 on
+    // two-rules-overlap step 3) and from the authority (21). It requires raw presentations, so
+    // requesting it disables quotient exploration (the engine reports that in warnings()).
+    void set_positional_event_identity(bool on) {
+        positional_event_identity_.store(on, std::memory_order_relaxed);
+    }
+    bool positional_event_identity() const {
+        return positional_event_identity_.load(std::memory_order_relaxed);
+    }
+
 
     // =========================================================================
     // Index Access
@@ -858,6 +880,21 @@ public:
     template <typename F>
     void for_each_reconstructed_event_signature(F&& f) const {
         qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
+    }
+
+    // Visit each reconstructed RAW event's content triple hash(input class, output class, rule).
+    // Schedule-stable and mode-stable -- a function of the multiway structure alone -- unlike
+    // the run-identity signatures, whose slot components are labels relative to the class frame
+    // a given run pinned and legitimately vary across schedules on symmetric classes. Use THIS
+    // for cross-run and cross-thread fingerprints; use the identity signatures for identity
+    // counts and identity-keyed relations.
+    template <typename F>
+    void for_each_reconstructed_raw_triple(F&& f) const {
+        const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint64_t* s = qc_event_sig_.get(i);
+            if (s) f(*s);
+        }
     }
 
     // The identity a reconstructed PAIR endpoint is reported under: the run's, when one was

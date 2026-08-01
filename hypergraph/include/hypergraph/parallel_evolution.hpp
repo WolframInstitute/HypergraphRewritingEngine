@@ -640,6 +640,9 @@ private:
     // but MATCH tasks are not spawned - we don't explore further from them.
     // This focuses compute on discovering new states rather than all transition paths.
     bool explore_from_canonical_states_only_{false};
+    // Run-level notices (an option combination adjusted, an optimisation disabled). Never a
+    // substitute for a result: the run still produces exactly what was requested.
+    std::vector<std::string> warnings_;
     bool quotient_initial_states_{false};
 
     // Per-parent successor count tracking (for max_successor_states_per_parent)
@@ -886,6 +889,7 @@ public:
     }
 
     const EvolutionStats& stats() const { return stats_; }
+    const std::vector<std::string>& warnings() const { return warnings_; }
 
     // Request early termination of evolution
     // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
@@ -1151,6 +1155,12 @@ private:
 
     // Disables causal transitive reduction under quotient exploration; see the definition.
     void guard_quotient_transitive_reduction();
+
+    // Applies the identity-mode rules at the top of every evolve():
+    //   Positional + quotient -> quotient exploration disabled (the identity needs raw
+    //   presentations) and a warning recorded; Automatic -> the reconstruction runs under BOTH
+    //   exploration strategies, so their observables agree by construction.
+    void configure_identity_and_quotient();
 
 
     // Per-thread sampling RNG used by should_explore() and get_shuffled_rule_indices().

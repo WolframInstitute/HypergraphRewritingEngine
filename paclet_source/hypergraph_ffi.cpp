@@ -134,6 +134,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Option values
         hypergraph::StateCanonicalizationMode state_canon_mode = hypergraph::StateCanonicalizationMode::None;  // Default: tree mode
         hypergraph::EventSignatureKeys event_signature_keys = hypergraph::EVENT_SIG_NONE;  // Default: no event canonicalization
+        bool positional_event_identity = false;  // CanonicalizeEvents -> "Positional"
         bool show_genesis_events = false;
         bool show_progress = false;
         bool causal_transitive_reduction = true;
@@ -434,6 +435,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                     event_signature_keys = hypergraph::EVENT_SIG_FULL;
                                 } else if (symbol == "Automatic") {
                                     event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
+                                } else if (symbol == "Positional") {
+                                    // Same key set as Automatic; ranks read from each raw
+                                    // state's own labelling rather than the class frame.
+                                    event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
+                                    positional_event_identity = true;
                                 }
                                 // else keep default (None)
                             }
@@ -695,6 +701,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         // Configure event canonicalization
         hg.set_event_signature_keys(event_signature_keys);
+        hg.set_positional_event_identity(positional_event_identity);
 
         // Configure state canonicalization mode
         hg.set_state_canonicalization_mode(state_canon_mode);
