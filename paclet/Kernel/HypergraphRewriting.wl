@@ -102,6 +102,11 @@ Options[HGEvolve] = {
   (* Uniform Random Evolution (reservoir sampling like blackhole_viz) *)
   "UniformRandom" -> False,  (* True: use uniform random match selection with reservoir sampling *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
+  (* Rulial-space plot: color each transition edge by the rule that fired it (the
+     fiber of the rule -> multiway functor). Applies to the styled graph
+     properties, whose edge payloads carry RuleIndex; Structure variants ship
+     topology only and are unaffected. *)
+  "ColorByRule" -> False,
   (* Dimension Analysis Options *)
   "DimensionAnalysis" -> False,  (* True: compute Hausdorff dimensions for all states *)
   "DimensionColorBy" -> "Mean",  (* "Mean", "Variance", "Min", "Max" *)
@@ -580,7 +585,7 @@ getDimensionColor[stateId_, dimensionData_, palette_, colorBy_, dimRange_] := Mo
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
 (* styled: True for full hypergraph rendering, False for structure only *)
 (* dimensionData: optional dimension data for coloring states *)
-createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}] := Module[
+createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, colorByRule_:False] := Module[
   {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeLabels, hasDimData, epilogLegend, g, addLegend},
 
   vertices = graphData["Vertices"];
@@ -640,6 +645,35 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
       ]
     ] &,
     graphData["Edges"]
+  ];
+
+  (* Rulial-space coloring: each transition edge takes the color of the rule that
+     fired it (edge payloads carry RuleIndex), with a swatch legend over the rules
+     that actually fired. The style rule matches on the edge's own payload tag, so
+     parallel transitions between the same states keep their own rules' colors.
+     Edges without a RuleIndex (causal, branchial, Structure variants) keep their
+     type styles from above. *)
+  If[TrueQ[colorByRule],
+    Module[{ruleEdges, firedRules, ruleColor},
+      ruleEdges = Select[graphData["Edges"],
+        AssociationQ[Lookup[#, "Data", <||>]] &&
+          KeyExistsQ[Lookup[#, "Data", <||>], "RuleIndex"] &];
+      firedRules = Sort @ DeleteDuplicates[#["Data"]["RuleIndex"] & /@ ruleEdges];
+      ruleColor = Association[# -> ColorData[97][# + 1] & /@ firedRules];
+      If[Length[firedRules] > 0,
+        edgeStyles = Join[
+          edgeStyles,
+          Map[With[{e = #},
+            DirectedEdge[e["From"], e["To"], e["Data"]] ->
+              Directive[ruleColor[e["Data"]["RuleIndex"]], Thickness[Medium]]] &,
+            ruleEdges]];
+        addLegend = Composition[
+          Function[graph, Legended[graph,
+            SwatchLegend[ruleColor /@ firedRules,
+              ("Rule " <> ToString[# + 1]) & /@ firedRules]]],
+          addLegend];
+      ]
+    ]
   ];
 
   (* Edge labels (tooltips for edges with Data) *)
@@ -981,7 +1015,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
          OptionsPattern[]] := Module[
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, aspectRatio, props,
-   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties,
+   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
    normalizedRules, rulesAssoc, initialStatesData},
 
   If[Head[performRewriting] =!= LibraryFunction,
@@ -1275,6 +1309,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   (* Dimension coloring options *)
+  colorByRule = TrueQ[OptionValue["ColorByRule"]];
   dimPalette = OptionValue["DimensionPalette"];
   dimColorBy = OptionValue["DimensionColorBy"];
   dimRange = Replace[OptionValue["DimensionRange"], Automatic :>
@@ -1284,15 +1319,15 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
   ]
 ]
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>, colorByRule_:False] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -1301,7 +1336,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
-      Return[createGraphFromData[graphData, aspectRatio, isStyled, dimensionData, dimPalette, dimColorBy, dimRange]],
+      Return[createGraphFromData[graphData, aspectRatio, isStyled, dimensionData, dimPalette, dimColorBy, dimRange, colorByRule]],
       (* GraphData for this property not available *)
       Return[$Failed]
     ]
