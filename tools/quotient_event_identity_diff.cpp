@@ -11,6 +11,7 @@
 #include <set>
 #include <vector>
 #include "hypergraph/hypergraph.hpp"
+using namespace hgcommon;
 #include "hypergraph/parallel_evolution.hpp"
 using namespace hypergraph;
 
@@ -40,6 +41,9 @@ static void measure(hgcommon::EventSignatureKeys keys, std::set<uint64_t>& F,
         e.set_explore_from_canonical_states_only(true);
         e.add_rule(rule); auto i = init; e.evolve(i, steps);
         hg.for_each_reconstructed_event_signature([&](uint64_t s) { Q.insert(s); });
+        if (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges))
+            std::printf("   [rank xlat] fired=%zu fell_through=%zu\n",
+                        hg.rank_translation_fired(), hg.rank_translation_fell_through());
     }
 
 }

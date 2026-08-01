@@ -104,6 +104,35 @@ int main() {
         std::printf("%-20s | %8zu %9zu\n", pr.first, c.canonical_events, c.raw_events);
     }
 
+    // BINARY-GROWTH under FULL CAPTURE, presented five ways. #4's remaining gap is that the
+    // reconstruction reports 6 Automatic identities where full capture reports 8. Before treating
+    // 8 as the target, ask whether 8 is itself an invariant: a rank is a position in a canonical
+    // LABELLING, and on an automorphic state that labelling is a coset. If full capture's count
+    // moves with presentation then 8 is presentation-dependent and the reconstruction's 6 -- read
+    // off the pinned class frame -- may be the invariant answer.
+    {
+        RewriteRule bg = make_rule(0).lhs({0,1}).rhs({0,2}).rhs({1,2}).build();
+        const std::vector<std::pair<const char*, std::vector<std::vector<VertexId>>>> bgp = {
+            {"as written",       {{0,1}}},
+            {"vertices +10",     {{10,11}}},
+            {"vertices swapped", {{1,0}}},
+            {"vertices relabel", {{7,3}}},
+        };
+        std::printf("\n# binary-growth, FULL CAPTURE, Automatic, five presentations of one graph\n");
+        std::printf("%-20s | %8s %9s\n", "presentation", "canon", "raw");
+        for (const auto& pr : bgp) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+            ParallelEvolutionEngine e(&hg, 1);
+            e.set_explore_from_canonical_states_only(false);
+            e.add_rule(bg);
+            auto init2 = pr.second;
+            e.evolve(init2, 3);
+            std::printf("%-20s | %8zu %9zu\n", pr.first, hg.num_events(), hg.num_raw_events());
+        }
+    }
+
     for (const Row& r : rows) {
         const Counts f = run(r.keys, /*quotient=*/false);
         const Counts q = run(r.keys, /*quotient=*/true);
