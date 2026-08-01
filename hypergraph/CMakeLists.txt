@@ -28,6 +28,13 @@ target_link_libraries(hypergraph PUBLIC
     lockfree_deque
 )
 
+# WaitOnAddress / WakeByAddress* (hgcommon/park.hpp's Windows backend) live in the
+# api-ms-win-core-synch API set, surfaced by MinGW and MSVC alike as `synchronization`.
+# PUBLIC so every consumer of the engine (paclet DLL, hg_evolve, tests) inherits it.
+if(WIN32)
+    target_link_libraries(hypergraph PUBLIC synchronization)
+endif()
+
 # Visualization event streaming (conditional on viz_events target existence)
 # When HYPERGRAPH_ENABLE_VISUALIZATION is defined, hypergraph uses VizEventSink
 # which requires linking to viz_events library for the static variable definitions

@@ -217,6 +217,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_libraries(HypergraphRewriting Threads::Threads)
 endif()
 
+
 # Compiler-specific options
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(HypergraphRewriting PRIVATE

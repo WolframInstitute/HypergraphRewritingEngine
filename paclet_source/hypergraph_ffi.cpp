@@ -2553,14 +2553,28 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back({wxf::WXFValue("NumStates"), wxf::WXFValue(static_cast<int64_t>(hg.num_canonical_states()))});
         }
         if (include_num_events) {
-            full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(static_cast<int64_t>(engine.num_events()))});
+            // Under the reconstruction (quotient exploration, or Automatic identity on either
+            // path) the observable event count is the reconstruction's -- the authority-anchored
+            // identity count the golden matrix pins -- not the materialised dedup count.
+            const int64_t n_events = hg.quotient_reconstruction()
+                ? static_cast<int64_t>(hg.observable_num_events())
+                : static_cast<int64_t>(engine.num_events());
+            full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(n_events)});
         }
         if (include_num_causal_edges) {
             // Count unique (producer, consumer) event pairs for v1 semantics
             // When show_genesis_events is false, we must filter out pairs involving genesis events
             // to match reference behavior ("IncludeInitialEvent" -> False)
+            //
+            // Reconstruction branch first: its pairs live in its own store over its own event
+            // ids, which never include genesis events (INIT is a sentinel producer, dropped at
+            // emission), so the genesis filter below -- which indexes HYPERGRAPH events and
+            // would misread a reconstruction id -- must not run on them.
             int64_t causal_count;
-            if (show_genesis_events) {
+            if (hg.quotient_reconstruction()) {
+                causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
+                    hg.causal_graph().transitive_reduction_enabled()));
+            } else if (show_genesis_events) {
                 // Include all pairs
                 causal_count = static_cast<int64_t>(hg.num_causal_event_pairs());
             } else {
@@ -2585,7 +2599,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(causal_count)});
         }
         if (include_num_branchial_edges) {
-            full_result.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(static_cast<int64_t>(hg.num_branchial_edges()))});
+            const int64_t n_branchial = hg.quotient_reconstruction()
+                ? static_cast<int64_t>(hg.observable_num_branchial())
+                : static_cast<int64_t>(hg.num_branchial_edges());
+            full_result.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(n_branchial)});
         }
 
         // GlobalEdges -> List of all edges created during evolution
