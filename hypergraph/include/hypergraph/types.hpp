@@ -78,13 +78,16 @@ struct EdgeOrbitTable {
     const EdgeId* edges = nullptr;      // sorted ascending, length n
     const uint32_t* orbit = nullptr;    // length n, parallel to edges
     const uint32_t* orbit_size = nullptr;  // length num_orbits
-    // Per-edge SLOT: the edge's rank when the state's edges are ordered by (canonical
-    // content class, EdgeId). Slots are a permutation of [0,n). The class prefix makes the
-    // ordering canonical, so slot i names structurally corresponding edges across every raw
-    // instance of one canonical state -- which is what lets a transition recorded on the
-    // expanded representative be replayed against an arbitrary instance. Ties within a class
-    // break on EdgeId, which is arbitrary but harmless: edges sharing a content class are
-    // interchangeable, and every match over them fires, so the emitted set is unchanged.
+    // Per-edge SLOT: the edge's rank when the state's edges are ordered by (Aut ORBIT,
+    // EdgeId). Slots are a permutation of [0,n). Orbit, not content class: which content
+    // class an edge lands in depends on which canonical labeling the IR run picked (two
+    // labelings differ by an automorphism, which can permute distinct contents), so a
+    // per-edge class is defined only up to the Aut action. The orbit is the Aut-closure
+    // itself, so the orbit-block structure of the slots is identical in every raw instance
+    // of one canonical state -- which is what lets a transition recorded on the expanded
+    // representative be replayed against an arbitrary instance. Ties within an orbit break
+    // on EdgeId, which is arbitrary but harmless: the match set is closed under Aut, so a
+    // within-orbit permutation maps matches to matches and the emitted set is unchanged.
     const uint32_t* slot = nullptr;     // length n, parallel to edges
     const uint32_t* klass = nullptr;    // length n, parallel to edges (canonical content class)
 

@@ -819,7 +819,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         order.reserve(n);
         for (uint32_t i = 0; i < n; ++i) order.push_back(i);
         std::stable_sort(order.begin(), order.end(),
-                         [&](uint32_t a, uint32_t b) { return arr_class[a] < arr_class[b]; });
+                         [&](uint32_t a, uint32_t b) { return arr_orbit[a] < arr_orbit[b]; });
         for (uint32_t r = 0; r < n; ++r) arr_slot[order[r]] = r;
     }
     uint32_t* arr_osize = arena_.allocate_array<uint32_t>(num_orbits ? num_orbits : 1);
