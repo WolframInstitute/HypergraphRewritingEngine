@@ -1306,9 +1306,10 @@ void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
     //
     // The per-instance raw reconstruction (Hypergraph::set_quotient_reconstruction) recovers
     // every raw observable COUNT exactly, but its causal edge IDENTITIES are not yet canonical:
-    // slots tie-break on EdgeId within a content class, and when same-content edges have
-    // different producers the wiring varies run to run. Until that tie-break is canonical the
-    // reconstruction cannot replace this guard. See docs/VERIFICATION_PLAN.md.
+    // slots tie-break on EdgeId within an Aut orbit, and when same-orbit edges have different
+    // producers the per-edge wiring is run-relative even though the emitted multiset is not.
+    // Replacing this guard with reconstruction-served TR needs repeat-run evidence that the
+    // TR-kept PAIR SET is schedule-independent. See docs/VERIFICATION_PLAN.md.
     if (explore_from_canonical_states_only_ &&
         hg_ && hg_->causal_graph().transitive_reduction_enabled()) {
         hg_->causal_graph().set_transitive_reduction(false);
