@@ -27,6 +27,10 @@ void check(cudaError_t err, const char* what) {
     }
 }
 
+// The single work role the persistent schedulers count. Shared by the seed kernel below and
+// the stage-2/stage-3 worker kernels.
+constexpr uint32_t kRoleMatch = 0;
+
 // Seed the queue on the device, so the ring's cursors and slot states are only ever touched
 // through its own device API rather than by a host write assuming its layout.
 __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceView queue,
@@ -39,6 +43,28 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     item.rule_id  = tid - (tid / num_rules) * num_rules;
     item.step     = step;
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
+}
+
+// Seed variant for a launch chain with no host round trip: the kept-root count lives in device
+// memory (written by k_seed_root_hashes earlier in the same stream), so each thread reads it
+// and self-selects, and the detector's pushed counter is marked here, item by item, under the
+// same discipline the workers keep (mark_pushed BEFORE try_push). The grid covers the CAP --
+// every root kept -- and threads past the live count exit, which is what lets the host launch
+// this without ever reading the count back.
+__global__ void k_seed_match_queue_counted(
+        typename RingBuffer<MatchWorkItem>::DeviceView queue,
+        const StateId* kept_ids, const uint32_t* kept_count, uint32_t kept_cap,
+        uint32_t num_rules, uint32_t step,
+        typename TerminationDetector::DeviceView term) {
+    const uint32_t kept = min(*kept_count, kept_cap);
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= kept * num_rules) return;
+    MatchWorkItem item;
+    item.state_id = kept_ids[tid / num_rules];
+    item.rule_id  = tid - (tid / num_rules) * num_rules;
+    item.step     = step;
+    term.mark_pushed(kRoleMatch);
+    queue.try_push(item);   // capacity >= kept_cap * num_rules, so this cannot fail here
 }
 
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
@@ -211,8 +237,6 @@ __global__ void k_persistent_match(DeviceState ds,
 // change. Blocks match concurrently, so no block can say which pool slots are its own: a
 // before/after counter delta is not attributable to one block. The cursor sidesteps that
 // entirely -- consumers claim indices, not ranges.
-constexpr uint32_t kRoleMatch = 0;
-
 __global__ void k_persistent_match_rewrite(
         DeviceState ds,
         const DeviceRule* rules,
@@ -786,46 +810,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     event_ids.clear();
     if (want_event_ids) engine.ensure_event_identity();
 
-    // Root hashing BEFORE the queue is seeded, because under quotient_roots the hashing is what
-    // decides which roots survive: it maps each root's key and compacts the winners into
-    // d_kept/d_kept_count, and the queue is seeded from those. Seeding the queue first would
-    // enqueue every root before dedup had an opinion.
-    //
-    // This is a host round trip, which the no-host-in-the-loop constraint permits: the constraint
-    // is on evolution, not on seeding.
+    // Every allocation happens HERE, before the first kernel goes out: cudaMalloc may
+    // synchronize the device, and the evolution's contract is memory traffic at the start and
+    // end only, with ONE synchronization -- after the last kernel.
     StateId* d_kept = nullptr;
     uint32_t* d_kept_count = nullptr;
     check(cudaMalloc(&d_kept, sizeof(StateId) * roots.size()), "kept roots alloc");
     check(cudaMalloc(&d_kept_count, sizeof(uint32_t)), "kept count alloc");
     check(cudaMemset(d_kept_count, 0, sizeof(uint32_t)), "kept count clear");
-
-    arena.reset();
-    {
-        const uint32_t block = 64;
-        const uint32_t n = static_cast<uint32_t>(roots.size());
-        k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
-            engine.device(), d_states, n, canonical.view(), state_mode,
-            event_keys != EVENT_SIG_NONE,
-            event_keys_need_ranks(event_keys),
-            arena.view(), quotient_roots, d_kept, d_kept_count, n);
-        check(cudaDeviceSynchronize(), "root hash seed sync");
-    }
-
-    uint32_t kept = 0;
-    check(cudaMemcpy(&kept, d_kept_count, sizeof(uint32_t), cudaMemcpyDeviceToHost),
-          "read kept count");
-    if (kept > roots.size()) kept = static_cast<uint32_t>(roots.size());
-
-    {
-        const uint32_t block = 128;
-        const uint32_t items = kept * num_rules;
-        if (items) {
-            const uint32_t grid = (items + block - 1) / block;
-            k_seed_match_queue<<<grid, block>>>(match_q.view(), d_kept, kept, num_rules,
-                                                /*step=*/0u);
-            check(cudaDeviceSynchronize(), "seed sync");
-        }
-    }
 
     uint32_t* d_cursor = nullptr;
     check(cudaMalloc(&d_cursor, sizeof(uint32_t) * 2), "cursor alloc");
@@ -839,7 +831,30 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
-    term.mark_pushed_host(kRoleMatch, kept * num_rules);
+
+    // The whole evolution is a launch CHAIN on one stream: root hashing decides which roots
+    // survive and compacts them into d_kept/d_kept_count; the counted seeder reads that count
+    // on the device, enqueues (root, rule) items and books them with the detector; the evolve
+    // kernel consumes them. Stream order carries every dependency, so the host synchronizes
+    // exactly once, after the last kernel, and reads nothing back before that.
+    arena.reset();
+    {
+        const uint32_t block = 64;
+        const uint32_t n = static_cast<uint32_t>(roots.size());
+        k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
+            engine.device(), d_states, n, canonical.view(), state_mode,
+            event_keys != EVENT_SIG_NONE,
+            event_keys_need_ranks(event_keys),
+            arena.view(), quotient_roots, d_kept, d_kept_count, n);
+    }
+    {
+        const uint32_t block = 128;
+        const uint32_t items = static_cast<uint32_t>(roots.size()) * num_rules;
+        const uint32_t seed_grid = (items + block - 1) / block;
+        k_seed_match_queue_counted<<<seed_grid, block>>>(
+            match_q.view(), d_kept, d_kept_count, static_cast<uint32_t>(roots.size()),
+            num_rules, /*step=*/0u, term.view());
+    }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
     const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
