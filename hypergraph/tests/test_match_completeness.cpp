@@ -10,11 +10,13 @@
 //   2. forwarding transfers every surviving parent match
 //   3. delta finds every match using a produced edge
 //
-// Obligation 2 is the exposed one, and it is exposed IN THE SHIPPING CONFIGURATION.
-// batched_matching_ defaults to false, so matches are submitted eagerly and children are created
-// while their parent is still matching. A match the parent discovers AFTER a child was created
-// has to reach that child by push, and the push path is what covers the race. It is also the
-// same rendezvous that previously lost transitions under contention.
+// Obligation 2 is the exposed one, and WHICH SUBMISSION MODE IS IN USE decides how exposed.
+// Under EAGER submission a child is created while its parent is still matching, so a match the
+// parent discovers afterwards has to reach that child by push -- the same rendezvous that
+// previously lost transitions under contention. Under BATCHED submission the parent finishes
+// matching before any child exists, and that window closes. batched_matching_ defaults to true
+// (parallel_evolution.hpp:577), so the shipping path is the batched one; the eager arm below is
+// measured because the mode is still selectable, not because it is what ships.
 //
 // Because forwarding is INDUCTIVE, one missed match at depth d silently removes the entire
 // subtree below it. Nothing downstream can notice: the run stays self-consistent and simply
@@ -111,16 +113,17 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
         << "no run took the delta branch, so the validator never executed and a zero mismatch "
         << "count proves nothing";
 
-    // EAGER submission still has a residual miss, and it is a RATE because it is a race: the
-    // parent may discover a match after a child was created, and eager relies on the push path
-    // to deliver it. Measured at 1/204 runs (2 matches) after the join-order fix, always
-    // attributed to forwarding and never to delta, and always on the high-automorphism case.
-    // The batched arm below is clean, which is exactly what parallel_evolution.hpp claims:
-    // batching eliminates the forwarding races that eager covers with the push path.
+    // THIS ARM RUNS EAGER, WHICH IS NOT THE DEFAULT. Its residual miss is a RATE because it is a
+    // race: the parent may discover a match after a child was created, and eager relies on the
+    // push path to deliver it. Always attributed to forwarding, never to delta, and concentrated
+    // on the growth and high-automorphism cases. The batched arm below is asserted at zero, which
+    // is exactly what parallel_evolution.hpp claims: batching eliminates the forwarding races
+    // that eager covers with the push path.
     //
     // Tracked as #76. The bound is a recorded baseline, not an acceptance of the defect: it must
-    // ratchet to zero, and it may never grow.
-    constexpr size_t kKnownEagerRaceRuns = 12;  // ~6% of 204; observed spread is 1-7
+    // ratchet to zero, and it may never grow. Observed spread on this host across 10 runs
+    // spanning the join extraction: 1-6 failing runs of 204.
+    constexpr size_t kKnownEagerRaceRuns = 12;  // ~6% of 204
     EXPECT_LE(failing_runs, kKnownEagerRaceRuns)
         << failing_runs << " of " << total_runs << " runs missed at least one match, above the "
         << "recorded baseline of " << kKnownEagerRaceRuns << ". Forwarding is inductive, so each "
