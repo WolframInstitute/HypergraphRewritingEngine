@@ -61,6 +61,7 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         tests/test_termination.cu
         tests/test_warp_ops.cu
         tests/test_edge_signature.cu
+        tests/test_quotient_expansion.cu
         tests/test_indices.cu
         tests/test_partial_match.cu
         tests/test_engine_state.cu
