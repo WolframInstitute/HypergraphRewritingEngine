@@ -73,15 +73,14 @@ struct DeviceRule {
 // One match found during pattern matching.
 //
 // `step` is the depth of the state this match was found in, carried on the RECORD so the
-// rewrite that consumes it needs nothing from its scheduler. The level-synchronous loop could
-// take it from the loop variable; a device-resident one has no loop, and its records from
-// several depths are live in the pool at once.
+// rewrite that consumes it needs nothing from its scheduler: there is no host loop variable to
+// read a depth from, and records from several depths are live in the pool at once.
 //
 // `published` is the record's own publication flag, stored LAST with release ordering.
 // Claiming a pool index bumps the pool counter before the record is filled, so a consumer
 // running concurrently with the producer -- which is what a device-resident scheduler does --
-// can see the index and read an unwritten record. A kernel boundary hides that for the
-// level-synchronous scheduler; nothing hides it without one. Consumers wait for this flag;
+// can see the index and read an unwritten record. A kernel boundary would hide that; there is
+// none inside the evolution. Consumers wait for this flag;
 // producers set it once the rest of the record is written.
 struct MatchRecord {
     RuleId   rule_id   = 0;
@@ -130,22 +129,8 @@ uint32_t run_match_kernel(const EngineState&            engine,
                           Pool<MatchRecord>&             out_matches,
                           uint32_t                       step = 0);
 
-// Batched variant: process all (state_id, rule) pairs across `state_ids` in
-// a single kernel launch. Much faster than calling run_match_kernel per
-// state because we avoid per-state kernel launch overhead.
-//
-// `d_rules` must already contain `rules` uploaded to device (caller reuses
-// across steps). Returns total number of matches written to out_matches.
-uint32_t run_match_kernel_batch(const EngineState& engine,
-                                const DeviceRule*  d_rules,
-                                uint32_t           num_rules,
-                                const StateId*     d_state_ids,
-                                uint32_t           num_state_ids,
-                                Pool<MatchRecord>& out_matches,
-                                uint32_t           step = 0);
-
-// Variant that skips the final size_host D2H — caller reads the count
-// separately (e.g. via Pool::counter pointer) to avoid per-step D2H.
+// Batched: every (state_id, rule) pair in one launch. Reads the count through
+// Pool::counter rather than a D2H per call.
 void run_match_kernel_batch_nosync(const EngineState& engine,
                                    const DeviceRule*  d_rules,
                                    uint32_t           num_rules,

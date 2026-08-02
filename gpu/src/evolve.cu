@@ -162,7 +162,7 @@ __device__ bool state_survives_dedup(StateId sid, uint64_t hash,
 
 namespace {
 
-// Level-synchronous driver: one thread per state created this step.
+// Batch driver: one thread per state in a range.
 __global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
                                    const uint64_t* hashes,
                                    DedupMap::DeviceView map,
@@ -311,9 +311,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             : std::vector<std::vector<std::vector<VertexId>>>{in.initial_state};
     size_t max_root_edges = 0;
     for (const auto& r : roots) max_root_edges = std::max(max_root_edges, r.size());
-    // Index maintenance cannot flip on mid-run under the persistent scheduler -- one launch, no
-    // host in the loop, so the lazy flip the step loop performs between steps has nowhere to
-    // happen -- and an index that missed inserts is not stale but WRONG (missed candidates).
+    // Index maintenance cannot flip on mid-run: the evolution is one launch with no host in
+    // the loop, so there is no point at which a lazy flip could happen -- and an index that
+    // missed inserts is not stale but WRONG (missed candidates).
     // So the decision is made up front, and it can be made exactly: a state's edge count along
     // any path is bounded by root_edges + steps * max(rhs - lhs) over the rules, and the match
     // kernels read the indices only for states past the slice-scan threshold. When even that
@@ -365,10 +365,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     StateId*  d_frontier      = d_frontier_;
     StateId*  d_next_frontier = d_next_frontier_;
     uint32_t* d_next_count    = d_next_count_;
-    // The per-state hash lives on DeviceState, not in this scheduler. Both schedulers write it
-    // -- the step loop below, and the persistent kernel when it hashes a child for dedup -- so
-    // the readback at the end reads one array whichever produced the run. A buffer owned by
-    // Engine::Impl would have made that assembly the step loop's private business.
+    // The per-state hash lives on DeviceState, not in this driver: the persistent kernel
+    // writes it when it hashes a child for dedup, and the readback at the end reads that same
+    // array. A buffer owned by Engine::Impl would have made the assembly private to the host.
     uint64_t* d_state_hashes  = engine.device().state_canonical_hash;
 
     // Canonical-state dedup map: hash → first-seen StateId. Cleared in reset().
@@ -429,7 +428,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     const bool key_is_exact = (in.canonicalization == CanonicalizationMode::Full);
     fill_event_identity_inputs(engine, 0, num_roots, ekeys_step, key_is_exact, identity_arena,
                                qc_route);
-    if (qc_route && !in.persistent_scheduler) run_qc_seed_roots(engine, qc_view, num_roots);
     if (in.explore_from_canonical_states_only) {
         uint32_t zero32c = 0;
         check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
@@ -448,9 +446,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                          cudaMemcpyHostToDevice),
               "seed frontier");
     }
-    // Initial frontier size: unique roots after dedup (explore-from-canonical), or
-    // all roots (full multiway).
-    uint32_t frontier_count = 0;
+    // Unique roots after dedup (explore-from-canonical), or all roots (full multiway).
+    // Read back for the debug trace only; the persistent loop takes its roots directly.
+    [[maybe_unused]] uint32_t frontier_count = 0;
     if (num_roots > 0) {
         if (in.explore_from_canonical_states_only) {
             check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
@@ -475,7 +473,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     // when it is finished. Everything below the loop is unchanged -- the readback is post-hoc
     // and reads the same per-state hash array either scheduler filled, which is what makes one
     // assembly path serve both.
-    if (in.persistent_scheduler) {
+    {
         const EventSignatureKeys ekeys = event_keys_for(in.event_canonicalization);
 
         // Automatic event identity keys on the canonical ranks of the consumed and produced
@@ -531,92 +529,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                          st.cycles_rw_sub[2] * rpct, st.cycles_rw_sub[3] * rpct,
                          st.cycles_rw_sub[4] * rpct, st.cycles_rw_sub[5] * rpct);
         }
-        frontier_count = 0;   // nothing left for the step loop to do
     }
 
-    for (uint32_t step = 0; !in.persistent_scheduler && step < in.num_steps && frontier_count > 0; ++step) {
-        auto t0 = std::chrono::steady_clock::now();
-        if (dbg) std::fprintf(stderr, "[step %u] frontier=%u state_count=%u\n",
-                              step, frontier_count, state_count_host);
-        // (1) Match all (frontier, rule) pairs in one kernel.
-        matches.reset();
-        run_match_kernel_batch_nosync(engine, d_rules, num_rules,
-                                      d_frontier, frontier_count, matches, step);
-        std::snprintf(ctx_buf, sizeof(ctx_buf), "match kernel step %u", step);
-        engine.collect_warnings_into(out.warnings, ctx_buf);
-        auto t1 = std::chrono::steady_clock::now();
-        t_match += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        uint32_t nm = matches.size_host();
-        if (nm == 0) break;
-
-        // (2) Rewrite all matches in one kernel. The rewrite kernel uses
-        // a CAS-loop on state_count so it never bumps past max_states;
-        // any overflow (state/event/edge/vertex pool) is recorded as a
-        // warning. The kernel still runs on whatever budget remains —
-        // partial work is fine, the result still self-consistent.
-        uint32_t state_before = state_count_host;
-        const uint32_t event_before = engine.num_events_host();
-        run_rewrite_kernel_with_nosync(engine, d_rules, matches, nm, step + 1);
-        std::snprintf(ctx_buf, sizeof(ctx_buf), "rewrite kernel step %u", step);
-        engine.collect_warnings_into(out.warnings, ctx_buf);
-        uint32_t state_after = engine.num_states_host();
-        state_count_host = state_after;
-        auto t2 = std::chrono::steady_clock::now();
-        t_rewrite += std::chrono::duration<double, std::milli>(t2 - t1).count();
-        if (state_after <= state_before) break;
-
-        // (3) WL-hash only the new states. Writes into d_state_hashes[lo..hi).
-        compute_state_dedup_keys(engine, state_before, state_after,
-                                 d_state_hashes + state_before, in.canonicalization);
-        // (3b) Event identity. The rewrite kernel wrote each event BEFORE its output state was
-        // canonicalized, so the signature cannot be filled inline there; it is filled here,
-        // once both endpoint hashes exist and before the frontier moves on.
-        fill_event_identity_inputs(engine, state_before, state_after, ekeys_step, key_is_exact,
-                                   identity_arena, qc_route);
-        stamp_event_identity_range(engine, event_before, engine.num_events_host(), ekeys_step,
-                                   event_identity_map);
-        // Quotient-causal drive: register this step's raw events once both endpoint hashes
-        // and orbit tables exist (the two calls above).
-        if (qc_route)
-            run_qc_register_range(engine, qc_view, event_before, engine.num_events_host());
-
-        auto t3 = std::chrono::steady_clock::now();
-        t_hash += std::chrono::duration<double, std::milli>(t3 - t2).count();
-
-        // (4) Dedup & build next frontier on device.
-        uint32_t zero32 = 0;
-        check(cudaMemcpy(d_next_count, &zero32, sizeof(uint32_t), cudaMemcpyHostToDevice),
-              "reset next_count");
-        uint32_t n_new = state_after - state_before;
-        int block = 128;
-        int grid  = (int)((n_new + block - 1) / block);
-
-        k_dedup_and_append<<<grid, block>>>(state_before, state_after,
-                                            d_state_hashes + state_before,
-                                            canonical_map.view(),
-                                            in.explore_from_canonical_states_only,
-                                            d_next_frontier, d_next_count,
-                                            cfg.max_states,
-                                            explore_threshold_u32,
-                                            resolved_seed, step);
-        check(cudaDeviceSynchronize(), "dedup sync");
-
-        check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
-                         cudaMemcpyDeviceToHost), "read next_count");
-
-        // First state above the slice-scan threshold: build the indices it will
-        // be matched through, then maintain them incrementally.
-        if (!engine.maintain_indices() && engine.needs_indices_host()) {
-            rebuild_indices(engine, engine.num_edges_host());
-            engine.set_maintain_indices(true);
-        }
-        auto t4 = std::chrono::steady_clock::now();
-        t_dedup += std::chrono::duration<double, std::milli>(t4 - t3).count();
-
-        // Swap frontier buffers.
-        std::swap(d_frontier, d_next_frontier);
-    }
 
     auto t_readback_start = std::chrono::steady_clock::now();
 

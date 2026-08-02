@@ -70,7 +70,7 @@ __global__ void k_seed_match_queue_counted(
 
 // Quotient-causal seeding for a scheduler that hashed its roots elsewhere: every orbit of each
 // root gains the INIT sentinel producer (initial edges have no producing event) and the root
-// is marked reached at depth 0. Root state ids are [0, num_roots) on both schedulers.
+// is marked reached at depth 0. Root state ids are [0, num_roots).
 __global__ void k_qc_seed_roots(DeviceState ds, QcView qc, uint32_t num_roots) {
     const uint32_t sid = blockIdx.x * blockDim.x + threadIdx.x;
     if (sid >= num_roots) return;
@@ -80,7 +80,7 @@ __global__ void k_qc_seed_roots(DeviceState ds, QcView qc, uint32_t num_roots) {
     qc_reach(ds, qc, h, 0);
 }
 
-// Register a range of raw events, one thread each -- the level-synchronous scheduler's
+// Register a range of raw events, one thread each -- the host-driven
 // per-step drive, run after the step's identity phase so both endpoints' hashes and orbit
 // tables exist.
 __global__ void k_qc_register_range(DeviceState ds, QcView qc, uint32_t lo, uint32_t hi) {
@@ -95,7 +95,7 @@ __global__ void k_qc_register_range(DeviceState ds, QcView qc, uint32_t lo, uint
 }
 
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
-// must stay the twin: the two schedulers deduplicating different equivalences is not a
+// must stay the twin: the seeding and the loop deduplicating different equivalences is not a
 // performance difference, it is a different evolution.
 //
 //   None       a per-state unique value, so nothing ever deduplicates. Costs no hashing at all.
@@ -130,7 +130,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 // Insert every root's canonical hash into the map before the loop starts, so a child isomorphic
 // to a root deduplicates against it rather than being explored a second time. Runs pre-launch,
 // which the no-host-in-the-loop constraint permits: the constraint is on evolution, not on
-// seeding. Mirrors what k_seed_roots does for the level-synchronous scheduler.
+// seeding, alongside k_seed_roots.
 //
 // Surviving roots are compacted into out_ids/out_count, and the queue is seeded from those rather
 // than from the caller's list, because `quotient_roots` is decided here:
@@ -140,7 +140,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 //   true   a root whose key another root already claimed is still hashed and mapped, but is not
 //          appended, so it never enters the queue.
 //
-// The level-synchronous path decides the same thing in k_seed_roots. Deciding it in only one of
+// k_seed_roots decides the same thing for the host-seeded roots. Deciding it in only one of
 // them made the option change the state set on one scheduler and not the other.
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
@@ -273,7 +273,7 @@ __global__ void k_persistent_match(DeviceState ds,
 // between finding a match and applying it, which is the whole point.
 //
 // A cursor rather than a second RingBuffer because a match's slot in the pool is assigned by
-// match_state_rule, whose contract is shared with the level-synchronous scheduler and must not
+// match_state_rule, whose contract the batch driver shares and which must not
 // change. Blocks match concurrently, so no block can say which pool slots are its own: a
 // before/after counter delta is not attributable to one block. The cursor sidesteps that
 // entirely -- consumers claim indices, not ranges.
@@ -336,10 +336,10 @@ __global__ void k_persistent_match_rewrite(
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
                 // rec.step + 1, not rec.step: an event is stamped with the depth of the state
-                // it PRODUCES, which is what the level-synchronous loop writes
+                // it PRODUCES, which is what the rewrite kernel writes
                 // (run_rewrite_kernel_with_nosync is called with step + 1) and what the CPU
                 // uses (the canonical OUTPUT state's step). Writing the parent's depth here
-                // made every event's reported step differ between the two schedulers.
+                // made every event's reported step differ from the depth it was claimed at.
                 (void)apply_one_match(ds, rules, rec, rec.step + 1u);
             }
             __syncthreads();
@@ -373,7 +373,7 @@ __global__ void k_persistent_match_rewrite(
 //
 // A rewrite's output state is hashed, tested against the exploration rule, and its (state,
 // rule) items pushed back into the same match queue. A whole evolution then runs inside one
-// launch: no step loop, no host in the middle, no barrier between depths.
+// launch: the device decides what work exists, who takes it, and when it is finished.
 //
 // Termination cannot be "queue empty" any more, and cannot be a single quiescent snapshot
 // either. The exact condition is that NOTHING MADE PROGRESS across an observation window while

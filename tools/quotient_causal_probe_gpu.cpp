@@ -40,7 +40,6 @@ int main(int argc, char** argv) {
             in.canonicalization = hg_gpu::CanonicalizationMode::Full;
             in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Full;
             in.explore_from_canonical_states_only = quotient;
-            in.persistent_scheduler = true;
             const auto res = hg_gpu::evolve(in);
             counts[res.causal_edges.size()]++;
             tallies_states[res.states.size()]++;

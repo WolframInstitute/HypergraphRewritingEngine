@@ -3,8 +3,8 @@
 // once per phase per step. See docs/GPU_PERSISTENT_DESIGN.md.
 //
 // Three entry points, each adding one thing to the one before, so a failure lands in the stage
-// that introduced it rather than in the whole model at once. Engine::Impl still runs the
-// level-synchronous loop; none of these is on the shipping path yet.
+// that introduced it rather than in the whole model at once. run_persistent_evolve is the
+// shipping one; the two below it are the stages it is built from, kept as gates.
 //
 //   run_persistent_match          the MATCH role alone, over a queue seeded once. Empty means
 //                                 finished, because nothing can push after the seed.
@@ -42,7 +42,7 @@ struct MatchWorkItem {
 };
 
 // Match every (state, rule) pair through persistent workers rather than one block per pair.
-// Returns the number of matches in `out`, which must equal what run_match_kernel_batch
+// Returns the number of matches in `out`, which must equal what the batch driver
 // produces for the same inputs -- that equality is the point of the stage.
 uint32_t run_persistent_match(const EngineState& engine,
                               const std::vector<DeviceRule>& rules,
@@ -62,8 +62,8 @@ uint32_t run_persistent_match(const EngineState& engine,
 //   observation window is for, and stage 2 is the first point at which it earns its keep.
 //
 // The queue between the roles is the match POOL plus a consume cursor, not a second ring.
-// A match's slot is assigned by match_state_rule, whose contract is shared with the
-// level-synchronous scheduler and must not change; and since blocks match concurrently, no
+// A match's slot is assigned by match_state_rule, whose contract must not change; and
+// since blocks match concurrently, no
 // block can say which pool slots are its own -- a before/after counter delta is not
 // attributable to one block. Consumers claim indices instead, which sidesteps that entirely.
 //
@@ -151,10 +151,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             uint32_t explore_threshold_u32 = 0xFFFFFFFFu,
                                             uint64_t explore_seed = 0,
                                             // How states are identified. The device twin of
-                                            // compute_state_dedup_keys: the two schedulers
-                                            // deduplicating different equivalences is not a
-                                            // performance difference, it is a different
-                                            // evolution.
+                                            // compute_state_dedup_keys: the host seeding and
+                                            // the device loop deduplicating different
+                                            // equivalences is not a performance difference, it
+                                            // is a different evolution.
                                             CanonicalizationMode state_mode =
                                                 CanonicalizationMode::Full,
                                             // Which components the event identity is built
@@ -168,19 +168,19 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // Default false is the reference semantics: provided
                                             // roots are distinct entry points even when
                                             // isomorphic. This must agree with what
-                                            // k_seed_roots does for the level-synchronous
-                                            // scheduler, or the option changes the state set on
-                                            // one and not the other.
+                                            // k_seed_roots does for the host-seeded roots, or
+                                            // the option changes the state set depending on
+                                            // which path seeded them.
                                             bool quotient_roots = false,
                                             // The quotient-causal DP's device structures
                                             // (quotient_causal.hpp), constructed by the
-                                            // caller so both schedulers can drive one body of
-                                            // state. Disabled (enabled == 0) when null.
+                                            // caller, so the host seeding and the device loop
+                                            // drive one body of state. Disabled (enabled == 0)
+                                            // when null.
                                             const QcView* qc = nullptr);
 
-// The level-synchronous scheduler's quotient-causal drive: seed the roots' INIT producers
-// once, then register each step's raw-event range after its identity phase (both endpoint
-// hashes and orbit tables must exist by then).
+// The host-driven quotient-causal seeding: the roots' INIT producers, registered once before
+// the evolution launches (both endpoint hashes and orbit tables must exist by then).
 void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots);
 void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi);
 

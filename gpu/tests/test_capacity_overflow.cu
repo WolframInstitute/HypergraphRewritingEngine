@@ -92,7 +92,6 @@ TEST(CapacityOverflow, PartialResultWithWarningAndNoOutOfBounds) {
 // fallback.
 TEST(CapacityOverflow, PersistentSchedulerAlsoReturnsPartialWork) {
     hg_gpu::EvolveInput in = growing_input(6);
-    in.persistent_scheduler = true;
 
     hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
     cfg.max_edges            = 512;

@@ -33,7 +33,6 @@ struct Workload {
     uint32_t num_steps = 0;
     hg_gpu::CanonicalizationMode canon_mode = hg_gpu::CanonicalizationMode::Full;
     hg_gpu::EventCanonicalizationMode event_canon_mode = hg_gpu::EventCanonicalizationMode::None;
-    bool persistent = false;
     bool transitive_reduction = true;
     // Reference semantics (reference/MultiwayReference.wl): every state is
     // expanded. The engine reproduces the reference exactly on this path
@@ -245,8 +244,8 @@ NormalizedResult run_cpu(const Workload& w) {
         // Quotient mode compares transitions without the step: each canonical state
         // is expanded once, so (input, output, rule) determines the step within a
         // run, but WHICH depth the CPU's dataflow claims a state at is arrival-
-        // dependent, while the GPU's level-synchronised loop always claims at the
-        // minimum. The step-less multiset is the canonical transition multiset.
+        // dependent, while the GPU claims at the minimum depth. The step-less
+        // multiset is the canonical transition multiset.
         uint64_t ek = event_key(ih, oh, ev.rule_index,
                                 w.explore_from_canonical_states_only ? 0u : step);
         event_key_by_id[eid] = ek;
@@ -305,7 +304,6 @@ NormalizedResult run_gpu(const Workload& w) {
     // The scheduler is part of the workload, so it is stated rather than inherited: this suite's
     // job is to validate the GPU against the CPU, and which GPU scheduler answered has to be a
     // property of the case rather than of whatever the default happens to be.
-    in.persistent_scheduler   = w.persistent;
     in.transitive_reduction   = w.transitive_reduction;
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
     in.slice_scan_max_edges = w.slice_scan_max_edges;
@@ -618,7 +616,7 @@ std::vector<Workload> build_corpus() {
 
     // Quotient exploration (explore_from_canonical_states_only): each canonical
     // state is expanded once, at its shortest depth. The CPU reaches that via
-    // depth relaxation over its dataflow; the GPU's level-synchronised step loop
+    // depth relaxation over its dataflow; the GPU's single-launch persistent loop
     // gives it by construction. Compared on canonical states and the step-less
     // transition multiset; causal/branchial are reconstructed offline in this
     // mode. The multi-rule workloads put loops in the multiway states graph,
@@ -691,23 +689,11 @@ std::vector<Workload> build_corpus() {
     return ws;
 }
 
-// Every corpus workload against the CPU on BOTH GPU schedulers.
-//
-// The suite validated only the level-synchronous path, which was the default when it was written.
-// The persistent scheduler is now the default, so leaving this at one scheduler would validate
-// the path that no longer ships while the one that does went unchecked against the authority.
-// Running both is also what makes the CPU -- not the other GPU scheduler -- the reference for
-// each, which matters because the two GPU paths share code and could agree while both being wrong.
+// Every corpus workload against the CPU. The device has ONE scheduler, and the CPU -- not a
+// second device path -- is its reference: two GPU paths sharing code can agree while both are
+// wrong, which is why the authority for the device is the host engine and the oracle behind it.
 std::vector<Workload> build_corpus_both_schedulers() {
-    std::vector<Workload> out;
-    for (bool persistent : {false, true}) {
-        for (Workload w : build_corpus()) {
-            w.persistent = persistent;
-            w.name += persistent ? "_persistent" : "_lockstep";
-            out.push_back(std::move(w));
-        }
-    }
-    return out;
+    return build_corpus();
 }
 
 // Running build_corpus_both_schedulers() here is the next step and is NOT yet green: it exposes a

@@ -52,16 +52,22 @@ The workload character that drives the architecture:
 
 ## 3. Architecture overview
 
-The evolution is a **host-driven step loop**: each step launches four bounded
-kernel phases — match (`k_match_batch`, one block per (frontier state, rule)),
-rewrite (`k_rewrite`, one thread per match: create edges/vertices, build the
-child CSR slice, write the event, register causal and branchial edges inline),
-canonical hashing over the new states (WL or exact IR per the canonicalization
-mode), and dedup-and-append (`k_dedup_and_append`, first writer per canonical
-hash wins the frontier slot). One device synchronization per phase; frontier
-counts round-trip to the host between steps. The loop is level-synchronised
-BFS, which is also what makes quotient exploration expand each canonical state
-at its shortest depth by construction.
+The evolution is **one kernel launch**. `run_persistent_evolve` starts a grid of
+resident blocks that pull work items from a device queue and keep pulling until
+a dedicated detector block decides the run is finished; the host is not in the
+loop and there is no barrier between depths. Inside it a block matches
+(`match_state_rule`, the same body the batch driver calls), applies
+(`apply_one_match`: create edges/vertices, build the child CSR slice, write the
+event, register causal and branchial edges inline), hashes the child (WL or
+exact IR per the canonicalization mode) and deduplicates it — first writer per
+canonical hash wins — then enqueues it. A state is claimed at its minimum
+depth, which is what makes quotient exploration expand each canonical state
+once at its shortest depth.
+
+Per-stage kernel launches would put a global barrier between every stage, so
+the whole grid would wait for its slowest block. The batch entry points
+(`run_match_kernel_batch_nosync`, `run_rewrite_kernel`) remain as unit-test
+entry points into single stages; they are not an evolution path.
 
 This shape amortises its per-step overhead (~4 launches + syncs + D2H,
 ~50-100 µs) whenever frontiers are wide; it is the wrong shape for deep,

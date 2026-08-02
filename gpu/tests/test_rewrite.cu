@@ -130,68 +130,6 @@ TEST(Rewrite, SparseVariableNumberingBindsTheRightNewVariable) {
     EXPECT_EQ(e2_verts, (std::vector<VertexId>{1u, 2u}));   // {z,y}, y fresh
 }
 
-// Match and rewrite running as two persistent roles must produce exactly what the
-// level-synchronous match-then-rewrite produces.
-//
-// Stage 2 of retiring the step loop. The roles feed each other with no barrier: a match is
-// applied as soon as some worker claims it, not after every match in the step has been found.
-// Both schedulers drive the same match_state_rule and apply_one_match, so any difference is in
-// the scheduling, and scheduling must not change the result.
-//
-// "The result" is the CANONICAL form, which is the whole reason removing the barrier is sound
-// (docs/GPU_PERSISTENT_DESIGN.md §2). Raw vertex ids are not part of it: fresh vertices come
-// from a high-water bump, so which rewrite gets which id follows execution order, and the two
-// schedulers legitimately produce the same hypergraph under a different labelling.
-//
-// The failure mode this guards against is not a wrong answer but a HANG: a detector that
-// signals exit during a lull loses work, and one that never signals never returns. Run under a
-// timeout.
-TEST(Rewrite, PersistentTwoRoleSchedulerMatchesTheLevelSynchronousResult) {
-    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}};
-
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}, {1, 2}};
-    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
-    r.num_lhs_vars = 3;
-    r.num_rhs_vars = 4;
-    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
-    const std::vector<hg_gpu::StateId> states = {0u};
-
-    // Level-synchronous: find every match, then apply every match.
-    hg_gpu::EngineState lockstep(small_cfg());
-    hg_gpu::upload_initial_state(lockstep, init);
-    hg_gpu::Pool<hg_gpu::MatchRecord> ls_matches(256);
-    ls_matches.reset();
-    hg_gpu::DeviceRule* d_rules = nullptr;
-    cudaMalloc(&d_rules, sizeof(hg_gpu::DeviceRule) * rules.size());
-    cudaMemcpy(d_rules, rules.data(), sizeof(hg_gpu::DeviceRule) * rules.size(),
-               cudaMemcpyHostToDevice);
-    hg_gpu::StateId* d_states = nullptr;
-    cudaMalloc(&d_states, sizeof(hg_gpu::StateId) * states.size());
-    cudaMemcpy(d_states, states.data(), sizeof(hg_gpu::StateId) * states.size(),
-               cudaMemcpyHostToDevice);
-    const uint32_t ls_n = hg_gpu::run_match_kernel_batch(
-        lockstep, d_rules, static_cast<uint32_t>(rules.size()), d_states,
-        static_cast<uint32_t>(states.size()), ls_matches);
-    cudaFree(d_states);
-    cudaFree(d_rules);
-    ASSERT_GT(ls_n, 0u) << "workload found no matches, so the comparison is vacuous";
-    hg_gpu::run_rewrite_kernel(lockstep, rules, ls_matches, ls_n, /*step=*/1);
-
-    // Persistent: the two roles interleave, with block 0 deciding when they are finished.
-    hg_gpu::EngineState persistent(small_cfg());
-    hg_gpu::upload_initial_state(persistent, init);
-    hg_gpu::Pool<hg_gpu::MatchRecord> p_matches(256);
-    p_matches.reset();
-    const auto stats = hg_gpu::run_persistent_match_rewrite(
-        persistent, rules, states, /*step=*/1, p_matches, /*blocks=*/5);
-
-    EXPECT_EQ(stats.matches_found, ls_n);
-    EXPECT_EQ(persistent.num_states_host(), lockstep.num_states_host());
-    EXPECT_EQ(persistent.num_edges_host(), lockstep.num_edges_host());
-    EXPECT_EQ(canonical_hash_multiset(persistent), canonical_hash_multiset(lockstep));
-}
-
 // The step budget is a PREDICATE on the item, not a loop bound. At max_steps == 1 only the
 // roots are expanded, so the run must stop after one round of rewriting even though the
 // children it produced are matchable.
@@ -233,7 +171,7 @@ TEST(Rewrite, PersistentEvolveStepBudgetStopsAtOne) {
 // synchronous Engine produces for the same input.
 //
 // Stage 3: the rewrite's output is hashed, deduplicated and re-enqueued on device, so there is
-// no step loop and no host in the middle. That makes three things load-bearing that stages 1
+// with no host in the middle. That makes three things load-bearing that the kernel entry points
 // and 2 never exercised, and each has its own failure signature:
 //
 //   THE STEP BUDGET. Depth rides on the item, so `max_steps` is a predicate. Getting it off by
@@ -324,7 +262,7 @@ TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
 
 // The device computes an event identity, and it is the one hgcommon defines.
 //
-// The level-synchronous scheduler cannot do this at all: it writes the event in the rewrite
+// A per-stage-launch scheduler cannot do this at all: it writes the event in the rewrite
 // kernel, before the output state has been canonicalized, and by the time the hash exists the
 // kernel that knew which event it belonged to has returned. The persistent scheduler has both
 // at one point -- the input hash published when the parent was created, the output hash just
@@ -505,141 +443,6 @@ TEST(Rewrite, TriangleRuleIntroducesNewEdge) {
 }
 
 }  // namespace
-
-// The persistent scheduler, reached the way a user reaches it: through Engine::run.
-//
-// Everything before this gated run_persistent_evolve directly. This gates the ROUTE -- the
-// option, the branch around the step loop, and the shared readback -- which is the part that
-// decides whether any of it is reachable. Compares canonical state hashes rather than counts,
-// because two runs can agree on how many states they found while finding different ones.
-//
-// Run-to-run ORDER varies by construction here: there are no phases, so states are created in
-// whatever order the queues hand them out. Only the canonical identities are invariant, which
-// is exactly the claim removing the barrier rests on, so it is what gets compared.
-TEST(Rewrite, PersistentSchedulerThroughEngineRunMatchesTheStepLoop) {
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}, {1, 2}};
-    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
-    r.num_lhs_vars = 3;
-    r.num_rhs_vars = 4;
-
-    // The full matrix of what the persistent path CLAIMS to support: every state mode, and
-    // both event modes it can answer. A spot check on one cell cannot distinguish "the routing
-    // works" from "the routing works for Full" -- and the state modes differ precisely in which
-    // states they identify, which is the thing a scheduler must not change.
-    for (auto sm : {hg_gpu::CanonicalizationMode::None,
-                    hg_gpu::CanonicalizationMode::Automatic,
-                    hg_gpu::CanonicalizationMode::Full})
-    for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
-                    hg_gpu::EventCanonicalizationMode::Automatic,
-                    hg_gpu::EventCanonicalizationMode::Full}) {
-        hg_gpu::EvolveInput in;
-        in.rules = {r};
-        in.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
-        in.num_steps = 3;
-        in.canonicalization = sm;
-        in.event_canonicalization = ev;
-
-        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
-
-        // Explicit, not inherited from the default: if the default becomes `true` this arm has to
-        // stay level-synchronous or the comparison silently becomes persistent-against-persistent
-        // and passes without testing anything.
-        in.persistent_scheduler = false;
-        hg_gpu::Engine lockstep(cfg);
-        const auto a = lockstep.run(in);
-
-        in.persistent_scheduler = true;
-        hg_gpu::Engine persistent(cfg);
-        const auto b = persistent.run(in);
-
-        ASSERT_TRUE(a.warnings.empty()) << "the level-synchronous reference overflowed";
-        {
-            std::string wtext;
-            for (const auto& w : b.warnings) {
-                wtext += hg_gpu::error_kind_name(w.kind);
-                wtext += " x";
-                wtext += std::to_string(w.count);
-                wtext += "; ";
-            }
-            ASSERT_TRUE(b.warnings.empty())
-                << "the persistent run overflowed -- its counts are partial, not comparable: "
-                << wtext;
-        }
-        ASSERT_GT(a.states.size(), 1u) << "workload never branched; the comparison is vacuous";
-
-        std::multiset<uint64_t> ha, hb;
-        for (const auto& s : a.states) ha.insert(s.canonical_hash);
-        for (const auto& s : b.states) hb.insert(s.canonical_hash);
-        const std::string cell = "state=" + std::to_string(static_cast<int>(sm)) +
-                                 " event=" + std::to_string(static_cast<int>(ev));
-
-        // Compared in every cell: the SIZE of the evolution. Whatever a mode identifies states
-        // by, both schedulers must find the same number of them and the same number of events.
-        EXPECT_EQ(b.states.size(), a.states.size()) << cell << ": state count differs";
-        EXPECT_EQ(b.events.size(), a.events.size()) << cell << ": event count differs";
-
-        // The reported hashes are only comparable across schedulers in FULL mode, and the
-        // reason is the modes' own definitions rather than a limitation here:
-        //
-        //   None       reports a per-state unique key (id+1). Comparing {1..N} to {1..N} is
-        //              vacuous -- it says the counts match, which is checked above.
-        //   Automatic  reports the CONTENT hash, which includes concrete vertex ids. Fresh
-        //              vertices come from an atomic high-water bump, so two schedulers build
-        //              the same evolution with different numbering and therefore different
-        //              content hashes. Requiring equality would be requiring Automatic to be
-        //              isomorphism-invariant, which is the one thing it is defined not to be.
-        //   Full       reports the isomorphism invariant, which is exactly what must agree.
-        if (sm == hg_gpu::CanonicalizationMode::Full) {
-            EXPECT_EQ(hb, ha) << cell << ": the persistent scheduler found a different state SET";
-        }
-
-        // The two schedulers compute the event identity's INPUTS by different code -- the
-        // persistent loop fills state_exact_hash inline as each child is created, the step loop
-        // fills it in a phase between hashing and dedup. Only the signature rule itself is
-        // shared. So the raw event count agreeing says nothing about whether they identify the
-        // same events, and that is what these check.
-        auto canonical_of = [](const hg_gpu::EvolveResult& res) {
-            std::multiset<uint64_t> sigs;
-            size_t n = 0;
-            for (const auto& e : res.events)
-                if (e.canonical_id == hg_gpu::INVALID_ID) { ++n; sigs.insert(e.signature); }
-            return std::make_pair(n, sigs);
-        };
-        const auto [na, sa] = canonical_of(a);
-        const auto [nb, sb] = canonical_of(b);
-
-        EXPECT_EQ(nb, na) << cell << ": canonical event count differs (" << na
-                          << " level-synchronous, " << nb << " persistent)";
-
-        // Causal and branchial output, which nothing compared across schedulers: the differential
-        // suite checks them against the CPU but only ever runs the level-synchronous path, so a
-        // persistent run that produced none of them would have looked fine everywhere.
-        EXPECT_EQ(b.causal_edges.size(), a.causal_edges.size())
-            << cell << ": causal edge count differs (" << a.causal_edges.size()
-            << " level-synchronous, " << b.causal_edges.size() << " persistent)";
-        EXPECT_EQ(b.branchial_edges.size(), a.branchial_edges.size())
-            << cell << ": branchial edge count differs (" << a.branchial_edges.size()
-            << " level-synchronous, " << b.branchial_edges.size() << " persistent)";
-
-        // Under event mode Full the signature is built from the two endpoint EXACT hashes,
-        // which are isomorphism invariants whatever the state mode is -- so the values, not
-        // merely the count, must agree. Automatic also keys on canonical edge ranks, which
-        // follow the presentation order and so can differ between schedulers on a state with a
-        // nontrivial automorphism group (#66); reported there rather than asserted.
-        // The VALUES, not merely the count. This workload's initial state is a directed path,
-        // whose automorphism group is trivial, so the coset freedom that makes ranks ambiguous
-        // on symmetric states (#66) does not arise -- every component of every key set is
-        // determined, and the two schedulers must agree on all of them.
-        //
-        // This is what caught the schedulers disagreeing about what STEP an event carries: the
-        // level-synchronous loop wrote the produced state's depth and the persistent loop wrote
-        // the parent's, so under Automatic -- which keys on the step -- 0 of 9 signatures were
-        // shared while Full, which does not key on it, matched perfectly.
-        EXPECT_EQ(sb, sa) << cell << ": same canonical event COUNT, different signature VALUES "
-                          << "-- the two schedulers identify different events";
-    }
-}
 
 // Automatic event identity must be refused rather than answered coarsely.
 // Automatic event identity keys on the canonical RANKS of the consumed and produced edges, on
@@ -857,114 +660,6 @@ TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
     EXPECT_LT(full.canonical, full.raw)
         << "Full merged nothing: " << full.raw << " applications, " << full.canonical
         << " events. The signature is being computed and not applied.";
-}
-
-// The free evolve() wrapper carries the persistent selector, and its grow-and-retry works with
-// it.
-//
-// The design notes asserted the opposite -- that "the evolve() wrapper cannot grow-and-retry a
-// single launch, so it must size up front or refuse the persistent selector". That was reasoned
-// from what a persistent kernel is, not measured. The wrapper does not resume a launch: it
-// destructs the engine, doubles the offending config fields and re-runs the whole evolution,
-// which is scheduler-agnostic. `in` is passed through unchanged, so persistent_scheduler is
-// carried into every attempt.
-//
-// Everything below Engine::run is already covered; what was not covered is that the wrapper
-// itself produces the same evolution under either scheduler.
-TEST(Rewrite, TheEvolveWrapperCarriesThePersistentSelector) {
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}, {1, 2}};
-    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
-    r.num_lhs_vars = 3;
-    r.num_rhs_vars = 4;
-
-    for (auto ev : {hg_gpu::EventCanonicalizationMode::None,
-                    hg_gpu::EventCanonicalizationMode::Full}) {
-        hg_gpu::EvolveInput in;
-        in.rules = {r};
-        in.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
-        in.num_steps = 3;
-        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
-        in.event_canonicalization = ev;
-
-        // Explicit for the same reason as above.
-        in.persistent_scheduler = false;
-        const auto lockstep = hg_gpu::evolve(in);
-        in.persistent_scheduler = true;
-        const auto persistent = hg_gpu::evolve(in);
-
-        const std::string cell = "event=" + std::to_string(static_cast<int>(ev));
-        EXPECT_TRUE(lockstep.warnings.empty())
-            << cell << ": the level-synchronous reference overflowed through the wrapper";
-        EXPECT_TRUE(persistent.warnings.empty())
-            << cell << ": the persistent run overflowed through the wrapper and did not recover";
-        ASSERT_GT(lockstep.states.size(), 1u) << "workload never branched";
-
-        std::multiset<uint64_t> a, b;
-        for (const auto& s : lockstep.states)   a.insert(s.canonical_hash);
-        for (const auto& s : persistent.states) b.insert(s.canonical_hash);
-        EXPECT_EQ(b, a) << cell << ": the wrapper produced a different state set per scheduler";
-
-        size_t na = 0, nb = 0;
-        for (const auto& e : lockstep.events)   if (e.canonical_id == hg_gpu::INVALID_ID) ++na;
-        for (const auto& e : persistent.events) if (e.canonical_id == hg_gpu::INVALID_ID) ++nb;
-        EXPECT_EQ(nb, na) << cell << ": canonical event count differs through the wrapper";
-    }
-}
-
-// quotient_initial_states must mean the same thing to both schedulers.
-//
-// It asks that isomorphic ROOTS collapse: given the same initial state twice, an evolution should
-// start from one entry point rather than two. The reference semantics without it are the opposite
-// -- provided roots are distinct entry points even when isomorphic -- so the option changes the
-// state set, not merely its labelling.
-//
-// The level-synchronous path passes it to k_seed_roots as `quotient_roots`, which drops the
-// duplicate. The persistent branch built its root list as every index 0..num_roots-1 and never
-// read the flag, so it explored both. Defaulting the persistent scheduler on would have changed
-// what this option does with no diagnostic.
-TEST(Rewrite, QuotientInitialStatesMeansTheSameToBothSchedulers) {
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}};
-    r.rhs = {{0, 1}, {1, 2}};
-    r.num_lhs_vars = 2;
-    r.num_rhs_vars = 3;
-
-    // The same state twice, up to vertex labelling: isomorphic but not identical, so collapsing
-    // them is an isomorphism test rather than an equality test.
-    const std::vector<std::vector<std::vector<VertexId>>> roots = {
-        {{0u, 1u}, {1u, 2u}},
-        {{5u, 6u}, {6u, 7u}},
-    };
-
-    for (bool quotient_roots : {false, true}) {
-        hg_gpu::EvolveInput in;
-        in.rules = {r};
-        in.initial_states = roots;
-        in.quotient_initial_states = quotient_roots;
-        in.num_steps = 2;
-        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
-
-        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
-        in.persistent_scheduler = false;   // explicit; see the note in the cross-scheduler gate
-        hg_gpu::Engine lockstep(cfg);
-        const auto a = lockstep.run(in);
-
-        in.persistent_scheduler = true;
-        hg_gpu::Engine persistent(cfg);
-        const auto b = persistent.run(in);
-
-        const std::string cell = quotient_roots ? "quotient_initial_states=true"
-                                                : "quotient_initial_states=false";
-        ASSERT_TRUE(a.warnings.empty()) << cell << ": the level-synchronous reference overflowed";
-        ASSERT_TRUE(b.warnings.empty()) << cell << ": the persistent run overflowed";
-
-        std::multiset<uint64_t> ha, hb;
-        for (const auto& s : a.states) ha.insert(s.canonical_hash);
-        for (const auto& s : b.states) hb.insert(s.canonical_hash);
-        EXPECT_EQ(hb, ha) << cell << ": the two schedulers explored a different state SET";
-        EXPECT_EQ(b.states.size(), a.states.size()) << cell << ": state count differs";
-    }
 }
 
 // Arena exhaustion is a RECOVERABLE capacity failure, and must be reported as one.

@@ -357,7 +357,7 @@ __device__ void match_state_rule(DeviceState       ds,
 
 namespace {
 
-// Level-synchronous driver: one block per (state, rule) pair of the frontier.
+// Batch driver: one block per (state, rule) pair of a state set.
 __global__ void k_match_batch(DeviceState      ds,
                               const DeviceRule* rules,
                               uint32_t          num_rules,
@@ -539,19 +539,6 @@ DeviceRule make_device_rule(const RewriteRule& rule) {
         for (uint8_t i = 0; i < dst.arity; ++i) dst.vars[i] = src[i];
     }
     return d;
-}
-
-uint32_t run_match_kernel_batch(const EngineState& engine,
-                                const DeviceRule*  d_rules,
-                                uint32_t           num_rules,
-                                const StateId*     d_state_ids,
-                                uint32_t           num_state_ids,
-                                Pool<MatchRecord>& out_matches,
-                                uint32_t           step) {
-    if (num_rules == 0 || num_state_ids == 0) return 0;
-    run_match_kernel_batch_nosync(engine, d_rules, num_rules,
-                                  d_state_ids, num_state_ids, out_matches, step);
-    return out_matches.size_host();
 }
 
 void run_match_kernel_batch_nosync(const EngineState& engine,

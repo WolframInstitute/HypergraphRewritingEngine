@@ -98,19 +98,6 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     )
     target_link_libraries(quotient_causal_probe_gpu PRIVATE hg_gpu hypergraph)
 
-    # Whether removing the per-step barrier pays, measured across evolution SHAPE rather than as
-    # one number -- the barrier's cost is one sync per step against whatever work that step had.
-    add_executable(bench_scheduler_shape
-        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/bench_scheduler_shape.cu
-    )
-    target_link_libraries(bench_scheduler_shape PRIVATE hg_gpu)
-
-    # Whether the persistent scheduler's loss on wide evolutions is its grid size or the queue.
-    add_executable(bench_persistent_blocks
-        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/bench_persistent_blocks.cu
-    )
-    target_link_libraries(bench_persistent_blocks PRIVATE hg_gpu)
-
     # Separates a presentation-order cause from a rank-assignment one when the device's
     # canonical edge ranks move between block counts.
     add_executable(gpu_rank_order_probe

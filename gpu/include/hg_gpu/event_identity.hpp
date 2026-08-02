@@ -1,10 +1,9 @@
 #pragma once
-// Event identity on the device, shared by both schedulers.
+// Event identity on the device.
 //
-// Two schedulers answer this question -- the level-synchronous step loop and the
-// device-resident persistent loop -- and they must answer it the SAME way. A second copy of the
-// signature rule would not crash; it would silently identify a different set of events, which is
-// the defect class the shared-core work exists to close.
+// One statement of the signature rule, read by the persistent kernel and by the host-driven
+// identity phase alike. A second copy would not crash; it would silently identify a different
+// set of events, which is the defect class the shared-core work exists to close.
 //
 // The identity is defined over ISOMORPHISM CLASSES independently of how states are being
 // identified (SPEC.md sec 4), so every component here reads DeviceState::state_exact_hash and
@@ -104,9 +103,9 @@ __device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
 
 // Fill state_exact_hash (and state_edge_rank when the keys read it) for states [lo, hi).
 //
-// The level-synchronous loop needs this as its own phase: its rewrite kernel writes an event
-// before the output state has been canonicalized, so the signature cannot be filled inline
-// there. Running it between hashing and dedup gives the stamping kernel both endpoint hashes.
+// A phase of its own, because the rewrite kernel writes an event before the output state has
+// been canonicalized and the signature cannot be filled inline there. Running it between
+// hashing and dedup gives the stamping kernel both endpoint hashes.
 //
 // In Full state mode the exact hash is the mode's key and is already in state_canonical_hash;
 // `key_is_exact` says so, and the pass then only has to produce ranks. `want_orbits`

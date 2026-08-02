@@ -27,10 +27,9 @@ namespace hg_gpu {
 // emits the event. Exposed so a scheduler in another translation unit drives this
 // implementation rather than growing a second copy of it.
 //
-// What one application produced. Both halves are needed by a scheduler that finishes the work
-// itself: the STATE to hash and re-enqueue, and the EVENT to stamp an identity onto once that
-// hash exists. The level-synchronous scheduler discards both and takes the step's whole
-// [before, after) range instead.
+// What one application produced. A scheduler that finishes the work itself needs both halves:
+// the STATE to hash and re-enqueue, and the EVENT to stamp an identity onto once that hash
+// exists.
 struct AppliedMatch {
     StateId state = INVALID_ID;
     EventId event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed

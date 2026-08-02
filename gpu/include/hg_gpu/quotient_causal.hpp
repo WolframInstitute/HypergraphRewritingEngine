@@ -85,7 +85,7 @@ struct QcView {
     uint32_t enabled   = 0;
 };
 
-// Host-side owner of the DP's device structures, shared by both schedulers so one run's
+// Host-side owner of the DP's device structures, so the host seeding and the device loop share one run's
 // registrations and producer sets are a single body of state whichever loop drives them.
 // Token-sized when the route is off. Owned by the ENGINE and cleared between runs rather than
 // rebuilt: the maps and pools total tens of MB of cudaMalloc, which an interactive caller

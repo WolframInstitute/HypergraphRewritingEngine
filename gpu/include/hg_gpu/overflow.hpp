@@ -59,8 +59,8 @@ enum class ErrorKind : uint32_t {
     kIRArenaExhausted    = 23,
     // The individualization search needed to go deeper than the device attempts. NOT
     // config-controlled -- the depth is a constant the slot is shaped for -- so growing cannot
-    // help, and unlike the level-synchronous path there is no 1-WL fallback here: the state is
-    // left un-canonicalized rather than keyed by a hash that MERGES non-isomorphic states.
+    // help. There is no 1-WL fallback: the state is left un-canonicalized rather than keyed by
+    // a hash that MERGES non-isomorphic states.
     kIRDepthExceeded     = 24,
     kCount
 };

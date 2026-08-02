@@ -567,7 +567,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 
 namespace {
 
-// Level-synchronous driver: one thread per match found this step.
+// Batch driver: one thread per match in the pool.
 __global__ void k_rewrite(DeviceState              ds,
                           const DeviceRule*        rules,
                           const MatchRecord*       matches,

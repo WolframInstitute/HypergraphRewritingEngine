@@ -1,10 +1,9 @@
 #pragma once
 // Which newly created states get expanded.
 //
-// Two schedulers ask this question -- the level-synchronous step loop and the device-resident
-// persistent loop -- and they must ask it the SAME way. A second copy of this predicate would
-// not crash; it would silently explore a different state set, which is the defect class the
-// shared-core work exists to close.
+// Asked in one place. A second copy of this predicate would not crash; it would silently
+// explore a different state set, which is the defect class the shared-core work exists to
+// close.
 
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/types.hpp"

@@ -1,5 +1,5 @@
 // Focused GPU evolve timing harness: the deep/narrow regime (small initial state,
-// many steps) where the per-step lockstep barrier floor dominates and CUDA-graph
+// many steps) where the per-launch barrier floor dominates and CUDA-graph
 // capture of the step chain should help most. Reports median/min wall time over N
 // iterations plus the state/event counts (for a correctness cross-check).
 //

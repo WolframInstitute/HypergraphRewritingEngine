@@ -186,13 +186,9 @@ TEST(Match, NonDistinctBindingAllowedWhenPatternUsesSameVar) {
     EXPECT_EQ(matched, (std::set<EdgeId>{0u, 2u}));
 }
 
-// The persistent scheduler must find exactly the matches the level-synchronous one finds.
-//
-// This is the whole point of stage 1: the two drive the SAME match_state_rule, so any
-// difference is in the scheduling -- the queue, the block-per-item claim, or workers deciding
-// when to stop -- and none of those may change what a match is. Deliberately fewer blocks than
-// items, so every worker loops rather than handling one item and exiting; a bug in the claim
-// would show up as a duplicated or dropped match.
+// The scheduler's queue and claim must not change what a match IS. Deliberately fewer blocks
+// than items, so every worker loops rather than handling one item and exiting; a bug in the
+// block-per-item claim shows up as a duplicated or dropped match.
 // run_match_kernel on a path-shaped LHS.
 //
 // This exact call used to throw "an illegal memory access was encountered". The cause was
@@ -219,56 +215,6 @@ TEST(Match, PathShapedLhsThroughTheSingleStateEntryPoint) {
 
     // Three consecutive pairs along a four-edge path.
     EXPECT_EQ(n, 3u);
-}
-
-TEST(Match, PersistentSchedulerFindsTheSameMatchesAsTheBatchKernel) {
-    hg_gpu::EngineState engine(small_cfg());
-    hg_gpu::upload_initial_state(engine, {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}});
-
-    hg_gpu::RewriteRule r;
-    r.lhs = {{0, 1}, {1, 2}};
-    r.rhs = {{0, 2}};
-    r.num_lhs_vars = 3;
-    r.num_rhs_vars = 3;
-    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
-    const std::vector<hg_gpu::StateId> states = {0u};
-
-    auto collect = [](hg_gpu::Pool<hg_gpu::MatchRecord>& pool, uint32_t n) {
-        std::vector<hg_gpu::MatchRecord> got(n);
-        cudaMemcpy(got.data(), pool.view().data, sizeof(hg_gpu::MatchRecord) * n,
-                   cudaMemcpyDeviceToHost);
-        std::multiset<std::vector<EdgeId>> out;
-        for (const auto& m : got) {
-            std::vector<EdgeId> e(m.matched_edges, m.matched_edges + m.num_edges);
-            out.insert(std::move(e));
-        }
-        return out;
-    };
-
-    hg_gpu::Pool<hg_gpu::MatchRecord> batch_out(256);
-    batch_out.reset();
-    hg_gpu::DeviceRule* d_rules = nullptr;
-    cudaMalloc(&d_rules, sizeof(hg_gpu::DeviceRule) * rules.size());
-    cudaMemcpy(d_rules, rules.data(), sizeof(hg_gpu::DeviceRule) * rules.size(),
-               cudaMemcpyHostToDevice);
-    hg_gpu::StateId* d_states = nullptr;
-    cudaMalloc(&d_states, sizeof(hg_gpu::StateId) * states.size());
-    cudaMemcpy(d_states, states.data(), sizeof(hg_gpu::StateId) * states.size(),
-               cudaMemcpyHostToDevice);
-    const uint32_t n_batch = hg_gpu::run_match_kernel_batch(
-        engine, d_rules, static_cast<uint32_t>(rules.size()), d_states,
-        static_cast<uint32_t>(states.size()), batch_out);
-    cudaFree(d_states);
-    cudaFree(d_rules);
-
-    hg_gpu::Pool<hg_gpu::MatchRecord> persistent_out(256);
-    persistent_out.reset();
-    const uint32_t n_persistent =
-        hg_gpu::run_persistent_match(engine, rules, states, persistent_out, /*blocks=*/2);
-
-    ASSERT_GT(n_batch, 0u) << "the workload found no matches, so the comparison is vacuous";
-    EXPECT_EQ(n_persistent, n_batch);
-    EXPECT_EQ(collect(persistent_out, n_persistent), collect(batch_out, n_batch));
 }
 
 }  // namespace

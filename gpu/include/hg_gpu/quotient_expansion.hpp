@@ -215,8 +215,8 @@ __device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&&
     });
 }
 
-// Host-side owner of the capture's device structures, shared by both schedulers so one run's
-// records are a single body of state whichever loop drives them. Token-sized when the route is
+// Host-side owner of the capture's device structures, so a run's records are one body of
+// state whether the host seeding or the device loop wrote them. Token-sized when the route is
 // off, and cleared between runs rather than rebuilt, for the same reason QcState is: the pools
 // total tens of MB of cudaMalloc that an interactive caller would otherwise pay every evolve.
 class QeState {
