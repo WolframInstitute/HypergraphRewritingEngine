@@ -208,6 +208,8 @@ record — `git show <hash>` is the record.
 | `9d1a96a` | The source map dropped **every call made from a template body** (dependent `OVERLOADED_DECL_REF`) | 159 dependent calls resolved; false "unreferenced in shipped code" 1176 → 1085. Caught because the audit called `join_dfs`/`join_seed` test-only one commit after both engines were wired to them |
 | `3b724c9` | **Quotient exploration threw on any rule that empties the state** — reachable through the public API | `compute_and_cache_state_orbits` started an empty state at hash 0 while its sibling used `EMPTY_STATE_CANONICAL_HASH`; 0 is the ConcurrentMap EMPTY sentinel and that hash keys every quotient map. Also **P5.8** `id_key`. `all_tests` 229/229 |
 | `114c903` | **`was_inserted` came from comparing values, not from the exchange** — ConcurrentMap told two callers they inserted one key | fuzz 0/400, was 2/150 and 5/300. NOT a split rendezvous: 720 instrumented runs gave 2 double-claims and ZERO with distinct winning values |
+| `50d0408` | Crossed the TR exactness probe with event identity — it swept rule/workload/threads while holding identity at the default, so every EXACT it printed was about the rendezvous | Found the defect below. Its order-replay model does NOT reproduce the engine (714/87/59 vs 654/43/50), so the probe reports three numbers and names NO cause |
+| `84d7c07` | **Automatic event identity returned a REDUCED, non-minimal causal graph.** The TR guard tested the exploration strategy; what makes the reduction wrong is the RECONSTRUCTION serving the graph, which Automatic turns on under full capture too | Before: wolfram5 654 vs minimal 512, chain6 43 vs 30, tri4 50 vs 37. After: un-reduced returned, with a user-visible warning. Rendezvous arm EXACT at 1/2/4/8/16 threads throughout |
 
 ### What `114c903` says about the verification, and what was done about it
 
@@ -234,7 +236,7 @@ Open, reproducible, with the command. Anything here that is closed moves to the 
 
 | what | reproducer | rate / size |
 |---|---|---|
-| **Online TR is not exact over the reconstructed relation** | `CausalTrExactnessTest.OnlineTrMatchesOfflineTr` with `qc = true` forced in `configure_identity_and_quotient` | wolfram/s4: online 68 edges, offline 48, full 76. Blocks P1.5 and P3.6 |
+| **Online TR is not exact over the reconstructed relation** | `tools/causal_tr_exactness_probe` (Automatic arm), or `CausalTrExactnessTest.OnlineTrMatchesOfflineTr` with `qc` forced | wolfram5 would keep 654 against a minimal 512; chain6 43 vs 30; tri4 50 vs 37. NO LONGER SERVED — `84d7c07` declines to reduce and warns — but the reduction itself is still not minimal, and this still blocks P1.5 and P3.6. REFUTED so far: raw event ids ARE topological (zero `producer >= consumer` over all three workloads), and it is deterministic single-threaded, so neither id order nor concurrency is the cause |
 | **Positional identity cannot run through the reconstruction** | `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`, same forcing | 87 events vs 86 |
 | **Cross-thread causal determinism breaks when the reconstruction covers the whole corpus** | `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`, same forcing | fails; note the probe is 0/650 on the CURRENT routing |
 | **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | 1–6 of 204 runs, always `fwd=1 delta=0`, on the non-default path. Batched arm asserts 0 and holds. Unchanged across the join extraction (2b624c8: 5,2,3,5,2; 59b3cd8: 4,1,6,4,1) |
