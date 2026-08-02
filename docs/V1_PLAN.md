@@ -10,8 +10,12 @@ continue.
 ```
 cat docs/V1_PLAN.md          # this file: what is next, and the gate that closes it
 git log --oneline -25        # what actually landed; every message carries its evidence
-grep -n "IN PROGRESS" docs/V1_PLAN.md
+grep -n "IN PROGRESS\|BLOCKED" docs/V1_PLAN.md
 ```
+
+Two sections below carry the state a lost conversation would otherwise take with it:
+**Landed ledger** (what shipped and the number that proves it) and **Live defect register**
+(what is broken now, with the command that shows it).
 
 Every commit message names the item id (`P1.2`, `P3.1`). A commit whose message does not carry
 the measurement that proves it is not finished.
@@ -45,8 +49,39 @@ item in P2 costs double until this lands.
 | P1.3 | GPU adapter: `match.cu` supplies a CSR-slice strider and calls `join_core`. Its own DFS is deleted in the same commit. | `hg_gpu_tests` 97/97 + `gpu_differential_tests` 30/30; 45317 states / 45316 events unchanged; device timing neutral (median 46.8 vs 48.5 ms, spread ~10%) | **DONE** |
 | P1.4 | Delta matching (`find_delta_matches`) folded into the same body — it is the same join anchored at a produced edge. | Delivered by P1.2: `scan_pattern_from_edge` IS `hgcommon::join_seed`. Rate unchanged across the extraction — 2b624c8 gave 5,2,3,5,2 failing runs of 204, 59b3cd8 gave 4,1,6,4,1, all forwarding-attributed. The DEVICE has no delta matching at all (full scan per state per rule); that is a missing feature, not a duplicated body. | **DONE** |
 
+| P1.5 | One causal attribution mechanism, not two. The raw-edge rendezvous in `rewriter.cpp` and the quotient reconstruction both compute the causal graph; `configure_identity_and_quotient` picks between them by event-identity mode. | **BLOCKED on four measured gaps — see below. Do NOT delete the rendezvous.** | **BLOCKED** |
+
 **Done-line for P1:** one join implementation in the tree. `grep -c "expand_match\|DFS"` finds
-one body, not two.
+one body, not two. **REACHED for the join** (P1.1–P1.4). P1.5 is a different rule (causal
+attribution) and is blocked.
+
+### P1.5 — why it is blocked, measured not argued
+
+Setting `qc = true` in `configure_identity_and_quotient`, so the reconstruction serves every
+mode and the rendezvous never runs, builds clean and gives **193/198**. The five failures are
+the work list, each with its reproducer:
+
+1. **CRASH on an emptying rule** under the non-Automatic identity modes. FIXED in `3b724c9`
+   (two hash functions disagreed on the empty state; one returned 0, the ConcurrentMap EMPTY
+   sentinel). `Unified_CanonicalHash.EmptyingRuleEvolvesWithoutError` now crosses all four
+   identity modes and both exploration strategies.
+2. **ONLINE TR IS NOT EXACT over the reconstructed relation.**
+   `CausalTrExactnessTest.OnlineTrMatchesOfflineTr`: wolfram/s4 gives online TR **68 edges**
+   against offline TR **48** of a full relation of **76**. This is the live blocker and it
+   invalidates P3.6 — see there.
+3. **POSITIONAL identity.** `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`:
+   87 events against full capture's 86. Positional reads ranks from each raw state's own
+   canonical labelling; the reconstruction does not materialise raw presentations.
+4. **CROSS-THREAD DETERMINISM.** `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`
+   fails once the reconstruction covers the whole corpus rather than the Automatic slice.
+   Note `quotient_determinism_rate_probe` measures 0/650 on the CURRENT routing, so widening
+   the routing widens the exposure.
+
+(`GoldenMatrix.EveryIdentityCellMatchesItsCachedExpectation` also fails, downstream of 2–4.)
+
+Gate for P1.5 when the four close: `tools/quotient_reconstruction_observables_probe` (exit code
+is the disagreement count; **already 0 over 80 configurations** — 4 identity modes x 10
+workloads x 2 thread counts, five observables each) plus those five tests.
 
 ---
 
@@ -74,12 +109,12 @@ and the two devices agree on it.
 
 | id | what | gate | status |
 |---|---|---|---|
-| P3.1 | #33 stage 2: orbit-keyed producer-set rendezvous for quotient causal attribution. Stage 1 (growth determinism) landed. | `quotient_determinism_rate_probe` 0 mismatches over 100 reps | |
+| P3.1 | #33 stage 2: orbit-keyed producer-set rendezvous for quotient causal attribution. Stage 1 (growth determinism) landed. | **NOT REPRODUCIBLE at HEAD**: `quotient_determinism_rate_probe` 0/200 on WPP, and 0/450 across WPP+mixed1+mixed2 with `--load 6`; total 0/650, each sweep threads {1,2,8} x seeds {fixed, random}. Left open: the original firing was 1 in ~90, so 650 clean runs bounds the rate below roughly 0.5% without establishing absence. Re-run after any change to quotient attribution. | **UNREPRODUCIBLE** |
 | P3.2 | #65: determinism gate fails ~1/30. Races excluded by TSAN; the ordering class is open. Minimise to a failing case first. | 6000-run sweep, 0 failures | |
 | P3.3 | #32: sweep the FFI and GPU paths for the six defect classes the engine audit found. | each class either absent or fixed, listed in the commit | |
 | P3.4 | **GPU ignores the sampling caps.** `MaxStatesPerStep` / `MaxSuccessorStatesPerParent` are applied to the CPU engine (`hypergraph_ffi.cpp:425-426`) and have no GPU equivalent in `gpu/include/hg_gpu/evolve.hpp`, with no warning on the GPU path — so the same call returns a different state set per device. Either implement on device or emit `OptionSkipped`. | a capped run agrees CPU vs GPU, or warns | **DONE** `warns`, see below |
 | P3.5 | **A dropped frontier state records no error.** `gpu/src/evolve.cu:183` is `pos = atomicAdd(out_count,1); if (pos < out_cap) out_ids[pos] = sid;` — past capacity the state is discarded silently. `kFrontierCapFull` exists and drives grow-and-retry at `:656`, but is not recorded at the drop site. | overflowing the frontier warns and returns partial, per the overflow contract | **DONE** `28c5cc2` |
-| P3.6 | **TR is force-disabled under quotient** (`parallel_evolution.cpp:1300`). The blocker the guard cites — slot tie-break not canonical — was closed in `d37fcc6` (slots now rank by Aut orbit). Lifting it needs its own determinism evidence, not the stale citation. | TR runs under quotient and the kept pair set is schedule-independent over repeat runs | |
+| P3.6 | ~~**TR is force-disabled under quotient**; the blocker it cites was closed in `d37fcc6`.~~ **PREMISE REFUTED — DO NOT ACTION.** The online TR is NOT exact over the reconstructed relation: with the reconstruction serving every mode, `CausalTrExactnessTest.OnlineTrMatchesOfflineTr` gives online 68 edges vs offline 48 of a full 76. The guard is protecting users from a wrong reduced causal graph. Same defect as P1.5 gap 2. | make the online TR exact over the reconstructed relation FIRST (reproducer: that test with `qc` forced true in `configure_identity_and_quotient`), THEN lift the guard | **BLOCKED — premise false** |
 
 ---
 
@@ -106,6 +141,8 @@ Strict order: each unblocks the next.
 | P5.2 | Dead code from the audit: `EdgeCausalInfo` (`hypergraph/include/hypergraph/types.hpp:490`) is referenced by nothing and is listed in CODEMAP as if it exists. | Deleted; CODEMAP no longer lists it. The causal rendezvous it described is `CausalGraph`'s `get_or_create_edge_producers`/`_consumers`, keyed by `CanonicalEdgeKey`. | **DONE** |
 | P5.3 | Fold the three untracked planning docs (`V1_ROADMAP` 163, `V1_EXECUTION` 249, `V1_SCOPING_REGISTER` 753) — one authority, not three. **Needs Richard's go: they are untracked, so deletion is irreversible.** | one planning doc remains | |
 | P5.4 | Regenerate `docs/CODEMAP.md` from `tools/dev/source_map.py` instead of maintaining it by hand, or delete it. It has already drifted. | CODEMAP is generated, or gone | |
+| P5.7 | **One CUDA error check, not seventeen.** Eight file-local copies in `.cu` plus nine private statics in device containers, byte-identical apart from a hand-written module name. | `HG_CUDA_CHECK` in `gpu/include/hg_gpu/cuda_check.hpp`; 165 call sites; `hg_gpu_tests` 97/97, `gpu_differential_tests` 30/30, error path ground-truthed with a deliberate failing `cudaMalloc` | **DONE** `498185a` |
+| P5.8 | **One rule for ConcurrentMap keys built from ids.** Seven maps packed ids raw and collided with EMPTY when an id was 0; the causal nudge additionally ALIASED pair (0,0) with (0,1) and undercounted. | `hypergraph::id_key(a[, b])`, offset-by-one and injective, at every site; `all_tests` 229/229 | **DONE** `3b724c9` |
 | P5.5 | `IR_VERIFICATION_NOTES.md` is **tracked** and states the CPU `HashStrategy` enum "still exposes" WL/UT options — they do not exist. Untrack it; move the IR-vs-WL correctness argument to `reference/CANONICALIZATION.md`. | no tracked doc states a non-existent option | |
 | P5.6 | The option list is duplicated in three places — `HypergraphRewriting.wl`, `hypergraph_ffi.cpp`'s parser, `HGEvolve.md`. Generate the reference from one definition. | one option definition, reference generated | |
 
@@ -145,6 +182,73 @@ Strict order: each unblocks the next.
 
 - paclet-golden CI secret (`WOLFRAMSCRIPT_ENTITLEMENTID`).
 - `tools/install_hooks.sh` on the laptop clone.
+
+---
+
+---
+
+# Landed ledger (append-only; newest block last)
+
+Each row is a commit whose message carries the full evidence. This table is the index, not the
+record — `git show <hash>` is the record.
+
+## 2026-08-02
+
+| commit | what | the number that proves it |
+|---|---|---|
+| `2b624c8` | Restored the grid sweep `3d26343` over-deleted, into `bench_gpu_evolve` mode 2 | Occupancy-bound, not contention-bound: 7 steps, grid 32→3072 gives 338→61 ms, monotone, plateau from ~8x SM. First version reported a FLAT curve — the grid caches in a function-local static, so every in-process row ran at the warmup's grid |
+| `9263712` | **P1.2** host matcher on `hgcommon/join_core.hpp`; its DFS and 3 copies of the completion block deleted; `execute_expand_task`'s 4th copy of the next-position rule replaced | `all_tests` 229/229. +0.34%/+0.26%/+0.26% instructions, D1 flat. The adapter itself is +3,428 instr (+0.006%); the rest is a force-inline that costs +0.33% on the unmodified baseline too |
+| `59b3cd8` | **P1.3** device matcher on the shared join; `PartialMatch` and its test deleted (−521 lines) | `hg_gpu_tests` 97/97, `gpu_differential_tests` 30/30, 45317 states / 45316 events unchanged, timing neutral (46.8 vs 48.5 ms) |
+| `01199bf` | The completeness gate's header named EAGER as the shipping default; `batched_matching_{true}` is | eager arm 2/204, batched arm 0/51 |
+| `a99b59c` | **P1.5 step 1**: crossed the S3 gate with event identity — the axis P1.5 turns on | 0 disagreements over 80 configurations (4 identity modes x 10 workloads x 2 thread counts). The instrument was wrong first and its own data caught it: 66 disagreements, ALL in the one column where the reconstruction already ships |
+| `bccc5f9` | Emptying-rule test crossed with all four identity modes | green on all four |
+| `9a23521` | **P5.2** deleted `EdgeCausalInfo`; CODEMAP listed a type nothing uses | `all_tests` 229/229 |
+| `12dedd7` | The source audit counted 186 duplicate names and **printed one** | now prints the 58 shipped ones; first entry led to `498185a` |
+| `498185a` | **P5.7** one CUDA error check, not seventeen | 165 call sites; 97/97 + 30/30; throw path ground-truthed with a deliberate failing `cudaMalloc` |
+| `9d1a96a` | The source map dropped **every call made from a template body** (dependent `OVERLOADED_DECL_REF`) | 159 dependent calls resolved; false "unreferenced in shipped code" 1176 → 1085. Caught because the audit called `join_dfs`/`join_seed` test-only one commit after both engines were wired to them |
+| `3b724c9` | **Quotient exploration threw on any rule that empties the state** — reachable through the public API | `compute_and_cache_state_orbits` started an empty state at hash 0 while its sibling used `EMPTY_STATE_CANONICAL_HASH`; 0 is the ConcurrentMap EMPTY sentinel and that hash keys every quotient map. Also **P5.8** `id_key`. `all_tests` 229/229 |
+| `114c903` | **`was_inserted` came from comparing values, not from the exchange** — ConcurrentMap told two callers they inserted one key | fuzz 0/400, was 2/150 and 5/300. NOT a split rendezvous: 720 instrumented runs gave 2 double-claims and ZERO with distinct winning values |
+
+### What `114c903` says about the verification, and what was done about it
+
+`concurrent_map_double_growth_2t` offers 100 from W1 and 200 from W2 — always DISTINCT — so
+"the stored value equals mine" and "my exchange won" agree in every execution it can enumerate.
+It passed **exhaustively at 130,897 executions while the defect shipped**. A harness that cannot
+separate a property from its wrong implementation is not evidence.
+
+`verification/genmc/concurrent_map_repeated_offer.cpp` now holds that property and is
+**calibrated**: restore the comparison and it reports the safety violation after 1,452
+executions; with the fix it exhausts clean at 3,755. Separate harness because folding the
+repeated offer into the double-growth one did not finish an exhaustive run in 560s, and an
+enumeration that cannot finish proves nothing. `_2t` is unchanged and still exhausts at 130,897.
+
+**The rule this establishes:** a GenMC harness in which the correct rule and the plausible wrong
+rule agree on every input is not a check. When adding one, state which wrong implementation it
+would catch, and calibrate by breaking the property.
+
+---
+
+# Live defect register
+
+Open, reproducible, with the command. Anything here that is closed moves to the ledger.
+
+| what | reproducer | rate / size |
+|---|---|---|
+| **Online TR is not exact over the reconstructed relation** | `CausalTrExactnessTest.OnlineTrMatchesOfflineTr` with `qc = true` forced in `configure_identity_and_quotient` | wolfram/s4: online 68 edges, offline 48, full 76. Blocks P1.5 and P3.6 |
+| **Positional identity cannot run through the reconstruction** | `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`, same forcing | 87 events vs 86 |
+| **Cross-thread causal determinism breaks when the reconstruction covers the whole corpus** | `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`, same forcing | fails; note the probe is 0/650 on the CURRENT routing |
+| **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | 1–6 of 204 runs, always `fwd=1 delta=0`, on the non-default path. Batched arm asserts 0 and holds. Unchanged across the join extraction (2b624c8: 5,2,3,5,2; 59b3cd8: 4,1,6,4,1) |
+| **`tools/` is 66 files with 57 built by nothing** | `ls tools/*.cpp tools/*.cu` against the CMake list | P5.1, 10,365 lines, `ir_incremental_probe.cpp` already broken |
+
+Each row above is also a task in the session task list, so the two cannot drift:
+"Online TR is not exact over the reconstructed causal relation",
+"Positional event identity cannot run through the quotient reconstruction",
+"Cross-thread causal determinism breaks when the reconstruction covers the whole corpus",
+"Forwarding loses matches under EAGER submission, 1-6 of 204 runs",
+"P5.1 tools/ triage: 57 of 66 files are built by nothing".
+
+The task list is per-session and does not survive a fresh clone; THIS FILE does. When they
+disagree, this file is right and the list is rebuilt from it.
 
 ---
 
