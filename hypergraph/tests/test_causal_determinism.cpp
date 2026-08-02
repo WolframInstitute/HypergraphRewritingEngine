@@ -60,9 +60,18 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     // causal graph here instead would fingerprint an empty set and pass vacuously.
     std::vector<uint64_t> ce;
     if (g.quotient_reconstruction()) {
-        g.for_each_reconstructed_causal(/*reduced=*/true, [&](uint64_t p, uint64_t c) {
-            ce.push_back(fnv(fnv(0, p), c));
-        });
+        // Endpoints keyed on the SCHEDULE-STABLE content triple, not the run identity.
+        //
+        // hypergraph.hpp says it directly: a run-identity signature's slot components are
+        // labels relative to the class frame that run pinned, and on a symmetric class two
+        // runs legitimately pin different members of the labelling coset. Fingerprinting the
+        // relation under it compares labels and calls a structural identity a difference.
+        // Measured: keyed on the run identity this failed 2 of 20 runs on mixed1, always the
+        // causal fingerprint alone while states, events and branchial held.
+        g.for_each_reconstructed_causal_as(
+            /*reduced=*/true,
+            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint64_t p, uint64_t c) { ce.push_back(fnv(fnv(0, p), c)); });
     } else {
         for (const auto& c : g.causal_graph().get_causal_edges()) {
             if (c.producer == hgraph::INVALID_ID || c.consumer == hgraph::INVALID_ID) continue;

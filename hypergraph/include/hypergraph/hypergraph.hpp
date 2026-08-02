@@ -917,17 +917,42 @@ public:
     // either view is available in any order at no extra cost.
     template <typename F>
     void for_each_reconstructed_causal(bool reduced, F&& f) const {
-        auto sig = [&](uint32_t e) -> uint64_t { return event_pair_signature(e); };
+        for_each_reconstructed_causal_as(
+            reduced, [&](uint32_t e) { return event_pair_signature(e); }, f);
+    }
+
+    // The same walk under a CALLER-CHOSEN endpoint identity.
+    //
+    // Which identity an endpoint is reported under is a real choice, not a detail. The run
+    // identity (event_pair_signature, the default above) is what full capture keys its pairs on,
+    // so it is what a set-comparison against full capture needs -- but its slot components are
+    // labels relative to the class frame THIS run pinned, and on a symmetric class two runs
+    // legitimately pin different members of the labelling coset. Fingerprinting the relation
+    // under it therefore compares labels, not the relation, and reports a difference where the
+    // structure is identical. For a cross-run or cross-thread comparison the endpoint identity
+    // must be the schedule-stable content triple (for_each_reconstructed_raw_triple's value,
+    // reachable per event through qc_event_sig_).
+    //
+    // One walk, two identities: a second copy of the traversal is how the two would drift.
+    template <typename Id, typename F>
+    void for_each_reconstructed_causal_as(bool reduced, Id&& id, F&& f) const {
         if (reduced) {
             qc_preds_.for_each([&](uint64_t k, LockFreeList<uint32_t>* lst) {
                 const uint32_t c = static_cast<uint32_t>(k - 1);
-                lst->for_each([&](uint32_t p) { f(sig(p), sig(c)); });
+                lst->for_each([&](uint32_t p) { f(id(p), id(c)); });
             });
         } else {
             qc_causal_pairs_.for_each([&](uint64_t k, bool) {
-                f(sig(static_cast<uint32_t>(k >> 32)), sig(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
+                f(id(static_cast<uint32_t>(k >> 32)), id(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
             });
         }
+    }
+
+    // The schedule-stable content triple of ONE reconstructed event: hash(input class, output
+    // class, rule). 0 when the event has no recorded triple.
+    uint64_t reconstructed_raw_triple(uint32_t e) const {
+        const uint64_t* s = qc_event_sig_.get(e);
+        return s ? *s : 0;
     }
 
     // Visit the reconstructed branchial relation as pairs of isomorphism-invariant event
