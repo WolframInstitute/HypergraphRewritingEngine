@@ -354,9 +354,35 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
 #ifdef HG_GPU_BACKEND
         // GPU binary: route the parsed job to hg_gpu::evolve and marshal its
-        // result into the same WXF output. The blackhole analysis sections below
-        // are CPU-only and are not produced by the GPU backend.
+        // result into the same WXF output.
         {
+            // The per-step caps have no device implementation: EvolveInput carries no
+            // max_states_per_step / max_successor_states_per_parent, so a capped run on the
+            // GPU returns the UNCAPPED state set while the same call on the CPU returns a
+            // capped one. Reported rather than applied -- silently returning a different
+            // answer per device is the divergence class the differential suite exists to
+            // catch, and a cap the caller asked for and did not get is exactly that.
+            if (max_states_per_step > 0) {
+                ffi_warnings.push_back(
+                    {"OptionSkipped", 1,
+                     "'MaxStatesPerStep' has no GPU implementation and was not applied; "
+                     "the returned state set is uncapped. Use TargetDevice -> \"CPU\" to "
+                     "apply it."});
+            }
+            if (max_successor_states_per_parent > 0) {
+                ffi_warnings.push_back(
+                    {"OptionSkipped", 1,
+                     "'MaxSuccessorStatesPerParent' has no GPU implementation and was not "
+                     "applied; the returned state set is uncapped. Use TargetDevice -> "
+                     "\"CPU\" to apply it."});
+            }
+            if (uniform_random && matches_per_step > 0) {
+                ffi_warnings.push_back(
+                    {"OptionSkipped", 1,
+                     "'MatchesPerStep' maps to the MaxStatesPerStep cap, which has no GPU "
+                     "implementation and was not applied."});
+            }
+
             GpuJob job{
                 parsed_rules_raw,
                 initial_states_raw,
