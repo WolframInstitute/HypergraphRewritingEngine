@@ -96,11 +96,19 @@ int main(){
         auto want   = offline_tr(raw);
         auto got    = run(w, true, 1, /*automatic_identity=*/true);
         auto replay = replay_online_tr(order);
-        const bool ok = (got.size() == want.size());
+        // Two acceptable outcomes, and one failure. The reduction is either EXACT, or it is
+        // DECLINED -- guard_quotient_transitive_reduction refuses to reduce a relation it
+        // cannot reduce minimally and returns the un-reduced graph, which is correct and is
+        // what the caller is warned about. The failure is a graph that was reduced and is not
+        // minimal, because that one is silently wrong.
+        const bool exact    = (got.size() == want.size());
+        const bool declined = (got.size() == raw.size()) && (raw.size() != want.size());
+        const bool ok = exact || declined;
         auto_ok &= ok;
         printf("%-9s raw=%4zu  engineTR=%4zu  minimalTR=%4zu  replayOnlineTR=%4zu  %s\n",
                w.name, raw.size(), got.size(), want.size(), replay.size(),
-               ok ? "EXACT" : "*** NOT MINIMAL ***");
+               exact ? "EXACT" : declined ? "DECLINED (un-reduced, per the guard)"
+                                          : "*** REDUCED BUT NOT MINIMAL ***");
         if (!ok) {
             // The replay models "online TR over the emission order, reachability across KEPT
             // edges". It is a MODEL, and it is only evidence about the engine when it agrees
@@ -111,8 +119,9 @@ int main(){
                    "the engine, so it identifies no cause here\n", replay.size(), got.size());
         }
     }
-    printf("%s\n\n", auto_ok ? "Automatic arm EXACT"
-                              : "*** Automatic arm NOT MINIMAL: reconstruction + TR is wrong ***");
+    printf("%s\n\n", auto_ok
+        ? "Automatic arm OK: every case is exact or declines to reduce"
+        : "*** Automatic arm returned a REDUCED, NON-MINIMAL graph: silently wrong ***");
     allok &= auto_ok;
 
     printf("== default identity (full-capture rendezvous) ==\n");

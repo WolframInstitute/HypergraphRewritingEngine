@@ -1313,11 +1313,24 @@ void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
     // producers the per-edge wiring is run-relative even though the emitted multiset is not.
     // Replacing this guard with reconstruction-served TR needs repeat-run evidence that the
     // TR-kept PAIR SET is schedule-independent. See docs/VERIFICATION_PLAN.md.
-    if (explore_from_canonical_states_only_ &&
-        hg_ && hg_->causal_graph().transitive_reduction_enabled()) {
+    //
+    // THE CONDITION IS WHICH MECHANISM SERVES THE CAUSAL GRAPH, not which exploration strategy
+    // runs. Testing explore_from_canonical_states_only_ alone let Automatic identity through:
+    // configure_identity_and_quotient turns the reconstruction on for EVENT_SIG_AUTOMATIC under
+    // FULL-CAPTURE exploration as well, so that combination ran the reduction over the
+    // reconstructed relation and returned a non-minimal graph. Measured by
+    // tools/causal_tr_exactness_probe at one thread: wolfram5 kept 654 where the minimal
+    // reduction is 512, chain6 43 against 30, tri4 50 against 37. The rendezvous arm is exact
+    // at 1, 2, 4, 8 and 16 threads, so this is the reconstruction's reduction and nothing else.
+    if (hg_ && hg_->quotient_causal() && hg_->causal_graph().transitive_reduction_enabled()) {
         hg_->causal_graph().set_transitive_reduction(false);
-        DEBUG_LOG("WARN: transitive reduction is disabled under quotient exploration; returning "
-                  "the correct un-reduced causal graph. Use full-capture for the reduced graph.");
+        // A warning, not a DEBUG_LOG: returning a different graph than the caller asked for
+        // without saying so is how the non-minimal reduction went unnoticed.
+        warnings_.push_back(
+            "TransitiveReduction disabled: the causal graph is served by the quotient "
+            "reconstruction (quotient exploration, or Automatic event identity), whose online "
+            "reduction is not minimal. The correct UN-REDUCED causal graph is returned instead. "
+            "Use full capture with a non-Automatic event identity for the reduced graph.");
     }
 }
 
