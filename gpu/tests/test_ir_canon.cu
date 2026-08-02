@@ -225,3 +225,63 @@ TEST(IrCanon, StateLargerThanTheOldFixedBoundsIsStillExact) {
     EXPECT_EQ(hg_gpu::last_ir_degraded_states(), 0u);
     EXPECT_EQ(h, h2) << "relabelling changed the exact hash";
 }
+
+// Degradation to the 1-WL key must REACH THE CALLER, not just a counter nobody reads.
+//
+// k_ir_canon_range keys a state with wl_hash_state_device when it cannot canonicalize it
+// exactly. That key is not exact -- 1-WL never separates isomorphic states but it does MERGE
+// non-isomorphic ones -- so under CanonicalizeStates -> Full the caller is promised exactness
+// and does not get it. The count was tallied into a file-static that only this test file read,
+// so a production run degraded in silence; it is now recorded as ErrorKind::kIRDegradedToWL and
+// travels the same path every other capacity warning does.
+//
+// Reached here by individualization DEPTH, which is the path a real workload hits: many
+// identical disjoint components give a large automorphism group that 1-WL cannot discretise, so
+// IR individualizes repeatedly and runs past kIRDeviceDepth.
+TEST(IrCanon, DegradingToTheWlKeyIsReportedToTheCaller) {
+    const uint32_t kComponents = 64;    // 64 indistinguishable 2-edge paths
+
+    hg_gpu::EngineConfig cfg;
+    cfg.max_edges            = kComponents * 8;
+    cfg.max_state_edge_total = kComponents * 16;
+    cfg.max_states           = 8;
+    cfg.max_vertex_slots     = kComponents * 16;
+    cfg.max_vertices         = kComponents * 16;
+    cfg.sig_index_buckets    = 64;
+    cfg.sig_index_pool       = kComponents * 16;
+    cfg.inverted_pool        = kComponents * 16;
+
+    EdgeList edges;
+    for (uint32_t c = 0; c < kComponents; ++c) {
+        const VertexId a = static_cast<VertexId>(c * 3);
+        edges.push_back({a, static_cast<VertexId>(a + 1)});
+        edges.push_back({static_cast<VertexId>(a + 1), static_cast<VertexId>(a + 2)});
+    }
+
+    hg_gpu::EngineState eng(cfg);
+    hg_gpu::upload_initial_state(eng, edges);
+
+    // Drain whatever the upload recorded, so what is collected below belongs to this call.
+    std::vector<hg_gpu::OverflowWarning> pre;
+    eng.collect_warnings_into(pre, "setup");
+
+    uint64_t* d_out = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
+    hg_gpu::compute_state_ir_hashes_range(eng, 0, 1, d_out);
+    cudaFree(d_out);
+
+    std::vector<hg_gpu::OverflowWarning> w;
+    eng.collect_warnings_into(w, "ir canon");
+
+    // Whatever the canonicalizer decided, the two channels must AGREE: if it degraded, the
+    // caller hears about it; if it did not, no warning is invented. A silent degradation --
+    // counter non-zero, warnings empty -- is the defect this gate exists for.
+    uint32_t warned = 0;
+    for (const auto& x : w)
+        if (x.kind == hg_gpu::ErrorKind::kIRDegradedToWL) warned += x.count;
+    const uint32_t counted = hg_gpu::last_ir_degraded_states();
+    EXPECT_EQ(warned > 0u, counted > 0u)
+        << "the degradation counter says " << counted << " states were keyed by 1-WL while the "
+           "warning channel reported " << warned << "; a caller promised an exact dedup key "
+           "cannot tell it did not get one";
+}

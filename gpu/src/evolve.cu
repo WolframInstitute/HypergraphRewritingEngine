@@ -667,6 +667,11 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             // depth is a constant the slot is shaped for, not a config field, so no amount of
             // growing helps and retrying would just burn six doublings.
             return false;
+        case ErrorKind::kIRDegradedToWL:
+            // The state was keyed by 1-WL because it did not fit the slot or wanted more
+            // individualization depth. Both are properties of the slot shape rather than of a
+            // config field, so this reports rather than retries.
+            return false;
         case ErrorKind::kScratchOverflow:
             // A fixed per-thread bound (the TR closure's ancestor/descendant scratch). Not
             // config-controlled, so it cannot be retried; the caller accepts the truncation.

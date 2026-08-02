@@ -145,8 +145,10 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
     // A null pool means the host could not afford even one slot for this batch's state size.
     // Every state then keeps the 1-WL hash, and the host has already counted them.
     if (pool == nullptr) {
-        for (uint32_t i = lo + tid; i < hi; i += stride)
+        for (uint32_t i = lo + tid; i < hi; i += stride) {
             out[i - lo] = wl_hash_state_device(ds, i);
+            ds.errors.record(ErrorKind::kIRDegradedToWL);
+        }
         return;
     }
     uint32_t* slot = pool + tid * slot_words;
@@ -167,6 +169,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
             // signal, and it is a report of a defect rather than of a tuning parameter.
             out[i - lo] = wl_hash_state_device(ds, sid);
             atomicAdd(degraded, 1u);
+            ds.errors.record(ErrorKind::kIRDegradedToWL);
             continue;
         }
         if (n_edges == 0) { out[i - lo] = 0; continue; }
@@ -184,6 +187,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
             // above: the fallback key can merge non-isomorphic states.
             out[i - lo] = wl_hash_state_device(ds, sid);
             atomicAdd(degraded, 1u);
+            ds.errors.record(ErrorKind::kIRDegradedToWL);
         } else {
             out[i - lo] = r.hash;
         }

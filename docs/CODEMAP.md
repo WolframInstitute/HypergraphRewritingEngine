@@ -28,7 +28,7 @@ reference/       Validation oracle (brute-force ground truth) + golden corpus + 
 tools/           Standalone research / validation / profiling probes
 testing/         gtest aggregation -> all_tests
 benchmarks/ + benchmarking/   Per-area benchmarks + the framework lib
-visualisation/   Viz-event interface + blackhole analysis library (renderer lives in ../hypergraph_viz)
+visualisation/   Viz-event interface only (renderer and analyses live in ../hypergraph_viz)
 ```
 
 The natural reading path for a new developer: `common/core.hpp` ->
@@ -104,7 +104,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - **quotient raw causal reconstruction** (`set_quotient_reconstruction`, default OFF): `compute_and_cache_state_orbits` (orbits+slots, piggybacked on the dedup IR pass), `qc_capture_expansion`/`qc_frame_slots` (the representative's full match list in slots, aligned into one pinned reference frame per canonical class), `qc_add_instance`/`qc_apply` (per-instance replay minting raw event ids), `qc_record_causal`/`qc_reachable` (causal base + in-reduction tag), `for_each_reconstructed_causal`, `num_reconstructed_*`, `observable_num_*`
   - the older aggregate producer-set DP (`qc_dsup_`, `qc_reach`, `qc_emit`) is still the DEFAULT quotient causal path; the per-instance reconstruction above is verified against full capture but not yet wired as the default (backlog: S4)
 - **`parallel_evolution.hpp`** -- the dataflow parallel multiway evolution engine.
-  - `ParallelEvolutionEngine` (`evolve` x2, `evolve_uniform_random`, `add_rule`, `set_*` config; private task methods `execute_*_task`/`submit_*_task`; forwarding `store_match_for_state`/`register_child_with_parent`/`push_match_to_children`/`forward_existing_parent_matches[_eager]`; pruning/RNG/quotient `should_explore`/`sampling_rng`/`propagate_explore_depth`)
+  - `ParallelEvolutionEngine` (`evolve` x2, `add_rule`, `set_*` config; private task methods `execute_*_task`/`submit_*_task`; forwarding `store_match_for_state`/`register_child_with_parent`/`push_match_to_children`/`forward_existing_parent_matches[_eager]`; pruning/RNG/quotient `should_explore`/`sampling_rng`/`propagate_explore_depth`)
   - `last_error()`/`raise_worker_error()` -- `wait_for_completion()` returns the moment a worker latches an error, so every run-completion path raises anything but `Aborted` rather than returning a truncated graph as a complete one
   - `try_claim_budget`/`release_successor_slot` -- pruning budgets are claimed by CAS (a fetch-add-then-rollback publishes a count above the limit, which the readers prune on), and every path that produces no child returns both slots
   - `guard_quotient_transitive_reduction()` -- forces TR off under quotient, because causal edges are emitted between canonical event ids whose assignment is schedule-dependent
@@ -173,7 +173,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `paclet_source/` -- FFI + standalone binary + GPU marshaling
 
 - **`hg_core.hpp`** -- `HostBridge` (progress callback; abort = process kill), `run_rewriting_core()` declaration
-- **`hypergraph_ffi.cpp`** -- the marshaling TU: `run_rewriting_core` (WXF<->engine, parses all options, routes CPU or GPU, serializes States/Events/Causal/Branchial/analysis), `ffi_helpers::read_rules_association`, plus LibraryLink DLL exports `performRewriting`/`performHausdorffAnalysis`/`performBranchAlignment[Batch]` + `WolframLibrary_initialize/uninitialize`. Builds the `GraphData` block (for the `*Graph` properties) via the shared `hgmarshal::build_graph_data`, adapting the engine through a `CpuGraphSource`
+- **`hypergraph_ffi.cpp`** -- the marshaling TU: `run_rewriting_core` (WXF<->engine, parses all options, routes CPU or GPU, serializes States/Events/Causal/Branchial), `ffi_helpers::read_rules_association`, plus the LibraryLink DLL export `performRewriting` + `WolframLibrary_initialize/uninitialize`. Builds the `GraphData` block (for the `*Graph` properties) via the shared `hgmarshal::build_graph_data`, adapting the engine through a `CpuGraphSource`
 - **`graph_marshal.hpp`** -- the shared `*Graph` marshaller: `hgmarshal::build_graph_data(source, properties, opts)`, templated over a `Source` that exposes the evolved multiway as effective (canonicalization-collapsed) ids + per-vertex tooltips. Both `hypergraph_ffi.cpp` (CPU engine) and `hg_gpu_backend.cpp` (GPU result) drive it, so CPU and GPU emit identical graph structure for every property -- ONE graph-building code path, no divergent copies
 - **`hg_evolve_main.cpp`** -- the `hg_evolve` binary: `run_one_shot`, `run_serve` (stdio worker), `run_serve_socket` (loopback-TCP worker), frame I/O helpers, `main` (flag dispatch, progress->stderr)
 - **`hg_gpu_backend.hpp`/`.cpp`** -- `GpuJob` struct + `run_gpu_evolution` (builds `hg_gpu::EvolveInput`, runs `PersistentEvolver`, regroups the raw GPU result into canonical-class WXF matching the CPU FFI, and builds `GraphData` through the shared `hgmarshal::build_graph_data` via a `GpuGraphSource`); `build_input`
@@ -211,6 +211,8 @@ Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown
 - **`benchmarks/*.cpp`** -> the `benchmark_suite` exe: `canonicalization_`, `pattern_matching_`, `state_management_`, `event_relationship_`, `evolution_`, `job_system_`, `wxf_`, `wolfram_integration_benchmarks`.
 - **`benchmarking/`** -- the reusable framework: `benchmark_framework.hpp`, `benchmark_main.cpp` (lib `benchmark_framework`), `random_hypergraph_generator.hpp`, `plot_benchmarks.py`.
 
-## `visualisation/` -- viz-event interface + blackhole analyses (renderer split to ../hypergraph_viz)
+## `visualisation/` -- the viz-event interface
 
-Sub-modules: `events/` (viz_event_sink -- the stream the engine emits under BUILD_VISUALIZATION and the external renderer consumes) · `blackhole/` (geodesic tracing / particle detection + WL reference; the paclet FFI compiles these sources directly) · `tools/` (analyze_bhdata) · `tests/` (test_quantum_analysis, builds only when a viz_blackhole target exists). The interactive renderer (app/gal/scene/camera/layout/math/platform/shaders) lives in `../hypergraph_viz`, split 2026-08-01 with filtered history.
+One sub-module: `events/` (viz_event_sink -- the stream the engine emits under
+BUILD_VISUALIZATION and an external renderer consumes). The renderer and the physics
+analyses live in `../hypergraph_viz`, which consumes this engine as a dependency.

@@ -57,13 +57,38 @@ enum class ErrorKind : uint32_t {
     // the host's grow-and-retry treats it as retryable. Collapsing the two made a recoverable
     // capacity failure look like an unfixable kernel limit.
     kIRArenaExhausted    = 23,
-    // The individualization search needed to go deeper than the device attempts. NOT
-    // config-controlled -- the depth is a constant the slot is shaped for -- so growing cannot
-    // help. There is no 1-WL fallback: the state is left un-canonicalized rather than keyed by
-    // a hash that MERGES non-isomorphic states.
+    // The individualization search needed to go deeper than the device attempts, on the
+    // PERSISTENT path. NOT config-controlled -- the depth is a constant the slot is shaped for
+    // -- so growing cannot help, and that path takes no 1-WL fallback: the state is left
+    // un-canonicalized rather than keyed by a hash that MERGES non-isomorphic states.
     kIRDepthExceeded     = 24,
-    kCount
+    // A state was keyed by the 1-WL hash because it did not fit the IR slot, or wanted an
+    // individualization depth the slot is not shaped for (k_ir_canon_range). 1-WL is
+    // isomorphism-invariant in one direction only: it never separates isomorphic states, but it
+    // DOES merge non-isomorphic ones -- tools/ir_vs_wl collides the prism against K3,3 on six
+    // vertices, and the rook's graph against Shrikhande. So under CanonicalizeStates -> Full
+    // this is a state whose dedup key is not exact, and the caller is promised exactness.
+    // Nothing bounds how often an evolution reaches such a state, which is why it is reported
+    // rather than tallied privately.
+    kIRDegradedToWL      = 27,
+    // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
+    // not below it, so kCount must exceed every value above. The values are assigned by hand and
+    // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
+    // kTrPredsNodes (25) and kQcNodes (26) came to sit above an implicit kCount of 25 and could
+    // never be reported at all. Stated explicitly, with the static_assert below as the guard.
+    kCount               = 32
 };
+
+// Every kind must be recordable. A kind at or above kCount is silently dropped by record(),
+// which turns a capacity failure into no signal at all.
+static_assert(static_cast<uint32_t>(ErrorKind::kQcNodes) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kQcNodes is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kIRDegradedToWL) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kIRDegradedToWL is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kPersistentStall is unrecordable");
 
 inline const char* error_kind_name(ErrorKind k) {
     switch (k) {
@@ -87,6 +112,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (not config-controlled)";
+        case ErrorKind::kIRDegradedToWL:      return "state keyed by 1-WL, not exact IR";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         default:                              return "unknown";
