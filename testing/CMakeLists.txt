@@ -146,6 +146,7 @@ create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
     # Hypergraph tests
+    ../hypergraph/tests/test_slot_core.cpp
     ../hypergraph/tests/test_concurrent_map.cpp
     ../hypergraph/tests/test_concurrent_map_fuzz.cpp
     ../hypergraph/tests/test_quotient_completeness.cpp

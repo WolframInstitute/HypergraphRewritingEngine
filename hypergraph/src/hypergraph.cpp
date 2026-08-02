@@ -3,6 +3,7 @@
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
+#include "hgcommon/slot_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
 
@@ -807,20 +808,16 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
             arr_class[i] = klass[i];
             if (orbit[i] + 1 > num_orbits) num_orbits = orbit[i] + 1;
         }
-        // Slot = rank under (ORBIT, EdgeId). Orbit, not content class: an automorphism can
-        // permute edges between content classes, so a class is defined only up to the Aut
-        // action and two raw states of one canonical class can disagree about which class an
-        // edge belongs to. Orbits are Aut-invariant, so the block structure is the same in
-        // every instance. Order within an orbit is arbitrary (ids ascend, so a stable sort
-        // fixes it), and that is harmless: the match set is closed under Aut, so permuting
-        // within an orbit maps matches to matches and leaves the reconstructed causal multiset
-        // unchanged -- which is exactly the property class-rank lacks.
-        SVec<uint32_t> order;
-        order.reserve(n);
-        for (uint32_t i = 0; i < n; ++i) order.push_back(i);
-        std::stable_sort(order.begin(), order.end(),
-                         [&](uint32_t a, uint32_t b) { return arr_orbit[a] < arr_orbit[b]; });
-        for (uint32_t r = 0; r < n; ++r) arr_slot[order[r]] = r;
+        // Slot = rank under (ORBIT, EdgeId). The rule and its rationale live in
+        // hgcommon/slot_core.hpp because the device records its expansion in the same
+        // coordinates: two readings of this that drift by one tie-break produce replayed
+        // events that are wrong and invisible. Bulk form here; the device reads one edge at a
+        // time through slot_rank, and the two are asserted equal.
+        {
+            SVec<uint32_t> counts;
+            counts.resize(num_orbits ? num_orbits : 1);
+            hgcommon::slots_from_orbits(arr_orbit, n, arr_slot, counts.data(), num_orbits);
+        }
     }
     uint32_t* arr_osize = arena_.allocate_array<uint32_t>(num_orbits ? num_orbits : 1);
     for (uint32_t j = 0; j < num_orbits; ++j) arr_osize[j] = 0;

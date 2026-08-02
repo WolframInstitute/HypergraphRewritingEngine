@@ -16,15 +16,10 @@
 // pinned by gpu/tests CanonicalEventCount.ReconstructionGapIsStillOpen (CPU 21 / GPU 23 on the
 // rank frame, CPU 144 / GPU 15 under quotient + mode None).
 //
-// WHAT A SLOT IS. A slot is an edge's rank when a state's edges are ordered by (Aut ORBIT,
-// EdgeId) -- the host's EdgeOrbitTable::slot, same definition, same tie-break. Orbit and not
-// content class: which content class an edge lands in depends on which canonical labelling the
-// IR pass happened to pick, and two labellings differ by an automorphism, so a per-edge class
-// is defined only up to the Aut action. The orbit IS the Aut-closure, so the orbit-block
-// structure of the slots is identical in every raw instance of one canonical state -- which is
-// exactly what lets a match recorded on one instance be replayed against another. Ties inside
-// an orbit break on EdgeId, which is arbitrary and harmless: the match set is closed under Aut,
-// so a within-orbit permutation maps matches to matches and the replayed set is unchanged.
+// WHAT A SLOT IS. Defined once, in hgcommon/slot_core.hpp, and read from there by both engines
+// -- the host fills a whole state at once (slots_from_orbits), this file reads one edge at a
+// time (slot_rank), and the two forms are asserted equal. Nothing about the rule is restated
+// here, because a second statement of it is exactly how the two would drift.
 //
 // ONE CLAIM, NOT TWO. The host keeps qc_expansion_rep_ (which raw state's events define the
 // class's expansion) and qc_frame_ (which raw state's labelling defines the class's slots) as
@@ -36,6 +31,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
 #include "hgcommon/ir_core.hpp"     // ir_isort_u64
+#include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 
 #include <cuda/atomic>
 
@@ -106,18 +102,12 @@ __device__ __forceinline__ uint32_t qe_slot_of(DeviceState ds, StateId sid, Edge
         if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
     }
     if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
-    const uint32_t my_orbit = ds.state_edge_orbit[sl.offset + lo];
-    if (my_orbit == UINT32_MAX) return UINT32_MAX;
+    if (ds.state_edge_orbit[sl.offset + lo] == UINT32_MAX) return UINT32_MAX;
 
-    uint32_t rank = 0;
-    for (uint32_t k = 0; k < sl.count; ++k) {
-        const uint32_t o = ds.state_edge_orbit[sl.offset + k];
-        if (o < my_orbit) { ++rank; continue; }
-        // Equal orbit: ties break on EdgeId, and the slice is ascending, so index order IS
-        // EdgeId order.
-        if (o == my_orbit && k < lo) ++rank;
-    }
-    return rank;
+    // The rule itself is hgcommon's, not this file's: the host records the same coordinates
+    // (hypergraph.cpp, via slots_from_orbits) and two readings that drift by one tie-break
+    // would replay wrong events invisibly.
+    return hgcommon::slot_rank(ds.state_edge_orbit + sl.offset, sl.count, lo);
 }
 
 // Survivor pairs one capture can hold in local scratch. A class with more surviving edges than
