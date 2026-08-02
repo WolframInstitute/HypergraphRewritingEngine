@@ -67,9 +67,5 @@ Do[
   ],
   {p, graphProps}];
 
-(* ---- fallback DLL path ---- *)
-haus = HGHausdorffAnalysis[{{1, 2}, {2, 3}, {3, 4}, {4, 1}, {1, 3}, {2, 4}}];
-check["fallback DLL loaded + ran (performHausdorffAnalysis)", AssociationQ[haus] && Length[haus] >= 3];
-
 Print[If[ok, "\nSMOKE TEST PASSED", "\nSMOKE TEST FAILED"]];
 Exit[If[ok, 0, 1]];

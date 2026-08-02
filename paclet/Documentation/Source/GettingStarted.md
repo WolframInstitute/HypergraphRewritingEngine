@@ -72,16 +72,17 @@ HGEvolve[{{1, 2, 3}, {3, 4, 5}} -> {{1, 2, 3}, {3, 4, 5}, {5, 6, 7}}, {{1, 2, 3}
 
 ## Structured initial conditions
 
-Instead of an explicit edge list, use an initial-condition generator or a named
-condition. Visualize one with `HGToGraph`:
+Instead of an explicit edge list, name a structured initial condition and shape it
+with `HGEvolve`'s options:
 
 ```wl
-HGToGraph[HGGrid[8, 8]]
-HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, HGGrid[4, 4], 2, "NumStates"]
+HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, "Grid", 2, "NumStates",
+         "GridWidth" -> 4, "GridHeight" -> 4]
 ```
 
-See also `HGTorus`, `HGSphere`, `HGCylinder`, `HGMinkowskiSprinkling`, and the other
-generators.
+`"InitialCondition"` selects the family (`"Grid"`, `"Sprinkling"`,
+`"BrillLindquist"`, `"Poisson"`, `"Uniform"`) and `"Topology"` the surface
+(`"Flat"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`).
 
 ## Running on the GPU
 

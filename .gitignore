@@ -22,3 +22,5 @@
 /paclet/Documentation/.english_stage/
 /paclet/Documentation/English/.build_ok
 /paclet/Documentation/English/.doc_manifest.wl
+__pycache__/
+*.pyc

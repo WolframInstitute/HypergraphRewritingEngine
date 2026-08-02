@@ -5,7 +5,7 @@ Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics, causal graph, branchial graph, evolution]
-SeeAlso: [HGToGraph, HGGrid, HGMinkowskiSprinkling, EdgeId]
+SeeAlso: []
 RelatedGuides: [Hypergraph Rewriting Engine]
 ---
 
@@ -18,7 +18,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 ## Details & Options
 
 - The *rules* argument is a rule or list of rules of the form *lhs* `->` *rhs*, e.g. `{{1, 2}, {2, 3}} -> {{2, 1}, {3, 2}, {1, 4}}`. Each side is a list of hyperedges and each hyperedge is a list of vertices. Vertices are variables that bind to (not necessarily distinct) vertices of the state hypergraph; a vertex appearing in *rhs* but not *lhs* is a freshly created vertex.
-- The *initial* argument is a single hypergraph state or a list of states given as numeric vertex labels, e.g. `{{1, 2}, {2, 3}}`. It may also be a `Graph`, a named initial condition (`"Grid"`, `"Sprinkling"`, ...), or an initial-condition generator result (`HGGrid`, `HGTorus`, ...).
+- The *initial* argument is a single hypergraph state or a list of states given as numeric vertex labels, e.g. `{{1, 2}, {2, 3}}`. It may also be a `Graph` or a named initial condition (`"Grid"`, `"Sprinkling"`, ...), shaped by the initial-condition options below.
 - The *steps* argument is an integer number of evolution steps.
 - The engine applies the rules in all possible ways (multiway evolution), optionally deduplicating isomorphic states, and builds the causal and branchial graphs. It runs in a standalone process, so a crash or abort never affects the notebook.
 - The accepted values for *property* include:
@@ -69,8 +69,6 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"DebugFFI"` | `False` | print low-level foreign-function-interface diagnostics |
 
 ### Analysis options
-
-- Each analysis family is gated by a boolean (all `False` by default) and, when enabled, attaches its results to the evolution (see also the dedicated `HGHausdorffAnalysis`, `HGGeodesicPlot`, `HGStateDimensionPlot`, and related reference pages).
 
 - *Dimension* — local Hausdorff-dimension estimation per vertex:
 
@@ -145,7 +143,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 
 ### Initial-condition options
 
-- Instead of an explicit *initial*, an initial condition can be generated in place. The standalone generators (`HGGrid`, `HGMinkowskiSprinkling`, `HGBrillLindquist`, ...) are usually clearer, but the same controls are available as options:
+- Instead of an explicit *initial*, an initial condition can be generated in place by naming it and shaping it with these options:
 
 | Option | Default | |
 |---|---|---|
@@ -238,7 +236,8 @@ An initial condition can be generated instead of passing an explicit edge list. 
 
 ```wl
 rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
-HGEvolve[rules, HGGrid[3, 3], 2, "NumStates", "CanonicalizeStates" -> Full]
+HGEvolve[rules, "Grid", 2, "NumStates", "GridWidth" -> 3, "GridHeight" -> 3,
+         "CanonicalizeStates" -> Full]
 ```
 
 ### Inspecting the raw states

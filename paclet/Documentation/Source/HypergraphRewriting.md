@@ -5,7 +5,7 @@ Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics]
-SeeAlso: [HGEvolve, HGToGraph, HGGrid]
+SeeAlso: [HGEvolve]
 ---
 
 # Hypergraph Rewriting Engine
@@ -14,32 +14,8 @@ A high-performance multiway hypergraph rewriting engine. It applies rewrite rule
 
 ## Functions
 
-### Evolution
-
 - `HGEvolve` — multiway hypergraph rewriting; returns states, events, and the causal/branchial graphs
 
-### Initial conditions
+`HGEvolve` is the paclet's entire public surface. Named initial conditions (grids, tori, spheres, sprinklings) are selected through its own options rather than by separate functions; see the `HGEvolve` page for the list.
 
-- `HGGrid` — a regular grid graph
-- `HGGridWithHoles` — a grid with circular holes
-- `HGCylinder` — a cylindrical topology
-- `HGTorus` — a toroidal topology
-- `HGSphere` — a spherical topology
-- `HGKleinBottle` — a Klein bottle topology
-- `HGMobiusStrip` — a Mobius strip topology
-- `HGMinkowskiSprinkling` — a causal set by Minkowski sprinkling
-- `HGBrillLindquist` — a Brill-Lindquist initial condition
-- `HGPoissonDisk` — a Poisson-disk sampled graph
-- `HGUniformRandom` — a uniformly random point cloud
-- `HGToGraph` — convert an initial-condition result to a Graph
-
-### Geometry and physics analysis
-
-- `HGHausdorffAnalysis` — local Hausdorff dimension per vertex
-- `HGStateDimensionPlot` — a state coloured by local dimension
-- `HGTimestepUnionPlot` — the union graph at a timestep, dimension-coloured
-- `HGDimensionFilmstrip` — a grid of timestep union graphs
-- `HGGeodesicPlot` — geodesic paths over a state graph
-- `HGGeodesicFilmstrip` — geodesic plots per timestep
-- `HGLensingPlot` — gravitational lensing deflection vs impact parameter
-- `HGBranchAlignmentBatch` — curvature-weighted PCA alignment for all states
+Geometry and physics analyses live in the companion `hypergraph_viz` project, which consumes this engine as a dependency.

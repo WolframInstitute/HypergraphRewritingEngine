@@ -89,13 +89,13 @@ list.
 ## Initial-condition generators
 
 Instead of an explicit edge list, the second argument can be a named initial
-condition or a generator result — grids, tori, spheres, Klein bottles, Minkowski
-sprinklings, Brill-Lindquist data, and more (`HGGrid`, `HGCylinder`, `HGTorus`,
-`HGSphere`, `HGMinkowskiSprinkling`, `HGBrillLindquist`, …). For example:
+condition — grids, tori, spheres, Klein bottles, Minkowski sprinklings,
+Brill-Lindquist data — selected by name and shaped by `HGEvolve`'s own options.
+For example:
 
 ```wolfram
-HGEvolve[rules, "Grid", steps]
-HGEvolve[rules, HGGrid[8, 8], steps]
+HGEvolve[rules, "Grid", steps, "GridWidth" -> 8, "GridHeight" -> 8]
+HGEvolve[rules, "Sprinkling", steps, "Topology" -> "Torus"]
 ```
 
 ## Building from source
