@@ -1,14 +1,30 @@
-// Focused GPU evolve timing harness: the deep/narrow regime (small initial state,
-// many steps) where the per-launch barrier floor dominates and CUDA-graph
-// capture of the step chain should help most. Reports median/min wall time over N
-// iterations plus the state/event counts (for a correctness cross-check).
+// GPU evolve timing: the deep/narrow regime (small initial state, many steps), where the work
+// per step is small enough that scheduling overhead, not compute, sets the time.
 //
-// Usage: bench_gpu_evolve [steps] [iters]   (default 6 20)
+// Usage: bench_gpu_evolve [steps] [iters] [mode]   (default 6 20 0)
+//   mode 0  evolve() against PersistentEvolver
+//   mode 1  PersistentEvolver alone (clean steady state for profiling)
+//   mode 2  one row for the grid this process is running at
+//
+// MODE 2 ASKS WHICH RESOURCE THE PERSISTENT LOOP IS BOUND BY. Its blocks do not retire, so the
+// grid IS the worker count, and grid size and queue contention predict opposite curves: if the
+// bound is occupancy, time falls as blocks rise until the device saturates; if it is contention
+// on the shared work cursors, time flattens early or climbs, because every added worker is more
+// traffic on the same lines. The default (persistent.cu default_persistent_grid) is eight blocks
+// per SM, chosen off this measurement; re-run it after any change to the queue or the work item.
+//
+// The grid is process-global and resolved ONCE -- worker count and IR arena slots both derive
+// from it and must agree -- so ONE PROCESS MEASURES ONE GRID. Sweep from the shell:
+//   for b in 128 256 512 1024 2048 3072; do HG_GPU_PERSISTENT_BLOCKS=$b ./bench_gpu_evolve 7 5 2; done
+// Each row prints the grid it ran at, read from the same variable the engine reads. A loop that
+// setenv'd inside one process would report the value it just set while every iteration ran at
+// the first grid, and that flat curve reads exactly like a real result.
 #include "hg_gpu/evolve.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 static hg_gpu::RewriteRule make_rule(std::vector<std::vector<uint8_t>> lhs,
@@ -26,8 +42,6 @@ static hg_gpu::RewriteRule make_rule(std::vector<std::vector<uint8_t>> lhs,
 int main(int argc, char** argv) {
     int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     int iters = argc > 2 ? std::atoi(argv[2]) : 20;
-    // mode 0 = compare evolve() vs PersistentEvolver; 1 = PersistentEvolver only
-    // (clean steady state for profiling the step-loop compute / bubbles).
     int mode  = argc > 3 ? std::atoi(argv[3]) : 0;
 
     hg_gpu::EvolveInput in;
@@ -43,6 +57,27 @@ int main(int argc, char** argv) {
         std::sort(v.begin(), v.end());
         return v[v.size() / 2];
     };
+
+    // Mode 2: is the persistent loop's cost set by its GRID SIZE or by CONTENTION on the work
+    // queue? The two predict different curves -- grid size falls until occupancy saturates,
+    // contention flattens early or rises as more workers hit the same cursors.
+    if (mode == 2) {
+        hg_gpu::PersistentEvolver ev;
+        auto warm = ev.run(in);
+        std::vector<double> t;
+        for (int i = 0; i < iters; ++i) {
+            auto a = std::chrono::steady_clock::now();
+            auto r = ev.run(in);
+            auto b = std::chrono::steady_clock::now();
+            (void)r;
+            t.push_back(std::chrono::duration<double, std::milli>(b - a).count());
+        }
+        const char* grid = std::getenv("HG_GPU_PERSISTENT_BLOCKS");
+        std::printf("%8s   %9.3f   %6zu   %6zu   (steps=%d)\n",
+                    grid ? grid : "8/SM", median(t),
+                    warm.states.size(), warm.events.size(), steps);
+        return 0;
+    }
 
     // (A) free evolve(): builds and destroys an Engine every call.
     std::vector<double> ta;

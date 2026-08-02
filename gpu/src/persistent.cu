@@ -675,13 +675,24 @@ __global__ void k_persistent_evolve(
 // one warp serialize on divergence and burst their atomics into the same lines), so the
 // scaling axis is MORE BLOCKS, each an independent serial worker the SM scheduler interleaves.
 //
-// Measured (bench_gpu_evolve, WPP rule, quotient, Full, RTX 4090, 128 SMs, medians): 6 steps
-// -- 128 blocks 8.1 ms, 384 6.6, 768 6.4, 1536 6.3, 3072 6.5; 7 steps -- 128 blocks 65.8 ms,
-// 512 40.3, 1024 37.3, 3072 37.5. A broad plateau from ~6x the SM count up; 8x sits inside it
-// on both depths, and the idle-path backoff in the kernels above is what makes
-// oversubscription free when work runs short. Quotient causal is orbit-keyed
-// (quotient_causal.hpp), so the causal set is the same at every grid
-// (tools/quotient_causal_probe_gpu holds it constant, and equal to the CPU's).
+// THE BOUND IS OCCUPANCY, NOT QUEUE CONTENTION. Those predict opposite curves -- contention
+// would flatten early or climb as workers pile onto the same cursors -- and the measured curve
+// falls monotonically and then plateaus:
+//
+//   for b in 32 64 128 256 512 1024 2048 3072; do
+//     HG_GPU_PERSISTENT_BLOCKS=$b build_gpu/bench_gpu_evolve 7 5 2; done
+//
+//   grid    32     64    128    256    512   1024   2048   3072
+//   ms     338    189    118     86     72     69     62     61
+//
+// (RTX 4090, 128 SMs, 45317 states / 45316 events, medians of 5.) The plateau begins near 8x the
+// SM count, which is where the default sits; the idle-path backoff in the kernels above is what
+// keeps oversubscription free when work runs short. Run-to-run spread on this host is ~10%, and
+// an explicit 1024 measures the same as the 8/SM default (58.6 vs 58.7 over 9 iterations), which
+// is the check that the override and the derived default are the same grid.
+//
+// Quotient causal is orbit-keyed (quotient_causal.hpp), so the causal set is the same at every
+// grid (tools/quotient_causal_probe_gpu holds it constant, and equal to the CPU's).
 uint32_t default_persistent_grid() {
     static uint32_t cached = 0;
     if (cached) return cached;
