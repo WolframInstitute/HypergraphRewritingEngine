@@ -7,6 +7,14 @@
 # re-implementation proves a property of the re-implementation. These harnesses break when the
 # header breaks, which is the entire point.
 #
+# SIZE THE HARNESS BEFORE RUNNING IT. `run.sh <name> --mode=estimate` samples executions and
+# prints the total-executions and time-to-completion estimates in about a tenth of a second.
+# A harness whose estimate does not fit the budget in tools/safe_verify.sh is REDUCED -- fewer
+# threads, fewer operations, the same window -- and the reduction is calibrated by breaking the
+# property and checking the smaller harness still reports it. Estimation is also a bug-finder in
+# its own right: it explores real executions, so a violation it samples is a genuine
+# counterexample, delivered in seconds rather than after an enumeration that may never finish.
+#
 # WHAT A CLEAN RUN MEANS. GenMC is sound and complete for the BOUNDED program it is given:
 # exhaustive over the interleavings and reads-from choices of RC11, for that thread count, that
 # operation count and those inputs. It is NOT a proof for unbounded thread counts. State the bound
