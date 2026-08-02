@@ -59,9 +59,14 @@ inline constexpr uint32_t id_from_key(uint64_t k) {
 //   - The VALUE is published by exchanging it from ABSENT_VALUE. A thread that finds its
 //     key already present but the value not yet published offers its OWN value to that same
 //     exchange rather than waiting for whoever claimed the key. Exactly one offer wins, and
-//     every caller returns the winner -- so was_inserted means "the value you passed is the
-//     one now stored", which is exactly what the get-or-create callers need to decide
+//     every caller returns the winner -- so was_inserted means "THIS CALL's offer won the
+//     publishing exchange", which is exactly what the get-or-create callers need to decide
 //     whether to keep the object they built.
+//
+//     EXACTLY ONE CALL EVER SEES was_inserted FOR A KEY, across every table generation and
+//     however many times a value is offered. It is the exchange that says so, not a
+//     comparison of the stored value against the caller's: offering the same value twice
+//     would pass such a comparison the second time and hand out a second winner.
 //
 // Progress guarantee: NO OPERATION WAITS ON ANOTHER THREAD. Lookup is wait-free. Insert is
 // lock-free: every exchange that fails does so because another thread published, and a
@@ -489,6 +494,13 @@ private:
     // anchor, not a correctness gate -- if it is stale, rivals still cannot answer from a
     // different exchange: their chain scan either reads this claim or loses its seal
     // exchange to it (see find_and_settle_in_chain), and either way offers HERE.
+    //
+    // THE VERDICT IS THE EXCHANGE'S, NOT A COMPARISON'S. publish_value performs the one
+    // compare-exchange that decides who published this key's value and hands back that
+    // answer; anchoring afterwards is bookkeeping and cannot change it. Recomputing it as
+    // "does the stored value equal mine" holds only while every call for a key offers a
+    // DISTINCT value: a caller offering the same value twice finds its own value already
+    // stored and a comparison cannot tell that from having just won.
     std::pair<V, bool> settle(Table* table, Entry& entry, K key, V value,
                               bool increment_count) {
         auto r = publish_value(entry, value);
@@ -499,7 +511,7 @@ private:
         Table* head = table_.load(std::memory_order_acquire);
         if (head == table) return *r;
         auto anchored = insert_into_table(head, key, r->first, false);
-        return {anchored.first, anchored.first == value};
+        return {anchored.first, r->second};
     }
 
     // Find `key` anywhere in the chain and ensure its value is settled, offering `value` if it
@@ -540,7 +552,7 @@ private:
                     if (!r->second) return r;
                     auto anchored = insert_into_table(
                         table_.load(std::memory_order_acquire), key, r->first, false);
-                    return std::make_pair(anchored.first, anchored.first == value);
+                    return std::make_pair(anchored.first, r->second);
                 }
             }
             table = table->prev;
