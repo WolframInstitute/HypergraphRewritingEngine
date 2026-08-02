@@ -42,7 +42,7 @@ item in P2 costs double until this lands.
 |---|---|---|---|
 | P1.1 | `hgcommon/join_core.hpp`: the join as ONE `HG_HD` body — pattern-edge order, binding, edge-injectivity, recursion, emit. Templated on candidate enumeration only. | compiles host + `nvcc -arch=sm_89`; no engine wired yet | **DONE** |
 | P1.2 | CPU adapter: `pattern_matcher.hpp` supplies an inverted-index candidate iterator and calls `join_core`. Its own DFS is deleted in the same commit. Both host schedulers (recursive and task-based) select the next pattern position with `join_next_position`. | `all_tests` 228/228 incl. `OracleCorpus`/`GoldenMatrix`/`ReferenceOracle`/`MatchCompleteness`; cost +0.26–0.34% instructions, D1 flat | **DONE** |
-| P1.3 | GPU adapter: `match.cu` supplies a CSR-slice strider and calls `join_core`. Its own DFS is deleted in the same commit. | `hg_gpu_tests` + `gpu_differential_tests` green; device match counts unchanged | |
+| P1.3 | GPU adapter: `match.cu` supplies a CSR-slice strider and calls `join_core`. Its own DFS is deleted in the same commit. | `hg_gpu_tests` 97/97 + `gpu_differential_tests` 30/30; 45317 states / 45316 events unchanged; device timing neutral (median 46.8 vs 48.5 ms, spread ~10%) | **DONE** |
 | P1.4 | Delta matching (`find_delta_matches`) folded into the same body — it is the same join anchored at a produced edge. | `test_match_completeness` rate unchanged | |
 
 **Done-line for P1:** one join implementation in the tree. `grep -c "expand_match\|DFS"` finds

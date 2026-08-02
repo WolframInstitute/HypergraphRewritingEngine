@@ -89,7 +89,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.
   - `EdgeSignature`, `signature_compatible()`, `enumerate_compatible_signatures()`, `CompatibleSignatureCache`
 - **`pattern.hpp`** -- rule representation, builder, match-identity types.
-  - `PatternEdge`, `RewriteRule` (`compute_var_counts`/`compute_match_order`), `RuleBuilder` + `make_rule()`, `MatchIdentity`, `PartialMatch`
+  - `PatternEdge`, `RewriteRule` (`compute_var_counts`/`compute_match_order`), `RuleBuilder` + `make_rule()`, `MatchIdentity`
   - `RewriteRule::match_order` is a SCHEDULE, not a semantic: every permutation yields the same match set (`JoinCore.EveryBindingOrderYieldsTheSameMatches`)
 - **`index.hpp`** -- lock-free matching indices for candidate generation.
   - `SignatureIndex`, `InvertedVertexIndex` (`for_each_edge_containing_all` -- shortest-list-seeded intersection), `PatternMatchingIndex`
@@ -142,7 +142,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
 - **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
 - **`warp_ops.hpp`** -- `VWarp<N>` (cooperative-groups tile ops: ballot/reduce/scan/compact/sorted-intersect)
-- **`partial_match.hpp`** -- `PartialMatch` (per-warp DFS match frame in registers/shared)
 - **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord` (carries its `step` and a `published` flag); device `match_state_rule`/`publish_match`/`await_match`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
 - **`rewrite.hpp`** -- device `apply_one_match` (returns the state it created); host `run_rewrite_kernel[_with][_nosync]`
 - **`exploration.hpp`** -- `DedupMap` + device `state_survives_dedup` (which new states get expanded; one predicate for both schedulers)
@@ -156,7 +155,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `gpu/src/` -- CUDA kernels + drivers
 
 - **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_dedup_and_append`/`k_fill_unique_keys`; device `state_survives_dedup`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
-- **`match.cu`** -- device `match_state_rule` + kernel `k_match_batch` (DFS binding LHS edges, Wolfram non-distinct semantics, CSR-slice/signature/pivot-inverted candidate seeding); host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
+- **`match.cu`** -- device `match_state_rule` + kernel `k_match_batch`. The JOIN is `hgcommon/join_core.hpp`; this file supplies `MatchJoinCtx` (CSR-slice / pivot-inverted / signature-bucket candidate enumeration) and the block-striped depth-0 parallelism. Host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
 - **`rewrite.cu`** -- device `apply_one_match` + kernel `k_rewrite` (preflight-reserve pools, build RHS/new-state CSR, write Event, causal+branchial rendezvous; the raw-edge causal rendezvous is skipped under `DeviceState::quotient_causal`, where the orbit-keyed DP replaces it); online TR is the `preds_list` backward-reachability oracle (`is_reachable_preds`, the device twin of `CausalGraph::is_reachable` -- no stored closure); `try_add_causal_edge` has external linkage (the DP emits through it); host `run_rewrite_kernel*`
 - **`event_identity.hpp` / `event_identity.cu`** -- event identity shared by both schedulers: `event_keys_need_ranks`, `edge_rank_in_state_device`, `stamp_event_signature` (computes the signature AND applies it through a signature -> EventId map, so two applications with the same identity are one event), plus `fill_event_identity_inputs` / `stamp_event_identity_range` for the level-synchronous loop's post-hash phase
 - **`persistent.cu`** -- the device-resident schedulers: `k_persistent_match` (match role alone), `k_persistent_match_rewrite` (two roles, no barrier), `k_persistent_evolve` (whole evolution in ONE launch chain with ONE host sync: root-hash seed -> counted queue seed -> rewrite -> key + exact hash [+ orbits] -> event stamp -> quotient-causal registration -> dedup -> re-enqueue, block 0 detecting quiescence; workers back off exponentially when idle and flush per-phase clock64 attribution at exit); `k_qc_seed_roots`/`k_qc_register_range` (the step loop's quotient-causal drive); host `run_persistent_*`, plus `default_persistent_grid()` (eight blocks per SM, from the grid sweep; `HG_GPU_PERSISTENT_BLOCKS` overrides) and `persistent_arena_words()` (IR arena as holders x `ir_arena_share_words`). Identity is answered per mode: `state_key_device` computes what the state mode identifies states by (`None` a per-state unique value with no hashing, `Automatic` the content hash, `Full` the exact IR hash), `stamp_event_signature` fills the event identity from the exact hashes plus the ranks `edge_rank_in_state_device` reads back, then APPLIES it through a signature -> EventId map so two applications with the same identity are one event
@@ -211,7 +210,7 @@ Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown
 
 - **`testing/`** -- `main.cpp` (gtest entry), `test_helpers.hpp`, `CMakeLists.txt` (fetches GoogleTest, builds `all_tests` + subset targets `core_tests`/`evolution_tests`/`causal_tests`/`stress_tests`/`integration_tests`).
 - **`hypergraph/tests/*.cpp`** -- CPU suites: `test_concurrent_map`, `test_quotient_completeness`, `test_causal_tr_exactness`, `test_ir_canonicalization`, `test_pattern_matching`, `test_parallel_evolution`, `test_multiple_initial_states`, `test_evolution_limits`, `test_sampling_reproducibility`, `test_causal_branchial`, `test_event_canonicalization`, `test_determinism_fuzzing`, `test_blackhole_idempotent`, `test_grid_performance`, `test_repeated_invocation`, `test_reference_oracle`.
-- **`gpu/tests/*.cu`** -- GPU units (`test_atomic_pool`, `test_lock_free_list`, `test_ring_buffer`, `test_hash_table`, `test_indices`, `test_edge_signature`, `test_warp_ops`, `test_engine_state`, `test_match`, `test_partial_match`, `test_rewrite`, `test_wl_hash`, `test_ir_canon`, `test_termination`, `test_exploration_probability`, `test_smoke`) + harnesses `bench_cpu_vs_gpu.cpp`, `test_gpu_vs_cpu_differential.cpp`.
+- **`gpu/tests/*.cu`** -- GPU units (`test_atomic_pool`, `test_lock_free_list`, `test_ring_buffer`, `test_hash_table`, `test_indices`, `test_edge_signature`, `test_warp_ops`, `test_engine_state`, `test_match`, `test_rewrite`, `test_wl_hash`, `test_ir_canon`, `test_termination`, `test_exploration_probability`, `test_smoke`) + harnesses `bench_cpu_vs_gpu.cpp`, `test_gpu_vs_cpu_differential.cpp`.
 
 ## `benchmarks/` + `benchmarking/`
 

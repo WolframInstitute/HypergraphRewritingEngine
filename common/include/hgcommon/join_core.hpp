@@ -57,7 +57,16 @@ struct JoinState {
     uint32_t  bound_mask = 0;
     uint8_t   depth = 0;
 
-    HG_HD void reset() { bound_mask = 0; depth = 0; }
+    // A reset frame has NO bound variables and no live values. The values matter as well as the
+    // mask: an enumerator may read a variable it expects the schedule to have bound already
+    // (the device pivots on one), and hgcommon::resolve_rhs_vertices reads the array directly
+    // and takes INVALID_ID to mean "not matched, allocate a fresh vertex". Once per join, not
+    // per candidate -- the unwind below restores the mask alone.
+    HG_HD void reset() {
+        bound_mask = 0;
+        depth = 0;
+        for (uint32_t v = 0; v < MaxVars; ++v) binding[v] = static_cast<VertexIdT>(INVALID_ID);
+    }
 
     // Edge-injectivity: a data edge may be taken by at most one pattern edge.
     HG_HD bool already_taken(EdgeIdT e) const {

@@ -3,7 +3,7 @@
 //
 // What CONSTITUTES a match is the rewrite system; how candidates are enumerated is the
 // hardware. This header holds the first. Both ports had their own copy of it -- the host in
-// pattern_matcher.hpp's validate_candidate, the device in PartialMatch::check_or_bind_var
+// pattern_matcher.hpp's validate_candidate and the device matcher both reach it through join_core
 // plus an arity check at each of its three call sites -- and two copies of a semantic rule is
 // how the two devices come to disagree about what a match is.
 //

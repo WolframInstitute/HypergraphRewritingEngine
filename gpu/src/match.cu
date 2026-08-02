@@ -1,10 +1,9 @@
 #include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/match.hpp"
-#include "hg_gpu/partial_match.hpp"
 
 #include <cuda_runtime.h>
 
-#include "hgcommon/match_core.hpp"  // bind_pattern_edge -- shared with the host matcher
+#include "hgcommon/join_core.hpp"   // THE JOIN -- one body, shared with the host matcher
 
 #include <algorithm>
 #include <stdexcept>
@@ -104,54 +103,119 @@ __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
     return false;
 }
 
-// How match_state_rule enumerates, below.
+// What match_state_rule below owns, and what it does not.
 //
-// Recursive DFS extending PartialMatch one pattern edge at a time. Per pattern
-// edge: union over every compatible signature bucket (Wolfram non-distinct
-// binding allows distinct vars to collapse to the same data vertex, so the data
-// signature may be coarser than the pattern's signature). For each candidate:
-// filter exact compat, arity, in-state, not-consumed; bind vars (saving and
-// restoring on backtrack); recurse; emit on full match.
+// THE JOIN IS NOT HERE. The recursion, edge-injectivity, binding and unwind, and which pattern
+// position is bound next are hgcommon/join_core.hpp, so the host engine runs the same body.
+// This file supplies the two device-specific halves: how candidates are enumerated, and the
+// parallelism.
 //
-// Candidate enumeration is adaptive on state size. Multiway states are small
-// (tens of edges) while the signature and vertex-inverted indices are global
-// across the whole evolution, so their buckets grow with total edge count and
-// walking them costs O(evolution) per state. At or below this slice length,
-// candidates come straight from the state's own CSR slice: O(|state|) work,
-// each edge exactly once (no dedup buffer), state membership free. Above it
-// (single huge states, the visualiser regime) the global indices win and the
-// pivot/signature machinery is used. The two paths are strictly either/or:
-// running both would enumerate a candidate twice and emit duplicate matches.
-// The threshold lives in DeviceState::slice_scan_max_edges (EngineConfig knob),
-// and also gates lazy index maintenance: below it the indices are never read.
-
-// Batched variant: one BLOCK per (state, rule) pair. Threads within the
-// block cooperate by striding over candidates for pattern edge 0 — each
-// thread runs the full DFS subtree from a different root candidate
-// independently. This unblocks the previous one-thread-per-(state×rule)
-// pathology where for n=1000, frontier=1, rule=1, only ONE GPU thread did
-// all the work (944 ms on n1000_s1) while the rest of the device sat idle.
+// PARALLELISM: one BLOCK per (state, rule) pair; threads inside it stride the candidates for
+// pattern edge 0, each running the whole DFS subtree below a different root, with no
+// inter-thread coordination -- outputs go straight to the global match pool. That is what
+// unblocked the one-thread-per-(state x rule) pathology where n=1000, frontier=1, rule=1 put
+// all the work on a single thread (944 ms on n1000_s1) while the rest of the device idled.
 //
-// Block layout:
 //   gridDim.x  = num_state_ids * num_rules
-//   blockDim.x = kMatchBlockThreads (warp-aligned; 32 by default)
+//   blockDim.x = kMatchBlockThreads (warp-aligned; 32 by default), declared in match.hpp
+//     because match_state_rule's body stripes across exactly those threads -- every scheduler
+//     calling it must launch with this shape, so it is contract, not a private detail.
 //
-// Cooperation pattern:
-//   - All threads walk the same signature_index linked list (read-only,
-//     cache-friendly), but each thread acts only on candidates whose
-//     0-based seen-index has (idx % blockDim.x == threadIdx.x). The
-//     list-walk itself is trivial work compared to the DFS.
-//   - Each thread carries its OWN PartialMatch in registers/local mem.
-//     No inter-thread coordination during DFS — outputs go straight to
-//     the global match pool via atomicAdd.
-//
-// For pattern_edges == 1 (single-LHS rules) the DFS body collapses to
-// "emit one MatchRecord per candidate", which still benefits because the
-// emit-to-output is the only contended atomic and threads parallelise
-// the candidate filter / variable-binding work.
-// kMatchBlockThreads is declared in match.hpp: match_state_rule's body stripes the depth-0
-// candidates across exactly these threads, so every scheduler calling it must launch with this
-// shape. That makes it part of the contract, not a detail private to this file.
+// ENUMERATION is adaptive on state size, in Ctx::for_each_candidate. Multiway states are small
+// (tens of edges) while the signature and vertex-inverted indices are global across the whole
+// evolution, so their buckets grow with total edge count and walking them costs O(evolution)
+// per state. At or below DeviceState::slice_scan_max_edges (an EngineConfig knob) candidates
+// come straight from the state's own CSR slice: O(|state|), each edge exactly once, no dedup
+// buffer, membership free. Above it -- single huge states, the visualiser regime -- the global
+// indices win and the pivot/signature machinery is used. The threshold also gates lazy index
+// maintenance: below it the indices are never read.
+
+using MatchJoinState = hgcommon::JoinState<kMaxPatternEdges, kMaxVars, EdgeId, VertexId>;
+
+// The join's view of this device. hgcommon/join_core.hpp owns the recursion, the
+// edge-injectivity rule, the binding and its unwind, and which pattern position is bound
+// next; this supplies candidate enumeration and nothing else.
+struct MatchJoinCtx {
+    DeviceState       ds;
+    const DeviceRule& rule;
+    StateId           state_id;
+
+    __device__ uint8_t num_lhs_edges() const { return rule.num_lhs_edges; }
+
+    // The device's schedule is the IDENTITY: build_device_rule physically reorders
+    // DeviceRule::lhs[] into join order when the rule is built, so position k of the
+    // schedule is lhs[k]. The host instead keeps its LHS authored and indirects through
+    // RewriteRule::match_order. Both say "bind this pattern edge at this position".
+    __device__ uint8_t order_at(uint8_t k) const { return k; }
+
+    __device__ const uint8_t* pattern_vars(uint8_t p)  const { return rule.lhs[p].vars; }
+    __device__ uint8_t        pattern_arity(uint8_t p) const { return rule.lhs[p].arity; }
+
+    // Every enumerator here walks id lists, so a candidate IS an id and there is nothing
+    // already-read to carry along.
+    __device__ EdgeId candidate_of(EdgeId e) const { return e; }
+    __device__ EdgeId candidate_id(EdgeId e) const { return e; }
+
+    __device__ const VertexId* edge_vertices(EdgeId e) const {
+        return &ds.vertex_pool.at(ds.edge_pool.at(e).vertex_offset);
+    }
+    __device__ uint8_t edge_arity(EdgeId e) const { return ds.edge_pool.at(e).arity; }
+
+    __device__ bool usable(EdgeId e) const { return state_contains(ds, state_id, e); }
+    __device__ bool aborted() const { return false; }
+
+    // Adaptive on state size, and the paths are strictly EITHER/OR: running two of them
+    // would enumerate a candidate twice and emit a duplicate match. Multiway states are
+    // small (tens of edges) while the signature and vertex-inverted indices span the whole
+    // evolution, so their buckets cost O(evolution) per state; at or below
+    // slice_scan_max_edges the state's own CSR slice gives each edge exactly once, with no
+    // dedup buffer and with membership for free.
+    template <typename F>
+    __device__ void for_each_candidate(uint8_t p, const MatchJoinState& st, F&& f) const {
+        const DevicePatternEdge& pe = rule.lhs[p];
+
+        const StateEdgeSlice sl = ds.state_edge_slices[state_id];
+        if (sl.count <= ds.slice_scan_max_edges) {
+            for (uint32_t i = 0; i < sl.count; ++i) f(ds.state_edge_ids[sl.offset + i]);
+            return;
+        }
+
+        if (pe.pivot_var != kNoPivotVar) {
+            const VertexId pivot_vert = st.binding[pe.pivot_var];
+            // Bounded dedup: a self-loop {a,a} appears twice in list[a], and concurrent
+            // inserts from rewrite kernels interleave those with other edges, so a
+            // last-seen check is not enough. Collect first, then hand over -- only one
+            // enumerator may call f, because a candidate tried during collection would be
+            // tried again by the signature walk after an overflow.
+            constexpr uint32_t kMaxIncidentSeen = 256;
+            EdgeId   seen[kMaxIncidentSeen];
+            uint32_t n_seen = 0;
+            bool     overflowed = false;
+            ds.vertex_inverted_index.for_each_incident(
+                pivot_vert,
+                [&] (EdgeId cand) {
+                    if (overflowed) return;
+                    for (uint32_t i = 0; i < n_seen; ++i) {
+                        if (seen[i] == cand) return;
+                    }
+                    if (n_seen >= kMaxIncidentSeen) { overflowed = true; return; }
+                    seen[n_seen++] = cand;
+                });
+            if (!overflowed) {
+                for (uint32_t i = 0; i < n_seen; ++i) f(seen[i]);
+                return;
+            }
+        }
+
+        // Union over every compatible signature bucket: Wolfram binding lets distinct vars
+        // collapse onto one vertex, so a matching data edge's signature may be coarser than
+        // the pattern's. Each edge appears in its own bucket exactly once.
+        for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
+            ds.signature_index.list.for_each(
+                static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask, f);
+        }
+    }
+};
 
 }  // namespace
 
@@ -174,167 +238,38 @@ __device__ void match_state_rule(DeviceState       ds,
 
     if (rule.num_lhs_edges == 0) return;
 
-    const DevicePatternEdge& pe0 = rule.lhs[0];
+    const MatchJoinCtx ctx{ds, rule, state_id};
 
-    // Each thread maintains its own DFS state. The DFS body for depth ≥ 1
-    // is the same as the original recursive lambda; we just specialise the
-    // loop at depth 0 to iterate candidates striped across the block.
-    auto run_dfs_from_root = [&] (EdgeId root_cand) {
-        const Edge& e0 = ds.edge_pool.at(root_cand);
-        if (!state_contains(ds, state_id, root_cand)) return;
-
-        PartialMatch pm;
-        pm.reset(rule.num_lhs_edges, rule.num_lhs_vars);
-
-        // Bind pattern edge 0 to root_cand. pm is freshly reset, so a partial binding left by
-        // a failed attempt is discarded with it -- no save/restore needed here.
-        if (!hgcommon::bind_pattern_edge(&ds.vertex_pool.at(e0.vertex_offset), e0.arity,
-                                         pe0.vars, pe0.arity, pm.var_binding, pm.bound_mask))
-            return;
-        pm.bind_pattern_edge(0, root_cand);
-        pm.set_consumed(root_cand);
-
-        // Single-edge rule: emit and return.
-        if (rule.num_lhs_edges == 1) {
-            uint32_t idx = out.claim();
-            if (idx == Pool<MatchRecord>::kInvalid) {
-                ds.errors.record(ErrorKind::kMatchPoolFull);
-                return;
-            }
-            MatchRecord& m = out.at(idx);
-            m.rule_id   = rid;
-            m.state_id  = state_id;
-            m.step      = step;
-            m.num_edges = 1;
-            m.matched_edges[0] = root_cand;
-            for (uint8_t i = 1; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
-            publish_match(m);
+    // A completed match. matched_edges is indexed by PATTERN position, not by depth.
+    auto emit = [&] (const MatchJoinState& st) {
+        const uint32_t idx = out.claim();
+        if (idx == Pool<MatchRecord>::kInvalid) {
+            ds.errors.record(ErrorKind::kMatchPoolFull);
             return;
         }
-
-        // Recursive DFS for depth ≥ 1. Same body as the single-thread
-        // version; per-thread PartialMatch keeps it independent.
-        auto recurse = [&] (auto& self_ref, uint8_t depth) -> void {
-            if (depth == rule.num_lhs_edges) {
-                uint32_t idx = out.claim();
-                if (idx == Pool<MatchRecord>::kInvalid) {
-                    ds.errors.record(ErrorKind::kMatchPoolFull);
-                    return;
-                }
-                MatchRecord& m = out.at(idx);
-                m.rule_id   = rid;
-                m.state_id  = state_id;
-                m.step      = step;
-                m.num_edges = depth;
-                for (uint8_t i = 0; i < depth; ++i) m.matched_edges[i] = pm.matched_edges[i];
-                for (uint8_t i = depth; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
-                publish_match(m);
-                return;
-            }
-
-            const DevicePatternEdge& pe = rule.lhs[depth];
-
-            auto try_candidate = [&] (EdgeId cand) {
-                const Edge& ec = ds.edge_pool.at(cand);
-                if (!state_contains(ds, state_id, cand)) return;
-                if (pm.is_consumed(cand))               return;
-
-                uint32_t saved_bound_mask = pm.bound_mask;
-                VertexId saved_bindings[kMaxVars];
-                #pragma unroll
-                for (uint32_t v = 0; v < kMaxVars; ++v) saved_bindings[v] = pm.var_binding[v];
-
-                const bool ok = hgcommon::bind_pattern_edge(
-                    &ds.vertex_pool.at(ec.vertex_offset), ec.arity,
-                    pe.vars, pe.arity, pm.var_binding, pm.bound_mask);
-
-                if (ok) {
-                    pm.bind_pattern_edge(depth, cand);
-                    pm.set_consumed(cand);
-                    self_ref(self_ref, depth + 1);
-                    pm.clear_consumed(cand);
-                    pm.unbind_pattern_edge(depth);
-                }
-
-                uint32_t newly_bound = pm.bound_mask & ~saved_bound_mask;
-                while (newly_bound) {
-                    int v = __ffs(newly_bound) - 1;
-                    pm.var_binding[v] = saved_bindings[v];
-                    pm.bound_mask &= ~(1u << v);
-                    newly_bound &= newly_bound - 1;
-                }
-            };
-
-            // Adapted-HGMatch candidate seeding at depth ≥ 1:
-            //   - Normal case (connectivity-scheduled LHS): pivot_var is
-            //     bound; iterate vertex_inverted_index[binding[pivot_var]]
-            //     for a degree-bounded candidate list, deduplicating across
-            //     occurrences (a self-loop {a,a} appears twice in list[a],
-            //     and concurrent inserts from rewrite kernels can interleave
-            //     these with other edges — so a per-iteration "seen" set
-            //     is required, not just a last-seen check). For a single
-            //     pattern edge each candidate must be tried at most once or
-            //     we emit duplicate match records.
-            //   - Fallback (rare, disconnected LHS): fall back to the
-            //     signature_index walk.
-            StateEdgeSlice sl_ = ds.state_edge_slices[state_id];
-            if (sl_.count <= ds.slice_scan_max_edges) {
-                for (uint32_t i = 0; i < sl_.count; ++i) {
-                    try_candidate(ds.state_edge_ids[sl_.offset + i]);
-                }
-            } else if (pe.pivot_var != kNoPivotVar) {
-                VertexId pivot_vert = pm.var_binding[pe.pivot_var];
-                // Bounded "seen" buffer for duplicate suppression; 256
-                // covers high-degree vertices in typical evolved Wolfram
-                // states. Collect first, then try: exactly one of the two
-                // enumerators ever calls try_candidate, because a candidate
-                // tried during collection would be tried again by the
-                // signature walk after an overflow, emitting duplicate
-                // match records with a count that varies with concurrent
-                // bucket-insertion order. The signature walk is exact on
-                // its own: each edge appears in its bucket exactly once.
-                constexpr uint32_t kMaxIncidentSeen = 256;
-                EdgeId   seen[kMaxIncidentSeen];
-                uint32_t n_seen = 0;
-                bool     overflowed = false;
-                ds.vertex_inverted_index.for_each_incident(
-                    pivot_vert,
-                    [&] (EdgeId cand) {
-                        if (overflowed) return;
-                        for (uint32_t i = 0; i < n_seen; ++i) {
-                            if (seen[i] == cand) return;
-                        }
-                        if (n_seen >= kMaxIncidentSeen) {
-                            overflowed = true;
-                            return;
-                        }
-                        seen[n_seen++] = cand;
-                    });
-                if (overflowed) {
-                    for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
-                        ds.signature_index.list.for_each(
-                            static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
-                            try_candidate);
-                    }
-                } else {
-                    for (uint32_t i = 0; i < n_seen; ++i) try_candidate(seen[i]);
-                }
-            } else {
-                for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
-                    ds.signature_index.list.for_each(
-                        static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask,
-                        try_candidate);
-                }
-            }
-        };
-
-        recurse(recurse, 1);
+        MatchRecord& m = out.at(idx);
+        m.rule_id   = rid;
+        m.state_id  = state_id;
+        m.step      = step;
+        m.num_edges = st.depth;
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
+        for (uint8_t d = 0; d < st.depth; ++d) m.matched_edges[st.pattern[d]] = st.matched[d];
+        publish_match(m);
     };
 
-    // Stride pattern_edge_0 candidates across the block's threads. Small
-    // states index their slice directly (each thread takes every 32nd edge);
-    // the signature-bucket walk covers large states, where every thread
-    // traverses the bucket but only acts on its own stripe.
+    // One thread, one depth-0 candidate, one whole DFS subtree: the join anchored at position 0.
+    // A single-edge rule completes on the anchor itself and emits through this same path.
+    auto run_dfs_from_root = [&] (EdgeId root_cand) {
+        MatchJoinState st;
+        hgcommon::join_seed(ctx, st, root_cand, 0, emit);
+    };
+
+    // Stride pattern edge 0's candidates across the block's threads. THIS is the device's part
+    // of matching -- the parallelism -- and it is why match_state_rule exists rather than a
+    // call straight into join_core. Small states index their slice directly; the
+    // signature-bucket walk covers large states, where every thread traverses the bucket but
+    // acts only on its own stripe.
+    const DevicePatternEdge& pe0 = rule.lhs[0];
     StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
     if (sl0.count <= ds.slice_scan_max_edges) {
         for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
@@ -353,6 +288,7 @@ __device__ void match_state_rule(DeviceState       ds,
                 });
         }
     }
+
 }
 
 namespace {

@@ -73,7 +73,6 @@ namespace hypergraph {
 // binding so far, seek the next vertex value at this position" -- which InvertedVertexIndex does
 // not provide; it answers set containment, not ordered seek.
 
-// PartialMatch is defined in pattern.hpp
 
 // =============================================================================
 // Candidate Validation
