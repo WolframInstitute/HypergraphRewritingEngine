@@ -256,6 +256,12 @@ NormalizedResult run_cpu(const Workload& w) {
     // Count diagnostics. NumStates as HGEvolve reports it is hg.num_canonical_states().
     out.num_canonical_states = hg.num_canonical_states();
     out.raw_states = state_hash_by_id.size();
+    // NOT the count the FFI serves. HGEvolve reports hg.observable_num_events()
+    // (hypergraph_ffi.cpp:1279), which under quotient exploration or EVENT_SIG_AUTOMATIC is the
+    // RECONSTRUCTION's count, not this one. The device has no reconstruction, so switching this
+    // line to observable_num_events() turns two assertions red -- see the pinned reproducer
+    // ReconstructionGapIsStillOpen below, which holds the measured numbers. That switch is the
+    // last step of the device port, not the first.
     out.num_events = hg.num_events();
     out.raw_events = hg.num_raw_events();
     {
@@ -441,6 +447,36 @@ std::vector<Workload> build_corpus() {
     std::vector<Workload> ws;
 
     ws.push_back({.name = "empty_rules_empty_initial_zero_steps", .num_steps = 0});
+
+    // THE WORKLOAD THAT SEPARATES THE TWO RANK CONVENTIONS.
+    //
+    // An Automatic event signature hashes the RANK of each consumed and produced edge -- the
+    // edge's position in a canonical labelling. Which state's labelling supplies that rank is a
+    // choice, and the two choices are not the same function:
+    //
+    //   class frame  -- one labelling pinned per isomorphism class, shared by every raw state in
+    //                   it. This is the linked-hypergraph convention of Wolfram/Multicomputation,
+    //                   and it is what the CPU computes for EVENT_SIG_AUTOMATIC (the reconstruction
+    //                   does the signing; see parallel_evolution.cpp, `qc`).
+    //   per-state    -- each raw state's own labelling. This is the CPU's Positional identity, and
+    //                   it is what edge_rank_in_state_device reads on the GPU, which has no
+    //                   class-level frame at all.
+    //
+    // Where a state's automorphism group makes the canonical labelling a coset, the two can pick
+    // different representatives, and then the class frame calls two applications ONE event while
+    // per-state calls them TWO. On this pair of rules at 3 steps the CPU measures exactly that
+    // split: 21 events by class frame, 23 by per-state (hypergraph.hpp
+    // set_positional_event_identity; test_event_identity_authority "two-rules-overlap").
+    //
+    // Every other workload in this corpus happens to agree under both conventions, so without
+    // this row the equality below is satisfied by two engines that were never asked to differ.
+    ws.push_back({
+        .name = "two_rules_overlap_rank_frame",
+        .rules = {rule({{0,1}}, {{0,2},{2,1}}),
+                  rule({{0,1}}, {{1,2},{2,0}})},
+        .initial_state = V{{0u,1u}},
+        .num_steps = 3,
+    });
 
     // 1-edge LHS, branching rule, simple initial.
     ws.push_back({
@@ -804,6 +840,58 @@ TEST(CanonicalEventCount, RanksAreIndependentOfPresentation) {
         EXPECT_EQ(gpu.num_events, cpu.num_events)
             << "devices disagree on " << presentations[i].name;
     }
+}
+
+// PINNED REPRODUCER for the device's missing reconstruction. It passes exactly while the
+// defect is present, so the suite notices if the gap silently moves or closes -- the same
+// contract verification/genmc/run.sh gives a `GENMC-EXPECT: violation` harness.
+//
+// WHAT IS BROKEN. An Automatic event signature hashes each consumed/produced edge's RANK, and
+// which state's canonical labelling supplies that rank is a choice. The CPU uses ONE labelling
+// pinned per isomorphism class, served by quotient reconstruction; the GPU has no class frame
+// and reads each state's own labelling (edge_rank_in_state_device). Measured on this workload:
+//
+//     hg.observable_num_events()  -- what HGEvolve returns --  CPU 21
+//     the GPU's canonical event count                          GPU 23
+//     hg.num_events()             -- what this harness reads -- CPU 23   <- why it passes
+//
+// The same gap under quotient exploration in mode None is larger: CPU 144, GPU 15, because the
+// CPU serves the reconstructed RAW count and the device has no reconstruction at all.
+//
+// TO CLOSE: port the expansion capture and per-instance reconstruction to the device, then
+// switch run_cpu to observable_num_events() and replace the two EXPECT_EQs below with an
+// equality between the devices.
+TEST(CanonicalEventCount, ReconstructionGapIsStillOpen) {
+    using EM = hg_gpu::EventCanonicalizationMode;
+    Workload w;
+    w.name = "two_rules_overlap_automatic";
+    w.rules = {rule({{0,1}}, {{0,2},{2,1}}), rule({{0,1}}, {{1,2},{2,0}})};
+    w.initial_state = {{0u, 1u}};
+    w.num_steps = 3;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.event_canon_mode = EM::Automatic;
+
+    NormalizedResult cpu = run_cpu(w);
+    NormalizedResult gpu = run_gpu(w);
+    hypergraph::Hypergraph probe;
+    probe.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+    probe.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+    hypergraph::ParallelEvolutionEngine pe(&probe, 1);
+    for (size_t i = 0; i < w.rules.size(); ++i)
+        pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+    pe.evolve({{0u, 1u}}, w.num_steps);
+
+    // The two engines agree on the EVOLUTION -- same applications -- and differ only on identity.
+    EXPECT_EQ(gpu.raw_events, cpu.raw_events);
+
+    // The shipped CPU answer, from the class-pinned frame.
+    EXPECT_EQ(probe.observable_num_events(), 21u)
+        << "the CPU's shipped count moved; re-derive the pinned numbers";
+    // The device answer, from each state's own labelling. Equality with the line above is the
+    // goal; this inequality is the defect, pinned so it cannot close unnoticed.
+    EXPECT_EQ(gpu.num_events, 23u)
+        << "the device's count moved; if it now reports 21 the port has landed -- replace this "
+           "reproducer with an equality against observable_num_events()";
 }
 
 TEST(CanonicalEventCount, ModesVsCpu) {
