@@ -112,7 +112,7 @@ class CausalGraph {
     // EMPTY sentinel and be silently dropped. Packing stays injective: event ids are far below
     // 2^32-1, so the +1 cannot carry into the neighbouring field.
     static uint64_t causal_pair_key(EventId producer, EventId consumer) {
-        return ((static_cast<uint64_t>(producer) + 1) << 32) | (static_cast<uint64_t>(consumer) + 1);
+        return id_key(producer, consumer);
     }
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
@@ -275,8 +275,7 @@ public:
                 if (other_event == event) return;  // Skip self
                 EventId e1 = std::min(event, other_event);
                 EventId e2 = std::max(event, other_event);
-                uint64_t key = (uint64_t(e1) << 32) | e2;
-                auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(key, true);
+                auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(id_key(e1, e2), true);
                 if (inserted) {
                     add_branchial_edge(e1, e2, shared);
                 }
@@ -362,7 +361,7 @@ public:
     template<typename Visitor>
     void for_each_state_events(Visitor&& visit) const {
         state_events_.for_each([&](uint64_t state_key, LockFreeList<EventId>* event_list) {
-            visit(static_cast<StateId>(state_key), event_list);
+            visit(static_cast<StateId>(id_from_key(state_key)), event_list);
         });
     }
 

@@ -57,7 +57,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
-    uint64_t key = state;
+    const uint64_t key = id_key(state);
 
     auto result = state_events_.lookup(key);
     if (result.has_value()) {
@@ -70,7 +70,7 @@ LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_edge_events(StateId state, EdgeId edge) {
-    uint64_t key = (static_cast<uint64_t>(state) << 32) | edge;
+    const uint64_t key = id_key(state, edge);
 
     auto result = state_edge_events_.lookup(key);
     if (result.has_value()) {

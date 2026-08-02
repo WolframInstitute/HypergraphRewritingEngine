@@ -8,6 +8,7 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <cstring>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -96,6 +97,30 @@ private:
     std::atomic<uint32_t> work_seq_{0};
 
     std::atomic<ErrorType> error_type_{ErrorType::None};
+
+    // The first worker exception's what(), kept so the failure names its cause and not just
+    // its category. Fixed buffer rather than a std::string because this is written from a
+    // catch block on a worker thread, where allocating is the last thing to attempt --
+    // OutOfMemory is one of the states being reported.
+    //
+    // Three states, so a reader never observes a partially written buffer: 0 empty,
+    // 1 claimed by the thread that won the exchange, 2 published. Only 2 may be read.
+    static constexpr size_t kErrorMessageCap = 512;
+    char error_message_[kErrorMessageCap]{};
+    std::atomic<uint8_t> error_message_state_{0};
+
+    // First failure wins, matching error_type_: later ones are consequences of the stop.
+    void record_error_message(const char* what) noexcept {
+        uint8_t expected = 0;
+        if (!error_message_state_.compare_exchange_strong(
+                expected, 1, std::memory_order_acq_rel, std::memory_order_relaxed))
+            return;
+        const size_t n = what ? std::strlen(what) : 0;
+        const size_t k = n < kErrorMessageCap - 1 ? n : kErrorMessageCap - 1;
+        if (k) std::memcpy(error_message_, what, k);
+        error_message_[k] = '\0';
+        error_message_state_.store(2, std::memory_order_release);
+    }
 
     // Optional hook run on the worker thread after EACH job's execute() — used to
     // recycle the per-worker scratch arena between tasks (allocation architecture).
@@ -193,15 +218,18 @@ private:
         if (data) data->jobs_executing.fetch_add(1);
         try {
             job->execute();
-        } catch (const std::bad_alloc&) {
+        } catch (const std::bad_alloc& e) {
+            record_error_message(e.what());
             error_type_.store(ErrorType::OutOfMemory, std::memory_order_release);
             stop_all_workers();
         } catch (const std::exception& e) {
-            error_type_.store(std::string(e.what()) == "Operation aborted"
-                                  ? ErrorType::Aborted : ErrorType::Exception,
+            const bool aborted = std::strcmp(e.what(), "Operation aborted") == 0;
+            if (!aborted) record_error_message(e.what());
+            error_type_.store(aborted ? ErrorType::Aborted : ErrorType::Exception,
                               std::memory_order_release);
             stop_all_workers();
         } catch (...) {
+            record_error_message("non-std exception");
             error_type_.store(ErrorType::Unhandled, std::memory_order_release);
             stop_all_workers();
         }
@@ -350,6 +378,7 @@ public:
         total_submitted_.store(0);
         total_completed_.store(0);
         error_type_.store(ErrorType::None, std::memory_order_relaxed);
+        error_message_state_.store(0, std::memory_order_relaxed);
 
         for (size_t i = 0; i < workers_.size(); ++i) {
             workers_[i]->stop.store(false, std::memory_order_relaxed);
@@ -502,6 +531,11 @@ public:
 
     ErrorType get_error_type() const { return error_type_.load(std::memory_order_acquire); }
     bool has_error() const { return get_error_type() != ErrorType::None; }
+
+    // The first worker exception's what(), or "" if none was recorded. Valid until reset().
+    const char* get_error_message() const {
+        return error_message_state_.load(std::memory_order_acquire) == 2 ? error_message_ : "";
+    }
 
     const char* get_error_description() const {
         switch (get_error_type()) {

@@ -18,6 +18,26 @@
 
 namespace hypergraph {
 
+// A ConcurrentMap key from one or two dense ids.
+//
+// The map reserves EMPTY(0) and LOCKED and REJECTS a key equal to either, so an id packed raw
+// collides exactly when the id is zero -- which is the first state, the first edge and the
+// first event. Offsetting each id by one is injective and cannot produce zero: the high word is
+// at least one. Ids are engine-minted and bounded well below INVALID_ID, so neither offset can
+// wrap into LOCKED.
+//
+// Every map keyed by ids goes through this. Two sites packing ids their own way is how one of
+// them ends up without the offset.
+inline constexpr uint64_t id_key(uint32_t a) {
+    return static_cast<uint64_t>(a) + 1;
+}
+inline constexpr uint64_t id_key(uint32_t a, uint32_t b) {
+    return ((static_cast<uint64_t>(a) + 1) << 32) | (static_cast<uint64_t>(b) + 1);
+}
+inline constexpr uint32_t id_from_key(uint64_t k) {
+    return static_cast<uint32_t>(k - 1);
+}
+
 // =============================================================================
 // ConcurrentMap<K, V>: Lock-free hash map with open addressing
 // =============================================================================
@@ -197,9 +217,10 @@ public:
             assert(false && "ConcurrentMap: key collides with a reserved sentinel (EMPTY/LOCKED)");
 #else
             throw std::logic_error(
-                std::string("ConcurrentMap::") + op +
-                ": key collides with a reserved sentinel (EMPTY/LOCKED). "
-                "Offset dense ids by +1 or use a reserved sentinel band.");
+                std::string("ConcurrentMap::") + op + ": key " +
+                std::to_string(static_cast<unsigned long long>(key)) + " collides with " +
+                (key == EMPTY_KEY ? "EMPTY" : "LOCKED") +
+                ". Offset dense ids by +1 or use a reserved sentinel band.");
 #endif
         }
     }

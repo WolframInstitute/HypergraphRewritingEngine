@@ -124,8 +124,14 @@ StateId Hypergraph::get_or_create_genesis_state() {
     StateId current = genesis_state_.load(std::memory_order_acquire);
     if (current != INVALID_ID) return current;
 
+    // EMPTY_STATE_CANONICAL_HASH, not 0, because that is what compute_canonical_hash gives an
+    // empty edge set -- the empty state must have ONE hash however it came to exist. Zero is
+    // also the ConcurrentMap EMPTY sentinel, so a genesis keyed by it made every map that keys
+    // on a canonical hash throw the moment genesis reached one (quotient exploration with a
+    // rule that empties the state).
     SparseBitset empty_edges;
-    const StateId candidate = create_state(std::move(empty_edges), 0, 0, INVALID_ID);
+    const StateId candidate =
+        create_state(std::move(empty_edges), 0, EMPTY_STATE_CANONICAL_HASH, INVALID_ID);
 
     StateId expected = INVALID_ID;
     if (genesis_state_.compare_exchange_strong(expected, candidate,
@@ -790,7 +796,11 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     uint32_t* arr_orbit = arena_.allocate_array<uint32_t>(n ? n : 1);
     uint32_t* arr_slot  = arena_.allocate_array<uint32_t>(n ? n : 1);
     uint32_t* arr_class = arena_.allocate_array<uint32_t>(n ? n : 1);
-    uint64_t hash = 0;
+    // The empty state's hash, for the n == 0 case that skips the canonicalizer below. It is the
+    // same value compute_state_ranks_and_hash gives an empty edge set, because the empty state
+    // is one state and must have one hash however it was reached. Zero is additionally the
+    // ConcurrentMap EMPTY sentinel, and this hash is a key in every quotient map.
+    uint64_t hash = EMPTY_STATE_CANONICAL_HASH;
     uint32_t num_orbits = 0;
 
     if (n > 0) {
@@ -981,8 +991,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
     qc_num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
 
-    uint64_t pk = (static_cast<uint64_t>(producer) << 32) | consumer;
-    pk = pk ? pk : 1;
+    const uint64_t pk = qc_pair_key(producer, consumer);
     if (!qc_causal_pairs_.insert_if_absent(pk, true).second) return;   // pair already recorded
     qc_num_causal_pairs_.fetch_add(1, std::memory_order_relaxed);
 
@@ -1125,8 +1134,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
             // comparing counts says only THAT the two paths disagree, never about which pair.
             const uint32_t lo = ev < other.event ? ev : other.event;
             const uint32_t hi = ev < other.event ? other.event : ev;
-            const uint64_t bk = (static_cast<uint64_t>(lo) << 32) | hi;
-            if (qc_branchial_pairs_.insert_if_absent(bk, true).second)
+            if (qc_branchial_pairs_.insert_if_absent(qc_pair_key(lo, hi), true).second)
                 qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         });
     }

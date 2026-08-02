@@ -6,6 +6,7 @@
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/causal_graph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
+#include <string>
 #include <vector>
 #include <set>
 #include <map>
@@ -464,18 +465,27 @@ TEST(Unified_CanonicalHash, EmptyingRuleEvolvesWithoutError) {
         {"Automatic",         hgcommon::EVENT_SIG_AUTOMATIC},
     };
 
-    for (const auto& m : modes) {
-        Hypergraph hg;
-        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        hg.set_event_signature_keys(m.keys);
+    // Both exploration strategies, because the strategy also decides the mechanism:
+    // quotient exploration forces the reconstruction on for EVERY identity mode, where full
+    // capture leaves all but Automatic on the rewriter.cpp rendezvous.
+    for (bool quotient : {false, true}) {
+        for (const auto& m : modes) {
+            const std::string where =
+                std::string(m.name) + (quotient ? " quotient" : " full-capture");
 
-        ParallelEvolutionEngine engine(&hg, 4);
-        engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            hg.set_event_signature_keys(m.keys);
 
-        std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
-        EXPECT_NO_THROW(engine.evolve(init, 3)) << m.name;
-        EXPECT_EQ(engine.last_error(), job_system::ErrorType::None) << m.name;
-        EXPECT_GT(hg.num_states(), 1u) << m.name;
+            ParallelEvolutionEngine engine(&hg, 4);
+            engine.set_explore_from_canonical_states_only(quotient);
+            engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
+
+            std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
+            EXPECT_NO_THROW(engine.evolve(init, 3)) << where;
+            EXPECT_EQ(engine.last_error(), job_system::ErrorType::None) << where;
+            EXPECT_GT(hg.num_states(), 1u) << where;
+        }
     }
 }
 

@@ -245,6 +245,17 @@ class Hypergraph {
     bool qc_reachable(uint32_t producer, uint32_t consumer) const;
     void qc_record_causal(uint32_t producer, uint32_t consumer);
 
+    // An ordered pair of event ids as one map key, for the causal and branchial pair sets.
+    //
+    // Both ids are offset by one before packing, which makes the key INJECTIVE and never zero:
+    // the high word is at least 1, and ConcurrentMap reserves 0 as EMPTY. Packing raw and
+    // nudging a zero result to 1 instead -- which is what the causal site did -- collides pair
+    // (0,0) with pair (0,1), and insert_if_absent then drops the second as already present.
+    //
+    // Ids are engine-minted and bounded well below INVALID_ID, so neither offset can wrap and
+    // the key cannot reach the LOCKED sentinel either.
+    static uint64_t qc_pair_key(uint32_t a, uint32_t b) { return id_key(a, b); }
+
     static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
         uint64_t h = 1469598103934665603ULL;
         h ^= state_hash; h *= 1099511628211ULL;

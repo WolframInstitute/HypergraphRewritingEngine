@@ -194,11 +194,14 @@ void ParallelEvolutionEngine::raise_worker_error() const {
         case job_system::ErrorType::None:
         case job_system::ErrorType::Aborted:
             return;
-        default:
+        default: {
+            const char* what = job_system_->get_error_message();
             throw std::runtime_error(
                 std::string("evolution failed in a worker: ")
                 + job_system_->get_error_description()
+                + (*what ? std::string(": ") + what : std::string())
                 + " (the graph is truncated at the point of failure)");
+        }
     }
 }
 
@@ -307,7 +310,7 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
 }
 
 LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(StateId state) {
-    uint64_t key = state;
+    const uint64_t key = id_key(state);
 
     // First, try to look up existing list
     auto result = state_matches_.lookup(key);
@@ -349,7 +352,7 @@ uint64_t ParallelEvolutionEngine::store_match_for_state(
 }
 
 LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(StateId state) {
-    uint64_t key = state;
+    const uint64_t key = id_key(state);
 
     // First, try to look up existing list
     auto result = state_children_.lookup(key);
@@ -405,7 +408,7 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
         pi_init.consumed_edges[i] = consumed_edges[i];
     }
     ParentInfo* parent_info = hg_->arena().template create<ParentInfo>(pi_init);
-    state_parent_.insert_if_absent(child, parent_info);
+    state_parent_.insert_if_absent(id_key(child), parent_info);
 
     // Now make the child push-visible (for push_match_to_children, incl. recursive)
     LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
@@ -452,7 +455,7 @@ void ParallelEvolutionEngine::push_match_to_children(
     // is not something to rely on. A single parent gains finitely many children, so scoped
     // this way the loop is bounded by that.
     auto child_epoch = [this](StateId p) -> uintptr_t {
-        auto r = state_children_.lookup(p);
+        auto r = state_children_.lookup(id_key(p));
         return r.has_value() ? (*r)->head_token() : 0;
     };
 
@@ -481,7 +484,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
                                               : stats_.push_forwarding_empty;
     calls.fetch_add(1, std::memory_order_relaxed);
 
-    auto result = state_children_.lookup_waiting(parent);
+    auto result = state_children_.lookup_waiting(id_key(parent));
     if (!result.has_value()) {
         empty.fetch_add(1, std::memory_order_relaxed);
         return;  // No children registered
@@ -569,7 +572,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches(
                                               accumulated_consumed, total_consumed, step, batch);
 
         // Move to the next ancestor and accumulate its consumed edges
-        auto parent_result = state_parent_.lookup_waiting(current_ancestor);
+        auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
         if (!parent_result.has_value()) break;
 
         ParentInfo* pi = *parent_result;
@@ -606,7 +609,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     uint64_t /* child_registration_epoch - unused */,
     SVec<MatchRecord>& batch
 ) {
-    auto result = state_matches_.lookup_waiting(ancestor);
+    auto result = state_matches_.lookup_waiting(id_key(ancestor));
     if (!result.has_value()) return;  // Ancestor has no matches yet
 
     LockFreeList<MatchRecord>* ancestor_matches = *result;
@@ -688,9 +691,9 @@ uintptr_t ParallelEvolutionEngine::ancestor_match_epoch(StateId parent) const {
     uintptr_t token = 0;
     StateId cur = parent;
     for (uint32_t hops = 0; cur != INVALID_ID && hops < kMaxAncestorHops; ++hops) {
-        auto m = state_matches_.lookup(cur);
+        auto m = state_matches_.lookup(id_key(cur));
         token = token * 1099511628211ULL + (m.has_value() ? (*m)->head_token() : 0);
-        auto p = state_parent_.lookup(cur);
+        auto p = state_parent_.lookup(id_key(cur));
         if (!p.has_value() || !*p || !(*p)->has_parent()) break;
         cur = (*p)->parent_state;
     }
@@ -722,7 +725,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
             accumulated_consumed, total_consumed, step);
 
         // Move to next ancestor and accumulate consumed edges
-        auto parent_result = state_parent_.lookup_waiting(current_ancestor);
+        auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
         if (!parent_result.has_value()) break;
 
         ParentInfo* pi = *parent_result;
@@ -752,7 +755,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
                 current_ancestor, child,
                 accumulated_consumed, total_consumed, step);
 
-            auto parent_result = state_parent_.lookup_waiting(current_ancestor);
+            auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
             if (!parent_result.has_value()) break;
 
             ParentInfo* pi = *parent_result;
@@ -775,7 +778,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
     uint8_t total_consumed,
     uint32_t step
 ) {
-    auto result = state_matches_.lookup_waiting(ancestor);
+    auto result = state_matches_.lookup_waiting(id_key(ancestor));
     if (!result.has_value()) return;
 
     // Build consumed set once for O(1) amortized overlap checks
@@ -1099,7 +1102,7 @@ bool ParallelEvolutionEngine::try_claim_budget(std::atomic<size_t>* counter, siz
 // =============================================================================
 
 ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
-    const uint64_t key = static_cast<uint64_t>(state);
+    const uint64_t key = id_key(state);
     auto result = match_join_.lookup(key);
     if (result.has_value()) return *result;
 
@@ -1158,7 +1161,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     if (join->own_spawned.load(std::memory_order_acquire) != 0) return;
     const uint64_t want = join->own_min_key.load(std::memory_order_acquire);
     if (want == ~0ULL) return;   // no own-found matches: no spine for this state
-    auto stored = state_matches_.lookup(static_cast<uint64_t>(state));
+    auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
 
     // The own-minimum's record is in the stored list (every site stores before drawing);
@@ -1202,7 +1205,7 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int s
 }
 
 size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
-    auto result = match_join_.lookup(static_cast<uint64_t>(state));
+    auto result = match_join_.lookup(id_key(state));
     if (!result.has_value()) return 0;
     return (*result)->matches.load(std::memory_order_acquire);
 }
