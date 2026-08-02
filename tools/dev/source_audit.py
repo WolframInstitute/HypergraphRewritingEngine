@@ -113,6 +113,27 @@ def main():
         sites = cross[name]
         W(f"- **{name}** — {', '.join(f'`{p}:{l}`' for p, l in sites)}")
 
+    # Same area, every site shipped: both definitions link into one product, so they can
+    # drift apart with nothing to notice. This is the class the prime directive is about,
+    # and it is the bulk of the count -- reporting only the cross-area subset above meant
+    # printing 1 of 186.
+    same = {n: s for n, s in dupes.items()
+            if n not in cross and not any(is_consumer(p) for p, _ in s)}
+    W(f"\n### Same area, all sites shipped — {len(same)}\n")
+    W("An overload set looks identical to a second implementation from here: both are one "
+      "name at two sites. What separates them is whether the two bodies DECIDE the same "
+      "thing, which is a reading task -- so this is a list to read, not a defect count.\n")
+    shown = sorted(same, key=lambda n: (-len(same[n]), n))
+    for name in shown[:120]:
+        W(f"- **{name}** — {', '.join(f'`{p}:{l}`' for p, l in same[name])}")
+    if len(shown) > 120:
+        W(f"\n({len(shown) - 120} further same-area duplicates not listed.)")
+
+    # The remainder are consumer-side: two standalone binaries' file-local helpers.
+    rest = len(dupes) - len(cross) - len(same)
+    W(f"\n{rest} duplicates have at least one site in tests/ or tools/ and are not listed: "
+      "two standalone binaries each defining `main` or `run` share a name and nothing else.\n")
+
     # ---- 2. unreferenced definitions ---------------------------------------------
     # Zero referrers from any project definition. Split by whether the definition is
     # itself in a consumer directory, because unreferenced test code is expected.
@@ -195,7 +216,7 @@ def main():
 
     dest = os.path.join(ROOT, "SOURCE_AUDIT.md")
     open(dest, "w").write("\n".join(out) + "\n")
-    print(f"{len(dupes)} duplicated names ({len(cross)} spanning areas), "
+    print(f"{len(dupes)} duplicated names ({len(cross)} spanning areas, {len(same)} same-area shipped), "
           f"{len(ship)} unreferenced in shipped code, "
           f"{len(only_consumer)} shipped-but-test-only -> {dest}")
 
