@@ -100,11 +100,11 @@ class CausalGraph {
 
     // Deduplication map for causal edges: hash(producer, consumer, edge) -> true
     // The rendezvous pattern can cause both producer and consumer to add the same edge
-    ConcurrentMap<uint64_t, bool> seen_causal_triples_;
+    ConcurrentMap<uint64_t, uint8_t> seen_causal_triples_;
 
     // Deduplication map for causal event pairs: (producer << 32 | consumer) -> true
     // Counts unique event pairs that have a causal relationship.
-    ConcurrentMap<uint64_t, bool> seen_causal_event_pairs_;
+    ConcurrentMap<uint64_t, uint8_t> seen_causal_event_pairs_;
 
     // Pack an ordered event pair into a map key. Both ids are offset by one so that the
     // self-loop (0,0) -- a real canonical self-loop under quotient, where distinct raw events
@@ -116,7 +116,7 @@ class CausalGraph {
     }
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
-    ConcurrentMap<uint64_t, bool> seen_branchial_pairs_;
+    ConcurrentMap<uint64_t, uint8_t> seen_branchial_pairs_;
 
     // =========================================================================
     // Online Transitive Reduction (backward-reachability oracle)

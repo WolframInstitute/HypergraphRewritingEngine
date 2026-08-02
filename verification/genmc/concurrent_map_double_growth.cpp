@@ -1,15 +1,17 @@
-// GenMC harness: is the WARRANTED double-growth residual actually reachable?
+// GenMC harness: exactly-one insert winner across a warranted double growth, THREE workers.
 //
-// 29283f7 closed the resize double-claim by removing the UNNECESSARY second installation:
-// resize() re-tests the load factor against the current head, so a thread whose resize decision
-// was made against a stale table does not install over a table that already has room. The
-// RESIDUAL recorded with it: when growth is GENUINELY warranted twice over -- the count crosses
-// the threshold again between one installation and the next -- a thread still holding the middle
-// table can claim a key there while a rival, whose chain scan already passed that table, claims
-// the same key at the head. Closing that needs seal-and-migrate, a rewrite of the primitive.
+// Same property and same shape as concurrent_map_double_growth_2t, with W2's third insert
+// carried by its own worker. The extra thread's interleavings put this at 3.3e9 executions
+// (genmc --mode=estimate), which cannot be exhausted here -- so this harness runs in
+// ESTIMATION mode, which samples real executions and reports a violation when it hits one.
+// A clean estimate is evidence, not proof; the proof at this shape is the 2t harness, which
+// is exhaustive.
 //
-// This harness exists to decide whether the rewrite has anything to fix AT A BOUND GENMC CAN
-// EXPLORE. It arranges the tightest configuration that can warrant two growths:
+// Sampling is not a weak instrument for this defect class. The un-anchored map -- a re-drive
+// claiming at the head on a verdict formed against an older table -- is refuted here in
+// 0.10s, while the dedicated fuzz gate (hypergraph/tests/test_concurrent_map_fuzz.cpp,
+// millions of operations at growth-saturated shapes) passes: random scheduling does not
+// reach the interleaving.
 //
 //   capacity 2 (threshold: count > 1.5), one key pre-inserted single-threaded;
 //   W1 inserts K   -- the contended key;
@@ -17,14 +19,11 @@
 //   W3 inserts kC          -- more load: with all four keys in, count 4 > 3 = 4 * 0.75,
 //                             so a SECOND growth (4 -> 8) is warranted while claims are in flight.
 //
-// THE ASSERTION IS THE RESIDUAL'S ABSENCE: exactly one of the two K-claims reports
-// was_inserted, and lookup(K) agrees with the winner. A safety violation here is not a harness
-// bug -- it is the residual, reached, and the seal-and-migrate rewrite becomes justified with a
-// reproducer. No violation over the full enumeration means the residual is UNREACHABLE at this
-// bound, and the recorded configuration must be enlarged before any rewrite is argued for.
+// The assertions: exactly one of the two K-claims reports was_inserted, both observe the same
+// stored value, lookup agrees, and nothing else was lost while the tables churned.
 //
-// GENMC-ARGS: --disable-estimation
-// GENMC-EXPECT: violation
+// GENMC-ARGS: --mode=estimate
+// GENMC-EXPECT: pass
 
 #include <pthread.h>
 #include <cassert>
@@ -74,7 +73,7 @@ int main() {
     pthread_join(t2, nullptr);
     pthread_join(t3, nullptr);
 
-    // The residual's signature: both K-claims told they inserted.
+    // Exactly one K-claim wins, and both observe the winner's value.
     assert(g_ins[0] != g_ins[1]);
     assert(g_val[0] == g_val[1]);
 

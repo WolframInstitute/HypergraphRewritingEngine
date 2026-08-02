@@ -511,7 +511,7 @@ private:
     // StateId is 32-bit, so we use keys outside that range for EMPTY/LOCKED
     static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
     static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) | 1;
-    ConcurrentMap<uint64_t, bool, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
+    ConcurrentMap<uint64_t, uint8_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
 
     // Per-state match storage for match forwarding
     // Maps state -> list of matches found in that state

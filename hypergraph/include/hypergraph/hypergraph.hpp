@@ -115,7 +115,7 @@ class Hypergraph {
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
     // producer-set reconstruction propagates over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    ConcurrentMap<uint64_t, bool> seen_transitions_;
+    ConcurrentMap<uint64_t, uint8_t> seen_transitions_;
 
     // Depth-indexed producer-set reconstruction (the online form of the validated DP).
     // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
@@ -123,8 +123,8 @@ class Hypergraph {
     // depth). Producers cascade forward monotonically as transitions and reachability are
     // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    ConcurrentMap<uint64_t, bool> qc_dsup_seen_;
-    ConcurrentMap<uint64_t, bool> qc_reached_;
+    ConcurrentMap<uint64_t, uint8_t> qc_dsup_seen_;
+    ConcurrentMap<uint64_t, uint8_t> qc_reached_;
     std::atomic<int> qc_max_steps_{0};
 
     // The expanded representative's FULL match list per canonical state, in slots -- the
@@ -176,10 +176,10 @@ class Hypergraph {
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
-    ConcurrentMap<uint64_t, bool> qc_applied_;
+    ConcurrentMap<uint64_t, uint8_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
-    ConcurrentMap<uint64_t, bool> qc_branchial_pairs_;
+    ConcurrentMap<uint64_t, uint8_t> qc_branchial_pairs_;
 
     // The matches already applied to one instance, indexed by dense instance id. Branchial
     // pairing scans THIS, not the expansion list, and that is what makes the pairing provable
@@ -213,7 +213,7 @@ class Hypergraph {
     // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
     // observable is the count of DISTINCT identities, so the mode's signature is computed here
     // and the distinct ones counted.
-    ConcurrentMap<uint64_t, bool> qc_canon_event_seen_{4096};
+    ConcurrentMap<uint64_t, uint8_t> qc_canon_event_seen_{4096};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
@@ -224,7 +224,7 @@ class Hypergraph {
     // before creating the child instance whose later application mints the consumer's -- and
     // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
     // reduction decision is exact at insertion.
-    ConcurrentMap<uint64_t, bool> qc_causal_pairs_;              // distinct (producer, consumer)
+    ConcurrentMap<uint64_t, uint8_t> qc_causal_pairs_;              // distinct (producer, consumer)
     ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only identity they have -- it

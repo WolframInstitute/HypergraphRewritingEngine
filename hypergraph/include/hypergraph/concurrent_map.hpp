@@ -58,6 +58,24 @@ public:
     static constexpr size_t DEFAULT_INITIAL_CAPACITY = 1024;
     static constexpr double LOAD_FACTOR_THRESHOLD = 0.75;
 
+    // The value slot's THIRD state: a resize seals every unsettled slot of the table it
+    // supersedes with this, so no value can ever settle in a superseded table after the seal
+    // (see resize). Pointer maps use address 1, which no real object occupies; integral maps
+    // the all-ones value, or all-ones-minus-one when ABSENT_VALUE is itself all-ones.
+    // publish_value rejects a stored value equal to it, exactly as it rejects ABSENT_VALUE,
+    // so a caller whose value domain collides finds out loudly. V must be able to hold three
+    // distinct states -- a V of bool cannot; such maps store uint8_t (their `true` converts
+    // to 1, distinct from ABSENT 0 and FORWARDED 0xFF).
+    static V forwarded_value() {
+        if constexpr (std::is_pointer_v<V>) {
+            return reinterpret_cast<V>(static_cast<uintptr_t>(1));
+        } else {
+            const V allones = static_cast<V>(~static_cast<uint64_t>(0));
+            return ABSENT_VALUE == allones ? static_cast<V>(static_cast<uint64_t>(allones) - 1)
+                                           : allones;
+        }
+    }
+
     struct Entry {
         std::atomic<K> key;
         std::atomic<V> value;
@@ -200,34 +218,57 @@ public:
             table = table_.load(std::memory_order_acquire);
         }
 
-        // Check superseded tables before inserting. An entry can live only in one of them --
-        // an insert that resolved against a table after its slot had been rehashed completes
-        // there -- and inserting again would give one key two entries, which for the
-        // get-or-create callers means two container objects and a silently split rendezvous.
-        //
-        // The scan SETTLES rather than merely looks. A plain lookup reports a key whose value
-        // is not yet published as absent, which is the right answer for a reader and the wrong
-        // one here: this caller is holding a value to offer, so it completes that entry
-        // instead of walking past it and creating a rival. Offering a value is the same
-        // exchange every publisher uses, so this closes the window without anyone waiting.
-        if (table->prev) {
-            auto settled = find_and_settle_in_chain(table->prev, key, value);
+        (void)table;
+        return drive_at_head(key, value, true);
+    }
+
+    // Drive `key` at the head, entering through the CHAIN.
+    //
+    // An entry can live in only one table -- an insert that resolved against a table after its
+    // slot had been rehashed completes there -- and inserting again would give one key two
+    // entries, which for the get-or-create callers means two container objects and a silently
+    // split rendezvous.
+    //
+    // The scan SETTLES rather than merely looks. A plain lookup reports a key whose value is
+    // not yet published as absent, which is the right answer for a reader and the wrong one
+    // here: this caller is holding a value to offer, so it completes that entry instead of
+    // walking past it and creating a rival. Offering a value is the same exchange every
+    // publisher uses, so this closes the window without anyone waiting.
+    //
+    // THE VERDICT MUST BE ANCHORED TO THE HEAD IT CLAIMS IN. Every path that re-drives -- a
+    // seal, an exhausted probe run, a growth -- arrives with an absence verdict for the ONE
+    // table it came from, while tables installed meanwhile may hold a rival's settled claim
+    // the migration has not yet carried forward. Claiming fresh on that verdict tells two
+    // callers was_inserted for one key, and the migration's exchange for the older claim then
+    // loses to the fresh one and drops its value. Rescanning from the current head re-anchors
+    // it: each older table either yields its claim to the scan or is foreclosed by the scan's
+    // seal.
+    //
+    // The scan is skipped only for an ANCHOR (increment_count false): that caller carries a
+    // value already settled elsewhere and is placing it at the head, not deciding absence.
+    std::pair<V, bool> drive_at_head(K key, V value, bool increment_count) {
+        Table* head = table_.load(std::memory_order_acquire);
+        if (increment_count && head->prev) {
+            auto settled = find_and_settle_in_chain(head->prev, key, value);
             if (settled.has_value()) return *settled;
         }
-
-        // A key claimed in a table that is no longer the head can be claimed AGAIN at the head by
-        // a thread whose chain scan walked past that table before this claim landed. resize()
-        // growing only when the CURRENT head needs it removes every unnecessary second
-        // installation; a second installation that is genuinely warranted -- the count crosses
-        // the threshold again between one installation and the next -- keeps the window open,
-        // and the model checker REACHES it: verification/genmc/concurrent_map_double_growth is
-        // the pinned reproducer (both claimants told was_inserted), kept expected-to-violate so
-        // the suite notices if the window silently moves or closes. Post-claim reconciliation
-        // cannot close it -- whichever entry is designated the winner, there is a one-sided
-        // visibility case in which the loser has already settled its own value and remains what
-        // some reader sees -- so the closure is entry forwarding at the value slot
-        // (seal-and-migrate), a change to this primitive's entry representation.
-        return insert_into_table(table, key, value, true);
+        // One key can be CLAIMED in two tables -- a claimant working from a superseded table
+        // racing a rival at the head -- but it can only ever SETTLE through one exchange, and
+        // every caller answers from that exchange. Claims serialize per slot (a claim is a
+        // compare-exchange, which reads the slot's latest value), and the chain scan above
+        // SEALS the slot any late claim would need: a scan whose probe run ends at an EMPTY
+        // slot exchanges it to LOCKED before moving on (see find_and_settle_in_chain). So in
+        // each superseded table, either the scan discovers the claim -- and the exchange it
+        // offers into is the ONE exchange for the key -- or its seal lands first and no claim
+        // for the key can ever settle there: a later claim's exchange reads the LOCKED slot
+        // and re-drives at the head. Reading LOCKED also hands the claimant the newer head:
+        // the sealer loaded table_ after the install, and the exchange carries that
+        // visibility, so the re-drive cannot land back in the table it just left. resize()
+        // seals whole tables through the same exchanges (EMPTY keys to LOCKED, ABSENT values
+        // to FORWARDED) before migrating. verification/genmc/concurrent_map_double_growth
+        // holds the tightest configuration that warrants two growths mid-claim, expected
+        // clean.
+        return insert_into_table(head, key, value, increment_count);
     }
 
     // Retained spelling of insert_if_absent. Nothing is ever in a state a caller could
@@ -277,8 +318,9 @@ public:
         for (Table* t = head; t; t = t->prev) {
             for (size_t i = 0; i < t->capacity; ++i) {
                 const K key = t->entries[i].key.load(std::memory_order_acquire);
-                if (key == EMPTY_KEY) continue;
-                if (t->entries[i].value.load(std::memory_order_acquire) == ABSENT_VALUE) continue;
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
+                const V v = t->entries[i].value.load(std::memory_order_acquire);
+                if (v == ABSENT_VALUE || v == forwarded_value()) continue;
                 if (t != head && contains_in_newer(head, t, key)) continue;
                 ++unique_count;
             }
@@ -308,9 +350,9 @@ public:
         for (Table* t = head; t; t = t->prev) {
             for (size_t i = 0; i < t->capacity; ++i) {
                 const K key = t->entries[i].key.load(std::memory_order_acquire);
-                if (key == EMPTY_KEY) continue;
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
                 const V v = t->entries[i].value.load(std::memory_order_acquire);
-                if (v == ABSENT_VALUE) continue;
+                if (v == ABSENT_VALUE || v == forwarded_value()) continue;
                 if (t != head && contains_in_newer(head, t, key)) continue;   // already emitted
                 f(key, v);
             }
@@ -351,12 +393,20 @@ private:
                                                       std::memory_order_acq_rel,
                                                       std::memory_order_acquire)) {
                     if (increment_count) count_.fetch_add(1, std::memory_order_relaxed);
-                    return publish_value(entry, value);
+                    return settle(table, entry, key, value, increment_count);
                 }
                 // Lost the slot; `current` now holds whichever key won it.
             }
 
-            if (current == key) return publish_value(entry, value);
+            if (current == LOCKED_KEY) {
+                // The seal: this table is superseded and takes no new claims. LOCKED replaced
+                // a slot that was EMPTY at seal time, and no probe run ever passed an EMPTY
+                // slot, so a key present in this table sits strictly before its run's first
+                // LOCKED -- reaching one means the key is not here. Re-drive at the head.
+                return drive_at_head(key, value, increment_count);
+            }
+
+            if (current == key) return settle(table, entry, key, value, increment_count);
             // Different key: keep probing.
         }
 
@@ -369,53 +419,108 @@ private:
         // head is already a larger table with room, and growing it would install another one --
         // and every extra installation is another chance for one key to be claimed in two tables
         // at once, which is what the head re-check in insert_if_absent exists to catch.
-        if (head != table) return insert_into_table(head, key, value, increment_count);
+        if (head != table) return drive_at_head(key, value, increment_count);
 
         // The head itself is full, so grow it regardless of the load factor: capacity elsewhere
         // in the chain cannot relieve an exhausted probe run here.
         resize(/*only_if_loaded=*/false);
-        return insert_into_table(table_.load(std::memory_order_acquire), key, value,
-                                 increment_count);
+        return drive_at_head(key, value, increment_count);
     }
 
-    // Settle this entry's value. Returns the stored value and whether it is the caller's.
-    std::pair<V, bool> publish_value(Entry& entry, V value) {
-        // A stored value equal to ABSENT_VALUE would read as "not published yet", so the
-        // entry would be invisible to every lookup -- the same silent-disappearance the key
-        // sentinels caused four times over, moved to the other field. Report it instead.
-        if (value == ABSENT_VALUE) {
+    // Settle this entry's value. Returns the stored value and whether it is the caller's, or
+    // nullopt when the slot is SEALED (value FORWARDED by a resize) -- the caller must then
+    // re-drive at the head, where the entry this one forwards to lives.
+    std::optional<std::pair<V, bool>> publish_value(Entry& entry, V value) {
+        // A stored value equal to a reserved value state would read as "not published yet" or
+        // as a seal, so the entry would be invisible to every lookup -- the same
+        // silent-disappearance the key sentinels caused four times over, moved to the other
+        // field. Report it instead.
+        if (value == ABSENT_VALUE || value == forwarded_value()) {
 #ifdef HG_VERIFICATION
             // See reject_sentinel_key for why a model-checked build asserts instead of throwing.
-            assert(false && "ConcurrentMap: stored value collides with ABSENT_VALUE");
+            assert(false && "ConcurrentMap: stored value collides with ABSENT/FORWARDED");
 #else
             throw std::logic_error(
-                "ConcurrentMap: stored value collides with ABSENT_VALUE, so the entry would "
-                "read as unpublished. Name a different ABSENT_VALUE for this map.");
+                "ConcurrentMap: stored value collides with ABSENT_VALUE or forwarded_value(), "
+                "so the entry would read as unpublished or sealed. Adjust this map's value "
+                "domain.");
 #endif
         }
 
         V current = entry.value.load(std::memory_order_acquire);
-        if (current != ABSENT_VALUE) return {current, false};
+        if (current == forwarded_value()) return std::nullopt;
+        if (current != ABSENT_VALUE) return std::make_pair(current, false);
 
         if (entry.value.compare_exchange_strong(current, value,
                                                 std::memory_order_acq_rel,
                                                 std::memory_order_acquire)) {
-            return {value, true};
+            return std::make_pair(value, true);
         }
-        return {current, false};   // another thread's value won; `current` holds it
+        if (current == forwarded_value()) return std::nullopt;   // the seal won the exchange
+        return std::make_pair(current, false);   // another thread's value won
+    }
+
+    // Settle through `entry` in `table`, then anchor the result at the HEAD: a settle that
+    // won in a table that has since been superseded drives the settled value through the
+    // head too, so the key is answerable from the head's own probe run and not only from the
+    // chain walk. (The local copy stays; newer tables are scanned first, so it is shadowed,
+    // and the migration pass carries the same value forward anyway.) The head read is an
+    // anchor, not a correctness gate -- if it is stale, rivals still cannot answer from a
+    // different exchange: their chain scan either reads this claim or loses its seal
+    // exchange to it (see find_and_settle_in_chain), and either way offers HERE.
+    std::pair<V, bool> settle(Table* table, Entry& entry, K key, V value,
+                              bool increment_count) {
+        auto r = publish_value(entry, value);
+        if (!r) {
+            // Sealed under us: nothing settled here, ever. Re-drive at the head.
+            return drive_at_head(key, value, increment_count);
+        }
+        Table* head = table_.load(std::memory_order_acquire);
+        if (head == table) return *r;
+        auto anchored = insert_into_table(head, key, r->first, false);
+        return {anchored.first, anchored.first == value};
     }
 
     // Find `key` anywhere in the chain and ensure its value is settled, offering `value` if it
     // is not. Returns the settled value and whether it is the caller's, or nullopt if the key
-    // is absent from every table.
+    // is absent from every table. A sealed (FORWARDED) claim is a claim that never settled and
+    // never will; the chain runs newest-first, so nothing newer holds it either -- skip it and
+    // keep scanning for an older settled original the migration may not have carried yet.
+    //
+    // SEAL ON SCAN. A probe run that reaches an EMPTY slot does not just report "not here":
+    // it exchanges the slot to LOCKED first. The slot it seals is exactly the slot any
+    // in-flight claim for `key` in this table must take (a claim takes the first EMPTY slot
+    // of this same run, and claims are exchanges, so they serialize per slot). Either this
+    // seal wins -- then no claim for `key` can ever settle in this table, because a later
+    // claim's exchange reads the LOCKED slot and re-drives at the head -- or a claim got
+    // there first, in which case the failed exchange hands back that claim and the scan
+    // offers into it: the ONE exchange for the key. This is what makes the scan complete:
+    // it cannot walk past a concurrent claim, it either discovers it or forecloses it.
     std::optional<std::pair<V, bool>> find_and_settle_in_chain(Table* table, K key, V value) {
         while (table) {
             const size_t start = hash(key) & table->mask;
             for (size_t probe = 0; probe < table->capacity; ++probe) {
                 Entry& entry = table->entries[(start + probe) & table->mask];
-                const K current = entry.key.load(std::memory_order_acquire);
-                if (current == EMPTY_KEY) break;          // not in THIS table; try the next
-                if (current == key) return publish_value(entry, value);
+                K current = entry.key.load(std::memory_order_acquire);
+                if (current == EMPTY_KEY) {
+                    if (entry.key.compare_exchange_strong(current, LOCKED_KEY,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_acquire))
+                        break;   // sealed: `key` can never settle in this table; try the next
+                    // Lost the exchange; `current` holds what beat us -- interpret it below.
+                }
+                if (current == LOCKED_KEY) break;         // not in THIS table; try the next
+                if (current == key) {
+                    auto r = publish_value(entry, value);
+                    if (!r) break;                        // sealed dead claim; try the next
+                    // A settle in a superseded table anchors at the head (see settle()); a
+                    // read of an already-settled value needs no anchoring, and this caller's
+                    // tables are all superseded, so distinguish by whether OUR offer won.
+                    if (!r->second) return r;
+                    auto anchored = insert_into_table(
+                        table_.load(std::memory_order_acquire), key, r->first, false);
+                    return std::make_pair(anchored.first, anchored.first == value);
+                }
             }
             table = table->prev;
         }
@@ -432,16 +537,18 @@ private:
     }
 
     // Wait-free. A key is either published or not; an entry whose value has not been settled
-    // yet reads as absent, which is the same answer a caller would get a moment earlier.
+    // yet -- or whose slot a resize sealed -- reads as absent, which is the same answer a
+    // caller would get a moment earlier. LOCKED ends a probe run exactly as EMPTY does: it
+    // replaced a slot that was EMPTY at seal time, and no probe run ever passed an EMPTY slot.
     std::optional<V> lookup_in_table(Table* table, K key) const {
         const size_t start = hash(key) & table->mask;
         for (size_t probe = 0; probe < table->capacity; ++probe) {
             const Entry& entry = table->entries[(start + probe) & table->mask];
             const K current = entry.key.load(std::memory_order_acquire);
-            if (current == EMPTY_KEY) return std::nullopt;   // empty slot ends the probe run
+            if (current == EMPTY_KEY || current == LOCKED_KEY) return std::nullopt;
             if (current == key) {
                 const V v = entry.value.load(std::memory_order_acquire);
-                if (v == ABSENT_VALUE) return std::nullopt;
+                if (v == ABSENT_VALUE || v == forwarded_value()) return std::nullopt;
                 return v;
             }
         }
@@ -456,8 +563,10 @@ private:
             size_t idx = hash(key) & t->mask;
             for (size_t probe = 0; probe < t->capacity; ++probe) {
                 const K k = t->entries[idx].key.load(std::memory_order_acquire);
-                if (k == key) return true;
-                if (k == EMPTY_KEY) break;           // key would have been placed by here
+                if (k == key)
+                    return t->entries[idx].value.load(std::memory_order_acquire)
+                           != forwarded_value();     // a sealed dead claim shadows nothing
+                if (k == EMPTY_KEY || k == LOCKED_KEY) break;  // placed by here if anywhere
                 idx = (idx + 1) & t->mask;
             }
         }
@@ -469,9 +578,9 @@ private:
         while (table) {
             for (size_t i = 0; i < table->capacity; ++i) {
                 const K key = table->entries[i].key.load(std::memory_order_acquire);
-                if (key == EMPTY_KEY) continue;
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
                 const V value = table->entries[i].value.load(std::memory_order_acquire);
-                if (value != ABSENT_VALUE) f(key, value);
+                if (value != ABSENT_VALUE && value != forwarded_value()) f(key, value);
             }
             table = table->prev;
         }
@@ -500,17 +609,11 @@ private:
 
         Table* new_table = Table::create(new_capacity, old_table, arena_);
 
-        // Rehash every settled entry. An entry whose value is not yet published stays behind
-        // in the old table -- the thread settling it is still working against that table, and
-        // the chain walk keeps it reachable.
-        for (size_t i = 0; i < old_table->capacity; ++i) {
-            const K key = old_table->entries[i].key.load(std::memory_order_acquire);
-            if (key == EMPTY_KEY) continue;
-            const V value = old_table->entries[i].value.load(std::memory_order_acquire);
-            if (value != ABSENT_VALUE) insert_into_table(new_table, key, value, false);
-        }
-
-        // Try to install new table
+        // INSTALL FIRST. The seal below redirects claimants and publishers to the head, so
+        // the head they are redirected to has to exist before any slot is sealed -- and the
+        // redirect must SEE it: a claimant that reads LOCKED, or a publisher whose exchange
+        // loses to FORWARDED, acquire-reads a value this thread wrote after the install, so
+        // its re-drive load of table_ observes the new head (or a newer one).
         if (!table_.compare_exchange_strong(
                 old_table, new_table,
                 std::memory_order_release,
@@ -518,6 +621,35 @@ private:
             // Another thread resized first. Discard our table: only free if heap-backed;
             // an arena-backed loser is reclaimed in bulk with the arena (rare, small).
             if (!arena_) ::operator delete(new_table);
+            return;
+        }
+
+        // SEAL. Every EMPTY key becomes LOCKED (no new claims here; a probe run ends at the
+        // first LOCKED exactly as it ended at the first EMPTY) and every ABSENT value becomes
+        // FORWARDED (no late settle; the publisher that loses this exchange re-drives at the
+        // head). Chain scans seal individual slots through this same key exchange
+        // (find_and_settle_in_chain); this pass seals the whole table, and only the thread
+        // whose install succeeded runs it.
+        for (size_t i = 0; i < old_table->capacity; ++i) {
+            K ek = EMPTY_KEY;
+            old_table->entries[i].key.compare_exchange_strong(
+                ek, LOCKED_KEY, std::memory_order_acq_rel, std::memory_order_acquire);
+            V av = ABSENT_VALUE;
+            old_table->entries[i].value.compare_exchange_strong(
+                av, forwarded_value(), std::memory_order_acq_rel, std::memory_order_acquire);
+        }
+
+        // MIGRATE. After the seal the superseded table's settled set is FROZEN -- a value
+        // either settled before its slot's seal and is visible to this acquire scan, or it
+        // lost to the seal and settles at the head under its own power -- so this copy is
+        // complete, and every key that ever settled here is answerable from the head chain.
+        // The old entries stay in place; newer tables are scanned first, so they are shadowed.
+        for (size_t i = 0; i < old_table->capacity; ++i) {
+            const K key = old_table->entries[i].key.load(std::memory_order_acquire);
+            if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
+            const V value = old_table->entries[i].value.load(std::memory_order_acquire);
+            if (value == ABSENT_VALUE || value == forwarded_value()) continue;
+            insert_into_table(table_.load(std::memory_order_acquire), key, value, false);
         }
     }
 
