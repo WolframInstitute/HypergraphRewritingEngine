@@ -65,6 +65,10 @@ DEF_KINDS = {
     ci.CursorKind.NAMESPACE: None,          # descend, do not record
 }
 
+# Marks an unresolved dependent call until merge time, when the full set of definition
+# names exists to resolve it against. Not a character that can appear in a C++ name.
+PENDING = "?"
+
 REF_KINDS = {
     ci.CursorKind.TYPE_REF,
     ci.CursorKind.TEMPLATE_REF,
@@ -248,6 +252,11 @@ def referenced_types(cur):
                     name = owning_type(d)
                 if name and "(lambda at" not in name and "(unnamed" not in name:
                     found.add(name)
+        elif c.kind == ci.CursorKind.OVERLOADED_DECL_REF and c.spelling:
+            # A call from inside an uninstantiated template: clang has not picked an
+            # overload yet, so there is no declaration to point at. Keep the name and
+            # resolve it once every definition is known.
+            found.add(PENDING + c.spelling)
         stack.extend(c.get_children())
     return found
 
@@ -326,6 +335,30 @@ def main():
             done += 1
             if done % 20 == 0:
                 print(f"  {done}/{len(uniq)} TUs", file=sys.stderr, flush=True)
+
+    # Resolve the dependent calls. A pending spelling matches any definition whose
+    # qualified name ends in it; ambiguity is kept rather than dropped, because the cost of
+    # a false "referenced" is one name read by hand and the cost of a false "unreferenced"
+    # is deleting live code.
+    by_last = defaultdict(set)
+    for (_p, _l, _k, name) in merged:
+        by_last[name.rsplit("::", 1)[-1]].add(name)
+
+    resolved_ct = unresolved_ct = 0
+    for key, refs in merged.items():
+        pending = {r for r in refs if r.startswith(PENDING)}
+        if not pending:
+            continue
+        refs -= pending
+        for p in pending:
+            hits = by_last.get(p[len(PENDING):])
+            if hits:
+                refs |= hits
+                resolved_ct += 1
+            else:
+                unresolved_ct += 1
+    print(f"dependent calls: {resolved_ct} resolved, {unresolved_ct} name not a project "
+          f"definition", file=sys.stderr)
 
     by_file = defaultdict(list)
     for (path, line, kind, name), refs in merged.items():
