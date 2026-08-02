@@ -1,5 +1,6 @@
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/device_arena.hpp"
+#include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/wl_hash.hpp"   // wl_hash_state_device — the size-tolerant fallback
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
 
@@ -217,13 +218,6 @@ __global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint3
     }
 }
 
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::ir_canon ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
-
 }  // namespace
 
 // Exact canonical hash of ONE state, sized and allocated entirely on device.
@@ -352,22 +346,22 @@ void compute_state_ir_hashes_range(const EngineState& engine,
     // wrong dedup key, not a coarser one (tools/ir_vs_wl collides on six-vertex graphs). A
     // state's size is knowable here, so nothing has to be given up for it.
     uint32_t* d_max = nullptr;
-    check(cudaMalloc(&d_max, sizeof(uint32_t) * 2), "measure alloc");
-    check(cudaMemset(d_max, 0, sizeof(uint32_t) * 2), "measure clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_max, sizeof(uint32_t) * 2), "measure alloc");
+    HG_CUDA_CHECK(cudaMemset(d_max, 0, sizeof(uint32_t) * 2), "measure clear");
     {
         const uint32_t block = 128;
         const uint32_t grid = (n + block - 1) / block;
         k_measure_states<<<grid ? grid : 1, block>>>(engine.device(), lo, hi, d_max);
-        check(cudaDeviceSynchronize(), "measure sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "measure sync");
     }
     uint32_t h_max[2] = {0, 0};
-    check(cudaMemcpy(h_max, d_max, sizeof(h_max), cudaMemcpyDeviceToHost), "measure copy");
+    HG_CUDA_CHECK(cudaMemcpy(h_max, d_max, sizeof(h_max), cudaMemcpyDeviceToHost), "measure copy");
     cudaFree(d_max);
 
     const uint32_t max_edges = h_max[0], max_occs = h_max[1];
     if (max_edges == 0) {
         // Every state in the range is empty; nothing to canonicalize.
-        check(cudaMemset(out_hashes_device, 0, sizeof(uint64_t) * n), "empty range clear");
+        HG_CUDA_CHECK(cudaMemset(out_hashes_device, 0, sizeof(uint64_t) * n), "empty range clear");
         g_last_degraded_states = 0;
         return;
     }
@@ -388,26 +382,26 @@ void compute_state_ir_hashes_range(const EngineState& engine,
         // dedup key, refuse: the caller sees the count and the states keep the 1-WL hash.
         k_ir_canon_range<<<1, 1>>>(engine.device(), lo, hi, out_hashes_device,
                                    nullptr, 0, IrSlotShape{}, nullptr);
-        check(cudaDeviceSynchronize(), "degenerate range sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "degenerate range sync");
         g_last_degraded_states = n;
         return;
     }
     if (threads > affordable) threads = static_cast<uint32_t>(affordable);
 
     uint32_t* pool = nullptr;
-    check(cudaMalloc(&pool, size_t(threads) * slot_bytes), "pool alloc");
+    HG_CUDA_CHECK(cudaMalloc(&pool, size_t(threads) * slot_bytes), "pool alloc");
     uint32_t* degraded = nullptr;
-    check(cudaMalloc(&degraded, sizeof(uint32_t)), "degraded alloc");
-    check(cudaMemset(degraded, 0, sizeof(uint32_t)), "degraded clear");
+    HG_CUDA_CHECK(cudaMalloc(&degraded, sizeof(uint32_t)), "degraded alloc");
+    HG_CUDA_CHECK(cudaMemset(degraded, 0, sizeof(uint32_t)), "degraded clear");
 
     const uint32_t block = threads < 64 ? threads : 64;
     const uint32_t grid = (threads + block - 1) / block;
     k_ir_canon_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device,
                                       pool, slot_words, shape, degraded);
-    check(cudaDeviceSynchronize(), "k_ir_canon_range sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_ir_canon_range sync");
 
     uint32_t h_degraded = 0;
-    check(cudaMemcpy(&h_degraded, degraded, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+    HG_CUDA_CHECK(cudaMemcpy(&h_degraded, degraded, sizeof(uint32_t), cudaMemcpyDeviceToHost),
           "degraded copy");
     cudaFree(degraded);
     cudaFree(pool);
@@ -418,10 +412,10 @@ uint32_t last_ir_degraded_states() { return g_last_degraded_states; }
 
 uint64_t compute_state_ir_hash_host(const EngineState& engine, StateId sid) {
     uint64_t* d = nullptr;
-    check(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
+    HG_CUDA_CHECK(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
     compute_state_ir_hashes_range(engine, sid, sid + 1, d);
     uint64_t h = 0;
-    check(cudaMemcpy(&h, d, sizeof(uint64_t), cudaMemcpyDeviceToHost), "copy");
+    HG_CUDA_CHECK(cudaMemcpy(&h, d, sizeof(uint64_t), cudaMemcpyDeviceToHost), "copy");
     cudaFree(d);
     return h;
 }

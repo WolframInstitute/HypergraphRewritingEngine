@@ -29,6 +29,7 @@
 // required to replay a record against an arbitrary INSTANCE; it belongs with the replay.
 
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
 #include "hgcommon/ir_core.hpp"     // ir_isort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
@@ -227,9 +228,9 @@ public:
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
-        check(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
-        check(cudaMalloc(&cursor_, sizeof(uint32_t)), "QeState cursor alloc");
-        check(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
+        HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
+        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QeState cursor alloc");
+        HG_CUDA_CHECK(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
         clear();
     }
     ~QeState() {
@@ -248,8 +249,8 @@ public:
         frame_.clear();
         by_from_.clear();
         matches_.reset();
-        check(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
-        check(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
+        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
+        HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
 
     QeView view(uint32_t max_steps) {
@@ -267,12 +268,6 @@ public:
     }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::QeState ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     Pool<DeviceSlotMatch>     matches_;
     LockFreeList<QeMatchRef>  by_from_;

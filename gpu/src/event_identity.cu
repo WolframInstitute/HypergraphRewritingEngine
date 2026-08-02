@@ -1,4 +1,5 @@
 #include "hg_gpu/event_identity.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -7,13 +8,6 @@
 
 namespace hg_gpu {
 namespace {
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::event_identity ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
 
 // One thread per state, grid-stride. Each claims its own arena slot, sized from its own state,
 // and keeps it across iterations so it re-claims only when it needs a larger one.
@@ -88,7 +82,7 @@ void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
     const int grid  = want < 1 ? 1 : (want > cap ? cap : want);
     k_fill_exact_and_ranks<<<grid, block>>>(
         engine.device(), lo, hi, key_is_exact, want_ranks, want_orbits, arena.view());
-    check(cudaDeviceSynchronize(), "fill_event_identity_inputs sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "fill_event_identity_inputs sync");
 }
 
 void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,
@@ -100,7 +94,7 @@ void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,
     const int grid  = static_cast<int>(((hi - lo) + block - 1) / block);
     k_stamp_events<<<grid > 0 ? grid : 1, block>>>(
         engine.device(), lo, hi, keys, event_map.view());
-    check(cudaDeviceSynchronize(), "stamp_event_identity_range sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "stamp_event_identity_range sync");
 }
 
 }  // namespace hg_gpu

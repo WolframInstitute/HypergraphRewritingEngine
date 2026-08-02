@@ -9,6 +9,7 @@
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -25,13 +26,6 @@
 namespace hg_gpu {
 
 namespace {
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::evolve ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
 
 }  // namespace (close anon — config_from_input has external linkage)
 
@@ -189,9 +183,9 @@ struct Engine::Impl {
         , matches_(cfg.max_states * 8u)
         , canonical_map_(cfg.max_states * 4u)
     {
-        check(cudaMalloc(&d_frontier_,      sizeof(StateId) * cfg.max_states), "d_frontier");
-        check(cudaMalloc(&d_next_frontier_, sizeof(StateId) * cfg.max_states), "d_next_frontier");
-        check(cudaMalloc(&d_next_count_,    sizeof(uint32_t)),                 "d_next_count");
+        HG_CUDA_CHECK(cudaMalloc(&d_frontier_,      sizeof(StateId) * cfg.max_states), "d_frontier");
+        HG_CUDA_CHECK(cudaMalloc(&d_next_frontier_, sizeof(StateId) * cfg.max_states), "d_next_frontier");
+        HG_CUDA_CHECK(cudaMalloc(&d_next_count_,    sizeof(uint32_t)),                 "d_next_count");
     }
 
     ~Impl() {
@@ -332,12 +326,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         d_rules_ = nullptr;
         d_rules_capacity_ = 0;
         if (num_rules > 0) {
-            check(cudaMalloc(&d_rules_, sizeof(DeviceRule) * num_rules), "d_rules alloc");
+            HG_CUDA_CHECK(cudaMalloc(&d_rules_, sizeof(DeviceRule) * num_rules), "d_rules alloc");
             d_rules_capacity_ = num_rules;
         }
     }
     if (num_rules > 0) {
-        check(cudaMemcpy(d_rules_, rules.data(), sizeof(DeviceRule) * num_rules,
+        HG_CUDA_CHECK(cudaMemcpy(d_rules_, rules.data(), sizeof(DeviceRule) * num_rules,
                          cudaMemcpyHostToDevice), "d_rules copy");
     }
     DeviceRule* d_rules = d_rules_;
@@ -414,7 +408,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                                qc_route);
     if (in.explore_from_canonical_states_only) {
         uint32_t zero32c = 0;
-        check(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "seed count");
         // Insert every root into the canonical map (children dedup against roots)
         // and seed the frontier; roots collapse only when quotient_initial_states.
@@ -422,11 +416,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         k_seed_roots<<<g, b>>>(engine.device(), num_roots, d_state_hashes, canonical_map.view(),
                                in.quotient_initial_states,
                                d_frontier, d_next_count, cfg.max_states);
-        check(cudaDeviceSynchronize(), "seed roots sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "seed roots sync");
     } else {
         std::vector<StateId> root_ids(num_roots);
         for (uint32_t i = 0; i < num_roots; ++i) root_ids[i] = i;
-        check(cudaMemcpy(d_frontier, root_ids.data(), sizeof(StateId) * num_roots,
+        HG_CUDA_CHECK(cudaMemcpy(d_frontier, root_ids.data(), sizeof(StateId) * num_roots,
                          cudaMemcpyHostToDevice),
               "seed frontier");
     }
@@ -435,7 +429,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     [[maybe_unused]] uint32_t frontier_count = 0;
     if (num_roots > 0) {
         if (in.explore_from_canonical_states_only) {
-            check(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
+            HG_CUDA_CHECK(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
                              cudaMemcpyDeviceToHost), "read seed count");
         } else {
             frontier_count = num_roots;
@@ -515,15 +509,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         }
     }
 
-
-
     auto t_readback_start = std::chrono::steady_clock::now();
 
     // Readback — hashes were persisted across steps, no re-hashing needed.
     uint32_t total_states = engine.num_states_host();
     std::vector<uint64_t> h_hashes(total_states);
     if (total_states > 0) {
-        check(cudaMemcpy(h_hashes.data(), d_state_hashes, sizeof(uint64_t) * total_states,
+        HG_CUDA_CHECK(cudaMemcpy(h_hashes.data(), d_state_hashes, sizeof(uint64_t) * total_states,
                          cudaMemcpyDeviceToHost), "final hashes d2h");
     }
     double t_readback_hashes = std::chrono::duration<double, std::milli>(

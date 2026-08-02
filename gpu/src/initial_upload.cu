@@ -1,5 +1,6 @@
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/edge_signature.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -24,13 +25,6 @@ __global__ void k_init_indices(DeviceState ds, uint32_t num_edges) {
 }
 
 namespace {
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::upload_initial_state ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
 
 }  // namespace
 
@@ -84,38 +78,38 @@ uint32_t upload_initial_states(EngineState& engine,
     if (M > cfg.max_states) throw std::runtime_error("upload_initial_states: max_states exceeded");
 
     if (n_edges > 0) {
-        check(cudaMemcpy(ds.vertex_pool.data, flat_vertices.data(),
+        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.data, flat_vertices.data(),
                          sizeof(VertexId) * flat_vertices.size(), cudaMemcpyHostToDevice),
               "upload vertex_pool");
-        check(cudaMemcpy(ds.edge_pool.data, edges.data(),
+        HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.data, edges.data(),
                          sizeof(Edge) * edges.size(), cudaMemcpyHostToDevice),
               "upload edge_pool");
         uint32_t vp_count = static_cast<uint32_t>(flat_vertices.size());
-        check(cudaMemcpy(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "set vertex_pool counter");
-        check(cudaMemcpy(ds.edge_pool.counter, &n_edges, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.counter, &n_edges, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "set edge_pool counter");
         uint32_t hi = max_vertex + 1;
-        check(cudaMemcpy(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "set vertex_high_water");
-        check(cudaMemcpy(ds.state_edge_ids, all_ids.data(),
+        HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids, all_ids.data(),
                          sizeof(EdgeId) * all_ids.size(), cudaMemcpyHostToDevice),
               "upload state_edge_ids");
         uint32_t ids_cnt = static_cast<uint32_t>(all_ids.size());
-        check(cudaMemcpy(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t), cudaMemcpyHostToDevice),
               "set state_edge_ids_counter");
     }
-    check(cudaMemcpy(ds.state_edge_slices, slices.data(),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_slices, slices.data(),
                      sizeof(StateEdgeSlice) * slices.size(), cudaMemcpyHostToDevice),
           "upload state slices");
-    check(cudaMemcpy(ds.state_count, &M, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_count, &M, sizeof(uint32_t), cudaMemcpyHostToDevice),
           "set state_count");
 
     if (n_edges > 0 && engine.maintain_indices()) {
         int block = 128;
         int grid  = (int)((n_edges + block - 1) / block);
         k_init_indices<<<grid, block>>>(ds, n_edges);
-        check(cudaDeviceSynchronize(), "k_init_indices sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_init_indices sync");
     }
     return M;
 }
@@ -127,7 +121,7 @@ StateId upload_initial_state(EngineState& engine,
         // Empty initial state — still create state 0 (an empty state) and
         // bump state_count to 1.
         uint32_t sc = 1;
-        check(cudaMemcpy(engine.device().state_count, &sc, sizeof(uint32_t),
+        HG_CUDA_CHECK(cudaMemcpy(engine.device().state_count, &sc, sizeof(uint32_t),
                          cudaMemcpyHostToDevice),
               "set state_count for empty initial");
         return 0u;
@@ -168,22 +162,22 @@ StateId upload_initial_state(EngineState& engine,
 
     // 2. Bulk upload vertex tuples and edges to their pools, then advance
     //    the atomic counters by direct host-side writes.
-    check(cudaMemcpy(ds.vertex_pool.data, flat_vertices.data(),
+    HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.data, flat_vertices.data(),
                      sizeof(VertexId) * flat_vertices.size(), cudaMemcpyHostToDevice),
           "upload vertex_pool");
-    check(cudaMemcpy(ds.edge_pool.data, edges.data(),
+    HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.data, edges.data(),
                      sizeof(Edge) * edges.size(), cudaMemcpyHostToDevice),
           "upload edge_pool");
 
     uint32_t vp_count = static_cast<uint32_t>(flat_vertices.size());
     uint32_t ep_count = n;
-    check(cudaMemcpy(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
           "set vertex_pool counter");
-    check(cudaMemcpy(ds.edge_pool.counter,   &ep_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.counter,   &ep_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
           "set edge_pool counter");
 
     uint32_t hi = max_vertex + 1;
-    check(cudaMemcpy(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice),
           "set vertex_high_water");
 
     // 3. Populate state 0's CSR slice: offset=0, count=n, ids=[0,1,...,n-1].
@@ -192,20 +186,20 @@ StateId upload_initial_state(EngineState& engine,
     }
     std::vector<EdgeId> initial_ids(n);
     for (uint32_t i = 0; i < n; ++i) initial_ids[i] = i;
-    check(cudaMemcpy(ds.state_edge_ids, initial_ids.data(),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids, initial_ids.data(),
                      sizeof(EdgeId) * n, cudaMemcpyHostToDevice),
           "upload state 0 edge ids");
     StateEdgeSlice slice0{0u, n};
-    check(cudaMemcpy(ds.state_edge_slices, &slice0, sizeof(StateEdgeSlice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_slices, &slice0, sizeof(StateEdgeSlice),
                      cudaMemcpyHostToDevice),
           "upload state 0 slice");
     uint32_t ids_cnt = n;
-    check(cudaMemcpy(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t),
                      cudaMemcpyHostToDevice),
           "set state_edge_ids_counter");
 
     uint32_t sc = 1;
-    check(cudaMemcpy(ds.state_count, &sc, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpy(ds.state_count, &sc, sizeof(uint32_t), cudaMemcpyHostToDevice),
           "set state_count");
 
     // 4. Populate indices via kernel.
@@ -214,11 +208,10 @@ StateId upload_initial_state(EngineState& engine,
     if (engine.maintain_indices()) {
         k_init_indices<<<grid, block>>>(ds, n);
     }
-    check(cudaDeviceSynchronize(), "k_init_indices sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_init_indices sync");
 
     return 0u;
 }
-
 
 // Bulk (re)build of the signature and vertex-inverted indices from the edge
 // pool. Runs once when lazy index maintenance flips on: edges created while
@@ -229,7 +222,7 @@ void rebuild_indices(EngineState& engine, uint32_t num_edges) {
     int block = 128;
     int grid  = (int)((num_edges + block - 1) / block);
     k_init_indices<<<grid, block>>>(engine.device(), num_edges);
-    check(cudaDeviceSynchronize(), "rebuild_indices sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "rebuild_indices sync");
 }
 
 }  // namespace hg_gpu

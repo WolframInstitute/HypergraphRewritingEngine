@@ -9,6 +9,7 @@
 #include "hg_gpu/signature_index.hpp"
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/vertex_inverted_index.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -186,9 +187,9 @@ public:
         // successful return does not mean the stack is the size that was asked for -- and the
         // failure mode either way is a stack overflow surfacing as an illegal memory access,
         // which reads like a pointer bug and is diagnosed as one.
-        check(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes), "set device stack size");
+        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes), "set device stack size");
         size_t actual_stack = 0;
-        check(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
+        HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
         if (actual_stack < kDeviceStackBytes) {
             throw std::runtime_error(
                 "EngineState: device stack is " + std::to_string(actual_stack) +
@@ -196,22 +197,22 @@ public:
                 "; match_state_rule's DFS would overflow it and report an illegal memory access");
         }
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;
-        check(cudaMalloc(&state_edge_slices_,
+        HG_CUDA_CHECK(cudaMalloc(&state_edge_slices_,
               sizeof(StateEdgeSlice) * cfg_.max_states),
               "EngineState state_edge_slices alloc");
-        check(cudaMalloc(&state_edge_ids_,
+        HG_CUDA_CHECK(cudaMalloc(&state_edge_ids_,
               sizeof(EdgeId) * cfg_.max_state_edge_total),
               "EngineState state_edge_ids alloc");
-        check(cudaMalloc(&state_edge_ids_counter_, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMalloc(&state_edge_ids_counter_, sizeof(uint32_t)),
               "EngineState state_edge_ids_counter alloc");
-        check(cudaMalloc(&state_count_,       sizeof(uint32_t)), "EngineState state_count alloc");
-        check(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMalloc(&state_count_,       sizeof(uint32_t)), "EngineState state_count alloc");
+        HG_CUDA_CHECK(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
               "EngineState state_canonical_hash alloc");
-        check(cudaMalloc(&state_exact_hash_, sizeof(uint64_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMalloc(&state_exact_hash_, sizeof(uint64_t) * cfg_.max_states),
               "EngineState state_exact_hash alloc");
-        check(cudaMalloc(&needs_indices_,     sizeof(uint32_t)), "EngineState needs_indices alloc");
-        check(cudaMalloc(&vertex_high_water_, sizeof(uint32_t)), "EngineState vertex_high_water alloc");
-        check(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
+        HG_CUDA_CHECK(cudaMalloc(&needs_indices_,     sizeof(uint32_t)), "EngineState needs_indices alloc");
+        HG_CUDA_CHECK(cudaMalloc(&vertex_high_water_, sizeof(uint32_t)), "EngineState vertex_high_water alloc");
+        HG_CUDA_CHECK(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
               "EngineState edge_producer alloc");
         clear();
     }
@@ -241,14 +242,14 @@ public:
     // most do not select. Idempotent; call before launching, never from a kernel.
     void ensure_edge_ranks() {
         if (state_edge_rank_) return;
-        check(cudaMalloc(&state_edge_rank_, sizeof(uint32_t) * cfg_.max_state_edge_total),
+        HG_CUDA_CHECK(cudaMalloc(&state_edge_rank_, sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState state_edge_rank alloc");
-        check(cudaMalloc(&event_sig_fallbacks_, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMalloc(&event_sig_fallbacks_, sizeof(uint32_t)),
               "EngineState event_sig_raw_fallbacks alloc");
-        check(cudaMemset(state_edge_rank_, 0xFF,
+        HG_CUDA_CHECK(cudaMemset(state_edge_rank_, 0xFF,
               sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState init state_edge_rank");
-        check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
               "EngineState init event_sig_raw_fallbacks");
     }
 
@@ -256,14 +257,14 @@ public:
     // quotient-causal run reads (its DP keys on orbits). Idempotent; call before launching.
     void ensure_edge_orbits() {
         if (state_edge_orbit_) return;
-        check(cudaMalloc(&state_edge_orbit_, sizeof(uint32_t) * cfg_.max_state_edge_total),
+        HG_CUDA_CHECK(cudaMalloc(&state_edge_orbit_, sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState state_edge_orbit alloc");
-        check(cudaMalloc(&state_num_orbits_, sizeof(uint32_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMalloc(&state_num_orbits_, sizeof(uint32_t) * cfg_.max_states),
               "EngineState state_num_orbits alloc");
-        check(cudaMemset(state_edge_orbit_, 0xFF,
+        HG_CUDA_CHECK(cudaMemset(state_edge_orbit_, 0xFF,
               sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState init state_edge_orbit");
-        check(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
               "EngineState init state_num_orbits");
     }
 
@@ -272,9 +273,9 @@ public:
     // computed and every application is its own event, so nothing counts.
     void ensure_event_identity() {
         if (canonical_event_count_) return;
-        check(cudaMalloc(&canonical_event_count_, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMalloc(&canonical_event_count_, sizeof(uint32_t)),
               "EngineState canonical_event_count alloc");
-        check(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
               "EngineState init canonical_event_count");
     }
 
@@ -283,7 +284,7 @@ public:
     uint32_t canonical_event_count() const {
         if (!canonical_event_count_) return 0;
         uint32_t n = 0;
-        check(cudaMemcpy(&n, canonical_event_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+        HG_CUDA_CHECK(cudaMemcpy(&n, canonical_event_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "EngineState read canonical_event_count");
         return n;
     }
@@ -312,7 +313,7 @@ public:
     uint32_t event_sig_raw_fallbacks() const {
         if (!event_sig_fallbacks_) return 0;
         uint32_t n = 0;
-        check(cudaMemcpy(&n, event_sig_fallbacks_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+        HG_CUDA_CHECK(cudaMemcpy(&n, event_sig_fallbacks_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "EngineState read event_sig_raw_fallbacks");
         return n;
     }
@@ -381,50 +382,50 @@ public:
     bool maintain_indices() const { return maintain_indices_; }
     bool needs_indices_host() const {
         uint32_t v = 0;
-        check(cudaMemcpy(&v, needs_indices_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+        HG_CUDA_CHECK(cudaMemcpy(&v, needs_indices_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "EngineState needs_indices read");
         return v != 0;
     }
 
     void clear() {
-        check(cudaMemset(state_edge_slices_, 0,
+        HG_CUDA_CHECK(cudaMemset(state_edge_slices_, 0,
               sizeof(StateEdgeSlice) * cfg_.max_states),
               "EngineState clear state_edge_slices");
-        check(cudaMemset(state_edge_ids_counter_, 0, sizeof(uint32_t)),
+        HG_CUDA_CHECK(cudaMemset(state_edge_ids_counter_, 0, sizeof(uint32_t)),
               "EngineState clear state_edge_ids_counter");
-        check(cudaMemset(state_count_,       0, sizeof(uint32_t)), "EngineState clear state_count");
+        HG_CUDA_CHECK(cudaMemset(state_count_,       0, sizeof(uint32_t)), "EngineState clear state_count");
         // 0 means "not yet computed", which is why the empty state has its own reserved hash
         // rather than 0 -- see EMPTY_STATE_CANONICAL_HASH.
-        check(cudaMemset(state_canonical_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMemset(state_canonical_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
               "EngineState clear state_canonical_hash");
-        check(cudaMemset(state_exact_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
+        HG_CUDA_CHECK(cudaMemset(state_exact_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
               "EngineState clear state_exact_hash");
         if (state_edge_rank_) {
             // UINT32_MAX, not 0: 0 is a valid rank (the canonically first edge), so a zeroed
             // array would read as "every edge ranks first" instead of "no ranks yet".
-            check(cudaMemset(state_edge_rank_, 0xFF,
+            HG_CUDA_CHECK(cudaMemset(state_edge_rank_, 0xFF,
                   sizeof(uint32_t) * cfg_.max_state_edge_total),
                   "EngineState clear state_edge_rank");
         }
         if (state_edge_orbit_) {
-            check(cudaMemset(state_edge_orbit_, 0xFF,
+            HG_CUDA_CHECK(cudaMemset(state_edge_orbit_, 0xFF,
                   sizeof(uint32_t) * cfg_.max_state_edge_total),
                   "EngineState clear state_edge_orbit");
-            check(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
+            HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
                   "EngineState clear state_num_orbits");
         }
         if (event_sig_fallbacks_) {
-            check(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
+            HG_CUDA_CHECK(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
                   "EngineState clear event_sig_raw_fallbacks");
         }
         if (canonical_event_count_) {
-            check(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
+            HG_CUDA_CHECK(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
                   "EngineState clear canonical_event_count");
         }
-        check(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
-        check(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
+        HG_CUDA_CHECK(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
+        HG_CUDA_CHECK(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
         // edge_producer init to INVALID_ID (0xFF bytes).
-        check(cudaMemset(edge_producer_, 0xFF, sizeof(EventId) * cfg_.max_edges),
+        HG_CUDA_CHECK(cudaMemset(edge_producer_, 0xFF, sizeof(EventId) * cfg_.max_edges),
               "EngineState clear edge_producer");
         vertex_pool_.reset();
         edge_pool_.reset();
@@ -544,12 +545,6 @@ public:
     VertexId* vertex_pool_view_data()  const { return vertex_pool_.view().data; }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::EngineState ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     EngineConfig                       cfg_;
     Pool<VertexId>                     vertex_pool_;

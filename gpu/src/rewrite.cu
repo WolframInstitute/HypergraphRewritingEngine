@@ -1,6 +1,7 @@
 #include "hg_gpu/edge_signature.hpp"
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hg_gpu/rewrite.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -11,13 +12,6 @@
 namespace hg_gpu {
 
 namespace {
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::run_rewrite_kernel ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Event + causal + branchial device helpers
@@ -255,7 +249,6 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
                                         unsigned long long* sub) {
     const DeviceRule&  rule = rules[m.rule_id];
     const unsigned long long t_start = clock64();
-
 
     // 1. Re-derive var bindings from matched_edges. volatile to defeat an
     //    observed miscompile on nvcc with this kernel's register pressure
@@ -589,8 +582,8 @@ uint32_t run_rewrite_kernel(EngineState&                   engine,
     if (num_matches == 0) return 0;
 
     DeviceRule* d_rules = nullptr;
-    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
-    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice), "rules copy");
 
     uint32_t n = run_rewrite_kernel_with(engine, d_rules, matches, num_matches, step);
@@ -627,10 +620,10 @@ void run_rewrite_kernel_with_nosync(EngineState&             engine,
             uint32_t n = (grid - off < cap) ? (grid - off) : cap;
             k_rewrite<<<n, block>>>(engine.device(), d_rules, matches.view().data,
                                     num_matches, step, off * (uint32_t)block);
-            check(cudaDeviceSynchronize(), "k_rewrite chunk sync");
+            HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_rewrite chunk sync");
         }
     }
-    check(cudaDeviceSynchronize(), "k_rewrite sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_rewrite sync");
 }
 
 }  // namespace hg_gpu

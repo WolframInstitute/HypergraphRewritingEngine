@@ -2,6 +2,7 @@
 
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -104,7 +105,7 @@ public:
 
     LockFreeList(uint32_t num_keys, uint32_t pool_capacity)
         : num_keys_(num_keys), pool_(pool_capacity) {
-        check(cudaMalloc(&heads_, sizeof(uint32_t) * num_keys_), "LockFreeList heads alloc");
+        HG_CUDA_CHECK(cudaMalloc(&heads_, sizeof(uint32_t) * num_keys_), "LockFreeList heads alloc");
         clear();
     }
 
@@ -121,7 +122,7 @@ public:
 
     // Set every head to kEmptyHead (= INVALID_ID = 0xFFFFFFFF).
     void clear() {
-        check(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * num_keys_),
+        HG_CUDA_CHECK(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * num_keys_),
               "LockFreeList clear heads");
         pool_.reset();
     }
@@ -131,12 +132,6 @@ public:
     uint32_t pool_used_host() const { return pool_.size_host(); }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::LockFreeList ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     uint32_t   num_keys_ = 0;
     Pool<Node> pool_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -114,10 +115,10 @@ public:
         if ((capacity_ & mask_) != 0 || capacity_ == 0) {
             throw std::invalid_argument("RingBuffer capacity must be a power of two ≥ 1");
         }
-        check(cudaMalloc(&slots_, sizeof(T)        * capacity_), "RingBuffer slots");
-        check(cudaMalloc(&seq_,   sizeof(uint64_t) * capacity_), "RingBuffer seq");
-        check(cudaMalloc(&head_,  sizeof(uint64_t)),             "RingBuffer head");
-        check(cudaMalloc(&tail_,  sizeof(uint64_t)),             "RingBuffer tail");
+        HG_CUDA_CHECK(cudaMalloc(&slots_, sizeof(T)        * capacity_), "RingBuffer slots");
+        HG_CUDA_CHECK(cudaMalloc(&seq_,   sizeof(uint64_t) * capacity_), "RingBuffer seq");
+        HG_CUDA_CHECK(cudaMalloc(&head_,  sizeof(uint64_t)),             "RingBuffer head");
+        HG_CUDA_CHECK(cudaMalloc(&tail_,  sizeof(uint64_t)),             "RingBuffer tail");
         clear();
     }
 
@@ -139,11 +140,11 @@ public:
     // that, and a fill kernel defined in this header would be registered once per including
     // translation unit, so the ramp is built on the host and uploaded.
     void clear() {
-        check(cudaMemset(head_, 0, sizeof(uint64_t)), "RingBuffer clear head");
-        check(cudaMemset(tail_, 0, sizeof(uint64_t)), "RingBuffer clear tail");
+        HG_CUDA_CHECK(cudaMemset(head_, 0, sizeof(uint64_t)), "RingBuffer clear head");
+        HG_CUDA_CHECK(cudaMemset(tail_, 0, sizeof(uint64_t)), "RingBuffer clear tail");
         std::vector<uint64_t> ramp(capacity_);
         for (uint32_t i = 0; i < capacity_; ++i) ramp[i] = i;
-        check(cudaMemcpy(seq_, ramp.data(), sizeof(uint64_t) * capacity_,
+        HG_CUDA_CHECK(cudaMemcpy(seq_, ramp.data(), sizeof(uint64_t) * capacity_,
                          cudaMemcpyHostToDevice), "RingBuffer seq init");
     }
 
@@ -154,14 +155,6 @@ public:
         uint64_t v = 0; cudaMemcpy(&v, tail_, sizeof(v), cudaMemcpyDeviceToHost); return v;
     }
     uint32_t capacity() const { return capacity_; }
-
-private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::RingBuffer ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     T*        slots_    = nullptr;
     uint64_t* seq_      = nullptr;

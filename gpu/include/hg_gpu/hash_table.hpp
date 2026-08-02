@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -192,8 +193,8 @@ public:
     };
 
     explicit ConcurrentMap(uint32_t capacity) : capacity_(capacity) {
-        check(cudaMalloc(&keys_,   sizeof(K) * capacity_), "ConcurrentMap keys alloc");
-        check(cudaMalloc(&values_, sizeof(V) * capacity_), "ConcurrentMap values alloc");
+        HG_CUDA_CHECK(cudaMalloc(&keys_,   sizeof(K) * capacity_), "ConcurrentMap keys alloc");
+        HG_CUDA_CHECK(cudaMalloc(&values_, sizeof(V) * capacity_), "ConcurrentMap values alloc");
         clear();
     }
 
@@ -219,17 +220,11 @@ public:
         // would need a fill kernel — not currently used in the codebase.)
         static_assert(EMPTY == K{0},
             "clear() relies on EMPTY == 0; provide a fill kernel for other sentinels");
-        check(cudaMemset(keys_,   0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
-        check(cudaMemset(values_, 0, sizeof(V) * capacity_), "ConcurrentMap clear values");
+        HG_CUDA_CHECK(cudaMemset(keys_,   0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
+        HG_CUDA_CHECK(cudaMemset(values_, 0, sizeof(V) * capacity_), "ConcurrentMap clear values");
     }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::ConcurrentMap ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     K*       keys_     = nullptr;
     V*       values_   = nullptr;

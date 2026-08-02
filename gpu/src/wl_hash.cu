@@ -1,4 +1,5 @@
 #include "hg_gpu/wl_hash.hpp"
+#include "hg_gpu/cuda_check.hpp"
 #include "hgcommon/wl_core.hpp"
 
 #include <cuda_runtime.h>
@@ -112,13 +113,6 @@ __global__ void k_wl_hash_states(DeviceState ds, uint32_t num_states, uint64_t* 
     out[tid] = wl_hash_state_device(ds, tid);
 }
 
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::wl_hash ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
-
 }  // namespace
 
 void compute_state_wl_hashes(const EngineState& engine,
@@ -128,19 +122,18 @@ void compute_state_wl_hashes(const EngineState& engine,
     int block = 64;
     int grid  = (int)((num_states + block - 1) / block);
     k_wl_hash_states<<<grid, block>>>(engine.device(), num_states, out_hashes_device);
-    check(cudaDeviceSynchronize(), "k_wl_hash_states sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_wl_hash_states sync");
 }
 
 uint64_t compute_state_wl_hash_host(const EngineState& engine, StateId sid) {
     uint64_t* d = nullptr;
-    check(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
+    HG_CUDA_CHECK(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
     compute_state_wl_hashes(engine, sid + 1, d);
     uint64_t h = 0;
-    check(cudaMemcpy(&h, d + sid, sizeof(uint64_t), cudaMemcpyDeviceToHost), "copy");
+    HG_CUDA_CHECK(cudaMemcpy(&h, d + sid, sizeof(uint64_t), cudaMemcpyDeviceToHost), "copy");
     cudaFree(d);
     return h;
 }
-
 
 // ---------------------------------------------------------------------------
 // Content-ordered (non-isomorphic) hash for CanonicalizationMode::Automatic.
@@ -185,7 +178,7 @@ void compute_state_content_hashes_range(const EngineState& engine,
     uint32_t n = hi - lo;
     int block = 64, grid = (int)((n + block - 1) / block);
     k_content_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device);
-    check(cudaDeviceSynchronize(), "k_content_hash_range sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_content_hash_range sync");
 }
 
 }  // namespace hg_gpu

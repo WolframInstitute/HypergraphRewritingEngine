@@ -37,6 +37,7 @@
 // guard_quotient_transitive_reduction, mirrored by the caller).
 
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/rewrite.hpp"       // try_add_causal_edge
 #include "hgcommon/ir_core.hpp"     // ir_isort_u64
 
@@ -101,8 +102,8 @@ public:
           reached_(on ? (1u << 20) : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
-        check(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QcState arr alloc");
-        check(cudaMalloc(&cursor_, sizeof(uint32_t)), "QcState cursor alloc");
+        HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QcState arr alloc");
+        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QcState cursor alloc");
         clear();
     }
     ~QcState() {
@@ -123,7 +124,7 @@ public:
         trans_from_.clear();
         dsup_.clear();
         transitions_.reset();
-        check(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
+        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
     }
 
     QcView view(uint32_t max_steps) {
@@ -143,12 +144,6 @@ public:
     }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::QcState ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     Pool<DeviceCanonicalTransition> transitions_;
     LockFreeList<QcTransitionRef>   trans_from_;

@@ -11,6 +11,7 @@
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/wl_hash.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -20,13 +21,6 @@
 
 namespace hg_gpu {
 namespace {
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::persistent ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
-}
 
 // The single work role the persistent schedulers count. Shared by the seed kernel below and
 // the stage-2/stage-3 worker kernels.
@@ -717,7 +711,7 @@ void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots) {
     const uint32_t block = 64;
     k_qc_seed_roots<<<(num_roots + block - 1) / block, block>>>(engine.device(), qc,
                                                                 num_roots);
-    check(cudaDeviceSynchronize(), "qc seed roots sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc seed roots sync");
 }
 
 void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi) {
@@ -725,7 +719,7 @@ void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t
     const uint32_t block = 64;
     k_qc_register_range<<<((hi - lo) + block - 1) / block, block>>>(engine.device(), qc, lo,
                                                                     hi);
-    check(cudaDeviceSynchronize(), "qc register range sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc register range sync");
 }
 
 uint32_t run_persistent_match(const EngineState& engine,
@@ -739,13 +733,13 @@ uint32_t run_persistent_match(const EngineState& engine,
     const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
 
     DeviceRule* d_rules = nullptr;
-    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
-    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice), "rules copy");
 
     StateId* d_states = nullptr;
-    check(cudaMalloc(&d_states, sizeof(StateId) * states.size()), "states alloc");
-    check(cudaMemcpy(d_states, states.data(), sizeof(StateId) * states.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_states, sizeof(StateId) * states.size()), "states alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice), "states copy");
 
     uint32_t cap = 1;
@@ -758,7 +752,7 @@ uint32_t run_persistent_match(const EngineState& engine,
         k_seed_match_queue<<<seed_grid, block>>>(queue.view(), d_states,
                                                  static_cast<uint32_t>(states.size()), num_rules,
                                                  /*step=*/0u);
-        check(cudaDeviceSynchronize(), "seed sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "seed sync");
     }
 
     // Deliberately FEWER blocks than items: each one loops, which is the whole difference from
@@ -767,7 +761,7 @@ uint32_t run_persistent_match(const EngineState& engine,
 
     k_persistent_match<<<grid, kMatchBlockThreads>>>(engine.device(), d_rules,
                                                      queue.view(), out.view());
-    check(cudaDeviceSynchronize(), "persistent match sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent match sync");
 
     cudaFree(d_states);
     cudaFree(d_rules);
@@ -791,13 +785,13 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
 
     DeviceRule* d_rules = nullptr;
-    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
-    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice), "rules copy");
 
     StateId* d_states = nullptr;
-    check(cudaMalloc(&d_states, sizeof(StateId) * states.size()), "states alloc");
-    check(cudaMemcpy(d_states, states.data(), sizeof(StateId) * states.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_states, sizeof(StateId) * states.size()), "states alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice), "states copy");
 
     uint32_t cap = 1;
@@ -809,12 +803,12 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
         k_seed_match_queue<<<seed_grid, block>>>(match_q.view(), d_states,
                                                  static_cast<uint32_t>(states.size()), num_rules,
                                                  step);
-        check(cudaDeviceSynchronize(), "seed sync");
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "seed sync");
     }
 
     uint32_t* d_cursor = nullptr;
-    check(cudaMalloc(&d_cursor, sizeof(uint32_t)), "cursor alloc");
-    check(cudaMemset(d_cursor, 0, sizeof(uint32_t)), "cursor clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_cursor, sizeof(uint32_t)), "cursor alloc");
+    HG_CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(uint32_t)), "cursor clear");
 
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
@@ -826,7 +820,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     k_persistent_match_rewrite<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, match_q.view(), scratch_matches.view(),
         d_cursor, term.view(), step);
-    check(cudaDeviceSynchronize(), "persistent match+rewrite sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent match+rewrite sync");
 
     stats.matches_found = scratch_matches.size_host();
 
@@ -864,13 +858,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const uint32_t num_seed  = static_cast<uint32_t>(num_rules * roots.size());
 
     DeviceRule* d_rules = nullptr;
-    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
-    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice), "rules copy");
 
     StateId* d_states = nullptr;
-    check(cudaMalloc(&d_states, sizeof(StateId) * roots.size()), "states alloc");
-    check(cudaMemcpy(d_states, roots.data(), sizeof(StateId) * roots.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_states, sizeof(StateId) * roots.size()), "states alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_states, roots.data(), sizeof(StateId) * roots.size(),
                      cudaMemcpyHostToDevice), "states copy");
 
     // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
@@ -905,19 +899,19 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // end only, with ONE synchronization -- after the last kernel.
     StateId* d_kept = nullptr;
     uint32_t* d_kept_count = nullptr;
-    check(cudaMalloc(&d_kept, sizeof(StateId) * roots.size()), "kept roots alloc");
-    check(cudaMalloc(&d_kept_count, sizeof(uint32_t)), "kept count alloc");
-    check(cudaMemset(d_kept_count, 0, sizeof(uint32_t)), "kept count clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_kept, sizeof(StateId) * roots.size()), "kept roots alloc");
+    HG_CUDA_CHECK(cudaMalloc(&d_kept_count, sizeof(uint32_t)), "kept count alloc");
+    HG_CUDA_CHECK(cudaMemset(d_kept_count, 0, sizeof(uint32_t)), "kept count clear");
 
     uint32_t* d_cursor = nullptr;
-    check(cudaMalloc(&d_cursor, sizeof(uint32_t) * 2), "cursor alloc");
-    check(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_cursor, sizeof(uint32_t) * 2), "cursor alloc");
+    HG_CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
     uint32_t* d_rewrites_done = d_cursor + 1;
 
     // 5 top-level phases + apply_one_match's 6 sub-stretches (see rewrite.hpp).
     unsigned long long* d_phase_cycles = nullptr;
-    check(cudaMalloc(&d_phase_cycles, sizeof(unsigned long long) * 11), "phase cycles alloc");
-    check(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 11), "phase cycles clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_phase_cycles, sizeof(unsigned long long) * 11), "phase cycles alloc");
+    HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 11), "phase cycles clear");
 
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
@@ -954,7 +948,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         event_ids.view(), arena.view(), term.view(), qc, d_phase_cycles);
-    check(cudaDeviceSynchronize(), "persistent evolve sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();
     stats.states_after     = engine.num_states_host();
@@ -962,7 +956,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.canonical_events = engine.canonical_event_count();
 
     unsigned long long phase[11] = {};
-    check(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),
+    HG_CUDA_CHECK(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),
           "phase cycles read");
     stats.cycles_match   = phase[0];
     stats.cycles_rewrite = phase[1];

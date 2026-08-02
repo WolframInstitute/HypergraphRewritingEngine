@@ -1,5 +1,6 @@
 #include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -75,13 +76,6 @@ std::vector<uint64_t> compatible_signature_hashes(const DevicePatternEdge& pe) {
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
-}
-
-void check(cudaError_t err, const char* what) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("hg_gpu::run_match_kernel ") + what + ": " +
-                                 cudaGetErrorString(err));
-    }
 }
 
 __device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
@@ -499,10 +493,10 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
             k_match_batch<<<n, block>>>(engine.device(), d_rules, num_rules,
                                         d_state_ids, num_state_ids, out_matches.view(), off,
                                         step);
-            check(cudaDeviceSynchronize(), "k_match_batch chunk sync");
+            HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_match_batch chunk sync");
         }
     }
-    check(cudaDeviceSynchronize(), "k_match_batch sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_match_batch sync");
 }
 
 uint32_t run_match_kernel(const EngineState&             engine,
@@ -513,8 +507,8 @@ uint32_t run_match_kernel(const EngineState&             engine,
     if (rules.empty()) return 0;
 
     DeviceRule* d_rules = nullptr;
-    check(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
-    check(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+    HG_CUDA_CHECK(cudaMalloc(&d_rules, sizeof(DeviceRule) * rules.size()), "rules alloc");
+    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
                      cudaMemcpyHostToDevice), "rules copy");
 
     out_matches.reset();
@@ -523,13 +517,13 @@ uint32_t run_match_kernel(const EngineState&             engine,
     // and the persistent scheduler use, so a test written against this entry point constrains
     // what ships.
     const StateId* d_state = nullptr;
-    check(cudaMalloc((void**)&d_state, sizeof(StateId)), "state alloc");
-    check(cudaMemcpy((void*)d_state, &state_id, sizeof(StateId), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMalloc((void**)&d_state, sizeof(StateId)), "state alloc");
+    HG_CUDA_CHECK(cudaMemcpy((void*)d_state, &state_id, sizeof(StateId), cudaMemcpyHostToDevice),
           "state copy");
     k_match_batch<<<(uint32_t)rules.size(), kMatchBlockThreads>>>(
         engine.device(), d_rules, (uint32_t)rules.size(), d_state, 1u,
         out_matches.view(), /*bid_offset=*/0, step);
-    check(cudaDeviceSynchronize(), "run_match_kernel sync");
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "run_match_kernel sync");
     cudaFree((void*)d_state);
     cudaFree(d_rules);
 

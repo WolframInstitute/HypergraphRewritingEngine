@@ -21,6 +21,7 @@
 // returns partial work. It cannot grow, because growing needs the host.
 
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -49,8 +50,8 @@ public:
     };
 
     explicit DeviceArena(uint64_t capacity_words) : capacity_(capacity_words) {
-        check(cudaMalloc(&base_, capacity_ * sizeof(uint32_t)), "arena alloc");
-        check(cudaMalloc(&cursor_, sizeof(uint64_t)), "arena cursor alloc");
+        HG_CUDA_CHECK(cudaMalloc(&base_, capacity_ * sizeof(uint32_t)), "arena alloc");
+        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint64_t)), "arena cursor alloc");
         reset();
     }
 
@@ -63,7 +64,7 @@ public:
     DeviceArena& operator=(const DeviceArena&) = delete;
 
     void reset() {
-        check(cudaMemset(cursor_, 0, sizeof(uint64_t)), "arena cursor clear");
+        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint64_t)), "arena cursor clear");
     }
 
     View view() { return View{base_, cursor_, capacity_}; }
@@ -78,12 +79,6 @@ public:
     }
 
 private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::DeviceArena ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
-    }
 
     uint32_t* base_    = nullptr;
     uint64_t* cursor_  = nullptr;

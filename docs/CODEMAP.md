@@ -130,6 +130,10 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `gpu/include/hg_gpu/` -- CUDA port (headers)
 
+- **`cuda_check.hpp`** -- `HG_CUDA_CHECK(err, what)` / `cuda_check_at`: the ONE CUDA error check.
+  Throws naming `__FILE__:__LINE__` and the driver string. Every `.cu` and every device
+  container routes through it; none carries its own copy.
+
 - **`overflow.hpp`** -- CUDA-free shared overflow types: `ErrorKind`, `OverflowWarning`, `error_kind_name()`
 - **`types.hpp`** -- GPU aliases + device storage structs: `DeviceEvent`, `DeviceCausalEdge`, `DeviceBranchialEdge`, `Edge`, `StateEdgeSlice`; enums `CanonicalizationMode`, `EventCanonicalizationMode`
 - **`errors.hpp`** -- device error channel: `DeviceErrors` (`DeviceView::record`), `PoolOverflow`

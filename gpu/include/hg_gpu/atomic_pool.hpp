@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hg_gpu/types.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -57,8 +58,8 @@ public:
     };
 
     explicit Pool(uint32_t capacity) : capacity_(capacity) {
-        check(cudaMalloc(&data_, sizeof(T) * capacity_), "Pool data alloc");
-        check(cudaMalloc(&counter_, sizeof(uint32_t)),   "Pool counter alloc");
+        HG_CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * capacity_), "Pool data alloc");
+        HG_CUDA_CHECK(cudaMalloc(&counter_, sizeof(uint32_t)),   "Pool counter alloc");
         reset();
     }
 
@@ -83,13 +84,13 @@ public:
 
     uint32_t size_host() const {
         uint32_t v = 0;
-        check(cudaMemcpy(&v, counter_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+        HG_CUDA_CHECK(cudaMemcpy(&v, counter_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "Pool size_host copy");
         return v;
     }
 
     void reset() {
-        check(cudaMemset(counter_, 0, sizeof(uint32_t)), "Pool reset");
+        HG_CUDA_CHECK(cudaMemset(counter_, 0, sizeof(uint32_t)), "Pool reset");
     }
 
     // Zero the payload as well as the counter. Needed by a consumer that reads records
@@ -98,15 +99,7 @@ public:
     // O(capacity), so it belongs at run setup rather than between steps.
     void reset_and_clear() {
         reset();
-        check(cudaMemset(data_, 0, sizeof(T) * capacity_), "Pool clear data");
-    }
-
-private:
-    static void check(cudaError_t err, const char* what) {
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("hg_gpu::Pool ") + what + ": " +
-                                     cudaGetErrorString(err));
-        }
+        HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * capacity_), "Pool clear data");
     }
 
     T*        data_    = nullptr;
