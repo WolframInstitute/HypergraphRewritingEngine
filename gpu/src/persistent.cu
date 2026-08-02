@@ -196,7 +196,12 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // isomorphic, so every root is kept regardless of whether it won the map slot.
     if (quotient_roots && !r.inserted) return;
     const uint32_t pos = atomicAdd(out_count, 1u);
+    // Past capacity the state is not written, and a state missing from the frontier is a
+    // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
+    // so the run reports partial work rather than looking complete; the host's grow-and-retry
+    // reads the same kind and doubles max_states.
     if (pos < out_cap) out_ids[pos] = sid;
+    else               ds.errors.record(ErrorKind::kFrontierCapFull);
 }
 
 // Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim

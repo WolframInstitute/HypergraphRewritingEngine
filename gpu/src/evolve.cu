@@ -121,7 +121,7 @@ __device__ __forceinline__ uint64_t splitmix64(uint64_t x) {
 // first of each canonical class is (isomorphic roots collapse). Default (false)
 // matches the reference MultiwaySystem semantics: provided roots are distinct
 // entry points even when isomorphic.
-__global__ void k_seed_roots(uint32_t num_roots, const uint64_t* hashes,
+__global__ void k_seed_roots(DeviceState ds, uint32_t num_roots, const uint64_t* hashes,
                              DedupMap::DeviceView map, bool quotient_roots,
                              StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -130,7 +130,12 @@ __global__ void k_seed_roots(uint32_t num_roots, const uint64_t* hashes,
     auto r = map.insert_if_absent(h, tid);
     if (quotient_roots && !r.inserted) return;
     uint32_t pos = atomicAdd(out_count, 1u);
+    // Past capacity the state is not written, and a state missing from the frontier is a
+    // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
+    // so the run reports partial work rather than looking complete; the host's grow-and-retry
+    // reads the same kind and doubles max_states.
     if (pos < out_cap) out_ids[pos] = tid;
+    else               ds.errors.record(ErrorKind::kFrontierCapFull);
 }
 
 }  // namespace
@@ -161,27 +166,6 @@ __device__ bool state_survives_dedup(StateId sid, uint64_t hash,
 }
 
 namespace {
-
-// Batch driver: one thread per state in a range.
-__global__ void k_dedup_and_append(uint32_t lo, uint32_t hi,
-                                   const uint64_t* hashes,
-                                   DedupMap::DeviceView map,
-                                   bool dedup,
-                                   StateId* out_ids, uint32_t* out_count,
-                                   uint32_t out_cap,
-                                   uint32_t explore_threshold_u32,
-                                   uint64_t explore_seed,
-                                   uint32_t step) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t n = hi - lo;
-    if (tid >= n) return;
-    StateId sid = lo + tid;
-    if (!state_survives_dedup(sid, hashes[tid], map, dedup,
-                              explore_threshold_u32, explore_seed, step)) return;
-
-    uint32_t pos = atomicAdd(out_count, 1u);
-    if (pos < out_cap) out_ids[pos] = sid;
-}
 
 }  // namespace
 
@@ -435,7 +419,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         // Insert every root into the canonical map (children dedup against roots)
         // and seed the frontier; roots collapse only when quotient_initial_states.
         int b = 64, g = static_cast<int>((num_roots + b - 1) / b);
-        k_seed_roots<<<g, b>>>(num_roots, d_state_hashes, canonical_map.view(),
+        k_seed_roots<<<g, b>>>(engine.device(), num_roots, d_state_hashes, canonical_map.view(),
                                in.quotient_initial_states,
                                d_frontier, d_next_count, cfg.max_states);
         check(cudaDeviceSynchronize(), "seed roots sync");
