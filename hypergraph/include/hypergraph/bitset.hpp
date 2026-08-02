@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "hgcommon/core.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -149,8 +150,17 @@ public:
     SparseBitset(const SparseBitset&) = delete;
     SparseBitset& operator=(const SparseBitset&) = delete;
 
-    // Check if edge is present - O(log num_chunks)
-    bool contains(uint32_t edge_id) const {
+    // Is this edge in the set? O(log num_chunks).
+    //
+    // Force-inlined, with find_chunk, because it is the engine's hottest predicate -- 15% of a
+    // 5-step Wolfram evolution -- and as a mere hint its inlining tracked the size of whatever
+    // else lived in the same translation unit. Pointing the matcher at the shared join added
+    // template instantiations to this header's users; GCC's per-unit budget tightened and
+    // contains was outlined from ParallelEvolutionEngine::execute_expand_task, which cost
+    // 2.15M instructions (+3.7%) while changing no arithmetic. Forcing only contains and
+    // leaving find_chunk a hint is WORSE than either (+4.5%): contains becomes a wrapper around
+    // a call. Measured with tools/cost_sweep.sh, wolfram-5step.
+    HG_INLINE bool contains(uint32_t edge_id) const {
         if (num_entries_ == 0) return false;
 
         uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
@@ -281,7 +291,7 @@ public:
 
 private:
     // Binary search for chunk by id (const version)
-    const Chunk* find_chunk(uint32_t chunk_id) const {
+    HG_INLINE const Chunk* find_chunk(uint32_t chunk_id) const {
         if (num_entries_ == 0) return nullptr;
 
         size_t lo = 0, hi = num_entries_;

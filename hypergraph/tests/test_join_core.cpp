@@ -44,6 +44,10 @@ struct ScanCtx {
     uint8_t order_at(uint8_t k) const { return (*order)[k]; }
     const uint8_t* pattern_vars(uint8_t p) const { return (*lhs)[p].data(); }
     uint8_t pattern_arity(uint8_t p) const { return static_cast<uint8_t>((*lhs)[p].size()); }
+
+    // This enumerator yields bare ids, so a candidate IS an id and the accessors are identities.
+    EdgeId candidate_of(EdgeId e) const { return e; }
+    EdgeId candidate_id(EdgeId e) const { return e; }
     const VertexId* edge_vertices(EdgeId e) const { return (*edges)[e].v.data(); }
     uint8_t edge_arity(EdgeId e) const { return static_cast<uint8_t>((*edges)[e].v.size()); }
     bool usable(EdgeId) const { return true; }
@@ -111,6 +115,24 @@ std::vector<uint8_t> identity_order(size_t n) {
 }
 
 }  // namespace
+
+// The position rule, directly: the recursive join and the task-based scheduler
+// (ParallelEvolutionEngine::execute_expand_task) both select with this, so it is pinned on its
+// own rather than only through what the join happens to emit.
+TEST(JoinCore, NextPositionIsTheFirstUNBOUNDOneInTheSchedule) {
+    const std::vector<uint8_t> order{2, 0, 1};
+    auto at = [&](uint8_t k) { return order[k]; };
+
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b000), 2) << "nothing bound: schedule head";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b100), 0) << "2 bound: next in schedule";
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b101), 1);
+
+    // Seeded away from the schedule head: counting by depth would take order[1]=0 and leave
+    // position 2 unbound forever. The rule takes 2, the first unbound one.
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b010), 2) << "anchor at position 1";
+
+    EXPECT_EQ(hgcommon::join_next_position(at, 3, 0b111), 0xFFu) << "all bound";
+}
 
 TEST(JoinCore, MatchesBruteForceOnAPath) {
     std::vector<Edge> edges{{{0,1}}, {{1,2}}, {{2,3}}, {{3,4}}};

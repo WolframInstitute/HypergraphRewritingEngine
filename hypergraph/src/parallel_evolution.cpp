@@ -1894,9 +1894,10 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         const CompatibleSignatureCache& first_cache = rule.lhs_cache[first_pidx];
 
         // Generate candidates for first edge
+        const VariableBinding unbound;
         generate_candidates(
             first_edge, first_sig, first_cache,
-            VariableBinding{}, s.edges,
+            unbound.bindings, unbound.bound_mask, s.edges,
             hg_->signature_index(), hg_->inverted_index(), get_edge,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
@@ -1960,17 +1961,15 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         return hg_->get_edge(eid);
     };
 
-    // Next pattern edge in the rule's optimized join order, skipping edges already
-    // matched (the seed may be an arbitrary position for delta matching).
+    // Next pattern edge, by the same rule the recursive join uses: the first position in the
+    // schedule that is not bound yet. The seed may sit at an arbitrary position under delta
+    // matching, which is why this cannot be match_order[num_matched].
     uint32_t matched_mask = 0;
     for (uint8_t i = 0; i < data.num_matched; ++i) {
         matched_mask |= (1u << data.match_order[i]);
     }
-    uint8_t pattern_idx = rule.num_lhs_edges;
-    for (uint8_t k = 0; k < rule.num_lhs_edges; ++k) {
-        uint8_t pidx = rule.match_order[k];
-        if (!(matched_mask & (1u << pidx))) { pattern_idx = pidx; break; }
-    }
+    const uint8_t pattern_idx = hgcommon::join_next_position(
+        [&](uint8_t k) { return rule.match_order[k]; }, rule.num_lhs_edges, matched_mask);
     if (pattern_idx >= rule.num_lhs_edges) return;
 
     const PatternEdge& pattern_edge = rule.lhs[pattern_idx];
@@ -1986,7 +1985,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     // Generate candidates
     generate_candidates(
         pattern_edge, pattern_sig, sig_cache,
-        data.binding, s.edges,
+        data.binding.bindings, data.binding.bound_mask, s.edges,
         hg_->signature_index(), hg_->inverted_index(), get_edge,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;

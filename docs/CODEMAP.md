@@ -44,12 +44,17 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 - **`core.hpp`** -- id typedefs, structural limits, integer hash primitives (`HG_HD` host/device).
   - id aliases `VertexId`/`EdgeId`/`StateId`/`EventId`/`MatchId`, `INVALID_ID`; limits `MAX_ARITY`/`MAX_PATTERN_EDGES`/`MAX_VARS`
+  - `HG_INLINE` -- force-inline, for functions whose inlining must not track unrelated code size
   - `mix64()` (Murmur3 finalizer), `fnv_hash()` (FNV-1a combine), `splitmix64()` (commutative-sum finalizer)
 - **`wl_core.hpp`** -- the single shared Weisfeiler-Leman canonical-hash impl, bit-identical CPU/GPU.
   - `WL_MAX_REFINE_ITERS`; `wl_isort()` (device-safe insertion sort); `wl_canonical_hash()` (occurrence-CSR build -> initial colouring -> refinement to fixpoint -> commutative fold)
 - **`ir_core.hpp`** -- the single shared EXACT canonicalizer (individualization-refinement), one implementation for host and device.
   - `IR_HOST_GENERATORS`/`IR_DEVICE_GENERATORS` (search-budget split), `ir_scratch_words()` (caller-sized span, no allocation), `IrScratch`, `IrPartition`, `ir_heapsort_idx`/`ir_isort_u64`
   - `ir_canonical_hash()` -- refine, search by individualizing the lowest non-singleton cell, lexicographically smallest form wins; optional outputs per input edge: canonical RANK (`out_edge_rank`), automorphism ORBIT and content CLASS (`out_edge_orbit`/`out_edge_class`, computed in input space from the discovered generators -- the quotient-causal DP's keys)
+- **`join_core.hpp`** -- THE JOIN: one backtracking-join body for host and device.
+  - `JoinState<>` (per-thread frame: bound edge and pattern position per depth, binding + mask, `already_taken` edge-injectivity, `bound_pattern_mask`)
+  - `join_next_position()` -- which pattern position to bind next: the first UNBOUND one in the schedule, never `order[depth]`, so a seeded join still binds the positions before its anchor
+  - `join_dfs()` / `join_seed()` -- the recursion, and the same recursion anchored at one position (which is what delta matching is). The Ctx supplies candidate enumeration and emit; nothing else differs between the two engines.
 - **`event_core.hpp` / `match_core.hpp` / `rewrite_core.hpp` / `signature_core.hpp`** -- the shared semantic cores the two engines drive: event-identity lattice (`EventSignatureKeys`, `event_signature`), pattern-edge binding (`bind_pattern_edge`), rewrite vertex resolution (`resolve_rhs_vertices`, `assign_fresh_consecutive`), edge signatures
 - **`park.hpp`** -- futex-style parking (`WaitOnAddress` on Windows, futex on Linux) for the job system's idle waits
 - **`portable_intrinsics.hpp`** -- GCC/Clang and MSVC spellings of the intrinsics the engine uses.
@@ -85,10 +90,12 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - `EdgeSignature`, `signature_compatible()`, `enumerate_compatible_signatures()`, `CompatibleSignatureCache`
 - **`pattern.hpp`** -- rule representation, builder, match-identity types.
   - `PatternEdge`, `RewriteRule` (`compute_var_counts`/`compute_match_order`), `RuleBuilder` + `make_rule()`, `MatchIdentity`, `PartialMatch`
+  - `RewriteRule::match_order` is a SCHEDULE, not a semantic: every permutation yields the same match set (`JoinCore.EveryBindingOrderYieldsTheSameMatches`)
 - **`index.hpp`** -- lock-free matching indices for candidate generation.
   - `SignatureIndex`, `InvertedVertexIndex` (`for_each_edge_containing_all` -- shortest-list-seeded intersection), `PatternMatchingIndex`
-- **`pattern_matcher.hpp`** -- header-only HGMatch-style SCAN->EXPAND->SINK join (templated on accessors).
-  - `PatternMatchingContext<>`; free templates `validate_candidate`, `generate_candidates`, `expand_match`, `scan_pattern[_from_edge]`, `find_matches`, `find_delta_matches`
+- **`pattern_matcher.hpp`** -- the host's half of the join: candidate enumeration and emit, over `hgcommon/join_core.hpp` (templated on accessors).
+  - `PatternMatchingContext<>`, `HostJoinContext<>` (the join's Ctx: `Candidate` carries the edge the enumerator already fetched)
+  - free templates `validate_candidate`, `generate_candidates`, `emit_match`, `scan_pattern[_from_edge]`, `find_matches`, `find_delta_matches`
 - **`wl_hash.hpp`** -- Weisfeiler-Leman approximate hashing + O(E) edge correspondence.
   - `WLHash` (`compute_state_hash_with_cache`, `find_edge_correspondence`, `compute_event_signature`)
 - **`canonical_types.hpp`** -- shared canonicalization result types.

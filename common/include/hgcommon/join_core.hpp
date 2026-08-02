@@ -66,12 +66,37 @@ struct JoinState {
         return false;
     }
 
-    HG_HD bool pattern_bound(uint8_t p) const {
-        for (uint8_t i = 0; i < depth; ++i)
-            if (pattern[i] == p) return true;
-        return false;
+    // Which pattern positions are bound, as a bitmask over pattern indices.
+    HG_HD uint32_t bound_pattern_mask() const {
+        uint32_t m = 0;
+        for (uint8_t i = 0; i < depth; ++i) m |= (1u << pattern[i]);
+        return m;
     }
 };
+
+// WHICH PATTERN POSITION TO BIND NEXT: the first in the schedule that is not bound yet.
+//
+// Selecting by COUNT -- order[depth] -- assumes the search began at order[0]. That holds for a
+// full scan and does NOT hold for a seeded one: an anchor pinned at some other position leaves
+// order[0] never bound at all, so every match through it is silently missed, and because
+// forwarding is inductive each miss deletes a whole subtree while the run stays self-consistent.
+//
+// Takes the schedule as an accessor, not an array, for two reasons: the device HAS no order
+// array (it physically reorders DeviceRule::lhs[] at build time, so its schedule is the
+// identity), and a caller that expands by SPAWNING A TASK per candidate instead of recursing --
+// ParallelEvolutionEngine::execute_expand_task -- selects with this same function rather than
+// its own copy of the loop.
+//
+// 0xFF means every position is bound.
+template <typename OrderAt>
+HG_HD HG_INLINE uint8_t join_next_position(OrderAt&& order_at, uint8_t num_lhs_edges,
+                                           uint32_t bound_pattern_mask) {
+    for (uint8_t k = 0; k < num_lhs_edges; ++k) {
+        const uint8_t p = order_at(k);
+        if (!(bound_pattern_mask & (1u << p))) return p;
+    }
+    return 0xFFu;
+}
 
 // Clear exactly the variables bound since `saved_mask`. No values are saved because a variable
 // bound for the first time had none.
@@ -87,11 +112,18 @@ HG_HD inline void join_unbind_since(St& st, uint32_t saved_mask) {
 //   uint8_t             order_at(uint8_t k) const            -- the k'th position in the schedule
 //   const uint8_t*      pattern_vars(uint8_t p) const
 //   uint8_t             pattern_arity(uint8_t p) const
-//   const VertexIdT*    edge_vertices(EdgeIdT e) const
-//   uint8_t             edge_arity(EdgeIdT e) const
+//   Cand                candidate_of(EdgeIdT e) const        -- a candidate from a bare edge id
+//   EdgeIdT             candidate_id(const Cand& c) const
+//   const VertexIdT*    edge_vertices(const Cand& c) const
+//   uint8_t             edge_arity(const Cand& c) const
 //   bool                usable(EdgeIdT e) const             -- e.g. "is in this state"
 //   template <class F> void for_each_candidate(uint8_t p, const St& st, F&& f) const
 //   bool                aborted() const
+//
+// A CANDIDATE IS WHATEVER THE ENUMERATOR PRODUCES, not necessarily an edge id. Enumerating a
+// candidate already reads its edge, so it hands that read to the join rather than having the
+// join repeat the lookup, and the Ctx says how to read an id and vertices back out of it. A
+// port whose enumerator yields bare ids makes Cand the id and all three accessors identities.
 //
 // Emit is called with the completed state; it may inspect st.matched / st.pattern / st.binding.
 //
@@ -106,26 +138,15 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
         return;
     }
 
-    // The next position is the first in the schedule that is NOT ALREADY BOUND -- not
-    // order_at(depth).
-    //
-    // Selecting by COUNT assumes the search began at order_at(0), which holds for a full scan
-    // and does NOT hold for a seeded one: an anchor pinned at some other position leaves
-    // order_at(0) never bound at all, so every match through it is silently missed, and because
-    // forwarding is inductive each miss deletes a whole subtree while the run stays
-    // self-consistent. The host matcher records the same defect and the same fix at
-    // pattern_matcher.hpp:294.
-    uint8_t p = 0xFFu;
-    for (uint8_t k = 0; k < ctx.num_lhs_edges(); ++k) {
-        const uint8_t cand_p = ctx.order_at(k);
-        if (!st.pattern_bound(cand_p)) { p = cand_p; break; }
-    }
+    const uint8_t p = join_next_position([&](uint8_t k) { return ctx.order_at(k); },
+                                         ctx.num_lhs_edges(), st.bound_pattern_mask());
     if (p == 0xFFu) return;   // every position bound but depth disagreed: emit nothing
 
-    ctx.for_each_candidate(p, st, [&](auto cand) {
+    ctx.for_each_candidate(p, st, [&](const auto& cand) {
         if (ctx.aborted()) return;
-        if (!ctx.usable(cand)) return;
-        if (st.already_taken(cand)) return;          // edge-injective
+        const auto id = ctx.candidate_id(cand);
+        if (!ctx.usable(id)) return;
+        if (st.already_taken(id)) return;            // edge-injective
 
         const uint32_t saved = st.bound_mask;
         if (!bind_pattern_edge(ctx.edge_vertices(cand), ctx.edge_arity(cand),
@@ -137,7 +158,7 @@ HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
         }
 
         st.pattern[st.depth] = p;
-        st.matched[st.depth] = cand;
+        st.matched[st.depth] = id;
         ++st.depth;
 
         join_dfs(ctx, st, emit);
@@ -160,8 +181,9 @@ HG_HD bool join_seed(const Ctx& ctx, St& st, EdgeIdT anchor, uint8_t at_pattern,
     st.reset();
     if (!ctx.usable(anchor)) return false;
 
+    const auto cand = ctx.candidate_of(anchor);
     const uint32_t saved = st.bound_mask;
-    if (!bind_pattern_edge(ctx.edge_vertices(anchor), ctx.edge_arity(anchor),
+    if (!bind_pattern_edge(ctx.edge_vertices(cand), ctx.edge_arity(cand),
                            ctx.pattern_vars(at_pattern), ctx.pattern_arity(at_pattern),
                            st.binding, st.bound_mask)) {
         join_unbind_since(st, saved);

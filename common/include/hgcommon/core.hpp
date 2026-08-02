@@ -14,6 +14,17 @@
   #define HG_HD
 #endif
 
+// For a function whose inlining must not be at the mercy of unrelated code size. `inline` is
+// only a hint, and GCC's budget is per translation unit: adding template instantiations to a
+// widely-included header tightens it everywhere in that unit, and something already inlined
+// stops being inlined. See SparseBitset::contains for the case that cost 3.7% of an evolution
+// without changing any arithmetic.
+#if defined(_MSC_VER) && !defined(__clang__)
+  #define HG_INLINE __forceinline
+#else
+  #define HG_INLINE inline __attribute__((always_inline))
+#endif
+
 namespace hgcommon {
 
 // Identifiers — all 32-bit (4 billion is ample and halves cache pressure vs 64-bit).

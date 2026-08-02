@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
+#include <utility>
 #include <atomic>
 #include <functional>
 
@@ -9,6 +11,7 @@
 #include "signature.hpp"
 #include "pattern.hpp"
 #include "hgcommon/match_core.hpp"
+#include "hgcommon/join_core.hpp"
 #include "index.hpp"
 #include "arena.hpp"
 #include "bitset.hpp"
@@ -19,19 +22,19 @@
 namespace hypergraph {
 
 // =============================================================================
-// Pattern Matching Tasks (HGMatch Dataflow Model)
+// Pattern matching on the host
 // =============================================================================
 //
-// Following v1's execution model:
-// - SCAN/EXPAND execute synchronously (recursive depth-first within single task)
-// - Only SINK→REWRITE spawns new jobs to the job system
-// - This is memory-efficient (bounded by O(pattern_edges * candidates))
+// The join itself -- recursion, edge-injectivity, binding and unwind, which pattern position is
+// bound next -- is hgcommon/join_core.hpp, so the device runs the same one. This file supplies
+// the host's half: candidate enumeration from the signature and inverted-vertex indices, and
+// what to do with a completed match.
 //
-// Task types:
-// - SCAN: Find initial candidates via signature partition
-// - EXPAND: Extend partial match with next pattern edge
-// - SINK: Process complete match, spawn REWRITE task
-// - REWRITE: Apply rule, create new state, spawn next evolution step
+// Matching runs synchronously here: the whole depth-first search happens inside one task, and
+// only the completed match spawns a job. ParallelEvolutionEngine::execute_scan_task and
+// ::execute_expand_task are the other host scheduler, expanding by spawning a task per candidate
+// rather than by recursing; they select the next pattern position with the same
+// hgcommon::join_next_position this join uses.
 //
 // =============================================================================
 // WHAT THIS JOIN COSTS, AND WHERE IT STOPS BEING OPTIMAL
@@ -171,7 +174,8 @@ void generate_candidates(
     const PatternEdge& pattern_edge,
     const EdgeSignature& pattern_sig,
     const CompatibleSignatureCache& sig_cache,  // Pre-computed compatible signatures
-    const VariableBinding& binding,
+    const VertexId* bindings,                   // indexed by variable; read only where bound
+    uint32_t bound_mask,
     const SparseBitset& state_edges,
     const SignatureIndex& sig_index,
     const InvertedVertexIndex& inv_index,
@@ -185,8 +189,8 @@ void generate_candidates(
 
     for (uint8_t i = 0; i < pattern_edge.arity; ++i) {
         uint8_t var = pattern_edge.var_at(i);
-        if (binding.is_bound(var)) {
-            bound_vertices[num_bound] = binding.get(var);
+        if (bound_mask & (1u << var)) {
+            bound_vertices[num_bound] = bindings[var];
             bound_positions[num_bound] = i;
             num_bound++;
         }
@@ -243,197 +247,127 @@ void generate_candidates(
 }
 
 // =============================================================================
-// EXPAND Task (Recursive)
+// The join, over this engine's indices
 // =============================================================================
-// Extends partial match with next pattern edge.
-// Executes synchronously (depth-first) - does not spawn jobs.
+// hgcommon/join_core.hpp owns the recursion, the edge-injectivity rule, the binding and its
+// unwind, and the order in which pattern positions are bound. This supplies the two things that
+// are genuinely host-specific: how candidates are enumerated, and what an emitted match is.
 
 template<typename EdgeAccessor, typename SignatureAccessor>
-void expand_match(
-    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx,
-    PartialMatch& partial
-) {
-    // Check termination
-    if (ctx.should_terminate && ctx.should_terminate->load()) return;
+struct HostJoinContext {
+    using JoinState = hgcommon::JoinState<MAX_PATTERN_EDGES, MAX_VARS, EdgeId, VertexId>;
 
-    // Check if complete
-    if (partial.is_complete()) {
-        // Convert to pattern order
-        EdgeId edges_in_order[MAX_PATTERN_EDGES];
-        partial.to_pattern_order(edges_in_order);
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>* mc;
 
-        // Deduplication check (optional)
-        if (ctx.match_dedup) {
-            MatchIdentity identity(ctx.rule_index, edges_in_order, ctx.rule->num_lhs_edges);
-            auto [existing, inserted] = ctx.match_dedup->insert_if_absent(
-                identity.hash(), static_cast<MatchId>(0));
-            if (!inserted) return;  // Already found
-        }
+    // Enumerating a candidate already fetched its edge, so the candidate carries it rather than
+    // handing the join an id to look up again.
+    //
+    // The edge type comes from the accessor, not from types.hpp: the matcher is generic over it
+    // (the pattern-matching tests supply their own). The accessor must return a REFERENCE --
+    // pointing at a returned temporary would dangle for the whole join.
+    using EdgeRef = decltype(std::declval<const EdgeAccessor&>()(EdgeId{}));
+    static_assert(std::is_reference_v<EdgeRef>,
+                  "edge accessor must return a reference; the join holds the edge across binding");
+    using EdgeType = std::remove_cv_t<std::remove_reference_t<EdgeRef>>;
 
-        // Report match
-        if (ctx.on_match) {
-            ctx.on_match(
-                ctx.rule_index,
-                edges_in_order,
-                ctx.rule->num_lhs_edges,
-                partial.binding,
-                ctx.state_id
-            );
-        }
+    struct Candidate {
+        EdgeId          id;
+        const EdgeType* edge;
+    };
 
-        // Track count
-        if (ctx.matches_found) {
-            size_t count = ctx.matches_found->fetch_add(1) + 1;
-            if (count >= ctx.max_matches && ctx.should_terminate) {
-                ctx.should_terminate->store(true);
-            }
-        }
-        return;
+    uint8_t        num_lhs_edges()          const { return mc->rule->num_lhs_edges; }
+    uint8_t        order_at(uint8_t k)      const { return mc->rule->match_order[k]; }
+    const uint8_t* pattern_vars(uint8_t p)  const { return mc->rule->lhs[p].vars; }
+    uint8_t        pattern_arity(uint8_t p) const { return mc->rule->lhs[p].arity; }
+
+    Candidate candidate_of(EdgeId e) const { return Candidate{e, &mc->get_edge(e)}; }
+    EdgeId    candidate_id(const Candidate& c)      const { return c.id; }
+    const VertexId* edge_vertices(const Candidate& c) const { return c.edge->vertices; }
+    uint8_t         edge_arity(const Candidate& c)    const { return c.edge->arity; }
+
+    // Every enumeration branch in generate_candidates is already filtered by the state's edge
+    // bitset, so a candidate reaching the join is in the state by construction. A SEEDED join
+    // takes its anchor from the caller, not from the enumerator, so the anchor's membership is
+    // checked at the call site (find_delta_matches) instead.
+    bool usable(EdgeId) const { return true; }
+
+    bool aborted() const {
+        return mc->should_terminate && mc->should_terminate->load();
     }
 
-    // Next pattern edge to match: the first position in the rule's join order that is not bound
-    // yet.
-    //
-    // Selecting it as match_order[num_matched] instead -- by COUNT -- assumes the search began at
-    // match_order[0]. That holds for a full scan, which always starts there. It does NOT hold for
-    // DELTA matching, which anchors a produced edge at EVERY pattern position in turn
-    // (find_delta_matches), precisely so that a match using the produced edge anywhere in the
-    // pattern is found. When the anchor sits at a position other than match_order[0], counting
-    // starts the walk at match_order[1] and match_order[0] is never bound at all, so those
-    // matches are never completed and the delta scan silently returns fewer matches than exist.
-    //
-    // Since forwarding is inductive, each such miss removes a whole subtree, and the run stays
-    // self-consistent while being wrong.
-    //
-    // When the anchor IS match_order[0] this selects exactly what counting selected, so the full
-    // scan is unaffected.
-    uint8_t pattern_idx = 0xFFu;
-    {
-        uint32_t bound_positions = 0;
-        for (uint8_t i = 0; i < partial.num_matched; ++i)
-            bound_positions |= (1u << partial.match_order[i]);
-        for (uint8_t i = 0; i < ctx.rule->num_lhs_edges; ++i) {
-            const uint8_t cand = ctx.rule->match_order[i];
-            if (!(bound_positions & (1u << cand))) { pattern_idx = cand; break; }
+    template<typename F>
+    void for_each_candidate(uint8_t p, const JoinState& st, F&& f) const {
+        generate_candidates(
+            mc->rule->lhs[p], mc->rule->lhs_sig[p], mc->rule->lhs_cache[p],
+            st.binding, st.bound_mask, *mc->state_edges,
+            *mc->sig_index, *mc->inv_index, mc->get_edge,
+            [&](EdgeId eid, const EdgeType& edge) { f(Candidate{eid, &edge}); });
+    }
+};
+
+// A completed match: deduplicate, report, count. One body for the full scan and the seeded scan.
+//
+// `scratch` is INVALID_ID in every slot on entry and is left that way on exit. It belongs to
+// the session, not the match, so a completed match costs two writes per bound variable rather
+// than the 128-byte memset a fresh VariableBinding would zero-fill.
+template<typename EdgeAccessor, typename SignatureAccessor, typename JoinState>
+void emit_match(PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc,
+                VariableBinding& scratch,
+                const JoinState& st) {
+    EdgeId edges_in_order[MAX_PATTERN_EDGES];
+    std::memset(edges_in_order, 0xFF, sizeof(edges_in_order));
+    for (uint8_t d = 0; d < st.depth; ++d) edges_in_order[st.pattern[d]] = st.matched[d];
+
+    if (mc.match_dedup) {
+        MatchIdentity identity(mc.rule_index, edges_in_order, mc.rule->num_lhs_edges);
+        auto [existing, inserted] = mc.match_dedup->insert_if_absent(
+            identity.hash(), static_cast<MatchId>(0));
+        if (!inserted) return;
+    }
+
+    if (mc.on_match) {
+        // Only the BOUND variables are copied across. The join's unwind restores the mask and
+        // leaves behind the vertex a discarded branch wrote, while resolve_rhs_vertices
+        // (hgcommon/rewrite_core.hpp) reads bindings[var] directly and takes INVALID_ID to mean
+        // "not matched, allocate a fresh vertex" -- it never consults the mask. So an unbound
+        // variable MUST carry INVALID_ID here, or a rule whose RHS introduces that variable
+        // would build its edge from a vertex belonging to a match that was rejected.
+        for (uint32_t m = st.bound_mask; m; m &= m - 1) {
+            const uint8_t var = static_cast<uint8_t>(hgcommon::ctz(m));
+            scratch.bind(var, st.binding[var]);
+        }
+        mc.on_match(mc.rule_index, edges_in_order, mc.rule->num_lhs_edges, scratch, mc.state_id);
+        // Back to all-INVALID_ID for the next match. Callers copy the binding rather than
+        // retaining a reference to it.
+        for (uint32_t m = st.bound_mask; m; m &= m - 1) {
+            scratch.unbind(static_cast<uint8_t>(hgcommon::ctz(m)));
         }
     }
-    if (pattern_idx >= ctx.rule->num_lhs_edges) return;
 
-    const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_idx];
-    const EdgeSignature& pattern_sig = ctx.rule->lhs_sig[pattern_idx];
-    const CompatibleSignatureCache& sig_cache = ctx.rule->lhs_cache[pattern_idx];
-
-    // Generate candidates. Depth-first backtracking mutates a single PartialMatch in
-    // place — bind the new variables directly into partial.binding, push the matched
-    // edge, recurse, then unbind and pop on return — instead of copying the ~356 B of
-    // binding + partial per surviving candidate at every recursion level.
-    generate_candidates(
-        pattern_edge, pattern_sig, sig_cache,
-        partial.binding, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
-        [&](EdgeId candidate, const auto& edge) {
-            // Check termination
-            if (ctx.should_terminate && ctx.should_terminate->load()) return;
-
-            // Skip if already matched
-            if (partial.contains_edge(candidate)) return;
-
-            // Bind directly into partial.binding, recording which variables are bound
-            // before this edge so the exact set of newly-bound variables can be undone.
-            const uint32_t pre_mask = partial.binding.bound_mask;
-
-            if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, partial.binding)) {
-                // validate_candidate may bind some variables before hitting a mismatch;
-                // restore partial.binding to its pre-edge state before trying the next.
-                for (uint32_t newly = partial.binding.bound_mask & ~pre_mask; newly; newly &= newly - 1) {
-                    partial.binding.unbind(static_cast<uint8_t>(hgcommon::ctz(newly)));
-                }
-                return;
-            }
-
-            // Push the matched edge/order and recurse on the same PartialMatch.
-            partial.match_order[partial.num_matched] = pattern_idx;
-            partial.matched_edges[partial.num_matched] = candidate;
-            partial.num_matched++;
-
-            expand_match(ctx, partial);
-
-            // Pop the edge and unbind the variables this edge bound.
-            partial.num_matched--;
-            for (uint32_t newly = partial.binding.bound_mask & ~pre_mask; newly; newly &= newly - 1) {
-                partial.binding.unbind(static_cast<uint8_t>(hgcommon::ctz(newly)));
-            }
+    if (mc.matches_found) {
+        size_t count = mc.matches_found->fetch_add(1) + 1;
+        if (count >= mc.max_matches && mc.should_terminate) {
+            mc.should_terminate->store(true);
         }
-    );
+    }
 }
 
 // =============================================================================
 // SCAN Task
 // =============================================================================
-// Finds initial candidates for first pattern edge, then calls expand_match.
-// Executes synchronously.
+// Every match of the rule in the state. Executes synchronously.
 
 template<typename EdgeAccessor, typename SignatureAccessor>
 void scan_pattern(
-    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc
 ) {
-    if (ctx.rule->num_lhs_edges == 0) return;
+    if (mc.rule->num_lhs_edges == 0) return;
 
-    // Seed the join with the rule's most-constrained edge (match_order[0]).
-    const uint8_t first_pidx = ctx.rule->match_order[0];
-    const PatternEdge& first_edge = ctx.rule->lhs[first_pidx];
-    const EdgeSignature& first_sig = ctx.rule->lhs_sig[first_pidx];
-    const CompatibleSignatureCache& first_cache = ctx.rule->lhs_cache[first_pidx];
-
-    // Generate candidates for first edge
-    generate_candidates(
-        first_edge, first_sig, first_cache,
-        VariableBinding{}, *ctx.state_edges,
-        *ctx.sig_index, *ctx.inv_index, ctx.get_edge,
-        [&](EdgeId candidate, const auto& edge) {
-            // Check termination
-            if (ctx.should_terminate && ctx.should_terminate->load()) return;
-
-            VariableBinding binding;
-
-            if (!validate_candidate(edge.vertices, edge.arity, first_edge, binding)) {
-                return;
-            }
-
-            // Create initial partial match
-            PartialMatch partial;
-            partial.num_pattern_edges = ctx.rule->num_lhs_edges;
-            partial.add_match(first_pidx, candidate, binding);
-
-            // Single-edge pattern: complete match
-            if (ctx.rule->num_lhs_edges == 1) {
-                EdgeId edges_in_order[MAX_PATTERN_EDGES];
-                partial.to_pattern_order(edges_in_order);
-
-                // Deduplication
-                if (ctx.match_dedup) {
-                    MatchIdentity identity(ctx.rule_index, edges_in_order, 1);
-                    auto [existing, inserted] = ctx.match_dedup->insert_if_absent(
-                        identity.hash(), static_cast<MatchId>(0));
-                    if (!inserted) return;
-                }
-
-                if (ctx.on_match) {
-                    ctx.on_match(ctx.rule_index, edges_in_order, 1, binding, ctx.state_id);
-                }
-
-                if (ctx.matches_found) {
-                    size_t count = ctx.matches_found->fetch_add(1) + 1;
-                    if (count >= ctx.max_matches && ctx.should_terminate) {
-                        ctx.should_terminate->store(true);
-                    }
-                }
-            } else {
-                // Multi-edge pattern: expand
-                expand_match(ctx, partial);
-            }
-        }
-    );
+    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx{&mc};
+    typename decltype(ctx)::JoinState st;
+    st.reset();
+    VariableBinding scratch;
+    hgcommon::join_dfs(ctx, st, [&](const auto& s) { emit_match(mc, scratch, s); });
 }
 
 // =============================================================================
@@ -512,59 +446,24 @@ void find_matches(
 
 template<typename EdgeAccessor, typename SignatureAccessor>
 void scan_pattern_from_edge(
-    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& ctx,
+    PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc,
     EdgeId starting_edge,
     uint8_t pattern_position
 ) {
-    if (ctx.rule->num_lhs_edges == 0) return;
+    if (mc.rule->num_lhs_edges == 0) return;
 
-    const PatternEdge& pattern_edge = ctx.rule->lhs[pattern_position];
-    const auto& edge = ctx.get_edge(starting_edge);
-
-    // Validate the starting edge matches the pattern at this position
-    VariableBinding binding;
-    if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding)) {
+    // The anchor bypasses generate_candidates, so the signature test it would have applied is
+    // applied here. join_seed binds the anchor, which rejects any edge this would have.
+    const EdgeSignature& data_sig = mc.get_signature(starting_edge);
+    if (!signature_compatible(data_sig, mc.rule->lhs_sig[pattern_position])) {
         return;
     }
 
-    // Check signature compatibility using cached signature
-    const EdgeSignature& data_sig = ctx.get_signature(starting_edge);
-    if (!signature_compatible(data_sig, ctx.rule->lhs_sig[pattern_position])) {
-        return;
-    }
-
-    // Create initial partial match at the specified position
-    PartialMatch partial;
-    partial.num_pattern_edges = ctx.rule->num_lhs_edges;
-    partial.add_match(pattern_position, starting_edge, binding);
-
-    // Single-edge pattern: complete match
-    if (ctx.rule->num_lhs_edges == 1) {
-        EdgeId edges_in_order[MAX_PATTERN_EDGES];
-        partial.to_pattern_order(edges_in_order);
-
-        // Deduplication
-        if (ctx.match_dedup) {
-            MatchIdentity identity(ctx.rule_index, edges_in_order, 1);
-            auto [existing, inserted] = ctx.match_dedup->insert_if_absent(
-                identity.hash(), static_cast<MatchId>(0));
-            if (!inserted) return;
-        }
-
-        if (ctx.on_match) {
-            ctx.on_match(ctx.rule_index, edges_in_order, 1, binding, ctx.state_id);
-        }
-
-        if (ctx.matches_found) {
-            size_t count = ctx.matches_found->fetch_add(1) + 1;
-            if (count >= ctx.max_matches && ctx.should_terminate) {
-                ctx.should_terminate->store(true);
-            }
-        }
-    } else {
-        // Multi-edge pattern: expand from this starting point
-        expand_match(ctx, partial);
-    }
+    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx{&mc};
+    typename decltype(ctx)::JoinState st;
+    VariableBinding scratch;
+    hgcommon::join_seed(ctx, st, starting_edge, pattern_position,
+                        [&](const auto& s) { emit_match(mc, scratch, s); });
 }
 
 // Find matches that include at least one of the produced edges
