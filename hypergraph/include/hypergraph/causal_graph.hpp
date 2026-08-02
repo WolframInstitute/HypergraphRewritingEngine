@@ -323,6 +323,20 @@ public:
         return num_causal_event_pairs_.load(std::memory_order_relaxed);
     }
 
+    // Pairs the branchial dedup actually claimed. add_branchial_edge is reached ONLY on a
+    // winning claim, so this must equal num_branchial_edges() at every point in a run.
+    //
+    // The two counts are maintained by different mechanisms -- one is a map's occupancy, the
+    // other a counter incremented by the winner -- so equality is a real check on the map's
+    // exactly-once contract rather than a restatement of it. A duplicate admitted under
+    // contention shows up here on the run that produced it, with that run's parameters, instead
+    // of only as two runs disagreeing afterwards: the branchial graph went non-deterministic at
+    // 8 threads once in 24 runs (30064 edges against 30063, states/events/causal identical),
+    // and a spread across runs cannot say WHICH run was wrong or why.
+    size_t num_branchial_pairs_claimed() const {
+        return seen_branchial_pairs_.count_unique();
+    }
+
     size_t num_branchial_edges() const {
         return num_branchial_edges_.load(std::memory_order_relaxed);
     }

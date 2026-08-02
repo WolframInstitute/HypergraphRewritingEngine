@@ -34,6 +34,7 @@ uint64_t fnv(uint64_t h, uint64_t x) { h ^= x; h *= 1099511628211ULL; return h; 
 struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
+    long branchial_pairs = 0;
 };
 
 Fingerprint fingerprint(hgraph::Hypergraph& g) {
@@ -81,6 +82,19 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     std::sort(be.begin(), be.end());
     fp.branchial = 1469598103934665603ULL; for (uint64_t v : be) fp.branchial = fnv(fp.branchial, v);
     fp.num_branchial = static_cast<long>(be.size());
+
+    // EXACTLY-ONCE, checked on THIS run rather than inferred from a disagreement between runs.
+    //
+    // add_branchial_edge is reached only when the pair dedup reports a winning claim, so the
+    // edge count must equal the number of claimed pairs. The two are maintained by different
+    // mechanisms -- a map's occupancy against a counter the winner increments -- so equality
+    // tests the map's exactly-once contract instead of restating it.
+    //
+    // The spread across runs cannot do this job: it reports that two runs disagreed, not which
+    // one was wrong. Observed once at 8 threads, 1 of 24 runs, 30064 edges against 30063 with
+    // states, events and causal identical -- a duplicate pair, not a lost or extra event. This
+    // fires on the run that produced it, with that run's thread count and seed.
+    fp.branchial_pairs = static_cast<long>(g.causal_graph().num_branchial_pairs_claimed());
 
     for (uint32_t e = 0; e < g.num_raw_events(); ++e)
         if (g.get_event(e).id != hgraph::INVALID_ID) ++fp.num_events;
@@ -176,6 +190,12 @@ Spread spread(const Workload& w, bool quotient) {
         for (int rep = 0; rep < 4; ++rep)
             for (int th : {1, 2, 8}) {
                 Fingerprint f = run(w.rules, w.init, quotient, th, seed, w.steps);
+                EXPECT_EQ(f.num_branchial, f.branchial_pairs)
+                    << w.name << ": branchial dedup admitted a duplicate at threads=" << th
+                    << " seed=" << (seed ? "fixed" : "random") << " rep=" << rep
+                    << " -- " << f.num_branchial << " edges from "
+                    << f.branchial_pairs << " claimed pairs. add_branchial_edge runs only on a "
+                       "winning claim, so the two cannot differ unless one key was claimed twice.";
                 s.states.insert(f.states); s.causal.insert(f.causal); s.branchial.insert(f.branchial);
                 s.ns.insert(f.num_states); s.ne.insert(f.num_events);
                 s.nc.insert(f.num_causal); s.nb.insert(f.num_branchial);
