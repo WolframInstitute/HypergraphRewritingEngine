@@ -450,18 +450,33 @@ TEST(Unified_CanonicalHash, CanonicalHash_EmptyState) {
 
 // A rule that empties the state must evolve, not throw: it drives a state whose
 // canonical hash keys the dedup, event-canonical and quotient maps.
+//
+// Run under EVERY event identity mode. The mode picks the causal attribution mechanism --
+// configure_identity_and_quotient routes Automatic to the quotient reconstruction and everything
+// else to the raw-edge rendezvous in rewriter.cpp -- so fixing one mode here tested one
+// mechanism and left the other unexercised on the empty state.
 TEST(Unified_CanonicalHash, EmptyingRuleEvolvesWithoutError) {
-    Hypergraph hg;
-    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    hg.set_event_signature_keys(EventKey_ConsumedEdges | EventKey_ProducedEdges);
+    struct Mode { const char* name; hgcommon::EventSignatureKeys keys; };
+    const Mode modes[] = {
+        {"None",              hgcommon::EVENT_SIG_NONE},
+        {"ConsumedxProduced", EventKey_ConsumedEdges | EventKey_ProducedEdges},
+        {"Full",              hgcommon::EVENT_SIG_FULL},
+        {"Automatic",         hgcommon::EVENT_SIG_AUTOMATIC},
+    };
 
-    ParallelEvolutionEngine engine(&hg, 4);
-    engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
+    for (const auto& m : modes) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(m.keys);
 
-    std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
-    EXPECT_NO_THROW(engine.evolve(init, 3));
-    EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
-    EXPECT_GT(hg.num_states(), 1u);
+        ParallelEvolutionEngine engine(&hg, 4);
+        engine.add_rule(make_rule(0).lhs({0, 1}).build());   // {{x,y}} -> {}
+
+        std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
+        EXPECT_NO_THROW(engine.evolve(init, 3)) << m.name;
+        EXPECT_EQ(engine.last_error(), job_system::ErrorType::None) << m.name;
+        EXPECT_GT(hg.num_states(), 1u) << m.name;
+    }
 }
 
 TEST(Unified_CanonicalHash, CanonicalHash_SingleEdge) {
