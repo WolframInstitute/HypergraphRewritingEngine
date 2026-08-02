@@ -43,7 +43,7 @@ item in P2 costs double until this lands.
 | P1.1 | `hgcommon/join_core.hpp`: the join as ONE `HG_HD` body — pattern-edge order, binding, edge-injectivity, recursion, emit. Templated on candidate enumeration only. | compiles host + `nvcc -arch=sm_89`; no engine wired yet | **DONE** |
 | P1.2 | CPU adapter: `pattern_matcher.hpp` supplies an inverted-index candidate iterator and calls `join_core`. Its own DFS is deleted in the same commit. Both host schedulers (recursive and task-based) select the next pattern position with `join_next_position`. | `all_tests` 228/228 incl. `OracleCorpus`/`GoldenMatrix`/`ReferenceOracle`/`MatchCompleteness`; cost +0.26–0.34% instructions, D1 flat | **DONE** |
 | P1.3 | GPU adapter: `match.cu` supplies a CSR-slice strider and calls `join_core`. Its own DFS is deleted in the same commit. | `hg_gpu_tests` 97/97 + `gpu_differential_tests` 30/30; 45317 states / 45316 events unchanged; device timing neutral (median 46.8 vs 48.5 ms, spread ~10%) | **DONE** |
-| P1.4 | Delta matching (`find_delta_matches`) folded into the same body — it is the same join anchored at a produced edge. | `test_match_completeness` rate unchanged | |
+| P1.4 | Delta matching (`find_delta_matches`) folded into the same body — it is the same join anchored at a produced edge. | Delivered by P1.2: `scan_pattern_from_edge` IS `hgcommon::join_seed`. Rate unchanged across the extraction — 2b624c8 gave 5,2,3,5,2 failing runs of 204, 59b3cd8 gave 4,1,6,4,1, all forwarding-attributed. The DEVICE has no delta matching at all (full scan per state per rule); that is a missing feature, not a duplicated body. | **DONE** |
 
 **Done-line for P1:** one join implementation in the tree. `grep -c "expand_match\|DFS"` finds
 one body, not two.
@@ -103,7 +103,7 @@ Strict order: each unblocks the next.
 | id | what | gate | status |
 |---|---|---|---|
 | P5.1 | `tools/` triage: 66 files, **57 built by nothing**, 10,365 lines, `ir_incremental_probe.cpp` already broken. Every survivor is registered in CMake; everything whose question is settled is deleted (its finding lives in the commit that answered it). | `ls tools/*.cpp tools/*.cu` count == CMake-registered count | |
-| P5.2 | Dead code from the audit: `EdgeCausalInfo` (`hypergraph/include/hypergraph/types.hpp:490`) is referenced by nothing and is listed in CODEMAP as if it exists. | `tools/dev/source_audit.py` reports zero unreferenced *types* in shipped code | |
+| P5.2 | Dead code from the audit: `EdgeCausalInfo` (`hypergraph/include/hypergraph/types.hpp:490`) is referenced by nothing and is listed in CODEMAP as if it exists. | Deleted; CODEMAP no longer lists it. The causal rendezvous it described is `CausalGraph`'s `get_or_create_edge_producers`/`_consumers`, keyed by `CanonicalEdgeKey`. | **DONE** |
 | P5.3 | Fold the three untracked planning docs (`V1_ROADMAP` 163, `V1_EXECUTION` 249, `V1_SCOPING_REGISTER` 753) — one authority, not three. **Needs Richard's go: they are untracked, so deletion is irreversible.** | one planning doc remains | |
 | P5.4 | Regenerate `docs/CODEMAP.md` from `tools/dev/source_map.py` instead of maintaining it by hand, or delete it. It has already drifted. | CODEMAP is generated, or gone | |
 | P5.5 | `IR_VERIFICATION_NOTES.md` is **tracked** and states the CPU `HashStrategy` enum "still exposes" WL/UT options — they do not exist. Untrack it; move the IR-vs-WL correctness argument to `reference/CANONICALIZATION.md`. | no tracked doc states a non-existent option | |

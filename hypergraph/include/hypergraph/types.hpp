@@ -480,20 +480,6 @@ struct GlobalCounters {
 };
 
 // =============================================================================
-// EdgeCausalInfo
-// =============================================================================
-// Per-edge causal tracking for online causal edge computation.
-// Uses rendezvous pattern: both producer and consumers write-then-read.
-//
-// Thread safety: Lock-free via atomic producer and LockFreeList consumers.
-
-struct EdgeCausalInfo {
-    std::atomic<EventId> producer{INVALID_ID};  // Set once when edge created
-    // Note: consumers stored separately in SegmentedArray<LockFreeList<EventId>>
-    // to avoid including lock_free_list.hpp here (circular dependency)
-};
-
-// =============================================================================
 // CausalEdge / BranchialEdge
 // =============================================================================
 // Represent relationships between events.

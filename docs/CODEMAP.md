@@ -63,7 +63,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `hypergraph/include/hypergraph/` -- core CPU engine (headers)
 
 - **`types.hpp`** -- core value types, IDs, bindings, mode enums.
-  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCausalInfo`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
+  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
   - quotient reconstruction types: `CanonicalEdgeKey` (the quotient-aware edge identity that meets producers with consumers -- orbit-keyed under quotient, raw `EdgeId` otherwise), `EdgeOrbitTable` (per-state edge orbits + SLOTS), `CanonicalTransition` (orbit-deduplicated), `SlotMatch` (undeduplicated, slot-named)
   - `EMPTY_STATE_CANONICAL_HASH` -- the empty state's own canonical hash; it cannot be 0, which means "not computed" for `State::canonical_hash` and is `ConcurrentMap`'s `EMPTY_KEY`
 - **`arena.hpp`** -- arena allocators (foundation of off-hot-path, malloc-free allocation).
