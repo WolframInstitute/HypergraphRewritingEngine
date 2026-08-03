@@ -78,6 +78,11 @@ struct NormalizedResult {
     // engines explored the same STATES; it cannot check that the device computed the same HASH
     // for them -- and the device's hash is what it deduplicates on and what a caller reads back.
     std::multiset<uint64_t> engine_state_hashes;
+    // The RECONSTRUCTED relations, when the run routes the reconstruction. Kept apart from the
+    // full-capture sets above because the endpoint identity differs: these are pairs of content
+    // triples hash(input class, output class, rule), which is what both engines can produce for
+    // an event that was never materialised.
+    std::multiset<uint64_t> recon_causal, recon_branchial;
 
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
@@ -284,6 +289,16 @@ NormalizedResult run_cpu(const Workload& w) {
         if (it1 == event_key_by_id.end() || it2 == event_key_by_id.end()) continue;
         out.branchial_edge_keys.insert(edge_pair_key(it1->second, it2->second));
     }
+
+    // The relations the run SERVES when it routes the reconstruction. The sets above are full
+    // capture's, which on that route holds only what the explored representatives left behind.
+    if (hg.quotient_reconstruction()) {
+        auto triple = [&](uint32_t e) { return hg.reconstructed_raw_triple(e); };
+        hg.for_each_reconstructed_causal_as(/*reduced=*/false, triple,
+            [&](uint64_t p, uint64_t c) { out.recon_causal.insert(causal_key(p, c)); });
+        hg.for_each_reconstructed_branchial_as(triple,
+            [&](uint64_t a, uint64_t b) { out.recon_branchial.insert(edge_pair_key(a, b)); });
+    }
     return out;
 }
 
@@ -351,6 +366,11 @@ NormalizedResult run_gpu(const Workload& w) {
         out.event_keys.insert(ek);
     }
 
+    for (const auto& p : result.reconstructed_causal_relation)
+        out.recon_causal.insert(causal_key(p.first, p.second));
+    for (const auto& p : result.reconstructed_branchial_relation)
+        out.recon_branchial.insert(edge_pair_key(p.first, p.second));
+
     // Count diagnostics (GPU side).
     out.raw_states = result.states.size();
     out.raw_events = result.events.size();
@@ -404,11 +424,36 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
         << "Workload: " << w.name
         << " event multisets differ; cpu=" << cpu.event_keys.size()
         << " gpu=" << gpu.event_keys.size();
-    // Quotient mode records only the expanded representative's causal/branchial
-    // edges, and which raw representative carries them is a claim race on the CPU.
-    // Exact causal and branchial multisets are reconstructed offline from the
-    // skeleton (tools/quotient_reconstruction_probe.cpp), so the online sets are
-    // not a cross-engine invariant in this mode.
+    // Whether this workload routes the reconstruction at all -- the same condition both
+    // engines apply (Full states, and either quotient exploration or Automatic identity).
+    // Stated here so the equality below cannot pass by both engines reconstructing nothing.
+    const bool routes_reconstruction =
+        w.canon_mode == hg_gpu::CanonicalizationMode::Full && w.num_steps > 0 &&
+        (w.explore_from_canonical_states_only ||
+         w.event_canon_mode == hg_gpu::EventCanonicalizationMode::Automatic);
+    if (routes_reconstruction) {
+        EXPECT_FALSE(cpu.recon_causal.empty())
+            << "Workload: " << w.name << " routes the reconstruction but the host reconstructed "
+            << "no causal relation, so the equality below constrains nothing";
+        std::printf("[recon %s] causal cpu=%zu gpu=%zu  branchial cpu=%zu gpu=%zu\n",
+                    w.name.c_str(), cpu.recon_causal.size(), gpu.recon_causal.size(),
+                    cpu.recon_branchial.size(), gpu.recon_branchial.size());
+    }
+
+    // The RECONSTRUCTED relations, compared as SETS. Both engines reconstruct them online from
+    // the class-frame expansion, and both report endpoints as the schedule-stable content
+    // triple, so this is a cross-engine invariant wherever the route is taken.
+    EXPECT_EQ(cpu.recon_causal, gpu.recon_causal)
+        << "Workload: " << w.name << " reconstructed causal relations differ; cpu="
+        << cpu.recon_causal.size() << " gpu=" << gpu.recon_causal.size();
+    EXPECT_EQ(cpu.recon_branchial, gpu.recon_branchial)
+        << "Workload: " << w.name << " reconstructed branchial relations differ; cpu="
+        << cpu.recon_branchial.size() << " gpu=" << gpu.recon_branchial.size();
+
+    // Full capture's own causal/branchial records. Under quotient exploration these hold only
+    // what the explored representatives left behind, and which raw representative carries them
+    // is a claim race, so they are compared on the full-capture route alone -- the relation a
+    // caller receives there is the reconstruction, compared above.
     if (!w.explore_from_canonical_states_only) {
         EXPECT_EQ(cpu.causal_edge_keys, gpu.causal_edge_keys)
             << "Workload: " << w.name

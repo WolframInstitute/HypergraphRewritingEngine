@@ -139,6 +139,12 @@ struct QeView {
     // application publishes itself there and then scans the bucket, so the later of any two
     // sees the earlier. `branchial_pairs` claims the unordered pair, since both sides can see
     // each other when their pushes and scans interleave.
+    // Per raw event, the schedule-stable content triple hash(input class, output class, rule).
+    // Indexed by raw event id, which is what the pair keys hold; the triple is what a
+    // cross-engine comparison can be made on. The host's qc_event_sig_.
+    uint64_t* event_sig;
+    uint32_t  event_sig_capacity;
+
     typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
     DedupMap::DeviceView branchial_pairs;
     uint32_t* num_branchial;
@@ -505,6 +511,16 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
         ev = nre.fetch_add(1u, cuda::memory_order_relaxed);
     }
 
+    // The event's content triple: isomorphism-invariant and independent of the schedule, so it
+    // is the identity a cross-run or cross-engine comparison of the relations is made on.
+    if (ev < qe.event_sig_capacity) {
+        uint64_t s = 1469598103934665603ULL;
+        s ^= state_hash; s *= 1099511628211ULL;
+        s ^= m.to_hash;  s *= 1099511628211ULL;
+        s ^= m.rule;     s *= 1099511628211ULL;
+        qe.event_sig[ev] = s;
+    }
+
     // The run's event identity. Under EVENT_SIG_NONE there is none: every application is its
     // own event, and the raw count above is what a caller is told.
     if (qe.keys != hgcommon::EVENT_SIG_NONE) {
@@ -638,6 +654,9 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&num_causal_pairs_, sizeof(uint32_t)), "QeState c-pairs alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_causal_edges_, sizeof(uint32_t)), "QeState c-edges alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_branchial_, sizeof(uint32_t)), "QeState branchial alloc");
+        event_sig_capacity_ = on ? max_events : 1u;
+        HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event sig alloc");
         clear();
     }
     ~QeState() {
@@ -652,6 +671,7 @@ public:
         if (num_causal_pairs_) cudaFree(num_causal_pairs_);
         if (num_causal_edges_) cudaFree(num_causal_edges_);
         if (num_branchial_) cudaFree(num_branchial_);
+        if (event_sig_) cudaFree(event_sig_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -681,6 +701,8 @@ public:
         HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
         HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
         HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
+        HG_CUDA_CHECK(cudaMemset(event_sig_, 0, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event sig clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -703,6 +725,34 @@ public:
     // Distinct branchial pairs: sibling applications of one instance whose consumed edges
     // overlap. The host's num_reconstructed_branchial.
     uint32_t num_branchial_host() { return read_counter(num_branchial_, "QeState branchial read"); }
+
+    // The reconstructed relations as pairs of CONTENT TRIPLES. A count says two engines
+    // disagree; a pair set says which pair is missing, which a count cannot.
+    void reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
+                                  std::vector<std::pair<uint64_t, uint64_t>>& branchial) {
+        causal.clear();
+        branchial.clear();
+        const uint32_t n = num_raw_events_host();
+        if (n == 0) return;
+        std::vector<uint64_t> sigs(event_sig_capacity_);
+        HG_CUDA_CHECK(cudaMemcpy(sigs.data(), event_sig_,
+                                 sizeof(uint64_t) * event_sig_capacity_, cudaMemcpyDeviceToHost),
+                      "QeState event sig read");
+        auto sig_of = [&](uint32_t e) -> uint64_t {
+            return e < sigs.size() ? sigs[e] : 0ull;
+        };
+        auto drain = [&](DedupMap& m, std::vector<std::pair<uint64_t, uint64_t>>& out) {
+            std::vector<uint64_t> keys;
+            m.copy_keys_to_host(keys);
+            out.reserve(keys.size());
+            for (uint64_t k : keys) {
+                const hgcommon::IdPair p = hgcommon::id_pair_from_key(k);
+                out.emplace_back(sig_of(p.a), sig_of(p.b));
+            }
+        };
+        drain(causal_pairs_, causal);
+        drain(branchial_pairs_, branchial);
+    }
 
     // Distinct event identities the replay produced under the run's mode. The host's
     // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.
@@ -729,6 +779,8 @@ public:
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;
+        q.event_sig        = event_sig_;
+        q.event_sig_capacity = event_sig_capacity_;
         q.inst_applied     = inst_applied_.view();
         q.branchial_pairs  = branchial_pairs_.view();
         q.num_branchial    = num_branchial_;
@@ -775,6 +827,8 @@ private:
     uint32_t*                 num_causal_pairs_ = nullptr;
     uint32_t*                 num_causal_edges_ = nullptr;
     uint32_t*                 num_branchial_    = nullptr;
+    uint64_t*                 event_sig_        = nullptr;
+    uint32_t                  event_sig_capacity_ = 0;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

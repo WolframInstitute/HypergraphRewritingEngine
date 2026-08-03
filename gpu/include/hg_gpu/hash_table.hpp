@@ -215,6 +215,18 @@ public:
 
     uint32_t capacity() const { return capacity_; }
 
+    // Every key the map holds, in slot order. EMPTY and LOCKED are slot states rather than
+    // keys, so they are dropped -- a caller enumerating a set must not be handed them. Only
+    // meaningful once the kernels writing the map have completed.
+    void copy_keys_to_host(std::vector<K>& out) const {
+        std::vector<K> slots(capacity_);
+        HG_CUDA_CHECK(cudaMemcpy(slots.data(), keys_, sizeof(K) * capacity_,
+                                 cudaMemcpyDeviceToHost), "ConcurrentMap key readback");
+        out.clear();
+        for (K k : slots)
+            if (k != EMPTY && k != LOCKED) out.push_back(k);
+    }
+
     void clear() {
         // EMPTY is K{0}; we memset the keys array. (For non-zero EMPTY this
         // would need a fill kernel — not currently used in the codebase.)

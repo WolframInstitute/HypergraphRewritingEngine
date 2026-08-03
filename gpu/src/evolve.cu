@@ -490,6 +490,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         out.reconstructed_causal_pairs = qc_route ? qe_state_->num_causal_pairs_host() : 0u;
         out.reconstructed_causal_edges = qc_route ? qe_state_->num_causal_edges_host() : 0u;
         out.reconstructed_branchial = qc_route ? qe_state_->num_branchial_host() : 0u;
+        if (qc_route)
+            qe_state_->reconstructed_pairs_host(out.reconstructed_causal_relation,
+                                                out.reconstructed_branchial_relation);
         out.frame_alignments = qc_route ? qe_state_->num_aligned_host() : 0u;
         out.frame_align_failures = qc_route ? qe_state_->num_align_failures_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
