@@ -1,13 +1,13 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 9 of 20 lines verified, 11 outstanding.** Every line that can be checked on
+**State at 2026-08-03: 10 verified, 3 partly, 7 outstanding.** Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 11 that
 remain split into exactly two kinds, and neither is effort:
 
-- **Needs the release matrix or a Windows machine** — the six-platform library and binary builds,
-  `hg_evolve_gpu` on both CUDA platforms, the `.paclet` archive, `DocumentationBuild`, the
-  static-link contract, the installed-paclet exercise, and the Windows MSVC+nvcc config (whose
-  build-only question is one click away: run `.github/workflows/windows-gpu.yml`).
+- **Needs a REBUILD on the release matrix** — and a rebuild, not a first build. All six platforms
+  and both CUDA binaries already EXIST in `paclet/LibraryResources/`; five of the six are dated
+  2026-07-22 or 08-01, so they predate this session entirely, including the GPU fault fix. The
+  `.paclet` archive, `DocumentationBuild` and the installed-paclet exercise follow the rebuild.
 - **Needs a decision** — the doc-accuracy line, which is a judgement about user-facing text.
 
 Nothing here is waiting on more engineering on this machine.
@@ -17,11 +17,22 @@ existed, and it was buried in a changelog). This is the gate a release must pass
 Keep it current: a release that skips a line here is not released.*
 
 ## Build artifacts
-- [ ] All 6 platform libraries built (Linux/Windows/macOS × x86-64/ARM64).
-- [ ] All 6 `hg_evolve` process binaries built.
-- [ ] `hg_evolve_gpu` built on both CUDA platforms.
-      *(v1.0 blocker: the native Windows MSVC+nvcc whole-stack config — until it lands,
-      `TargetDevice->"GPU"` silently falls back to CPU on Windows.)*
+- [~] All 6 platform libraries built (Linux/Windows/macOS × x86-64/ARM64). **All six ARE present in
+      `paclet/LibraryResources/` — but five are STALE.** Dates at 2026-08-03: Linux-x86-64 today;
+      Linux-ARM64, both MacOSX, both Windows are 2026-07-22 or 08-01, so they predate this
+      session's GPU fault fix (`00e21ee`), the continuation fixes and everything after. **The
+      release needs a REBUILD of all six from current source, not a first build.**
+- [~] All 6 `hg_evolve` process binaries built. Same: all six present, five stale.
+- [~] `hg_evolve_gpu` built on both CUDA platforms. **BOTH exist** — `Linux-x86-64/hg_evolve_gpu`
+      (rebuilt 2026-08-03) and `Windows-x86-64/hg_evolve_gpu.exe` (2026-07-22, stale).
+      *THE "v1.0 BLOCKER" BELOW IS STALE AND IS STRUCK. It read: "the native Windows MSVC+nvcc
+      whole-stack config — until it lands, `TargetDevice->"GPU"` silently falls back to CPU on
+      Windows." It landed. The evidence is the binary itself: its import table is exactly
+      `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — the static-link contract this checklist
+      specifies — with no `VCRUNTIME`/`MSVCP` (so not a dynamic MSVC link) and no
+      `libgcc`/`libstdc++`/`mingw` (so not MinGW). That is a fully static native MSVC build with
+      nvcc. What remains is a REBUILD from current source, not the config.*
+      Outstanding for ARM64 Windows: `/MD` rather than `/MT` (recorded, unchanged).
       **THE EXPERIMENT THAT SETTLES THIS EXISTS BUT HAS NOT BEEN RUN:** the Windows CI leg
       configures with `-DBUILD_GPU=OFF`, so "the config does not work" and "nobody has tried it"
       are indistinguishable from outside. `.github/workflows/windows-gpu.yml` builds and LINKS the
@@ -35,8 +46,10 @@ Keep it current: a release that skips a line here is not released.*
 - [ ] `.paclet` archive produced.
 - [ ] `DocumentationBuild` passes (was 24/24) — note this **evaluates every example cell**, so it is
       also the docs-can't-rot gate.
-- [ ] **Static-link contract holds:** `hg_evolve_gpu.exe` imports only `KERNEL32`/`WS2_32`
-      (static `libcudart_static` + `/MT`); the only runtime dependency is `nvcuda.dll`.
+- [x] **Static-link contract holds.** Verified 2026-08-03 on
+      `paclet/LibraryResources/Windows-x86-64/hg_evolve_gpu.exe`: the import set is exactly
+      `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — nothing else — so `libcudart_static` + `/MT`
+      held. Re-verify after the rebuild, since the binary checked is the 2026-07-22 one.
 
 ## Functional verification
 - [ ] The assembled `.paclet` is installed and exercised via wolframscript.

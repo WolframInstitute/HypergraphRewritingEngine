@@ -2,10 +2,15 @@ name: Windows GPU (build only)
 
 # THE EXPERIMENT THAT ANSWERS A NAMED v1.0 BLOCKER.
 #
-# docs/RELEASE_CHECKLIST.md calls the native Windows MSVC+nvcc whole-stack config a v1.0 blocker,
-# because until it lands `TargetDevice -> "GPU"` silently falls back to CPU on Windows. But nothing
-# in CI builds that stack -- the Windows leg configures with -DBUILD_GPU=OFF -- so "it does not
-# work" and "nobody has tried" are indistinguishable from the outside. This leg distinguishes them.
+# The checklist called the native Windows MSVC+nvcc whole-stack config a v1.0 blocker. IT IS NOT:
+# `paclet/LibraryResources/Windows-x86-64/hg_evolve_gpu.exe` exists and its import table is exactly
+# KERNEL32.dll, WS2_32.dll and nvcuda.dll -- the static-link contract -- with no VCRUNTIME/MSVCP
+# and no libgcc/libstdc++, so it is a fully static native MSVC build with nvcc. The config landed.
+#
+# WHAT THIS LEG IS FOR, THEN. Nothing in CI builds that stack -- the Windows leg configures with
+# -DBUILD_GPU=OFF -- so the config is unguarded: it works today because someone made it work, and
+# nothing would notice if a change broke it. This leg is the guard, and it also proves the build
+# runs from a CLEAN CHECKOUT rather than from one machine's configured tree.
 #
 # WHAT IT PROVES AND WHAT IT DOES NOT. It configures, compiles and LINKS the CUDA stack with
 # cl.exe as the host compiler. That is the whole of the config question: nvcc driving MSVC,
