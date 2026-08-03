@@ -640,6 +640,35 @@ private:
     size_t num_threads_{0};
     ExecutionMode mode_{ExecutionMode::Parallel};
 
+    // A match task the step budget refused. Its state exists and its matches were never
+    // computed, so this is precisely the work a continuation resumes -- and precisely the
+    // frontier, since a state is refused a match task only for being one step past the budget.
+    //
+    // The delta context is carried with it: without it the resumed task would rescan the whole
+    // state, which finds the same matches but is the slow path the parent already paid to avoid.
+    struct DeferredMatch {
+        StateId state;
+        uint32_t step;
+        MatchContext ctx;
+        bool has_ctx;
+    };
+    LockFreeList<DeferredMatch> deferred_frontier_;
+
+    // A rewrite the step budget refused. Match forwarding STORES a forwarded match on the child
+    // and then asks for its rewrite; when the child sits one step past the budget that ask is
+    // refused, and the stored match is not something the child's own match task will re-offer --
+    // it deduplicates against what is already stored. So the deferred rewrites are their own
+    // frontier, and without them a continuation reaches every state and misses transitions.
+    struct DeferredRewrite {
+        MatchRecord match;
+        uint32_t step;
+    };
+    LockFreeList<DeferredRewrite> deferred_rewrites_;
+    std::atomic<size_t> deferred_count_{0};
+
+    void defer_match_task(StateId state, uint32_t step, const MatchContext* ctx);
+    void defer_rewrite_task(const MatchRecord& match, uint32_t step);
+
     // Evolution control
     std::atomic<bool> should_stop_{false};
     size_t max_steps_{0};
@@ -1057,6 +1086,14 @@ public:
     // steps == 0 yields the initial state alone. A run to closure (terminating rule
     // systems only) passes SIZE_MAX.
     void evolve(const std::vector<std::vector<VertexId>>& initial_edges, size_t steps);
+
+    // Carry the SAME run `additional_steps` further, from the frontier where the budget stopped
+    // it. Equivalent to having asked for the total in the first place; the states, events and
+    // relations already built are kept rather than recomputed.
+    //
+    // Does nothing if no evolve() has run: there is no frontier to resume from, and seeding one
+    // here would be a second copy of what evolve() does with the roots it was given.
+    void evolve_more(size_t additional_steps);
 
     // Overload for multiple initial states (without abort callback)
     // Each initial state is evolved from independently, exploring the full multiway system

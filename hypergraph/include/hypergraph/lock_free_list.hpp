@@ -109,6 +109,12 @@ public:
         }
     }
 
+    // Drop every node. QUIESCENT ONLY: a concurrent for_each holds raw node pointers, and this
+    // gives the list a new head without telling it. Nodes came from an arena and are reclaimed
+    // with it, so this releases nothing by itself -- it makes the list empty, not the memory
+    // free.
+    void reset() { head_.store(nullptr, std::memory_order_release); }
+
     // An opaque token that changes whenever a node is pushed. Two reads returning the same
     // token mean nothing was appended between them; the value itself carries no meaning and
     // must not be dereferenced. Lets a caller scope a "did this list grow?" check to ONE

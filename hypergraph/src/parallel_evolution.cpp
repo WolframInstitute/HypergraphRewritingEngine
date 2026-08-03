@@ -915,7 +915,10 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
 
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) return;
+    // Past the budget: this is the frontier, not a dead end. Kept so a continuation resumes
+    // exactly here. The caps below are different -- a cap is a decision, and resuming past one
+    // would undo it.
+    if (step > max_steps_) { defer_match_task(state, step, nullptr); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -939,7 +942,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     const MatchContext& ctx
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) return;
+    if (step > max_steps_) { defer_match_task(state, step, &ctx); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -960,7 +963,9 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) return;
+    // Past the budget: the match is already stored on its state, so dropping the rewrite would
+    // strand it -- the state's own matching will not re-offer a match it already holds.
+    if (step > max_steps_) { defer_rewrite_task(match, step); return; }
     // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(match.source_state)) return;
@@ -1245,6 +1250,53 @@ size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
     auto result = match_join_.lookup(id_key(state));
     if (!result.has_value()) return 0;
     return (*result)->matches.load(std::memory_order_acquire);
+}
+
+void ParallelEvolutionEngine::defer_match_task(StateId state, uint32_t step,
+                                               const MatchContext* ctx) {
+    DeferredMatch d{state, step, MatchContext{}, ctx != nullptr};
+    if (ctx) d.ctx = *ctx;
+    deferred_frontier_.push(d, hg_->arena());
+    deferred_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint32_t step) {
+    deferred_rewrites_.push(DeferredRewrite{match, step}, hg_->arena());
+    deferred_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
+    if (!hg_ || rules_.empty() || additional_steps == 0) return;
+    if (deferred_count_.load(std::memory_order_acquire) == 0) return;   // nothing to resume
+
+    max_steps_ += additional_steps;
+    should_stop_.store(false, std::memory_order_relaxed);
+    reset_depth_join();
+
+    // Take the frontier and clear it: resubmitting may defer again at the NEW boundary, and a
+    // list that still held the old entries would resubmit them a second time.
+    ArenaVector<DeferredMatch> resume(worker_scratch(), 64);
+    deferred_frontier_.for_each([&](const DeferredMatch& d) { resume.push_back(d); });
+    ArenaVector<DeferredRewrite> resume_rw(worker_scratch(), 64);
+    deferred_rewrites_.for_each([&](const DeferredRewrite& d) { resume_rw.push_back(d); });
+    deferred_frontier_.reset();   // quiescent: no worker is running between evolve calls
+    deferred_rewrites_.reset();
+    deferred_count_.store(0, std::memory_order_release);
+
+    // Rewrites first: they mint the transitions the budget stranded, and doing them before the
+    // frontier's matching means the states they create are matched in the same pass.
+    for (const DeferredRewrite& d : resume_rw) submit_rewrite_task(d.match, d.step);
+    for (const DeferredMatch& d : resume) {
+        if (d.has_ctx) submit_match_task_with_context(d.state, d.step, d.ctx);
+        else           submit_match_task(d.state, d.step);
+    }
+    // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
+    roots_seeded_.store(true, std::memory_order_release);
+    try_complete_depth(0);
+
+    job_system_->wait_for_completion();
+    raise_worker_error();
+    finalize_evolution();
 }
 
 void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {

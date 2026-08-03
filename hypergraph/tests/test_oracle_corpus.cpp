@@ -244,3 +244,83 @@ TEST(OracleCorpus, SerialSpawnsNoWorkerAndOneWorkerIsNotSerial) {
     EXPECT_EQ(serial.num_threads(), 1u) << "serial runs on the caller's thread, so it reports one";
     EXPECT_FALSE(one_worker.is_serial()) << "num_threads = 1 is a worker thread, not serial";
 }
+
+// Continuing a run gives the same graph as asking for the total in the first place.
+//
+// evolve() begins from the roots it is handed, so two more steps used to mean redoing the first
+// N. evolve_more resumes from the frontier the budget stopped at. What must hold is that the
+// split run and the whole run are the same evolution -- compared on the graph, since state and
+// event ids are handed out in arrival order and the two paths arrive differently.
+TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
+    struct Fp {
+        size_t states = 0, events = 0, causal = 0, branchial = 0;
+        std::multiset<uint64_t> state_hashes, causal_pairs;
+    };
+    auto fingerprint = [](Hypergraph& hg) {
+        Fp f;
+        f.states = hg.num_canonical_states();
+        f.events = hg.num_events();
+        f.causal = hg.causal_graph().num_causal_event_pairs();
+        f.branchial = hg.causal_graph().num_branchial_edges();
+        for (uint32_t s = 0; s < hg.num_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID)
+                f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
+        auto esig = [&](EventId ev) {
+            const Event& x = hg.get_event(ev);
+            uint64_t h = 1469598103934665603ULL;
+            auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
+            mix(x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
+            mix(x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
+            mix(x.rule_index);
+            return h;
+        };
+        for (const auto& ce : hg.causal_graph().get_causal_edges()) {
+            if (ce.producer == INVALID_ID || ce.consumer == INVALID_ID) continue;
+            f.causal_pairs.insert(esig(ce.producer) * 31 + esig(ce.consumer));
+        }
+        return f;
+    };
+
+    size_t continued_anything = 0;
+    for (const auto& c : oracle::corpus()) {
+        if (c.measure_steps < 2) continue;
+        const size_t first = c.measure_steps - 1;
+
+        Hypergraph whole;
+        whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        {
+            ParallelEvolutionEngine e(&whole, 4);
+            e.set_transitive_reduction(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+        }
+
+        Hypergraph split;
+        split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        {
+            ParallelEvolutionEngine e(&split, 4);
+            e.set_transitive_reduction(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, first);
+            const size_t after_first = split.num_canonical_states();
+            e.evolve_more(c.measure_steps - first);
+            if (split.num_canonical_states() > after_first) ++continued_anything;
+        }
+
+        const Fp a = fingerprint(whole), b = fingerprint(split);
+        std::printf("[cont %-18s] whole s=%zu e=%zu c=%zu b=%zu | split s=%zu e=%zu c=%zu b=%zu\n",
+                    c.name, a.states, a.events, a.causal, a.branchial,
+                    b.states, b.events, b.causal, b.branchial);
+        EXPECT_EQ(b.states, a.states) << c.name << ": continuing found a different state count";
+        EXPECT_EQ(b.events, a.events) << c.name << ": continuing found a different event count";
+        EXPECT_EQ(b.causal, a.causal) << c.name << ": continuing built a different causal size";
+        EXPECT_EQ(b.branchial, a.branchial) << c.name << ": continuing built a different branchial size";
+        EXPECT_EQ(b.state_hashes, a.state_hashes) << c.name << ": continuing explored different states";
+        EXPECT_EQ(b.causal_pairs, a.causal_pairs) << c.name << ": continuing built a different causal relation";
+    }
+
+    // Without this the equalities hold for a corpus where the last step adds nothing, which
+    // would pass on an evolve_more that did nothing at all.
+    EXPECT_GT(continued_anything, 0u)
+        << "no workload grew when continued, so the continuation was never exercised";
+}
