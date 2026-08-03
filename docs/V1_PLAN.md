@@ -305,6 +305,21 @@ would catch, and calibrate by breaking the property.
 
 ---
 
+# Measured do-not-retry
+
+Routes closed by measurement, with the number that closed them. Each is here because the idea is
+plausible enough to be had again.
+
+| idea | measurement | verdict |
+|---|---|---|
+| Raise `ConcurrentMap::DEFAULT_INITIAL_CAPACITY` above 1024 | 1024 → 8192 costs **+3.97%** of the end-to-end corpus total (3,126,320,794 → 3,250,520,730): most maps in a run are small and each pays 8192-entry construction | blanket increase is wrong; only per-map sizing from a real estimate could pay, and the estimate does not exist yet |
+| Memoize `MatchRecord::hash()` in `MatchCore` | saves **0.003%** (106,203 instructions) against an 8-byte growth per core and a seal-before-hash invariant that is silent when violated | not worth it at that size |
+| Key-only sets for the claim maps | a real **0.53%** saving, then 4 of 12 invocations fail — `ConcurrentIdSet` double-claims across a resize | reopen only with that defect fixed AND a fuzz-rate gate; see the register |
+| `VariableBinding`'s 128-byte `0xFF` fill is waste | it is the contract `rewrite_core.hpp` depends on — it reads `bindings[var]` directly and takes `INVALID_ID` to mean unbound | not waste; removing it reads uninitialised memory |
+| Tiered canon (WL bucket, IR on collision) | +28% pessimisation, recorded earlier | stands, and is stronger now that WL is known not to be the cheap path |
+
+---
+
 # Live defect register
 
 Open, reproducible, with the command. Anything here that is closed moves to the ledger.
