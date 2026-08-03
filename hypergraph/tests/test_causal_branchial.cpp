@@ -904,24 +904,26 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);  // 1 skipped
 }
 
-// A direct edge that a LATER path supersedes leaves the reduction.
+// OUT-OF-ORDER ARRIVAL: the reduction is still minimal, because the caller declares that its
+// ids do not order the edges.
 //
-// This is the out-of-order case, and it is the whole difference between a reduction that is
-// minimal and one that merely never adds a redundant edge. 0 -> 2 arrives first and is kept,
-// because at that moment nothing else reaches 2. Then 0 -> 1 -> 2 appears and 0 -> 2 becomes
-// implied. The transitive reduction of {0->2, 0->1, 1->2} is {0->1, 1->2}, so the answer is 2.
+// 0 -> 2 arrives first and nothing else reaches 2 yet; then 0 -> 1 -> 2 appears and implies it.
+// The transitive reduction of {0->2, 0->1, 1->2} is {0->1, 1->2}, so the answer is 2. Deciding
+// once on arrival gives 3, which is what the incremental rule does -- and that rule is exact
+// only when a consumer's ancestry is already complete when its edges are offered.
 //
-// Testing each pair once on arrival and never again gives 3 here. That is exact only when a
-// consumer's whole ancestry is already present when its edges are offered -- true for full
-// capture, false for the quotient reconstruction, whose DP propagates producers forward over
-// time. retract_superseded is what closes it.
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_SupersededDirectEdgeIsRetracted) {
+// set_ids_are_topological(false) is how a caller says it cannot promise that. CausalGraph then
+// stores the whole relation and reduces on read, which is minimal for ANY arrival order because
+// the relation is a set and a DAG's reduction is unique. The engine's full-capture path keeps
+// the promise and keeps the incremental rule; the quotient reconstruction cannot and takes this
+// path.
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_OutOfOrderArrivalStillMinimal) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
     cg.set_transitive_reduction(true);
+    cg.set_ids_are_topological(false);   // edges may arrive before the paths that imply them
 
-    // 0 -> 2 first: nothing else reaches 2 yet, so it is kept.
     cg.add_causal_edge(0, 2, 0);
     EXPECT_EQ(cg.num_causal_edges(), 1u);
 
