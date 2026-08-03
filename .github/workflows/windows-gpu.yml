@@ -1,0 +1,60 @@
+name: Windows GPU (build only)
+
+# THE EXPERIMENT THAT ANSWERS A NAMED v1.0 BLOCKER.
+#
+# docs/RELEASE_CHECKLIST.md calls the native Windows MSVC+nvcc whole-stack config a v1.0 blocker,
+# because until it lands `TargetDevice -> "GPU"` silently falls back to CPU on Windows. But nothing
+# in CI builds that stack -- the Windows leg configures with -DBUILD_GPU=OFF -- so "it does not
+# work" and "nobody has tried" are indistinguishable from the outside. This leg distinguishes them.
+#
+# WHAT IT PROVES AND WHAT IT DOES NOT. It configures, compiles and LINKS the CUDA stack with
+# cl.exe as the host compiler. That is the whole of the config question: nvcc driving MSVC,
+# separable compilation, the explicit device link (gpu/CMakeLists.txt states it is
+# generator-independent "so the Windows MSVC build links too" -- this is what checks that claim),
+# and the /MT static-runtime contract. It does NOT run a kernel: GitHub's hosted Windows runners
+# have no NVIDIA GPU, so execution still needs a self-hosted runner or a local machine, and the
+# release checklist's "GPU results match CPU with no device fallback" line is untouched by this.
+#
+# MANUAL TRIGGER ONLY, deliberately. It has never run, so its first outcome is unknown; putting an
+# unproven leg on push would turn someone else's CI red to answer a question they did not ask. Run
+# it from the Actions tab, read the result, and if it is green move it onto `push` in the same
+# change that ticks the checklist line.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-gpu-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.16
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          # nvcc plus the runtime import libraries is all a build needs; skipping the driver and
+          # the samples keeps the runner install to minutes rather than tens of minutes.
+          sub-packages: '["nvcc", "cudart", "thrust", "visual_studio_integration"]'
+
+      - name: Report toolchain
+        run: |
+          nvcc --version
+          cmake --version
+
+      - name: Configure with the GPU stack ON
+        run: >
+          cmake -S . -B build-gpu
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_GPU=ON
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_VISUALIZATION=OFF
+          -DHG_GPU_ARCHS=89
+
+      - name: Build the device library
+        run: cmake --build build-gpu --config Release --target hg_gpu
+
+      # The device-side test binary is what exercises the explicit device link, which is the part
+      # the CMake comment claims is generator-independent. Building it is the actual check.
+      - name: Build the device test binary
+        run: cmake --build build-gpu --config Release --target hg_gpu_tests

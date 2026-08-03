@@ -10,6 +10,16 @@ Keep it current: a release that skips a line here is not released.*
 - [ ] `hg_evolve_gpu` built on both CUDA platforms.
       *(v1.0 blocker: the native Windows MSVC+nvcc whole-stack config — until it lands,
       `TargetDevice->"GPU"` silently falls back to CPU on Windows.)*
+      **THE EXPERIMENT THAT SETTLES THIS EXISTS BUT HAS NOT BEEN RUN:** the Windows CI leg
+      configures with `-DBUILD_GPU=OFF`, so "the config does not work" and "nobody has tried it"
+      are indistinguishable from outside. `.github/workflows/windows-gpu.yml` builds and LINKS the
+      stack under `cl.exe` — which is the whole config question, including the explicit device link
+      `gpu/CMakeLists.txt` claims is generator-independent. It is `workflow_dispatch` only, because
+      its first outcome is unknown and an unproven leg on `push` would turn CI red to answer a
+      question nobody asked. **Run it from the Actions tab; if green, move it onto `push` in the
+      same change that ticks this line.** It does NOT run a kernel — hosted Windows runners have no
+      NVIDIA GPU, so the "GPU results match CPU with no fallback" line below still needs real
+      hardware.
 - [ ] `.paclet` archive produced.
 - [ ] `DocumentationBuild` passes (was 24/24) — note this **evaluates every example cell**, so it is
       also the docs-can't-rot gate.
