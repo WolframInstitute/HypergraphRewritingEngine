@@ -27,6 +27,7 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
+#include <fstream>
 
 using namespace hypergraph;
 using Rules = std::vector<RewriteRule>;
@@ -56,6 +57,9 @@ static std::vector<Workload> workloads() {
 // One run's causal fingerprint, plus the engine counters that would explain a disagreement.
 struct Sample {
     uint64_t causal_fp;
+    uint64_t branchial_fp;
+    uint64_t states_fp;
+    size_t   branchial_pairs, canonical_states, instances;
     size_t   frame_disagree, align_fail, align_badcorr;
     size_t   events, causal_pairs;
     // The relation the run does NOT serve on this route, carried alongside so the baseline line
@@ -64,6 +68,11 @@ struct Sample {
     int      threads;
     uint64_t seed;
 };
+
+// When non-empty, run_once writes its sorted relations here: one file per call, suffixed by a
+// counter, so two runs of the same configuration can be diffed pair by pair.
+static std::string g_dump_prefix;
+static int g_dump_seq = 0;
 
 static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     Hypergraph g;
@@ -103,11 +112,60 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
             ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
         }
     }
-    std::sort(ce.begin(), ce.end());
-    uint64_t fp = 1469598103934665603ULL;
-    for (uint64_t x : ce) fp = fnv(fp, x);
+    // Branchial under the same schedule-stable endpoint identity, kept as its OWN fingerprint:
+    // a disagreement has to name which relation moved, which one combined hash cannot.
+    std::vector<uint64_t> be;
+    if (g.quotient_reconstruction()) {
+        g.for_each_reconstructed_branchial_as(
+            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint64_t a, uint64_t b) {
+                be.push_back(a < b ? fnv(fnv(0, a), b) : fnv(fnv(0, b), a));
+            });
+    } else {
+        for (const auto& x : g.causal_graph().get_branchial_edges()) {
+            if (x.event1 == INVALID_ID || x.event2 == INVALID_ID) continue;
+            const uint64_t a = g.get_event(x.event1).signature;
+            const uint64_t b = g.get_event(x.event2).signature;
+            be.push_back(a < b ? fnv(fnv(0, a), b) : fnv(fnv(0, b), a));
+        }
+    }
 
-    return { fp, g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
+    // The canonical STATE set, the gate's first column. Isomorphism hashes, sorted, so it is
+    // comparable across runs that number states differently.
+    std::vector<uint64_t> st;
+    for (StateId s = 0; s < g.num_states(); ++s) st.push_back(g.get_or_compute_canonical_hash(s));
+    std::sort(st.begin(), st.end());
+    st.erase(std::unique(st.begin(), st.end()), st.end());
+
+    auto hash_all = [](std::vector<uint64_t>& v) {
+        std::sort(v.begin(), v.end());
+        uint64_t h = 1469598103934665603ULL;
+        for (uint64_t x : v) h = fnv(h, x);
+        return h;
+    };
+    const uint64_t fp = hash_all(ce);
+    const uint64_t bfp = hash_all(be);
+    const uint64_t sfp = hash_all(st);
+
+    if (!g_dump_prefix.empty()) {
+        char path[512];
+        std::snprintf(path, sizeof path, "%s.%s.th%d.seed%llx.%d", g_dump_prefix.c_str(), w.name,
+                      threads, (unsigned long long)seed, g_dump_seq++);
+        // The raw EVENT multiset, so a relation difference can be told apart from a difference
+        // in the applications the relation is built over.
+        std::vector<uint64_t> ev;
+        g.for_each_reconstructed_raw_triple([&](uint64_t t) { ev.push_back(t); });
+        std::sort(ev.begin(), ev.end());
+
+        std::ofstream f(path);
+        for (uint64_t x : ev) f << "E " << std::hex << x << "\n";
+        for (uint64_t x : st) f << "S " << std::hex << x << "\n";
+        for (uint64_t x : ce) f << "C " << std::hex << x << "\n";
+        for (uint64_t x : be) f << "B " << std::hex << x << "\n";
+    }
+
+    return { fp, bfp, sfp, be.size(), st.size(), g.num_reconstructed_instances(),
+             g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
              g.num_bad_correspondences(), g.observable_num_events(), ce.size(),
              g.causal_graph().num_causal_event_pairs(), threads, seed };
 }
@@ -117,7 +175,8 @@ int main(int argc, char** argv) {
     int load_threads = 0;
     std::string only;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--load") && i + 1 < argc) load_threads = std::atoi(argv[++i]);
+        if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) g_dump_prefix = argv[++i];
+        else if (!std::strcmp(argv[i], "--load") && i + 1 < argc) load_threads = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--workload") && i + 1 < argc) only = argv[++i];
         else iterations = std::atoi(argv[i]);
     }
@@ -140,34 +199,42 @@ int main(int argc, char** argv) {
         // relation agrees with itself forever, so the magnitude is part of the reading.
         {
             Sample b = run_once(w, 1, 0xABCDEF);
-            std::printf("  %-8s baseline: events=%zu served_pairs=%zu full_capture_pairs=%zu"
-                        " fp=%016llx\n", w.name, b.events, b.causal_pairs,
-                        b.full_capture_pairs, (unsigned long long)b.causal_fp);
-            if (b.causal_pairs == 0)
-                std::printf("  %-8s FINGERPRINTS NOTHING -- every comparison below is vacuous\n",
-                            w.name);
+            std::printf("  %-8s baseline: states=%zu instances=%zu events=%zu causal=%zu"
+                        " branchial=%zu (full_capture_causal=%zu)\n", w.name,
+                        b.canonical_states, b.instances, b.events, b.causal_pairs,
+                        b.branchial_pairs, b.full_capture_pairs);
+            if (b.causal_pairs == 0 || b.branchial_pairs == 0 || b.canonical_states == 0)
+                std::printf("  %-8s A FINGERPRINTED RELATION IS EMPTY -- it agrees with itself"
+                            " forever and constrains nothing\n", w.name);
         }
         size_t w_fail = 0;
         for (int it = 0; it < iterations; ++it) {
-            std::set<uint64_t> fps;
+            std::set<uint64_t> fps, bfps, sfps;
             std::vector<Sample> samples;
             for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})
                 for (int th : {1, 2, 8}) {
                     Sample s = run_once(w, th, seed);
                     fps.insert(s.causal_fp);
+                    bfps.insert(s.branchial_fp);
+                    sfps.insert(s.states_fp);
                     samples.push_back(s);
                 }
             ++total;
-            if (fps.size() > 1) {
+            if (fps.size() > 1 || bfps.size() > 1 || sfps.size() > 1) {
                 ++failed; ++w_fail;
-                std::printf("  %s iteration %d: %zu DISTINCT CAUSAL FINGERPRINTS\n",
-                            w.name, it, fps.size());
+                std::printf("  %s iteration %d: distinct fingerprints -- states %zu,"
+                            " causal %zu, branchial %zu\n",
+                            w.name, it, sfps.size(), fps.size(), bfps.size());
                 for (const auto& s : samples)
-                    std::printf("      th=%-2d seed=%-8llx fp=%016llx  events=%-6zu pairs=%-6zu"
-                                "  frame_disagree=%zu align_fail=%zu bad_corr=%zu\n",
+                    std::printf("      th=%-2d seed=%-8llx  states=%016llx/%-5zu"
+                                " causal=%016llx/%-6zu branchial=%016llx/%-6zu events=%-6zu"
+                                " inst=%-6zu frame_disagree=%zu align_fail=%zu bad_corr=%zu\n",
                                 s.threads, (unsigned long long)s.seed,
-                                (unsigned long long)s.causal_fp, s.events, s.causal_pairs,
-                                s.frame_disagree, s.align_fail, s.align_badcorr);
+                                (unsigned long long)s.states_fp, s.canonical_states,
+                                (unsigned long long)s.causal_fp, s.causal_pairs,
+                                (unsigned long long)s.branchial_fp, s.branchial_pairs,
+                                s.events, s.instances, s.frame_disagree, s.align_fail,
+                                s.align_badcorr);
             }
         }
         std::printf("  %-8s %zu/%d iterations disagreed (%.2f%%)\n",
