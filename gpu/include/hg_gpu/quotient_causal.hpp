@@ -83,6 +83,12 @@ struct QcView {
     DedupMap::DeviceView reached;
 
     uint32_t max_steps = 0;
+    // How deep this DP may recurse before the per-thread stack runs out. qc_reach ->
+    // qc_process_transition -> qc_add_producer -> qc_reach descends once per depth, exactly as
+    // the replay's cycle does, so the two share one bound (EngineState::qe_max_recursion_depth).
+    // Past it the cascade stops and records; without it the next frame faults and the fault
+    // takes the whole run's result, not just the part past the bound.
+    uint32_t max_recursion_depth = 0;
     uint32_t enabled   = 0;
 };
 
@@ -127,7 +133,7 @@ public:
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
     }
 
-    QcView view(uint32_t max_steps) {
+    QcView view(uint32_t max_steps, uint32_t max_recursion_depth) {
         QcView q{};
         q.transitions      = transitions_.view();
         q.trans_from       = trans_from_.view();
@@ -139,6 +145,7 @@ public:
         q.dsup_seen        = dsup_seen_.view();
         q.reached          = reached_.view();
         q.max_steps        = max_steps;
+        q.max_recursion_depth = max_recursion_depth;
         q.enabled          = on_ ? 1u : 0u;
         return q;
     }
@@ -252,6 +259,7 @@ __device__ inline void qc_for_each_transition_from(DeviceState ds, QcView qc,
 __device__ inline void qc_reach(DeviceState ds, QcView qc, uint64_t state_hash,
                                 uint32_t depth) {
     if (depth > qc.max_steps) return;
+    if (depth >= qc.max_recursion_depth) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
     if (!qc.reached.insert_if_absent(qc_rkey(state_hash, depth), 1u).inserted) return;
     // Publish (the insert above) before scanning; pairs with the fence in
     // qc_register_transition. Without seq_cst on BOTH sides a thread reaching (state, depth)
@@ -264,6 +272,7 @@ __device__ inline void qc_reach(DeviceState ds, QcView qc, uint64_t state_hash,
 __device__ inline void qc_add_producer(DeviceState ds, QcView qc, uint64_t state_hash,
                                        uint32_t depth, uint32_t orbit, EventId producer) {
     if (depth > qc.max_steps) return;
+    if (depth >= qc.max_recursion_depth) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
     const uint64_t key = qc_key(state_hash, depth, orbit);
     uint64_t seenk = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
     seenk *= 1099511628211ULL; if (seenk == 0 || seenk == ~0ULL) seenk = 1;

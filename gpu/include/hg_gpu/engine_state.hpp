@@ -164,7 +164,36 @@ struct DeviceState {
 class EngineState {
 public:
     // Per-thread device stack. See the constructor for why the default is not enough.
-    static constexpr size_t kDeviceStackBytes = 32u * 1024u;
+    //
+    // The floor covers the kernels whose stack need is fixed: match_state_rule's DFS recurses
+    // to the LHS edge count and apply_one_match holds several kMaxPatternEdges arrays, both
+    // bounded by kMaxPatternEdges.
+    static constexpr size_t kDeviceStackFloorBytes = 32u * 1024u;
+
+    // The reconstruction's replay is different in kind: qe_apply -> qe_add_instance ->
+    // qe_drive_instance -> qe_apply is a cycle, and it descends once per reconstruction DEPTH,
+    // which the caller chooses through num_steps. Its cost per level is MEASURED, not guessed:
+    // on sm_89 a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13, so
+    // 32768/6 == 65536/12 == 5461 bytes per level, linear with no significant intercept.
+    // Rounded up for margin.
+    static constexpr size_t kDeviceStackBytesPerDepth = 5632;
+
+    // Stack is per-thread and the driver reserves it for every resident thread, so this is
+    // multiplied by the occupancy of the whole device -- it cannot simply be made large. Past
+    // this the replay is bounded instead and records kScratchOverflow, which is the overflow
+    // contract: partial work and a warning, never a fault.
+    static constexpr size_t kDeviceStackCapBytes = 256u * 1024u;
+
+    static size_t stack_bytes_for_depth(uint32_t depth) {
+        const size_t want = kDeviceStackFloorBytes +
+                            static_cast<size_t>(depth + 1u) * kDeviceStackBytesPerDepth;
+        if (want < kDeviceStackFloorBytes) return kDeviceStackFloorBytes;
+        return want > kDeviceStackCapBytes ? kDeviceStackCapBytes : want;
+    }
+
+    // How deep the replay may recurse on the stack this engine actually got. One level is
+    // reserved so the guard fires before the frame that would fault.
+    uint32_t qe_max_recursion_depth() const { return qe_max_recursion_depth_; }
 
     explicit EngineState(EngineConfig cfg)
         : cfg_(cfg)
@@ -192,13 +221,21 @@ public:
         // successful return does not mean the stack is the size that was asked for -- and the
         // failure mode either way is a stack overflow surfacing as an illegal memory access,
         // which reads like a pointer bug and is diagnosed as one.
-        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes), "set device stack size");
+        const size_t want_stack = stack_bytes_for_depth(cfg.reconstruction_max_depth);
+        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, want_stack), "set device stack size");
         size_t actual_stack = 0;
         HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
-        if (actual_stack < kDeviceStackBytes) {
+        // The depth the replay may reach is derived from what the driver ACTUALLY gave, not from
+        // what was asked for, because a driver may clamp a request rather than refuse it.
+        qe_max_recursion_depth_ =
+            actual_stack > kDeviceStackFloorBytes
+                ? static_cast<uint32_t>((actual_stack - kDeviceStackFloorBytes) /
+                                        kDeviceStackBytesPerDepth)
+                : 0u;
+        if (actual_stack < kDeviceStackFloorBytes) {
             throw std::runtime_error(
                 "EngineState: device stack is " + std::to_string(actual_stack) +
-                " bytes after requesting " + std::to_string(kDeviceStackBytes) +
+                " bytes after requesting " + std::to_string(want_stack) +
                 "; match_state_rule's DFS would overflow it and report an illegal memory access");
         }
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;
@@ -590,6 +627,7 @@ private:
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
     bool                               quotient_causal_ = false;
+    uint32_t                           qe_max_recursion_depth_ = 0;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

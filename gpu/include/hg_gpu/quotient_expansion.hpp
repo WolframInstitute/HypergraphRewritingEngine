@@ -186,6 +186,12 @@ struct QeView {
 
     uint32_t* next_id;         // device atomic; dense match ids
     uint32_t  max_steps = 0;
+    // How deep the replay may recurse before the per-thread stack runs out. The cycle
+    // qe_apply -> qe_add_instance -> qe_drive_instance descends once per depth, so this is a
+    // property of the stack the engine was given (EngineState::qe_max_recursion_depth) and not
+    // of the workload. Past it the replay stops and records, which loses deep events and says
+    // so; without it the next frame faults and the whole run returns nothing.
+    uint32_t  max_recursion_depth = 0;
     uint32_t  enabled   = 0;
 };
 
@@ -489,6 +495,12 @@ __device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
                                          const DeviceQcInstance& inst,
                                          uint64_t state_hash, uint32_t depth) {
     if (depth >= qe.max_steps) return;   // final-depth instances are recorded, never expanded
+    if (depth >= qe.max_recursion_depth) {
+        // Out of stack, not out of work. Recorded and returned rather than descended: one more
+        // frame faults, and a fault takes the entire run's result with it.
+        ds.errors.record(ErrorKind::kScratchOverflow);
+        return;
+    }
     // Published before scanning; pairs with the fence on the match side so a concurrent
     // instance and match cannot both miss each other.
     __threadfence();
@@ -846,7 +858,7 @@ public:
     // before any replay, and one more per application once the replay lands.
     uint32_t num_instances_host() { return instances_.size_host(); }
 
-    QeView view(uint32_t max_steps, EventSignatureKeys keys) {
+    QeView view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -879,6 +891,7 @@ public:
         q.arr_capacity = arr_cap_;
         q.next_id      = next_id_;
         q.max_steps    = max_steps;
+        q.max_recursion_depth = max_recursion_depth;
         q.enabled      = on_ ? 1u : 0u;
         return q;
     }

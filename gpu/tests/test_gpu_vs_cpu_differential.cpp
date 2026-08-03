@@ -659,6 +659,34 @@ std::vector<Workload> build_corpus() {
     // Two isomorphic roots under quotient, DEFAULT (quotient_initial_states=false):
     // both engines keep every provided root as a distinct entry point (reference
     // MultiwaySystem semantics), so results agree.
+    // A DEEP CONE, which is where the two reachability walks can differ.
+    //
+    // The reduction asks "is this pair already bypassed" by walking backward over the KEPT
+    // predecessors. A rule that consumes two edges gives every reconstructed event two
+    // predecessors, so at depth d the cone holds O(d) nodes and 2^d PATHS through them. A walk
+    // that dedups visits the nodes; one that does not visits the paths. Both answer the same
+    // question, so this workload does not separate them by RESULT -- it is here because it is
+    // the only shape in the corpus that reaches the regime at all, and because the reduced sets
+    // must agree in it.
+    //
+    // The rule is the disconnected-LHS one: it matches any two edges, so the class has two
+    // matches and the instance count doubles per depth, which is what builds the cone.
+    ws.push_back({
+        .name = "deep_cone_reduction_d6",
+        .rules = {rule({{0, 1}, {2, 3}}, {{0, 2}, {1, 3}})},
+        .initial_state = V{{0u, 1u}, {2u, 3u}},
+        .num_steps = 6,
+        .explore_from_canonical_states_only = true,
+    });
+
+    ws.push_back({
+        .name = "deep_cone_reduction_d13",
+        .rules = {rule({{0, 1}, {2, 3}}, {{0, 2}, {1, 3}})},
+        .initial_state = V{{0u, 1u}, {2u, 3u}},
+        .num_steps = 13,
+        .explore_from_canonical_states_only = true,
+    });
+
     ws.push_back({
         .name = "multi_initial_iso_roots_kept",
         .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
@@ -1274,4 +1302,41 @@ TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
         EXPECT_EQ(no_b.states.size(), all.states.size())
             << w.name << ": dropping branchial moved the states";
     }
+}
+
+// Past the depth the per-thread stack holds, the replay STOPS AND SAYS SO.
+//
+// The replay descends one frame triple per reconstruction depth, so its stack need is linear in
+// the run's step count -- a quantity the caller chooses. EngineState sizes the stack from that
+// count, but stack is reserved per resident thread, so it is capped, and past the cap there is a
+// depth the device cannot reach. What must not happen there is a fault: an illegal memory access
+// takes the whole run's result with it, and the caller gets nothing back and no reason.
+//
+// A chain rule is what reaches the regime cheaply. Consuming one edge and producing one gives a
+// single application per depth, so the recursion is deep while the work stays small -- the wide
+// rules in the corpus above would need 2^depth applications to get here.
+TEST(QuotientReconstruction, PastTheStackDepthItRecordsRatherThanFaults) {
+    const uint32_t deep = 80;   // beyond any stack the cap allows
+    hg_gpu::EvolveInput in;
+    in.rules = {rule({{0, 1}}, {{1, 2}})};
+    in.initial_state = {{0u, 1u}};
+    in.num_steps = deep;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.explore_from_canonical_states_only = true;
+
+    auto result = hg_gpu::evolve(in);
+
+    // The run came back. This is the whole point: before the bound existed this faulted, and a
+    // faulted context returns an empty result for every later call in the process too.
+    EXPECT_FALSE(result.states.empty())
+        << "the deep run returned no states at all, which is what a device fault looks like";
+
+    bool faulted = false, bounded = false;
+    for (const auto& w : result.warnings) {
+        if (w.context.find("illegal memory access") != std::string::npos) faulted = true;
+        if (w.kind == hg_gpu::ErrorKind::kScratchOverflow) bounded = true;
+    }
+    EXPECT_FALSE(faulted) << "the replay faulted instead of stopping at its depth bound";
+    EXPECT_TRUE(bounded)
+        << "a run " << deep << " deep neither reached that depth nor recorded that it could not";
 }

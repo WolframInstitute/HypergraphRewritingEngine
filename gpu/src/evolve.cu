@@ -33,6 +33,9 @@ EngineConfig config_from_input(const EvolveInput& in) {
     EngineConfig cfg;
     size_t n_init   = in.initial_state.size();
     uint32_t steps  = in.num_steps;
+    // The replay descends one stack frame per reconstruction depth, so the step count sizes the
+    // per-thread stack as well as the pools.
+    cfg.reconstruction_max_depth = steps;
 
     // Estimate growth per step. A typical Wolfram-style rule produces 2–4
     // new edges per match; matches grow ~linearly with edge count; states
@@ -373,7 +376,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         qc_state_ = std::make_unique<QcState>(qc_route, cfg.max_events);
     else
         qc_state_->clear();
-    QcView qc_view = qc_state_->view(in.num_steps);
+    QcView qc_view = qc_state_->view(in.num_steps, state_.qe_max_recursion_depth());
 
     // The class-frame expansion capture rides the same route decision as the causal DP: both
     // ARE the quotient reconstruction, and a run that reconstructs causality is exactly a run
@@ -382,7 +385,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         qe_state_ = std::make_unique<QeState>(qc_route, cfg.max_events);
     else
         qe_state_->clear();
-    QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization));
+    QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
+                                     state_.qe_max_recursion_depth());
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
