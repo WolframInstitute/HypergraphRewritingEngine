@@ -58,7 +58,12 @@ Keep it current: a release that skips a line here is not released.*
 
 ## Functional verification
 - [ ] The assembled `.paclet` is installed and exercised via wolframscript.
-- [ ] `HGEvolve` runs through the `hg_evolve` / `hg_evolve_gpu` **processes** (isolation confirmed).
+- [x] `HGEvolve` runs through the `hg_evolve` **process** (isolation confirmed). **2026-08-03**:
+      `PacletTest` 3/3 — it `PacletDirectoryLoad`s the local `paclet/` and calls
+      `HypergraphRewriting`HGEvolve` under wolframscript, which routes through `RunProcess` to
+      `LibraryResources/Linux-x86-64/hg_evolve`, the binary rebuilt from current source today. So
+      the WL layer, the WXF transport and a fresh engine binary were exercised end to end.
+      `hg_evolve_gpu` via `TargetDevice -> "GPU"` is NOT covered by this and still needs a run.
 - [x] CPU results correct across `None` / `Automatic` / `Full`. **2026-08-03**: `GoldenMatrix.*`
       + `Unified_CanonicalHash.*` + the event-identity gates, 12/12.
 - [x] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.
