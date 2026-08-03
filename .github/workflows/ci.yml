@@ -22,6 +22,14 @@ jobs:
       - name: docs/CODEMAP.md names what exists, and names everything that exists
         run: python3 tools/dev/codemap_check.py
 
+      # The Windows DLL export list is only consumed by a Windows paclet link, and no leg
+      # here performs one -- a hosted runner has no LibraryLink headers. So this file went
+      # stale when the visualisation split deleted three exported functions, and stayed
+      # stale through every green build, because an ELF .so links with undefined symbols
+      # and says nothing. Checking the list against the sources needs no linker.
+      - name: The Windows export list names only functions that exist
+        run: python3 tools/dev/def_exports_check.py
+
   linux-tests:
     runs-on: ubuntu-latest
     steps:

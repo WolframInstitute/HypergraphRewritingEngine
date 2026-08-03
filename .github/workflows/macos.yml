@@ -27,6 +27,26 @@ jobs:
           -DBUILD_GPU=OFF
           -DBUILD_VISUALIZATION=OFF
 
+      # THE DEPLOYMENT TARGET IS PART OF THE GATE, not a detail of it. This job takes the
+      # runner's default, which is the runner's own OS, and at that target every wait
+      # primitive the engine can use is available. The SHIPPED libraries are built by
+      # cmake/toolchains/macos-cross.cmake at 10.15, where std::atomic::wait is marked
+      # unavailable and os_sync_wait_on_address does not exist before the 14.4 SDK -- so
+      # park.hpp took a third path that this leg was structurally unable to compile.
+      # Compile-only: linking and running are the job above's, and neither is what the
+      # deployment target decides.
+      - name: Configure at the SHIPPED deployment target
+        run: >
+          cmake -S . -B build-1015 -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+
+      - name: Build at 10.15
+        run: cmake --build build-1015 --target hypergraph
+
       - name: Build tests
         run: cmake --build build --target all_tests
 
