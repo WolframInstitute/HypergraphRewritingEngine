@@ -19,10 +19,6 @@
 // the matcher found; matches_forwarded counts those inherited from an ancestor. Cores are
 // created only on discovery, so cores == discovered and records == discovered + forwarded.
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I common/include -I job_system/include \
-//       -I lockfree_deque/include tools/unfolding_ratio_probe.cpp hypergraph/src/*.cpp \
-//       -o /tmp/unfolding_ratio_probe && /tmp/unfolding_ratio_probe
 
 #include "hypergraph/parallel_evolution.hpp"
 

@@ -11,10 +11,6 @@
 // the reconstruction, whereas a stable disagreement at one thread is a systematic bug in
 // how one of the two computes branchial.
 //
-// Build:
-//   g++ -O2 -std=c++17 -Ihypergraph/include -Icommon/include -Ijob_system/include \
-//       -Ilockfree_deque/include tools/quotient_branchial_gap_probe.cpp \
-//       build/libhypergraph.a -o /tmp/qbg -pthread
 
 #include "hypergraph/parallel_evolution.hpp"
 #include <cstdio>

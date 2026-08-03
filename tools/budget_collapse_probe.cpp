@@ -5,8 +5,6 @@
 // their equivalence (IR canonicalisation cost), with a fixed budget Θ that forces
 // a merge ("collapse") when accumulated cost·time exceeds Θ.
 //
-// Build:
-//   g++ -O2 -std=c++17 tools/budget_collapse_probe.cpp -o /tmp/budget_collapse_probe
 //   /tmp/budget_collapse_probe
 //
 // This is the experiment that is actually ABOUT the hypothesis (complexity of

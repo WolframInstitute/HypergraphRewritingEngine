@@ -11,7 +11,6 @@
 // needs more rounds -> always correct, NO fallback (B2). O(delta) commutative patch
 // when the child fixpoint matches the parent's, full rebuild otherwise.
 //
-// Build: g++ -O2 -std=c++17 -I hypergraph/include tools/wl_engine_incremental.cpp -o /tmp/wl_engine_incremental
 
 #include <hypergraph/wl_hash.hpp>
 #include <hypergraph/arena.hpp>

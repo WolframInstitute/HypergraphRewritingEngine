@@ -11,10 +11,6 @@
 // the engine agrees. Where it cannot, the row is a PIN and says so, which is how a cell with
 // no independent check stays visible instead of blending in.
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
-//       -I lockfree_deque/include -I common/include -I . \
-//       tools/generate_golden_matrix.cpp hypergraph/src/*.cpp -o /tmp/gen_golden
 //   /tmp/gen_golden > reference/golden_matrix.txt
 
 #include "reference/golden_matrix.hpp"

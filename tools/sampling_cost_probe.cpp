@@ -21,10 +21,6 @@
 // that does not move here. So: interleaved A/B (adjacent in time, so drift hits both arms) and
 // minimum-of-N (the minimum is the run least disturbed by the rest of the machine).
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
-//       -I lockfree_deque/include tools/sampling_cost_probe.cpp hypergraph/src/*.cpp \
-//       -o /tmp/sampling_cost_probe && /tmp/sampling_cost_probe
 
 #include "hypergraph/parallel_evolution.hpp"
 

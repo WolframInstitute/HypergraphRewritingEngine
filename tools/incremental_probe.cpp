@@ -6,8 +6,6 @@
 //    individualization-refinement (IR) — when the input changes by a single
 //    local rewrite?"
 //
-// Build:
-//   g++ -O2 -std=c++17 tools/incremental_probe.cpp -o /tmp/incremental_probe
 //   /tmp/incremental_probe
 //
 // What it measures

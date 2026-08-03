@@ -13,7 +13,6 @@
 // Binary directed edges (the rule shapes here). Validated bit-identical (or
 // fallback) against full WL with the same commutative hash.
 //
-// Build: g++ -O2 -std=c++17 tools/wl_sparse_prototype.cpp -o /tmp/wl_sparse_prototype
 
 #include <algorithm>
 #include <array>

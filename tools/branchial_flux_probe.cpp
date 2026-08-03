@@ -5,8 +5,6 @@
 // CAUSAL-FLUX "mass" proxy, and is there a re-merge ("collapse") cutoff that
 // scales with that mass?
 //
-// Build:
-//   g++ -O2 -std=c++17 tools/branchial_flux_probe.cpp -o /tmp/branchial_flux_probe
 //   /tmp/branchial_flux_probe
 //
 // Setup

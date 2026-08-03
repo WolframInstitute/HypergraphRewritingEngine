@@ -4,9 +4,6 @@
 // SVec/ScratchAlloc temporary on the hot path. Reports nanoseconds per allocation
 // under the mark/release cycle that real callers use.
 //
-// Build:
-//   g++ -O2 -std=c++17 -I hypergraph/include tools/arena_bump_bench.cpp \
-//       -o /tmp/arena_bump_bench -pthread
 
 #include <hypergraph/arena.hpp>
 #include <chrono>

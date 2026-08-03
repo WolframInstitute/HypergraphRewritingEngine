@@ -6,9 +6,6 @@
 // same one (for the self-preserving rule at 5 steps: states=events=153, causal=152).
 // More than one tuple with forwarding on means a forwarded match was lost under
 // contention. Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
-//       -I lockfree_deque/include tools/determinism_forwarding_repro.cpp \
-//       hypergraph/src/*.cpp -o /tmp/det_repro && /tmp/det_repro 16 3000
 #include "hypergraph/parallel_evolution.hpp"
 #include <cstdio>
 #include <set>

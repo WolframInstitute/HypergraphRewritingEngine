@@ -17,10 +17,6 @@
 // appeared or vanished. Knowing WHICH state is missing points at a mechanism far faster than
 // knowing how often.
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
-//       -I lockfree_deque/include -I common/include tools/branchial_nondeterminism_probe.cpp \
-//       hypergraph/src/*.cpp -o /tmp/probe
 // Run: /tmp/probe [runs] [threads] [steps]
 //
 // STATUS: this does NOT yet reproduce. WPP is clean over 1200 runs and mixed1 over 360, at

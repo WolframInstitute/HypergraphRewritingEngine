@@ -7,7 +7,6 @@
 // IR = IRCanonicalizer::compute_canonical_hash (exact canonical form).
 // WL = Hypergraph::compute_canonical_hash with shared-tree on (approximate).
 //
-// Build: see the g++ line in the session; links build_linux/libhypergraph.a.
 
 #include <hypergraph/hypergraph.hpp>
 #include <hypergraph/ir_canonicalization.hpp>

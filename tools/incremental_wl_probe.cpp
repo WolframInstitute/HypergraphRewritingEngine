@@ -4,8 +4,6 @@
 // propagation), VALIDATED bit-identical to full WL, with the actual work saving
 // measured and the pay-off regime pinned to a concrete graph property.
 //
-// Build:
-//   g++ -O2 -std=c++17 tools/incremental_wl_probe.cpp -o /tmp/incremental_wl_probe
 //   /tmp/incremental_wl_probe
 //
 // Why this can be correct AND sublinear

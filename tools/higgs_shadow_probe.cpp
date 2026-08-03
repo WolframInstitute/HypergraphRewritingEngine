@@ -7,8 +7,6 @@
 // flux. Prediction: Δ(symmetry) and Δ(mass) anti-correlate — symmetry traded for
 // mass, rewrite by rewrite.
 //
-// Build:
-//   g++ -O2 -std=c++17 tools/higgs_shadow_probe.cpp -o /tmp/higgs_shadow_probe
 //   /tmp/higgs_shadow_probe
 //
 // Hardened over the first cut:

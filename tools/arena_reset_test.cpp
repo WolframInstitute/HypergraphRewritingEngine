@@ -4,7 +4,6 @@
 // instead of freeing them, so a per-worker scratch arena touches malloc ONCE
 // (during warmup) and never again across many task cycles. Counts global allocations.
 //
-// Build: g++ -O2 -std=c++17 -I hypergraph/include tools/arena_reset_test.cpp -o /tmp/arena_reset_test
 
 #include <hypergraph/arena.hpp>
 #include <cstdio>

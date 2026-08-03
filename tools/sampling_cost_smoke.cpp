@@ -3,10 +3,6 @@
 // One configuration per invocation, unbuffered, so a hang is attributable rather than inferred
 // from an empty output file.
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include -I job_system/include \
-//       -I lockfree_deque/include -I common/include tools/sampling_cost_smoke.cpp \
-//       hypergraph/src/*.cpp -o /tmp/smoke
 // Run: /tmp/smoke <arm: cap|rate|ratenofwd|fwdon|fwdoff> <rule> <edges> <steps> <threads> <k>
 
 #include "hypergraph/parallel_evolution.hpp"

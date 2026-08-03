@@ -31,8 +31,6 @@
 // pair/path(12)@4 = 25884 / 25883, pair/cycle(8)@4 = 8721 / 8720. The prototype reproduces those
 // numbers or it is wrong.
 //
-// Build:
-//   g++ -O2 -std=c++20 tools/representation_prototype.cpp -o /tmp/representation_prototype
 //   /tmp/representation_prototype
 
 #include <algorithm>

@@ -2,8 +2,6 @@
 //
 // Measures heap allocations per IR canonicalization, across symmetry regimes.
 // Build (links the IR canonicalizer source directly):
-//   g++ -O2 -std=c++17 -I hypergraph/include tools/ir_malloc_bench.cpp \
-//       hypergraph/src/ir_canonicalization.cpp -o /tmp/ir_malloc_bench
 
 #include <hypergraph/ir_canonicalization.hpp>
 #include <cstdio>

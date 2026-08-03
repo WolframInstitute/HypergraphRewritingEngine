@@ -228,6 +228,9 @@ option(BUILD_VISUALIZATION "Emit visualization events for the external renderer"
 # which describes itself as the harness the paper's ablation uses. A measurement whose instrument
 # cannot be rebuilt cannot be repeated, and a number that cannot be repeated is not evidence.
 #
+# EVERY tool now has one, and `make host_tools` compiles them all, so a tool that falls behind
+# the API it measures is found on purpose rather than when someone next needs it.
+#
 # EXCLUDE_FROM_ALL so a probe that has fallen behind the API it measures does not break the
 # default build or CI, while `make <tool>` still works and the rot is discoverable rather than
 # invisible. `make host_tools` builds them all, which is what turns "this probe no longer
@@ -242,15 +245,14 @@ foreach(tool_src ${HG_TOOL_SOURCES})
     # fail here for a reason that says nothing about the tool.
     file(READ ${tool_src} tool_text)
     string(FIND "${tool_text}" "hg_gpu/" tool_needs_gpu)
-    # ir_incremental_probe is the ONE tool that has genuinely rotted: it reads
-    # IRCanonicalizer::last_stats, which no longer exists. It measured incremental IR, and
-    # incremental WL hashing was built bit-identical and then dropped, so what it probes may no
-    # longer be a thing to probe. Named here rather than deleted, because whether the probe or the
-    # API should come back is a decision, not a build detail -- and because a silent skip would
-    # put it straight back in the state this whole target exists to end.
-    set(HG_ROTTED_TOOLS ir_incremental_probe)
-    list(FIND HG_ROTTED_TOOLS ${tool_name} tool_is_rotted)
-    if(NOT TARGET ${tool_name} AND tool_needs_gpu EQUAL -1 AND tool_is_rotted EQUAL -1)
+    # A tool that is not part of the repository. ir_incremental_probe.cpp is one clone's local
+    # scratch (.git/info/exclude), and it reads IRCanonicalizer::last_stats, which no longer
+    # exists -- so the glob, which sees the working tree rather than the index, would break
+    # host_tools for everyone who happens to have it. Named rather than silently skipped: a
+    # skip by pattern is how an unbuilt file stops being noticed.
+    set(HG_UNTRACKED_TOOLS ir_incremental_probe)
+    list(FIND HG_UNTRACKED_TOOLS ${tool_name} tool_untracked)
+    if(NOT TARGET ${tool_name} AND tool_needs_gpu EQUAL -1 AND tool_untracked EQUAL -1)
         add_executable(${tool_name} EXCLUDE_FROM_ALL ${tool_src})
         target_include_directories(${tool_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(${tool_name} PRIVATE hypergraph)

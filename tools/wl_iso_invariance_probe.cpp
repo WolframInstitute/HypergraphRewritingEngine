@@ -13,10 +13,6 @@
 // the oracle for "same graph". Within one IR class, every WL hash must agree. Report any
 // class WL splits.
 //
-// Build:
-//   g++ -O2 -std=c++17 -Ihypergraph/include -Icommon/include -Ijob_system/include \
-//       -Ilockfree_deque/include tools/wl_iso_invariance_probe.cpp build/libhypergraph.a \
-//       -o /tmp/wl_iso -pthread
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"

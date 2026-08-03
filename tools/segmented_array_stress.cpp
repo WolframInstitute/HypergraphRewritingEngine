@@ -10,9 +10,6 @@
 // then checks that every emplace-returned index holds exactly the value that emplace
 // stored. A crash or any mismatch is a failure.
 //
-// Build:
-//   g++ -O2 -std=c++20 -pthread -I hypergraph/include \
-//       tools/segmented_array_stress.cpp -o /tmp/sa_stress && /tmp/sa_stress
 #include "hypergraph/segmented_array.hpp"
 #include "hypergraph/arena.hpp"
 #include <atomic>
