@@ -449,6 +449,17 @@ std::vector<Workload> build_corpus() {
 
     ws.push_back({.name = "empty_rules_empty_initial_zero_steps", .num_steps = 0});
 
+    // A rule that CONSUMES its match and produces nothing, so the evolution reaches the empty
+    // state. The empty state's canonical hash is a value both devices must agree on: it is what
+    // dedup keys on and what IncludeCanonicalHashes returns, and no other workload in this
+    // corpus reaches it.
+    ws.push_back({
+        .name = "emptying_rule",
+        .rules = {rule({{0, 1}}, {})},
+        .initial_state = V{{0u, 1u}, {1u, 2u}},
+        .num_steps = 3,
+    });
+
     // THE WORKLOAD THAT SEPARATES THE TWO RANK CONVENTIONS.
     //
     // An Automatic event signature hashes the RANK of each consumed and produced edge -- the
@@ -753,19 +764,29 @@ INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
 // collapsing duplicates would hide a device that merged a class the host split.
 TEST(CanonicalHash, DeviceHashEqualsHostHash) {
     auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
+    // A rule that consumes its match and produces nothing, so the evolution reaches the EMPTY
+    // state. The empty state has no edges for a canonicalizer to work on, so its hash is a
+    // reserved value rather than a computed one, and the two engines must reserve the same one.
+    auto empt = rule({{0, 1}}, {});
 
-    struct Case { const char* name; std::vector<std::vector<hg_gpu::VertexId>> init; uint32_t steps; };
+    struct Case {
+        const char* name;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+        uint32_t steps;
+        bool emptying = false;
+    };
     const std::vector<Case> cases = {
         {"path",              {{0,1},{1,2},{2,3}},          3},
         {"cycle4-automorphic",{{0,1},{1,2},{2,3},{3,0}},     3},
         {"star4-automorphic", {{0,1},{0,2},{0,3},{0,4}},     2},
+        {"empties",           {{0,1},{1,2}},                3, true},
     };
 
     for (const Case& c : cases) {
         for (bool quotient : {false, true}) {
             Workload w;
             w.name = std::string("hash/") + c.name + (quotient ? "/quotient" : "/full");
-            w.rules = {r};
+            w.rules = {c.emptying ? empt : r};
             w.initial_state = c.init;
             w.num_steps = c.steps;
             w.canon_mode = hg_gpu::CanonicalizationMode::Full;   // exact IR on both sides

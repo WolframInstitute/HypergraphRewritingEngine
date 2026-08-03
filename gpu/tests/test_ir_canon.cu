@@ -62,9 +62,15 @@ uint64_t gpu_ir_hash(const EdgeList& edges) {
 // Empty / trivial cases
 // -------------------------------------------------------------------------
 
-TEST(IRCanonGPU, EmptyGraphHashesToZero) {
-    // Convention from ir_canon.cu: empty state returns 0.
-    EXPECT_EQ(gpu_ir_hash(EdgeList{}), 0u);
+TEST(IRCanonGPU, EmptyGraphTakesTheReservedHash) {
+    // A canonicalizer given no edges has nothing to compute a hash from, so the empty state's
+    // is reserved. The value is shared with the host (hgcommon/core.hpp): it is what each
+    // engine deduplicates on and what a caller reads back, so the two must agree on it.
+    //
+    // Not 0: 0 is what the per-state hash array holds for "not computed yet", and it is the
+    // EMPTY sentinel of every map this hash keys.
+    EXPECT_EQ(gpu_ir_hash(EdgeList{}), hgcommon::EMPTY_STATE_CANONICAL_HASH);
+    EXPECT_NE(gpu_ir_hash(EdgeList{}), 0u);
 }
 
 TEST(IRCanonGPU, SingleEdgeIsoInvariant) {

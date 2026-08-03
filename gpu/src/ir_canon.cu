@@ -198,6 +198,12 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
 // Largest (edge count, occurrence count) over a state range, so the slot can be sized to the
 // batch instead of to a constant. One cheap pass: the alternative is bounding occurrences by
 // edges * kMaxArity, which is 8x loose on the arity-2 edges that dominate real rules.
+// Every state in the launched range is empty, so each takes the reserved empty-state hash.
+__global__ void k_fill_empty_state_hashes(uint64_t* out, uint32_t n) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = hgcommon::EMPTY_STATE_CANONICAL_HASH;
+}
+
 __global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
@@ -257,7 +263,12 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
             ++n_edges; total_occ += e.arity;
         }
     }
-    if (n_edges == 0) { out_hash = 0; return ExactHashStatus::kOk; }
+    // No edges to canonicalize: the empty state's hash is the reserved one both engines agree
+    // on, not 0 -- 0 is what this array holds for "not computed yet".
+    if (n_edges == 0) {
+        out_hash = hgcommon::EMPTY_STATE_CANONICAL_HASH;
+        return ExactHashStatus::kOk;
+    }
 
     IrSlotShape shape;
     shape.cap_edges = n_edges + 1;
@@ -360,8 +371,11 @@ void compute_state_ir_hashes_range(const EngineState& engine,
 
     const uint32_t max_edges = h_max[0], max_occs = h_max[1];
     if (max_edges == 0) {
-        // Every state in the range is empty; nothing to canonicalize.
-        HG_CUDA_CHECK(cudaMemset(out_hashes_device, 0, sizeof(uint64_t) * n), "empty range clear");
+        // Every state in the range is empty: each takes the reserved empty-state hash, which a
+        // memset cannot write, so one thread per state does it.
+        const uint32_t block = 128;
+        k_fill_empty_state_hashes<<<(n + block - 1) / block, block>>>(out_hashes_device, n);
+        HG_CUDA_CHECK(cudaDeviceSynchronize(), "empty range fill sync");
         g_last_degraded_states = 0;
         return;
     }

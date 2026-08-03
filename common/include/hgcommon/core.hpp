@@ -71,4 +71,17 @@ HG_HD inline uint64_t splitmix64(uint64_t z) {
     return z ^ (z >> 31);
 }
 
+// Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it, so it
+// is an ordinary canonical form and needs a hash of its own -- a canonicalizer given no edges
+// has nothing to compute one from, so it is reserved rather than derived.
+//
+// It cannot be 0, which carries two other meanings a state hash must stay clear of: 0 means
+// "not computed yet" in both engines' per-state hash array, and 0 is the EMPTY sentinel of
+// every map this hash keys, so a 0-hashed state is unstorable in all of them.
+//
+// The value is arbitrary -- the fractional part of the golden ratio, a mixing constant already
+// in this file -- and only has to be non-zero, fixed, and THE SAME ON BOTH DEVICES, since a
+// caller compares canonical hashes across runs and across devices.
+inline constexpr uint64_t EMPTY_STATE_CANONICAL_HASH = 0x9E3779B97F4A7C15ULL;
+
 }  // namespace hgcommon
