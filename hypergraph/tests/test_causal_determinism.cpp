@@ -82,11 +82,21 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     fp.causal = 1469598103934665603ULL; for (uint64_t v : ce) fp.causal = fnv(fp.causal, v);
     fp.num_causal = static_cast<long>(ce.size());
 
+    // Branchial, on whichever side the run serves it -- the same split the causal component
+    // above makes, and under the same schedule-stable endpoint identity.
     std::vector<uint64_t> be;
-    for (const auto& b : g.causal_graph().get_branchial_edges()) {
-        uint64_t a = esig(b.event1), d = esig(b.event2);
-        if (a > d) std::swap(a, d);
-        be.push_back(fnv(fnv(0, a), d));
+    if (g.quotient_reconstruction()) {
+        g.for_each_reconstructed_branchial_as(
+            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint64_t a, uint64_t d) {
+                be.push_back(a < d ? fnv(fnv(0, a), d) : fnv(fnv(0, d), a));
+            });
+    } else {
+        for (const auto& b : g.causal_graph().get_branchial_edges()) {
+            uint64_t a = esig(b.event1), d = esig(b.event2);
+            if (a > d) std::swap(a, d);
+            be.push_back(fnv(fnv(0, a), d));
+        }
     }
     std::sort(be.begin(), be.end());
     fp.branchial = 1469598103934665603ULL; for (uint64_t v : be) fp.branchial = fnv(fp.branchial, v);
@@ -103,10 +113,11 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     // one was wrong. Observed once at 8 threads, 1 of 24 runs, 30064 edges against 30063 with
     // states, events and causal identical -- a duplicate pair, not a lost or extra event. This
     // fires on the run that produced it, with that run's thread count and seed.
-    fp.branchial_pairs = static_cast<long>(g.causal_graph().num_branchial_pairs_claimed());
+    fp.branchial_pairs = g.quotient_reconstruction()
+        ? static_cast<long>(g.num_reconstructed_branchial())
+        : static_cast<long>(g.causal_graph().num_branchial_pairs_claimed());
 
-    for (uint32_t e = 0; e < g.num_raw_events(); ++e)
-        if (g.get_event(e).id != hgraph::INVALID_ID) ++fp.num_events;
+    fp.num_events = static_cast<long>(g.observable_num_events());
     return fp;
 }
 
