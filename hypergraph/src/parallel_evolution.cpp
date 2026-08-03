@@ -1297,6 +1297,10 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
                      hg_->event_signature_keys() == hgcommon::EVENT_SIG_AUTOMATIC);
     hg_->set_quotient_causal(qc);
     hg_->set_quotient_reconstruction(qc);
+    // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
+    // first-writer-wins and are not monotonic along causal edges. The online reduction's
+    // pruning is only sound when they are, so it is told which regime it is in.
+    hg_->causal_graph().set_ids_are_topological(!qc);
     guard_quotient_transitive_reduction();
 }
 

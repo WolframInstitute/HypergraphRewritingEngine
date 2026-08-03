@@ -27,10 +27,13 @@ LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(CanonicalEdgeKe
 
 bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
     if (producer == consumer) return true;
-    // Event ids increase along every causal edge, so an ancestor's id is strictly
-    // smaller than its descendant's: a producer with id >= its consumer's cannot
-    // reach it, and any node with id < producer's is out of the search cone.
-    if (producer >= consumer) return false;
+    // Both shortcuts below hold only while ids increase along every causal edge. When they do,
+    // an ancestor's id is strictly smaller than its descendant's, so a producer with id >= its
+    // consumer's cannot reach it and any node with id < producer's is out of the cone. The
+    // quotient reconstruction emits between canonical ids, which are not monotonic, and there
+    // the walk must run unpruned or it misses paths that exist.
+    const bool topo = ids_are_topological_.load(std::memory_order_relaxed);
+    if (topo && producer >= consumer) return false;
 
     // Backward BFS from consumer over the reduced predecessor adjacency, searching
     // for producer and pruning to ids >= producer. Scratch lives in the calling
@@ -49,7 +52,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
             if (found) return;
             if (q == producer) { found = true; return; }
             // q < producer can neither be producer nor have it as an ancestor; skip.
-            if (q > producer && visited.insert(q).second) stack.push_back(q);
+            if ((!topo || q > producer) && visited.insert(q).second) stack.push_back(q);
         });
         if (found) return true;
     }

@@ -115,6 +115,8 @@ class CausalGraph {
         return id_key(producer, consumer);
     }
 
+    std::atomic<bool> ids_are_topological_{true};
+
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
     ConcurrentMap<uint64_t, uint8_t> seen_branchial_pairs_;
 
@@ -212,6 +214,21 @@ public:
     // Redundancy check: is consumer already reachable from producer via kept edges?
     // Backward search over preds_ (the reduced adjacency); exact and lock-free.
     bool is_reachable(EventId producer, EventId consumer) const;
+
+    // WHETHER EVENT IDS INCREASE ALONG EVERY CAUSAL EDGE. True for full capture, which mints
+    // an event only after the events that produced its inputs; is_reachable uses it to skip
+    // the walk for producer >= consumer and to prune it to ids >= producer.
+    //
+    // FALSE for the quotient reconstruction: it emits between CANONICAL event ids, assigned
+    // first-writer-wins, which are not monotonic under recurrence -- measured on chain6,
+    // producer 9 -> consumer 8 among others. With the assumption false the pruned walk misses
+    // paths that exist and the reduction over-keeps, so it runs unpruned instead.
+    void set_ids_are_topological(bool on) {
+        ids_are_topological_.store(on, std::memory_order_relaxed);
+    }
+    bool ids_are_topological() const {
+        return ids_are_topological_.load(std::memory_order_relaxed);
+    }
 
     // Get or create the event list for a state (thread-safe)
     LockFreeList<EventId>* get_or_create_state_events(StateId state);
