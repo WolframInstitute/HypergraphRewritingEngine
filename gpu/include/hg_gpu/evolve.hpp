@@ -146,6 +146,12 @@ struct EvolveResult {
     // Raw events the per-instance replay minted: one per (instance, match) application. The
     // host's num_raw_events under the reconstruction. 0 when the route is off.
     uint32_t reconstructed_raw_events = 0;
+
+    // Frame alignment: slots the class frame MOVED off the recording state's own labelling, and
+    // slots for which no frame image existed (the capture is dropped, so events reachable only
+    // through it are missing).
+    uint32_t frame_alignments = 0;
+    uint32_t frame_align_failures = 0;
 };
 
 // Sizing knobs. The auto-tuner (M9) will pick these per device + workload;

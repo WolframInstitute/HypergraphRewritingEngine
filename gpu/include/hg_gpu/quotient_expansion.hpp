@@ -104,10 +104,24 @@ struct QeView {
     DedupMap::DeviceView applied;
     uint32_t* next_raw_event;  // device atomic; dense raw-event ids
 
-    // canonical hash -> (StateId + 1) of the state that defines this class's expansion AND its
-    // frame. +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0
-    // could never be stored -- the same offset, for the same reason, as the None-mode dedup key.
+    // Slots the frame MOVED -- resolved through a state that did not hold the frame, and landing
+    // somewhere other than the state's own slot. Counting corrections rather than lookups is
+    // what makes it evidence: a lookup that returns the state's own slot changes nothing.
+    // align_fail is the host's qc_align_fail_ / qc_align_badcorr_.
+    uint32_t* align_moved;
+    uint32_t* align_fail;
+
+    // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
+    // +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0 could never
+    // be stored -- the same offset, for the same reason, as the None-mode dedup key.
+    DedupMap::DeviceView rep;
+
+    // canonical hash -> (StateId + 1) of the state whose labelling is this class's FRAME, and
+    // that state's step. Separate from `rep`: a class is given a frame by both endpoints of
+    // every captured transition, so a class first seen as an output owns its frame from a state
+    // that need never expand. The step is what the Automatic signature keys on.
     DedupMap::DeviceView frame;
+    DedupMap::DeviceView frame_step;   // canonical hash -> step + 1
 
     // Bump arena for the matches' slot arrays.
     uint32_t* arr_words;
@@ -164,6 +178,66 @@ __device__ __forceinline__ uint32_t qe_slot_of(DeviceState ds, StateId sid, Edge
     return hgcommon::slot_rank(ds.state_edge_orbit + sl.offset, sl.count, lo);
 }
 
+// The canonical rank of `edge` within `sid` -- its position in the state's canonical order,
+// from the same individualization-refinement pass that produced the state's exact hash.
+// UINT32_MAX when the edge is absent or no rank was computed.
+__device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, EdgeId edge) {
+    if (!ds.state_edge_rank || sid >= ds.max_states) return UINT32_MAX;
+    const StateEdgeSlice sl = ds.state_edge_slices[sid];
+    uint32_t lo = 0, hi = sl.count;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) >> 1;
+        if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
+    }
+    if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
+    return ds.state_edge_rank[sl.offset + lo];
+}
+
+// Register `sid` as the frame of its class if no state holds it yet, recording the step the
+// signature reads. Idempotent, and the winner is whichever state gets there first -- which is
+// all the frame has to be, since every state of the class is isomorphic to it.
+__device__ __forceinline__ void qe_register_frame(QeView qe, uint64_t class_hash, StateId sid,
+                                                  uint32_t step) {
+    if (qe.frame.insert_if_absent(class_hash, static_cast<uint32_t>(sid) + 1u).inserted)
+        qe.frame_step.insert_if_absent(class_hash, step + 1u);
+}
+
+// The slot `edge` of `sid` occupies IN ITS CLASS'S FRAME.
+//
+// When `sid` holds the frame this is its own slot. Otherwise the two states are isomorphic and
+// the correspondence is by canonical position: the frame's edge of equal rank is this edge's
+// image, and its slot is the answer. The correspondence is defined only up to an automorphism,
+// which is the harmless freedom -- an automorphism permutes the frame coherently and carries
+// matches to matches. Each state using its OWN labelling is what is not harmless, and is what
+// this removes.
+//
+// UINT32_MAX when no image exists, which every caller turns into dropping the capture rather
+// than recording a slot that means nothing.
+__device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t class_hash,
+                                            StateId sid, EdgeId edge) {
+    const auto held = qe.frame.lookup_waiting(class_hash);
+    if (!held.found || held.value == 0) { atomicAdd(qe.align_fail, 1u); return UINT32_MAX; }
+    const StateId frame = static_cast<StateId>(held.value - 1u);
+    if (frame == sid) return qe_slot_of(ds, sid, edge);
+
+    if (!ds.state_edge_rank || !ds.state_edge_orbit || frame >= ds.max_states) {
+        atomicAdd(qe.align_fail, 1u);
+        return UINT32_MAX;
+    }
+    const uint32_t r = qe_rank_of(ds, sid, edge);
+    if (r != UINT32_MAX) {
+        const StateEdgeSlice fsl = ds.state_edge_slices[frame];
+        for (uint32_t k = 0; k < fsl.count; ++k) {
+            if (ds.state_edge_rank[fsl.offset + k] != r) continue;
+            const uint32_t fs = hgcommon::slot_rank(ds.state_edge_orbit + fsl.offset, fsl.count, k);
+            if (fs != qe_slot_of(ds, sid, edge)) atomicAdd(qe.align_moved, 1u);
+            return fs;
+        }
+    }
+    atomicAdd(qe.align_fail, 1u);
+    return UINT32_MAX;
+}
+
 // Survivor pairs one capture can hold in local scratch. A class with more surviving edges than
 // this records kScratchOverflow and drops the capture: the events reachable only through it are
 // then missing, which the warning reports rather than silently mis-attributing. Matches the
@@ -186,10 +260,14 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const uint64_t from = ds.state_canonical_hash[parent];
     const uint64_t to   = ds.state_canonical_hash[child];
 
-    // Claim the class. The winner's labelling is the frame; everyone else drops out here, so a
-    // record's slots are always in one labelling and never mix two.
+    // One raw state's matches define the class's expansion; every later parent of the same class
+    // drops out here, so the record is a property of the CLASS and not of the schedule.
     const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
-    if (qe.frame.insert_if_absent(from, claim).value != claim) return;
+    if (qe.rep.insert_if_absent(from, claim).value != claim) return;
+
+    // Both endpoints are given a frame before any slot is taken, so every slot below resolves.
+    qe_register_frame(qe, from, parent, depth);
+    qe_register_frame(qe, to, child, depth + 1u);
 
     const DeviceEvent& ev = ds.event_pool.at(event);
     const uint32_t nc = ev.num_consumed, np = ev.num_produced;
@@ -197,11 +275,11 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     uint32_t consumed[kMaxPatternEdges];
     uint32_t produced[kMaxPatternEdges];
     for (uint32_t i = 0; i < nc; ++i) {
-        consumed[i] = qe_slot_of(ds, parent, ev.consumed_edges[i]);
+        consumed[i] = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[i]);
         if (consumed[i] == UINT32_MAX) return;   // no frame slot: drop rather than corrupt
     }
     for (uint32_t i = 0; i < np; ++i) {
-        produced[i] = qe_slot_of(ds, child, ev.produced_edges[i]);
+        produced[i] = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[i]);
         if (produced[i] == UINT32_MAX) return;
     }
 
@@ -218,8 +296,8 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             for (uint32_t j = 0; j < np; ++j)
                 if (ev.produced_edges[j] == oe) { produced_here = true; break; }
             if (produced_here) continue;
-            const uint32_t ps = qe_slot_of(ds, parent, oe);
-            const uint32_t cs = qe_slot_of(ds, child, oe);
+            const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe);
+            const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe);
             if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
             if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
             surv[ns++] = (static_cast<uint64_t>(ps) << 32) | cs;
@@ -319,8 +397,7 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     const uint64_t h = ds.state_canonical_hash[root];
     const uint32_t nslots = ds.state_edge_slices[root].count;
 
-    const uint32_t claim = static_cast<uint32_t>(root) + 1u;
-    if (qe.frame.insert_if_absent(h, claim).value != claim) return;  // another root is the frame
+    qe_register_frame(qe, h, root, 0u);
 
     const uint32_t off = qe_alloc_words(ds, qe, nslots);
     if (off == UINT32_MAX) return;
@@ -430,6 +507,8 @@ public:
           by_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           instances_(on ? max_events : 1u),
           by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
+          rep_(on ? max_events : 8u),
+          frame_step_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
@@ -439,6 +518,8 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
         HG_CUDA_CHECK(cudaMalloc(&inst_next_id_, sizeof(uint32_t)), "QeState inst id alloc");
         HG_CUDA_CHECK(cudaMalloc(&next_raw_event_, sizeof(uint32_t)), "QeState raw ev alloc");
+        HG_CUDA_CHECK(cudaMalloc(&align_moved_, sizeof(uint32_t)), "QeState align moved alloc");
+        HG_CUDA_CHECK(cudaMalloc(&align_fail_, sizeof(uint32_t)), "QeState align fail alloc");
         clear();
     }
     ~QeState() {
@@ -447,6 +528,8 @@ public:
         if (next_id_) cudaFree(next_id_);
         if (inst_next_id_) cudaFree(inst_next_id_);
         if (next_raw_event_) cudaFree(next_raw_event_);
+        if (align_moved_) cudaFree(align_moved_);
+        if (align_fail_) cudaFree(align_fail_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -461,9 +544,13 @@ public:
         matches_.reset();
         by_key_.clear();
         instances_.reset();
+        rep_.clear();
+        frame_step_.clear();
         applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
+        HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
+        HG_CUDA_CHECK(cudaMemset(align_fail_, 0, sizeof(uint32_t)), "QeState align fail clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -475,12 +562,11 @@ public:
 
     // Raw events the replay minted: one per (instance, match) application. The host's
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
-    uint32_t num_raw_events_host() {
-        uint32_t v = 0;
-        HG_CUDA_CHECK(cudaMemcpy(&v, next_raw_event_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
-                      "QeState raw event read");
-        return v;
-    }
+    uint32_t num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
+
+    // Slots the frame moved off the state's own labelling, and slots no frame image existed for.
+    uint32_t num_aligned_host() { return read_counter(align_moved_, "QeState align moved read"); }
+    uint32_t num_align_failures_host() { return read_counter(align_fail_, "QeState align fail read"); }
 
     // Instances recorded this run. One per raw occurrence of a class at a depth: one per root
     // before any replay, and one more per application once the replay lands.
@@ -493,7 +579,11 @@ public:
         q.instances      = instances_.view();
         q.by_key         = by_key_.view();
         q.inst_next_id   = inst_next_id_;
+        q.rep            = rep_.view();
+        q.frame_step     = frame_step_.view();
         q.applied        = applied_.view();
+        q.align_moved    = align_moved_;
+        q.align_fail     = align_fail_;
         q.next_raw_event = next_raw_event_;
         q.frame        = frame_.view();
         q.arr_words    = arr_;
@@ -507,13 +597,23 @@ public:
 
 private:
 
+    static uint32_t read_counter(const uint32_t* p, const char* what) {
+        uint32_t v = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&v, p, sizeof(uint32_t), cudaMemcpyDeviceToHost), what);
+        return v;
+    }
+
     Pool<DeviceSlotMatch>     matches_;
     LockFreeList<QeMatchRef>  by_from_;
     Pool<DeviceQcInstance>    instances_;
     LockFreeList<QeInstRef>   by_key_;
+    DedupMap                  rep_;
+    DedupMap                  frame_step_;
     DedupMap                  applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
+    uint32_t*                 align_moved_    = nullptr;
+    uint32_t*                 align_fail_     = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

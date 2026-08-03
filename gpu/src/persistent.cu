@@ -421,7 +421,8 @@ __global__ void k_persistent_evolve(
         QeView qe,
         unsigned long long* phase_cycles) {
 
-    const bool need_ranks = event_keys_need_ranks(event_keys);
+    // Ranks are the reconstruction's frame alignment as well as Automatic's signature.
+    const bool need_ranks = event_keys_need_ranks(event_keys) || qe.enabled != 0;
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -947,7 +948,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             engine.device(), d_states, n, canonical.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
-            event_keys_need_ranks(event_keys),
+            event_keys_need_ranks(event_keys) || qe.enabled != 0,
             arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
     }
     {

@@ -282,7 +282,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                            event_keys_for(in.event_canonicalization) == EVENT_SIG_AUTOMATIC);
     engine.set_quotient_causal(qc_route);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
-    if (qc_route) engine.ensure_edge_orbits();
+    if (qc_route) { engine.ensure_edge_orbits(); engine.ensure_edge_ranks(); }
     double t_init = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_init_start).count();
 
@@ -501,6 +501,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_route ? qe_state_->num_instances_host() : 0u;
         out.reconstructed_raw_events = qc_route ? qe_state_->num_raw_events_host() : 0u;
+        out.frame_alignments = qc_route ? qe_state_->num_aligned_host() : 0u;
+        out.frame_align_failures = qc_route ? qe_state_->num_align_failures_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
         if (dbg) {
             const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +

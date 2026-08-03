@@ -943,8 +943,9 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         }
         const size_t host_raw = hg.num_reconstructed_raw_events();
 
-        std::printf("%-28s frame matches %4zu  raw events %4zu\n", w.name.c_str(),
-                    host_matches, host_raw);
+        std::printf("%-28s frame matches %4zu  raw events %4zu  aligned %3u  align-fail %u\n",
+                    w.name.c_str(), host_matches, host_raw, gpu.frame_alignments,
+                    gpu.frame_align_failures);
 
         EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
                                        "every comparison below would pass on a device that "
@@ -957,6 +958,9 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         EXPECT_EQ(gpu.reconstructed_raw_events, host_raw)
             << w.name << ": the replay minted " << gpu.reconstructed_raw_events
             << " raw events, host " << host_raw;
+        EXPECT_EQ(gpu.frame_align_failures, 0u)
+            << w.name << ": " << gpu.frame_align_failures << " slots had no image in their "
+            << "class's frame, so their captures were dropped";
     }
 }
 
