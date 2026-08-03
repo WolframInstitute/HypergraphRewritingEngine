@@ -17,11 +17,6 @@
 // hence --load, which runs background threads to keep the machine busy the way a suite does.
 //
 // Usage: quotient_determinism_rate_probe [iterations] [--load N] [--workload NAME]
-//
-// Build:
-//   g++ -O2 -std=c++17 -Ihypergraph/include -Icommon/include -Ijob_system/include \
-//       -Ilockfree_deque/include tools/quotient_determinism_rate_probe.cpp \
-//       build/libhypergraph.a -o /tmp/qdr -pthread
 
 #include "hypergraph/parallel_evolution.hpp"
 #include <atomic>
@@ -63,6 +58,9 @@ struct Sample {
     uint64_t causal_fp;
     size_t   frame_disagree, align_fail, align_badcorr;
     size_t   events, causal_pairs;
+    // The relation the run does NOT serve on this route, carried alongside so the baseline line
+    // shows both magnitudes: which of the two a fingerprint covers is the whole question.
+    size_t   full_capture_pairs;
     int      threads;
     uint64_t seed;
 };
@@ -78,25 +76,40 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     Init in = w.init;
     e.evolve(in, w.steps);
 
-    // Canonical-hash-keyed, so it is comparable across runs that number events differently.
-    auto canon = [&](StateId s) -> uint64_t {
-        return s == INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
-    };
-    auto esig = [&](EventId ev) -> uint64_t {
-        const Event& x = g.get_event(ev);
-        return fnv(fnv(fnv(0, canon(x.input_state)), canon(x.output_state)), x.rule_index);
-    };
+    // The relation the run SERVES. Quotient exploration routes the reconstruction, whose pairs
+    // live in the qc_ structures; fingerprinting CausalGraph there would hash whatever full
+    // capture happened to leave behind rather than the answer a caller receives.
+    //
+    // Endpoints are the schedule-stable content triple hash(input class, output class, rule),
+    // which is what for_each_reconstructed_causal_as's contract requires of a cross-thread
+    // comparison: the run identity's slot components are labels relative to the class frame THIS
+    // run pinned, and two runs may legitimately pin different members of the labelling coset.
     std::vector<uint64_t> ce;
-    for (const auto& c : g.causal_graph().get_causal_edges()) {
-        if (c.producer == INVALID_ID || c.consumer == INVALID_ID) continue;
-        ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
+    if (g.quotient_reconstruction()) {
+        g.for_each_reconstructed_causal_as(
+            /*reduced=*/true,
+            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint64_t p, uint64_t c) { ce.push_back(fnv(fnv(0, p), c)); });
+    } else {
+        auto canon = [&](StateId s) -> uint64_t {
+            return s == INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
+        };
+        auto esig = [&](EventId ev) -> uint64_t {
+            const Event& x = g.get_event(ev);
+            return fnv(fnv(fnv(0, canon(x.input_state)), canon(x.output_state)), x.rule_index);
+        };
+        for (const auto& c : g.causal_graph().get_causal_edges()) {
+            if (c.producer == INVALID_ID || c.consumer == INVALID_ID) continue;
+            ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
+        }
     }
     std::sort(ce.begin(), ce.end());
     uint64_t fp = 1469598103934665603ULL;
     for (uint64_t x : ce) fp = fnv(fp, x);
 
     return { fp, g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
-             g.num_bad_correspondences(), g.num_events(), ce.size(), threads, seed };
+             g.num_bad_correspondences(), g.observable_num_events(), ce.size(),
+             g.causal_graph().num_causal_event_pairs(), threads, seed };
 }
 
 int main(int argc, char** argv) {
@@ -123,6 +136,17 @@ int main(int argc, char** argv) {
     size_t total = 0, failed = 0;
     for (const auto& w : workloads()) {
         if (!only.empty() && only != w.name) continue;
+        // What is being fingerprinted, before any verdict about it. A fingerprint over an empty
+        // relation agrees with itself forever, so the magnitude is part of the reading.
+        {
+            Sample b = run_once(w, 1, 0xABCDEF);
+            std::printf("  %-8s baseline: events=%zu served_pairs=%zu full_capture_pairs=%zu"
+                        " fp=%016llx\n", w.name, b.events, b.causal_pairs,
+                        b.full_capture_pairs, (unsigned long long)b.causal_fp);
+            if (b.causal_pairs == 0)
+                std::printf("  %-8s FINGERPRINTS NOTHING -- every comparison below is vacuous\n",
+                            w.name);
+        }
         size_t w_fail = 0;
         for (int it = 0; it < iterations; ++it) {
             std::set<uint64_t> fps;

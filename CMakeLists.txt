@@ -153,6 +153,14 @@ add_executable(event_signature_stability_probe tools/event_signature_stability_p
 target_include_directories(event_signature_stability_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(event_signature_stability_probe PRIVATE hypergraph)
 
+# Failure RATE of quotient causal determinism, over the sweep the pass/fail gate runs once.
+# A gate that answers pass/fail cannot tell "fixed" from "did not fire this time", which is the
+# whole question for a defect observed once in ~90 runs. --load runs background threads, since
+# the one observation came from inside a full suite run.
+add_executable(quotient_determinism_rate_probe tools/quotient_determinism_rate_probe.cpp)
+target_include_directories(quotient_determinism_rate_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(quotient_determinism_rate_probe PRIVATE hypergraph)
+
 # Host counterpart of gpu_rank_order_probe: separates a stable presentation order from an
 # order-independent rank rule as the reason the CPU's event identities do not move.
 add_executable(cpu_rank_order_probe tools/cpu_rank_order_probe.cpp)
