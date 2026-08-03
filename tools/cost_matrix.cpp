@@ -105,7 +105,34 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
 }  // namespace
 
 int main(int argc, char** argv) {
-    int steps_override = (argc > 1) ? std::atoi(argv[1]) : -1;
+    int steps_override = -1;
+    std::string only;            // --case NAME: run this workload alone
+    const char* record = "";     // --record all|none: run it under one record set alone
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--case" && i + 1 < argc) only = argv[++i];
+        else if (a == "--record" && i + 1 < argc) record = argv[++i];
+        else steps_override = std::atoi(argv[i]);
+    }
+
+    // One case, one record set, nothing else: the shape a profiler can attribute. The exactness
+    // check and the paired second run are skipped, because both would land in the same profile.
+    if (!only.empty() && *record) {
+        const RecordSet rs = (std::string(record) == "none")
+                                 ? RecordSet{false, false, false} : RecordSet{};
+        for (const auto& c : oracle::corpus()) {
+            if (only != c.name) continue;
+            const int steps = (steps_override > 0) ? steps_override : c.measure_steps;
+            const Measured m = measure(c, steps, rs);
+            std::printf("%s record=%s states=%zu events=%zu causal=%zu branchial=%zu arenaB=%zu\n",
+                        c.name, record, m.canonical_states, m.events, m.causal_edges,
+                        m.branchial_edges, m.arena_bytes);
+            return 0;
+        }
+        std::fprintf(stderr, "no such case: %s\n", only.c_str());
+        return 2;
+    }
 
     auto cases = oracle::corpus();
 
