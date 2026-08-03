@@ -120,9 +120,11 @@ __global__ void k_seed_roots(DeviceState ds, uint32_t num_roots, const uint64_t*
                              StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
-    uint64_t h = hashes[tid]; if (h == 0) h = 1;
-    auto r = map.insert_if_absent(h, tid);
-    if (quotient_roots && !r.inserted) return;
+    const uint64_t h = hashes[tid];
+    bool merged = false;
+    if (h == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
+    else        merged = !map.insert_if_absent(h, tid).inserted;
+    if (quotient_roots && merged) return;
     uint32_t pos = atomicAdd(out_count, 1u);
     // Past capacity the state is not written, and a state missing from the frontier is a
     // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
@@ -134,30 +136,6 @@ __global__ void k_seed_roots(DeviceState ds, uint32_t num_roots, const uint64_t*
 
 }  // namespace
 
-// Declared in hg_gpu/exploration.hpp, which carries the contract.
-__device__ bool state_survives_dedup(StateId sid, uint64_t hash,
-                                     DedupMap::DeviceView map, bool dedup,
-                                     uint32_t explore_threshold_u32,
-                                     uint64_t explore_seed, uint32_t step) {
-    if (dedup) {
-        auto r = map.insert_if_absent(hash == 0 ? 1 : hash, sid);
-        if (!r.inserted) return false;
-    }
-
-    // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
-    // (the threshold encoding for probability 1.0); skip the hash work
-    // entirely on that fast path so the existing all-deterministic
-    // workloads pay zero overhead.
-    if (explore_threshold_u32 != 0xFFFFFFFFu) {
-        if (explore_threshold_u32 == 0u) return false;  // probability 0.0
-        uint64_t mix = splitmix64(explore_seed
-                                  ^ (static_cast<uint64_t>(step) << 32)
-                                  ^ static_cast<uint64_t>(sid));
-        uint32_t draw = static_cast<uint32_t>(mix);
-        if (draw >= explore_threshold_u32) return false;
-    }
-    return true;
-}
 
 namespace {
 

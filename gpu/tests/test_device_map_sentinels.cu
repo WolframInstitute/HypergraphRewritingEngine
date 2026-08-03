@@ -25,6 +25,8 @@
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/exploration.hpp"
+#include "hg_gpu/cuda_check.hpp"
 
 #include <vector>
 
@@ -37,6 +39,17 @@ __global__ void k_insert(Map::DeviceView m, const uint64_t* keys, uint32_t n,
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     inserted_flags[i] = m.insert_if_absent(keys[i], i + 1u).inserted ? 1u : 0u;
+}
+
+// Deduplication with a canonical hash of 0. 0 is not a hash -- it is what the per-state hash
+// array holds for "not computed yet" -- so the state must be KEPT and the run must report it,
+// rather than every such state sharing one dedup slot and all but the first vanishing.
+__global__ void k_dedup_zero_hash(hg_gpu::DeviceState ds, Map::DeviceView m, uint32_t n,
+                                  uint32_t* survived) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    survived[i] = hg_gpu::state_survives_dedup(ds, i, /*hash=*/0ull, m, /*dedup=*/true,
+                                               UINT32_MAX, 0ull, 0u) ? 1u : 0u;
 }
 
 __global__ void k_lookup(Map::DeviceView m, const uint64_t* keys, uint32_t n,
@@ -96,6 +109,35 @@ TEST(DeviceMapSentinels, ReservedKeysAreStoredAndFound) {
 }
 
 // An oversized or unrepresentable rule must be refused at the boundary.
+// GROUND-TRUTH for kUncomputedStateHash: the path is taken, every state survives, and the run
+// carries a warning. Without this the kind is a branch nothing has ever executed.
+TEST(DeviceMapSentinels, ZeroHashKeepsEveryStateAndWarns) {
+    hg_gpu::EngineState engine(hg_gpu::EngineConfig{});
+    Map map(1024);
+    const uint32_t n = 8;
+    uint32_t* d_surv = nullptr;
+    HG_CUDA_CHECK(cudaMalloc(&d_surv, sizeof(uint32_t) * n), "surv alloc");
+
+    k_dedup_zero_hash<<<1, n>>>(engine.device(), map.view(), n, d_surv);
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "zero-hash dedup sync");
+
+    std::vector<uint32_t> surv(n, 0);
+    HG_CUDA_CHECK(cudaMemcpy(surv.data(), d_surv, sizeof(uint32_t) * n, cudaMemcpyDeviceToHost),
+                  "surv copy");
+    cudaFree(d_surv);
+
+    for (uint32_t i = 0; i < n; ++i)
+        EXPECT_EQ(surv[i], 1u) << "state " << i << " was deduplicated on a hash of 0, so it is "
+                               << "a subtree the run will never explore";
+
+    std::vector<hg_gpu::OverflowWarning> warnings;
+    engine.collect_warnings_into(warnings, "zero-hash dedup");
+    bool reported = false;
+    for (const auto& w : warnings)
+        if (w.kind == hg_gpu::ErrorKind::kUncomputedStateHash) { reported = true; break; }
+    EXPECT_TRUE(reported) << "the run kept " << n << " un-deduplicated states and said nothing";
+}
+
 TEST(DeviceRuleValidation, UnrepresentableRulesAreRefusedNotTruncated) {
     // Rule edges are lists of VARIABLE indices (uint8_t), not vertex ids.
     auto edge = [](uint8_t a, uint8_t b) { return std::vector<uint8_t>{a, b}; };

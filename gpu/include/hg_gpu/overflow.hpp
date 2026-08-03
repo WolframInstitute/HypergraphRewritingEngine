@@ -71,6 +71,13 @@ enum class ErrorKind : uint32_t {
     // Nothing bounds how often an evolution reaches such a state, which is why it is reported
     // rather than tallied privately.
     kIRDegradedToWL      = 27,
+    // A state reached deduplication with a canonical hash of 0, which is not a hash: 0 is what
+    // the per-state hash array holds for "not computed yet", and the empty state -- the one
+    // case with nothing to compute a hash from -- has its own reserved value
+    // (hgcommon::EMPTY_STATE_CANONICAL_HASH). Such a state is NOT merged, because merging is
+    // the destructive choice: a state deduped away is a subtree never explored. It is kept and
+    // reported, so the answer is over-complete with a warning rather than short without one.
+    kUncomputedStateHash = 28,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
@@ -83,6 +90,8 @@ enum class ErrorKind : uint32_t {
 // which turns a capacity failure into no signal at all.
 static_assert(static_cast<uint32_t>(ErrorKind::kQcNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kQcNodes is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kUncomputedStateHash) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kUncomputedStateHash is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kIRDegradedToWL) <

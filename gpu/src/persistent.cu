@@ -195,10 +195,12 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // class frame records one.
     qe_seed_root_instance(ds, qe, sid);
 
-    const auto r = map.insert_if_absent(key == 0 ? 1 : key, sid);
+    bool merged = false;
+    if (key == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
+    else          merged = !map.insert_if_absent(key, sid).inserted;
     // Reference semantics without the option: provided roots are distinct entry points even when
     // isomorphic, so every root is kept regardless of whether it won the map slot.
-    if (quotient_roots && !r.inserted) return;
+    if (quotient_roots && merged) return;
     const uint32_t pos = atomicAdd(out_count, 1u);
     // Past capacity the state is not written, and a state missing from the frontier is a
     // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
@@ -582,7 +584,7 @@ __global__ void k_persistent_evolve(
                         }
 
                         expand_child = child_step < max_steps &&
-                                       state_survives_dedup(child_sid, h, dedup_map, dedup,
+                                       state_survives_dedup(ds, child_sid, h, dedup_map, dedup,
                                                             explore_threshold_u32,
                                                             explore_seed, child_step);
                     }
