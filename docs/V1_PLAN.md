@@ -202,7 +202,7 @@ Strict order: each unblocks the next.
 
 | id | what | gate | status |
 |---|---|---|---|
-| P7.1 | #42 rule static analysis: critical pairs (finite, decidable, complete — every parallel-dependent match pair is an instance of one) + GYO acyclicity and `ρ*` for per-rule join classification. | predicted branching matches the observed multiway graph on every shipped rule set | |
+| P7.1 | #42 rule static analysis: critical pairs (finite, decidable, complete — every parallel-dependent match pair is an instance of one) + GYO acyclicity and `ρ*` for per-rule join classification. | **The critical-pair half is DONE and WIRED** (`a0a1947`, `4408f57`). `hypergraph/rule_analysis.hpp` decides edge delta, vertex creation rate, LHS shape and `can_branch` — whether two distinct matches can share a CONSUMED edge, which is the branchial relation's own condition. Sound in the FALSE direction only; the gate is asymmetric to match, so a predicted-no that branches FAILS and a predicted-yes that does not is reported. **8 of 17 corpus workloads PROVED branchial-free, all 8 observed exactly 0, no false negatives**; 3 of the remaining 9 are the over-approximation. The engine acts on the false and skips building the relation. GYO acyclicity and `ρ*` join classification are not started | **PARTIAL** |
 | P7.2 | #24 paper + reproducible measurements. | every number in it regenerable by one command | |
 
 ---
