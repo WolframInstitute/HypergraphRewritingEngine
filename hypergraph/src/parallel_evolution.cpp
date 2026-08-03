@@ -1292,9 +1292,27 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // construction -- adjudicated step-exact against Wolfram/Multicomputation
     // (reference/adjudicate_gap1_authority.wls). Set before any state (incl. genesis) is
     // created so edge keys use the right mode.
-    const bool qc = explore_from_canonical_states_only_ ||
-                    (!hg_->positional_event_identity() &&
-                     hg_->event_signature_keys() == hgcommon::EVENT_SIG_AUTOMATIC);
+    //
+    // AND IT NEEDS FULL STATE CANONICALIZATION. The reconstruction is defined over canonical
+    // states and their EDGE ORBITS, and the orbit tables are computed only on the Full branch of
+    // create_or_get_canonical_state. Under None or Automatic state modes there are no orbit
+    // tables, register_quotient_transition no-ops on every event, and the run reports ZERO
+    // events and ZERO causal edges -- measured: None+Automatic gave 34 states, 0 events, 0
+    // causal, where None with a non-Automatic key set gives 4 events and 32 causal edges.
+    const bool full_states =
+        hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
+    const bool wants_qc = explore_from_canonical_states_only_ ||
+                          (!hg_->positional_event_identity() &&
+                           hg_->event_signature_keys() == hgcommon::EVENT_SIG_AUTOMATIC);
+    const bool qc = wants_qc && full_states;
+    if (wants_qc && !full_states) {
+        warnings_.push_back(
+            "Automatic event identity and quotient exploration are defined over canonical "
+            "states and their edge orbits, which only StateCanonicalization -> Full computes. "
+            "The requested state canonicalization does not, so the causal graph is built by "
+            "the raw-edge rendezvous instead. Set StateCanonicalization -> Full for the "
+            "canonical-class event identity.");
+    }
     hg_->set_quotient_causal(qc);
     hg_->set_quotient_reconstruction(qc);
     // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
