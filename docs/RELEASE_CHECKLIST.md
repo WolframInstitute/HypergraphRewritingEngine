@@ -1,14 +1,19 @@
 # Release acceptance checklist
 
 **State at 2026-08-03: 10 verified, 3 partly, 7 outstanding.** Every line that can be checked on
-a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 11 that
-remain split into exactly two kinds, and neither is effort:
+a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 10 that
+remain — 3 partly done, 7 not — split into exactly two kinds, and neither is new engineering:
 
 - **Needs a REBUILD on the release matrix** — and a rebuild, not a first build. All six platforms
   and both CUDA binaries already EXIST in `paclet/LibraryResources/`; five of the six are dated
   2026-07-22 or 08-01, so they predate this session entirely, including the GPU fault fix. The
   `.paclet` archive, `DocumentationBuild` and the installed-paclet exercise follow the rebuild.
 - **Needs a decision** — the doc-accuracy line, which is a judgement about user-facing text.
+
+The Windows MSVC+nvcc config is NOT among them: it landed, and the binary's import table proves it
+(see the `hg_evolve_gpu` line). `.github/workflows/windows-gpu.yml` exists to keep it from rotting,
+since nothing in CI builds that stack today — run it once from the Actions tab and, if green, move
+it onto `push`.
 
 Nothing here is waiting on more engineering on this machine.
 
