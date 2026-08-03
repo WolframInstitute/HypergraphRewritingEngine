@@ -100,6 +100,28 @@ HG_HD inline constexpr IdPair id_pair_from_key(uint64_t k) {
                    static_cast<uint32_t>(k & 0xFFFFFFFFu) - 1u };
 }
 
+// What a run must RECORD, as against what it will later SERIALIZE.
+//
+// An artifact turned off here is never built: the rendezvous that would produce it does not
+// run, and the structures behind it stay empty. That is a different question from which
+// artifacts a caller asks to be written out, which is what the FFI's include_* flags decide --
+// a run can be asked for states alone and still have paid for the whole causal graph.
+//
+// Everything defaults to on, so a caller that states nothing gets exactly what it got before.
+// States and events are not listed: the evolution IS the states and the events, so there is no
+// run that skips them.
+struct RecordSet {
+    // The causal relation: which event produced the edge another consumed.
+    bool causal = true;
+    // The branchial PAIR relation: two events that consumed a common edge of one state.
+    bool branchial = true;
+    // The per-state event list. Read only by an all-siblings view of the branchial state
+    // graph -- every pair of output states of one input state, with no overlap test -- which
+    // is a different question from the pair relation above and is answered without it.
+    bool state_events = true;
+};
+
+
 // Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it, so it
 // is an ordinary canonical form and needs a hash of its own -- a canonicalizer given no edges
 // has nothing to compute one from, so it is reserved rather than derived.

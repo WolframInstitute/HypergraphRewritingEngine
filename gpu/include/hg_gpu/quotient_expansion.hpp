@@ -598,7 +598,7 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
     // Causal: one relationship per consumed edge that has a producer. Fed in DESCENDING
     // producer order, so nearer producers enter the relation before farther ones -- the same
     // discipline the full-capture rendezvous keeps.
-    {
+    if (ds.record_causal) {
         uint32_t producers[kMaxPatternEdges];
         uint32_t np = 0;
         const uint32_t* cs = qe.arr_words + m.arr_offset;
@@ -636,7 +636,7 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
     // Branchial: siblings expanding the SAME instance whose consumed edges overlap. Publish
     // before scanning -- membership of the list is the proof the other application happened,
     // and an application that never claims never publishes.
-    if (m.num_consumed) {
+    if (m.num_consumed && ds.record_branchial) {
         const uint32_t bucket = qe_bucket(hgcommon::id_key(inst.id), qe.inst_applied.num_keys);
         if (qe.inst_applied.push(bucket,
                 QeAppliedMatch{inst.id, m.id, ev, m.num_consumed, m.arr_offset}) == INVALID_ID) {

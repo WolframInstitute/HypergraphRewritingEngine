@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <memory>
+#include "hgcommon/core.hpp"
+
 #include <set>
 #include <utility>
 #include <vector>
@@ -19,6 +21,11 @@ struct RewriteRule {
 };
 
 struct EvolveInput {
+    // Which artifacts this run must RECORD. An artifact turned off is never built: the
+    // rendezvous that would produce it does not run. Defaults to everything, so a caller that
+    // states nothing gets what it always got.
+    hgcommon::RecordSet record;
+
     std::vector<RewriteRule> rules;
     std::vector<std::vector<VertexId>> initial_state;
     // Multiple initial states (multiway with several roots). When non-empty this

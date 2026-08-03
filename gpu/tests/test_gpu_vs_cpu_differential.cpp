@@ -1195,3 +1195,83 @@ TEST(CanonicalStateCount, ModesVsCpu) {
 }
 
 }  // namespace
+
+// The device records what it was asked for, and nothing else moves.
+//
+// EvolveInput::record mirrors the host's RecordSet. An artifact turned off must vanish from the
+// result and leave every other artifact exactly as it was -- compared as SETS, since two runs
+// can agree on how many pairs there are and disagree about which. Both routes are covered: the
+// full-capture rendezvous in rewrite.cu and the reconstruction's replay in qe_apply.
+TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
+    struct Case { const char* name; bool quotient; };
+    const Case cases[] = {{"full-capture", false}, {"reconstruction", true}};
+
+    auto r = rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}});
+
+    for (const Case& c : cases) {
+        Workload w;
+        w.name = std::string("record/") + c.name;
+        w.rules = {r};
+        w.initial_state = {{0u,1u},{1u,2u},{2u,3u},{3u,0u}};
+        w.num_steps = 3;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.explore_from_canonical_states_only = c.quotient;
+
+        auto run = [&](hgcommon::RecordSet rs) {
+            hg_gpu::EvolveInput in = make_input(w);
+            in.record = rs;
+            return hg_gpu::evolve(in);
+        };
+
+        const auto all  = run(hgcommon::RecordSet{true, true, true});
+        const auto no_c = run(hgcommon::RecordSet{false, true, true});
+        const auto no_b = run(hgcommon::RecordSet{true, false, true});
+
+        // Endpoints by CONTENT, never by device event id: ids are handed out in arrival
+        // order, so two runs of the same request already disagree on them and an id-keyed
+        // comparison would report every run as a change.
+        auto causal_set = [](const hg_gpu::EvolveResult& x) {
+            std::multiset<uint64_t> s;
+            if (x.reconstruction_ran) {
+                for (const auto& p : x.reconstructed_causal_relation)
+                    s.insert(causal_key(p.first, p.second));   // already content triples
+                return s;
+            }
+            hypergraph::IRCanonicalizer ir;
+            std::unordered_map<uint32_t, uint64_t> state_hash;
+            for (const auto& st : x.states) state_hash[st.id] = ir.compute_canonical_hash(st.edges);
+            std::unordered_map<uint32_t, uint64_t> ekey;
+            for (const auto& ev : x.events) {
+                const uint64_t ih = state_hash.count(ev.input_state) ? state_hash[ev.input_state] : 0ull;
+                const uint64_t oh = state_hash.count(ev.output_state) ? state_hash[ev.output_state] : 0ull;
+                ekey[ev.id] = event_key(ih, oh, ev.rule, ev.step);
+            }
+            for (const auto& e : x.causal_edges) {
+                if (!ekey.count(e.from) || !ekey.count(e.to)) continue;
+                s.insert(causal_key(ekey[e.from], ekey[e.to]));
+            }
+            return s;
+        };
+        auto branchial_size = [](const hg_gpu::EvolveResult& x) {
+            return x.reconstruction_ran ? x.reconstructed_branchial_relation.size()
+                                        : x.branchial_edges.size();
+        };
+
+        ASSERT_FALSE(causal_set(all).empty()) << w.name << ": nothing to drop";
+        ASSERT_GT(branchial_size(all), 0u) << w.name << ": nothing to drop";
+
+        EXPECT_TRUE(causal_set(no_c).empty())
+            << w.name << ": the device recorded causal when it was not asked to";
+        EXPECT_EQ(branchial_size(no_c), branchial_size(all))
+            << w.name << ": dropping causal moved the branchial relation";
+        EXPECT_EQ(no_c.states.size(), all.states.size())
+            << w.name << ": dropping causal moved the states";
+
+        EXPECT_EQ(branchial_size(no_b), 0u)
+            << w.name << ": the device recorded branchial when it was not asked to";
+        EXPECT_EQ(causal_set(no_b), causal_set(all))
+            << w.name << ": dropping branchial changed the causal relation";
+        EXPECT_EQ(no_b.states.size(), all.states.size())
+            << w.name << ": dropping branchial moved the states";
+    }
+}

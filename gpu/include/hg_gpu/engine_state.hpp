@@ -108,6 +108,11 @@ struct DeviceState {
     // Per-edge producer slot (atomic EventId, INVALID_ID if not yet produced)
     EventId* edge_producer;
     // Per-edge consumer list (LockFreeList keyed by EdgeId)
+    // Which artifacts this run records. Read by the rewrite kernel before each rendezvous, so
+    // an artifact nobody asked for costs no map inserts and no list nodes.
+    uint32_t record_causal;
+    uint32_t record_branchial;
+
     typename LockFreeList<EventId>::DeviceView edge_consumers;
     // Per-state event list (LockFreeList keyed by raw StateId) — used by
     // branchial scan to find prior sibling events from the same input state
@@ -352,6 +357,8 @@ public:
         d.quotient_causal         = quotient_causal_;
         d.slice_scan_max_edges    = slice_scan_max_edges_;
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
+        d.record_causal           = record_.causal ? 1u : 0u;
+        d.record_branchial        = record_.branchial ? 1u : 0u;
         d.needs_indices           = needs_indices_;
         d.errors                  = errors_.view();
         return d;
@@ -372,6 +379,10 @@ public:
         errors_.throw_if_any(context);
     }
     void clear_errors() { errors_.clear(); }
+
+    // Which artifacts this run records; read into DeviceState by device().
+    void set_record_set(hgcommon::RecordSet r) { record_ = r; }
+    hgcommon::RecordSet record_set() const { return record_; }
 
     void set_tr_enabled(bool enabled) { tr_enabled_ = enabled; }
     void set_quotient_causal(bool enabled) { quotient_causal_ = enabled; }
@@ -555,6 +566,7 @@ private:
     uint32_t*                          state_count_            = nullptr;
     uint64_t*                          state_canonical_hash_   = nullptr;
     uint64_t*                          state_exact_hash_       = nullptr;
+    hgcommon::RecordSet                record_{};
     uint32_t*                          state_edge_rank_        = nullptr;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;

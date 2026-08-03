@@ -110,6 +110,16 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         job.event_canon_mode == GpuJob::EventCanonCode::kFull      ? hg_gpu::EventCanonicalizationMode::Full :
         job.event_canon_mode == GpuJob::EventCanonCode::kAutomatic ? hg_gpu::EventCanonicalizationMode::Automatic :
                                                                      hg_gpu::EventCanonicalizationMode::None;
+    // What this call must RECORD, from what it will return. Same derivation as the CPU FFI,
+    // and the graph properties' needs come from the same graph_property_needs the marshaller
+    // builds them with. The device has no per-state event list, so an all-siblings branchial
+    // state view is built from the events it returns rather than from a recorded index.
+    {
+        const hgmarshal::GraphPropertyNeeds gneeds =
+            hgmarshal::graph_property_needs(job.graph_properties);
+        in.record.causal    = job.include_causal_edges || gneeds.causal;
+        in.record.branchial = job.include_branchial_edges || gneeds.branchial;
+    }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
     in.quotient_initial_states = job.quotient_initial_states;

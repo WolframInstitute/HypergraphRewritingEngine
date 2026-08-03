@@ -501,7 +501,8 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
-        if (produced[r] != INVALID_ID) register_as_producer(ds, my_event, produced[r]);
+        if (produced[r] != INVALID_ID && ds.record_causal)
+            register_as_producer(ds, my_event, produced[r]);
     }
 
     // 9. Causal rendezvous — consumer side (our consumed edges).
@@ -538,13 +539,14 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 
     for (uint8_t p = 0; p < n_cons; ++p) {
         EdgeId eid = consumed_sorted[p];
-        if (eid != INVALID_ID) register_as_consumer(ds, my_event, eid);
+        if (eid != INVALID_ID && ds.record_causal) register_as_consumer(ds, my_event, eid);
     }
     }  // end !quotient_causal (raw-edge rendezvous)
     const unsigned long long t_causal = clock64();
 
     // 10. Branchial scan: our sibling events in the same input state.
-    register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
+    if (ds.record_branchial)
+        register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
 
     if (sub) {
         atomicAdd(&sub[0], t_reserved - t_start);

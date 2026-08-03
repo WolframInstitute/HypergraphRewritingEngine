@@ -259,6 +259,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
                           (in.explore_from_canonical_states_only ||
                            event_keys_for(in.event_canonicalization) == EVENT_SIG_AUTOMATIC);
     engine.set_quotient_causal(qc_route);
+    engine.set_record_set(in.record);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
     if (qc_route) { engine.ensure_edge_orbits(); engine.ensure_edge_ranks(); }
     double t_init = std::chrono::duration<double, std::milli>(
