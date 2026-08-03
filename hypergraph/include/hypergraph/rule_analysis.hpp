@@ -188,15 +188,21 @@ struct RuleSetFacts {
     bool bounded_vertices = false;
 };
 
+// Only the SET facts, and only from what they need.
+//
+// This runs on the evolve path (configure_identity_and_quotient reads may_branch), so it must not
+// pay for facts nobody asked for. analyze_rule additionally runs the GYO reduction and a 2^n
+// edge-cover enumeration; calling it here cost 0.036% of the end-to-end corpus total for two
+// numbers this function does not use. The three fields below come from counters the rule already
+// carries.
 inline RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
     RuleSetFacts s;
     s.may_branch = can_branch(rules);
     s.non_growing = true;
     s.bounded_vertices = true;
     for (const auto& r : rules) {
-        const RuleFacts f = analyze_rule(r);
-        if (f.edge_delta > 0) s.non_growing = false;
-        if (f.new_vertices > 0) s.bounded_vertices = false;
+        if (r.num_rhs_edges > r.num_lhs_edges) s.non_growing = false;
+        if (r.num_new_vars > 0) s.bounded_vertices = false;
     }
     return s;
 }
