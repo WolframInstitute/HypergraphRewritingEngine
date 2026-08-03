@@ -18,6 +18,21 @@ Two sections below carry the state a lost conversation would otherwise take with
 **Landed ledger** (what shipped and the number that proves it) and **Live defect register**
 (what is broken now, with the command that shows it).
 
+## WHAT v1.0 IS WAITING ON
+
+Every remaining row needs a decision from Richard. None is waiting on effort.
+
+| row | what is needed | why it cannot be decided here |
+|---|---|---|
+| **P5.3** | go-ahead to fold three untracked planning docs into one | they are UNTRACKED, so deleting them is irreversible — git cannot recover them |
+| **P6.1** | read and approve `docs/P6_ARCHITECTURE_SPLIT.md` | it proposes moving ~1,400 lines behind one body; the doc says no code moves until approved, and P6.2/P6.3 are sequenced behind it |
+| **P7.1** | two semantics calls: may match multiplicity be reduced to orbit representatives, and may a rule set override the caller's state canonicalization | both CHANGE WHAT THE ENGINE OUTPUTS. They are choices about what the engine means, not optimisations |
+| **P7.2** | the paper | the machine that regenerates every number in it is done (`tools/dev/evidence.sh`); the writing is Richard's |
+| **P4.4** | whether the FFI transport may hold one in-flight job across calls | the session model needs state to survive a call; today's transport is one-shot WXF over stdin/stdout, so this is a transport redesign, not a feature |
+
+`P3.1` is UNREPRODUCIBLE at 0/1100 sweeps and is left open by its own instruction to re-run
+after any change to quotient attribution.
+
 Every commit message names the item id (`P1.2`, `P3.1`). A commit whose message does not carry
 the measurement that proves it is not finished.
 
