@@ -68,6 +68,7 @@ void ParallelEvolutionEngine::evolve(
     configure_identity_and_quotient();
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
+    reset_depth_join();
 
     // Create initial state
     std::vector<EdgeId> edge_ids;
@@ -150,8 +151,12 @@ void ParallelEvolutionEngine::evolve(
         hg_->try_claim_expanded(canonical_state);
     }
 
-    // Submit MATCH task for initial state - this kicks off the dataflow
+    // Submit MATCH task for initial state - this kicks off the dataflow. A root's match task
+    // runs at step 1 -- the step of the states it will create -- so the depth this signal is
+    // indexed by is the step a task RUNS at, and depth 0 holds nothing.
     submit_match_task(raw_state, 1);
+    roots_seeded_.store(true, std::memory_order_release);
+    try_complete_depth(0);
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
@@ -172,10 +177,16 @@ void ParallelEvolutionEngine::evolve(
     // New run: re-seed the per-thread sampling RNGs from random_seed_.
     sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
+    reset_depth_join();
+
     // Create all initial states - they will all be explored
     for (const auto& state_edges : initial_states) {
         create_and_register_initial_state(state_edges);
     }
+    // Depth 0's arrivals are all booked: it may now settle. A root that already drained left
+    // the counters equal without settling, so the attempt is made here rather than waited for.
+    roots_seeded_.store(true, std::memory_order_release);
+    try_complete_depth(0);
 
     // Single synchronization point at the end
     job_system_->wait_for_completion();
@@ -903,8 +914,10 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
     note_match_task_pushed(state);
+    note_depth_task_pushed(step);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step]() {
+            DepthTaskGuard depth_guard(*this, step);
             execute_match_task(state, step, MatchContext{});
         },
         EvolutionJobType::MATCH
@@ -926,8 +939,10 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
 
     note_match_task_pushed(state);
+    note_depth_task_pushed(step);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, state, step, ctx]() {
+            DepthTaskGuard depth_guard(*this, step);
             execute_match_task(state, step, ctx);
         },
         EvolutionJobType::MATCH
@@ -944,8 +959,12 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
 
     DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index(), step);
 
+    // A rewrite belongs to no state's match join -- it is the step that CREATES a state, not
+    // one that matches on it -- so the depth join is where it is counted.
+    note_depth_task_pushed(step);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, match, step]() {
+            DepthTaskGuard depth_guard(*this, step);
             execute_rewrite_task(match, step);
         },
         EvolutionJobType::REWRITE
@@ -962,8 +981,14 @@ void ParallelEvolutionEngine::execute_expand_chunk(const ExpandChunk& chunk) {
 }
 
 void ParallelEvolutionEngine::submit_expand_chunk(const ExpandChunk& chunk) {
+    // A chunk carries the rewrites of one state's match set; the rewrites inside it are not
+    // separately submitted, so the CHUNK is the unit counted at its depth.
+    note_depth_task_pushed(chunk.step);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, chunk]() { execute_expand_chunk(chunk); },
+        [this, chunk]() {
+            DepthTaskGuard depth_guard(*this, chunk.step);
+            execute_expand_chunk(chunk);
+        },
         EvolutionJobType::REWRITE
     );
     job_system_->submit(std::move(job));
@@ -1012,8 +1037,10 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
               data.state, data.rule_index, data.step, data.is_delta);
 
     note_match_task_pushed(data.state);
+    note_depth_task_pushed(data.step);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, data]() {
+            DepthTaskGuard depth_guard(*this, data.step);
             execute_scan_task(data);
         },
         EvolutionJobType::SCAN
@@ -1032,8 +1059,10 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
     note_match_task_pushed(data.state);
+    note_depth_task_pushed(data.step);
     auto job = job_system::make_job<EvolutionJobType>(
         [this, data]() {
+            DepthTaskGuard depth_guard(*this, data.step);
             execute_expand_task(data);
         },
         EvolutionJobType::EXPAND
@@ -1212,6 +1241,58 @@ size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
 
 void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
     match_join_for(state)->pushed.fetch_add(1, std::memory_order_release);
+}
+
+// Per-depth join for this run. A task runs at steps 1..max_steps, and the entry above that is
+// where a submit past the budget would land; it is never settled, which is harmless because
+// nothing waits on it.
+void ParallelEvolutionEngine::reset_depth_join() {
+    depth_signal_available_ = depth_signal_available() && on_depth_complete_ != nullptr;
+    depth_join_ = std::vector<DepthJoin>(max_steps_ + 2);
+    roots_seeded_.store(false, std::memory_order_release);
+    depth_late_arrivals_.store(0, std::memory_order_relaxed);
+}
+
+void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
+    if (!depth_signal_available_ || depth >= depth_join_.size()) return;
+    depth_join_[depth].live.fetch_add(1, std::memory_order_acq_rel);
+    if (depth_join_[depth].complete.load(std::memory_order_acquire))
+        depth_late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ParallelEvolutionEngine::note_depth_task_done(uint32_t depth) {
+    if (!depth_signal_available_ || depth >= depth_join_.size()) return;
+    // Settle only on the transition to zero: any other decrement leaves work live here.
+    if (depth_join_[depth].live.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        try_complete_depth(depth);
+}
+
+// Settle `depth` if it can be, then cascade: the depth above may have been waiting only on
+// this one, and may already have no live work of its own.
+//
+// A task at depth d submits only at depths ABOVE d, so a settled d-1 means nothing can put work
+// at d. That is the whole argument, and it is why the two conditions below are enough without
+// any wait: no live work here, and the depth below already settled.
+void ParallelEvolutionEngine::try_complete_depth(uint32_t depth) {
+    if (!depth_signal_available_) return;
+    // Depth 0 runs no task -- a root's match task runs at step 1 -- so it is complete by
+    // definition once the roots are in, and the chain starts above it.
+    for (uint32_t d = (depth == 0 ? 1u : depth); d < depth_join_.size(); ++d) {
+        if (depth_join_[d].complete.load(std::memory_order_acquire)) continue;
+        if (d == 1) {
+            if (!roots_seeded_.load(std::memory_order_acquire)) return;
+        } else if (!depth_join_[d - 1].complete.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (depth_join_[d].live.load(std::memory_order_acquire) != 0) return;
+
+        uint8_t expected = 0;
+        if (!depth_join_[d].complete.compare_exchange_strong(
+                expected, 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            continue;   // another thread settled it; its cascade covers the depths above
+        }
+        if (on_depth_complete_) on_depth_complete_(d);
+    }
 }
 
 void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step) {

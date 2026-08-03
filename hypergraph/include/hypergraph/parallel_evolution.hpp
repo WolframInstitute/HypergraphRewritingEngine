@@ -706,6 +706,54 @@ private:
     std::function<void(StateId, uint32_t)> on_state_matches_complete_;
     std::atomic<size_t> states_drained_{0};
 
+    // Per-depth join, derived from the per-state one above. Flat and sized once per run: depth
+    // is bounded by the step budget, so a map would buy nothing and cost a lookup on a path
+    // every match task walks.
+    //
+    // `live` counts the tasks submitted to run at this depth that have not finished. A task at
+    // depth d only ever submits at depths ABOVE d, so once d-1 has settled nothing can put work
+    // at d -- which is what lets a depth be declared done without a barrier.
+    //
+    // Counting STATES that arrived would not do: match forwarding submits a rewrite task that
+    // is booked against no state, and that rewrite creates a state and submits its match task,
+    // so an arrival can appear at a depth with no live state accounting for it.
+    struct DepthJoin {
+        std::atomic<size_t>  live{0};       // tasks submitted at this depth, minus those done
+        std::atomic<uint8_t> complete{0};
+    };
+    std::vector<DepthJoin> depth_join_;
+    // Depth 0 cannot settle before the roots are in: until then arrived is still moving and an
+    // early match would fire the signal on an empty depth.
+    std::atomic<bool> roots_seeded_{false};
+    // Whether the arrival invariant this signal needs holds for this run. See the note on
+    // set_on_depth_complete.
+    bool depth_signal_available_{false};
+    std::function<void(uint32_t)> on_depth_complete_;
+    // Arrivals at a depth that had already settled. The signal's whole claim is that this
+    // cannot happen, so it is counted rather than assumed: a non-zero value means a depth was
+    // reported complete while work could still land in it.
+    std::atomic<size_t> depth_late_arrivals_{0};
+
+    void reset_depth_join();
+    // Every task is booked at the depth it RUNS at: pushed before it can be seen, done after
+    // every effect of it is visible -- the same discipline as the per-state join.
+    void note_depth_task_pushed(uint32_t depth);
+    void note_depth_task_done(uint32_t depth);
+    void try_complete_depth(uint32_t depth);
+
+    // Books one task against its depth however its function exits.
+    class DepthTaskGuard {
+    public:
+        DepthTaskGuard(ParallelEvolutionEngine& engine, uint32_t depth)
+            : engine_(engine), depth_(depth) {}
+        ~DepthTaskGuard() { engine_.note_depth_task_done(depth_); }
+        DepthTaskGuard(const DepthTaskGuard&) = delete;
+        DepthTaskGuard& operator=(const DepthTaskGuard&) = delete;
+    private:
+        ParallelEvolutionEngine& engine_;
+        uint32_t depth_;
+    };
+
     // Statistics (atomics for thread-safety)
     // Four hot counters in 32 bytes would share a line; one each (see EvolutionStats).
     alignas(64) std::atomic<size_t> total_matches_found_{0};
@@ -849,6 +897,30 @@ public:
     // Set it before evolve(); it runs on a worker thread.
     void set_on_state_matches_complete(std::function<void(StateId, uint32_t)> cb) {
         on_state_matches_complete_ = std::move(cb);
+    }
+
+    // Called once per DEPTH, after every state that entered that depth has drained and every
+    // shallower depth has done the same -- so nothing can still arrive there. Fires on a worker
+    // thread, in depth order, without any barrier: it is derived from the per-state drain
+    // above, not from a wait.
+    //
+    // AVAILABLE UNDER FULL CAPTURE ONLY, and depth_signal_available() says so before a run
+    // commits to it. Under quotient exploration a child is submitted at its parent's LIVE
+    // MINIMUM depth plus one, and a shorter path found later lowers that minimum -- so a task
+    // running at a deep step can put a new state at a shallow depth, after that depth's
+    // predecessor has already settled. The invariant that makes this signal sound is exactly
+    // the one relaxation breaks, and repairing it would need "no live task can still submit
+    // here", which is the global barrier this exists to avoid. Quotient callers have the
+    // per-state drain and the run's own completion.
+    void set_on_depth_complete(std::function<void(uint32_t)> cb) {
+        on_depth_complete_ = std::move(cb);
+    }
+    // Whether the depth signal will fire for the configuration this engine is set to. False
+    // under quotient exploration; see set_on_depth_complete.
+    bool depth_signal_available() const { return !explore_from_canonical_states_only_; }
+    // States that arrived at a depth already reported complete. Must be zero.
+    size_t depth_late_arrivals() const {
+        return depth_late_arrivals_.load(std::memory_order_relaxed);
     }
     size_t states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
 

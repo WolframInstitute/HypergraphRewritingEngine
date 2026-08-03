@@ -381,3 +381,88 @@ TEST(SamplingReproducibility, ExplorationProbabilityIsPerCanonicalState) {
             << " (observed " << frac << "); a per-transition coin would bias high";
     }
 }
+
+// A depth reports complete exactly once, in order, and only after every state at it has drained.
+//
+// The signal is derived from the per-state drain with no barrier, so the properties that matter
+// are the ones a barrier would have given for free: fired once, fired in depth order, and never
+// fired while a state at that depth was still matching. Run at several worker counts, because
+// with one worker every task drains in submission order and none of it is tested.
+TEST(SamplingReproducibility, DepthCompletesOnceAfterEveryStateAtItHasDrained) {
+    for (unsigned threads : {1u, 4u, 16u}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_growth_rule());
+
+        std::mutex m;
+        std::vector<uint32_t> depth_order;
+        std::unordered_map<uint32_t, int> depth_fires;
+        std::unordered_map<uint32_t, size_t> drained_at_depth;
+        std::unordered_map<uint32_t, size_t> drained_when_depth_fired;
+        std::unordered_map<uint32_t, size_t> arrived_at_depth;
+
+        e.set_on_state_matches_complete([&](StateId, uint32_t step) {
+            std::lock_guard<std::mutex> lock(m);
+            drained_at_depth[step]++;
+        });
+        e.set_on_depth_complete([&](uint32_t depth) {
+            std::lock_guard<std::mutex> lock(m);
+            depth_order.push_back(depth);
+            depth_fires[depth]++;
+            drained_when_depth_fired[depth] = drained_at_depth[depth];
+        });
+        ASSERT_TRUE(e.depth_signal_available())
+            << "full capture must offer the depth signal, or this test asserts nothing";
+
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 4);
+
+        // Every state that drained belongs to some depth; a depth that fired must have seen all
+        // of its own drains BEFORE it fired, which is the whole content of the signal.
+        {
+            std::lock_guard<std::mutex> lock(m);
+            arrived_at_depth = drained_at_depth;   // final tally, after the run
+        }
+
+        ASSERT_FALSE(depth_order.empty())
+            << "no depth completed at " << threads << " threads, so nothing was tested";
+        EXPECT_EQ(e.depth_late_arrivals(), 0u)
+            << e.depth_late_arrivals() << " states arrived at a depth already reported complete, "
+            << "at " << threads << " threads";
+
+        for (const auto& [depth, fires] : depth_fires) {
+            EXPECT_EQ(fires, 1) << "depth " << depth << " fired " << fires << " times at "
+                                << threads << " threads";
+            EXPECT_EQ(drained_when_depth_fired[depth], arrived_at_depth[depth])
+                << "depth " << depth << " fired with " << drained_when_depth_fired[depth]
+                << " of its " << arrived_at_depth[depth] << " states drained, at " << threads
+                << " threads";
+        }
+
+        for (size_t i = 1; i < depth_order.size(); ++i) {
+            EXPECT_LT(depth_order[i - 1], depth_order[i])
+                << "depths completed out of order at " << threads << " threads: "
+                << depth_order[i - 1] << " then " << depth_order[i];
+        }
+    }
+}
+
+// Under quotient exploration the signal is refused rather than made to lie: a child is
+// submitted at its parent's LIVE MINIMUM depth plus one, so a relaxation can put an arrival at
+// a shallow depth from a task running at a deep one, after that depth's predecessor settled.
+TEST(SamplingReproducibility, DepthSignalIsRefusedUnderQuotientExploration) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 4);
+    e.set_explore_from_canonical_states_only(true);
+    e.add_rule(make_growth_rule());
+
+    std::atomic<int> fires{0};
+    e.set_on_depth_complete([&](uint32_t) { fires.fetch_add(1); });
+    EXPECT_FALSE(e.depth_signal_available())
+        << "quotient exploration cannot support the depth signal; see set_on_depth_complete";
+
+    e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 4);
+    EXPECT_EQ(fires.load(), 0)
+        << "the depth signal fired under quotient, where its arrival invariant does not hold";
+}
