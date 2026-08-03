@@ -9,10 +9,11 @@
 //
 // SCOPE, WHICH IS THE POINT OF THIS BLOCK. What is measured here is the ALGORITHM, per call, on
 // a state handed to it. It is NOT the cost the engine pays, and the two answer opposite ways:
-// over a full evolution the non-Full/WL route costs 64,098,344 instructions against Full/IR's
-// 55,034,936 (callgrind, board #48), because the engine pays the ALLOCATION DISCIPLINE around
+// over a full evolution the non-Full/WL route costs 68,004,245 instructions against Full/IR's
+// 59,028,301 (callgrind, board #48), because the engine pays the ALLOCATION DISCIPLINE around
 // the call and not only the call -- 9.74% of the non-Full run is __memset_avx2 zeroing WL
-// scratch (board #43).
+// scratch (board #43). Regenerate both with `tools/dev/evidence.sh`, which is where these came
+// from; they drift as the engine changes and the gap between them is the claim, not the pair.
 //
 // So "IR/WL = 37.5x" below does not license "WL is the fast path for the engine". It licenses
 // "WL is faster per call". Anyone choosing a route needs the engine-level number, which this
@@ -193,7 +194,7 @@ static Edges shrikhande() {
 int main() {
     printf("=== SPEED: IR vs WL on identical states (median us/call) ===\n");
     printf("NOTE: per-CALL cost of the algorithm, not the cost the engine pays. Over a full\n"
-           "evolution non-Full/WL measured 64,098,344 instructions against Full/IR's 55,034,936\n"
+           "evolution non-Full/WL measured 68,004,245 instructions against Full/IR's 59,028,301\n"
            "(callgrind): the engine pays the allocation discipline around the call, and 9.74%% of\n"
            "the non-Full run is memset zeroing WL scratch. Use cost_matrix to choose a route.\n");
     printf("%-12s %6s %12s %12s %10s\n", "graph", "edges", "WL_us", "IR_us", "IR/WL");
