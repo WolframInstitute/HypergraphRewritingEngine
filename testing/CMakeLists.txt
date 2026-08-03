@@ -180,6 +180,9 @@ create_test_executable(all_tests
     # FFI WXF serialization pin test: exercises run_rewriting_core end to end.
     # Pulls in the FFI marshaling TU (compiled in standalone mode, no Wolfram SDK).
     ../paclet_source/tests/test_wxf_serialization.cpp
+    # The option surface is written down in four places (declared, sent, parsed, documented)
+    # and nothing links them; this reconciles them by reading the sources.
+    ../paclet_source/tests/test_option_surface.cpp
     ../paclet_source/hypergraph_ffi.cpp
 )
 # run_rewriting_core is the standalone-binary marshaling path (WXF over the FFI):

@@ -1,0 +1,107 @@
+// The option surface is written down in three places, and they must agree.
+//
+// A user-facing option is declared in Options[HGEvolve], SENT by the WL wrapper in the options
+// association, PARSED by the FFI, and described in the reference page. Nothing links those four
+// copies, so an option can be declared and never sent, sent and never parsed, or documented
+// after it stops existing -- each of which reads as a working option and does nothing.
+//
+// That is not hypothetical: RandomSeed was declared, documented "for reproducibility", consumed
+// by the initial-condition generators, and never sent -- so a sampled evolution ignored it. This
+// gate is the check that found it, made standing.
+//
+// It reads the sources rather than any generated artifact, because the point is that the copies
+// agree with EACH OTHER; comparing two views of one generated list would prove nothing.
+
+#include <gtest/gtest.h>
+
+#include <fstream>
+#include <regex>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+
+// The repo file, found from wherever the test binary was launched.
+std::string read_repo_file(const std::string& rel) {
+    for (const std::string& prefix : {"", "../", "../../"}) {
+        std::ifstream in(prefix + rel);
+        if (!in) continue;
+        return std::string((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    }
+    return {};
+}
+
+// Names captured by `re` inside the region between `begin` and `end` markers. An empty region
+// yields nothing, which every caller asserts against -- a regex that silently stops matching
+// would otherwise turn this gate into a tautology.
+std::set<std::string> names_in_region(const std::string& text, const std::string& begin,
+                                      const std::string& end, const std::regex& re) {
+    std::set<std::string> out;
+    const size_t b = text.find(begin);
+    if (b == std::string::npos) return out;
+    const size_t e = text.find(end, b + begin.size());
+    if (e == std::string::npos) return out;
+    const std::string region = text.substr(b, e - b);
+    for (auto it = std::sregex_iterator(region.begin(), region.end(), re);
+         it != std::sregex_iterator(); ++it) {
+        out.insert((*it)[1].str());
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(OptionSurface, EveryOptionTheWrapperSendsIsParsedByTheFfi) {
+    const std::string wl  = read_repo_file("paclet/Kernel/HypergraphRewriting.wl");
+    const std::string ffi = read_repo_file("paclet_source/hypergraph_ffi.cpp");
+    ASSERT_FALSE(wl.empty()) << "paclet/Kernel/HypergraphRewriting.wl not found";
+    ASSERT_FALSE(ffi.empty()) << "paclet_source/hypergraph_ffi.cpp not found";
+
+    const std::set<std::string> sent =
+        names_in_region(wl, "  options = <|", "  |>;", std::regex("\"([A-Za-z]+)\"\\s*->"));
+    std::set<std::string> parsed;
+    {
+        const std::regex re("option_key == \"([A-Za-z]+)\"");
+        for (auto it = std::sregex_iterator(ffi.begin(), ffi.end(), re);
+             it != std::sregex_iterator(); ++it) {
+            parsed.insert((*it)[1].str());
+        }
+    }
+    ASSERT_FALSE(sent.empty()) << "found no options association in the wrapper; the regex has "
+                                  "stopped matching and this gate is asserting nothing";
+    ASSERT_FALSE(parsed.empty()) << "found no option keys in the FFI parser; same";
+
+    for (const std::string& key : sent) {
+        EXPECT_TRUE(parsed.count(key))
+            << "the wrapper sends \"" << key << "\" and the FFI does not parse it, so setting it "
+            << "does nothing and says nothing";
+    }
+}
+
+TEST(OptionSurface, EveryDocumentedOptionIsAnOptionHGEvolveAccepts) {
+    const std::string wl  = read_repo_file("paclet/Kernel/HypergraphRewriting.wl");
+    const std::string doc = read_repo_file("paclet/Documentation/Source/HGEvolve.md");
+    ASSERT_FALSE(wl.empty()) << "paclet/Kernel/HypergraphRewriting.wl not found";
+    ASSERT_FALSE(doc.empty()) << "paclet/Documentation/Source/HGEvolve.md not found";
+
+    const std::set<std::string> declared =
+        names_in_region(wl, "Options[HGEvolve] = {", "\n};", std::regex("\"([A-Za-z]+)\"\\s*->"));
+    std::set<std::string> documented;
+    {
+        const std::regex re("### \"([A-Za-z]+)\"");
+        for (auto it = std::sregex_iterator(doc.begin(), doc.end(), re);
+             it != std::sregex_iterator(); ++it) {
+            documented.insert((*it)[1].str());
+        }
+    }
+    ASSERT_FALSE(declared.empty()) << "found no Options[HGEvolve] list; the regex has stopped "
+                                      "matching and this gate is asserting nothing";
+    ASSERT_FALSE(documented.empty()) << "found no documented options; same";
+
+    for (const std::string& key : documented) {
+        EXPECT_TRUE(declared.count(key))
+            << "the reference page documents \"" << key << "\", which HGEvolve does not accept";
+    }
+}
