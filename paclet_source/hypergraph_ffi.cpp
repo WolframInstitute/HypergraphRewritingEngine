@@ -1283,8 +1283,31 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // Adapt the engine to the shared graph marshaller (graph_marshal.hpp) so the CPU
             // and the GPU backend build byte-identical GraphData. The wrappers reuse the
             // effective-id and serialization lambdas above -- one graph-building code path.
+            // Under the reconstruction the events a caller is TOLD about are the replay's, not
+            // the materialised ones, and NumEvents already reports those. Built once here so the
+            // graph's vertices are the same set: dense id per distinct identity, and the content
+            // that describes it.
+            struct ReconEvents {
+                bool active = false;
+                std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
+                std::unordered_map<int64_t, hypergraph::QcEventContent> content;
+                uint32_t raw_count = 0;
+            };
+            ReconEvents recon;
+            if (hg.quotient_reconstruction()) {
+                recon.active = true;
+                recon.raw_count = static_cast<uint32_t>(hg.num_reconstructed_raw_events());
+                hg.for_each_reconstructed_event(
+                    [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
+                        const int64_t id = static_cast<int64_t>(dense);
+                        recon.dense_of_sig[hg.event_pair_signature(raw)] = id;
+                        recon.content[id] = c;
+                    });
+            }
+
             struct CpuGraphSource {
                 const hypergraph::Hypergraph& hg;
+                const ReconEvents& recon;
                 bool show_genesis;
                 std::function<int64_t(hypergraph::StateId)> eff_state;
                 std::function<int64_t(hypergraph::EventId)> eff_event;
@@ -1297,12 +1320,52 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 int64_t effective_state_id(uint32_t sid) const { return eff_state(sid); }
                 uint32_t state_step(uint32_t sid) const { return hg.get_state(sid).step; }
                 wxf::WXFValueAssociation serialize_state_data(uint32_t sid) const { return state_data(sid); }
-                uint32_t num_raw_events() const { return hg.num_raw_events(); }
-                bool is_valid_event(uint32_t eid) const { return valid_event(eid); }
-                int64_t effective_event_id(uint32_t eid) const { return eff_event(eid); }
-                uint32_t event_input_state(uint32_t eid) const { return hg.get_event(eid).input_state; }
-                uint32_t event_output_state(uint32_t eid) const { return hg.get_event(eid).output_state; }
-                wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const { return event_data(eid); }
+                // Under the reconstruction an "event id" is one of the replay's applications.
+                // The scan bound, the validity test and the identity all follow from that, so
+                // the marshaller builds its graph over the reconstruction without knowing.
+                uint32_t num_raw_events() const {
+                    return recon.active ? recon.raw_count : hg.num_raw_events();
+                }
+                bool is_valid_event(uint32_t eid) const {
+                    if (!recon.active) return valid_event(eid);
+                    // An application whose identity was not registered stands for no vertex.
+                    return recon.dense_of_sig.count(hg.event_pair_signature(eid)) != 0;
+                }
+                int64_t effective_event_id(uint32_t eid) const {
+                    if (!recon.active) return eff_event(eid);
+                    auto it = recon.dense_of_sig.find(hg.event_pair_signature(eid));
+                    return it == recon.dense_of_sig.end() ? -1 : it->second;
+                }
+                // The endpoints of a reconstructed event are CLASSES, and a class is pointed at
+                // by its frame -- the state whose labelling it is described in. Nothing is
+                // materialised for the event itself.
+                uint32_t event_input_state(uint32_t eid) const {
+                    if (!recon.active) return hg.get_event(eid).input_state;
+                    const auto* c = hg.reconstructed_event_content(eid);
+                    return c ? hg.class_frame_state(c->from_class) : hypergraph::INVALID_ID;
+                }
+                uint32_t event_output_state(uint32_t eid) const {
+                    if (!recon.active) return hg.get_event(eid).output_state;
+                    const auto* c = hg.reconstructed_event_content(eid);
+                    return c ? hg.class_frame_state(c->to_class) : hypergraph::INVALID_ID;
+                }
+                wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const {
+                    if (!recon.active) return event_data(eid);
+                    // What the reconstruction holds and no more: the identity, the rule, and the
+                    // endpoint classes as their frame states. A reconstructed event has no
+                    // consumed/produced edge lists -- the replay mints an id and materialises
+                    // nothing -- so claiming any would be inventing them.
+                    wxf::WXFValueAssociation d;
+                    d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(effective_event_id(eid))});
+                    const auto* c = hg.reconstructed_event_content(eid);
+                    d.push_back({wxf::WXFValue("RuleIndex"),
+                                 wxf::WXFValue(static_cast<int64_t>(c ? c->rule : 0))});
+                    d.push_back({wxf::WXFValue("InputState"),
+                                 wxf::WXFValue(effective_state_id(event_input_state(eid)))});
+                    d.push_back({wxf::WXFValue("OutputState"),
+                                 wxf::WXFValue(effective_state_id(event_output_state(eid)))});
+                    return d;
+                }
                 std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
                     // A property the record set did not anticipate would be handed an EMPTY
                     // relation and would serve an empty graph without a word. The name test
@@ -1314,6 +1377,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             "not asked to record: graph_property_needs missed its name");
                     }
                     std::vector<std::pair<uint32_t, uint32_t>> out;
+                    if (recon.active) {
+                        // The relation the run SERVES. Its endpoints are the replay's
+                        // application ids, which effective_event_id maps to vertices above.
+                        hg.for_each_reconstructed_causal_as(
+                            hg.causal_graph().transitive_reduction_enabled(),
+                            [](uint32_t e) { return e; },
+                            [&](uint64_t p, uint64_t c) {
+                                out.emplace_back(static_cast<uint32_t>(p), static_cast<uint32_t>(c));
+                            });
+                        return out;
+                    }
                     for (const auto& ce : hg.causal_graph().get_causal_edges()) {
                         if (!show_genesis && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
                         out.emplace_back(ce.producer, ce.consumer);
@@ -1327,6 +1401,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             "was not asked to record: graph_property_needs missed its name");
                     }
                     std::vector<std::pair<uint32_t, uint32_t>> out;
+                    if (recon.active) {
+                        hg.for_each_reconstructed_branchial_as(
+                            [](uint32_t e) { return e; },
+                            [&](uint64_t a, uint64_t b) {
+                                out.emplace_back(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+                            });
+                        return out;
+                    }
                     for (const auto& be : hg.causal_graph().get_branchial_edges()) {
                         if (!show_genesis && (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2))) continue;
                         out.emplace_back(be.event1, be.event2);
@@ -1334,7 +1416,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return out;
                 }
             };
-            CpuGraphSource gsrc{hg, show_genesis_events,
+            CpuGraphSource gsrc{hg, recon, show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
                 serialize_state_data, serialize_event_data};
             hgmarshal::GraphOptions gopts;

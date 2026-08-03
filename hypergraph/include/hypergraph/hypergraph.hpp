@@ -903,6 +903,43 @@ public:
         qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
     }
 
+    // The state whose labelling defines a canonical class -- the class FRAME. The reconstruction
+    // pins one to align slots, so a class hash resolves to a state a caller can point at without
+    // anything being materialised for it. INVALID_ID when the class has no frame, which happens
+    // for a class no captured transition touched.
+    StateId class_frame_state(uint64_t class_hash) const {
+        auto r = qc_frame_.lookup(class_hash);
+        return r.has_value() ? static_cast<StateId>(*r - 1) : INVALID_ID;
+    }
+
+    // Visit each DISTINCT reconstructed event once, as (dense id, content).
+    //
+    // The dense id names a vertex: the identity signatures are 64-bit hashes, which cannot be a
+    // vertex label a user reads, and the reconstruction's raw event ids are per-application, so
+    // there are more of them than there are events to show. Ids are assigned in ascending raw
+    // event order, which is the order the replay minted them, so the numbering is a function of
+    // the run rather than of the map's layout.
+    //
+    // Under EVENT_SIG_NONE every application is its own event and each raw event is visited;
+    // under an identity mode the FIRST raw event carrying each identity stands for it, and its
+    // content describes the class transition they all share.
+    template <typename F>
+    void for_each_reconstructed_event(F&& f) const {
+        const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+        const bool by_identity = event_signature_keys() != hgcommon::EVENT_SIG_NONE;
+        std::set<uint64_t> seen;
+        uint32_t dense = 0;
+        for (uint32_t e = 0; e < n; ++e) {
+            const QcEventContent* c = qc_event_sig_.get(e);
+            if (!c) continue;
+            if (by_identity) {
+                const uint64_t* sig = qc_event_runsig_.get(e);
+                if (!sig || !seen.insert(*sig).second) continue;
+            }
+            f(dense++, e, *c);
+        }
+    }
+
     // Visit each reconstructed RAW event's content triple hash(input class, output class, rule).
     // Schedule-stable and mode-stable -- a function of the multiway structure alone -- unlike
     // the run-identity signatures, whose slot components are labels relative to the class frame

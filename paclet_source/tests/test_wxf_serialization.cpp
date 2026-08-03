@@ -318,24 +318,15 @@ TEST(WxfSerializationPin, StatesGraphUnderFullCanonicalization) {
     EXPECT_GT(read_int_key(out, "NumStates"), 0);
 }
 
-// PINNED REPRODUCER for P4.6: the causal GRAPH and the event COUNT beside it describe
-// different event sets. It passes exactly while the gap is present, so the suite notices if it
-// moves or closes -- the same contract ReconstructionGapIsStillOpen carried until P2 closed it.
+// The causal graph a caller receives has one vertex per event a caller is TOLD about.
 //
-// WHAT IS BROKEN. NumEvents routes through observable_num_events, which under an identity mode
-// is the RECONSTRUCTION's count: distinct identities over the class frame. The graph is built by
-// scanning MATERIALISED raw events and mapping each through its canonical_event_id, which full
-// capture computed from each raw state's own labelling -- the per-state convention the
-// reconstruction exists to replace. Measured on this workload under Automatic:
-//
-//     NumEvents (reconstruction, class frame)     24
-//     causal graph vertices (materialised)        25
-//
-// TO CLOSE: serve the graph's event vertices from the reconstruction when it ran. That needs a
-// vertex payload for an identity with no Event record -- the reconstruction deliberately
-// materialises none -- built from the class hashes and rule it does hold, or the lean payload
-// the Structure variants already use.
-TEST(WxfSerializationPin, CausalGraphAndNumEventsStillDescribeDifferentSets) {
+// NumEvents routes through observable_num_events, which under an identity mode is the
+// RECONSTRUCTION's count: distinct identities over the class frame. The graph used to be built
+// by scanning MATERIALISED raw events and mapping each through its canonical_event_id, which
+// full capture computes from each raw state's own labelling -- the per-state convention the
+// reconstruction exists to replace. Measured then: 24 against 25, a graph and a count over
+// different event sets with nothing marking the difference.
+TEST(WxfSerializationPin, CausalGraphVerticesAreTheEventsTheCountReports) {
     HostBridge host;
     auto in = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer& w) {
         put_str_list_option(w, "GraphProperties", {"CausalGraph"});
@@ -346,6 +337,7 @@ TEST(WxfSerializationPin, CausalGraphAndNumEventsStillDescribeDifferentSets) {
     ASSERT_FALSE(out.empty());
 
     const int64_t num_events = read_int_key(out, "NumEvents");
+    ASSERT_GT(num_events, 0);
 
     int64_t vertex_count = -1;
     wxf::Parser parser(out);
@@ -365,11 +357,9 @@ TEST(WxfSerializationPin, CausalGraphAndNumEventsStillDescribeDifferentSets) {
     });
     ASSERT_GE(vertex_count, 0) << "no Vertices came back for the requested CausalGraph";
 
-    EXPECT_EQ(num_events, 24)
-        << "the reconstruction's count moved; re-derive the pinned numbers";
-    EXPECT_EQ(vertex_count, 25)
-        << "the graph's vertex count moved; if it now equals NumEvents the gap has closed -- "
-           "replace this reproducer with the equality";
+    EXPECT_EQ(vertex_count, num_events)
+        << "the causal graph has " << vertex_count << " event vertices while NumEvents reports "
+        << num_events << ": the graph and the count describe different event sets";
 }
 
 // RandomSeed reaches the sampler it is documented to control.
