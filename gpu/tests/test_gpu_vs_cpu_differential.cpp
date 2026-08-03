@@ -83,6 +83,8 @@ struct NormalizedResult {
     // triples hash(input class, output class, rule), which is what both engines can produce for
     // an event that was never materialised.
     std::multiset<uint64_t> recon_causal, recon_branchial;
+    // The TR view of the same relation: the pairs tagged in-reduction.
+    std::multiset<uint64_t> recon_causal_reduced;
 
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
@@ -296,6 +298,8 @@ NormalizedResult run_cpu(const Workload& w) {
         auto triple = [&](uint32_t e) { return hg.reconstructed_raw_triple(e); };
         hg.for_each_reconstructed_causal_as(/*reduced=*/false, triple,
             [&](uint64_t p, uint64_t c) { out.recon_causal.insert(causal_key(p, c)); });
+        hg.for_each_reconstructed_causal_as(/*reduced=*/true, triple,
+            [&](uint64_t p, uint64_t c) { out.recon_causal_reduced.insert(causal_key(p, c)); });
         hg.for_each_reconstructed_branchial_as(triple,
             [&](uint64_t a, uint64_t b) { out.recon_branchial.insert(edge_pair_key(a, b)); });
     }
@@ -368,6 +372,8 @@ NormalizedResult run_gpu(const Workload& w) {
 
     for (const auto& p : result.reconstructed_causal_relation)
         out.recon_causal.insert(causal_key(p.first, p.second));
+    for (const auto& p : result.reconstructed_causal_relation_reduced)
+        out.recon_causal_reduced.insert(causal_key(p.first, p.second));
     for (const auto& p : result.reconstructed_branchial_relation)
         out.recon_branchial.insert(edge_pair_key(p.first, p.second));
 
@@ -435,8 +441,9 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
         EXPECT_FALSE(cpu.recon_causal.empty())
             << "Workload: " << w.name << " routes the reconstruction but the host reconstructed "
             << "no causal relation, so the equality below constrains nothing";
-        std::printf("[recon %s] causal cpu=%zu gpu=%zu  branchial cpu=%zu gpu=%zu\n",
-                    w.name.c_str(), cpu.recon_causal.size(), gpu.recon_causal.size(),
+        std::printf("[recon %s] causal cpu=%zu gpu=%zu (reduced cpu=%zu)  branchial cpu=%zu"
+                    " gpu=%zu\n", w.name.c_str(), cpu.recon_causal.size(),
+                    gpu.recon_causal.size(), cpu.recon_causal_reduced.size(),
                     cpu.recon_branchial.size(), gpu.recon_branchial.size());
     }
 
@@ -446,6 +453,9 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
     EXPECT_EQ(cpu.recon_causal, gpu.recon_causal)
         << "Workload: " << w.name << " reconstructed causal relations differ; cpu="
         << cpu.recon_causal.size() << " gpu=" << gpu.recon_causal.size();
+    EXPECT_EQ(cpu.recon_causal_reduced, gpu.recon_causal_reduced)
+        << "Workload: " << w.name << " reconstructed REDUCED causal relations differ; cpu="
+        << cpu.recon_causal_reduced.size() << " gpu=" << gpu.recon_causal_reduced.size();
     EXPECT_EQ(cpu.recon_branchial, gpu.recon_branchial)
         << "Workload: " << w.name << " reconstructed branchial relations differ; cpu="
         << cpu.recon_branchial.size() << " gpu=" << gpu.recon_branchial.size();
@@ -962,6 +972,11 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         ws.push_back(w);
     }
 
+    // At least one workload must have redundancy for the reduction to remove; on a relation
+    // that is already its own reduction the equality above is satisfied by an engine that does
+    // not reduce at all.
+    bool reduction_bites = false;
+
     for (const Workload& w : ws) {
         hg_gpu::EvolveInput in = make_input(w);
         hg_gpu::EvolveResult gpu = hg_gpu::evolve(in);
@@ -989,11 +1004,12 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         const size_t host_cp = hg.num_reconstructed_causal_pairs(false);
         const size_t host_ce = hg.num_reconstructed_causal_edges();
         const size_t host_br = hg.num_reconstructed_branchial();
+        const size_t host_cr = hg.num_reconstructed_causal_pairs(true);
 
         std::printf("%-28s matches %3zu  raw %4zu  ids %4zu  causal %4zu/%4zu  branchial %5zu"
-                    "  moved %3u  align-fail %u\n", w.name.c_str(), host_matches, host_raw,
-                    host_ids, host_cp, host_ce, host_br, gpu.frame_alignments,
-                    gpu.frame_align_failures);
+                    "  reduced %4zu  moved %3u  align-fail %u\n", w.name.c_str(), host_matches,
+                    host_raw, host_ids, host_cp, host_ce, host_br, host_cr,
+                    gpu.frame_alignments, gpu.frame_align_failures);
 
         EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
                                        "every comparison below would pass on a device that "
@@ -1025,6 +1041,11 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
             << w.name << ": the replay recorded " << gpu.reconstructed_causal_edges
             << " causal edge occurrences, host " << host_ce;
 
+        EXPECT_EQ(gpu.reconstructed_causal_pairs_reduced, host_cr)
+            << w.name << ": the replay tagged " << gpu.reconstructed_causal_pairs_reduced
+            << " pairs in-reduction, host " << host_cr;
+        if (host_cr < host_cp) reduction_bites = true;
+
         EXPECT_EQ(gpu.reconstructed_branchial, host_br)
             << w.name << ": the replay recorded " << gpu.reconstructed_branchial
             << " branchial pairs, host " << host_br;
@@ -1033,6 +1054,10 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
             << w.name << ": " << gpu.frame_align_failures << " slots had no image in their "
             << "class's frame, so their captures were dropped";
     }
+
+    EXPECT_TRUE(reduction_bites)
+        << "no workload here has a causal relation with redundancy in it, so the reduced-pair "
+           "equality is satisfied by an engine that never reduces";
 }
 
 TEST(CanonicalEventCount, ModesVsCpu) {

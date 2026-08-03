@@ -98,6 +98,13 @@ struct QeAppliedMatch {
     uint32_t consumed_offset;   // into arr_words
 };
 
+// One KEPT causal pair, bucketed by its consumer; the node carries the consumer so a shared
+// bucket can be filtered, as every other bucketed record here does.
+struct QePredRef {
+    uint32_t consumer;
+    uint32_t producer;
+};
+
 // No event produced this slot's edge: it was in the initial state. Matches the host's
 // Hypergraph::QC_NO_PRODUCER.
 inline constexpr uint32_t kQeNoProducer = 0xFFFFFFFFu;
@@ -134,6 +141,17 @@ struct QeView {
     DedupMap::DeviceView causal_pairs;
     uint32_t* num_causal_pairs;
     uint32_t* num_causal_edges;
+
+    // The KEPT predecessor adjacency: the reduction's only stored structure. A pair enters it
+    // exactly when it survives, so the walk testing the next pair reads the reduction rather
+    // than the full relation -- keeping an edge costs one list push instead of an
+    // ancestors x descendants cross-product of map inserts.
+    typename LockFreeList<QePredRef>::DeviceView preds;
+    // The same decision, keyed so the relation can be handed back as a SET: preds is a chained
+    // list the host cannot walk, and a count says only THAT two engines disagree. Written at
+    // the point the counter increments, so the two cannot drift.
+    DedupMap::DeviceView reduced_pairs;
+    uint32_t* num_reduced_pairs;
 
     // The reconstructed branchial relation. `inst_applied` is bucketed by instance id: an
     // application publishes itself there and then scans the bucket, so the later of any two
@@ -491,6 +509,44 @@ __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlo
     }
 }
 
+// Walk scratch. A cone wider than this records kScratchOverflow and the pair under test is
+// KEPT: over-keeping is reported and recoverable, where dropping silently removes a causal edge.
+constexpr uint32_t kQeReachStack = 192;
+
+// Is `consumer` already reachable from `producer` over the KEPT predecessors?
+//
+// Backward walk from the consumer, pruned to ids above the producer. Raw reconstructed event
+// ids increase along every causal edge -- a producer wrote the slot its consumer reads, so its
+// application minted the lower id -- which is what makes the prune sound. That is a property of
+// THIS id assignment and not of the engine, which is why the host had to parameterise the same
+// prune for canonical ids.
+__device__ inline bool qe_reachable(DeviceState ds, QeView qe, uint32_t producer,
+                                    uint32_t consumer) {
+    if (producer >= consumer) return false;
+    uint32_t stack[kQeReachStack];
+    uint32_t sp = 0;
+    stack[sp++] = consumer;
+    while (sp) {
+        const uint32_t x = stack[--sp];
+        bool found = false, full = false;
+        qe.preds.for_each(qe_bucket(hgcommon::id_key(x), qe.preds.num_keys),
+                          [&](const QePredRef& r) {
+            if (found || r.consumer != x) return;
+            if (r.producer == producer) { found = true; return; }
+            if (r.producer <= producer) return;            // outside the cone
+            if (sp < kQeReachStack) stack[sp++] = r.producer;
+            else                    full = true;
+        });
+        if (found) return true;
+        if (full) {
+            // The answer would be a guess, and a wrong "reachable" DROPS a causal edge.
+            ds.errors.record(ErrorKind::kScratchOverflow);
+            return false;
+        }
+    }
+    return false;
+}
+
 // One application of `m` to `inst`: mint the raw event, then mint the child instance whose
 // producers this application determines.
 __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
@@ -562,8 +618,18 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
         for (uint32_t i = 0; i < np; ++i) {
             atomicAdd(qe.num_causal_edges, 1u);
             const uint64_t pk = hgcommon::id_key(producers[i], ev);
-            if (qe.causal_pairs.insert_if_absent(pk, 1u).inserted)
-                atomicAdd(qe.num_causal_pairs, 1u);
+            if (!qe.causal_pairs.insert_if_absent(pk, 1u).inserted) continue;
+            atomicAdd(qe.num_causal_pairs, 1u);
+
+            // One base, two views: tag whether this pair survives the reduction. A pair
+            // bypassed by a longer path is not in it; otherwise it is kept and becomes part of
+            // the predecessor adjacency later decisions walk.
+            if (qe_reachable(ds, qe, producers[i], ev)) continue;
+            atomicAdd(qe.num_reduced_pairs, 1u);
+            qe.reduced_pairs.insert_if_absent(pk, 1u);
+            if (qe.preds.push(qe_bucket(hgcommon::id_key(ev), qe.preds.num_keys),
+                              QePredRef{ev, producers[i]}) == INVALID_ID)
+                ds.errors.record(ErrorKind::kQcNodes);
         }
     }
 
@@ -639,7 +705,9 @@ public:
           canon_seen_(on ? max_events * 2u : 8u),
           causal_pairs_(on ? max_events * 4u : 8u),
           branchial_pairs_(on ? max_events * 4u : 8u),
+          reduced_pairs_(on ? max_events * 4u : 8u),
           inst_applied_(on ? (1u << 16) : 1u, on ? max_events * 2u : 1u),
+          preds_(on ? (1u << 16) : 1u, on ? max_events * 4u : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
@@ -654,6 +722,7 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&num_causal_pairs_, sizeof(uint32_t)), "QeState c-pairs alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_causal_edges_, sizeof(uint32_t)), "QeState c-edges alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_branchial_, sizeof(uint32_t)), "QeState branchial alloc");
+        HG_CUDA_CHECK(cudaMalloc(&num_reduced_pairs_, sizeof(uint32_t)), "QeState reduced alloc");
         event_sig_capacity_ = on ? max_events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
@@ -671,6 +740,7 @@ public:
         if (num_causal_pairs_) cudaFree(num_causal_pairs_);
         if (num_causal_edges_) cudaFree(num_causal_edges_);
         if (num_branchial_) cudaFree(num_branchial_);
+        if (num_reduced_pairs_) cudaFree(num_reduced_pairs_);
         if (event_sig_) cudaFree(event_sig_);
     }
     QeState(const QeState&)            = delete;
@@ -692,7 +762,9 @@ public:
         canon_seen_.clear();
         causal_pairs_.clear();
         branchial_pairs_.clear();
+        reduced_pairs_.clear();
         inst_applied_.clear();
+        preds_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
@@ -701,6 +773,7 @@ public:
         HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
         HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
         HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
+        HG_CUDA_CHECK(cudaMemset(num_reduced_pairs_, 0, sizeof(uint32_t)), "QeState reduced clear");
         HG_CUDA_CHECK(cudaMemset(event_sig_, 0, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
@@ -722,6 +795,10 @@ public:
     uint32_t num_causal_pairs_host() { return read_counter(num_causal_pairs_, "QeState c-pairs read"); }
     uint32_t num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
 
+    // Pairs tagged in-reduction: the TR view of the same relation. The host's
+    // num_reconstructed_causal_pairs(true).
+    uint32_t num_reduced_pairs_host() { return read_counter(num_reduced_pairs_, "QeState reduced read"); }
+
     // Distinct branchial pairs: sibling applications of one instance whose consumed edges
     // overlap. The host's num_reconstructed_branchial.
     uint32_t num_branchial_host() { return read_counter(num_branchial_, "QeState branchial read"); }
@@ -729,8 +806,10 @@ public:
     // The reconstructed relations as pairs of CONTENT TRIPLES. A count says two engines
     // disagree; a pair set says which pair is missing, which a count cannot.
     void reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
+                                  std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial) {
         causal.clear();
+        causal_reduced.clear();
         branchial.clear();
         const uint32_t n = num_raw_events_host();
         if (n == 0) return;
@@ -751,6 +830,7 @@ public:
             }
         };
         drain(causal_pairs_, causal);
+        drain(reduced_pairs_, causal_reduced);
         drain(branchial_pairs_, branchial);
     }
 
@@ -784,6 +864,9 @@ public:
         q.inst_applied     = inst_applied_.view();
         q.branchial_pairs  = branchial_pairs_.view();
         q.num_branchial    = num_branchial_;
+        q.preds            = preds_.view();
+        q.reduced_pairs    = reduced_pairs_.view();
+        q.num_reduced_pairs = num_reduced_pairs_;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;
@@ -818,7 +901,9 @@ private:
     DedupMap                  canon_seen_;
     DedupMap                  causal_pairs_;
     DedupMap                  branchial_pairs_;
+    DedupMap                  reduced_pairs_;
     LockFreeList<QeAppliedMatch> inst_applied_;
+    LockFreeList<QePredRef>   preds_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
     uint32_t*                 align_moved_    = nullptr;
@@ -827,6 +912,7 @@ private:
     uint32_t*                 num_causal_pairs_ = nullptr;
     uint32_t*                 num_causal_edges_ = nullptr;
     uint32_t*                 num_branchial_    = nullptr;
+    uint32_t*                 num_reduced_pairs_ = nullptr;
     uint64_t*                 event_sig_        = nullptr;
     uint32_t                  event_sig_capacity_ = 0;
     DedupMap                  frame_;

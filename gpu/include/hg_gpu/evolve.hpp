@@ -165,12 +165,15 @@ struct EvolveResult {
     uint32_t reconstructed_causal_edges = 0;
     // Distinct branchial pairs: sibling applications of one instance whose consumed edges
     // overlap. 0 when the route is off.
+    // Pairs tagged in-reduction: the TR view of the same relation.
+    uint32_t reconstructed_causal_pairs_reduced = 0;
     uint32_t reconstructed_branchial = 0;
 
     // The reconstructed relations as pairs of content triples hash(input class, output class,
     // rule) -- the identity a cross-engine comparison is made on, since raw event ids are
     // minted in application order and mean nothing between engines. Empty when the route is off.
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_causal_relation;
+    std::vector<std::pair<uint64_t, uint64_t>> reconstructed_causal_relation_reduced;
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_branchial_relation;
 
     uint32_t frame_alignments = 0;
