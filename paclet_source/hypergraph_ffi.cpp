@@ -1314,6 +1314,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 std::function<bool(hypergraph::EventId)> valid_event;
                 std::function<wxf::WXFValueAssociation(hypergraph::StateId)> state_data;
                 std::function<wxf::WXFValueAssociation(hypergraph::EventId)> event_data;
+                // What the CALLER's property list asked for, from graph_property_needs. This is
+                // not the same question as what the run recorded: the engine may prove a relation
+                // empty from the rules alone and skip the work, and then a requested property is
+                // correctly served an empty graph. The guards below are about the name pairing,
+                // so they ask the request, which is the thing that pairing decides.
+                bool needs_causal;
+                bool needs_branchial;
 
                 uint32_t num_states() const { return hg.num_states(); }
                 bool state_valid(uint32_t sid) const { return hg.get_state(sid).id != hypergraph::INVALID_ID; }
@@ -1367,11 +1374,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return d;
                 }
                 std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
-                    // A property the record set did not anticipate would be handed an EMPTY
-                    // relation and would serve an empty graph without a word. The name test
+                    // A property the request derivation did not anticipate would be handed an
+                    // EMPTY relation and would serve an empty graph without a word. The name test
                     // that decides what to record lives in graph_marshal.hpp beside the one
                     // that decides what to build, so a miss here is a defect in that pairing.
-                    if (!hg.record_set().causal) {
+                    if (!needs_causal) {
                         throw std::runtime_error(
                             "a graph property asked for the causal relation, which this run was "
                             "not asked to record: graph_property_needs missed its name");
@@ -1395,7 +1402,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return out;
                 }
                 std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const {
-                    if (!hg.record_set().branchial) {
+                    if (!needs_branchial) {
                         throw std::runtime_error(
                             "a graph property asked for the branchial relation, which this run "
                             "was not asked to record: graph_property_needs missed its name");
@@ -1418,7 +1425,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             };
             CpuGraphSource gsrc{hg, recon, show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
-                serialize_state_data, serialize_event_data};
+                serialize_state_data, serialize_event_data,
+                gneeds.causal, gneeds.branchial};
             hgmarshal::GraphOptions gopts;
             gopts.edge_deduplication = edge_deduplication;
             gopts.branchial_step = branchial_step;
