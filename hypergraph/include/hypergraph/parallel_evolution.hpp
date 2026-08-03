@@ -17,6 +17,7 @@
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "hypergraph.hpp"
+#include "hgcommon/portable_intrinsics.hpp"
 #include "hypergraph/scratch_alloc.hpp"
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
@@ -109,12 +110,17 @@ struct MatchRecord {
         h ^= c.binding.bound_mask;
         h *= FNV_PRIME;
 
-        // Mix in bound variables
-        for (uint8_t i = 0; i < MAX_VARS; ++i) {
-            if (c.binding.is_bound(i)) {
-                h ^= (static_cast<uint64_t>(i) << 32) | c.binding.get(i);
-                h *= FNV_PRIME;
-            }
+        // Mix in bound variables, walking the SET BITS of the mask rather than all MAX_VARS
+        // positions. Identical result -- the loop body was already guarded by is_bound, which is
+        // that same mask -- for as many iterations as there are bound variables instead of 32.
+        // This is the engine's most-probed hash: once per discovered match, and again per
+        // (match, descendant) pair that forwarding carries.
+        uint32_t mask = c.binding.bound_mask;
+        while (mask) {
+            const uint32_t i = hgcommon::ctz(mask);
+            mask &= mask - 1;
+            h ^= (static_cast<uint64_t>(i) << 32) | c.binding.get(static_cast<uint8_t>(i));
+            h *= FNV_PRIME;
         }
 
         return h;
