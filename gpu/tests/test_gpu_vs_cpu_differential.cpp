@@ -896,45 +896,68 @@ TEST(CanonicalEventCount, ReconstructionGapIsStillOpen) {
 //
 // One record per match of each class's FRAME state, so the host total is the sum of
 // for_each_expansion_match over the distinct canonical hashes it captured.
-TEST(CanonicalEventCount, DeviceCapturesTheSameClassFrameExpansion) {
-    Workload w;
-    w.name = "two_rules_overlap_automatic";
-    w.rules = {rule({{0,1}}, {{0,2},{2,1}}), rule({{0,1}}, {{1,2},{2,0}})};
-    w.initial_state = {{0u, 1u}};
-    w.num_steps = 3;
-    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
-    w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
-
-    hg_gpu::EvolveInput in = make_input(w);
-    hg_gpu::EvolveResult gpu = hg_gpu::evolve(in);
-
-    hypergraph::Hypergraph hg;
-    hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
-    hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
-    hypergraph::ParallelEvolutionEngine pe(&hg, 1);
-    for (size_t i = 0; i < w.rules.size(); ++i)
-        pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
-    pe.evolve({{0u, 1u}}, w.num_steps);
-
-    size_t host_total = 0;
-    std::set<uint64_t> seen;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
-        const uint64_t h = hg.get_state(sid).canonical_hash;
-        if (!seen.insert(h).second) continue;
-        hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_total; });
+TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
+    // The two doors into the reconstruction: quotient exploration, and Automatic identity under
+    // full capture. Both must reach the same population and mint the same raw events as the host.
+    std::vector<Workload> ws;
+    {
+        Workload w;
+        w.name = "two_rules_overlap_automatic";
+        w.rules = {rule({{0,1}}, {{0,2},{2,1}}), rule({{0,1}}, {{1,2},{2,0}})};
+        w.initial_state = {{0u, 1u}};
+        w.num_steps = 3;
+        w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+        ws.push_back(w);
+    }
+    {
+        Workload w;
+        w.name = "quotient_4cycle_none";
+        w.rules = {rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}})};
+        w.initial_state = {{0u,1u},{1u,2u},{2u,3u},{3u,0u}};
+        w.num_steps = 3;
+        w.explore_from_canonical_states_only = true;
+        ws.push_back(w);
     }
 
-    EXPECT_GT(host_total, 0u) << "the host captured no expansion at all -- the comparison "
-                                 "below would pass on a device that captures nothing";
-    EXPECT_EQ(gpu.expansion_matches, host_total)
-        << "device captured " << gpu.expansion_matches << " class-frame matches, host "
-        << host_total;
+    for (const Workload& w : ws) {
+        hg_gpu::EvolveInput in = make_input(w);
+        hg_gpu::EvolveResult gpu = hg_gpu::evolve(in);
 
-    // P2.2: one ROOT instance, for the class the initial state belongs to. The replay
-    // (P2.3-P2.4) mints one more per application; until it lands this is the whole population,
-    // and it is what says the instance store and its seeding are wired.
-    EXPECT_EQ(gpu.expansion_instances, 1u)
-        << "expected exactly one seeded root instance, got " << gpu.expansion_instances;
+        hypergraph::Hypergraph hg;
+        hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(
+            w.event_canon_mode == hg_gpu::EventCanonicalizationMode::Automatic
+                ? hgcommon::EVENT_SIG_AUTOMATIC : hgcommon::EVENT_SIG_NONE);
+        hypergraph::ParallelEvolutionEngine pe(&hg, 1);
+        pe.set_explore_from_canonical_states_only(w.explore_from_canonical_states_only);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        pe.evolve(w.initial_state, w.num_steps);
+
+        size_t host_matches = 0;
+        std::set<uint64_t> seen;
+        for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+            const uint64_t h = hg.get_state(sid).canonical_hash;
+            if (!seen.insert(h).second) continue;
+            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_matches; });
+        }
+        const size_t host_raw = hg.num_reconstructed_raw_events();
+
+        std::printf("%-28s frame matches %4zu  raw events %4zu\n", w.name.c_str(),
+                    host_matches, host_raw);
+
+        EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
+                                       "every comparison below would pass on a device that "
+                                       "captures nothing";
+        EXPECT_GT(host_raw, 0u) << w.name << ": the host reconstructed no raw events";
+
+        EXPECT_EQ(gpu.expansion_matches, host_matches)
+            << w.name << ": device captured " << gpu.expansion_matches
+            << " class-frame matches, host " << host_matches;
+        EXPECT_EQ(gpu.reconstructed_raw_events, host_raw)
+            << w.name << ": the replay minted " << gpu.reconstructed_raw_events
+            << " raw events, host " << host_raw;
+    }
 }
 
 TEST(CanonicalEventCount, ModesVsCpu) {

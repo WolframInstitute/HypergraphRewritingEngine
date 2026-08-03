@@ -99,6 +99,11 @@ struct QeView {
     typename LockFreeList<QeInstRef>::DeviceView        by_key;    // bucket(key(hash, depth))
     uint32_t* inst_next_id;    // device atomic; dense instance ids
 
+    // Claims an (instance, match) application. An application mints a raw event, so unlike the
+    // producer-set DP it is not idempotent and the pair must be claimed exactly once.
+    DedupMap::DeviceView applied;
+    uint32_t* next_raw_event;  // device atomic; dense raw-event ids
+
     // canonical hash -> (StateId + 1) of the state that defines this class's expansion AND its
     // frame. +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0
     // could never be stored -- the same offset, for the same reason, as the None-mode dedup key.
@@ -113,6 +118,16 @@ struct QeView {
     uint32_t  max_steps = 0;
     uint32_t  enabled   = 0;
 };
+
+// The rendezvous is mutually recursive: publishing an instance drives the matches, publishing a
+// match drives the instances, and an application publishes a child instance. Declared here so
+// each publisher can drive without the definitions having to be ordered around each other.
+struct DeviceQcInstance;
+__device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
+                                         const DeviceQcInstance& inst,
+                                         uint64_t state_hash, uint32_t depth);
+__device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
+                                      uint64_t from_hash);
 
 // Bucket a hash into a list's key space. Same mixing as the DP's qc_bucket, so a shared bucket
 // count distributes the two the same way.
@@ -242,6 +257,8 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
 
     if (qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec}) == INVALID_ID)
         ds.errors.record(ErrorKind::kQcNodes);
+
+    qe_drive_match(ds, qe, m, from);
 }
 
 // Walk the captured matches of one class. The bucket is shared, so the exact hash on each node
@@ -308,7 +325,8 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     const uint32_t off = qe_alloc_words(ds, qe, nslots);
     if (off == UINT32_MAX) return;
     for (uint32_t i = 0; i < nslots; ++i) qe.arr_words[off + i] = kQeNoProducer;
-    qe_add_instance(ds, qe, h, 0u, off, nslots);
+    const uint32_t rec = qe_add_instance(ds, qe, h, 0u, off, nslots);
+    if (rec != UINT32_MAX) qe_drive_instance(ds, qe, qe.instances.at(rec), h, 0u);
 }
 
 // Visit every instance recorded for `state_hash` at `depth`.
@@ -319,6 +337,86 @@ __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint
     qe.by_key.for_each(qe_bucket(key, qe.by_key.num_keys), [&](const QeInstRef& r) {
         if (r.key == key) f(qe.instances.at(r.record));
     });
+}
+
+// The (instance, match) claim key. Same mixing as the host's apply_key, and nudged off both
+// map sentinels for the same reason.
+__device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t match) {
+    uint64_t k = 1469598103934665603ULL;
+    k ^= instance; k *= 1099511628211ULL;
+    k ^= match;    k *= 1099511628211ULL;
+    return (k == 0 || k == ~0ULL) ? 1 : k;
+}
+
+__device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
+                                const DeviceSlotMatch& m, uint64_t state_hash, uint32_t depth);
+
+// Instance side of the rendezvous: replay every match already captured for this class.
+__device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
+                                         const DeviceQcInstance& inst,
+                                         uint64_t state_hash, uint32_t depth) {
+    if (depth >= qe.max_steps) return;   // final-depth instances are recorded, never expanded
+    // Published before scanning; pairs with the fence on the match side so a concurrent
+    // instance and match cannot both miss each other.
+    __threadfence();
+    qe_for_each_match_from(qe, state_hash, [&](const DeviceSlotMatch& m) {
+        qe_apply(ds, qe, inst, m, state_hash, depth);
+    });
+}
+
+// Match side of the rendezvous: replay this match against every instance already standing at
+// this class, at every depth it could stand at.
+__device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
+                                      uint64_t from_hash) {
+    __threadfence();
+    for (uint32_t d = 0; d < qe.max_steps; ++d) {
+        qe_for_each_instance(qe, from_hash, d, [&](const DeviceQcInstance& inst) {
+            qe_apply(ds, qe, inst, m, from_hash, d);
+        });
+    }
+}
+
+// One application of `m` to `inst`: mint the raw event, then mint the child instance whose
+// producers this application determines.
+__device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
+                                const DeviceSlotMatch& m, uint64_t state_hash, uint32_t depth) {
+    if (!qe.enabled || depth >= qe.max_steps) return;
+
+    // Exactly once, however many times the two sides reach this pair.
+    const uint64_t ck = qe_apply_key(inst.id, m.id);
+    if (!qe.applied.insert_if_absent(ck, 1u).inserted) return;
+    // The capture and the instance disagree on the class's width: drop rather than corrupt.
+    if (m.from_slots != inst.nslots) return;
+
+    // The raw event this instance's copy of the match stands for. An id suffices -- counts and
+    // causal edges are expressed over ids, so no Event record has to be materialised.
+    uint32_t ev;
+    {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nre(*qe.next_raw_event);
+        ev = nre.fetch_add(1u, cuda::memory_order_relaxed);
+    }
+
+    // The child instance: survivors carry their producer across, produced slots take THIS event.
+    const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
+    if (off == UINT32_MAX) return;
+    for (uint32_t i = 0; i < m.to_slots; ++i) qe.arr_words[off + i] = kQeNoProducer;
+
+    const uint32_t* a = qe.arr_words + m.arr_offset;
+    const uint32_t* surv_from = a + m.num_consumed + m.num_produced;
+    const uint32_t* surv_to   = surv_from + m.num_survivors;
+    for (uint32_t i = 0; i < m.num_survivors; ++i) {
+        const uint32_t f = surv_from[i], t = surv_to[i];
+        if (f < inst.nslots && t < m.to_slots)
+            qe.arr_words[off + t] = qe.arr_words[inst.prod_offset + f];
+    }
+    for (uint32_t i = 0; i < m.num_produced; ++i) {
+        const uint32_t s = a[m.num_consumed + i];
+        if (s < m.to_slots) qe.arr_words[off + s] = ev;
+    }
+
+    const uint32_t rec = qe_add_instance(ds, qe, m.to_hash, depth + 1u, off, m.to_slots);
+    if (rec == UINT32_MAX) return;
+    qe_drive_instance(ds, qe, qe.instances.at(rec), m.to_hash, depth + 1u);
 }
 
 // Host-side owner of the capture's device structures, so a run's records are one body of
@@ -332,6 +430,7 @@ public:
           by_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           instances_(on ? max_events : 1u),
           by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
+          applied_(on ? max_events * 4u : 8u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
@@ -339,6 +438,7 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QeState cursor alloc");
         HG_CUDA_CHECK(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
         HG_CUDA_CHECK(cudaMalloc(&inst_next_id_, sizeof(uint32_t)), "QeState inst id alloc");
+        HG_CUDA_CHECK(cudaMalloc(&next_raw_event_, sizeof(uint32_t)), "QeState raw ev alloc");
         clear();
     }
     ~QeState() {
@@ -346,6 +446,7 @@ public:
         if (cursor_)  cudaFree(cursor_);
         if (next_id_) cudaFree(next_id_);
         if (inst_next_id_) cudaFree(inst_next_id_);
+        if (next_raw_event_) cudaFree(next_raw_event_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -360,7 +461,9 @@ public:
         matches_.reset();
         by_key_.clear();
         instances_.reset();
+        applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
+        HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -370,6 +473,15 @@ public:
     // capture being wired correctly.
     uint32_t num_matches_host() { return matches_.size_host(); }
 
+    // Raw events the replay minted: one per (instance, match) application. The host's
+    // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
+    uint32_t num_raw_events_host() {
+        uint32_t v = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&v, next_raw_event_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "QeState raw event read");
+        return v;
+    }
+
     // Instances recorded this run. One per raw occurrence of a class at a depth: one per root
     // before any replay, and one more per application once the replay lands.
     uint32_t num_instances_host() { return instances_.size_host(); }
@@ -378,9 +490,11 @@ public:
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
-        q.instances    = instances_.view();
-        q.by_key       = by_key_.view();
-        q.inst_next_id = inst_next_id_;
+        q.instances      = instances_.view();
+        q.by_key         = by_key_.view();
+        q.inst_next_id   = inst_next_id_;
+        q.applied        = applied_.view();
+        q.next_raw_event = next_raw_event_;
         q.frame        = frame_.view();
         q.arr_words    = arr_;
         q.arr_cursor   = cursor_;
@@ -397,7 +511,9 @@ private:
     LockFreeList<QeMatchRef>  by_from_;
     Pool<DeviceQcInstance>    instances_;
     LockFreeList<QeInstRef>   by_key_;
+    DedupMap                  applied_;
     uint32_t*                 inst_next_id_ = nullptr;
+    uint32_t*                 next_raw_event_ = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

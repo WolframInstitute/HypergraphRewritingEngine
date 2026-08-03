@@ -142,6 +142,10 @@ struct EvolveResult {
     // occurrence of a class at a depth: one per root class before the replay lands, one more
     // per application afterwards.
     uint32_t expansion_instances = 0;
+
+    // Raw events the per-instance replay minted: one per (instance, match) application. The
+    // host's num_raw_events under the reconstruction. 0 when the route is off.
+    uint32_t reconstructed_raw_events = 0;
 };
 
 // Sizing knobs. The auto-tuner (M9) will pick these per device + workload;
