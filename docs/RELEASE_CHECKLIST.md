@@ -1,15 +1,16 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 11 verified, 4 partly, 5 outstanding.** The Windows GPU stack is
+**State at 2026-08-03: 13 verified, 2 partly, 5 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
 remain — 4 partly done, 5 not — split into exactly two kinds, and neither is new engineering:
 
-- **Needs a REBUILD on the release matrix** — and a rebuild, not a first build. All six platforms
-  and both CUDA binaries already EXIST in `paclet/LibraryResources/`; five of the six are dated
-  2026-07-22 or 08-01, so they predate this session entirely, including the GPU fault fix. The
-  `.paclet` archive, `DocumentationBuild` and the installed-paclet exercise follow the rebuild.
+- **Needs the Wolfram documentation toolchain** — the `.paclet` archive, `DocumentationBuild` and
+  the installed-archive exercise. The six-platform rebuild they follow is DONE (2026-08-03).
+- **Needs a Windows host** — only `Windows-x86-64/hg_evolve_gpu.exe`, which requires native
+  MSVC+nvcc. The cross attempt failed on the WSL interop socket, not on code, and the config
+  itself is proven: that binary's predecessor passes the golden corpus 12/12.
 - **Needs a decision** — the doc-accuracy line, which is a judgement about user-facing text.
 
 The Windows MSVC+nvcc config is NOT among them: it landed, and the binary's import table proves it
@@ -24,12 +25,14 @@ existed, and it was buried in a changelog). This is the gate a release must pass
 Keep it current: a release that skips a line here is not released.*
 
 ## Build artifacts
-- [~] All 6 platform libraries built (Linux/Windows/macOS × x86-64/ARM64). **All six ARE present in
-      `paclet/LibraryResources/` — but five are STALE.** Dates at 2026-08-03: Linux-x86-64 today;
-      Linux-ARM64, both MacOSX, both Windows are 2026-07-22 or 08-01, so they predate this
-      session's GPU fault fix (`00e21ee`), the continuation fixes and everything after. **The
-      release needs a REBUILD of all six from current source, not a first build.**
-- [~] All 6 `hg_evolve` process binaries built. Same: all six present, five stale.
+- [x] All 6 platform libraries built (Linux/Windows/macOS × x86-64/ARM64). **REBUILT FROM CURRENT
+      SOURCE 2026-08-03**: `./build_all_platforms.sh` → 6 built, 0 failed. Getting there needed two
+      real fixes, because four of the six DID NOT BUILD: the Windows `.def` exported three
+      functions the viz split deleted (`fc6d24a`), and macOS could not compile `park.hpp` since
+      both its wait primitives were out of reach on the 12.3 SDK at a 10.15 deployment target
+      (`29c9345`). Neither was visible to any gate — every gate here runs on Linux, and a Linux
+      `.so` links with undefined symbols and says nothing.
+- [x] All 6 `hg_evolve` process binaries built. Same run, all six dated 2026-08-03.
 - [~] `hg_evolve_gpu` built on both CUDA platforms. **BOTH exist** — `Linux-x86-64/hg_evolve_gpu`
       (rebuilt 2026-08-03) and `Windows-x86-64/hg_evolve_gpu.exe` (2026-07-22, stale).
       *THE "v1.0 BLOCKER" BELOW IS STALE AND IS STRUCK. It read: "the native Windows MSVC+nvcc
