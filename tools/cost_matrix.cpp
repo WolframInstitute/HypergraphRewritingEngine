@@ -78,6 +78,11 @@ struct Measured {
 // `rec` selects which artifacts the run RECORDS. Measuring both settings on the same workload
 // is what turns "the causal graph is built even when unrequested" into a number: the states and
 // events must be identical between the two, and the difference is what recording them costs.
+// Which engine the probe drives. Serial spawns no thread, which is the only mode available on
+// a target without them -- and running the corpus there is what says the engine WORKS there,
+// as against merely compiling.
+ParallelEvolutionEngine::ExecutionMode g_mode = ParallelEvolutionEngine::ExecutionMode::Parallel;
+
 Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) {
     uint64_t a0 = g_alloc_count.load(std::memory_order_relaxed);
     uint64_t b0 = g_alloc_bytes.load(std::memory_order_relaxed);
@@ -85,7 +90,7 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     hg.set_record_set(rec);
-    ParallelEvolutionEngine engine(&hg, 1);
+    ParallelEvolutionEngine engine(&hg, 1, g_mode);
     engine.set_transitive_reduction(true);  // exercise the Desc/Anc closure (the O(N^2) term)
     for (const auto& r : c.rules) engine.add_rule(r);
     engine.evolve(c.init, steps);
@@ -113,6 +118,7 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--case" && i + 1 < argc) only = argv[++i];
         else if (a == "--record" && i + 1 < argc) record = argv[++i];
+        else if (a == "--serial") g_mode = ParallelEvolutionEngine::ExecutionMode::Serial;
         else steps_override = std::atoi(argv[i]);
     }
 
@@ -138,6 +144,8 @@ int main(int argc, char** argv) {
 
     // The last column is the SAME evolution recording NEITHER relation, so the gap against
     // arenaB is what the causal and branchial graphs cost a caller who asked for neither.
+    std::printf("engine: %s\n",
+                g_mode == ParallelEvolutionEngine::ExecutionMode::Serial ? "serial" : "threaded");
     std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s %10s\n",
                 "case", "type", "oracle", "canon", "events",
                 "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB");
@@ -152,8 +160,9 @@ int main(int argc, char** argv) {
     for (const auto& c : cases) {
         // Exactness: engine Full-count vs brute-force iso count at the oracle depth.
         bool all_small = true;
-        size_t brute = oracle::brute_force_iso_count(c.rules, c.init, c.oracle_steps, &all_small);
-        size_t full  = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);
+        size_t brute = oracle::brute_force_iso_count(c.rules, c.init, c.oracle_steps, &all_small,
+                                                    g_mode);
+        size_t full  = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1, g_mode);
         const char* verdict;
         // "oversz" means the brute-force oracle could not run, so exactness was NOT checked
         // for this row. Leaving all_exact alone let the summary print ALL EXACT having

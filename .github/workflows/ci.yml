@@ -47,3 +47,33 @@ jobs:
 
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure
+
+  # The engine on wasm32, where no thread exists. The compile leg alone does not say the
+  # engine WORKS there: it compiled for months while the first evolution trapped in
+  # JobSystem::start() with "thread constructor failed". So this leg RUNS the oracle corpus
+  # under node and requires it exact, which is the same check the native suite makes.
+  wasm-oracle-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.7
+
+      - name: Configure
+        run: >
+          emcmake cmake -S . -B build_wasm
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+          -DBUILD_TESTS=OFF
+
+      - name: Build the engine library and the corpus consumer
+        run: cmake --build build_wasm --target hypergraph cost_matrix -j2
+
+      # --serial: the wasm engine has no threads. Exit code is the exactness verdict.
+      - name: Run the oracle corpus on wasm32
+        run: node build_wasm/cost_matrix.js --serial
+

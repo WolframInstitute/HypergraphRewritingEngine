@@ -55,6 +55,22 @@ foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR})
 endforeach()
 
+# WebAssembly. The engine runs there in SERIAL mode -- no threads exist, which is why
+# ParallelEvolutionEngine::ExecutionMode::Serial is the mode a wasm consumer selects.
+#
+# The link settings are not tuning. A wasm module gets a fixed 16 MB heap and a 64 KB stack
+# unless told otherwise, and this engine outgrows both: the arena grows past 16 MB on any
+# non-trivial evolution, and the matcher's per-frame scratch outgrows 64 KB. Without these an
+# out-of-bounds trap is the FIRST thing a run produces.
+if(EMSCRIPTEN)
+    add_link_options(
+        -sALLOW_MEMORY_GROWTH=1     # the arena grows; a fixed heap caps the reachable evolution
+        -sINITIAL_MEMORY=64MB
+        -sSTACK_SIZE=4MB
+        -sEXIT_RUNTIME=1            # main()'s exit code is the gate's verdict
+    )
+endif()
+
 # Benchmarking option for event relationship processing
 option(SINGLE_THREADED_EVENT_RELATION_PROCESSING "Use single-threaded event relation processing for benchmarking" OFF)
 if(SINGLE_THREADED_EVENT_RELATION_PROCESSING)

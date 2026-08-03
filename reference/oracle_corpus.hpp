@@ -68,12 +68,14 @@ inline std::vector<std::vector<uint32_t>> state_edges(const Hypergraph& hg, Stat
 }
 
 // Engine's exact iso-distinct count via IR (Full mode).
-inline size_t engine_full_count(const std::vector<RewriteRule>& rules,
-                                const std::vector<std::vector<VertexId>>& initial,
-                                int steps, unsigned threads = 4) {
+inline size_t engine_full_count(
+    const std::vector<RewriteRule>& rules,
+    const std::vector<std::vector<VertexId>>& initial,
+    int steps, unsigned threads = 4,
+    ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-    ParallelEvolutionEngine engine(&hg, threads);
+    ParallelEvolutionEngine engine(&hg, threads, mode);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
     return engine.num_canonical_states();
@@ -137,11 +139,15 @@ inline LatticeCounts brute_force_lattice(const std::vector<RewriteRule>& rules,
 }
 
 // Brute-force iso-distinct count of the full raw exploration (None mode).
-inline size_t brute_force_iso_count(const std::vector<RewriteRule>& rules,
-                                    const std::vector<std::vector<VertexId>>& initial,
-                                    int steps, bool* all_small) {
+inline size_t brute_force_iso_count(
+    const std::vector<RewriteRule>& rules,
+    const std::vector<std::vector<VertexId>>& initial,
+    int steps, bool* all_small,
+    ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel) {
     Hypergraph hg;  // None mode: no dedup -> full raw state set
-    ParallelEvolutionEngine engine(&hg, 1);  // single thread -> no wasted states
+    // One thread -> no wasted states. The MODE is separate: a target without threads must be
+    // able to run the oracle too, and a threaded engine there fails in its constructor.
+    ParallelEvolutionEngine engine(&hg, 1, mode);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
 
