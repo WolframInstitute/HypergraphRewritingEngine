@@ -124,11 +124,16 @@ RewriteResult Rewriter::apply(
         hg_->register_quotient_transition(result.event);
     }
 
+    const RecordSet rec = hg_->record_set();
+
     // Full-capture causal: the stable raw edge id is the rendezvous key, so a producer and
     // any later consumer of the same edge instance meet directly. Under quotient this whole
     // block is replaced by the online depth-indexed reconstruction driven from
     // register_quotient_transition above (which is why it is gated off here).
-    if (!hg_->quotient_causal()) {
+    //
+    // Skipped entirely when the run does not record causal: the producer map is read by this
+    // rendezvous and by nothing else, so not filling it costs nothing else.
+    if (!hg_->quotient_causal() && rec.causal) {
     // Register produced edges (set this event as producer). The produced edges live in
     // result.raw_state (the output state); key each by its canonical edge identity so
     // that, under quotient, every parent producing the same canonical edge orbit meets its
@@ -187,10 +192,12 @@ RewriteResult Rewriter::apply(
     // Use the RAW input state ID for grouping (matching v1's behavior)
     // Branchial edges only connect events from the SAME actual state, not just canonically equivalent
     // Pass canonical_event_id to enable skipping branchial edges between equivalent events
-    hg_->register_event_for_branchial(
-        result.event, input_state, matched_edges, num_matched,
-        event_result.canonical_event_id
-    );
+    if (rec.branchial) {
+        hg_->register_event_for_branchial(
+            result.event, input_state, matched_edges, num_matched,
+            event_result.canonical_event_id
+        );
+    }
 
     result.success = true;
     return result;

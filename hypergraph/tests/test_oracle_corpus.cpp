@@ -58,3 +58,93 @@ TEST(OracleCorpus, CausalBranchialCountsDeterministicAcrossThreads) {
         }
     }
 }
+
+// An artifact the run was not asked to record is not built -- and everything else is untouched.
+//
+// The requested properties used to gate SERIALIZATION only: the causal and branchial relations
+// were built in full and dropped at the output. Gating them at source is only correct if what
+// survives is IDENTICAL, so this compares the surviving artifacts as SETS against the all-on
+// run rather than as counts: two runs can agree on how many causal pairs there are and disagree
+// about which.
+TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
+    struct Fp {
+        size_t states = 0, events = 0, causal_pairs = 0, branchial = 0;
+        std::multiset<uint64_t> state_hashes, causal, branchial_set;
+    };
+
+    auto run = [](const oracle::Case& c, RecordSet rs) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine engine(&hg, 4);
+        engine.set_transitive_reduction(true);
+        for (const auto& r : c.rules) engine.add_rule(r);
+        engine.evolve(c.init, c.measure_steps);
+
+        Fp f;
+        f.states = hg.num_canonical_states();
+        f.events = hg.num_events();
+        f.causal_pairs = hg.causal_graph().num_causal_event_pairs();
+        f.branchial = hg.causal_graph().num_branchial_edges();
+        for (uint32_t s = 0; s < hg.num_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID)
+                f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
+        auto esig = [&](EventId e) {
+            const Event& x = hg.get_event(e);
+            uint64_t h = 1469598103934665603ULL;
+            auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
+            mix(x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
+            mix(x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
+            mix(x.rule_index);
+            return h;
+        };
+        for (const auto& e : hg.causal_graph().get_causal_edges()) {
+            if (e.producer == INVALID_ID || e.consumer == INVALID_ID) continue;
+            f.causal.insert(esig(e.producer) * 31 + esig(e.consumer));
+        }
+        for (const auto& b : hg.causal_graph().get_branchial_edges()) {
+            if (b.event1 == INVALID_ID || b.event2 == INVALID_ID) continue;
+            const uint64_t a = esig(b.event1), d = esig(b.event2);
+            f.branchial_set.insert(a < d ? a * 31 + d : d * 31 + a);
+        }
+        return f;
+    };
+
+    bool any_causal = false, any_branchial = false;
+    for (const auto& c : oracle::corpus()) {
+        const Fp all = run(c, RecordSet{true, true});
+        if (all.causal_pairs) any_causal = true;
+        if (all.branchial) any_branchial = true;
+
+        // Causal off: no causal relation, and everything else unchanged.
+        const Fp no_c = run(c, RecordSet{false, true});
+        EXPECT_EQ(no_c.causal_pairs, 0u) << c.name << ": causal was recorded when unrequested";
+        EXPECT_EQ(no_c.states, all.states) << c.name << ": dropping causal moved the state count";
+        EXPECT_EQ(no_c.events, all.events) << c.name << ": dropping causal moved the event count";
+        EXPECT_EQ(no_c.state_hashes, all.state_hashes) << c.name << ": dropping causal moved the states";
+        EXPECT_EQ(no_c.branchial_set, all.branchial_set)
+            << c.name << ": dropping causal changed the branchial relation";
+
+        // Branchial off: likewise.
+        const Fp no_b = run(c, RecordSet{true, false});
+        EXPECT_EQ(no_b.branchial, 0u) << c.name << ": branchial was recorded when unrequested";
+        EXPECT_EQ(no_b.states, all.states) << c.name << ": dropping branchial moved the state count";
+        EXPECT_EQ(no_b.events, all.events) << c.name << ": dropping branchial moved the event count";
+        EXPECT_EQ(no_b.state_hashes, all.state_hashes) << c.name << ": dropping branchial moved the states";
+        EXPECT_EQ(no_b.causal, all.causal)
+            << c.name << ": dropping branchial changed the causal relation";
+
+        // Neither: the evolution itself is untouched.
+        const Fp none = run(c, RecordSet{false, false});
+        EXPECT_EQ(none.causal_pairs, 0u) << c.name;
+        EXPECT_EQ(none.branchial, 0u) << c.name;
+        EXPECT_EQ(none.state_hashes, all.state_hashes)
+            << c.name << ": recording nothing moved the states";
+        EXPECT_EQ(none.events, all.events) << c.name << ": recording nothing moved the event count";
+    }
+
+    // Without these the equalities above are satisfied by a corpus that produces neither
+    // relation, so the gate would pass on an engine that never records either.
+    EXPECT_TRUE(any_causal) << "no corpus workload produced a causal relation";
+    EXPECT_TRUE(any_branchial) << "no corpus workload produced a branchial relation";
+}

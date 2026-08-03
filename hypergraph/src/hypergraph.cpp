@@ -1072,11 +1072,13 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
         }
     }
 
+    const RecordSet rec = record_set();
+
     // Causal: one relationship per consumed edge that has a producer. Feed them in DESCENDING
     // producer order so nearer producers enter the kept adjacency before farther ones are
     // tested -- the same discipline the full-capture rendezvous uses, and what makes the
     // reduction tag exact rather than insertion-order dependent.
-    {
+    if (rec.causal) {
         auto mk = worker_scratch().mark();
         SVec<uint32_t> producers;
         for (uint32_t i = 0; i < m.num_consumed; ++i) {
@@ -1115,7 +1117,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     //
     // NEVER TWICE: that elects no single reporter -- both sides can see each other when their
     // pushes and scans interleave -- so the unordered pair is claimed and the winner reports.
-    if (m.num_consumed) {
+    if (m.num_consumed && rec.branchial) {
         auto& applied = qc_inst_applied_.get_or_default(inst.id, arena_);
         applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, arena_);
         applied.for_each([&](const QcAppliedMatch& other) {

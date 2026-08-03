@@ -97,6 +97,8 @@ class Hypergraph {
     // set, causal edges are keyed by canonical edge orbit so attribution is schedule-
     // independent across the labelings by which parents reach one canonical state.
     std::atomic<bool> quotient_causal_{false};
+    std::atomic<bool> record_causal_{true};
+    std::atomic<bool> record_branchial_{true};
 
     // Per-state canonical edge-orbit tables, computed once at state canonicalization in
     // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
@@ -1043,6 +1045,17 @@ public:
     // by the evolution engine before evolving; read when minting causal edge keys.
     void set_quotient_causal(bool q) { quotient_causal_.store(q, std::memory_order_relaxed); }
     bool quotient_causal() const { return quotient_causal_.load(std::memory_order_relaxed); }
+
+    // Which artifacts this run builds. Set before evolving and read by the workers, so the
+    // two components are stored as atomics like every other pre-evolution switch here.
+    void set_record_set(RecordSet r) {
+        record_causal_.store(r.causal, std::memory_order_relaxed);
+        record_branchial_.store(r.branchial, std::memory_order_relaxed);
+    }
+    RecordSet record_set() const {
+        return RecordSet{record_causal_.load(std::memory_order_relaxed),
+                         record_branchial_.load(std::memory_order_relaxed)};
+    }
 
     // Create a genesis event for an initial state.
     // This synthetic event connects the empty genesis state to the initial state.

@@ -74,12 +74,17 @@ struct Measured {
 };
 
 // Full mode, single-threaded (deterministic memory), online causal+branchial+TR.
-Measured measure(const oracle::Case& c, int steps) {
+//
+// `rec` selects which artifacts the run RECORDS. Measuring both settings on the same workload
+// is what turns "the causal graph is built even when unrequested" into a number: the states and
+// events must be identical between the two, and the difference is what recording them costs.
+Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) {
     uint64_t a0 = g_alloc_count.load(std::memory_order_relaxed);
     uint64_t b0 = g_alloc_bytes.load(std::memory_order_relaxed);
 
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_record_set(rec);
     ParallelEvolutionEngine engine(&hg, 1);
     engine.set_transitive_reduction(true);  // exercise the Desc/Anc closure (the O(N^2) term)
     for (const auto& r : c.rules) engine.add_rule(r);
@@ -104,13 +109,19 @@ int main(int argc, char** argv) {
 
     auto cases = oracle::corpus();
 
-    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s\n",
+    // The last column is the SAME evolution recording NEITHER relation, so the gap against
+    // arenaB is what the causal and branchial graphs cost a caller who asked for neither.
+    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s %10s\n",
                 "case", "type", "oracle", "canon", "events",
-                "causal", "branch", "arenaB", "heapB", "heapAllocs");
+                "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB");
+    // The last column is the SAME evolution recording neither relation, so the difference
+    // against arenaB is what the causal and branchial graphs cost a caller who asked for
+    // neither.
     std::printf("%s\n", std::string(120, '-').c_str());
 
     bool all_exact = true;
     bool any_unverified = false;   // a row the oracle could not check
+    size_t total_all = 0, total_states_only = 0;
     for (const auto& c : cases) {
         // Exactness: engine Full-count vs brute-force iso count at the oracle depth.
         bool all_small = true;
@@ -126,15 +137,29 @@ int main(int argc, char** argv) {
 
         int steps = (steps_override > 0) ? steps_override : c.measure_steps;
         Measured m = measure(c, steps);
+        // The same evolution recording neither relation. States and events must not move.
+        Measured s = measure(c, steps, RecordSet{false, false});
+        if (s.canonical_states != m.canonical_states || s.events != m.events) {
+            std::printf("  %-16s STATES/EVENTS MOVED when the relations were not recorded: "
+                        "%zu/%zu against %zu/%zu\n", c.name, s.canonical_states, s.events,
+                        m.canonical_states, m.events);
+            all_exact = false;
+        }
+        total_all += m.arena_bytes;
+        total_states_only += s.arena_bytes;
 
-        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu\n",
+        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu %10zu\n",
                     c.name, c.type, verdict,
                     m.canonical_states, m.events,
                     m.causal_edges, m.branchial_edges, m.arena_bytes,
-                    (unsigned long long)m.heap_bytes, (unsigned long long)m.heap_allocs);
+                    (unsigned long long)m.heap_bytes, (unsigned long long)m.heap_allocs,
+                    s.arena_bytes);
     }
 
     std::printf("%s\n", std::string(120, '-').c_str());
+    std::printf("arena bytes, all artifacts / neither relation: %zu / %zu  (%.1f%% of the arena "
+                "is the causal and branchial graphs)\n", total_all, total_states_only,
+                total_all ? 100.0 * double(total_all - total_states_only) / double(total_all) : 0.0);
     std::printf("exactness (oracle depth): %s%s\n",
                 all_exact ? "ALL EXACT" : "*** MISMATCH ***",
                 any_unverified ? "  (some rows UNVERIFIED: oversized for the brute-force oracle)" : "");

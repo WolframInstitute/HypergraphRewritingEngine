@@ -31,6 +31,21 @@ using RuleIndex = uint16_t;  // host-only width (the GPU port uses a 32-bit Rule
 // hgcommon/core.hpp, and named here so host call sites reach it unqualified.
 using hgcommon::EMPTY_STATE_CANONICAL_HASH;
 
+// What a run must RECORD, as against what it will later SERIALIZE.
+//
+// An artifact turned off here is never built: the rendezvous that would produce it does not
+// run, and the structures behind it stay empty. That is a different question from which
+// artifacts a caller asks to be written out, which is what the FFI's include_* flags decide --
+// a run can be asked for states alone and still have paid for the whole causal graph.
+//
+// Everything defaults to on, so a caller that states nothing gets exactly what it got before.
+// States and events are not listed: the evolution IS the states and the events, so there is no
+// run that skips them.
+struct RecordSet {
+    bool causal = true;
+    bool branchial = true;
+};
+
 // The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an
 // edge's producer events with its consumer events. Strongly typed and distinct from:
 //   * EdgeId     -- one concrete hyperedge instance in one state (a dense counter), and
