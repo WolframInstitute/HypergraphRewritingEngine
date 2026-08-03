@@ -1184,7 +1184,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
             // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
             // When CanonicalizeStates is Full, emits IR-canonicalized edges
-            auto serialize_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
+            // Memoized by state, because the same state's edges are asked for once as a state
+            // and again by EVERY event that enters or leaves it: S + 2E calls over S distinct
+            // states. Under Full each call ran a whole IR canonicalization, so an evolution with
+            // more events than states paid for the same state's canonical form many times over.
+            //
+            // The cache holds what the frame is about to carry anyway, and stays empty for the
+            // Structure properties, which serialize ids and steps and never ask for edges.
+            std::unordered_map<uint32_t, wxf::WXFValueList> state_edges_memo;
+            auto build_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
                 wxf::WXFValueList edge_list;
                 if (full_canonicalization) {
                     std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
@@ -1215,6 +1223,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     });
                 }
                 return edge_list;
+            };
+            auto serialize_state_edges = [&](hypergraph::StateId sid) -> const wxf::WXFValueList& {
+                auto it = state_edges_memo.find(sid);
+                if (it == state_edges_memo.end())
+                    it = state_edges_memo.emplace(sid, build_state_edges(sid)).first;
+                return it->second;
             };
 
             // Helper: Serialize state data for tooltips

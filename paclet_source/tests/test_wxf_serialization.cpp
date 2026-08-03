@@ -299,3 +299,21 @@ TEST(WxfSerializationPin, RequestedDataChangesNothingItReturns) {
     EXPECT_EQ(read_int_key(lean, "NumBranchialEdges"), -1)
         << "NumBranchialEdges came back from a request that did not ask for it";
 }
+
+// A content-bearing graph property under Full canonicalization: the path where every event
+// carries its two endpoint states' edge lists, so the same state's canonical form is asked for
+// once as a state and again by every event incident to it.
+TEST(WxfSerializationPin, StatesGraphUnderFullCanonicalization) {
+    HostBridge host;
+    auto in = build_input(kSeed, kLhs, kRhs, 4, [](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", {"StatesGraph"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+    }, 2);
+    auto out = run_rewriting_core(in, host);
+    ASSERT_FALSE(out.empty());
+
+    // GraphData carries one entry per requested property.
+    EXPECT_EQ(count_assoc_entries(out, "GraphData"), 1)
+        << "StatesGraph was requested and no GraphData came back";
+    EXPECT_GT(read_int_key(out, "NumStates"), 0);
+}
