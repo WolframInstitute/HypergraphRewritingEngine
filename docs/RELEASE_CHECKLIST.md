@@ -1,10 +1,10 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 12 verified, 4 partly, 4 outstanding.** The Windows GPU stack is
+**State at 2026-08-03: 11 verified, 4 partly, 5 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
-a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 10 that
-remain — 3 partly done, 7 not — split into exactly two kinds, and neither is new engineering:
+a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
+remain — 4 partly done, 5 not — split into exactly two kinds, and neither is new engineering:
 
 - **Needs a REBUILD on the release matrix** — and a rebuild, not a first build. All six platforms
   and both CUDA binaries already EXIST in `paclet/LibraryResources/`; five of the six are dated
