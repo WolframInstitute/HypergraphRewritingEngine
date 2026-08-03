@@ -604,6 +604,35 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
         }
 
+        // Content identity of every state: the hash the engine deduplicates on under Automatic,
+        // and the first state carrying each. TWO output sections need this same map, and it is a
+        // pass over every state, so it is built at most once and only if something asks.
+        //
+        // The hash comes from the library's get_state_content_hash -- the same function the
+        // evolution deduplicates with -- so the ContentStateId a caller reads back is the
+        // grouping the run actually used, not a second opinion about it.
+        struct ContentIndex {
+            std::vector<uint64_t> hash_of;                                  // by raw state id
+            std::unordered_map<uint64_t, hypergraph::StateId> first_with;
+        };
+        ContentIndex content_index_storage;
+        bool content_index_built = false;
+        auto content_index = [&]() -> const ContentIndex& {
+            if (!content_index_built) {
+                const uint32_t n = hg.num_states();
+                content_index_storage.hash_of.assign(n, 0);
+                content_index_storage.first_with.reserve(n);
+                for (uint32_t sid = 0; sid < n; ++sid) {
+                    if (hg.get_state(sid).id == hypergraph::INVALID_ID) continue;
+                    const uint64_t h = hg.get_state_content_hash(sid);
+                    content_index_storage.hash_of[sid] = h;
+                    content_index_storage.first_with.emplace(h, sid);
+                }
+                content_index_built = true;
+            }
+            return content_index_storage;
+        };
+
         // Run the evolution. Abort is a process kill by the parent, so there is
         // no cooperative abort; progress (when requested) is reported through the
         // host bridge.
@@ -661,28 +690,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
         // This matches reference behavior where canonicalization is applied at display time
         if (include_states) {
-            uint32_t num_states = hg.num_states();
-
-            // Single pass: compute content hash for each state and build mapping
-            // Uses the library's get_state_content_hash which is the SAME function
-            // used during evolution for Automatic state deduplication, ensuring consistency.
-            std::unordered_map<uint64_t, hypergraph::StateId> content_hash_to_id;
-            std::vector<uint64_t> state_content_hashes(num_states, 0);
-            content_hash_to_id.reserve(num_states);
-
-            for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const hypergraph::State& state = hg.get_state(sid);
-                if (state.id == hypergraph::INVALID_ID) continue;
-
-                // Use the library's content hash function (same as evolution-time deduplication)
-                // This ensures FFI ContentStateId matches the grouping done during evolution
-                uint64_t hash = hg.get_state_content_hash(sid);
-
-                state_content_hashes[sid] = hash;
-                if (content_hash_to_id.find(hash) == content_hash_to_id.end()) {
-                    content_hash_to_id[hash] = sid;
-                }
-            }
+            const uint32_t num_states = hg.num_states();
+            const ContentIndex& ci = content_index();
+            const auto& content_hash_to_id = ci.first_with;
+            const auto& state_content_hashes = ci.hash_of;
 
             // First pass fixes the emitted state set so the association length is
             // known before streaming. When CanonicalizeStates is Full, emit one state
@@ -710,7 +721,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 const hypergraph::State& state = hg.get_state(sid);
                 // Canonical state ID (isomorphism-based) and content state ID (from cached hash).
                 hypergraph::StateId canonical_id = hg.get_canonical_state(sid);
-                hypergraph::StateId content_id = content_hash_to_id[state_content_hashes[sid]];
+                hypergraph::StateId content_id = content_hash_to_id.at(state_content_hashes[sid]);
 
                 // Association key: raw state id.
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -1147,30 +1158,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // GraphData - Graph-ready data for direct Graph[] construction in WL
         // ========================================================================
         if (!graph_properties.empty()) {
-            // Compute content hashes for Automatic mode (if not already computed)
-            uint32_t num_states = hg.num_states();
-            std::unordered_map<uint64_t, hypergraph::StateId> gd_content_hash_to_id;
-            std::vector<uint64_t> gd_state_content_hashes(num_states, 0);
-
-            if (canonicalize_states_mode == "Automatic") {
-                gd_content_hash_to_id.reserve(num_states);
-                for (uint32_t sid = 0; sid < num_states; ++sid) {
-                    const hypergraph::State& state = hg.get_state(sid);
-                    if (state.id == hypergraph::INVALID_ID) continue;
-                    uint64_t hash = hg.get_state_content_hash(sid);
-                    gd_state_content_hashes[sid] = hash;
-                    if (gd_content_hash_to_id.find(hash) == gd_content_hash_to_id.end()) {
-                        gd_content_hash_to_id[hash] = sid;
-                    }
-                }
-            }
 
             // Helper: Get effective state ID based on canonicalization mode
             auto get_effective_state_id = [&](hypergraph::StateId sid) -> int64_t {
                 if (canonicalize_states_mode == "Full")
                     return static_cast<int64_t>(hg.get_canonical_state(sid));
-                if (canonicalize_states_mode == "Automatic")
-                    return static_cast<int64_t>(gd_content_hash_to_id[gd_state_content_hashes[sid]]);
+                if (canonicalize_states_mode == "Automatic") {
+                    const ContentIndex& ci = content_index();
+                    return static_cast<int64_t>(ci.first_with.at(ci.hash_of[sid]));
+                }
                 return static_cast<int64_t>(sid);
             };
 
