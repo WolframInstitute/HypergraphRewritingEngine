@@ -172,3 +172,75 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
     EXPECT_TRUE(any_branchial) << "no corpus workload produced a branchial relation";
     EXPECT_TRUE(any_state_events) << "no corpus workload produced a per-state event list";
 }
+
+// Serial execution produces the same graph as the threaded engine, on every corpus workload.
+//
+// Serial is not "one worker": no thread is spawned and every job runs inline on the calling
+// thread. That is a different execution path through the job system -- the injector FIFO rather
+// than the work-stealing deques -- so it is compared against the threaded engine rather than
+// assumed equivalent to it. The comparison is on the graph, not on ids: state and event ids are
+// handed out in arrival order, and the two paths arrive in different orders.
+TEST(OracleCorpus, SerialExecutionMatchesTheThreadedEngine) {
+    using Mode = ParallelEvolutionEngine::ExecutionMode;
+
+    struct Fp {
+        size_t states = 0, events = 0, causal = 0, branchial = 0;
+        std::multiset<uint64_t> state_hashes, causal_pairs;
+    };
+    auto run = [](const oracle::Case& c, Mode mode, size_t threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads, mode);
+        e.set_transitive_reduction(true);
+        for (const auto& r : c.rules) e.add_rule(r);
+        e.evolve(c.init, c.measure_steps);
+
+        Fp f;
+        f.states = hg.num_canonical_states();
+        f.events = hg.num_events();
+        f.causal = hg.causal_graph().num_causal_event_pairs();
+        f.branchial = hg.causal_graph().num_branchial_edges();
+        for (uint32_t s = 0; s < hg.num_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID)
+                f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
+        auto esig = [&](EventId ev) {
+            const Event& x = hg.get_event(ev);
+            uint64_t h = 1469598103934665603ULL;
+            auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
+            mix(x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
+            mix(x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
+            mix(x.rule_index);
+            return h;
+        };
+        for (const auto& ce : hg.causal_graph().get_causal_edges()) {
+            if (ce.producer == INVALID_ID || ce.consumer == INVALID_ID) continue;
+            f.causal_pairs.insert(esig(ce.producer) * 31 + esig(ce.consumer));
+        }
+        return f;
+    };
+
+    for (const auto& c : oracle::corpus()) {
+        const Fp threaded = run(c, Mode::Parallel, 4);
+        const Fp serial   = run(c, Mode::Serial, 0);
+
+        EXPECT_EQ(serial.states, threaded.states) << c.name << ": serial found a different state count";
+        EXPECT_EQ(serial.events, threaded.events) << c.name << ": serial found a different event count";
+        EXPECT_EQ(serial.causal, threaded.causal) << c.name << ": serial built a different causal relation size";
+        EXPECT_EQ(serial.branchial, threaded.branchial) << c.name << ": serial built a different branchial size";
+        EXPECT_EQ(serial.state_hashes, threaded.state_hashes) << c.name << ": serial explored different states";
+        EXPECT_EQ(serial.causal_pairs, threaded.causal_pairs) << c.name << ": serial built a different causal relation";
+    }
+}
+
+// A serial engine spawns no thread, which is the property a target without threads needs. One
+// worker is a different thing and the two must not be conflated.
+TEST(OracleCorpus, SerialSpawnsNoWorkerAndOneWorkerIsNotSerial) {
+    using Mode = ParallelEvolutionEngine::ExecutionMode;
+    Hypergraph hs, hp;
+    ParallelEvolutionEngine serial(&hs, 0, Mode::Serial);
+    ParallelEvolutionEngine one_worker(&hp, 1, Mode::Parallel);
+
+    EXPECT_TRUE(serial.is_serial());
+    EXPECT_EQ(serial.num_threads(), 1u) << "serial runs on the caller's thread, so it reports one";
+    EXPECT_FALSE(one_worker.is_serial()) << "num_threads = 1 is a worker thread, not serial";
+}

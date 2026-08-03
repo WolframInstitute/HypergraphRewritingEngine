@@ -365,6 +365,17 @@ struct ParentInfo {
 // - State tracking uses ConcurrentMap (lock-free)
 
 class ParallelEvolutionEngine {
+public:
+    // How the engine runs its work.
+    //
+    // Parallel: worker threads with work-stealing deques, sized by num_threads.
+    //   Serial: no thread is spawned at all. Every job runs inline on the thread that called
+    //           evolve(), in submission order, so the run is deterministic by construction --
+    //           and it needs neither threads nor the atomics the deques spin on, which is what
+    //           a WebAssembly target requires. Passing num_threads = 1 does NOT give this: it
+    //           still spawns a worker and still goes through the deques.
+    enum class ExecutionMode { Parallel, Serial };
+
     Hypergraph* hg_;
     Rewriter rewriter_;
 
@@ -627,6 +638,7 @@ private:
     // Job system
     std::unique_ptr<job_system::JobSystem<EvolutionJobType>> job_system_;
     size_t num_threads_{0};
+    ExecutionMode mode_{ExecutionMode::Parallel};
 
     // Evolution control
     std::atomic<bool> should_stop_{false};
@@ -770,7 +782,8 @@ public:
         , rewriter_(nullptr)
     {}
 
-    explicit ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads = 0);
+    explicit ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads = 0,
+                                     ExecutionMode mode = ExecutionMode::Parallel);
 
     ~ParallelEvolutionEngine();
 
@@ -988,6 +1001,8 @@ public:
     }
 
     size_t num_threads() const { return num_threads_; }
+    // Serial runs execute every job on the calling thread and spawn nothing.
+    bool is_serial() const { return mode_ == ExecutionMode::Serial; }
     size_t num_states() const { return hg_ ? hg_->num_states() : 0; }
     size_t num_canonical_states() const { return hg_ ? hg_->num_canonical_states() : 0; }
     size_t num_events() const { return hg_ ? hg_->num_events() : 0; }

@@ -17,10 +17,16 @@ namespace hypergraph {
 // Constructor / Destructor
 // =============================================================================
 
-ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads)
+ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads,
+                                                 ExecutionMode mode)
     : hg_(hg)
     , rewriter_(hg)
-    , num_threads_(num_threads > 0 ? num_threads : std::thread::hardware_concurrency())
+    // Serial reports one thread of execution -- the caller's. Reporting the hardware count
+    // there would be a lie to anything sizing itself from num_threads().
+    , num_threads_(mode == ExecutionMode::Serial
+                       ? 1
+                       : (num_threads > 0 ? num_threads : std::thread::hardware_concurrency()))
+    , mode_(mode)
 {
     // Route every engine map's table storage through the hypergraph arena (no malloc,
     // no per-map heap contention). These maps are append-only across the engine's
@@ -36,7 +42,9 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     states_per_step_.set_arena(arena);
     match_join_.set_arena(arena);
 
-    job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(num_threads_);
+    job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(
+        mode_ == ExecutionMode::Serial ? 0 : num_threads_, 4096,
+        /*serial=*/mode_ == ExecutionMode::Serial);
     // Recycle each worker's scratch arena after every job — temporaries allocated
     // during a task are reclaimed in bulk, keeping malloc off the hot path.
     job_system_->set_on_job_complete([] { worker_scratch().reset(); });
