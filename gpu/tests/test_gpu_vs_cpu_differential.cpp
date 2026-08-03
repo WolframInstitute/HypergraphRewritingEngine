@@ -942,10 +942,11 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
             hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_matches; });
         }
         const size_t host_raw = hg.num_reconstructed_raw_events();
+        const size_t host_ids = hg.num_reconstructed_events();
 
-        std::printf("%-28s frame matches %4zu  raw events %4zu  aligned %3u  align-fail %u\n",
-                    w.name.c_str(), host_matches, host_raw, gpu.frame_alignments,
-                    gpu.frame_align_failures);
+        std::printf("%-28s frame matches %4zu  raw %4zu  identities %4zu  moved %3u  "
+                    "align-fail %u\n", w.name.c_str(), host_matches, host_raw, host_ids,
+                    gpu.frame_alignments, gpu.frame_align_failures);
 
         EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
                                        "every comparison below would pass on a device that "
@@ -958,6 +959,14 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         EXPECT_EQ(gpu.reconstructed_raw_events, host_raw)
             << w.name << ": the replay minted " << gpu.reconstructed_raw_events
             << " raw events, host " << host_raw;
+        // Under EVENT_SIG_NONE every application is its own event, so the reconstruction
+        // reports no identity count and num_reconstructed_events returns the raw count.
+        const uint32_t gpu_ids = w.event_canon_mode == hg_gpu::EventCanonicalizationMode::None
+                                     ? gpu.reconstructed_raw_events : gpu.reconstructed_events;
+        EXPECT_EQ(gpu_ids, host_ids)
+            << w.name << ": the replay carries " << gpu_ids << " distinct event identities, "
+            << "host " << host_ids;
+
         EXPECT_EQ(gpu.frame_align_failures, 0u)
             << w.name << ": " << gpu.frame_align_failures << " slots had no image in their "
             << "class's frame, so their captures were dropped";

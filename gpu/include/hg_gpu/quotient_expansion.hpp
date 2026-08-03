@@ -111,6 +111,12 @@ struct QeView {
     uint32_t* align_moved;
     uint32_t* align_fail;
 
+    // Distinct run identities and their count. Empty under EVENT_SIG_NONE, where every
+    // application is its own event and the raw count is already the answer.
+    DedupMap::DeviceView canon_seen;
+    uint32_t* num_canon;
+    EventSignatureKeys keys;
+
     // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
     // +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0 could never
     // be stored -- the same offset, for the same reason, as the None-mode dedup key.
@@ -473,13 +479,31 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
         ev = nre.fetch_add(1u, cuda::memory_order_relaxed);
     }
 
+    // The run's event identity. Under EVENT_SIG_NONE there is none: every application is its
+    // own event, and the raw count above is what a caller is told.
+    if (qe.keys != hgcommon::EVENT_SIG_NONE) {
+        // The canonical OUTPUT state's step, which is one value per class, not the depth this
+        // instance sits at. Falls back to the depth when the output class holds no frame.
+        uint32_t out_step = depth;
+        const auto fs = qe.frame_step.lookup_waiting(m.to_hash);
+        if (fs.found && fs.value != 0) out_step = fs.value - 1u;
+
+        const uint32_t* a = qe.arr_words + m.arr_offset;
+        uint64_t csig = hgcommon::event_signature(
+            qe.keys, state_hash, m.to_hash, out_step, static_cast<uint16_t>(m.rule),
+            a, static_cast<uint8_t>(m.num_consumed),
+            a + m.num_consumed, static_cast<uint8_t>(m.num_produced));
+        if (csig == 0 || csig == ~0ULL) csig = 1;
+        if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
+    }
+
     // The child instance: survivors carry their producer across, produced slots take THIS event.
     const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
     if (off == UINT32_MAX) return;
     for (uint32_t i = 0; i < m.to_slots; ++i) qe.arr_words[off + i] = kQeNoProducer;
 
-    const uint32_t* a = qe.arr_words + m.arr_offset;
-    const uint32_t* surv_from = a + m.num_consumed + m.num_produced;
+    const uint32_t* aw = qe.arr_words + m.arr_offset;
+    const uint32_t* surv_from = aw + m.num_consumed + m.num_produced;
     const uint32_t* surv_to   = surv_from + m.num_survivors;
     for (uint32_t i = 0; i < m.num_survivors; ++i) {
         const uint32_t f = surv_from[i], t = surv_to[i];
@@ -487,7 +511,7 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
             qe.arr_words[off + t] = qe.arr_words[inst.prod_offset + f];
     }
     for (uint32_t i = 0; i < m.num_produced; ++i) {
-        const uint32_t s = a[m.num_consumed + i];
+        const uint32_t s = aw[m.num_consumed + i];
         if (s < m.to_slots) qe.arr_words[off + s] = ev;
     }
 
@@ -510,6 +534,7 @@ public:
           rep_(on ? max_events : 8u),
           frame_step_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
+          canon_seen_(on ? max_events * 2u : 8u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
@@ -520,6 +545,7 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&next_raw_event_, sizeof(uint32_t)), "QeState raw ev alloc");
         HG_CUDA_CHECK(cudaMalloc(&align_moved_, sizeof(uint32_t)), "QeState align moved alloc");
         HG_CUDA_CHECK(cudaMalloc(&align_fail_, sizeof(uint32_t)), "QeState align fail alloc");
+        HG_CUDA_CHECK(cudaMalloc(&num_canon_, sizeof(uint32_t)), "QeState canon alloc");
         clear();
     }
     ~QeState() {
@@ -530,6 +556,7 @@ public:
         if (next_raw_event_) cudaFree(next_raw_event_);
         if (align_moved_) cudaFree(align_moved_);
         if (align_fail_) cudaFree(align_fail_);
+        if (num_canon_) cudaFree(num_canon_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -547,10 +574,12 @@ public:
         rep_.clear();
         frame_step_.clear();
         applied_.clear();
+        canon_seen_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
         HG_CUDA_CHECK(cudaMemset(align_fail_, 0, sizeof(uint32_t)), "QeState align fail clear");
+        HG_CUDA_CHECK(cudaMemset(num_canon_, 0, sizeof(uint32_t)), "QeState canon clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -564,6 +593,10 @@ public:
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
     uint32_t num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
 
+    // Distinct event identities the replay produced under the run's mode. The host's
+    // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.
+    uint32_t num_canon_events_host() { return read_counter(num_canon_, "QeState canon read"); }
+
     // Slots the frame moved off the state's own labelling, and slots no frame image existed for.
     uint32_t num_aligned_host() { return read_counter(align_moved_, "QeState align moved read"); }
     uint32_t num_align_failures_host() { return read_counter(align_fail_, "QeState align fail read"); }
@@ -572,7 +605,7 @@ public:
     // before any replay, and one more per application once the replay lands.
     uint32_t num_instances_host() { return instances_.size_host(); }
 
-    QeView view(uint32_t max_steps) {
+    QeView view(uint32_t max_steps, EventSignatureKeys keys) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -583,6 +616,9 @@ public:
         q.frame_step     = frame_step_.view();
         q.applied        = applied_.view();
         q.align_moved    = align_moved_;
+        q.canon_seen     = canon_seen_.view();
+        q.num_canon      = num_canon_;
+        q.keys           = keys;
         q.align_fail     = align_fail_;
         q.next_raw_event = next_raw_event_;
         q.frame        = frame_.view();
@@ -610,10 +646,12 @@ private:
     DedupMap                  rep_;
     DedupMap                  frame_step_;
     DedupMap                  applied_;
+    DedupMap                  canon_seen_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
     uint32_t*                 align_moved_    = nullptr;
     uint32_t*                 align_fail_     = nullptr;
+    uint32_t*                 num_canon_      = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

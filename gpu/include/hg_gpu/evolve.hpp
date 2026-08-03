@@ -150,6 +150,10 @@ struct EvolveResult {
     // Frame alignment: slots the class frame MOVED off the recording state's own labelling, and
     // slots for which no frame image existed (the capture is dropped, so events reachable only
     // through it are missing).
+    // Distinct event identities the reconstruction produced under the run's mode. 0 under
+    // EVENT_SIG_NONE, where every application is its own event and the raw count is the answer.
+    uint32_t reconstructed_events = 0;
+
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;
 };

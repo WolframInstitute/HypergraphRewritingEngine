@@ -403,7 +403,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         qe_state_ = std::make_unique<QeState>(qc_route, cfg.max_events);
     else
         qe_state_->clear();
-    QeView qe_view = qe_state_->view(in.num_steps);
+    QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization));
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
@@ -501,6 +501,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_route ? qe_state_->num_instances_host() : 0u;
         out.reconstructed_raw_events = qc_route ? qe_state_->num_raw_events_host() : 0u;
+        out.reconstructed_events = qc_route ? qe_state_->num_canon_events_host() : 0u;
         out.frame_alignments = qc_route ? qe_state_->num_aligned_host() : 0u;
         out.frame_align_failures = qc_route ? qe_state_->num_align_failures_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
