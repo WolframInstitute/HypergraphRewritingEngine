@@ -487,6 +487,13 @@ TEST(OracleCorpus, GyoSeparatesTheTriangleFromThePath) {
     EXPECT_TRUE(lhs_is_acyclic(single));
     EXPECT_EQ(lhs_edge_cover(single), 1u);
 
+    // Where the integral cover stops being rho*. The triangle's fractional optimum is 1/2 on
+    // each edge, so rho* is 3/2 against an integral cover of 2 -- the bound is valid and loose.
+    EXPECT_FALSE(edge_cover_is_tight(triangle));
+    // A path is acyclic, so its cover IS rho* and N^cover is the tight AGM bound.
+    EXPECT_TRUE(edge_cover_is_tight(path));
+    EXPECT_TRUE(edge_cover_is_tight(single));
+
     // A 4-cycle: cyclic, and two opposite edges cover all four variables.
     const RewriteRule cycle4 =
         make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 3}).lhs({3, 0}).rhs({0, 2}).build();

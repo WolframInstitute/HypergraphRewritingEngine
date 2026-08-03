@@ -41,6 +41,9 @@ struct RuleFacts {
     bool acyclic = true;
     // Integral edge cover; N^edge_cover bounds the matches one state of N edges can yield.
     uint32_t edge_cover = 0;
+    // Whether that bound is TIGHT -- i.e. edge_cover is rho* and not merely above it. True
+    // exactly when the query is acyclic; see edge_cover_is_tight.
+    bool edge_cover_tight = true;
 };
 
 // IS THE LHS AN ACYCLIC CONJUNCTIVE QUERY? (GYO reduction, Graham-Yu-Ozsoyoglu.)
@@ -141,6 +144,7 @@ inline RuleFacts analyze_rule(const RewriteRule& r) {
     f.new_vertices = r.num_new_vars;
     f.acyclic = lhs_is_acyclic(r);
     f.edge_cover = lhs_edge_cover(r);
+    f.edge_cover_tight = f.acyclic;   // acyclic => the LP optimum is integral => cover == rho*
     return f;
 }
 
@@ -176,6 +180,21 @@ inline bool can_branch(const std::vector<RewriteRule>& rules) {
     }
     return false;
 }
+
+// IS THE INTEGRAL COVER ALREADY rho*?
+//
+// The AGM bound is N^(rho*), where rho* is the FRACTIONAL edge cover number -- the LP relaxation
+// of lhs_edge_cover. Solving that LP is only necessary when the two differ, and for an
+// ALPHA-ACYCLIC query they do not: an acyclic hypergraph has the integrality property, so its
+// fractional cover LP attains its optimum at an integral point and rho* == lhs_edge_cover
+// exactly. A cyclic query is where they separate, and the separation is real -- the triangle has
+// cover 2 and rho* 3/2 (x = 1/2 on each of the three edges), and a k-cycle has rho* k/2.
+//
+// So on any acyclic rule the bound this header already computes is TIGHT, and the LP is needed
+// only for cyclic ones. Every rule in the shipped corpus is acyclic, which is why no LP is
+// implemented here: it would have no input to run on and no way to be checked. When a cyclic rule
+// arrives, the closed forms above are the test it must reproduce.
+inline bool edge_cover_is_tight(const RewriteRule& r) { return lhs_is_acyclic(r); }
 
 // Facts about the SET, which is what a strategy is chosen from.
 struct RuleSetFacts {
