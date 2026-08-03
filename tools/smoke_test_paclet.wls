@@ -5,7 +5,7 @@
      - CPU/GPU structural parity for EVERY graph property (GraphData): same vertex and
        edge counts and isomorphic graphs -- and neither returns $Failed
      - CPU/GPU raw-count parity (NumStates/NumEvents/NumCausalEdges/NumBranchialEdges)
-     - the fallback DLL loads and runs (performHausdorffAnalysis)
+     - the DLL loads and runs (performRewriting, the library's one evolution entry point)
    Argv[1] is the .paclet path (a Windows path under the Windows kernel). *)
 
 pacletFile = $ScriptCommandLine[[2]];

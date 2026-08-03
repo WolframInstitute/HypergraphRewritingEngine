@@ -1,7 +1,8 @@
+; The Windows DLL export list. A name here MUST exist in the library: the linker resolves every
+; export, so a stale entry is a hard link failure and only on Windows/macOS -- a Linux .so links
+; with undefined symbols and says nothing. That is why three visualisation exports survived the
+; viz split (board #18) unnoticed until the release matrix was actually built.
 EXPORTS
 performRewriting
-performHausdorffAnalysis
-performBranchAlignment
-performBranchAlignmentBatch
 WolframLibrary_initialize
 WolframLibrary_uninitialize
