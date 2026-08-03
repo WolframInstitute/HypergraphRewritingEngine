@@ -49,17 +49,17 @@ item in P2 costs double until this lands.
 | P1.3 | GPU adapter: `match.cu` supplies a CSR-slice strider and calls `join_core`. Its own DFS is deleted in the same commit. | `hg_gpu_tests` 97/97 + `gpu_differential_tests` 30/30; 45317 states / 45316 events unchanged; device timing neutral (median 46.8 vs 48.5 ms, spread ~10%) | **DONE** |
 | P1.4 | Delta matching (`find_delta_matches`) folded into the same body — it is the same join anchored at a produced edge. | Delivered by P1.2: `scan_pattern_from_edge` IS `hgcommon::join_seed`. Rate unchanged across the extraction — 2b624c8 gave 5,2,3,5,2 failing runs of 204, 59b3cd8 gave 4,1,6,4,1, all forwarding-attributed. The DEVICE has no delta matching at all (full scan per state per rule); that is a missing feature, not a duplicated body. | **DONE** |
 
-| P1.5 | One causal attribution mechanism, not two. The raw-edge rendezvous in `rewriter.cpp` and the quotient reconstruction both compute the causal graph; `configure_identity_and_quotient` picks between them by event-identity mode. | **BLOCKED on four measured gaps — see below. Do NOT delete the rendezvous.** | **BLOCKED** |
+| P1.5 | One causal attribution mechanism, not two. The raw-edge rendezvous in `rewriter.cpp` and the quotient reconstruction both compute the causal graph; `configure_identity_and_quotient` picks between them by event-identity mode. | Gate green on both halves: `quotient_reconstruction_observables_probe` reports **0 disagreements over 80 configurations**, and the suite is **239/239 with the routing forced wide** (`wants_qc = !positional_event_identity()`), up from 193/198. The rendezvous STAYS — see the restatement below. | **DONE** |
 
 **Done-line for P1:** one join implementation in the tree. `grep -c "expand_match\|DFS"` finds
 one body, not two. **REACHED for the join** (P1.1–P1.4). P1.5 is a different rule (causal
-attribution) and is blocked.
+attribution) and is closed on the restated done-line below.
 
-### P1.5 — why it is blocked, measured not argued
+### P1.5 — the four gaps, measured not argued
 
 Setting `qc = true` in `configure_identity_and_quotient`, so the reconstruction serves every
-mode and the rendezvous never runs, builds clean and gives **193/198**. The five failures are
-the work list, each with its reproducer:
+mode and the rendezvous never runs, gave **193/198** when the item was opened. It now gives
+**239/239**. The five failures were the work list, each with its reproducer:
 
 1. **CRASH on an emptying rule** under the non-Automatic identity modes. FIXED in `3b724c9`
    (two hash functions disagreed on the empty state; one returned 0, the ConcurrentMap EMPTY
@@ -83,19 +83,39 @@ the work list, each with its reproducer:
    `65740dc`. `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads` now passes with the
    routing forced wide, which went 193/198 -> 196/198.
 
-(`GoldenMatrix.EveryIdentityCellMatchesItsCachedExpectation` also fails, downstream of 2–4.)
+(`GoldenMatrix.EveryIdentityCellMatchesItsCachedExpectation` also failed, downstream of 2–4.)
+
+5. **The five above all pass with the routing forced wide.** Re-running that experiment on top
+   of P2 and P3 surfaced two more, both fixed and gated:
+   - `RecordSetSkipsOnlyWhatItWasNotAskedFor` reported 191 causal pairs for a run that asked to
+     record none, because it read `causal_graph()` — full capture's store — on a run the
+     reconstruction was serving. The three corpus gates now read the served relation (`7062996`).
+   - A continued run's reconstruction stood at the depth the first `evolve` stopped on.
+     `evolve_more` raised the engine's `max_steps_` and never the replay's `qc_max_steps_`
+     (`3898da5`).
 
 **RESTATEMENT.** "One causal attribution mechanism" is the wrong done-line. The two mechanisms
 consume DIFFERENT DATA — a raw state's own labelling versus a canonical class's frame — and
 which is available is decided by the requested identity and the state canonicalization mode. The
 correct done-line is **one mechanism per available presentation, with the routing explicit and
 checked**, which `2d40f9f` established (and which caught a live defect: any state mode but Full
-with Automatic identity returned ZERO events). The remaining real work is P2 — give the device
-the class-frame convention — after which CPU and GPU agree at 21.
+with Automatic identity returned ZERO events). P2 gave the device the class-frame convention;
+CPU and GPU agree at 21.
 
-Gate for P1.5 when the four close: `tools/quotient_reconstruction_observables_probe` (exit code
-is the disagreement count; **already 0 over 80 configurations** — 4 identity modes x 10
-workloads x 2 thread counts, five observables each) plus those five tests.
+The rendezvous therefore STAYS, and not as a fallback: it is the only mechanism for the two
+presentations the reconstruction cannot read — Positional identity, which needs raw
+presentations, and any state canonicalization but `Full`, which computes no edge orbits
+(`qc = wants_qc && full_states`). Deleting it would delete those modes.
+
+Gate, both halves green: `tools/quotient_reconstruction_observables_probe` (exit code is the
+disagreement count; **0 over 80 configurations** — 4 identity modes x 10 workloads x 2 thread
+counts, five observables each) plus the whole host suite with `wants_qc` forced to
+`!positional_event_identity()`: **239 passed, 0 failed**, where the item opened at 193/198.
+
+What that measures is CORRECTNESS, and only that. Whether the reconstruction should also become
+the DEFAULT for the non-Automatic modes it can now serve is a cost question, and the cost of
+running it where full capture currently runs is unmeasured — the "cheaper than full capture"
+result (board #4) was measured on the quotient route alone.
 
 ---
 
