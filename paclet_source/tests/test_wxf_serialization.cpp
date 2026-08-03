@@ -317,3 +317,57 @@ TEST(WxfSerializationPin, StatesGraphUnderFullCanonicalization) {
         << "StatesGraph was requested and no GraphData came back";
     EXPECT_GT(read_int_key(out, "NumStates"), 0);
 }
+
+// PINNED REPRODUCER for P4.6: the causal GRAPH and the event COUNT beside it describe
+// different event sets. It passes exactly while the gap is present, so the suite notices if it
+// moves or closes -- the same contract ReconstructionGapIsStillOpen carried until P2 closed it.
+//
+// WHAT IS BROKEN. NumEvents routes through observable_num_events, which under an identity mode
+// is the RECONSTRUCTION's count: distinct identities over the class frame. The graph is built by
+// scanning MATERIALISED raw events and mapping each through its canonical_event_id, which full
+// capture computed from each raw state's own labelling -- the per-state convention the
+// reconstruction exists to replace. Measured on this workload under Automatic:
+//
+//     NumEvents (reconstruction, class frame)     24
+//     causal graph vertices (materialised)        25
+//
+// TO CLOSE: serve the graph's event vertices from the reconstruction when it ran. That needs a
+// vertex payload for an identity with no Event record -- the reconstruction deliberately
+// materialises none -- built from the class hashes and rule it does hold, or the lean payload
+// the Structure variants already use.
+TEST(WxfSerializationPin, CausalGraphAndNumEventsStillDescribeDifferentSets) {
+    HostBridge host;
+    auto in = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", {"CausalGraph"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_option(w, "CanonicalizeEvents", "Automatic");
+    }, 3);
+    auto out = run_rewriting_core(in, host);
+    ASSERT_FALSE(out.empty());
+
+    const int64_t num_events = read_int_key(out, "NumEvents");
+
+    int64_t vertex_count = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "GraphData") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string&, wxf::Parser& gp) {
+            gp.read_association([&](const std::string& field, wxf::Parser& fp) {
+                if (field != "Vertices") { fp.skip_value(); return; }
+                // A WXF list is a Function with head List; its arg count is the length.
+                fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                    for (size_t i = 0; i < n; ++i) ep.skip_value();
+                    vertex_count = static_cast<int64_t>(n);
+                });
+            });
+        });
+    });
+    ASSERT_GE(vertex_count, 0) << "no Vertices came back for the requested CausalGraph";
+
+    EXPECT_EQ(num_events, 24)
+        << "the reconstruction's count moved; re-derive the pinned numbers";
+    EXPECT_EQ(vertex_count, 25)
+        << "the graph's vertex count moved; if it now equals NumEvents the gap has closed -- "
+           "replace this reproducer with the equality";
+}
