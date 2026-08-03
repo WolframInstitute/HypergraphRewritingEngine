@@ -50,6 +50,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
         bool found = false;
         pl->for_each([&](EventId q) {
             if (found) return;
+            if (is_retracted(q, x)) return;          // superseded: no longer in the reduction
             if (q == producer) { found = true; return; }
             // q < producer can neither be producer nor have it as an ancestor; skip.
             if ((!topo || q > producer) && visited.insert(q).second) stack.push_back(q);
@@ -201,9 +202,35 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
             // pair, so preds_ holds no duplicate producers for a consumer.
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
                 record_reduced_edge(producer, consumer);
+                retract_superseded(producer, consumer);
             }
         }
     }
+}
+
+// (producer,consumer) has just entered the reduction. Any already-kept (q,consumer) whose q
+// reaches producer is now implied by q ~> producer -> consumer, so it leaves the reduction.
+//
+// This is what makes the reduction exact without assuming an arrival order. Testing each pair
+// once on arrival is exact only when the consumer's whole ancestry is already present, which
+// holds for full capture and not for the reconstruction's forward-propagating DP.
+//
+// preds_[consumer] is written only by consumer's own thread, so this scan and its decisions are
+// single-threaded for a given consumer.
+void CausalGraph::retract_superseded(EventId producer, EventId consumer) {
+    LockFreeList<EventId>* pl = preds_.get(consumer);
+    if (!pl) return;
+    pl->for_each([&](EventId q) {
+        if (q == producer) return;
+        if (is_retracted(q, consumer)) return;
+        // q ~> producer means q reaches consumer without its own direct edge.
+        if (!is_reachable(q, producer)) return;
+        const uint64_t k = causal_pair_key(q, consumer);
+        if (retracted_pairs_.insert_if_absent(k, uint8_t{1}).second) {
+            num_causal_event_pairs_.fetch_sub(1, std::memory_order_relaxed);
+            num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
 }
 
 void CausalGraph::record_reduced_edge(EventId producer, EventId consumer) {

@@ -117,6 +117,14 @@ class CausalGraph {
 
     std::atomic<bool> ids_are_topological_{true};
 
+    // Pairs that WERE kept and a later edge made redundant. preds_ and causal_edges_ are
+    // append-only, so a retraction is recorded here and every reader -- the reachability walk,
+    // the edge iteration and the pair count -- consults it.
+    ConcurrentMap<uint64_t, uint8_t> retracted_pairs_;
+
+    // (p,c) has just been kept: retract any already-kept (q,c) that it makes redundant.
+    void retract_superseded(EventId producer, EventId consumer);
+
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
     ConcurrentMap<uint64_t, uint8_t> seen_branchial_pairs_;
 
@@ -214,6 +222,11 @@ public:
     // Redundancy check: is consumer already reachable from producer via kept edges?
     // Backward search over preds_ (the reduced adjacency); exact and lock-free.
     bool is_reachable(EventId producer, EventId consumer) const;
+
+    // Has this pair been retracted by a later edge that supersedes it?
+    bool is_retracted(EventId producer, EventId consumer) const {
+        return retracted_pairs_.lookup(causal_pair_key(producer, consumer)).has_value();
+    }
 
     // WHETHER EVENT IDS INCREASE ALONG EVERY CAUSAL EDGE. True for full capture, which mints
     // an event only after the events that produced its inputs; is_reachable uses it to skip
@@ -317,6 +330,9 @@ public:
     template<typename Visitor>
     void for_each_causal_edge(Visitor&& visit) const {
         causal_edges_.for_each([&](const CausalEdge& edge) {
+            // A pair a later edge superseded is no longer in the reduction. causal_edges_ is
+            // append-only, so the retraction is recorded beside it rather than removed.
+            if (is_retracted(edge.producer, edge.consumer)) return;
             visit(edge);
         });
     }
@@ -331,7 +347,16 @@ public:
 
     // Statistics
     size_t num_causal_edges() const {
-        return num_causal_edges_.load(std::memory_order_relaxed);
+        // The counter tracks distinct (producer, consumer, edge) triples as they are admitted.
+        // A retraction removes a PAIR, and with it every triple carrying that pair, so once any
+        // retraction has happened the counter is no longer the number of live edges and the
+        // iteration -- which filters them -- is. No retractions is the common case and keeps the
+        // O(1) read; the walk costs O(edges) and runs on an accessor, not on the hot path.
+        if (retracted_pairs_.count_unique() == 0)
+            return num_causal_edges_.load(std::memory_order_relaxed);
+        size_t n = 0;
+        for_each_causal_edge([&](const CausalEdge&) { ++n; });
+        return n;
     }
 
     // Number of unique event pairs with a causal relationship.

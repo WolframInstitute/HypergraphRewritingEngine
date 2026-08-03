@@ -88,13 +88,13 @@ int main(){
     // ARM 1: Automatic identity, single-threaded. This is the reconstruction serving the causal
     // graph WITH the reduction enabled -- reachable through set_event_signature_keys, because
     // guard_quotient_transitive_reduction only disables TR under quotient EXPLORATION.
-    printf("== Automatic identity (quotient reconstruction) + TR, th=1 ==\n");
+    printf("== Automatic identity (quotient reconstruction) + TR ==\n");
     bool auto_ok = true;
-    for (auto& w : wls) {
-        auto order = ordered_pairs(w, 1, /*automatic_identity=*/true);
+    for (auto& w : wls) for (int th : {1,2,4,8}) {
+        auto order = ordered_pairs(w, th, /*automatic_identity=*/true);
         std::set<std::pair<uint32_t,uint32_t>> raw(order.begin(), order.end());
         auto want   = offline_tr(raw);
-        auto got    = run(w, true, 1, /*automatic_identity=*/true);
+        auto got    = run(w, true, th, /*automatic_identity=*/true);
         auto replay = replay_online_tr(order);
         // Two acceptable outcomes, and one failure. The reduction is either EXACT, or it is
         // DECLINED -- guard_quotient_transitive_reduction refuses to reduce a relation it
@@ -105,8 +105,8 @@ int main(){
         const bool declined = (got.size() == raw.size()) && (raw.size() != want.size());
         const bool ok = exact || declined;
         auto_ok &= ok;
-        printf("%-9s raw=%4zu  engineTR=%4zu  minimalTR=%4zu  replayOnlineTR=%4zu  %s\n",
-               w.name, raw.size(), got.size(), want.size(), replay.size(),
+        printf("%-9s th=%2d  raw=%4zu  engineTR=%4zu  minimalTR=%4zu  replayOnlineTR=%4zu  %s\n",
+               w.name, th, raw.size(), got.size(), want.size(), replay.size(),
                exact ? "EXACT" : declined ? "DECLINED (un-reduced, per the guard)"
                                           : "*** REDUCED BUT NOT MINIMAL ***");
         if (!ok) {

@@ -904,24 +904,45 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);  // 1 skipped
 }
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_DirectEdgeStillAdded) {
+// A direct edge that a LATER path supersedes leaves the reduction.
+//
+// This is the out-of-order case, and it is the whole difference between a reduction that is
+// minimal and one that merely never adds a redundant edge. 0 -> 2 arrives first and is kept,
+// because at that moment nothing else reaches 2. Then 0 -> 1 -> 2 appears and 0 -> 2 becomes
+// implied. The transitive reduction of {0->2, 0->1, 1->2} is {0->1, 1->2}, so the answer is 2.
+//
+// Testing each pair once on arrival and never again gives 3 here. That is exact only when a
+// consumer's whole ancestry is already present when its edges are offered -- true for full
+// capture, false for the quotient reconstruction, whose DP propagates producers forward over
+// time. retract_superseded is what closes it.
+TEST(Unified_CausalGraph, OnlineTransitiveReduction_SupersededDirectEdgeIsRetracted) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
-    // Enable TR
     cg.set_transitive_reduction(true);
 
-    // First add direct edge 0 -> 2
+    // 0 -> 2 first: nothing else reaches 2 yet, so it is kept.
     cg.add_causal_edge(0, 2, 0);
     EXPECT_EQ(cg.num_causal_edges(), 1u);
 
-    // Then add edges that form a path 0 -> 1 -> 2
+    // Now the path that implies it.
     cg.add_causal_edge(0, 1, 1);
     cg.add_causal_edge(1, 2, 2);
 
-    // All 3 edges should be stored because they were added before the path existed
-    // TR only skips edges where the target is ALREADY reachable
-    EXPECT_EQ(cg.num_causal_edges(), 3u);
+    // The minimal reduction, not the arrival-order one.
+    EXPECT_EQ(cg.num_causal_edges(), 2u);
+
+    const auto edges = cg.get_causal_edges();
+    ASSERT_EQ(edges.size(), 2u);
+    bool has01 = false, has12 = false, has02 = false;
+    for (const auto& e : edges) {
+        if (e.producer == 0 && e.consumer == 1) has01 = true;
+        if (e.producer == 1 && e.consumer == 2) has12 = true;
+        if (e.producer == 0 && e.consumer == 2) has02 = true;
+    }
+    EXPECT_TRUE(has01);
+    EXPECT_TRUE(has12);
+    EXPECT_FALSE(has02) << "0->2 is implied by 0->1->2 and must not remain in the reduction";
 }
 
 TEST(Unified_CausalGraph, OnlineTransitiveReduction_LongerPath) {
