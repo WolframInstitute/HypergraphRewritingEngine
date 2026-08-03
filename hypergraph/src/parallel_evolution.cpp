@@ -1,6 +1,7 @@
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
 
 #include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/rule_analysis.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1475,6 +1476,19 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
             "the raw-edge rendezvous instead. Set StateCanonicalization -> Full for the "
             "canonical-class event identity.");
     }
+    // What the RULES already decide. If no two matches can share a consumed edge then no state
+    // has a branchial pair, for any initial condition, and building the relation is work whose
+    // answer is provably empty. Acting on the FALSE only: can_branch's true means "not ruled
+    // out" (rule_analysis.hpp), and skipping on an unknown would drop real structure.
+    //
+    // The caller's request is not overridden, because nothing is taken from it: what it asked for
+    // is the empty relation and the empty relation is what it gets. Only the work goes.
+    if (!analyze_rules(rules_).may_branch) {
+        RecordSet rs = hg_->record_set();
+        rs.branchial = false;
+        hg_->set_record_set(rs);
+    }
+
     hg_->set_quotient_causal(qc);
     hg_->set_quotient_reconstruction(qc);
     // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
