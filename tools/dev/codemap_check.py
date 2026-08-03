@@ -141,7 +141,9 @@ def main():
         for name in sorted(actual - named_files):
             findings.append(f"MISSING {directory}{name} exists and CODEMAP does not name it")
     for name in sorted(named_files - all_basenames):
-        findings.append(f"STALE   CODEMAP names `{name}`, which is not in the tree")
+        findings.append(f"STALE   CODEMAP names `{name}`, which is not in the tree "
+                        f"(a NEW file reads this way until it is `git add`ed -- the tree here is "
+                        f"`git ls-files`, because CODEMAP documents the repository)")
 
     for name, lineno in sorted(idents.items()):
         if name in corpus_words:
