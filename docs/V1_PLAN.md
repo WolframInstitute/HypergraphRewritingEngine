@@ -11,6 +11,7 @@ continue.
 cat docs/V1_PLAN.md          # this file: what is next, and the gate that closes it
 git log --oneline -25        # what actually landed; every message carries its evidence
 grep -n "IN PROGRESS\|BLOCKED" docs/V1_PLAN.md
+tools/dev/evidence.sh        # regenerate every headline number; skips say why they skipped
 ```
 
 Two sections below carry the state a lost conversation would otherwise take with it:
@@ -203,7 +204,7 @@ Strict order: each unblocks the next.
 | id | what | gate | status |
 |---|---|---|---|
 | P7.1 | #42 rule static analysis: critical pairs (finite, decidable, complete — every parallel-dependent match pair is an instance of one) + GYO acyclicity and `ρ*` for per-rule join classification. | **The critical-pair half is DONE and WIRED** (`a0a1947`, `4408f57`). `hypergraph/rule_analysis.hpp` decides edge delta, vertex creation rate, LHS shape and `can_branch` — whether two distinct matches can share a CONSUMED edge, which is the branchial relation's own condition. Sound in the FALSE direction only; the gate is asymmetric to match, so a predicted-no that branches FAILS and a predicted-yes that does not is reported. **8 of 17 corpus workloads PROVED branchial-free, all 8 observed exactly 0, no false negatives**; 3 of the remaining 9 are the over-approximation. The engine acts on the false and skips building the relation. GYO acyclicity and `ρ*` join classification are not started | **PARTIAL** |
-| P7.2 | #24 paper + reproducible measurements. | every number in it regenerable by one command | |
+| P7.2 | #24 paper + reproducible measurements. | **The MACHINE is done** (`f73f557`): `tools/dev/evidence.sh` regenerates every headline number in one command — corpus exactness, static analysis, reconstruction vs full capture over 80 configurations, the quotient determinism rate, cost matrix, the callgrind route comparison, CODEMAP drift, the option surface, and both device suites. It REPORTS rather than asserts (the gates assert), uses no wall clock anywhere, and a leg that cannot run says SKIPPED with the guard that failed rather than being omitted. It earned its keep on the first run: the cited route figures had drifted ~7% and nothing would have said so (`ee69c66`). **The PAPER is not written** | **PARTIAL** |
 
 ---
 
