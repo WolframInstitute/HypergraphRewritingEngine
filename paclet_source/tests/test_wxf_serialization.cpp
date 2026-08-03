@@ -362,6 +362,33 @@ TEST(WxfSerializationPin, CausalGraphVerticesAreTheEventsTheCountReports) {
         << num_events << ": the graph and the count describe different event sets";
 }
 
+// A relation PROVED empty is still a relation the caller asked for.
+//
+// record_set().branchial answers "the caller asked for this". The critical-pair work added a
+// second writer (parallel_evolution.cpp, configure_identity_and_quotient): when can_branch
+// proves no two matches can share a consumed edge, the flag is cleared so the run does not
+// build a relation whose answer is empty. The FFI then read the cleared flag as "the caller did
+// not ask" and threw, so HGEvolve returned $Failed for every no-property call -- the default
+// property is "EvolutionCausalBranchialGraph" -- on any rule that cannot branch.
+//
+// kLhs is a SINGLE edge, which is exactly the provable case: a match IS that edge, so two
+// distinct matches are two distinct edges and none can share one. That makes this corpus's
+// own rule the reproducer, and it is why the branchial-free proof's own gate stayed green --
+// it checks that the branchial COUNT is 0, which it correctly is.
+TEST(WxfSerializationPin, ProvablyBranchialFreeRulesStillServeTheBranchialGraph) {
+    HostBridge host;
+    auto in = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", {"EvolutionCausalBranchialGraph"});
+    }, 1);
+    auto out = run_rewriting_core(in, host);
+
+    // Empty output is the failure this pins: the engine aborted rather than returning.
+    ASSERT_FALSE(out.empty())
+        << "the default graph property returned nothing on a rule that provably cannot branch";
+    EXPECT_EQ(count_assoc_entries(out, "GraphData"), 1)
+        << "EvolutionCausalBranchialGraph was requested and no GraphData came back";
+}
+
 // RandomSeed reaches the sampler it is documented to control.
 //
 // ExplorationProbability is Monte-Carlo sampling of the multiway system, and the engine's
