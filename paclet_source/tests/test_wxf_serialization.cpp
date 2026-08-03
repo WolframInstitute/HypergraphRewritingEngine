@@ -67,6 +67,29 @@ std::vector<uint8_t> build_input(const StateList& initial_states,
     return w.release_data();
 }
 
+// The raw BYTES of one top-level key's value. Two runs are then compared payload for payload,
+// which is what "the gating changed nothing" has to mean -- equal entry counts would also hold
+// for two runs that returned different states.
+std::vector<uint8_t> value_bytes(const std::vector<uint8_t>& out, const std::string& key) {
+    std::vector<uint8_t> got;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        const size_t begin = vp.position();
+        vp.skip_value();
+        if (k == key) got.assign(out.begin() + static_cast<long>(begin),
+                                 out.begin() + static_cast<long>(vp.position()));
+    });
+    return got;
+}
+
+void put_str_list_option(wxf::Writer& w, const char* key,
+                         const std::vector<std::string>& values) {
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string(key));
+    w.write(values);
+}
+
 void put_str_option(wxf::Writer& w, const char* key, const char* value) {
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string(key));
@@ -232,4 +255,47 @@ TEST(WxfSerializationPin, MinimalEvents) {
     });
     EXPECT_TRUE(any_event);
     EXPECT_TRUE(all_minimal);
+}
+
+// Asking for less returns the same thing, and does not build what nobody asked for.
+//
+// RequestedData used to gate SERIALIZATION only: a caller asking for States alone still paid
+// for the causal and branchial relations in full. Now the request decides what is RECORDED, so
+// this pins the other half of that change.
+//
+// Compared by COUNT, not by payload bytes: the state and event ids in the output are raw
+// engine ids, handed out in arrival order by whichever worker got there first, so two runs of
+// the SAME request already disagree on them. Only CanonicalHash is stable across runs. What
+// the contents are is gated a layer down, where the recording happens, by
+// OracleCorpus.RecordSetSkipsOnlyWhatItWasNotAskedFor comparing canonical-hash multisets.
+TEST(WxfSerializationPin, RequestedDataChangesNothingItReturns) {
+    HostBridge host;
+
+    auto full_in = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer&) {}, 0);
+    auto full = run_rewriting_core(full_in, host);
+    ASSERT_FALSE(full.empty());
+
+    auto lean_in = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"States", "NumStates", "Events", "NumEvents"});
+    }, 1);
+    auto lean = run_rewriting_core(lean_in, host);
+    ASSERT_FALSE(lean.empty());
+
+    ASSERT_GT(count_assoc_entries(full, "States"), 0)
+        << "the all-on run returned no States, so every equality below is vacuous";
+    EXPECT_EQ(count_assoc_entries(lean, "States"), count_assoc_entries(full, "States"))
+        << "asking for States alone changed how many states came back";
+    EXPECT_EQ(count_assoc_entries(lean, "Events"), count_assoc_entries(full, "Events"))
+        << "asking for a subset changed how many events came back";
+    EXPECT_EQ(read_int_key(lean, "NumStates"), read_int_key(full, "NumStates"));
+    EXPECT_EQ(read_int_key(lean, "NumEvents"), read_int_key(full, "NumEvents"));
+
+    // The relations nobody asked for are absent from the output, not merely empty -- and the
+    // run did not build them either, which is what the record set changed.
+    EXPECT_EQ(count_assoc_entries(lean, "CausalEdges"), -1)
+        << "CausalEdges came back from a request that did not ask for it";
+    EXPECT_EQ(read_int_key(lean, "NumCausalEdges"), -1)
+        << "NumCausalEdges came back from a request that did not ask for it";
+    EXPECT_EQ(read_int_key(lean, "NumBranchialEdges"), -1)
+        << "NumBranchialEdges came back from a request that did not ask for it";
 }

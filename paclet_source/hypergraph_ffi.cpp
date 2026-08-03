@@ -442,6 +442,28 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         hg.set_state_canonicalization_mode(state_canon_mode);
 
         // Create parallel evolution engine
+        // What this call must RECORD, derived from what it will return. An artifact nothing
+        // asked for is not built at all, where before it was built in full and dropped at the
+        // output. Every consumer is named here and nowhere else:
+        //
+        //   causal       CausalEdges, NumCausalEdges, any graph property built from the causal
+        //                relation, and the progress line's pair count
+        //   branchial    BranchialEdges, NumBranchialEdges, BranchialStateEdges (which reads the
+        //                pair relation), the branchial graph properties, the progress line
+        //   state events BranchialStateEdgesAllSiblings alone -- it pairs every two output
+        //                states of one input state and never consults the pair relation
+        //
+        // Which graph properties need which comes from graph_property_needs, the same test the
+        // marshaller builds them with, so the two cannot disagree about a name.
+        const hgmarshal::GraphPropertyNeeds gneeds = hgmarshal::graph_property_needs(graph_properties);
+        hypergraph::RecordSet record;
+        record.causal = include_causal_edges || include_num_causal_edges || gneeds.causal ||
+                        show_progress;
+        record.branchial = include_branchial_edges || include_num_branchial_edges ||
+                           include_branchial_state_edges || gneeds.branchial || show_progress;
+        record.state_events = include_branchial_state_edges_all_siblings;
+        hg.set_record_set(record);
+
         hypergraph::ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
 
         // Configure engine options
@@ -1266,6 +1288,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 uint32_t event_output_state(uint32_t eid) const { return hg.get_event(eid).output_state; }
                 wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const { return event_data(eid); }
                 std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
+                    // A property the record set did not anticipate would be handed an EMPTY
+                    // relation and would serve an empty graph without a word. The name test
+                    // that decides what to record lives in graph_marshal.hpp beside the one
+                    // that decides what to build, so a miss here is a defect in that pairing.
+                    if (!hg.record_set().causal) {
+                        throw std::runtime_error(
+                            "a graph property asked for the causal relation, which this run was "
+                            "not asked to record: graph_property_needs missed its name");
+                    }
                     std::vector<std::pair<uint32_t, uint32_t>> out;
                     for (const auto& ce : hg.causal_graph().get_causal_edges()) {
                         if (!show_genesis && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
@@ -1274,6 +1305,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return out;
                 }
                 std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const {
+                    if (!hg.record_set().branchial) {
+                        throw std::runtime_error(
+                            "a graph property asked for the branchial relation, which this run "
+                            "was not asked to record: graph_property_needs missed its name");
+                    }
                     std::vector<std::pair<uint32_t, uint32_t>> out;
                     for (const auto& be : hg.causal_graph().get_branchial_edges()) {
                         if (!show_genesis && (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2))) continue;

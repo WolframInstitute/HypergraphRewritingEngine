@@ -591,28 +591,6 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
     return eid;
 }
 
-void Hypergraph::register_event_for_branchial(
-    EventId event,
-    StateId input_state,
-    const EdgeId* consumed_edges,
-    uint8_t num_consumed,
-    EventId canonical_event
-) {
-    // Branchial relationships are exact-consumed-edge overlaps at a shared input
-    // state, independent of event canonicalization: two events branch iff they
-    // consumed a common edge. (Both former paths used exact edge equality and no
-    // canonical skip, so they were identical.) The inverted-index registration below
-    // handles this in O(co-consumers); canonical_event is unused for branchial.
-    (void)canonical_event;
-    causal_graph_.register_event_from_state_with_overlap_check(
-        event, input_state, consumed_edges, num_consumed,
-        [this](EventId eid, const EdgeId*& edges, uint8_t& num) {
-            const Event& ev = events_[eid];
-            edges = ev.consumed_edges;
-            num = ev.num_consumed;
-        }
-    );
-}
 
 // =============================================================================
 // Canonical Hash Computation

@@ -275,21 +275,26 @@ public:
     // More detailed branchial check with access to event data
     //
     // Thread-safety: Uses "add first, check all, deduplicate on insert" pattern.
-    // Both events in a pair may detect the overlap and try to add the edge,
-    // but only one succeeds due to ConcurrentMap deduplication.
-    template<typename GetEventConsumedEdges>
-    void register_event_from_state_with_overlap_check(
+    // The per-state event list, read back through for_each_state_events. It is what an
+    // all-siblings view of the branchial state graph is built from -- every pair of output
+    // states of one input state, with no overlap test -- and that view is the only reader.
+    // Recorded separately from the pair relation below because the two answer different
+    // questions and a caller asking for one should not pay for the other.
+    void record_state_event(EventId event, StateId input_state) {
+        get_or_create_state_events(input_state)->push(event, *arena_);
+    }
+
+    // The branchial PAIR relation: two events branch iff they consumed a common edge at a
+    // shared input state.
+    //
+    // Both events in a pair may detect the overlap and try to add the edge, but only one
+    // succeeds due to ConcurrentMap deduplication.
+    void record_branchial_overlaps(
         EventId event,
         StateId input_state,
         const EdgeId* consumed_edges,
-        uint8_t num_consumed,
-        GetEventConsumedEdges&& /* get_consumed - unused: the index identifies
-                                   co-consumers directly, no per-event edge lookup */
+        uint8_t num_consumed
     ) {
-        // The full per-state event list is exposed to the FFI via for_each_state_events;
-        // branchial detection uses the per-consumed-edge inverted index below.
-        get_or_create_state_events(input_state)->push(event, *arena_);
-
         // Inverted index: for each consumed edge, publish this event into that edge's
         // co-consumer bucket, then scan the same bucket. Per bucket this is
         // "add first, then check", so both events of a pair see each other (whichever

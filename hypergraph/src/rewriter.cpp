@@ -188,15 +188,14 @@ RewriteResult Rewriter::apply(
     }
     }  // end !quotient_causal (full-capture rendezvous)
 
-    // Register for branchial tracking (checks overlap with other events from same state)
-    // Use the RAW input state ID for grouping (matching v1's behavior)
-    // Branchial edges only connect events from the SAME actual state, not just canonically equivalent
-    // Pass canonical_event_id to enable skipping branchial edges between equivalent events
+    // Branchial, in two independent recordings. Grouping is by the RAW input state id: two
+    // events branch when they consumed a common edge of the SAME actual state, not of a
+    // canonically equivalent one, so event canonicalization does not enter either.
+    if (rec.state_events) {
+        hg_->record_state_event(result.event, input_state);
+    }
     if (rec.branchial) {
-        hg_->register_event_for_branchial(
-            result.event, input_state, matched_edges, num_matched,
-            event_result.canonical_event_id
-        );
+        hg_->record_branchial_overlaps(result.event, input_state, matched_edges, num_matched);
     }
 
     result.success = true;

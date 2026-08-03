@@ -42,8 +42,14 @@ using hgcommon::EMPTY_STATE_CANONICAL_HASH;
 // States and events are not listed: the evolution IS the states and the events, so there is no
 // run that skips them.
 struct RecordSet {
+    // The causal relation: which event produced the edge another consumed.
     bool causal = true;
+    // The branchial PAIR relation: two events that consumed a common edge of one state.
     bool branchial = true;
+    // The per-state event list. Read only by an all-siblings view of the branchial state
+    // graph -- every pair of output states of one input state, with no overlap test -- which
+    // is a different question from the pair relation above and is answered without it.
+    bool state_events = true;
 };
 
 // The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an

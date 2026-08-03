@@ -57,6 +57,36 @@ inline uint32_t branchial_target_step(int branchial_step, int steps, bool& filte
     return static_cast<uint32_t>(steps + 1 + branchial_step);
 }
 
+// Which relations a graph property is built FROM, decided by its name.
+//
+// Shared with whoever must decide what the run records: a property whose relation was never
+// recorded is served as an empty graph, and a second copy of this test is how the two come to
+// disagree about one name.
+struct GraphPropertyNeeds {
+    bool causal = false;
+    bool branchial = false;
+};
+
+inline GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {
+    const bool is_causal    = graph_property.rfind("Causal", 0) == 0;
+    const bool is_branchial = graph_property.rfind("Branchial", 0) == 0;
+    const bool is_evolution = graph_property.find("Evolution") != std::string::npos;
+    return GraphPropertyNeeds{
+        is_causal    || (is_evolution && graph_property.find("Causal") != std::string::npos),
+        is_branchial || (is_evolution && graph_property.find("Branchial") != std::string::npos)};
+}
+
+// The union over a list of properties.
+inline GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties) {
+    GraphPropertyNeeds n;
+    for (const std::string& p : properties) {
+        const GraphPropertyNeeds one = graph_property_needs(p);
+        n.causal    = n.causal    || one.causal;
+        n.branchial = n.branchial || one.branchial;
+    }
+    return n;
+}
+
 // Build the "GraphData" association: property name -> <|Vertices, Edges, VertexData|>.
 template <typename Source>
 wxf::WXFValue build_graph_data(const Source& src,
@@ -73,8 +103,9 @@ wxf::WXFValue build_graph_data(const Source& src,
         const bool is_causal    = graph_property.rfind("Causal", 0) == 0;
         const bool is_branchial = graph_property.rfind("Branchial", 0) == 0;
         const bool is_evolution = graph_property.find("Evolution") != std::string::npos;
-        const bool has_causal    = is_evolution && graph_property.find("Causal") != std::string::npos;
-        const bool has_branchial = is_evolution && graph_property.find("Branchial") != std::string::npos;
+        const GraphPropertyNeeds needs = graph_property_needs(graph_property);
+        const bool has_causal    = is_evolution && needs.causal;
+        const bool has_branchial = is_evolution && needs.branchial;
         // Structure variants are TOPOLOGY: their vertex payloads carry ids and steps, never
         // hypergraph contents (edge lists, bindings, consumed/produced sets). The Wolfram side
         // renders them with plain styles and id-level tooltips, so shipping the contents would

@@ -68,8 +68,8 @@ TEST(OracleCorpus, CausalBranchialCountsDeterministicAcrossThreads) {
 // about which.
 TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
     struct Fp {
-        size_t states = 0, events = 0, causal_pairs = 0, branchial = 0;
-        std::multiset<uint64_t> state_hashes, causal, branchial_set;
+        size_t states = 0, events = 0, causal_pairs = 0, branchial = 0, state_event_entries = 0;
+        std::multiset<uint64_t> state_hashes, causal, branchial_set, state_events;
     };
 
     auto run = [](const oracle::Case& c, RecordSet rs) {
@@ -102,6 +102,14 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
             if (e.producer == INVALID_ID || e.consumer == INVALID_ID) continue;
             f.causal.insert(esig(e.producer) * 31 + esig(e.consumer));
         }
+        // The per-state event list, as (input state, event) content pairs.
+        hg.causal_graph().for_each_state_events([&](StateId in, auto* list) {
+            list->for_each([&](EventId e) {
+                ++f.state_event_entries;
+                f.state_events.insert(
+                    (in == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(in)) * 31 + esig(e));
+            });
+        });
         for (const auto& b : hg.causal_graph().get_branchial_edges()) {
             if (b.event1 == INVALID_ID || b.event2 == INVALID_ID) continue;
             const uint64_t a = esig(b.event1), d = esig(b.event2);
@@ -110,32 +118,47 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
         return f;
     };
 
-    bool any_causal = false, any_branchial = false;
+    bool any_causal = false, any_branchial = false, any_state_events = false;
     for (const auto& c : oracle::corpus()) {
-        const Fp all = run(c, RecordSet{true, true});
+        const Fp all = run(c, RecordSet{true, true, true});
         if (all.causal_pairs) any_causal = true;
         if (all.branchial) any_branchial = true;
+        if (all.state_event_entries) any_state_events = true;
 
         // Causal off: no causal relation, and everything else unchanged.
-        const Fp no_c = run(c, RecordSet{false, true});
+        const Fp no_c = run(c, RecordSet{false, true, true});
         EXPECT_EQ(no_c.causal_pairs, 0u) << c.name << ": causal was recorded when unrequested";
         EXPECT_EQ(no_c.states, all.states) << c.name << ": dropping causal moved the state count";
         EXPECT_EQ(no_c.events, all.events) << c.name << ": dropping causal moved the event count";
         EXPECT_EQ(no_c.state_hashes, all.state_hashes) << c.name << ": dropping causal moved the states";
         EXPECT_EQ(no_c.branchial_set, all.branchial_set)
             << c.name << ": dropping causal changed the branchial relation";
+        EXPECT_EQ(no_c.state_events, all.state_events)
+            << c.name << ": dropping causal changed the per-state event list";
 
         // Branchial off: likewise.
-        const Fp no_b = run(c, RecordSet{true, false});
+        const Fp no_b = run(c, RecordSet{true, false, true});
         EXPECT_EQ(no_b.branchial, 0u) << c.name << ": branchial was recorded when unrequested";
         EXPECT_EQ(no_b.states, all.states) << c.name << ": dropping branchial moved the state count";
         EXPECT_EQ(no_b.events, all.events) << c.name << ": dropping branchial moved the event count";
         EXPECT_EQ(no_b.state_hashes, all.state_hashes) << c.name << ": dropping branchial moved the states";
         EXPECT_EQ(no_b.causal, all.causal)
             << c.name << ": dropping branchial changed the causal relation";
+        // The two branchial artifacts are independent: the pair relation can go without
+        // taking the per-state event list with it, which is what an all-siblings view reads.
+        EXPECT_EQ(no_b.state_events, all.state_events)
+            << c.name << ": dropping the branchial PAIRS also dropped the per-state event list";
+
+        const Fp no_se = run(c, RecordSet{true, true, false});
+        EXPECT_EQ(no_se.state_event_entries, 0u)
+            << c.name << ": the per-state event list was recorded when unrequested";
+        EXPECT_EQ(no_se.branchial_set, all.branchial_set)
+            << c.name << ": dropping the per-state event list changed the branchial relation";
+        EXPECT_EQ(no_se.causal, all.causal)
+            << c.name << ": dropping the per-state event list changed the causal relation";
 
         // Neither: the evolution itself is untouched.
-        const Fp none = run(c, RecordSet{false, false});
+        const Fp none = run(c, RecordSet{false, false, false});
         EXPECT_EQ(none.causal_pairs, 0u) << c.name;
         EXPECT_EQ(none.branchial, 0u) << c.name;
         EXPECT_EQ(none.state_hashes, all.state_hashes)
@@ -147,4 +170,5 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
     // relation, so the gate would pass on an engine that never records either.
     EXPECT_TRUE(any_causal) << "no corpus workload produced a causal relation";
     EXPECT_TRUE(any_branchial) << "no corpus workload produced a branchial relation";
+    EXPECT_TRUE(any_state_events) << "no corpus workload produced a per-state event list";
 }

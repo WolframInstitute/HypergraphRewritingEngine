@@ -99,6 +99,7 @@ class Hypergraph {
     std::atomic<bool> quotient_causal_{false};
     std::atomic<bool> record_causal_{true};
     std::atomic<bool> record_branchial_{true};
+    std::atomic<bool> record_state_events_{true};
 
     // Per-state canonical edge-orbit tables, computed once at state canonicalization in
     // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
@@ -1051,10 +1052,12 @@ public:
     void set_record_set(RecordSet r) {
         record_causal_.store(r.causal, std::memory_order_relaxed);
         record_branchial_.store(r.branchial, std::memory_order_relaxed);
+        record_state_events_.store(r.state_events, std::memory_order_relaxed);
     }
     RecordSet record_set() const {
         return RecordSet{record_causal_.load(std::memory_order_relaxed),
-                         record_branchial_.load(std::memory_order_relaxed)};
+                         record_branchial_.load(std::memory_order_relaxed),
+                         record_state_events_.load(std::memory_order_relaxed)};
     }
 
     // Create a genesis event for an initial state.
@@ -1066,13 +1069,15 @@ public:
     // Register event for branchial tracking
     // When event canonicalization is enabled, uses edge equivalence for overlap detection
     // and skips branchial edges between canonically equivalent events
-    void register_event_for_branchial(
-        EventId event,
-        StateId input_state,
-        const EdgeId* consumed_edges,
-        uint8_t num_consumed,
-        EventId canonical_event = INVALID_ID  // Pass canonical_event_id for deduplication
-    );
+    // The per-state event list and the branchial pair relation, recorded independently: they
+    // feed different outputs, so a run that needs one need not build the other.
+    void record_state_event(EventId event, StateId input_state) {
+        causal_graph_.record_state_event(event, input_state);
+    }
+    void record_branchial_overlaps(EventId event, StateId input_state,
+                                   const EdgeId* consumed_edges, uint8_t num_consumed) {
+        causal_graph_.record_branchial_overlaps(event, input_state, consumed_edges, num_consumed);
+    }
 
     // Get causal/branchial statistics
     size_t num_causal_edges() const { return causal_graph_.num_causal_edges(); }
