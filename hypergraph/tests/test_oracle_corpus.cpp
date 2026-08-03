@@ -301,6 +301,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
             ParallelEvolutionEngine e(&split, 4);
             e.set_transitive_reduction(true);
             for (const auto& r : c.rules) e.add_rule(r);
+            e.set_continuable(true);
             e.evolve(c.init, first);
             const size_t after_first = split.num_canonical_states();
             e.evolve_more(c.measure_steps - first);
@@ -323,4 +324,26 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
     // would pass on an evolve_more that did nothing at all.
     EXPECT_GT(continued_anything, 0u)
         << "no workload grew when continued, so the continuation was never exercised";
+}
+
+// A run that was not made continuable says so, rather than returning the graph it already had.
+//
+// The frontier costs arena on every run, so it is off by default; the failure mode that
+// creates is a continuation that silently does nothing and returns a graph that reads as
+// converged. That is a programmer error, and the engine's policy is that those are raised.
+TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
+    // The corpus is returned BY VALUE; binding a reference to .front() of the temporary does
+    // not extend its lifetime, and the dangling case read as an engine with no rules.
+    const auto corpus = oracle::corpus();
+    const auto& c = corpus.front();
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 2);
+    for (const auto& r : c.rules) e.add_rule(r);
+    EXPECT_FALSE(e.continuable()) << "recording the frontier must be opt-in";
+    e.evolve(c.init, 2);
+
+    EXPECT_THROW(e.evolve_more(1), std::runtime_error)
+        << "evolve_more returned quietly on a run with no frontier, so the caller gets the graph "
+        << "it already had and nothing says the continuation did not happen";
 }

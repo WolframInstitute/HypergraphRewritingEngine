@@ -1010,14 +1010,11 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
     // causal edges are expressed over ids, so no Event record (and hence no raw state or raw
     // edge) has to be materialised here.
     const uint32_t ev = qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
-    {   // The event's only identity: isomorphism-invariant, so schedule-independence can be
-        // fingerprinted on it and a later materialisation can key off it.
-        uint64_t s = 1469598103934665603ULL;
-        s ^= state_hash; s *= 1099511628211ULL;
-        s ^= m.to_hash;  s *= 1099511628211ULL;
-        s ^= m.rule;     s *= 1099511628211ULL;
-        qc_event_sig_.emplace_at(ev, arena_, s);
-    }
+    // The event's content: which class it went from, which to, and by which rule. Its hash is
+    // the isomorphism-invariant identity that schedule-independence is fingerprinted on, and it
+    // is derived from these rather than stored beside them.
+    qc_event_sig_.emplace_at(ev, arena_,
+                             QcEventContent{state_hash, m.to_hash, static_cast<uint32_t>(m.rule)});
 
     // The RUN'S event identity, which is a different question from the invariant above. Slots
     // are positions in the class's canonical frame, so they ARE the canonical ranks the

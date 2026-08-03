@@ -36,6 +36,26 @@ using hgcommon::EMPTY_STATE_CANONICAL_HASH;
 // unqualified.
 using hgcommon::RecordSet;
 
+// One reconstructed event's content: the class it went from, the class it went to, and the rule
+// that took it. A reconstructed event has no Event record -- the replay mints an id and
+// materialises nothing -- so this is what describes it.
+//
+// The triple HASH is its isomorphism-invariant identity, derived here rather than stored beside
+// the components so the mixing has one definition and the two cannot drift.
+struct QcEventContent {
+    uint64_t from_class = 0;
+    uint64_t to_class = 0;
+    uint32_t rule = 0;
+
+    uint64_t triple_hash() const {
+        uint64_t s = 1469598103934665603ULL;
+        s ^= from_class; s *= 1099511628211ULL;
+        s ^= to_class;   s *= 1099511628211ULL;
+        s ^= rule;       s *= 1099511628211ULL;
+        return s;
+    }
+};
+
 // The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an
 // edge's producer events with its consumer events. Strongly typed and distinct from:
 //   * EdgeId     -- one concrete hyperedge instance in one state (a dense counter), and

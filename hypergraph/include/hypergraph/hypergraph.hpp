@@ -230,10 +230,11 @@ class Hypergraph {
     ConcurrentMap<uint64_t, uint8_t> qc_causal_pairs_;              // distinct (producer, consumer)
     ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
-    // Reconstructed events carry no Event record, so this is the only identity they have -- it
-    // is what schedule-independence is fingerprinted on, and what a later materialisation of
-    // the raw event list would key off.
-    SegmentedArray<uint64_t> qc_event_sig_;
+    // Reconstructed events carry no Event record, so this is the only description they have --
+    // it is what schedule-independence is fingerprinted on, and what a graph over reconstructed
+    // events is built from. Held as the three COMPONENTS rather than their hash: the hash
+    // identifies an event and cannot describe one, and a vertex needs its endpoints.
+    SegmentedArray<QcEventContent> qc_event_sig_;
     // The same events under the RUN'S event identity, indexed the same way. The pair accessors
     // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
     // relation against full capture is comparing against Event::signature, which is the run's
@@ -912,8 +913,8 @@ public:
     void for_each_reconstructed_raw_triple(F&& f) const {
         const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
         for (uint32_t i = 0; i < n; ++i) {
-            const uint64_t* s = qc_event_sig_.get(i);
-            if (s) f(*s);
+            const QcEventContent* c = qc_event_sig_.get(i);
+            if (c) f(c->triple_hash());
         }
     }
 
@@ -927,8 +928,7 @@ public:
             const uint64_t* r = qc_event_runsig_.get(e);
             if (r) return *r;
         }
-        const uint64_t* s = qc_event_sig_.get(e);
-        return s ? *s : 0;
+        return reconstructed_raw_triple(e);
     }
 
     // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
@@ -972,8 +972,14 @@ public:
     // The schedule-stable content triple of ONE reconstructed event: hash(input class, output
     // class, rule). 0 when the event has no recorded triple.
     uint64_t reconstructed_raw_triple(uint32_t e) const {
-        const uint64_t* s = qc_event_sig_.get(e);
-        return s ? *s : 0;
+        const QcEventContent* c = qc_event_sig_.get(e);
+        return c ? c->triple_hash() : 0;
+    }
+
+    // The event's content itself, for a caller that must DESCRIBE the event rather than
+    // identify it. Null when no such reconstructed event exists.
+    const QcEventContent* reconstructed_event_content(uint32_t e) const {
+        return qc_event_sig_.get(e);
     }
 
     // Visit the reconstructed branchial relation as pairs of isomorphism-invariant event

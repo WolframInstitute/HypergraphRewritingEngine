@@ -644,14 +644,16 @@ private:
     // computed, so this is precisely the work a continuation resumes -- and precisely the
     // frontier, since a state is refused a match task only for being one step past the budget.
     //
-    // The delta context is carried with it: without it the resumed task would rescan the whole
-    // state, which finds the same matches but is the slow path the parent already paid to avoid.
+    // The state and its step, and nothing else. Carrying the delta context as well cost 30.1 MB
+    // across the oracle corpus -- +9.3% of the arena -- on every run, continued or not. It also
+    // buys nothing: a delta context says which edges are new relative to the parent so the scan
+    // can skip what forwarding already offered, and a frontier state had no scan at all, so the
+    // full scan is the correct resume rather than a fallback.
     struct DeferredMatch {
         StateId state;
         uint32_t step;
-        MatchContext ctx;
-        bool has_ctx;
     };
+    bool continuable_{false};
     LockFreeList<DeferredMatch> deferred_frontier_;
 
     // A rewrite the step budget refused. Match forwarding STORES a forwarded match on the child
@@ -666,7 +668,7 @@ private:
     LockFreeList<DeferredRewrite> deferred_rewrites_;
     std::atomic<size_t> deferred_count_{0};
 
-    void defer_match_task(StateId state, uint32_t step, const MatchContext* ctx);
+    void defer_match_task(StateId state, uint32_t step);
     void defer_rewrite_task(const MatchRecord& match, uint32_t step);
 
     // Evolution control
@@ -1087,12 +1089,19 @@ public:
     // systems only) passes SIZE_MAX.
     void evolve(const std::vector<std::vector<VertexId>>& initial_edges, size_t steps);
 
+    // Record what a continuation would resume from. Off by default: the frontier costs 12.5 MB
+    // across the oracle corpus, +3.9% of the arena, and a run that is never continued pays all
+    // of it for nothing. Set before evolve().
+    void set_continuable(bool on) { continuable_ = on; }
+    bool continuable() const { return continuable_; }
+
     // Carry the SAME run `additional_steps` further, from the frontier where the budget stopped
     // it. Equivalent to having asked for the total in the first place; the states, events and
     // relations already built are kept rather than recomputed.
     //
-    // Does nothing if no evolve() has run: there is no frontier to resume from, and seeding one
-    // here would be a second copy of what evolve() does with the roots it was given.
+    // Throws unless the run was made continuable before evolve(): without the frontier there is
+    // nothing to resume from, and returning the unchanged graph would be a wrong answer that
+    // looks like a converged one.
     void evolve_more(size_t additional_steps);
 
     // Overload for multiple initial states (without abort callback)

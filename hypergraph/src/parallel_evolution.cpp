@@ -918,7 +918,7 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     // Past the budget: this is the frontier, not a dead end. Kept so a continuation resumes
     // exactly here. The caps below are different -- a cap is a decision, and resuming past one
     // would undo it.
-    if (step > max_steps_) { defer_match_task(state, step, nullptr); return; }
+    if (step > max_steps_) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -942,7 +942,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     const MatchContext& ctx
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) { defer_match_task(state, step, &ctx); return; }
+    if (step > max_steps_) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -1252,22 +1252,27 @@ size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
     return (*result)->matches.load(std::memory_order_acquire);
 }
 
-void ParallelEvolutionEngine::defer_match_task(StateId state, uint32_t step,
-                                               const MatchContext* ctx) {
-    DeferredMatch d{state, step, MatchContext{}, ctx != nullptr};
-    if (ctx) d.ctx = *ctx;
-    deferred_frontier_.push(d, hg_->arena());
+void ParallelEvolutionEngine::defer_match_task(StateId state, uint32_t step) {
+    if (!continuable_) return;
+    deferred_frontier_.push(DeferredMatch{state, step}, hg_->arena());
     deferred_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint32_t step) {
+    if (!continuable_) return;
     deferred_rewrites_.push(DeferredRewrite{match, step}, hg_->arena());
     deferred_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
     if (!hg_ || rules_.empty() || additional_steps == 0) return;
-    if (deferred_count_.load(std::memory_order_acquire) == 0) return;   // nothing to resume
+    if (!continuable_) {
+        throw std::runtime_error(
+            "evolve_more: this run did not record a continuation frontier. Call "
+            "set_continuable(true) before evolve(); resuming without it would return the "
+            "unchanged graph, which reads as a converged one.");
+    }
+    if (deferred_count_.load(std::memory_order_acquire) == 0) return;   // budget was never hit
 
     max_steps_ += additional_steps;
     should_stop_.store(false, std::memory_order_relaxed);
@@ -1286,10 +1291,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
     // Rewrites first: they mint the transitions the budget stranded, and doing them before the
     // frontier's matching means the states they create are matched in the same pass.
     for (const DeferredRewrite& d : resume_rw) submit_rewrite_task(d.match, d.step);
-    for (const DeferredMatch& d : resume) {
-        if (d.has_ctx) submit_match_task_with_context(d.state, d.step, d.ctx);
-        else           submit_match_task(d.state, d.step);
-    }
+    for (const DeferredMatch& d : resume) submit_match_task(d.state, d.step);
     // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
     roots_seeded_.store(true, std::memory_order_release);
     try_complete_depth(0);
