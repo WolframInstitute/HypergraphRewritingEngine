@@ -10,6 +10,42 @@
 
 using namespace hypergraph;
 
+namespace {
+
+// The causal relation the run SERVES, as a multiset of endpoint-pair keys.
+//
+// Which mechanism produced it is the run's business, not the gate's: on the reconstruction
+// route hg.causal_graph() holds what full capture left behind, and reading it measures the
+// wrong mechanism -- silently, and only on the routings where the two differ.
+//
+// Endpoints are the schedule-stable content triple where the reconstruction serves, and the
+// canonical endpoint states otherwise, because a raw event id means nothing across runs.
+inline std::multiset<uint64_t> served_causal_pairs(Hypergraph& hg) {
+    auto mix = [](uint64_t h, uint64_t v) { h ^= v; h *= 1099511628211ULL; return h; };
+    std::multiset<uint64_t> out;
+    if (hg.quotient_reconstruction()) {
+        hg.for_each_reconstructed_causal_as(
+            hg.causal_graph().transitive_reduction_enabled(),
+            [&](uint32_t e) { return hg.reconstructed_raw_triple(e); },
+            [&](uint64_t p, uint64_t c) { out.insert(mix(mix(0, p), c)); });
+        return out;
+    }
+    auto esig = [&](EventId e) {
+        const Event& x = hg.get_event(e);
+        uint64_t h = 1469598103934665603ULL;
+        h = mix(h, x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
+        h = mix(h, x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
+        return mix(h, x.rule_index);
+    };
+    for (const auto& ce : hg.causal_graph().get_causal_edges()) {
+        if (ce.producer == INVALID_ID || ce.consumer == INVALID_ID) continue;
+        out.insert(esig(ce.producer) * 31 + esig(ce.consumer));
+    }
+    return out;
+}
+
+}  // namespace
+
 TEST(OracleCorpus, EveryRuleTypeMatchesBruteForce) {
     for (const auto& c : oracle::corpus()) {
         bool all_small = true;
@@ -84,8 +120,9 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
         Fp f;
         f.states = hg.num_canonical_states();
         f.events = hg.num_events();
-        f.causal_pairs = hg.causal_graph().num_causal_event_pairs();
-        f.branchial = hg.causal_graph().num_branchial_edges();
+        f.causal_pairs = hg.observable_num_causal_pairs(
+            hg.causal_graph().transitive_reduction_enabled());
+        f.branchial = hg.observable_num_branchial();
         for (uint32_t s = 0; s < hg.num_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
@@ -98,10 +135,7 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
             mix(x.rule_index);
             return h;
         };
-        for (const auto& e : hg.causal_graph().get_causal_edges()) {
-            if (e.producer == INVALID_ID || e.consumer == INVALID_ID) continue;
-            f.causal.insert(esig(e.producer) * 31 + esig(e.consumer));
-        }
+        f.causal = served_causal_pairs(hg);
         // The per-state event list, as (input state, event) content pairs.
         hg.causal_graph().for_each_state_events([&](StateId in, auto* list) {
             list->for_each([&](EventId e) {
@@ -198,24 +232,13 @@ TEST(OracleCorpus, SerialExecutionMatchesTheThreadedEngine) {
         Fp f;
         f.states = hg.num_canonical_states();
         f.events = hg.num_events();
-        f.causal = hg.causal_graph().num_causal_event_pairs();
-        f.branchial = hg.causal_graph().num_branchial_edges();
+        f.causal = hg.observable_num_causal_pairs(
+            hg.causal_graph().transitive_reduction_enabled());
+        f.branchial = hg.observable_num_branchial();
         for (uint32_t s = 0; s < hg.num_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
-        auto esig = [&](EventId ev) {
-            const Event& x = hg.get_event(ev);
-            uint64_t h = 1469598103934665603ULL;
-            auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
-            mix(x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
-            mix(x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
-            mix(x.rule_index);
-            return h;
-        };
-        for (const auto& ce : hg.causal_graph().get_causal_edges()) {
-            if (ce.producer == INVALID_ID || ce.consumer == INVALID_ID) continue;
-            f.causal_pairs.insert(esig(ce.producer) * 31 + esig(ce.consumer));
-        }
+        f.causal_pairs = served_causal_pairs(hg);
         return f;
     };
 
@@ -247,10 +270,9 @@ TEST(OracleCorpus, SerialSpawnsNoWorkerAndOneWorkerIsNotSerial) {
 
 // Continuing a run gives the same graph as asking for the total in the first place.
 //
-// evolve() begins from the roots it is handed, so two more steps used to mean redoing the first
-// N. evolve_more resumes from the frontier the budget stopped at. What must hold is that the
-// split run and the whole run are the same evolution -- compared on the graph, since state and
-// event ids are handed out in arrival order and the two paths arrive differently.
+// evolve_more resumes from the frontier the budget stopped at. What must hold is that the split
+// run and the whole run are the same evolution -- compared on the graph, since state and event
+// ids are handed out in arrival order and the two paths arrive differently.
 TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
     struct Fp {
         size_t states = 0, events = 0, causal = 0, branchial = 0;
@@ -260,24 +282,13 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         Fp f;
         f.states = hg.num_canonical_states();
         f.events = hg.num_events();
-        f.causal = hg.causal_graph().num_causal_event_pairs();
-        f.branchial = hg.causal_graph().num_branchial_edges();
+        f.causal = hg.observable_num_causal_pairs(
+            hg.causal_graph().transitive_reduction_enabled());
+        f.branchial = hg.observable_num_branchial();
         for (uint32_t s = 0; s < hg.num_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
-        auto esig = [&](EventId ev) {
-            const Event& x = hg.get_event(ev);
-            uint64_t h = 1469598103934665603ULL;
-            auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
-            mix(x.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.input_state));
-            mix(x.output_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(x.output_state));
-            mix(x.rule_index);
-            return h;
-        };
-        for (const auto& ce : hg.causal_graph().get_causal_edges()) {
-            if (ce.producer == INVALID_ID || ce.consumer == INVALID_ID) continue;
-            f.causal_pairs.insert(esig(ce.producer) * 31 + esig(ce.consumer));
-        }
+        f.causal_pairs = served_causal_pairs(hg);
         return f;
     };
 
