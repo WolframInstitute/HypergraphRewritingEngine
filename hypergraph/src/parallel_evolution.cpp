@@ -347,27 +347,22 @@ LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
     return inserted ? new_list : existing;
 }
 
-uint64_t ParallelEvolutionEngine::store_match_for_state(
+void ParallelEvolutionEngine::store_match_for_state(
     StateId state,
     MatchRecord& match,
     bool with_fence
 ) {
-    // Publish the match, THEN bump the rendezvous epoch. Pulls re-walk their
-    // ancestor chain while match_epoch_ keeps changing; pushing before the bump
-    // guarantees that a pull woken by this bump also observes the pushed match.
-    // (Bumping first opens a window where the pull re-reads the list before the
-    // push lands, sees no further epoch change, and quiesces without the match.)
+    // The match is published HERE and read by two separate deliveries: the push, which scans
+    // this state's children right after, and a later child's pull, which walks its ancestors'
+    // match lists. Storing before either runs is what makes the match findable by both.
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
     list->push(match, hg_->arena());
 
-    // In non-batched (eager) mode, we need a fence after each store to ensure
-    // visibility before push_match_to_children runs. In batched mode, we use
-    // a single fence after all stores.
+    // Eager pushes immediately after this call returns, so the store must be visible to the
+    // scan; batched fences once after the whole batch instead of once per match.
     if (with_fence) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
-
-    return match_epoch_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(StateId state) {
@@ -389,21 +384,19 @@ LockFreeList<ChildInfo>* ParallelEvolutionEngine::get_or_create_state_children(S
     return inserted ? new_list : existing;
 }
 
-uint64_t ParallelEvolutionEngine::register_child_with_parent(
+void ParallelEvolutionEngine::register_child_with_parent(
     StateId parent,
     StateId child,
     const EdgeId* consumed_edges,
     uint8_t num_consumed,
     uint32_t child_step
 ) {
-    if (parent == INVALID_ID) return 0;
+    if (parent == INVALID_ID) return;
 
-    // Build ChildInfo (epoch will be set after push)
     ChildInfo info;
     info.child_state = child;
     info.num_consumed = num_consumed;
     info.creation_step = child_step;  // Step at which child was created
-    info.registration_epoch = 0;  // Temporary, will update after push
     for (uint8_t i = 0; i < num_consumed; ++i) {
         info.consumed_edges[i] = consumed_edges[i];
     }
@@ -429,14 +422,11 @@ uint64_t ParallelEvolutionEngine::register_child_with_parent(
     ParentInfo* parent_info = hg_->arena().template create<ParentInfo>(pi_init);
     state_parent_.insert_if_absent(id_key(child), parent_info);
 
-    // Now make the child push-visible (for push_match_to_children, incl. recursive)
+    // Now make the child push-visible (for push_match_to_children, incl. recursive). The
+    // pusher notices a child that arrives mid-scan by watching THIS parent's list head, not a
+    // global counter -- see push_match_to_children for why the scope matters.
     LockFreeList<ChildInfo>* children = get_or_create_state_children(parent);
     children->push(info, hg_->arena());
-
-    // Bump the rendezvous epoch (pushers retry their child scan on epoch change)
-    uint64_t epoch = child_epoch_.fetch_add(1, std::memory_order_acq_rel);
-
-    return epoch;
 }
 
 void ParallelEvolutionEngine::note_late_arrival(uint64_t match_hash) {
@@ -614,9 +604,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
     SVec<MatchRecord>& batch
 ) {
     forward_matches_from_single_ancestor_impl(
-        ancestor, child, accumulated_consumed, total_consumed, step,
-        0,  // child_registration_epoch unused
-        batch);
+        ancestor, child, accumulated_consumed, total_consumed, step, batch);
 }
 
 void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
@@ -625,7 +613,6 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
     const EdgeId* accumulated_consumed,
     uint8_t total_consumed,
     uint32_t step,
-    uint64_t /* child_registration_epoch - unused */,
     SVec<MatchRecord>& batch
 ) {
     auto result = state_matches_.lookup_waiting(id_key(ancestor));

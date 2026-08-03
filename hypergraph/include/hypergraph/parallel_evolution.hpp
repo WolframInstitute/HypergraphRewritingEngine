@@ -305,7 +305,6 @@ struct ChildInfo {
     EdgeId consumed_edges[MAX_PATTERN_EDGES];
     uint8_t num_consumed;
     uint32_t creation_step{0};  // Step at which child was created
-    uint64_t registration_epoch{0};  // Epoch when child was registered
 
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
         for (uint8_t i = 0; i < num_edges; ++i) {
@@ -545,21 +544,6 @@ private:
     static constexpr uint64_t PARENT_MAP_LOCKED = (1ULL << 62) + 301;
     ConcurrentMap<uint64_t, ParentInfo*, PARENT_MAP_EMPTY, PARENT_MAP_LOCKED> state_parent_;
 
-    // Global epoch counter for ordering matches and registrations
-    // Used to determine if push or pull should handle each (match, child) pair:
-    // - If match.epoch < child.epoch: child pulls (match was stored before child registered)
-    // - If match.epoch >= child.epoch: parent pushes (match stored after child registered)
-    // Split rendezvous epochs. match_epoch_ bumps only when a match is stored for
-    // some state; child_epoch_ bumps only when a child registers under a parent. The
-    // pull retry (collecting ancestor matches) watches match_epoch_; the push retry
-    // (scanning a parent's children) watches child_epoch_. Keeping them separate stops
-    // a match-store from spuriously re-scanning children lists and a child-registration
-    // from spuriously re-walking ancestor chains. Start at 1 to avoid 0 confusion.
-    // Each takes its own cache line: adjacent, the two would share one, and a bump of
-    // either would invalidate the other for every core watching it -- which is exactly
-    // the coupling the split exists to remove, reintroduced by the hardware.
-    alignas(64) std::atomic<uint64_t> match_epoch_{1};
-    alignas(64) std::atomic<uint64_t> child_epoch_{1};
 
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
@@ -1152,15 +1136,15 @@ private:
     LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state);
 
     // Helper: Store a match for a state (for later forwarding)
-    uint64_t store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false);
+    void store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false);
 
     // Helper: Get or create the children list for a state (thread-safe)
     LockFreeList<ChildInfo>* get_or_create_state_children(StateId state);
 
     // Helper: Register a child with its parent (for push-based forwarding)
-    uint64_t register_child_with_parent(StateId parent, StateId child,
-                                     const EdgeId* consumed_edges, uint8_t num_consumed,
-                                     uint32_t child_step = 0);
+    void register_child_with_parent(StateId parent, StateId child,
+                                    const EdgeId* consumed_edges, uint8_t num_consumed,
+                                    uint32_t child_step = 0);
 
     // Which moment a push is issued from. The two are counted separately because they answer
     // different questions about whether the push has anything to do -- see EvolutionStats.
@@ -1195,7 +1179,7 @@ private:
     void forward_matches_from_single_ancestor_impl(
         StateId ancestor, StateId child,
         const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step, uint64_t child_registration_epoch,
+        uint32_t step,
         SVec<MatchRecord>& batch
     );
 
