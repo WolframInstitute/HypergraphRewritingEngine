@@ -1,5 +1,22 @@
 // tools/wl_engine_incremental.cpp
 //
+// SCOPE, AND WHY A SPEEDUP HERE DOES NOT CLOSE OR OPEN A ROUTE.
+//
+// The number below is WALL CLOCK, which drifts more than 10% run to run on this machine --
+// larger than most effects worth attributing. Every perf conclusion this project stands on since
+// board #48 uses callgrind instructions or cachegrind misses instead. A difference under ~10%%
+// measured here is not a result, in either direction.
+//
+// It also measures the wrong cost for the decision it looks like it informs. Incremental WL saves
+// O(delta) SIGNATURE COMPUTATION. That is not where the engine's WL cost lives: 9.74% of a
+// non-Full run is __memset_avx2 zeroing WL scratch (board #43), which is ALLOCATION DISCIPLINE and
+// is untouched by making the signature cheaper. Incremental WL was built bit-identical and then
+// dropped (0530f69) and this is the reason it stays dropped -- not the wall-clock comparison that
+// was originally recorded for it, which was weak evidence for a right answer.
+//
+// What this tool IS good for: proving the incremental hash is BIT-IDENTICAL to the engine's. That
+// is a correctness question, it has a definite answer, and wall clock has nothing to do with it.
+//
 // Validates a SPARSE incremental WL against the ENGINE's real full WL
 // (WLHash::compute_state_hash_with_cache, now a commutative multiset hash), and
 // measures the de-confounded speedup. The incremental reimplements the engine's
