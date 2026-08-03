@@ -210,6 +210,7 @@ struct Engine::Impl {
     // Engine-lifetime, cleared per run: rebuilding its maps costs tens of MB of cudaMalloc
     // per evolve. Constructed on the first run that routes quotient causal.
     std::unique_ptr<QcState>           qc_state_;
+    std::unique_ptr<QeState>           qe_state_;
     StateId*                           d_frontier_       = nullptr;
     StateId*                           d_next_frontier_  = nullptr;
     uint32_t*                          d_next_count_     = nullptr;
@@ -266,14 +267,19 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     auto t_total_start = std::chrono::steady_clock::now();
     auto t_init_start = std::chrono::steady_clock::now();
     EngineState& engine = state_;
-    // Quotient exploration under Full state identity routes causal through the orbit-keyed DP
-    // (quotient_causal.hpp): which raw child wins the canonical slot decides which raw edges
-    // carry the attribution, so the raw rendezvous is schedule-dependent there
-    // (tools/quotient_causal_probe_gpu). TR stays off on that route, mirroring the host's
-    // guard_quotient_transitive_reduction.
-    const bool qc_route = in.explore_from_canonical_states_only &&
-                          in.canonicalization == CanonicalizationMode::Full &&
-                          in.num_steps > 0;
+    // WHICH RUNS RECONSTRUCT. This must be the same predicate the host uses
+    // (ParallelEvolutionEngine::configure_identity_and_quotient), because it decides where event
+    // identity comes from: the class frame, or each raw state's own labelling. The device used
+    // to require quotient EXPLORATION, so an Automatic-identity run under full capture took the
+    // raw-labelling path here and the class-frame path on the host -- which is the whole of the
+    // CPU 21 / GPU 23 divergence.
+    //
+    // Full state canonicalization is required by both: the reconstruction is defined over
+    // canonical states and their edge orbits, and no other mode computes orbit tables.
+    const bool qc_route = in.canonicalization == CanonicalizationMode::Full &&
+                          in.num_steps > 0 &&
+                          (in.explore_from_canonical_states_only ||
+                           event_keys_for(in.event_canonicalization) == EVENT_SIG_AUTOMATIC);
     engine.set_quotient_causal(qc_route);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
     if (qc_route) engine.ensure_edge_orbits();
@@ -390,6 +396,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         qc_state_->clear();
     QcView qc_view = qc_state_->view(in.num_steps);
 
+    // The class-frame expansion capture rides the same route decision as the causal DP: both
+    // ARE the quotient reconstruction, and a run that reconstructs causality is exactly a run
+    // whose event identity comes from the class frame rather than each raw state's labelling.
+    if (!qe_state_ || qe_state_->enabled() != qc_route)
+        qe_state_ = std::make_unique<QeState>(qc_route, cfg.max_events);
+    else
+        qe_state_->clear();
+    QeView qe_view = qe_state_->view(in.num_steps);
+
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
         std::random_device rd;
@@ -479,9 +494,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             explore_threshold_u32, resolved_seed,
             in.canonicalization, ekeys, /*blocks=*/0,
             /*quotient_roots=*/in.quotient_initial_states,
-            qc_route ? &qc_view : nullptr);
+            qc_route ? &qc_view : nullptr,
+            qc_route ? &qe_view : nullptr);
 
         state_count_host = engine.num_states_host();
+        out.expansion_matches = qc_route ? qe_state_->num_matches_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
         if (dbg) {
             const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +

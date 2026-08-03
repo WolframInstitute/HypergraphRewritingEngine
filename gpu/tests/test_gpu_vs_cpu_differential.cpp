@@ -290,9 +290,9 @@ NormalizedResult run_cpu(const Workload& w) {
     return out;
 }
 
-NormalizedResult run_gpu(const Workload& w) {
-    NormalizedResult out;
-
+// One mapping from a Workload to a device run. Any test that needs the raw EvolveResult rather
+// than the normalized comparison uses this, so the two cannot describe different runs.
+hg_gpu::EvolveInput make_input(const Workload& w) {
     hg_gpu::EvolveInput in;
     in.rules                  = w.rules;
     in.initial_state          = w.initial_state;
@@ -308,6 +308,13 @@ NormalizedResult run_gpu(const Workload& w) {
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
     in.slice_scan_max_edges = w.slice_scan_max_edges;
     in.max_blocks_per_launch = w.max_blocks_per_launch;
+    return in;
+}
+
+NormalizedResult run_gpu(const Workload& w) {
+    NormalizedResult out;
+
+    hg_gpu::EvolveInput in = make_input(w);
 
     auto result = hg_gpu::evolve(in);
 
@@ -878,6 +885,50 @@ TEST(CanonicalEventCount, ReconstructionGapIsStillOpen) {
     EXPECT_EQ(gpu.num_events, 23u)
         << "the device's count moved; if it now reports 21 the port has landed -- replace this "
            "reproducer with an equality against observable_num_events()";
+}
+
+// P2.1: the device captures the SAME class-frame expansion the host does.
+//
+// The expansion is the input to the per-instance replay, so a device that captures a different
+// number of frame matches cannot agree with the host on event identity however good the replay
+// is. This gates the capture on its own, before any replay exists -- otherwise the first
+// disagreement would surface as an event-count difference with two candidate causes.
+//
+// One record per match of each class's FRAME state, so the host total is the sum of
+// for_each_expansion_match over the distinct canonical hashes it captured.
+TEST(CanonicalEventCount, DeviceCapturesTheSameClassFrameExpansion) {
+    Workload w;
+    w.name = "two_rules_overlap_automatic";
+    w.rules = {rule({{0,1}}, {{0,2},{2,1}}), rule({{0,1}}, {{1,2},{2,0}})};
+    w.initial_state = {{0u, 1u}};
+    w.num_steps = 3;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+
+    hg_gpu::EvolveInput in = make_input(w);
+    hg_gpu::EvolveResult gpu = hg_gpu::evolve(in);
+
+    hypergraph::Hypergraph hg;
+    hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+    hypergraph::ParallelEvolutionEngine pe(&hg, 1);
+    for (size_t i = 0; i < w.rules.size(); ++i)
+        pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+    pe.evolve({{0u, 1u}}, w.num_steps);
+
+    size_t host_total = 0;
+    std::set<uint64_t> seen;
+    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+        const uint64_t h = hg.get_state(sid).canonical_hash;
+        if (!seen.insert(h).second) continue;
+        hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_total; });
+    }
+
+    EXPECT_GT(host_total, 0u) << "the host captured no expansion at all -- the comparison "
+                                 "below would pass on a device that captures nothing";
+    EXPECT_EQ(gpu.expansion_matches, host_total)
+        << "device captured " << gpu.expansion_matches << " class-frame matches, host "
+        << host_total;
 }
 
 TEST(CanonicalEventCount, ModesVsCpu) {

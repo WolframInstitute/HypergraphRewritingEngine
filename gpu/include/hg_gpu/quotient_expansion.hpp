@@ -253,6 +253,11 @@ public:
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
 
+    // Records captured this run: one per match of each class's frame state. The number the
+    // host's for_each_expansion_match yields when summed over classes, and the gate for the
+    // capture being wired correctly.
+    uint32_t num_matches_host() { return matches_.size_host(); }
+
     QeView view(uint32_t max_steps) {
         QeView q{};
         q.matches      = matches_.view();

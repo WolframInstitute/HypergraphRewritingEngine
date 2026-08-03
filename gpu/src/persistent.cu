@@ -10,6 +10,7 @@
 #include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/quotient_causal.hpp"
+#include "hg_gpu/quotient_expansion.hpp"
 #include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -77,15 +78,18 @@ __global__ void k_qc_seed_roots(DeviceState ds, QcView qc, uint32_t num_roots) {
 // Register a range of raw events, one thread each -- the host-driven
 // per-step drive, run after the step's identity phase so both endpoints' hashes and orbit
 // tables exist.
-__global__ void k_qc_register_range(DeviceState ds, QcView qc, uint32_t lo, uint32_t hi) {
+__global__ void k_qc_register_range(DeviceState ds, QcView qc, QeView qe,
+                                    uint32_t lo, uint32_t hi) {
     const uint32_t eid = lo + blockIdx.x * blockDim.x + threadIdx.x;
     if (eid >= hi) return;
     const DeviceEvent& ev = ds.event_pool.at(eid);
     if (ev.id == INVALID_ID || ev.input_state == INVALID_ID ||
         ev.output_state == INVALID_ID)
         return;
-    qc_register_transition(ds, qc, ev.input_state, ev.output_state, eid, ev.rule,
-                           ev.step > 0 ? ev.step - 1 : 0);
+    const uint32_t depth = ev.step > 0 ? ev.step - 1 : 0;
+    qc_register_transition(ds, qc, ev.input_state, ev.output_state, eid, ev.rule, depth);
+    // The class frame's matches, in slots -- the input the per-instance replay reads.
+    qe_capture_expansion(ds, qe, ev.input_state, ev.output_state, eid, ev.rule, depth);
 }
 
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
@@ -408,6 +412,7 @@ __global__ void k_persistent_evolve(
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term,
         QcView qc,
+        QeView qe,
         unsigned long long* phase_cycles) {
 
     const bool need_ranks = event_keys_need_ranks(event_keys);
@@ -560,9 +565,13 @@ __global__ void k_persistent_evolve(
                         // survives dedup below -- the host registers per raw event too. Both
                         // endpoint hashes and orbit tables exist at this point (the parent's
                         // from its own canon, the child's from the pass just above).
-                        if (qc.enabled && child_event != INVALID_ID) {
-                            qc_register_transition(ds, qc, rec.state_id, child_sid,
-                                                   child_event, rec.rule_id, step);
+                        if (child_event != INVALID_ID) {
+                            if (qc.enabled)
+                                qc_register_transition(ds, qc, rec.state_id, child_sid,
+                                                       child_event, rec.rule_id, step);
+                            // Same event, same endpoints: the class frame's match record.
+                            qe_capture_expansion(ds, qe, rec.state_id, child_sid,
+                                                 child_event, rec.rule_id, step);
                         }
 
                         expand_child = child_step < max_steps &&
@@ -714,10 +723,11 @@ void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots) {
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc seed roots sync");
 }
 
-void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi) {
+void run_qc_register_range(EngineState& engine, QcView qc, QeView qe,
+                           uint32_t lo, uint32_t hi) {
     if (hi <= lo) return;
     const uint32_t block = 64;
-    k_qc_register_range<<<((hi - lo) + block - 1) / block, block>>>(engine.device(), qc, lo,
+    k_qc_register_range<<<((hi - lo) + block - 1) / block, block>>>(engine.device(), qc, qe, lo,
                                                                     hi);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc register range sync");
 }
@@ -843,12 +853,15 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             EventSignatureKeys event_keys,
                                             uint32_t blocks,
                                             bool quotient_roots,
-                                            const QcView* qc_in) {
+                                            const QcView* qc_in,
+                                            const QeView* qe_in) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
 
     QcView qc{};
     if (qc_in) qc = *qc_in;
+    QeView qe{};
+    if (qe_in) qe = *qe_in;
 
     // Records are consumed while they are still being produced, so their publication flags
     // must start clear. The scheduler that relies on the flag is the one that clears it.
@@ -947,7 +960,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done, canonical.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        event_ids.view(), arena.view(), term.view(), qc, d_phase_cycles);
+        event_ids.view(), arena.view(), term.view(), qc, qe, d_phase_cycles);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();

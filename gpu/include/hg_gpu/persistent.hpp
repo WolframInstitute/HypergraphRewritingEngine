@@ -20,6 +20,7 @@
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/quotient_causal.hpp"
+#include "hg_gpu/quotient_expansion.hpp"
 #include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/ring_buffer.hpp"
 #include "hg_gpu/termination.hpp"
@@ -177,11 +178,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // caller, so the host seeding and the device loop
                                             // drive one body of state. Disabled (enabled == 0)
                                             // when null.
-                                            const QcView* qc = nullptr);
+                                            const QcView* qc = nullptr,
+                                            const QeView* qe = nullptr);
 
 // The host-driven quotient-causal seeding: the roots' INIT producers, registered once before
 // the evolution launches (both endpoint hashes and orbit tables must exist by then).
 void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots);
-void run_qc_register_range(EngineState& engine, QcView qc, uint32_t lo, uint32_t hi);
+void run_qc_register_range(EngineState& engine, QcView qc, QeView qe,
+                           uint32_t lo, uint32_t hi);
 
 }  // namespace hg_gpu

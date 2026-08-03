@@ -131,6 +131,12 @@ struct EvolveResult {
     // inspect it themselves and decide whether the partial result is
     // good enough.
     std::vector<OverflowWarning> warnings;
+
+    // Class-frame expansion records captured (quotient reconstruction only, 0 otherwise). The
+    // per-instance replay reads these, so a device that captures a different number from the
+    // host cannot agree with it on event identity. Compared against the host's
+    // for_each_expansion_match total in the differential suite.
+    uint32_t expansion_matches = 0;
 };
 
 // Sizing knobs. The auto-tuner (M9) will pick these per device + workload;
