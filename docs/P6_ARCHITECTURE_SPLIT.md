@@ -70,9 +70,13 @@ and pools — plus the fence spelling and the scratch discipline.
 **Both copies have already drifted, and neither drift was found by a gate.** Both were found by
 reading the two bodies against each other while writing this document:
 
-1. `qe_reachable` has no visited set; `qc_reachable` (`hypergraph.cpp:976`) does. The device
-   therefore revisits a node once per PATH into it, which is exponential where the host is
-   linear. Same answer, different asymptotics.
+1. `qe_reachable` had no visited set; `qc_reachable` (`hypergraph.cpp:976`) does. The device
+   therefore expanded a node once per PATH into it rather than once, which is exponential in the
+   worst case where the host is linear. Same answer, different bound. Measured after fixing it:
+   no speedup outside this machine's run-to-run wall-clock drift, and the reason is worth
+   keeping — the walk is over KEPT predecessors, so reduction leaves most events with one and
+   the paths and the nodes stay close on ordinary workloads. It is a bound that was wrong, not a
+   cost that was being paid.
 2. The device cascades recurse once per reconstruction depth against a fixed per-thread stack,
    and a 7-step run on a two-consumed-edge rule returned an illegal memory access — and with a
    poisoned CUDA context, nothing at all for every later workload in the process. Fixed in
@@ -134,7 +138,7 @@ Two properties the policy must carry, both learned from the drifts above:
 | P6.2b | `hgcommon/quotient_core.hpp`: the DP and the rendezvous as one body over a container policy. Host adapter lands with it; the host's `qc_*` bodies are deleted in the same commit. | `all_tests` green; `quotient_determinism_rate_probe` 0 at `--load 6`; the reconstruction's served relation unchanged on all 17 corpus workloads |
 | P6.2c | Device adapter; `quotient_expansion.hpp`'s DP and rendezvous deleted in the same commit. | `gpu_differential_tests` green including `deep_cone_reduction_*`; `hg_gpu_tests` green |
 | P6.2d | Convert the cascade to a work list inside the shared body. | the device depth cap is gone: `PastTheStackDepthItRecordsRatherThanFaults` becomes an equality test against the host at depth 80, with no `kScratchOverflow` |
-| P6.2e | The reachability walk's visited set becomes part of the shared body. | a wide-cone workload where the undeduped walk was exponential completes in time linear in cone SIZE |
+| P6.2e | The reachability walk is one body, so the host's visited set and the device's cannot be two decisions. | the two walks are one function; `gpu_differential_tests` and `all_tests` green |
 
 P6.2a is separable and cheap; it can land first and alone. P6.2b–c are the substance. P6.2d–e
 are what turn "the copies agree today" into "there is nothing to disagree".

@@ -535,19 +535,31 @@ constexpr uint32_t kQeReachStack = 192;
 __device__ inline bool qe_reachable(DeviceState ds, QeView qe, uint32_t producer,
                                     uint32_t consumer) {
     if (producer >= consumer) return false;
-    uint32_t stack[kQeReachStack];
-    uint32_t sp = 0;
-    stack[sp++] = consumer;
-    while (sp) {
-        const uint32_t x = stack[--sp];
+
+    // One array, holding every node the walk has REACHED, with a cursor separating the ones
+    // already expanded from the ones still to expand. That makes it the visited set and the
+    // worklist at once, which is what keeps the walk linear in the cone's NODES: a node reached
+    // by k paths is expanded once, not k times. A plain stack without the membership test costs
+    // one expansion per PATH, which is exponential in the worst case -- though not usually: this
+    // walks the KEPT predecessors, and reduction leaves most events with one, so the paths and
+    // the nodes are close on ordinary workloads and the bound is what is being fixed rather than
+    // a measured cost. Same shape as the host's walk (Hypergraph::qc_reachable), which carries an explicit
+    // visited set beside its stack; here the two are one array because the cursor never goes
+    // backwards.
+    uint32_t seen[kQeReachStack];
+    uint32_t n = 0, cursor = 0;
+    seen[n++] = consumer;
+    while (cursor < n) {
+        const uint32_t x = seen[cursor++];
         bool found = false, full = false;
         qe.preds.for_each(qe_bucket(hgcommon::id_key(x), qe.preds.num_keys),
                           [&](const QePredRef& r) {
             if (found || r.consumer != x) return;
             if (r.producer == producer) { found = true; return; }
             if (r.producer <= producer) return;            // outside the cone
-            if (sp < kQeReachStack) stack[sp++] = r.producer;
-            else                    full = true;
+            for (uint32_t i = 0; i < n; ++i) if (seen[i] == r.producer) return;   // already reached
+            if (n < kQeReachStack) seen[n++] = r.producer;
+            else                   full = true;
         });
         if (found) return true;
         if (full) {
