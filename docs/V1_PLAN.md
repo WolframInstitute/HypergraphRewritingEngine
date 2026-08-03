@@ -310,17 +310,20 @@ Open, reproducible, with the command. Anything here that is closed moves to the 
 
 | what | reproducer | rate / size |
 |---|---|---|
-| **Positional identity cannot run through the reconstruction** | `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`, same forcing | 87 events vs 86 |
-| **Cross-thread causal determinism breaks when the reconstruction covers the whole corpus** | `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`, same forcing | fails; note the probe is 0/650 on the CURRENT routing |
 | **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | 1–6 of 204 runs, always `fwd=1 delta=0`, on the non-default path. Batched arm asserts 0 and holds. Unchanged across the join extraction (2b624c8: 5,2,3,5,2; 59b3cd8: 4,1,6,4,1) |
-| **`tools/` is 66 files with 57 built by nothing** | `ls tools/*.cpp tools/*.cu` against the CMake list | P5.1, 10,365 lines, `ir_incremental_probe.cpp` already broken |
+| **Device reconstruction depth is capped near 40** | `QuotientReconstruction.PastTheStackDepthItRecordsRatherThanFaults` | Both device cascades recurse once per depth against a per-thread stack, measured at 5461 bytes/level. `00e21ee` sizes the stack from the depth and bounds the recursion, so a deeper run returns partial work and records `kScratchOverflow` instead of faulting. Removing the recursion (explicit work list) makes depth cost O(1) stack and is the real fix |
+| **Device reachability walk does not dedup** | read `qe_reachable` against `Hypergraph::qc_reachable` (`hypergraph.cpp:976`) | The host walk carries a visited set; the device walk has none, so it revisits a node once per PATH — exponential where the host is linear. Same result, different asymptotics; found by reading, not yet by a workload |
+
+Two rows were removed as closed, not forgotten: **Positional identity cannot run through the
+reconstruction** and **cross-thread causal determinism under the widened routing** both pass now
+— the full host suite is 239/239 with `wants_qc` forced to `!positional_event_identity()`, where
+the item opened at 193/198 (P1.5, `bb1ccab`). **`tools/` built by nothing** closed as P5.1
+(`365273d`): a glob gives every tracked tool a target.
 
 Each row above is also a task in the session task list, so the two cannot drift:
-"Online TR is not exact over the reconstructed causal relation",
-"Positional event identity cannot run through the quotient reconstruction",
-"Cross-thread causal determinism breaks when the reconstruction covers the whole corpus",
 "Forwarding loses matches under EAGER submission, 1-6 of 204 runs",
-"P5.1 tools/ triage: 57 of 66 files are built by nothing".
+"CLOSED: deep quotient run faulted the device; stack sized from depth + recursion bounded",
+"Device reachability walk has no visited set: exponential re-walk".
 
 The task list is per-session and does not survive a fresh clone; THIS FILE does. When they
 disagree, this file is right and the list is rebuilt from it.
