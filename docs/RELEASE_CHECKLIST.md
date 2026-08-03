@@ -122,6 +122,18 @@ Keep it current: a release that skips a line here is not released.*
 - [ ] **No user-facing doc states something a user can act on and be wrong about.** The five known
       cases were `HashStrategy`, `EquilibriumAnalysis`, the quotient/TR interaction, `Automatic`
       semantics and the `"States"` return shape (board #5, closed).
+      **NEW AND LARGER, 2026-08-03 — 21 REFERENCE PAGES DOCUMENT SYMBOLS THAT DO NOT EXIST.**
+      `paclet/Kernel/HypergraphRewriting.wl:5` is `PackageExport["HGEvolve"]` and the file carries
+      exactly one `::usage`, HGEvolve's. Yet 22 pages ship under
+      `ReferencePages/Symbols/`, and each of the other 21 — `EdgeId`, `HGTorus`, `HGSphere`,
+      `HGToGraph`, `HGHausdorffAnalysis`, `HGBranchAlignmentBatch`, `HGGeodesicPlot`,
+      `HGUniformRandom` and 13 more — names a symbol with **zero** mentions anywhere in
+      `paclet/Kernel/`. Verified present inside the assembled archive. A shipped tutorial,
+      `Documentation/English/Tutorials/QuantumAnalysisExamples.wl`, also calls two of them.
+      This is the same class as the `.def` break in `fc6d24a`: the visualisation split (#18)
+      removed the functions and both manifests that described them outlived them, unchecked.
+      **Disposition is Richard's** — these belong to the split-out visualisation paclet, so either
+      they are deleted here or that repo carries them. Board #108.
       *DANGLING REFERENCE, now inlined above: this line pointed at `V1_SCOPING_REGISTER.md` §C3,
       which is NOT in the repository — it is one of the superseded planning notes that survive only
       on one clone through `.git/info/exclude`. A tracked checklist cannot cite an untracked file:
