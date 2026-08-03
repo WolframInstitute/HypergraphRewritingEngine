@@ -622,7 +622,14 @@ private:
 
     // Track missing hashes to verify they arrive later via push
     // Value is (state_id << 16) | rule_index for debugging
-    ConcurrentMap<uint64_t, uint64_t, uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}> missing_match_hashes_{4096};
+    // Hash -> a STABLE copy of the match that was missing, not a debug word.
+    //
+    // Deciding at the end of the run whether that match ever arrived needs the same test the
+    // validator used to decide it was absent: contains_match, which probes the whole dedup chain
+    // AND compares the record. A hash alone cannot be re-tested that way -- a colliding different
+    // match occupying the probe slot reads as "arrived" -- and the state/rule pair a debug word
+    // carries is recoverable from the record anyway (source_state, core->rule_index).
+    ConcurrentMap<uint64_t, const MatchRecord*> missing_match_hashes_{4096};
     std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
@@ -999,25 +1006,26 @@ public:
     size_t draws_survived() const { return draws_survived_.load(); }
     size_t draws_at_site(int i) const { return draws_by_site_[i].load(); }
     size_t late_arrivals() const { return late_arrivals_.load(); }
+    // Matches recorded absent by the validator and STILL absent when the run ended.
+    //
+    // Tested with contains_match, the validator's own membership test: it probes the whole dedup
+    // chain and compares the RECORD. Testing probe slot 0 for the key alone -- which this did --
+    // reports a colliding different match as an arrival and silently under-counts.
     size_t still_missing() const {
-        // Count how many "missing" matches never arrived
         size_t count = 0;
-        missing_match_hashes_.for_each([&](uint64_t h, bool) {
-            if (!seen_match_hashes_.contains(dedup_probe_key(h, 0))) {
-                ++count;
-            }
+        missing_match_hashes_.for_each([&](uint64_t h, const MatchRecord* rec) {
+            if (rec && !contains_match(h, *rec)) ++count;
         });
         return count;
     }
 
-    void dump_still_missing() const {
-        DEBUG_LOG("STILL MISSING HASHES:");
-        missing_match_hashes_.for_each([&](uint64_t h, uint64_t debug_info) {
-            if (!seen_match_hashes_.contains(dedup_probe_key(h, 0))) {
-                [[maybe_unused]] uint32_t state_id = debug_info >> 16;
-                [[maybe_unused]] uint16_t rule_index = debug_info & 0xFFFF;
-                DEBUG_LOG("  hash=%lu state=%u rule=%u", h, state_id, rule_index);
-            }
+    // Every still-absent match, with the state and rule read off the record itself.
+    template <typename F>
+    void for_each_still_missing(F&& f) const {
+        missing_match_hashes_.for_each([&](uint64_t h, const MatchRecord* rec) {
+            if (rec && !contains_match(h, *rec))
+                f(h, rec->source_state, rec->core ? rec->core->rule_index : uint16_t{0xFFFF},
+                  rec->num_edges());
         });
     }
 

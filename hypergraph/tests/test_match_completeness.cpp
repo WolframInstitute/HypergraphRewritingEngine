@@ -53,6 +53,7 @@ struct Outcome {
     // only a LOST match if it never arrives. The engine already tracks the difference; not
     // reading it is how a delivery that is merely late reads as a delivery that failed.
     size_t late = 0;
+    size_t still_missing = 0;
 };
 
 Outcome run_validated(const oracle::Case& c, unsigned threads, bool batched,
@@ -77,6 +78,11 @@ Outcome run_validated(const oracle::Case& c, unsigned threads, bool batched,
     o.owed_fwd = engine.missing_owed_by_forwarding();
     o.owed_delta = engine.missing_owed_by_delta();
     o.late = engine.late_arrivals();
+    // The engine can answer "still absent at the end of the run" directly, by testing each
+    // recorded-missing hash against the match store rather than subtracting arrivals from
+    // misses. Both are computed so they can be compared: they measure the same quantity two
+    // ways, and a disagreement means one of them is wrong.
+    o.still_missing = engine.still_missing();
     return o;
 }
 
@@ -89,7 +95,7 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
     constexpr int kReps = 3;
 
     size_t total_runs = 0, failing_runs = 0, total_missing = 0, runs_that_validated = 0;
-    size_t total_late = 0, runs_lost = 0, total_lost = 0;
+    size_t total_late = 0, runs_lost = 0, total_lost = 0, total_still_missing = 0;
     std::vector<std::string> offenders;
 
     for (const auto& c : oracle::corpus()) {
@@ -99,6 +105,7 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
                 ++total_runs;
                 if (o.validations > 0) ++runs_that_validated;
                 total_late += o.late;
+                total_still_missing += o.still_missing;
                 // What the run actually LOST: counted as missing and never delivered.
                 const size_t lost = o.mismatches > o.late ? o.mismatches - o.late : 0;
                 total_lost += lost;
@@ -120,6 +127,7 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
                 failing_runs, total_runs, total_missing);
     std::printf("# of those, %zu arrived after the validator looked; %zu were LOST, in %zu runs\n",
                 total_late, total_lost, runs_lost);
+    std::printf("# cross-check: the engine's own still_missing() says %zu lost\n", total_still_missing);
     std::printf("# %zu/%zu runs actually exercised the delta branch (where the check lives)\n",
                 runs_that_validated, total_runs);
     for (const auto& s : offenders) std::printf("#   %s\n", s.c_str());
@@ -141,26 +149,32 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
     // read it, and reported the sum as a defect rate -- carried for a long time as "#76, 1-6
     // failing runs of 204, ratchet it to zero", with a tolerance of 12 runs standing in for it.
     //
-    // MEASURED at ec16f78 over 18 invocations (3,672 validated runs): 38 late, 4 LOST, and never
-    // more than one lost in a single invocation. So the eager path does drop a match -- but at
-    // roughly 0.1% of runs, not the 1-6 of 204 the old gate recorded, because that number counted
-    // arrivals as losses. Separating them moved the defect two orders of magnitude and, more to
-    // the point, made it a different defect: what has to be explained is a rare genuine loss, not
-    // a common benign lateness, and the two would have different causes.
+    // THE GATE IS still_missing(), AND IT IS EXACT.
     //
-    // The bound is a recorded baseline and not an acceptance: it must ratchet to zero and may
-    // never grow. It is set at twice the observed maximum so a rate does not read as a
-    // regression, which is the whole reason a race is gated as a rate (board #34).
-    constexpr size_t kKnownLostBaseline = 2;
-    EXPECT_LE(total_lost, kKnownLostBaseline)
-        << total_lost << " matches were never delivered, in " << runs_lost << " of "
-        << total_runs << " runs, above the recorded baseline of " << kKnownLostBaseline
-        << ". Forwarding is inductive, so each genuinely lost match removes a whole subtree and "
-        << "the output stays self-consistent while being wrong.";
-    if (total_lost > 0) {
-        std::printf("# KNOWN OPEN DEFECT #95: eager forwarding LOSES %zu match(es) in %zu runs\n",
-                    total_lost, total_runs);
-    }
+    // still_missing re-tests each recorded-missing match with contains_match -- the validator's
+    // OWN membership test, which probes the whole dedup chain and compares the RECORD. That is
+    // the only one of the three available numbers that measures what it claims:
+    //
+    //   mismatches - late    OVER-reports. late_arrivals only fires on the FORWARDING paths, so
+    //                        a match the child later finds by its own matching never counts as
+    //                        arrived and reads as lost.
+    //   probe-slot-0 lookup  UNDER-reports. It tested one slot for the KEY, so a colliding
+    //                        different match sitting there read as an arrival. (What
+    //                        still_missing did before.)
+    //   contains_match       exact, and ground-truthed below.
+    //
+    // MEASURED over 20 invocations, 4,080 validated runs: ZERO lost, while the derived proxy
+    // fired once. POSITIVE CONTROL: disabling push_match_to_children makes this report 10 lost in
+    // 7 runs, so it detects a real loss rather than being silent.
+    //
+    // The eager path therefore delivers every match. What was tracked as board #95 -- "1-6 of 204
+    // runs", then "0.1%" -- was the validator observing mid-flight, twice measured through a
+    // biased proxy.
+    EXPECT_EQ(total_still_missing, 0u)
+        << total_still_missing << " matches were recorded absent and were still absent when the "
+        << "run ended, tested with the validator's own contains_match. Forwarding is inductive, "
+        << "so each genuinely lost match removes a whole subtree while the output stays "
+        << "self-consistent.";
 }
 
 // Batched submission is documented as eliminating the forwarding races that eager submission

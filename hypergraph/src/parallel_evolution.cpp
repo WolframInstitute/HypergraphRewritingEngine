@@ -1943,8 +1943,13 @@ void ParallelEvolutionEngine::execute_match_task(
                             if (edges[i] == ctx.produced_edges[j]) { touches_produced = true; break; }
                     if (touches_produced) missing_owed_by_delta_.fetch_add(1, std::memory_order_relaxed);
                     else missing_owed_by_forwarding_.fetch_add(1, std::memory_order_relaxed);
-                    uint64_t debug_info = (static_cast<uint64_t>(state) << 16) | rule_index;
-                    missing_match_hashes_.insert_if_absent(h, debug_info);
+                    // A stable copy, because the record above is a stack temporary and the
+                    // end-of-run test needs to compare against the real match.
+                    MatchCore* core_copy = hg_->arena().template create<MatchCore>(core_tmp);
+                    MatchRecord* stable = hg_->arena().template create<MatchRecord>();
+                    stable->core = core_copy;
+                    stable->source_state = state;
+                    missing_match_hashes_.insert_if_absent(h, stable);
                 }
             };
             for (uint16_t r = 0; r < rules_.size(); ++r) {
