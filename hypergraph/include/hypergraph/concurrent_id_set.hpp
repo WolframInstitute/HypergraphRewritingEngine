@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include <type_traits>
 
 #include "arena.hpp"
 
@@ -33,15 +32,13 @@ namespace hypergraph {
 //
 // EMPTY_KEY (0 by default) is reserved and must never be inserted: callers offset real
 // ids by +1 so id 0 does not collide with the empty sentinel.
-template<typename Key = uint32_t, Key EMPTY_KEY = Key{0}>
+template<uint32_t EMPTY_KEY = 0u>
 class ConcurrentIdSet {
-    static_assert(std::is_unsigned<Key>::value,
-                  "the empty sentinel and the probe arithmetic both assume an unsigned key");
 public:
     static constexpr double LOAD_FACTOR_THRESHOLD = 0.75;
 
     struct Table {
-        std::atomic<Key>* keys;
+        std::atomic<uint32_t>* keys;
         size_t capacity;
         size_t mask;  // capacity - 1, for fast modulo
         Table* prev;  // superseded table (resize chain)
@@ -54,18 +51,18 @@ public:
             size_t actual_cap = 1;
             while (actual_cap < cap) actual_cap <<= 1;
 
-            size_t bytes = sizeof(Table) + sizeof(std::atomic<Key>) * actual_cap;
+            size_t bytes = sizeof(Table) + sizeof(std::atomic<uint32_t>) * actual_cap;
             void* mem = arena ? arena->allocate_raw(bytes, alignof(std::max_align_t))
                               : ::operator new(bytes);
             Table* table = static_cast<Table*>(mem);
-            table->keys = reinterpret_cast<std::atomic<Key>*>(
+            table->keys = reinterpret_cast<std::atomic<uint32_t>*>(
                 static_cast<char*>(mem) + sizeof(Table));
             table->capacity = actual_cap;
             table->mask = actual_cap - 1;
             table->prev = prev_table;
 
             for (size_t i = 0; i < actual_cap; ++i) {
-                new (&table->keys[i]) std::atomic<Key>(EMPTY_KEY);
+                new (&table->keys[i]) std::atomic<uint32_t>(EMPTY_KEY);
             }
             return table;
         }
@@ -94,7 +91,7 @@ public:
     ConcurrentIdSet& operator=(ConcurrentIdSet&&) = delete;
 
     // Insert key. Returns true iff newly inserted, false if already present.
-    bool insert(Key key) {
+    bool insert(uint32_t key) {
         Table* table = table_.load(std::memory_order_acquire);
         size_t current_count = count_.load(std::memory_order_relaxed);
         if (current_count > table->capacity * LOAD_FACTOR_THRESHOLD) {
@@ -110,7 +107,7 @@ public:
         return insert_into_table(table, key, true);
     }
 
-    bool contains(Key key) const {
+    bool contains(uint32_t key) const {
         return contains_in_chain(table_.load(std::memory_order_acquire), key);
     }
 
@@ -118,29 +115,20 @@ public:
     // concurrently during a resize window); used only for capacity hints.
     size_t size() const { return count_.load(std::memory_order_relaxed); }
 
-    // Visits each key ONCE, though a key may sit in several tables at the same time.
-    //
-    // resize() COPIES into the new table and leaves the old one intact and reachable, because a
-    // straggler still writing into a retired table has to remain findable. So a key that survived
-    // r resizes occupies r+1 slots across the chain, and a walk that just concatenates the tables
-    // emits it r+1 times. Skipping a key that a NEWER table already carries is what makes the walk
-    // a set walk. (ConcurrentMap::for_each carries the same guard for the same reason; this is one
-    // rule and it was previously written twice, correctly in the used copy and not here.)
     template<typename F>
     void for_each(F&& f) const {
-        Table* head = table_.load(std::memory_order_acquire);
-        for (Table* t = head; t; t = t->prev) {
-            for (size_t i = 0; i < t->capacity; ++i) {
-                Key k = t->keys[i].load(std::memory_order_acquire);
-                if (k == EMPTY_KEY) continue;
-                if (t != head && contains_in_newer(head, t, k)) continue;   // already emitted
-                f(k);
+        Table* table = table_.load(std::memory_order_acquire);
+        while (table) {
+            for (size_t i = 0; i < table->capacity; ++i) {
+                uint32_t k = table->keys[i].load(std::memory_order_acquire);
+                if (k != EMPTY_KEY) f(k);
             }
+            table = table->prev;
         }
     }
 
 private:
-    static size_t hash(Key key) {
+    static size_t hash(uint32_t key) {
         uint64_t h = key;
         h ^= h >> 33;
         h *= 0xff51afd7ed558ccdULL;
@@ -150,13 +138,13 @@ private:
         return static_cast<size_t>(h);
     }
 
-    bool insert_into_table(Table* table, Key key, bool increment_count) {
+    bool insert_into_table(Table* table, uint32_t key, bool increment_count) {
         size_t idx = hash(key) & table->mask;
         for (size_t probe = 0; probe < table->capacity; ++probe) {
             size_t i = (idx + probe) & table->mask;
-            std::atomic<Key>& slot = table->keys[i];
+            std::atomic<uint32_t>& slot = table->keys[i];
 
-            Key cur = slot.load(std::memory_order_acquire);
+            uint32_t cur = slot.load(std::memory_order_acquire);
             if (cur == key) return false;
             if (cur == EMPTY_KEY) {
                 if (slot.compare_exchange_strong(cur, key,
@@ -175,27 +163,12 @@ private:
         return insert(key);
     }
 
-    // Is `key` in any table strictly NEWER than `stop`? Walks head..stop exclusive, so it answers
-    // "has an earlier iteration of for_each already emitted this".
-    bool contains_in_newer(Table* head, Table* stop, Key key) const {
-        for (Table* t = head; t && t != stop; t = t->prev) {
-            size_t idx = hash(key) & t->mask;
-            for (size_t probe = 0; probe < t->capacity; ++probe) {
-                size_t i = (idx + probe) & t->mask;
-                Key cur = t->keys[i].load(std::memory_order_acquire);
-                if (cur == key) return true;
-                if (cur == EMPTY_KEY) break;   // open addressing: absent in this table
-            }
-        }
-        return false;
-    }
-
-    bool contains_in_chain(Table* table, Key key) const {
+    bool contains_in_chain(Table* table, uint32_t key) const {
         while (table) {
             size_t idx = hash(key) & table->mask;
             for (size_t probe = 0; probe < table->capacity; ++probe) {
                 size_t i = (idx + probe) & table->mask;
-                Key cur = table->keys[i].load(std::memory_order_acquire);
+                uint32_t cur = table->keys[i].load(std::memory_order_acquire);
                 if (cur == key) return true;
                 if (cur == EMPTY_KEY) break;  // open addressing: absent in this table
             }
@@ -210,7 +183,7 @@ private:
         Table* new_table = Table::create(new_capacity, old_table, arena_);
 
         for (size_t i = 0; i < old_table->capacity; ++i) {
-            Key k = old_table->keys[i].load(std::memory_order_acquire);
+            uint32_t k = old_table->keys[i].load(std::memory_order_acquire);
             if (k != EMPTY_KEY) insert_into_table(new_table, k, false);
         }
 

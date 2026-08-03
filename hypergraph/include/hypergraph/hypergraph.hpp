@@ -19,7 +19,6 @@
 #include "causal_graph.hpp"
 #include "wl_hash.hpp"
 #include "concurrent_map.hpp"
-#include "concurrent_id_set.hpp"
 
 // Shared types: CanonicalizationResult, CanonicalForm, VertexMapping
 #include "canonical_types.hpp"
@@ -119,7 +118,7 @@ class Hypergraph {
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
     // producer-set reconstruction propagates over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    ConcurrentIdSet<uint64_t> seen_transitions_;
+    ConcurrentMap<uint64_t, uint8_t> seen_transitions_;
 
     // Depth-indexed producer-set reconstruction (the online form of the validated DP).
     // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
@@ -127,8 +126,8 @@ class Hypergraph {
     // depth). Producers cascade forward monotonically as transitions and reachability are
     // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    ConcurrentIdSet<uint64_t> qc_dsup_seen_;
-    ConcurrentIdSet<uint64_t> qc_reached_;
+    ConcurrentMap<uint64_t, uint8_t> qc_dsup_seen_;
+    ConcurrentMap<uint64_t, uint8_t> qc_reached_;
     // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
     // depth irreversibly, and raising the depth budget has to revisit the points that stood
     // at the old terminal depth: each was marked reached, but every transition out of it was
@@ -186,10 +185,10 @@ class Hypergraph {
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
-    ConcurrentIdSet<uint64_t> qc_applied_;
+    ConcurrentMap<uint64_t, uint8_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
-    ConcurrentIdSet<uint64_t> qc_branchial_pairs_;
+    ConcurrentMap<uint64_t, uint8_t> qc_branchial_pairs_;
 
     // The matches already applied to one instance, indexed by dense instance id. Branchial
     // pairing scans THIS, not the expansion list, and that is what makes the pairing provable
@@ -223,7 +222,7 @@ class Hypergraph {
     // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
     // observable is the count of DISTINCT identities, so the mode's signature is computed here
     // and the distinct ones counted.
-    ConcurrentIdSet<uint64_t> qc_canon_event_seen_{4096};
+    ConcurrentMap<uint64_t, uint8_t> qc_canon_event_seen_{4096};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
@@ -234,7 +233,7 @@ class Hypergraph {
     // before creating the child instance whose later application mints the consumer's -- and
     // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
     // reduction decision is exact at insertion.
-    ConcurrentIdSet<uint64_t> qc_causal_pairs_;              // distinct (producer, consumer)
+    ConcurrentMap<uint64_t, uint8_t> qc_causal_pairs_;              // distinct (producer, consumer)
     ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
@@ -912,7 +911,7 @@ public:
     // two paths disagree about, where comparing counts only says that they do.
     template <typename F>
     void for_each_reconstructed_event_signature(F&& f) const {
-        qc_canon_event_seen_.for_each([&](uint64_t sig) { f(sig); });
+        qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
     }
 
     // The state whose labelling defines a canonical class -- the class FRAME. The reconstruction
@@ -1011,7 +1010,7 @@ public:
                 lst->for_each([&](uint32_t p) { f(id(p), id(c)); });
             });
         } else {
-            qc_causal_pairs_.for_each([&](uint64_t k) {
+            qc_causal_pairs_.for_each([&](uint64_t k, bool) {
                 const IdPair p = id_pair_from_key(k);
                 f(id(p.a), id(p.b));
             });
@@ -1050,7 +1049,7 @@ public:
     // must use the schedule-stable content triple instead. One walk, two identities.
     template <typename Id, typename F>
     void for_each_reconstructed_branchial_as(Id&& id, F&& f) const {
-        qc_branchial_pairs_.for_each([&](uint64_t k) {
+        qc_branchial_pairs_.for_each([&](uint64_t k, bool) {
             const IdPair p = id_pair_from_key(k);
             f(id(p.a), id(p.b));
         });
