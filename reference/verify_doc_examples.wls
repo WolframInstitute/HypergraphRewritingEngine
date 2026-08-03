@@ -41,10 +41,17 @@ Do[
     Do[
       Module[{code = blocks[[i]], msgs = {}, res, bad},
         total++;
+        (* The handler fires for EVERY message, including ones that are switched off --
+           those arrive wrapped in $Off[...] and are by definition not shown to a user, so
+           they are not what this is looking for. Nothing is wrapped in Quiet here for the
+           same reason: quieting would make every message look switched-off and the check
+           would pass on anything. *)
         res = Block[{$Context = "DocExample`", $ContextPath = {"DocExample`",
                      "HypergraphRewriting`", "System`"}},
-          Internal`HandlerBlock[{"Message", AppendTo[msgs, #] &},
-            Quiet@Check[ToExpression[code], $Failed]]];
+          Internal`HandlerBlock[{"Message",
+              With[{nm = ToString[#[[1, 1]]]},
+                If[!StringStartsQ[nm, "$Off"], AppendTo[msgs, nm]]] &},
+            Check[ToExpression[code], $Failed]]];
         (* An unevaluated HGEvolve head means the arguments did not match any definition. *)
         bad = FailureQ[res] || res === $Failed ||
               (Head[res] === HypergraphRewriting`HGEvolve) ||
@@ -53,8 +60,10 @@ Do[
           AppendTo[failed, {FileNameTake[src], i}];
           Print["FAIL  block ", i, "  ", StringTake[StringReplace[code, "\n" -> " "],
                                                     UpTo[70]]];
-          If[msgs =!= {}, Print["      messages: ", Length[msgs]]];
-          If[bad, Print["      returned: ", Short[res, 2]]],
+          If[msgs =!= {},
+            Print["      ", Length[msgs], " message(s), distinct: ",
+                  Take[Tally[msgs], UpTo[6]]]];
+          If[bad, Print["      returned: ", ToString[Short[res, 2]]]],
           Print["PASS  block ", i]]],
       {i, Length[blocks]}]],
   {src, sources}];
