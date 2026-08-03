@@ -933,6 +933,11 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
     "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
     "ExplorationProbability" -> OptionValue["ExplorationProbability"],
+    (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
+       engine spells as 0; anything else fixes the sample. Without this the option reached the
+       initial-condition generators only, and a sampled evolution was irreproducible however it
+       was set. *)
+    "RandomSeed" -> Replace[OptionValue["RandomSeed"], Automatic -> 0],
     "ExploreFromCanonicalStatesOnly" -> OptionValue["ExploreFromCanonicalStatesOnly"],
     "QuotientInitialStates" -> OptionValue["QuotientInitialStates"],
     "ShowProgress" -> OptionValue["ShowProgress"],

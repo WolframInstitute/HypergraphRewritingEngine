@@ -371,3 +371,40 @@ TEST(WxfSerializationPin, CausalGraphAndNumEventsStillDescribeDifferentSets) {
         << "the graph's vertex count moved; if it now equals NumEvents the gap has closed -- "
            "replace this reproducer with the equality";
 }
+
+// RandomSeed reaches the sampler it is documented to control.
+//
+// ExplorationProbability is Monte-Carlo sampling of the multiway system, and the engine's
+// contract (parallel_evolution.hpp) is that a NONZERO seed is what makes that sample
+// reproducible. The option reached the initial-condition generators only, so a sampled
+// evolution asked for with a fixed seed returned a different sample every run and nothing said
+// so. Serial, because the contract is stated for a single thread.
+TEST(WxfSerializationPin, RandomSeedMakesASampledEvolutionReproducible) {
+    HostBridge host;
+    auto sampled = [&](int64_t seed) {
+        auto in = build_input(kSeed, kLhs, kRhs, 5, [&](wxf::Writer& w) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("ExplorationProbability"));
+            w.write(0.5);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("RandomSeed"));
+            w.write(seed);
+        }, 2);
+        auto out = run_rewriting_core(in, host);
+        return read_int_key(out, "NumStates");
+    };
+
+    // A fixed seed pins the sample.
+    const int64_t a = sampled(12345), b = sampled(12345);
+    ASSERT_GT(a, 0);
+    EXPECT_EQ(a, b) << "the same RandomSeed gave " << a << " then " << b
+                    << " states: the seed does not reach the sampling draws";
+
+    // A different seed is allowed to differ; what must not happen is the seed being ignored,
+    // which would make every seed give the same answer for the wrong reason. Sampling at 0.5
+    // over 5 steps separates them on this workload.
+    bool any_different = false;
+    for (int64_t s : {7, 99, 4242, 31337}) if (sampled(s) != a) { any_different = true; break; }
+    EXPECT_TRUE(any_different)
+        << "every seed gave " << a << " states, so the draw is not seeded at all";
+}

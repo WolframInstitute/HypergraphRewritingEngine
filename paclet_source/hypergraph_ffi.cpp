@@ -138,6 +138,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         bool explore_from_canonical_states_only = false;  // Exploration deduplication
         bool quotient_initial_states = false;             // Collapse isomorphic initial states
         // ir_verification and return_canonical_states are derived from state_canon_mode == Full
+        uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
         bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
         size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
 
@@ -201,6 +202,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "MatchesPerStep") {
                             matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "RandomSeed") {
+                            random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
                             exploration_probability = option_parser.read<double>();
                         } else if (option_key == "BranchialStep") {
@@ -470,6 +473,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         engine.set_max_steps(static_cast<size_t>(steps));
         engine.set_transitive_reduction(causal_transitive_reduction);
         engine.set_exploration_probability(exploration_probability);
+        // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
+        // sampling draws reproducible, which is the whole content of the option.
+        engine.set_random_seed(random_seed);
         engine.set_max_successor_states_per_parent(max_successor_states_per_parent);
         engine.set_max_states_per_step(max_states_per_step);
         engine.set_genesis_events(show_genesis_events);
