@@ -183,7 +183,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
 // The host-driven quotient-causal seeding: the roots' INIT producers, registered once before
 // the evolution launches (both endpoint hashes and orbit tables must exist by then).
-void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots);
+void run_qc_seed_roots(EngineState& engine, QcView qc, QeView qe, uint32_t num_roots);
 void run_qc_register_range(EngineState& engine, QcView qc, QeView qe,
                            uint32_t lo, uint32_t hi);
 

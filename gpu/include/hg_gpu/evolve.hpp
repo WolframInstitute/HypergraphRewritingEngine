@@ -137,6 +137,11 @@ struct EvolveResult {
     // host cannot agree with it on event identity. Compared against the host's
     // for_each_expansion_match total in the differential suite.
     uint32_t expansion_matches = 0;
+
+    // Per-class instances recorded (quotient reconstruction only, 0 otherwise). One per raw
+    // occurrence of a class at a depth: one per root class before the replay lands, one more
+    // per application afterwards.
+    uint32_t expansion_instances = 0;
 };
 
 // Sizing knobs. The auto-tuner (M9) will pick these per device + workload;

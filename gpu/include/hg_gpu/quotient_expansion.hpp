@@ -57,9 +57,47 @@ struct QeMatchRef {
     uint32_t record;
 };
 
+// (class, depth) as one key. Same mixing as the DP's qc_key with orbit 0, because the two
+// index the same (class, depth) space and a reader comparing them must not have to check that
+// two spellings agree.
+__device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
+    uint64_t h = 1469598103934665603ULL;
+    h ^= state_hash; h *= 1099511628211ULL;
+    h ^= (static_cast<uint64_t>(depth) << 32); h *= 1099511628211ULL;
+    return h;
+}
+
+// One raw occurrence of a canonical class, at one depth. `prod_offset` addresses `nslots` words
+// in the expansion arena: per FRAME SLOT, the event that produced the edge now in that slot, or
+// kQeNoProducer for an edge the initial state came with.
+//
+// Slots rather than edge ids is the whole point: the class's captured matches are in frame
+// slots, so an instance built from any raw state of the class replays them without knowing
+// which raw edges the frame state happened to have.
+struct DeviceQcInstance {
+    uint32_t id = 0;           // dense; the replay's (instance, match) claim keys on it
+    uint32_t nslots = 0;
+    uint32_t prod_offset = 0;
+};
+
+// An instance reference bucketed by key(hash, depth); the node carries the exact key so a
+// shared bucket can be filtered, exactly as QeMatchRef does for the matches.
+struct QeInstRef {
+    uint64_t key;
+    uint32_t record;
+};
+
+// No event produced this slot's edge: it was in the initial state. Matches the host's
+// Hypergraph::QC_NO_PRODUCER.
+inline constexpr uint32_t kQeNoProducer = 0xFFFFFFFFu;
+
 struct QeView {
     typename Pool<DeviceSlotMatch>::DeviceView          matches;
     typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(from_hash)
+
+    typename Pool<DeviceQcInstance>::DeviceView         instances;
+    typename LockFreeList<QeInstRef>::DeviceView        by_key;    // bucket(key(hash, depth))
+    uint32_t* inst_next_id;    // device atomic; dense instance ids
 
     // canonical hash -> (StateId + 1) of the state that defines this class's expansion AND its
     // frame. +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0
@@ -216,6 +254,73 @@ __device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&&
     });
 }
 
+// Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
+// which the caller reports as a capacity overflow rather than writing past the end.
+__device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n) {
+    if (n == 0) return 0;
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cur(*qe.arr_cursor);
+    const uint32_t off = cur.fetch_add(n, cuda::memory_order_relaxed);
+    if (off + n > qe.arr_capacity) { ds.errors.record(ErrorKind::kQcNodes); return UINT32_MAX; }
+    return off;
+}
+
+// Record one instance of `state_hash` at `depth`, whose per-slot producers are already written
+// at `prod_offset`. The device twin of Hypergraph::qc_add_instance.
+__device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t state_hash,
+                                           uint32_t depth, uint32_t prod_offset,
+                                           uint32_t nslots) {
+    if (!qe.enabled || depth > qe.max_steps) return UINT32_MAX;
+
+    const uint32_t rec = qe.instances.claim();
+    if (rec == Pool<DeviceQcInstance>::kInvalid) {
+        ds.errors.record(ErrorKind::kQcNodes);
+        return UINT32_MAX;
+    }
+    DeviceQcInstance& inst = qe.instances.at(rec);
+    {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nid(*qe.inst_next_id);
+        inst.id = nid.fetch_add(1u, cuda::memory_order_relaxed);
+    }
+    inst.nslots      = nslots;
+    inst.prod_offset = prod_offset;
+
+    // Published only after the record is complete: a walker that reaches the reference must not
+    // find a half-written instance.
+    __threadfence();
+    const uint64_t key = qe_inst_key(state_hash, depth);
+    if (qe.by_key.push(qe_bucket(key, qe.by_key.num_keys), QeInstRef{key, rec}) == INVALID_ID)
+        ds.errors.record(ErrorKind::kQcNodes);
+    return rec;
+}
+
+// The root instance of a class: every slot's edge came with the initial state, so no event
+// produced any of them. Claims the class frame first, so the root's producer vector and the
+// expansion captured from it are in the SAME labelling by construction -- the host does the
+// same, and for the same reason.
+__device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId root) {
+    if (!qe.enabled) return;
+    const uint64_t h = ds.state_canonical_hash[root];
+    const uint32_t nslots = ds.state_edge_slices[root].count;
+
+    const uint32_t claim = static_cast<uint32_t>(root) + 1u;
+    if (qe.frame.insert_if_absent(h, claim).value != claim) return;  // another root is the frame
+
+    const uint32_t off = qe_alloc_words(ds, qe, nslots);
+    if (off == UINT32_MAX) return;
+    for (uint32_t i = 0; i < nslots; ++i) qe.arr_words[off + i] = kQeNoProducer;
+    qe_add_instance(ds, qe, h, 0u, off, nslots);
+}
+
+// Visit every instance recorded for `state_hash` at `depth`.
+template <typename F>
+__device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint32_t depth,
+                                            F&& f) {
+    const uint64_t key = qe_inst_key(state_hash, depth);
+    qe.by_key.for_each(qe_bucket(key, qe.by_key.num_keys), [&](const QeInstRef& r) {
+        if (r.key == key) f(qe.instances.at(r.record));
+    });
+}
+
 // Host-side owner of the capture's device structures, so a run's records are one body of
 // state whether the host seeding or the device loop wrote them. Token-sized when the route is
 // off, and cleared between runs rather than rebuilt, for the same reason QcState is: the pools
@@ -225,18 +330,22 @@ public:
     QeState(bool on, uint32_t max_events)
         : matches_(on ? max_events : 1u),
           by_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
+          instances_(on ? max_events : 1u),
+          by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
         HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QeState cursor alloc");
         HG_CUDA_CHECK(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
+        HG_CUDA_CHECK(cudaMalloc(&inst_next_id_, sizeof(uint32_t)), "QeState inst id alloc");
         clear();
     }
     ~QeState() {
         if (arr_)     cudaFree(arr_);
         if (cursor_)  cudaFree(cursor_);
         if (next_id_) cudaFree(next_id_);
+        if (inst_next_id_) cudaFree(inst_next_id_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -249,6 +358,9 @@ public:
         frame_.clear();
         by_from_.clear();
         matches_.reset();
+        by_key_.clear();
+        instances_.reset();
+        HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -258,10 +370,17 @@ public:
     // capture being wired correctly.
     uint32_t num_matches_host() { return matches_.size_host(); }
 
+    // Instances recorded this run. One per raw occurrence of a class at a depth: one per root
+    // before any replay, and one more per application once the replay lands.
+    uint32_t num_instances_host() { return instances_.size_host(); }
+
     QeView view(uint32_t max_steps) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
+        q.instances    = instances_.view();
+        q.by_key       = by_key_.view();
+        q.inst_next_id = inst_next_id_;
         q.frame        = frame_.view();
         q.arr_words    = arr_;
         q.arr_cursor   = cursor_;
@@ -276,6 +395,9 @@ private:
 
     Pool<DeviceSlotMatch>     matches_;
     LockFreeList<QeMatchRef>  by_from_;
+    Pool<DeviceQcInstance>    instances_;
+    LockFreeList<QeInstRef>   by_key_;
+    uint32_t*                 inst_next_id_ = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

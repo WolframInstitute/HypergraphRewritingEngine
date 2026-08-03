@@ -66,13 +66,15 @@ __global__ void k_seed_match_queue_counted(
 // Quotient-causal seeding for a scheduler that hashed its roots elsewhere: every orbit of each
 // root gains the INIT sentinel producer (initial edges have no producing event) and the root
 // is marked reached at depth 0. Root state ids are [0, num_roots).
-__global__ void k_qc_seed_roots(DeviceState ds, QcView qc, uint32_t num_roots) {
+__global__ void k_qc_seed_roots(DeviceState ds, QcView qc, QeView qe, uint32_t num_roots) {
     const uint32_t sid = blockIdx.x * blockDim.x + threadIdx.x;
     if (sid >= num_roots) return;
     const uint64_t h = ds.state_canonical_hash[sid];
     const uint32_t norb = ds.state_num_orbits[sid];
     for (uint32_t j = 0; j < norb; ++j) qc_add_producer(ds, qc, h, 0, j, INVALID_ID);
     qc_reach(ds, qc, h, 0);
+    // The class's root instance: every slot's edge came with the initial state.
+    qe_seed_root_instance(ds, qe, sid);
 }
 
 // Register a range of raw events, one thread each -- the host-driven
@@ -143,7 +145,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   bool quotient_roots, QcView qc,
+                                   bool quotient_roots, QcView qc, QeView qe,
                                    StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
@@ -188,6 +190,10 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
             qc_add_producer(ds, qc, key, 0, j, INVALID_ID);
         qc_reach(ds, qc, key, 0);
     }
+    // The class's root instance: every slot's edge came with the initial state, so no event
+    // produced any of them. Idempotent across duplicate roots -- only the state that wins the
+    // class frame records one.
+    qe_seed_root_instance(ds, qe, sid);
 
     const auto r = map.insert_if_absent(key == 0 ? 1 : key, sid);
     // Reference semantics without the option: provided roots are distinct entry points even when
@@ -715,10 +721,10 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
-void run_qc_seed_roots(EngineState& engine, QcView qc, uint32_t num_roots) {
+void run_qc_seed_roots(EngineState& engine, QcView qc, QeView qe, uint32_t num_roots) {
     if (num_roots == 0) return;
     const uint32_t block = 64;
-    k_qc_seed_roots<<<(num_roots + block - 1) / block, block>>>(engine.device(), qc,
+    k_qc_seed_roots<<<(num_roots + block - 1) / block, block>>>(engine.device(), qc, qe,
                                                                 num_roots);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc seed roots sync");
 }
@@ -942,7 +948,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             engine.device(), d_states, n, canonical.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
             event_keys_need_ranks(event_keys),
-            arena.view(), quotient_roots, qc, d_kept, d_kept_count, n);
+            arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
     }
     {
         const uint32_t block = 128;

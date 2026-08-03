@@ -498,7 +498,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             qc_route ? &qe_view : nullptr);
 
         state_count_host = engine.num_states_host();
-        out.expansion_matches = qc_route ? qe_state_->num_matches_host() : 0u;
+        out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
+        out.expansion_instances = qc_route ? qe_state_->num_instances_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
         if (dbg) {
             const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +

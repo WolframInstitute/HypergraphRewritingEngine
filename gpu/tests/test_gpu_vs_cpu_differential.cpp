@@ -929,6 +929,12 @@ TEST(CanonicalEventCount, DeviceCapturesTheSameClassFrameExpansion) {
     EXPECT_EQ(gpu.expansion_matches, host_total)
         << "device captured " << gpu.expansion_matches << " class-frame matches, host "
         << host_total;
+
+    // P2.2: one ROOT instance, for the class the initial state belongs to. The replay
+    // (P2.3-P2.4) mints one more per application; until it lands this is the whole population,
+    // and it is what says the instance store and its seeding are wired.
+    EXPECT_EQ(gpu.expansion_instances, 1u)
+        << "expected exactly one seeded root instance, got " << gpu.expansion_instances;
 }
 
 TEST(CanonicalEventCount, ModesVsCpu) {
