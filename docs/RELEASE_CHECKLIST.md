@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 15 verified, 1 partly, 4 outstanding.** The Windows GPU stack is
+**State at 2026-08-03: 16 verified, 1 partly, 3 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
@@ -108,8 +108,15 @@ Keep it current: a release that skips a line here is not released.*
       out to wolframscript and flake on this machine's WSL interop socket — `accept4 failed 110`,
       10-20 s timeouts; 28/28 and 3/3 when the socket is healthy. Not a code failure, but it will
       make any CI leg that calls wolframscript unreliable.)
-- [ ] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
-      plus per-mode `NumStates` (was 24/24).
+- [x] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
+      plus per-mode `NumStates`. **2026-08-03: `gpu_differential_tests` 36/36 on an RTX 4090**, a
+      full 21-minute run. This line and the `gpu_differential_tests` line below are the SAME
+      binary: the equivalences are `DifferentialEvolution.BitIdenticalCanonicalForm` over the
+      28-workload corpus, which compares causal and branchial as sets on both routes (the run logs
+      each, e.g. `quotient_wolfram_steps6 causal cpu=26332 gpu=26332 branchial cpu=30063
+      gpu=30063`), and per-mode `NumStates` is `CanonicalStateCount.ModesVsCpu`, which reproduces
+      the CPU's `num_canonical_states()` by the same per-mode rule rather than reverse-engineering
+      it (`test_gpu_vs_cpu_differential.cpp:1174-1209`).
 - [x] `gpu_differential_tests` and `hg_gpu_tests` green. **36/36 and 98/98 at 2026-08-03.**
 - [x] Determinism gate green **with TR on and quotient on**. **2026-08-03**: `CausalDeterminism.*`
       4/4, and `quotient_determinism_rate_probe` 0/1100 sweeps cumulative at `--load 6`
