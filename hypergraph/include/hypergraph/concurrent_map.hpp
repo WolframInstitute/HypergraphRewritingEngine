@@ -38,6 +38,15 @@ inline constexpr uint32_t id_from_key(uint64_t k) {
     return static_cast<uint32_t>(k - 1);
 }
 
+// The inverse of the two-id form, beside it for the same reason the forward map is shared: a
+// reader that unpacks a packed pair its own way is a second implementation of the packing, and
+// the offset is exactly what such a copy leaves out.
+struct IdPair { uint32_t a, b; };
+inline constexpr IdPair id_pair_from_key(uint64_t k) {
+    return IdPair{ static_cast<uint32_t>(k >> 32) - 1u,
+                   static_cast<uint32_t>(k & 0xFFFFFFFFu) - 1u };
+}
+
 // =============================================================================
 // ConcurrentMap<K, V>: Lock-free hash map with open addressing
 // =============================================================================

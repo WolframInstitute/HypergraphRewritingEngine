@@ -867,6 +867,12 @@ public:
     size_t num_reconstructed_raw_events() const {
         return qc_next_raw_event_.load(std::memory_order_relaxed);
     }
+    // Instances the replay recorded: one per raw occurrence of a class at a depth. The
+    // population every captured match is replayed against, so the relations it produces are a
+    // function of it -- which makes it the first thing to compare when two runs disagree.
+    size_t num_reconstructed_instances() const {
+        return qc_next_instance_.load(std::memory_order_relaxed);
+    }
     size_t num_reconstructed_causal_edges() const {
         return qc_num_causal_edges_.load(std::memory_order_relaxed);
     }
@@ -954,7 +960,8 @@ public:
             });
         } else {
             qc_causal_pairs_.for_each([&](uint64_t k, bool) {
-                f(id(static_cast<uint32_t>(k >> 32)), id(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
+                const IdPair p = id_pair_from_key(k);
+                f(id(p.a), id(p.b));
             });
         }
     }
@@ -975,9 +982,19 @@ public:
     // distinct, so lo < hi strictly, and neither an all-zero nor an all-ones key is reachable.
     template <typename F>
     void for_each_reconstructed_branchial(F&& f) const {
-        auto sig = [&](uint32_t e) -> uint64_t { return event_pair_signature(e); };
+        for_each_reconstructed_branchial_as(
+            [&](uint32_t e) { return event_pair_signature(e); }, f);
+    }
+
+    // The same walk under a CALLER-CHOSEN endpoint identity, for the same reason
+    // for_each_reconstructed_causal_as exists: the run identity's slot components are labels
+    // relative to the class frame THIS run pinned, so a cross-run or cross-thread comparison
+    // must use the schedule-stable content triple instead. One walk, two identities.
+    template <typename Id, typename F>
+    void for_each_reconstructed_branchial_as(Id&& id, F&& f) const {
         qc_branchial_pairs_.for_each([&](uint64_t k, bool) {
-            f(sig(static_cast<uint32_t>(k >> 32)), sig(static_cast<uint32_t>(k & 0xFFFFFFFFu)));
+            const IdPair p = id_pair_from_key(k);
+            f(id(p.a), id(p.b));
         });
     }
 
