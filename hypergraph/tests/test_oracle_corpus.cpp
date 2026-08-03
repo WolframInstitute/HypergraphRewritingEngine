@@ -6,6 +6,7 @@
 // oracle" guarantee that every optimization must keep passing.
 #include <gtest/gtest.h>
 
+#include "hypergraph/rule_analysis.hpp"
 #include "reference/oracle_corpus.hpp"
 
 using namespace hypergraph;
@@ -401,4 +402,57 @@ TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
     EXPECT_THROW(e.evolve_more(1), std::runtime_error)
         << "evolve_more returned quietly on a run with no frontier, so the caller gets the graph "
         << "it already had and nothing says the continuation did not happen";
+}
+
+// STATIC ANALYSIS: what the rules alone decide, checked against what the engine builds.
+//
+// can_branch is sound in ONE direction. False means two matches can never share a consumed edge,
+// which is exactly the branchial relation's condition, so the relation is empty for EVERY initial
+// condition and the work of building it has a provably empty answer. True means only "not ruled
+// out" -- a reachability question stands behind it and reachability is undecidable here.
+//
+// So the gate is asymmetric, and deliberately: a case predicted NOT to branch and then observed
+// branching is a defect in the analysis and would license dropping real structure. A case
+// predicted to branch and observed not to is the over-approximation working as designed, and is
+// reported rather than failed.
+TEST(OracleCorpus, StaticAnalysisNeverPredictsAwayRealBranching) {
+    size_t proved_none = 0, not_ruled_out = 0, over_approximated = 0;
+
+    for (const auto& c : oracle::corpus()) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        {
+            ParallelEvolutionEngine e(&hg, 4);
+            e.set_transitive_reduction(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+        }
+        const size_t observed = hg.observable_num_branchial();
+        const RuleSetFacts f = analyze_rules(c.rules);
+
+        if (!f.may_branch) {
+            ++proved_none;
+            EXPECT_EQ(observed, 0u)
+                << c.name << ": the analysis proved no two matches can share a consumed edge, and "
+                << "the engine built " << observed << " branchial edges. The analysis is wrong, "
+                << "and anything that skipped branchial work on this answer would drop real "
+                << "structure.";
+        } else {
+            ++not_ruled_out;
+            if (observed == 0) ++over_approximated;
+        }
+        std::printf("[static %-18s] lhs_edges=%u rules=%zu may_branch=%s observed_branchial=%zu\n",
+                    c.name, analyze_rule(c.rules[0]).lhs_edges, c.rules.size(),
+                    f.may_branch ? "yes" : "NO ", observed);
+    }
+
+    std::printf("# static analysis: %zu workloads PROVED branchial-free, %zu not ruled out "
+                "(%zu of those observed none -- the over-approximation)\n",
+                proved_none, not_ruled_out, over_approximated);
+
+    // Without this the test passes on an analysis that says "may branch" for everything, which
+    // is sound, useless, and indistinguishable from a correct one on the assertion above.
+    EXPECT_GT(proved_none, 0u)
+        << "the analysis proved nothing about any corpus workload, so it is sound only by being "
+        << "silent and nothing can act on it";
 }
