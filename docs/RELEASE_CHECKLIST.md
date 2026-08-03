@@ -1,13 +1,14 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 13 verified, 2 partly, 5 outstanding.** The Windows GPU stack is
+**State at 2026-08-03: 15 verified, 1 partly, 4 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
 remain — 4 partly done, 5 not — split into exactly two kinds, and neither is new engineering:
 
-- **Needs the Wolfram documentation toolchain** — the `.paclet` archive, `DocumentationBuild` and
-  the installed-archive exercise. The six-platform rebuild they follow is DONE (2026-08-03).
+- **Needs the Wolfram documentation toolchain** — `DocumentationBuild` and the example pages.
+  The `.paclet` archive and the installed-archive exercise are DONE (2026-08-03), and the doc
+  build has an open finding of its own recorded on its line.
 - **Needs a Windows host** — only `Windows-x86-64/hg_evolve_gpu.exe`, which requires native
   MSVC+nvcc. The cross attempt failed on the WSL interop socket, not on code, and the config
   itself is proven: that binary's predecessor passes the golden corpus 12/12.
@@ -53,18 +54,35 @@ Keep it current: a release that skips a line here is not released.*
       same change that ticks this line.** It does NOT run a kernel — hosted Windows runners have no
       NVIDIA GPU, so the "GPU results match CPU with no fallback" line below still needs real
       hardware.
-- [ ] `.paclet` archive produced.
+- [x] `.paclet` archive produced. **2026-08-03**: `reference/build_paclet_archive.wls` →
+      `dist/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet`, **30 MB, 41 entries, a
+      library present for each of the six declared SystemIDs**, checked by reading the archive
+      back. It STAGES: archiving `paclet/` directly gave 96 MB from a 599 MB tree, 512 MB of it
+      `Documentation/Source/generated/`, a gitignored doc-build intermediate. The script now
+      copies only what `PacletInfo.wl` declares and fails if a `Documentation/Source` entry
+      appears in the result.
 - [ ] `DocumentationBuild` passes (was 24/24) — note this **evaluates every example cell**, so it is
-      also the docs-can't-rot gate.
+      also the docs-can't-rot gate. **KNOWN FINDING, 2026-08-03**: the last build left
+      `Documentation/Source/generated/Tutorials/Getting Started with Hypergraph Rewriting.nb` at
+      **535 MB / 8.47 M lines**. The cause is in the notebook's own content, not the doc
+      toolchain: the graph it embeds annotates EVERY edge with the full `InputStateEdges` and
+      `OutputStateEdges` lists of its endpoint states, so the payload grows as events × state
+      size. It does not reach a user — the archive ships `Documentation/English` and the staging
+      check now fails if `Documentation/Source` appears — but a tutorial that emits a
+      half-gigabyte cell is not a tutorial that can be maintained, and this line stays open on it.
 - [x] **Static-link contract holds.** Verified 2026-08-03 on
       `paclet/LibraryResources/Windows-x86-64/hg_evolve_gpu.exe`: the import set is exactly
       `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — nothing else — so `libcudart_static` + `/MT`
       held. Re-verify after the rebuild, since the binary checked is the 2026-07-22 one.
 
 ## Functional verification
-- [~] The assembled `.paclet` is installed and exercised via wolframscript. The paclet DIRECTORY is
-      (`PacletDirectoryLoad` + `HGEvolve`, both CPU and GPU, 2026-08-03); the assembled `.paclet`
-      ARCHIVE is not, since producing it is part of the rebuild.
+- [x] The assembled `.paclet` is installed and exercised via wolframscript. **2026-08-03**:
+      `reference/verify_paclet.wls --archive` `PacletInstall`s `dist/*.paclet` and runs the golden
+      corpus against the INSTALLED copy — **12/12, Failed NONE**, and TargetDevice CPU == GPU ==
+      `{5,33,32,43}`. Because wolframscript here is the Windows executable, `$SystemID` resolved to
+      `Windows-x86-64`, so the library exercised was the archive's WINDOWS one. This is the check a
+      directory load cannot make: the archive is a staged SUBSET, so a dropped file or a platform
+      library unfindable by SystemID would show up only here. It uninstalls afterwards.
 - [x] `HGEvolve` runs through the `hg_evolve` **process** (isolation confirmed). **2026-08-03**:
       `PacletTest` 3/3 — it `PacletDirectoryLoad`s the local `paclet/` and calls
       `HypergraphRewriting`HGEvolve` under wolframscript, which routes through `RunProcess` to
