@@ -255,13 +255,10 @@ NormalizedResult run_cpu(const Workload& w) {
     // Count diagnostics. NumStates as HGEvolve reports it is hg.num_canonical_states().
     out.num_canonical_states = hg.num_canonical_states();
     out.raw_states = state_hash_by_id.size();
-    // NOT the count the FFI serves. HGEvolve reports hg.observable_num_events()
-    // (hypergraph_ffi.cpp:1279), which under quotient exploration or EVENT_SIG_AUTOMATIC is the
-    // RECONSTRUCTION's count, not this one. The device has no reconstruction, so switching this
-    // line to observable_num_events() turns two assertions red -- see the pinned reproducer
-    // ReconstructionGapIsStillOpen below, which holds the measured numbers. That switch is the
-    // last step of the device port, not the first.
-    out.num_events = hg.num_events();
+    // The count the FFI serves (hypergraph_ffi.cpp:1305): under quotient exploration or
+    // EVENT_SIG_AUTOMATIC it is the RECONSTRUCTION's, which is a different number from the
+    // full-capture count and is what a caller of HGEvolve is told.
+    out.num_events = hg.observable_num_events();
     out.raw_events = hg.num_raw_events();
     {
         std::set<uint32_t> outs;
@@ -356,11 +353,10 @@ NormalizedResult run_gpu(const Workload& w) {
 
     // Count diagnostics (GPU side).
     out.raw_states = result.states.size();
-    // Mirrors hg_gpu_backend.cpp's NumEvents: events that are their own canonical.
     out.raw_events = result.events.size();
-    out.num_events = 0;
-    for (const auto& e : result.events)
-        if (e.canonical_id == hg_gpu::INVALID_ID) ++out.num_events;
+    // The same accessor hg_gpu_backend.cpp serves as NumEvents, so the harness cannot compare a
+    // number no caller receives.
+    out.num_events = result.observable_num_events();
     {
         std::set<uint32_t> outs;
         for (const auto& ev : result.events) outs.insert(ev.output_state);
@@ -835,26 +831,16 @@ TEST(CanonicalEventCount, RanksAreIndependentOfPresentation) {
     }
 }
 
-// PINNED REPRODUCER for the device's missing reconstruction. It passes exactly while the
-// defect is present, so the suite notices if the gap silently moves or closes -- the same
-// contract verification/genmc/run.sh gives a `GENMC-EXPECT: violation` harness.
+// The two devices agree on the number HGEvolve returns, on the workload where the identity
+// question has teeth.
 //
-// WHAT IS BROKEN. An Automatic event signature hashes each consumed/produced edge's RANK, and
-// which state's canonical labelling supplies that rank is a choice. The CPU uses ONE labelling
-// pinned per isomorphism class, served by quotient reconstruction; the GPU has no class frame
-// and reads each state's own labelling (edge_rank_in_state_device). Measured on this workload:
-//
-//     hg.observable_num_events()  -- what HGEvolve returns --  CPU 21
-//     the GPU's canonical event count                          GPU 23
-//     hg.num_events()             -- what this harness reads -- CPU 23   <- why it passes
-//
-// The same gap under quotient exploration in mode None is larger: CPU 144, GPU 15, because the
-// CPU serves the reconstructed RAW count and the device has no reconstruction at all.
-//
-// TO CLOSE: port the expansion capture and per-instance reconstruction to the device, then
-// switch run_cpu to observable_num_events() and replace the two EXPECT_EQs below with an
-// equality between the devices.
-TEST(CanonicalEventCount, ReconstructionGapIsStillOpen) {
+// An Automatic event signature hashes each consumed/produced edge's RANK, and which state's
+// canonical labelling supplies that rank is a choice. Both engines now answer from ONE labelling
+// pinned per isomorphism class -- the class frame -- rather than from whichever raw state of the
+// class a schedule happened to rank first. Reading each state's own labelling gives 23 here
+// where the class frame gives 21, so this workload separates the two conventions and an
+// equality on it is a real constraint.
+TEST(CanonicalEventCount, BothDevicesServeTheReconstructedCount) {
     using EM = hg_gpu::EventCanonicalizationMode;
     Workload w;
     w.name = "two_rules_overlap_automatic";
@@ -866,25 +852,16 @@ TEST(CanonicalEventCount, ReconstructionGapIsStillOpen) {
 
     NormalizedResult cpu = run_cpu(w);
     NormalizedResult gpu = run_gpu(w);
-    hypergraph::Hypergraph probe;
-    probe.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
-    probe.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
-    hypergraph::ParallelEvolutionEngine pe(&probe, 1);
-    for (size_t i = 0; i < w.rules.size(); ++i)
-        pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
-    pe.evolve({{0u, 1u}}, w.num_steps);
 
-    // The two engines agree on the EVOLUTION -- same applications -- and differ only on identity.
+    // Same applications: the engines agree on the EVOLUTION before any identity is applied.
     EXPECT_EQ(gpu.raw_events, cpu.raw_events);
 
-    // The shipped CPU answer, from the class-pinned frame.
-    EXPECT_EQ(probe.observable_num_events(), 21u)
-        << "the CPU's shipped count moved; re-derive the pinned numbers";
-    // The device answer, from each state's own labelling. Equality with the line above is the
-    // goal; this inequality is the defect, pinned so it cannot close unnoticed.
-    EXPECT_EQ(gpu.num_events, 23u)
-        << "the device's count moved; if it now reports 21 the port has landed -- replace this "
-           "reproducer with an equality against observable_num_events()";
+    // 21, not 23. Stated as a literal as well as an equality: two engines that both regressed to
+    // per-state ranks would agree with each other and say nothing.
+    EXPECT_EQ(cpu.num_events, 21u)
+        << "the CPU's shipped count moved; re-derive the pinned number";
+    EXPECT_EQ(gpu.num_events, cpu.num_events)
+        << "device serves " << gpu.num_events << " events, host " << cpu.num_events;
 }
 
 // P2.1: the device captures the SAME class-frame expansion the host does.

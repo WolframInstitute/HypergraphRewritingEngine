@@ -501,7 +501,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_route ? qe_state_->num_instances_host() : 0u;
         out.reconstructed_raw_events = qc_route ? qe_state_->num_raw_events_host() : 0u;
-        out.reconstructed_events = qc_route ? qe_state_->num_canon_events_host() : 0u;
+        out.reconstruction_ran = qc_route;
+        // Under EVENT_SIG_NONE no identity is computed and every application is its own event,
+        // so the raw count IS the answer -- the same rule as the host's num_reconstructed_events.
+        out.reconstructed_events =
+            !qc_route ? 0u
+            : (event_keys_for(in.event_canonicalization) == EVENT_SIG_NONE
+                   ? qe_state_->num_raw_events_host()
+                   : qe_state_->num_canon_events_host());
         out.frame_alignments = qc_route ? qe_state_->num_aligned_host() : 0u;
         out.frame_align_failures = qc_route ? qe_state_->num_align_failures_host() : 0u;
         engine.collect_warnings_into(out.warnings, "persistent evolve");

@@ -150,12 +150,28 @@ struct EvolveResult {
     // Frame alignment: slots the class frame MOVED off the recording state's own labelling, and
     // slots for which no frame image existed (the capture is dropped, so events reachable only
     // through it are missing).
-    // Distinct event identities the reconstruction produced under the run's mode. 0 under
-    // EVENT_SIG_NONE, where every application is its own event and the raw count is the answer.
+    // Did this run reconstruct its events from the class-frame expansion? True on the quotient
+    // route and under Automatic identity, where a class holds many raw states and each would
+    // otherwise be ranked from its own presentation.
+    bool reconstruction_ran = false;
+
+    // The reconstruction's event count: distinct identities under the run's mode, or the raw
+    // application count under EVENT_SIG_NONE, where every application is its own event.
     uint32_t reconstructed_events = 0;
 
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;
+
+    // The number a caller is told, mirroring the host's Hypergraph::observable_num_events.
+    // Off the reconstruction route an event that lost a signature slot carries the winner's id,
+    // so counting events that are their own canonical gives the identity count under Full or
+    // Automatic and the raw count under None, without a mode test.
+    size_t observable_num_events() const {
+        if (reconstruction_ran) return reconstructed_events;
+        size_t n = 0;
+        for (const auto& e : events) if (e.canonical_id == INVALID_ID) ++n;
+        return n;
+    }
 };
 
 // Sizing knobs. The auto-tuner (M9) will pick these per device + workload;
