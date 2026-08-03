@@ -12,7 +12,10 @@
 #
 # WALL CLOCK IS NOT USED ANYWHERE HERE. It drifts more than 10% run to run on this hardware,
 # which is larger than most effects worth attributing. Where a cost is reported it is callgrind
-# instructions or arena/heap bytes, both deterministic.
+# instructions or arena/heap bytes, both deterministic. MEASURED, on two consecutive runs of this
+# script: the corpus total moved 3,125,670,179 -> 3,125,675,709 and the Full/IR route 59,028,301
+# -> 59,028,419, both about 2 parts per million. That is the reproducibility a number quoted in a
+# document needs, and it is four orders of magnitude tighter than the clock.
 #
 # A LEG THAT CANNOT RUN SAYS SO. No GPU, no wolframscript, no valgrind: each is reported as
 # SKIPPED with the reason. Silently omitting a leg would let the report read as complete evidence
@@ -81,6 +84,16 @@ say "## Cost, on the deterministic axes"
 run_or_skip "Cost matrix: arena and heap per workload, with and without the relations" \
     "test -x $BUILD/cost_matrix" \
     "$BUILD/cost_matrix"
+
+# P7.1 names this its prerequisite: "an end-to-end corpus timing harness reporting TOTAL time
+# across the full rule x initial-state matrix, since that is the number to drive down and no
+# per-configuration measurement substitutes for it". Instructions rather than time, because time
+# is not measurable here to better than 10%. A fixed depth of 3 keeps every workload in the matrix
+# comparable and the whole sweep at about 11 seconds under callgrind.
+run_or_skip "END-TO-END TOTAL: instructions for the entire corpus at a fixed depth" \
+    "command -v valgrind && test -x $BUILD/cost_matrix" \
+    bash -c "valgrind --tool=callgrind --callgrind-out-file=/dev/null $BUILD/cost_matrix 3 2>&1 |
+             grep -E 'I *refs:'"
 
 run_or_skip "Canonicalization route: instructions for the whole evolution, Full/IR vs None/WL" \
     "command -v valgrind && test -x $BUILD/profile_evolve" \
