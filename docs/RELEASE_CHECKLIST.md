@@ -24,21 +24,33 @@ Keep it current: a release that skips a line here is not released.*
 - [ ] `HGEvolve` example pages evaluate cleanly against the local engine.
 
 ## Test gates
-- [ ] CPU suite green (was 190; currently 194).
+- [x] CPU suite green. **244 at 2026-08-03**: 213 engine + 28 WXF + 3 Paclet. (WXF and Paclet shell
+      out to wolframscript and flake on this machine's WSL interop socket — `accept4 failed 110`,
+      10-20 s timeouts; 28/28 and 3/3 when the socket is healthy. Not a code failure, but it will
+      make any CI leg that calls wolframscript unreliable.)
 - [ ] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
       plus per-mode `NumStates` (was 24/24).
-- [ ] `gpu_differential_tests` and `hg_gpu_tests` green (were 24/24 and 77/77).
+- [x] `gpu_differential_tests` and `hg_gpu_tests` green. **36/36 and 98/98 at 2026-08-03.**
 - [ ] Determinism gate green **with TR on and quotient on** (the acceptance test for the causal work).
 - [ ] Oracle corpus + golden corpus green, including the event-canonicalization parity columns.
 
 ## v1.0 additions to the above
-- [ ] **No user-facing doc states something a user can act on and be wrong about** (see the
-      inaccuracy register in `V1_SCOPING_REGISTER.md` §C3 — `HashStrategy`, `EquilibriumAnalysis`,
-      the quotient/TR interaction, `Automatic` semantics, the `"States"` return shape).
-- [ ] **An OSS license exists** (none today — blocking for a public release).
-- [ ] No silent correctness degradation anywhere: GPU IR→1-WL fallback surfaced; unknown options
-      rejected rather than skipped; quotient/TR interaction visible to the user.
-- [ ] Every advertised option exists and every existing option is documented (generated reference).
+- [ ] **No user-facing doc states something a user can act on and be wrong about.** The five known
+      cases were `HashStrategy`, `EquilibriumAnalysis`, the quotient/TR interaction, `Automatic`
+      semantics and the `"States"` return shape (board #5, closed).
+      *DANGLING REFERENCE, now inlined above: this line pointed at `V1_SCOPING_REGISTER.md` §C3,
+      which is NOT in the repository — it is one of the superseded planning notes that survive only
+      on one clone through `.git/info/exclude`. A tracked checklist cannot cite an untracked file:
+      a fresh clone, which is what a release is, cannot follow it.*
+- [x] **An OSS license exists.** `LICENSE.md` (MIT, The Wolfram Institute), tracked, and declared
+      as `"License" -> "MIT"` in `paclet/PacletInfo.wl`.
+- [x] No silent correctness degradation anywhere: the GPU IR→1-WL fallback is surfaced
+      (`ErrorKind::kIRDegradedToWL`, `last_ir_degraded_states()`); an option the engine ignores is
+      reported as `OptionSkipped` rather than dropped (`hypergraph_ffi.cpp`, surfaced by the WL
+      layer's advisory kinds).
+- [x] Every advertised option exists and every existing option is documented. Gated by
+      `OptionSurface.*`, which reconciles all FOUR copies — declared, sent by the wrapper, parsed,
+      documented — by reading the sources: 18 sent all parsed, 10 documented all accepted.
 
 ## Shipped semantic changes to carry forward in release notes
 *(recovered from alpha.6 — these are user-visible and currently have no other home)*

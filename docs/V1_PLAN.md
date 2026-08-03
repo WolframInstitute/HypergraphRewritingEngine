@@ -31,7 +31,17 @@ effort.
 |---|---|---|
 | **P6.1** | read and approve `docs/P6_ARCHITECTURE_SPLIT.md` | it proposes moving ~1,400 lines behind one body; the doc says no code moves until approved, and P6.2/P6.3 are sequenced behind it |
 | **P7.2** | the paper | the machine that regenerates every number in it is done (`tools/dev/evidence.sh`); the writing is Richard's |
-| **P4.4** | whether the FFI transport may hold one in-flight job across calls | the session model needs state to survive a call; today's transport is one-shot WXF over stdin/stdout, so this is a transport redesign, not a feature |
+| **P4.4** | whether the FFI transport may hold one in-flight job across calls | the session model needs state to survive a call; today's transport is one-shot WXF over stdin/stdout (`HypergraphRewriting.wl:124`, `RunProcess`), so this is a transport redesign, not a feature |
+
+**AND THE P1–P7 ROWS ARE NOT THE WHOLE OF v1.0.** `docs/RELEASE_CHECKLIST.md` is the acceptance
+gate a release must pass, and it carries requirements this file does not:
+
+| from the checklist | state |
+|---|---|
+| **Native Windows MSVC+nvcc whole-stack config** — the checklist calls this a **v1.0 blocker** in as many words: until it lands, `TargetDevice -> "GPU"` SILENTLY FALLS BACK TO CPU on Windows | not started, and not tracked anywhere else. This is a silent-degradation blocker of exactly the kind P3 exists to eliminate |
+| All 6 platform libraries and 6 `hg_evolve` binaries (Linux/Windows/macOS × x86-64/ARM64); `hg_evolve_gpu` on both CUDA platforms; the `.paclet` archive; `DocumentationBuild` (which evaluates every example cell, so it is also the docs-can't-rot gate); the static-link contract | none verifiable on this machine — they need the release matrix |
+
+Neither file should be read alone. This one orders the WORK; the checklist gates the RELEASE.
 
 `P3.1` is UNREPRODUCIBLE at 0/1100 sweeps and is left open by its own instruction to re-run
 after any change to quotient attribution — it blocks nothing.
