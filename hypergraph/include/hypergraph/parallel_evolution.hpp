@@ -1363,6 +1363,19 @@ private:
     // at all is rare.
     void propagate_explore_depth(StateId canonical_state, uint32_t depth);
 
+    // May this canonical state be expanded? The claim holds matching to once per canonical
+    // state, and the exploration-probability draw is taken once, AT the claim, so a class
+    // reached by N transitions is kept with probability p rather than 1-(1-p)^N -- matching the
+    // GPU, which flips once per deduped state. A state whose draw fails stays claimed, so no
+    // later transition re-flips for it.
+    //
+    // The DEPTH BUDGET is deliberately not tested here. The three callers stand in different
+    // relations to it: the rewrite path and the relaxation walk each test it to choose between
+    // expanding and deferring, and the continuation resubmits entries that failed it under a
+    // bound that has since risen. What they must NOT differ on is the claim and the draw, which
+    // decide which classes exist at all.
+    bool claim_canonical_for_expansion(StateId canonical_state);
+
     // Bias mitigation: returns rule indices in shuffled order
     SVec<uint16_t> get_shuffled_rule_indices() const;
 };

@@ -301,18 +301,24 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         return f;
     };
 
-    // Both mechanisms, because resuming means something different to each. Full capture holds
-    // the relation it has already built and simply keeps adding to it, while the reconstruction
-    // replays the run against a depth bound and has to be told the bound moved. A gate that
-    // only ran whichever one the default routing selects would leave the other's resume path
-    // uncovered.
+    // Three legs, because "resume" names three different frontiers.
     //
-    // The reconstruction is reached by asking for Automatic event identity, which is the
-    // routing that selects it in a shipping run (parallel_evolution.cpp,
-    // configure_identity_and_quotient) and leaves the exploration itself alone, so the two legs
-    // differ in the mechanism under test and in nothing else.
+    // FULL holds the relation it has already built and keeps adding to it. RECON replays the
+    // run against a depth bound and has to be told the bound moved; it is reached by asking for
+    // Automatic event identity, the routing that selects it in a shipping run
+    // (parallel_evolution.cpp, configure_identity_and_quotient), which leaves the exploration
+    // itself alone. QUOTIENT_EXPLORE drives expansion by depth relaxation instead of by task
+    // submission, so its frontier is the states propagate_explore_depth settled at or past the
+    // budget, an entirely different set from the deferred match and rewrite tasks.
+    //
+    // A gate on whichever one the default routing happens to select leaves the other two
+    // uncovered, and they fail differently: the reconstruction's resume was short by a whole
+    // depth, and quotient exploration's dropped its frontier outright.
+    enum Leg { FULL, RECON, QUOTIENT_EXPLORE };
     size_t continued_anything = 0;
-    for (bool reconstruct : {false, true}) {
+    for (Leg leg : {FULL, RECON, QUOTIENT_EXPLORE}) {
+        const bool reconstruct = leg != FULL;
+        const bool quotient_explore = leg == QUOTIENT_EXPLORE;
         for (const auto& c : oracle::corpus()) {
             if (c.measure_steps < 2) continue;
             const size_t first = c.measure_steps - 1;
@@ -323,6 +329,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
             {
                 ParallelEvolutionEngine e(&whole, 4);
                 e.set_transitive_reduction(true);
+                e.set_explore_from_canonical_states_only(quotient_explore);
                 for (const auto& r : c.rules) e.add_rule(r);
                 e.evolve(c.init, c.measure_steps);
             }
@@ -333,6 +340,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
             {
                 ParallelEvolutionEngine e(&split, 4);
                 e.set_transitive_reduction(true);
+                e.set_explore_from_canonical_states_only(quotient_explore);
                 for (const auto& r : c.rules) e.add_rule(r);
                 e.set_continuable(true);
                 e.evolve(c.init, first);
@@ -341,7 +349,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
                 if (split.num_canonical_states() > after_first) ++continued_anything;
             }
 
-            const char* route = reconstruct ? "recon" : "full ";
+            const char* route = quotient_explore ? "qexpl" : (reconstruct ? "recon" : "full ");
             const Fp a = fingerprint(whole), b = fingerprint(split);
             std::printf("[cont %s %-18s] whole s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu"
                         " | split s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu\n",

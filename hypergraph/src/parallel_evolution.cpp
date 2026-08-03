@@ -900,11 +900,15 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
         // individualization-refinement pass on first use for a state, and at p == 1 the answer
         // is yes regardless. An argument evaluated eagerly here would put that pass on the
         // default, unsampled path.
-        if (d < budget && hg_->try_claim_expanded(s) &&
-            (exploration_probability_ >= 1.0 ||
-             should_explore(hg_->get_or_compute_canonical_hash(s)))) {
+        // Over the budget this is the frontier, not a dead end, so it is kept for a
+        // continuation to resume from. The claim is NOT taken here: a shorter path found
+        // later in this same run must still be able to relax s below the budget and expand
+        // it, and a state already claimed never would. The resume takes the claim instead,
+        // which is also what makes resuming a state that was expanded in the meantime a
+        // no-op.
+        if (d >= budget) defer_match_task(s, d + 1);
+        else if (claim_canonical_for_expansion(s))
             submit_match_task(s, d + 1);  // a canonical state is its own representative
-        }
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
             more->for_each([&](StateId child) { pending.emplace_back(child, d + 1); });
@@ -1252,6 +1256,19 @@ size_t ParallelEvolutionEngine::matches_found_for_state(StateId state) const {
     return (*result)->matches.load(std::memory_order_acquire);
 }
 
+bool ParallelEvolutionEngine::claim_canonical_for_expansion(StateId canonical_state) {
+    if (!hg_->try_claim_expanded(canonical_state)) return false;
+    // exploration_probability_ is tested AFTER the claim rather than as an eager argument
+    // beside it: the key costs an individualization-refinement pass on first use for a state,
+    // and at p == 1 the answer is yes regardless, so evaluating it eagerly would put that pass
+    // on the default, unsampled path. Keyed on the class's canonical hash, so WHICH classes
+    // survive is the same at any worker count even though the claim that reaches here is
+    // whichever transition won the race.
+    if (exploration_probability_ < 1.0 &&
+        !should_explore(hg_->get_or_compute_canonical_hash(canonical_state))) return false;
+    return true;
+}
+
 void ParallelEvolutionEngine::defer_match_task(StateId state, uint32_t step) {
     if (!continuable_) return;
     deferred_frontier_.push(DeferredMatch{state, step}, hg_->arena());
@@ -1272,8 +1289,11 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
             "set_continuable(true) before evolve(); resuming without it would return the "
             "unchanged graph, which reads as a converged one.");
     }
-    if (deferred_count_.load(std::memory_order_acquire) == 0) return;   // budget was never hit
-
+    // No early return on an empty frontier. An exploration can have nothing deferred and the
+    // run still be unfinished: quotient exploration matches each CLASS once, so a system with
+    // one canonical class settles at depth zero with no frontier at all, while the
+    // reconstruction still has to replay every depth up to the budget. The frontier and the
+    // replay bound are different quantities, and only the first can be empty here.
     max_steps_ += additional_steps;
     // The reconstruction carries its own depth bound and expands nothing at or past it, so
     // raising the engine's alone leaves the replay standing at the depth the first call
@@ -1297,7 +1317,13 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
     // Rewrites first: they mint the transitions the budget stranded, and doing them before the
     // frontier's matching means the states they create are matched in the same pass.
     for (const DeferredRewrite& d : resume_rw) submit_rewrite_task(d.match, d.step);
-    for (const DeferredMatch& d : resume) submit_match_task(d.state, d.step);
+    for (const DeferredMatch& d : resume) {
+        // Quotient exploration matches a canonical state once, under a claim, so its frontier
+        // resumes through the same decision the relaxation walk makes rather than a second
+        // copy of it.
+        if (!explore_from_canonical_states_only_) submit_match_task(d.state, d.step);
+        else if (claim_canonical_for_expansion(d.state)) submit_match_task(d.state, d.step);
+    }
     // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
     roots_seeded_.store(true, std::memory_order_release);
     try_complete_depth(0);
@@ -1669,26 +1695,24 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
             const uint32_t budget =
         static_cast<uint32_t>(std::min<size_t>(max_steps_, INVALID_ID));
-            if (child_depth < budget && hg_->try_claim_expanded(rr.new_state)) {
-                // Exploration-probability pruning: flip the coin ONCE per canonical
-                // state, at its first (shortest-depth) claim, so a state reached by N
-                // transitions is kept with probability p, not 1-(1-p)^N. Matches the
-                // GPU, which flips once per deduped state. A pruned state stays
-                // claimed, so no later transition re-flips for it.
-                //
-                // Keyed on the class's canonical hash, so WHICH classes survive is the same
-                // at any worker count -- and so it stays one draw per class even though the
-                // claim that reaches here is whichever transition won the race.
-                if (exploration_probability_ >= 1.0 ||
-                    should_explore(hg_->get_or_compute_canonical_hash(rr.new_state))) {
-                    if (enable_match_forwarding_) {
-                        register_child_with_parent(
-                            match.source_state, rr.raw_state,
-                            match.matched_edges(), match.num_edges(),
-                            child_depth);
-                    }
-                    submit_match_task_with_context(rr.raw_state, child_depth + 1, ctx);
+            // Past the budget this child is the frontier, not a dead end, so it is kept for a
+            // continuation to resume from. The claim is NOT taken over budget: a shorter path
+            // found later in this same run must still be able to relax this state below the
+            // budget and expand it, and an already-claimed state never would. The resume takes
+            // the claim instead, which is also what makes resuming a state that was expanded in
+            // the meantime a no-op. It resumes the CANONICAL state by plain match task, as the
+            // relaxation walk does -- the forwarding context below belongs to this rewrite and
+            // does not outlive the call, so a resumed frontier pays a full rematch.
+            if (child_depth >= budget) {
+                defer_match_task(rr.new_state, child_depth + 1);
+            } else if (claim_canonical_for_expansion(rr.new_state)) {
+                if (enable_match_forwarding_) {
+                    register_child_with_parent(
+                        match.source_state, rr.raw_state,
+                        match.matched_edges(), match.num_edges(),
+                        child_depth);
                 }
+                submit_match_task_with_context(rr.raw_state, child_depth + 1, ctx);
             }
             propagate_explore_depth(rr.new_state, child_depth);
             return;
