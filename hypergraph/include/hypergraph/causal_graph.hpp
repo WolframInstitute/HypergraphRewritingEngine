@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <set>
+#include <utility>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -223,6 +225,17 @@ public:
     // Backward search over preds_ (the reduced adjacency); exact and lock-free.
     bool is_reachable(EventId producer, EventId consumer) const;
 
+    // Is the reduction computed on read rather than maintained incrementally? True exactly
+    // when the reduction is on and the id assignment does not support the incremental rule.
+    bool reduces_on_read() const {
+        return transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
+               !ids_are_topological_.load(std::memory_order_relaxed);
+    }
+
+    // The reduced pair set, computed from the stored relation. Unique for a given relation, so
+    // the answer does not depend on the schedule that produced it.
+    std::set<std::pair<EventId, EventId>> reduced_pairs() const;
+
     // Has this pair been retracted by a later edge that supersedes it?
     bool is_retracted(EventId producer, EventId consumer) const {
         return retracted_pairs_.lookup(causal_pair_key(producer, consumer)).has_value();
@@ -329,6 +342,13 @@ public:
     // Iterate over causal edges
     template<typename Visitor>
     void for_each_causal_edge(Visitor&& visit) const {
+        if (reduces_on_read()) {
+            const auto keep = reduced_pairs();
+            causal_edges_.for_each([&](const CausalEdge& edge) {
+                if (keep.count({edge.producer, edge.consumer})) visit(edge);
+            });
+            return;
+        }
         causal_edges_.for_each([&](const CausalEdge& edge) {
             // A pair a later edge superseded is no longer in the reduction. causal_edges_ is
             // append-only, so the retraction is recorded beside it rather than removed.
@@ -347,6 +367,11 @@ public:
 
     // Statistics
     size_t num_causal_edges() const {
+        if (reduces_on_read()) {
+            size_t n = 0;
+            for_each_causal_edge([&](const CausalEdge&) { ++n; });
+            return n;
+        }
         // The counter tracks distinct (producer, consumer, edge) triples as they are admitted.
         // A retraction removes a PAIR, and with it every triple carrying that pair, so once any
         // retraction has happened the counter is no longer the number of live edges and the
@@ -361,6 +386,7 @@ public:
 
     // Number of unique event pairs with a causal relationship.
     size_t num_causal_event_pairs() const {
+        if (reduces_on_read()) return reduced_pairs().size();
         return num_causal_event_pairs_.load(std::memory_order_relaxed);
     }
 

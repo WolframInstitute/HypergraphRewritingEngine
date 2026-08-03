@@ -1305,37 +1305,21 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
 }
 
 void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
-    // Quotient emits causal edges between CANONICAL event ids, which are schedule-dependent
-    // (canonical_event_map_ is first-writer-wins) and non-topological under recurrence, so the
-    // online transitive reduction -- which assumes id order == topological order -- would
-    // produce a non-deterministic, wrong reduced graph. Serving the correct un-reduced graph is
-    // strictly better, hence this guard.
+    // Nothing to guard. The reduction is exact under BOTH mechanisms.
     //
-    // The per-instance raw reconstruction (Hypergraph::set_quotient_reconstruction) recovers
-    // every raw observable COUNT exactly, but its causal edge IDENTITIES are not yet canonical:
-    // slots tie-break on EdgeId within an Aut orbit, and when same-orbit edges have different
-    // producers the per-edge wiring is run-relative even though the emitted multiset is not.
-    // Replacing this guard with reconstruction-served TR needs repeat-run evidence that the
-    // TR-kept PAIR SET is schedule-independent. See docs/VERIFICATION_PLAN.md.
+    // Full capture mints an event after the events that produced its inputs, so its ids
+    // increase along every causal edge and a consumer's ancestry is complete when its edges are
+    // offered. Those are exactly the preconditions the incremental rule needs, and it measures
+    // ALL EXACT at 1, 2, 4, 8 and 16 threads.
     //
-    // THE CONDITION IS WHICH MECHANISM SERVES THE CAUSAL GRAPH, not which exploration strategy
-    // runs. Testing explore_from_canonical_states_only_ alone let Automatic identity through:
-    // configure_identity_and_quotient turns the reconstruction on for EVENT_SIG_AUTOMATIC under
-    // FULL-CAPTURE exploration as well, so that combination ran the reduction over the
-    // reconstructed relation and returned a non-minimal graph. Measured by
-    // tools/causal_tr_exactness_probe at one thread: wolfram5 kept 654 where the minimal
-    // reduction is 512, chain6 43 against 30, tri4 50 against 37. The rendezvous arm is exact
-    // at 1, 2, 4, 8 and 16 threads, so this is the reconstruction's reduction and nothing else.
-    if (hg_ && hg_->quotient_causal() && hg_->causal_graph().transitive_reduction_enabled()) {
-        hg_->causal_graph().set_transitive_reduction(false);
-        // A warning, not a DEBUG_LOG: returning a different graph than the caller asked for
-        // without saying so is how the non-minimal reduction went unnoticed.
-        warnings_.push_back(
-            "TransitiveReduction disabled: the causal graph is served by the quotient "
-            "reconstruction (quotient exploration, or Automatic event identity), whose online "
-            "reduction is not minimal. The correct UN-REDUCED causal graph is returned instead. "
-            "Use full capture with a non-Automatic event identity for the reduced graph.");
-    }
+    // The quotient reconstruction satisfies neither: it emits between canonical ids, which are
+    // assigned first-writer-wins and are not monotonic, and its DP propagates producers forward
+    // over time. CausalGraph reduces on READ there instead -- the stored relation is a set and a
+    // DAG's transitive reduction is unique, so the answer is minimal and identical at every
+    // thread count (tools/causal_tr_exactness_probe, Automatic arm, th 1/2/4/8).
+    //
+    // The previous guard disabled the reduction under quotient and served the un-reduced graph,
+    // because the reduction it would have served was wrong.
 }
 
 bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {

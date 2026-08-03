@@ -1,6 +1,10 @@
 // causal_graph.cpp - Implementation of CausalGraph class
 
 #include "hypergraph/causal_graph.hpp"
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include "hypergraph/scratch_alloc.hpp"
 
 namespace hypergraph {
@@ -58,6 +62,48 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
         if (found) return true;
     }
     return false;
+}
+
+// The reduction of the STORED relation. A pair (p,c) is redundant iff c is reachable from p by
+// a path of length >= 2 in that relation. The relation is a set and a DAG's transitive
+// reduction is unique, so this answer does not depend on the schedule that produced it -- which
+// is the whole reason it exists: the incremental rule needs an arrival discipline the quotient
+// reconstruction cannot provide.
+std::set<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
+    std::unordered_map<EventId, std::vector<EventId>> succ;
+    std::set<std::pair<EventId, EventId>> all;
+    causal_edges_.for_each([&](const CausalEdge& e) {
+        if (all.insert({e.producer, e.consumer}).second) succ[e.producer].push_back(e.consumer);
+    });
+
+    std::set<std::pair<EventId, EventId>> kept;
+    std::unordered_set<EventId> seen;
+    std::vector<EventId> stack;
+    for (const auto& pc : all) {
+        // Reachable from p WITHOUT taking the direct edge (p,c): if c turns up, (p,c) is
+        // implied by a longer path and leaves the reduction.
+        bool redundant = false;
+        seen.clear();
+        stack.clear();
+        auto it = succ.find(pc.first);
+        if (it != succ.end()) {
+            for (EventId w : it->second) {
+                if (w == pc.second) continue;             // the direct edge itself
+                if (seen.insert(w).second) stack.push_back(w);
+            }
+        }
+        while (!stack.empty() && !redundant) {
+            const EventId x = stack.back();
+            stack.pop_back();
+            if (x == pc.second) { redundant = true; break; }
+            auto jt = succ.find(x);
+            if (jt == succ.end()) continue;
+            for (EventId w : jt->second)
+                if (seen.insert(w).second) stack.push_back(w);
+        }
+        if (!redundant) kept.insert(pc);
+    }
+    return kept;
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
@@ -164,7 +210,11 @@ EventId CausalGraph::get_edge_producer(CanonicalEdgeKey edge_key) const {
 // =============================================================================
 
 void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
-    if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
+    // Incremental reduction only where its preconditions hold. Where they do not, every pair is
+    // stored and the reduction is computed on read, which is exact and schedule-independent
+    // because the stored relation is a set and a DAG's transitive reduction is unique.
+    if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
+        ids_are_topological_.load(std::memory_order_relaxed)) {
         const uint64_t pair_key = causal_pair_key(producer, consumer);
         auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
 
@@ -200,7 +250,8 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
             num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
             // Record the kept edge in the reduced adjacency once per unique event
             // pair, so preds_ holds no duplicate producers for a consumer.
-            if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
+            if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
+                ids_are_topological_.load(std::memory_order_relaxed)) {
                 record_reduced_edge(producer, consumer);
                 retract_superseded(producer, consumer);
             }
