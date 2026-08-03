@@ -310,7 +310,7 @@ Open, reproducible, with the command. Anything here that is closed moves to the 
 
 | what | reproducer | rate / size |
 |---|---|---|
-| **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | 1–6 of 204 runs, always `fwd=1 delta=0`, on the non-default path. Batched arm asserts 0 and holds. Unchanged across the join extraction (2b624c8: 5,2,3,5,2; 59b3cd8: 4,1,6,4,1) |
+| **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | **0.1% of runs, not the 3% recorded until `aa2fd41`.** The old number summed late arrivals with real losses: the validator runs inside the child's match task and counts what is not there YET, and the engine's own `late_arrivals_` (which the test never read) says most of it arrives. Measured separately over 18 invocations / 3,672 runs: **38 late, 4 lost**, never more than one lost per invocation. Ruled out: store order (store precedes push), and a missing `seq_cst` on the child side (added, measured, no change, reverted). Batched — the default — asserts 0 and holds |
 | **Device reconstruction depth is capped near 40** | `QuotientReconstruction.PastTheStackDepthItRecordsRatherThanFaults` | Both device cascades recurse once per depth against a per-thread stack, measured at 5461 bytes/level. `00e21ee` sizes the stack from the depth and bounds the recursion, so a deeper run returns partial work and records `kScratchOverflow` instead of faulting. Removing the recursion (explicit work list) makes depth cost O(1) stack and is the real fix |
 
 Two rows were removed as closed, not forgotten: **Positional identity cannot run through the
