@@ -853,7 +853,7 @@ void Hypergraph::qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t o
     // Newly added producer for this (state, depth, orbit)?
     uint64_t seenk = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
     seenk *= 1099511628211ULL; if (seenk == 0 || seenk == ~0ULL) seenk = 1;
-    if (!qc_dsup_seen_.insert_if_absent(seenk, true).second) return;
+    if (!qc_dsup_seen_.insert(seenk)) return;
     qc_dsup_list(key)->push(producer, arena_);
 
     // A producer landing at (state, depth) witnesses that (state, depth) is reachable, so
@@ -904,7 +904,7 @@ void Hypergraph::qc_process_transition(const CanonicalTransition& t, uint64_t fr
 void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     if (static_cast<int>(depth) > maxs) return;
-    if (!qc_reached_.insert_if_absent(qc_rkey(state_hash, depth), true).second) return;
+    if (!qc_reached_.insert(qc_rkey(state_hash, depth))) return;
     qc_reached_list_.push(QcReachPoint{state_hash, depth}, arena_);
 
     // Publish (the insert above) before scanning; pairs with the fence in
@@ -1007,7 +1007,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     qc_num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
 
     const uint64_t pk = qc_pair_key(producer, consumer);
-    if (!qc_causal_pairs_.insert_if_absent(pk, true).second) return;   // pair already recorded
+    if (!qc_causal_pairs_.insert(pk)) return;   // pair already recorded
     qc_num_causal_pairs_.fetch_add(1, std::memory_order_relaxed);
 
     // One base, two views: tag whether this pair survives reduction. A pair bypassed by a
@@ -1040,7 +1040,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
         return (k == 0 || k == ~0ULL) ? 1 : k;
     };
     const uint64_t ck = apply_key(inst.id, m.id);
-    if (!qc_applied_.insert_if_absent(ck, true).second) return;
+    if (!qc_applied_.insert(ck)) return;
     if (m.from_slots != inst.nslots) return;   // capture/instance disagree; drop rather than corrupt
 
     // The raw event this instance's copy of the match stands for. An id suffices: counts and
@@ -1079,7 +1079,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
             // (input, output, rule) triple instead makes every pair look like a disagreement
             // against full capture, which keys its pairs on Event::signature.
             qc_event_runsig_.emplace_at(ev, arena_, csig);
-            if (qc_canon_event_seen_.insert_if_absent(csig, true).second)
+            if (qc_canon_event_seen_.insert(csig))
                 qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -1148,7 +1148,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
             // comparing counts says only THAT the two paths disagree, never about which pair.
             const uint32_t lo = ev < other.event ? ev : other.event;
             const uint32_t hi = ev < other.event ? other.event : ev;
-            if (qc_branchial_pairs_.insert_if_absent(qc_pair_key(lo, hi), true).second)
+            if (qc_branchial_pairs_.insert(qc_pair_key(lo, hi)))
                 qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         });
     }
@@ -1377,8 +1377,8 @@ void Hypergraph::register_quotient_transition(EventId e) {
     for (uint32_t o : consumed) { mix(0x1111); mix(o); }
     for (auto& pr : survivors) { mix(0x2222); mix(pr.first); mix(pr.second); }
 
-    auto seen = seen_transitions_.insert_if_absent(sig, true);
-    if (!seen.second) { worker_scratch().release(mk); return; }  // already captured
+    // insert() returns whether the key was NEW, which is what insert_if_absent's .second said.
+    if (!seen_transitions_.insert(sig)) { worker_scratch().release(mk); return; }  // already captured
 
     // Copy the orbit arrays into the persistent arena, then publish the transition.
     auto copy = [&](const SVec<uint32_t>& src) -> const uint32_t* {
@@ -1420,7 +1420,7 @@ void Hypergraph::register_quotient_transition(EventId e) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d <= maxs; ++d)
-        if (qc_reached_.lookup(qc_rkey(from, static_cast<uint32_t>(d))).has_value())
+        if (qc_reached_.contains(qc_rkey(from, static_cast<uint32_t>(d))))
             qc_process_transition(*t, from, static_cast<uint32_t>(d));
 }
 
