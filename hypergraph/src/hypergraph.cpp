@@ -905,6 +905,7 @@ void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     if (static_cast<int>(depth) > maxs) return;
     if (!qc_reached_.insert_if_absent(qc_rkey(state_hash, depth), true).second) return;
+    qc_reached_list_.push(QcReachPoint{state_hash, depth}, arena_);
 
     // Publish (the insert above) before scanning; pairs with the fence in
     // register_quotient_transition. The two sides write different locations and then read the
@@ -914,6 +915,42 @@ void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
         qc_process_transition(t, state_hash, depth);
+    });
+}
+
+void Hypergraph::raise_quotient_max_steps(int max_steps) {
+    int old = qc_max_steps_.load(std::memory_order_relaxed);
+    while (max_steps > old &&
+           !qc_max_steps_.compare_exchange_weak(old, max_steps, std::memory_order_relaxed)) {
+    }
+    if (max_steps <= old) return;
+
+    // The points at depths that the old bound made terminal were reached and then left
+    // unexpanded: qc_reach scanned their transitions and qc_process_transition declined every
+    // one, so their producers never propagated and their instances never met a match. Under
+    // the raised bound they are ordinary interior points, and driving them again from the
+    // reached list restarts the cascade -- the deeper points it creates drive themselves,
+    // since the bound is already raised when they are reached. Every step of the re-drive is
+    // claimed (qc_reached_, qc_dsup_seen_, qc_applied_), so revisiting a driven point is a
+    // no-op. Called between runs, with the workers drained.
+    qc_reached_list_.for_each([&](const QcReachPoint& p) {
+        // [old, max_steps): below the old bound the point was already driven, and AT the new
+        // bound it must not be -- the final depth is produced into and never read, so
+        // expanding it would replay a step the run was not asked for. The cascade pushes its
+        // own deeper points onto this list as it goes, so the guard is what keeps the walk
+        // from expanding the frontier it is creating.
+        if (static_cast<int>(p.depth) < old || static_cast<int>(p.depth) >= max_steps) return;
+        for_each_transition_from(p.state_hash, [&](const CanonicalTransition& t) {
+            qc_process_transition(t, p.state_hash, p.depth);
+        });
+        if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
+        auto ri = qc_instances_.lookup(qc_key(p.state_hash, p.depth, 0));
+        if (!ri.has_value()) return;
+        (*ri)->for_each([&](const QcInstance& inst) {
+            for_each_expansion_match(p.state_hash, [&](const SlotMatch& m) {
+                qc_apply(inst, m, p.state_hash, p.depth);
+            });
+        });
     });
 }
 

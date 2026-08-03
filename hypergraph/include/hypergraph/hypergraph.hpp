@@ -128,6 +128,12 @@ class Hypergraph {
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
     ConcurrentMap<uint64_t, uint8_t> qc_dsup_seen_;
     ConcurrentMap<uint64_t, uint8_t> qc_reached_;
+    // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
+    // depth irreversibly, and raising the depth budget has to revisit the points that stood
+    // at the old terminal depth: each was marked reached, but every transition out of it was
+    // declined by the bound, so its producers and instances are recorded and unexpanded.
+    struct QcReachPoint { uint64_t state_hash; uint32_t depth; };
+    LockFreeList<QcReachPoint> qc_reached_list_;
     std::atomic<int> qc_max_steps_{0};
 
     // The expanded representative's FULL match list per canonical state, in slots -- the
@@ -834,6 +840,11 @@ public:
     // reachable and give each of its edge orbits the sentinel INIT producer (INVALID_ID,
     // skipped at emission -- initial edges have no producer). max_steps bounds the depth.
     void quotient_causal_seed(StateId initial_state, int max_steps);
+
+    // Extend the reconstruction's depth budget for a continued run. The replay refuses to
+    // expand an instance past it, so a continuation that raised the engine's budget and not
+    // this one resumes the exploration and leaves the reconstruction where it stopped.
+    void raise_quotient_max_steps(int max_steps);
 
     // Visit the distinct canonical transitions out of the canonical state `from_hash`.
     template <typename F>

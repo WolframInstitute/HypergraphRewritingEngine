@@ -1275,6 +1275,12 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
     if (deferred_count_.load(std::memory_order_acquire) == 0) return;   // budget was never hit
 
     max_steps_ += additional_steps;
+    // The reconstruction carries its own depth bound and expands nothing at or past it, so
+    // raising the engine's alone leaves the replay standing at the depth the first call
+    // stopped on while the exploration goes on past it, and the two then answer about
+    // different depths.
+    hg_->raise_quotient_max_steps(static_cast<int>(
+        std::min<size_t>(max_steps_, static_cast<size_t>((std::numeric_limits<int>::max)()))));
     should_stop_.store(false, std::memory_order_relaxed);
     reset_depth_join();
 

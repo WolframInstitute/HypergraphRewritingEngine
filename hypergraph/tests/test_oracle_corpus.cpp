@@ -273,9 +273,16 @@ TEST(OracleCorpus, SerialSpawnsNoWorkerAndOneWorkerIsNotSerial) {
 // evolve_more resumes from the frontier the budget stopped at. What must hold is that the split
 // run and the whole run are the same evolution -- compared on the graph, since state and event
 // ids are handed out in arrival order and the two paths arrive differently.
+//
+// Under quotient the reduced relation alone cannot say WHERE a difference came from: the base
+// relation and the reduction that derives it are separate mechanisms, and a resumed run can
+// rebuild the base exactly and still reduce it differently, because the online reduction decides
+// a pair against the paths known when it arrives. So both are compared, plus the application
+// count the base is built from.
 TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
     struct Fp {
-        size_t states = 0, events = 0, causal = 0, branchial = 0;
+        size_t states = 0, events = 0, causal = 0, causal_all = 0, applications = 0,
+               branchial = 0;
         std::multiset<uint64_t> state_hashes, causal_pairs;
     };
     auto fingerprint = [](Hypergraph& hg) {
@@ -284,6 +291,8 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         f.events = hg.num_events();
         f.causal = hg.observable_num_causal_pairs(
             hg.causal_graph().transitive_reduction_enabled());
+        f.causal_all = hg.observable_num_causal_pairs(false);
+        f.applications = hg.quotient_reconstruction() ? hg.num_reconstructed_raw_events() : 0;
         f.branchial = hg.observable_num_branchial();
         for (uint32_t s = 0; s < hg.num_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
@@ -292,43 +301,70 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         return f;
     };
 
+    // Both mechanisms, because resuming means something different to each. Full capture holds
+    // the relation it has already built and simply keeps adding to it, while the reconstruction
+    // replays the run against a depth bound and has to be told the bound moved. A gate that
+    // only ran whichever one the default routing selects would leave the other's resume path
+    // uncovered.
+    //
+    // The reconstruction is reached by asking for Automatic event identity, which is the
+    // routing that selects it in a shipping run (parallel_evolution.cpp,
+    // configure_identity_and_quotient) and leaves the exploration itself alone, so the two legs
+    // differ in the mechanism under test and in nothing else.
     size_t continued_anything = 0;
-    for (const auto& c : oracle::corpus()) {
-        if (c.measure_steps < 2) continue;
-        const size_t first = c.measure_steps - 1;
+    for (bool reconstruct : {false, true}) {
+        for (const auto& c : oracle::corpus()) {
+            if (c.measure_steps < 2) continue;
+            const size_t first = c.measure_steps - 1;
 
-        Hypergraph whole;
-        whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        {
-            ParallelEvolutionEngine e(&whole, 4);
-            e.set_transitive_reduction(true);
-            for (const auto& r : c.rules) e.add_rule(r);
-            e.evolve(c.init, c.measure_steps);
+            Hypergraph whole;
+            whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            if (reconstruct) whole.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+            {
+                ParallelEvolutionEngine e(&whole, 4);
+                e.set_transitive_reduction(true);
+                for (const auto& r : c.rules) e.add_rule(r);
+                e.evolve(c.init, c.measure_steps);
+            }
+
+            Hypergraph split;
+            split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            if (reconstruct) split.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+            {
+                ParallelEvolutionEngine e(&split, 4);
+                e.set_transitive_reduction(true);
+                for (const auto& r : c.rules) e.add_rule(r);
+                e.set_continuable(true);
+                e.evolve(c.init, first);
+                const size_t after_first = split.num_canonical_states();
+                e.evolve_more(c.measure_steps - first);
+                if (split.num_canonical_states() > after_first) ++continued_anything;
+            }
+
+            const char* route = reconstruct ? "recon" : "full ";
+            const Fp a = fingerprint(whole), b = fingerprint(split);
+            std::printf("[cont %s %-18s] whole s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu"
+                        " | split s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu\n",
+                        route, c.name,
+                        a.states, a.events, a.applications, a.causal_all, a.causal, a.branchial,
+                        b.states, b.events, b.applications, b.causal_all, b.causal, b.branchial);
+            EXPECT_EQ(b.states, a.states)
+                << route << c.name << ": continuing found a different state count";
+            EXPECT_EQ(b.events, a.events)
+                << route << c.name << ": continuing found a different event count";
+            EXPECT_EQ(b.applications, a.applications)
+                << route << c.name << ": continuing replayed a different number of applications";
+            EXPECT_EQ(b.causal_all, a.causal_all)
+                << route << c.name << ": continuing built a different UNREDUCED causal base";
+            EXPECT_EQ(b.causal, a.causal)
+                << route << c.name << ": continuing built a different causal size";
+            EXPECT_EQ(b.branchial, a.branchial)
+                << route << c.name << ": continuing built a different branchial size";
+            EXPECT_EQ(b.state_hashes, a.state_hashes)
+                << route << c.name << ": continuing explored different states";
+            EXPECT_EQ(b.causal_pairs, a.causal_pairs)
+                << route << c.name << ": continuing built a different causal relation";
         }
-
-        Hypergraph split;
-        split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-        {
-            ParallelEvolutionEngine e(&split, 4);
-            e.set_transitive_reduction(true);
-            for (const auto& r : c.rules) e.add_rule(r);
-            e.set_continuable(true);
-            e.evolve(c.init, first);
-            const size_t after_first = split.num_canonical_states();
-            e.evolve_more(c.measure_steps - first);
-            if (split.num_canonical_states() > after_first) ++continued_anything;
-        }
-
-        const Fp a = fingerprint(whole), b = fingerprint(split);
-        std::printf("[cont %-18s] whole s=%zu e=%zu c=%zu b=%zu | split s=%zu e=%zu c=%zu b=%zu\n",
-                    c.name, a.states, a.events, a.causal, a.branchial,
-                    b.states, b.events, b.causal, b.branchial);
-        EXPECT_EQ(b.states, a.states) << c.name << ": continuing found a different state count";
-        EXPECT_EQ(b.events, a.events) << c.name << ": continuing found a different event count";
-        EXPECT_EQ(b.causal, a.causal) << c.name << ": continuing built a different causal size";
-        EXPECT_EQ(b.branchial, a.branchial) << c.name << ": continuing built a different branchial size";
-        EXPECT_EQ(b.state_hashes, a.state_hashes) << c.name << ": continuing explored different states";
-        EXPECT_EQ(b.causal_pairs, a.causal_pairs) << c.name << ": continuing built a different causal relation";
     }
 
     // Without this the equalities hold for a corpus where the last step adds nothing, which
