@@ -157,7 +157,7 @@ Strict order: each unblocks the next.
 
 | id | what | gate | status |
 |---|---|---|---|
-| P5.1 | `tools/` triage: 66 files, **57 built by nothing**, 10,365 lines, `ir_incremental_probe.cpp` already broken. Every survivor is registered in CMake; everything whose question is settled is deleted (its finding lives in the commit that answered it). | `ls tools/*.cpp tools/*.cu` count == CMake-registered count | |
+| P5.1 | `tools/` triage. The headline was stale: a glob gives every non-GPU tool a target. | **65 tracked sources = 62 (host glob) + 3 (gpu CMake)**, `make host_tools` compiles all 62 with zero errors. 21 hand-build recipes removed — that line is what let them rot. The one skipped name is one clone's untracked scratch, not a repo tool. Deleting settled probes is not what the gate asks and is Richard's call | **DONE** `365273d` |
 | P5.2 | Dead code from the audit: `EdgeCausalInfo` (`hypergraph/include/hypergraph/types.hpp:490`) is referenced by nothing and is listed in CODEMAP as if it exists. | Deleted; CODEMAP no longer lists it. The causal rendezvous it described is `CausalGraph`'s `get_or_create_edge_producers`/`_consumers`, keyed by `CanonicalEdgeKey`. | **DONE** |
 | P5.3 | Fold the three untracked planning docs (`V1_ROADMAP` 163, `V1_EXECUTION` 249, `V1_SCOPING_REGISTER` 753) — one authority, not three. **Needs Richard's go: they are untracked, so deletion is irreversible.** | one planning doc remains | |
 | P5.4 | Regenerate `docs/CODEMAP.md` from `tools/dev/source_map.py` instead of maintaining it by hand, or delete it. It has already drifted. | CODEMAP is generated, or gone | |
