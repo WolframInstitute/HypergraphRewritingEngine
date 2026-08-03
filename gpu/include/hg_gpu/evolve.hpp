@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
+#include <utility>
 #include <vector>
 
 namespace hg_gpu {
@@ -183,6 +185,26 @@ struct EvolveResult {
     // Off the reconstruction route an event that lost a signature slot carries the winner's id,
     // so counting events that are their own canonical gives the identity count under Full or
     // Automatic and the raw count under None, without a mode test.
+    // The causal pair count a caller is told, mirroring Hypergraph::observable_num_causal_pairs.
+    // `reduced` selects the TR view; both come from the same base, so either is available at no
+    // extra cost. Off the reconstruction route this is the materialised relation, deduplicated
+    // by (from, to) as the FFI reports it.
+    size_t observable_num_causal_pairs(bool reduced) const {
+        if (reconstruction_ran)
+            return reduced ? reconstructed_causal_relation_reduced.size()
+                           : reconstructed_causal_relation.size();
+        std::set<std::pair<EventId, EventId>> seen;
+        for (const auto& c : causal_edges) seen.insert({c.from, c.to});
+        return seen.size();
+    }
+
+    // The branchial pair count a caller is told, mirroring
+    // Hypergraph::observable_num_branchial.
+    size_t observable_num_branchial() const {
+        return reconstruction_ran ? reconstructed_branchial_relation.size()
+                                  : branchial_edges.size();
+    }
+
     size_t observable_num_events() const {
         if (reconstruction_ran) return reconstructed_events;
         size_t n = 0;

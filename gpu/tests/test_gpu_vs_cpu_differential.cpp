@@ -85,6 +85,9 @@ struct NormalizedResult {
     std::multiset<uint64_t> recon_causal, recon_branchial;
     // The TR view of the same relation: the pairs tagged in-reduction.
     std::multiset<uint64_t> recon_causal_reduced;
+    // The COUNTS HGEvolve returns for the two relations, from each engine's observable_*
+    // accessor -- the same one its FFI reads, so the gated number is the shipped number.
+    size_t observable_causal = 0, observable_branchial = 0;
 
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
@@ -294,6 +297,10 @@ NormalizedResult run_cpu(const Workload& w) {
 
     // The relations the run SERVES when it routes the reconstruction. The sets above are full
     // capture's, which on that route holds only what the explored representatives left behind.
+    out.observable_causal =
+        hg.observable_num_causal_pairs(hg.causal_graph().transitive_reduction_enabled());
+    out.observable_branchial = hg.observable_num_branchial();
+
     if (hg.quotient_reconstruction()) {
         auto triple = [&](uint32_t e) { return hg.reconstructed_raw_triple(e); };
         hg.for_each_reconstructed_causal_as(/*reduced=*/false, triple,
@@ -372,6 +379,9 @@ NormalizedResult run_gpu(const Workload& w) {
 
     for (const auto& p : result.reconstructed_causal_relation)
         out.recon_causal.insert(causal_key(p.first, p.second));
+    out.observable_causal = result.observable_num_causal_pairs(w.transitive_reduction);
+    out.observable_branchial = result.observable_num_branchial();
+
     for (const auto& p : result.reconstructed_causal_relation_reduced)
         out.recon_causal_reduced.insert(causal_key(p.first, p.second));
     for (const auto& p : result.reconstructed_branchial_relation)
@@ -453,6 +463,14 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
     EXPECT_EQ(cpu.recon_causal, gpu.recon_causal)
         << "Workload: " << w.name << " reconstructed causal relations differ; cpu="
         << cpu.recon_causal.size() << " gpu=" << gpu.recon_causal.size();
+    // The numbers HGEvolve returns, on either route.
+    EXPECT_EQ(gpu.observable_causal, cpu.observable_causal)
+        << "Workload: " << w.name << " NumCausalEdges differs; cpu=" << cpu.observable_causal
+        << " gpu=" << gpu.observable_causal;
+    EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial)
+        << "Workload: " << w.name << " NumBranchialEdges differs; cpu="
+        << cpu.observable_branchial << " gpu=" << gpu.observable_branchial;
+
     EXPECT_EQ(cpu.recon_causal_reduced, gpu.recon_causal_reduced)
         << "Workload: " << w.name << " reconstructed REDUCED causal relations differ; cpu="
         << cpu.recon_causal_reduced.size() << " gpu=" << gpu.recon_causal_reduced.size();

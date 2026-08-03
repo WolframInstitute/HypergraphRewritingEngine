@@ -304,9 +304,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // disagree about which number the device serves.
     full_result.push_back({wxf::WXFValue("NumEvents"),
                            wxf::WXFValue(static_cast<int64_t>(result.observable_num_events()))});
-    full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(num_causal)});
+    // The RECONSTRUCTION's relations wherever it ran, as hypergraph_ffi.cpp:1319 does -- on that
+    // route the materialised edges counted above belong to the explored representatives alone.
+    // The rule lives on EvolveResult beside observable_num_events, so the shipped number and the
+    // number the differential gates cannot diverge.
+    full_result.push_back({wxf::WXFValue("NumCausalEdges"),
+                           wxf::WXFValue(result.reconstruction_ran
+                               ? static_cast<int64_t>(result.observable_num_causal_pairs(
+                                     job.transitive_reduction))
+                               : num_causal)});
     full_result.push_back({wxf::WXFValue("NumBranchialEdges"),
-                           wxf::WXFValue(static_cast<int64_t>(result.branchial_edges.size()))});
+                           wxf::WXFValue(static_cast<int64_t>(
+                               result.observable_num_branchial()))});
 
     // GraphData for the requested *Graph properties, built through the SAME shared
     // marshaller (graph_marshal.hpp) as the CPU FFI so the two devices emit identical
