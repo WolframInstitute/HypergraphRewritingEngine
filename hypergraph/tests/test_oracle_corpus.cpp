@@ -441,9 +441,11 @@ TEST(OracleCorpus, StaticAnalysisNeverPredictsAwayRealBranching) {
             ++not_ruled_out;
             if (observed == 0) ++over_approximated;
         }
-        std::printf("[static %-18s] lhs_edges=%u rules=%zu may_branch=%s observed_branchial=%zu\n",
-                    c.name, analyze_rule(c.rules[0]).lhs_edges, c.rules.size(),
-                    f.may_branch ? "yes" : "NO ", observed);
+            const RuleFacts r0 = analyze_rule(c.rules[0]);
+        std::printf("[static %-18s] lhs_edges=%u rules=%zu may_branch=%s acyclic=%s cover=%u "
+                    "observed_branchial=%zu\n",
+                    c.name, r0.lhs_edges, c.rules.size(), f.may_branch ? "yes" : "NO ",
+                    r0.acyclic ? "yes" : "NO ", r0.edge_cover, observed);
     }
 
     std::printf("# static analysis: %zu workloads PROVED branchial-free, %zu not ruled out "
@@ -455,4 +457,39 @@ TEST(OracleCorpus, StaticAnalysisNeverPredictsAwayRealBranching) {
     EXPECT_GT(proved_none, 0u)
         << "the analysis proved nothing about any corpus workload, so it is sound only by being "
         << "silent and nothing can act on it";
+}
+
+// GYO acyclicity, against queries whose class is known independently of this code.
+//
+// Every corpus LHS is a path or a pair, and those are all alpha-acyclic, so the corpus alone
+// cannot tell a working GYO from one that returns true unconditionally. The controls are the
+// standard separating examples: the TRIANGLE query is the textbook cyclic conjunctive query, and
+// a path of any length is acyclic. Without the cyclic case this predicate is untested.
+TEST(OracleCorpus, GyoSeparatesTheTriangleFromThePath) {
+    using oracle::make_rule;
+
+    // {0,1},{1,2},{2,0} -- every variable in exactly two edges, no ear anywhere. Cyclic.
+    const RewriteRule triangle =
+        make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 0}).rhs({0, 1}).build();
+    EXPECT_FALSE(lhs_is_acyclic(triangle))
+        << "the triangle query is the standard cyclic conjunctive query; a GYO that reduces it "
+        << "would call every query acyclic and the classification would be worthless";
+    // Covering three variables needs two of the three edges.
+    EXPECT_EQ(lhs_edge_cover(triangle), 2u);
+
+    // A path shares one variable per adjacent pair and peels from either end. Acyclic.
+    const RewriteRule path =
+        make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 3}).rhs({0, 3}).build();
+    EXPECT_TRUE(lhs_is_acyclic(path));
+
+    // One edge is acyclic with nothing to join, and covers itself.
+    const RewriteRule single = make_rule(0).lhs({0, 1}).rhs({1, 0}).build();
+    EXPECT_TRUE(lhs_is_acyclic(single));
+    EXPECT_EQ(lhs_edge_cover(single), 1u);
+
+    // A 4-cycle: cyclic, and two opposite edges cover all four variables.
+    const RewriteRule cycle4 =
+        make_rule(0).lhs({0, 1}).lhs({1, 2}).lhs({2, 3}).lhs({3, 0}).rhs({0, 2}).build();
+    EXPECT_FALSE(lhs_is_acyclic(cycle4));
+    EXPECT_EQ(lhs_edge_cover(cycle4), 2u);
 }

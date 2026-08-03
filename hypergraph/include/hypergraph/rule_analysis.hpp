@@ -37,7 +37,98 @@ struct RuleFacts {
     uint32_t lhs_edges = 0;
     // The arities present in the LHS, one entry per edge, in pattern order.
     std::vector<uint32_t> lhs_arities;
+    // The LHS as a conjunctive query: acyclic admits a join order with no intermediate blow-up.
+    bool acyclic = true;
+    // Integral edge cover; N^edge_cover bounds the matches one state of N edges can yield.
+    uint32_t edge_cover = 0;
 };
+
+// IS THE LHS AN ACYCLIC CONJUNCTIVE QUERY? (GYO reduction, Graham-Yu-Ozsoyoglu.)
+//
+// The LHS is a conjunctive query over the state's edge relation: each pattern edge is an atom and
+// each variable a join attribute. Alpha-acyclicity is the property that decides how the join can
+// behave -- an acyclic query admits an order in which no intermediate result exceeds the final
+// one, which is why join order matters at all and why P5's join-order work paid off where it did.
+// A CYCLIC query has no such order, and its intermediate blow-up is a property of the query
+// rather than of the schedule.
+//
+// GYO is the decision procedure and it is exact: repeatedly remove an EAR -- a vertex appearing
+// in only one edge, or an edge contained in another -- until nothing changes. Everything gone
+// means acyclic. Both operations are confluent, so the order of removals cannot change the
+// answer and no search is needed.
+inline bool lhs_is_acyclic(const RewriteRule& r) {
+    uint32_t edge_vars[MAX_PATTERN_EDGES] = {0};   // bitset of variables per edge
+    bool alive[MAX_PATTERN_EDGES] = {false};
+    const uint8_t n = r.num_lhs_edges;
+    for (uint8_t i = 0; i < n; ++i) {
+        alive[i] = true;
+        for (uint8_t j = 0; j < r.lhs[i].arity; ++j) {
+            const uint8_t v = r.lhs[i].vars[j];
+            if (v < 32) edge_vars[i] |= (1u << v);
+        }
+    }
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+
+        // (a) Drop a variable that only one live edge mentions: nothing joins on it.
+        for (uint8_t v = 0; v < 32; ++v) {
+            const uint32_t bit = 1u << v;
+            int holder = -1, count = 0;
+            for (uint8_t i = 0; i < n; ++i)
+                if (alive[i] && (edge_vars[i] & bit)) { holder = i; if (++count > 1) break; }
+            if (count == 1) { edge_vars[holder] &= ~bit; changed = true; }
+        }
+
+        // (b) Drop an edge with nothing left to constrain. Stripping (a) empties an edge whose
+        // variables were all its own, and a single-edge query reaches exactly that state -- it is
+        // trivially acyclic, and a rule requiring ANOTHER edge to contain it would never say so.
+        for (uint8_t i = 0; i < n; ++i)
+            if (alive[i] && edge_vars[i] == 0u) { alive[i] = false; changed = true; }
+
+        // (c) Drop an edge whose variables another live edge already carries. It constrains
+        // nothing the other does not.
+        for (uint8_t i = 0; i < n && !changed; ++i) {
+            if (!alive[i]) continue;
+            for (uint8_t k = 0; k < n; ++k) {
+                if (k == i || !alive[k]) continue;
+                if ((edge_vars[i] & ~edge_vars[k]) == 0u) {   // i subset of k
+                    alive[i] = false; changed = true; break;
+                }
+            }
+        }
+    }
+
+    for (uint8_t i = 0; i < n; ++i) if (alive[i]) return false;
+    return true;
+}
+
+// The smallest set of LHS edges whose variables cover every LHS variable.
+//
+// The AGM bound says a conjunctive query over relations of size N has at most N^(rho*) results,
+// where rho* is the FRACTIONAL edge cover number. This computes the INTEGRAL one, which is >=
+// rho*, so N^cover is a valid -- and weaker -- upper bound on the matches one state can yield.
+// Exact by subset enumeration: MAX_PATTERN_EDGES is 16, so the search is at most 65536 subsets
+// and needs no LP.
+inline uint32_t lhs_edge_cover(const RewriteRule& r) {
+    const uint8_t n = r.num_lhs_edges;
+    if (n == 0) return 0;
+    uint32_t edge_vars[MAX_PATTERN_EDGES] = {0}, all = 0;
+    for (uint8_t i = 0; i < n; ++i)
+        for (uint8_t j = 0; j < r.lhs[i].arity; ++j) {
+            const uint8_t v = r.lhs[i].vars[j];
+            if (v < 32) { edge_vars[i] |= (1u << v); all |= (1u << v); }
+        }
+    uint32_t best = n;
+    for (uint32_t mask = 1; mask < (1u << n); ++mask) {
+        uint32_t covered = 0, used = 0;
+        for (uint8_t i = 0; i < n; ++i)
+            if (mask & (1u << i)) { covered |= edge_vars[i]; ++used; }
+        if (used < best && covered == all) best = used;
+    }
+    return best;
+}
 
 inline RuleFacts analyze_rule(const RewriteRule& r) {
     RuleFacts f;
@@ -48,6 +139,8 @@ inline RuleFacts analyze_rule(const RewriteRule& r) {
     // is the vertex creation rate. Recomputing it here would be a second implementation of a
     // rule the pattern builder already decides.
     f.new_vertices = r.num_new_vars;
+    f.acyclic = lhs_is_acyclic(r);
+    f.edge_cover = lhs_edge_cover(r);
     return f;
 }
 
