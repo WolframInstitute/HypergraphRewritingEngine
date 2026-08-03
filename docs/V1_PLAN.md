@@ -20,7 +20,12 @@ Two sections below carry the state a lost conversation would otherwise take with
 
 ## WHAT v1.0 IS WAITING ON
 
-Every remaining row needs a decision from Richard. None is waiting on effort.
+**Read `Explicitly NOT in v1.0` below before opening anything.** Four board items (#30, #58, #77,
+#78) are named there as out of scope, and it is easy to spend a session on one of them believing
+it is milestone work. It has happened.
+
+Of the P1–P7 rows, every one that is still open needs a decision from Richard. None is waiting on
+effort.
 
 | row | what is needed | why it cannot be decided here |
 |---|---|---|
@@ -30,7 +35,10 @@ Every remaining row needs a decision from Richard. None is waiting on effort.
 | **P4.4** | whether the FFI transport may hold one in-flight job across calls | the session model needs state to survive a call; today's transport is one-shot WXF over stdin/stdout, so this is a transport redesign, not a feature |
 
 `P3.1` is UNREPRODUCIBLE at 0/1100 sweeps and is left open by its own instruction to re-run
-after any change to quotient attribution.
+after any change to quotient attribution — it blocks nothing.
+
+Everything else is DONE: P1 (all five), P2 (all ten), P3 (all six), P4 except the FFI half of
+P4.4, P5 (all eight), and P7.1's three decidable invariants with P7.2's evidence machine.
 
 Every commit message names the item id (`P1.2`, `P3.1`). A commit whose message does not carry
 the measurement that proves it is not finished.
