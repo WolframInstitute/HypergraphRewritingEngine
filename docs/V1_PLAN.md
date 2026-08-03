@@ -70,15 +70,28 @@ the work list, each with its reproducer:
    refused to serve it is deleted. Three causes, all measured: the oracle's id-order prune
    (canonical ids are not monotonic), test-once-on-arrival, and retraction being one-shot
    under concurrency — closed by reducing on READ where the arrival discipline cannot hold.
-3. **POSITIONAL identity.** `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`:
-   87 events against full capture's 86. Positional reads ranks from each raw state's own
-   canonical labelling; the reconstruction does not materialise raw presentations.
-4. **CROSS-THREAD DETERMINISM.** `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`
-   fails once the reconstruction covers the whole corpus rather than the Automatic slice.
-   Note `quotient_determinism_rate_probe` measures 0/650 on the CURRENT routing, so widening
-   the routing widens the exposure.
+3. **POSITIONAL identity — NOT a gap in code sharing, and no work here.** `event_signature`
+   (`hgcommon/event_core.hpp:62`) is `HG_HD` and BOTH engines already call it; the key lattice
+   is one definition. What differs is the RANK SOURCE: the host under Automatic feeds
+   CLASS-FRAME SLOTS from the reconstruction (21 events), the device always feeds ranks in each
+   RAW state's own labelling (23). Per-raw-state ranks ARE the Positional convention, so the
+   device already computes Positional correctly and merely labels it Automatic; what it lacks
+   is the class-frame convention, which needs the expansion replay — **that is P2, not this.**
+   On the host, `positional_event_identity_` never touches the rank source at all: it forces
+   full capture and excludes the run from `qc`, nothing more.
+4. ~~**CROSS-THREAD DETERMINISM.**~~ **CLOSED.** It WAS the TR schedule dependence; closed by
+   `65740dc`. `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads` now passes with the
+   routing forced wide, which went 193/198 -> 196/198.
 
 (`GoldenMatrix.EveryIdentityCellMatchesItsCachedExpectation` also fails, downstream of 2–4.)
+
+**RESTATEMENT.** "One causal attribution mechanism" is the wrong done-line. The two mechanisms
+consume DIFFERENT DATA — a raw state's own labelling versus a canonical class's frame — and
+which is available is decided by the requested identity and the state canonicalization mode. The
+correct done-line is **one mechanism per available presentation, with the routing explicit and
+checked**, which `2d40f9f` established (and which caught a live defect: any state mode but Full
+with Automatic identity returned ZERO events). The remaining real work is P2 — give the device
+the class-frame convention — after which CPU and GPU agree at 21.
 
 Gate for P1.5 when the four close: `tools/quotient_reconstruction_observables_probe` (exit code
 is the disagreement count; **already 0 over 80 configurations** — 4 identity modes x 10
