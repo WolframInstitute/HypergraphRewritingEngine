@@ -1,5 +1,17 @@
 # Release acceptance checklist
 
+**State at 2026-08-03: 9 of 20 lines verified, 11 outstanding.** Every line that can be checked on
+a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 11 that
+remain split into exactly two kinds, and neither is effort:
+
+- **Needs the release matrix or a Windows machine** — the six-platform library and binary builds,
+  `hg_evolve_gpu` on both CUDA platforms, the `.paclet` archive, `DocumentationBuild`, the
+  static-link contract, the installed-paclet exercise, and the Windows MSVC+nvcc config (whose
+  build-only question is one click away: run `.github/workflows/windows-gpu.yml`).
+- **Needs a decision** — the doc-accuracy line, which is a judgement about user-facing text.
+
+Nothing here is waiting on more engineering on this machine.
+
 *Recovered from the alpha.6 release notes (the only end-to-end release-acceptance procedure that
 existed, and it was buried in a changelog). This is the gate a release must pass, tightened for v1.0.
 Keep it current: a release that skips a line here is not released.*
@@ -29,8 +41,12 @@ Keep it current: a release that skips a line here is not released.*
 ## Functional verification
 - [ ] The assembled `.paclet` is installed and exercised via wolframscript.
 - [ ] `HGEvolve` runs through the `hg_evolve` / `hg_evolve_gpu` **processes** (isolation confirmed).
-- [ ] CPU results correct across `None` / `Automatic` / `Full`.
-- [ ] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.
+- [x] CPU results correct across `None` / `Automatic` / `Full`. **2026-08-03**: `GoldenMatrix.*`
+      + `Unified_CanonicalHash.*` + the event-identity gates, 12/12.
+- [x] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.
+      **2026-08-03**: `gpu_differential_tests` 36/36 on an RTX 4090, with ZERO `kIRDegradedToWL`
+      in the run — the differential compares states, events, causal and branchial as SETS on both
+      routes, so a silent degrade would change a set rather than only a count.
 - [ ] `HGEvolve` example pages evaluate cleanly against the local engine.
 
 ## Test gates
@@ -41,8 +57,12 @@ Keep it current: a release that skips a line here is not released.*
 - [ ] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
       plus per-mode `NumStates` (was 24/24).
 - [x] `gpu_differential_tests` and `hg_gpu_tests` green. **36/36 and 98/98 at 2026-08-03.**
-- [ ] Determinism gate green **with TR on and quotient on** (the acceptance test for the causal work).
-- [ ] Oracle corpus + golden corpus green, including the event-canonicalization parity columns.
+- [x] Determinism gate green **with TR on and quotient on**. **2026-08-03**: `CausalDeterminism.*`
+      4/4, and `quotient_determinism_rate_probe` 0/1100 sweeps cumulative at `--load 6`
+      (threads {1,2,8} × seeds {fixed, random} × WPP+mixed1+mixed2).
+- [x] Oracle corpus + golden corpus green, including the event-canonicalization parity columns.
+      **2026-08-03**: `OracleCorpus.*` + `ReferenceOracle.*` 12/12, which includes the brute-force
+      isomorphism oracle (independent of the engine's WL and IR) on every rule type.
 
 ## v1.0 additions to the above
 - [ ] **No user-facing doc states something a user can act on and be wrong about.** The five known
