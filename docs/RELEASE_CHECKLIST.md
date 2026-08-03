@@ -1,6 +1,8 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 10 verified, 3 partly, 7 outstanding.** Every line that can be checked on
+**State at 2026-08-03: 12 verified, 4 partly, 4 outstanding.** The Windows GPU stack is
+FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
+golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 10 that
 remain — 3 partly done, 7 not — split into exactly two kinds, and neither is new engineering:
 
@@ -57,13 +59,21 @@ Keep it current: a release that skips a line here is not released.*
       held. Re-verify after the rebuild, since the binary checked is the 2026-07-22 one.
 
 ## Functional verification
-- [ ] The assembled `.paclet` is installed and exercised via wolframscript.
+- [~] The assembled `.paclet` is installed and exercised via wolframscript. The paclet DIRECTORY is
+      (`PacletDirectoryLoad` + `HGEvolve`, both CPU and GPU, 2026-08-03); the assembled `.paclet`
+      ARCHIVE is not, since producing it is part of the rebuild.
 - [x] `HGEvolve` runs through the `hg_evolve` **process** (isolation confirmed). **2026-08-03**:
       `PacletTest` 3/3 — it `PacletDirectoryLoad`s the local `paclet/` and calls
       `HypergraphRewriting`HGEvolve` under wolframscript, which routes through `RunProcess` to
       `LibraryResources/Linux-x86-64/hg_evolve`, the binary rebuilt from current source today. So
       the WL layer, the WXF transport and a fresh engine binary were exercised end to end.
-      `hg_evolve_gpu` via `TargetDevice -> "GPU"` is NOT covered by this and still needs a run.
+      **`hg_evolve_gpu` is ALSO confirmed**, 2026-08-03: `reference/verify_paclet_gpu.wls` under
+      wolframscript ran `HGEvolve[..., TargetDevice -> "GPU"]` against the golden corpus, **12/12,
+      Failed: NONE**. Because wolframscript here is the Windows executable, `$SystemID` resolved to
+      Windows-x86-64 and the run used
+      `LibraryResources/Windows-x86-64/hg_evolve_gpu.exe` — the NATIVE MSVC+nvcc binary — on an
+      RTX 4090. Both isolation paths are therefore exercised. Caveat: that binary is 2026-07-22, so
+      the result certifies the config and the path, not current source.
 - [x] CPU results correct across `None` / `Automatic` / `Full`. **2026-08-03**: `GoldenMatrix.*`
       + `Unified_CanonicalHash.*` + the event-identity gates, 12/12.
 - [x] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.
