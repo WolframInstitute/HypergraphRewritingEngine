@@ -163,6 +163,9 @@ struct EvolveResult {
     // consumed-edge occurrences behind them. 0 when the route is off.
     uint32_t reconstructed_causal_pairs = 0;
     uint32_t reconstructed_causal_edges = 0;
+    // Distinct branchial pairs: sibling applications of one instance whose consumed edges
+    // overlap. 0 when the route is off.
+    uint32_t reconstructed_branchial = 0;
 
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;

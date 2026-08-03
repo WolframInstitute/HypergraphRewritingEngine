@@ -943,15 +943,21 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         const size_t host_ids = hg.num_reconstructed_events();
         const size_t host_cp = hg.num_reconstructed_causal_pairs(false);
         const size_t host_ce = hg.num_reconstructed_causal_edges();
+        const size_t host_br = hg.num_reconstructed_branchial();
 
-        std::printf("%-28s frame matches %4zu  raw %4zu  identities %4zu  causal %4zu/%4zu  "
-                    "moved %3u  align-fail %u\n", w.name.c_str(), host_matches, host_raw,
-                    host_ids, host_cp, host_ce, gpu.frame_alignments, gpu.frame_align_failures);
+        std::printf("%-28s matches %3zu  raw %4zu  ids %4zu  causal %4zu/%4zu  branchial %5zu"
+                    "  moved %3u  align-fail %u\n", w.name.c_str(), host_matches, host_raw,
+                    host_ids, host_cp, host_ce, host_br, gpu.frame_alignments,
+                    gpu.frame_align_failures);
 
         EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
                                        "every comparison below would pass on a device that "
                                        "captures nothing";
         EXPECT_GT(host_raw, 0u) << w.name << ": the host reconstructed no raw events";
+        EXPECT_GT(host_cp, 0u) << w.name << ": the host reconstructed no causal pairs, so the "
+                                  "equality below holds for both engines doing nothing";
+        EXPECT_GT(host_br, 0u) << w.name << ": the host reconstructed no branchial pairs, so "
+                                  "the equality below holds for both engines doing nothing";
 
         EXPECT_EQ(gpu.expansion_matches, host_matches)
             << w.name << ": device captured " << gpu.expansion_matches
@@ -973,6 +979,10 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         EXPECT_EQ(gpu.reconstructed_causal_edges, host_ce)
             << w.name << ": the replay recorded " << gpu.reconstructed_causal_edges
             << " causal edge occurrences, host " << host_ce;
+
+        EXPECT_EQ(gpu.reconstructed_branchial, host_br)
+            << w.name << ": the replay recorded " << gpu.reconstructed_branchial
+            << " branchial pairs, host " << host_br;
 
         EXPECT_EQ(gpu.frame_align_failures, 0u)
             << w.name << ": " << gpu.frame_align_failures << " slots had no image in their "

@@ -87,6 +87,17 @@ struct QeInstRef {
     uint32_t record;
 };
 
+// One application recorded against the instance it expanded. The consumed slots are carried by
+// OFFSET into the expansion arena rather than by pointer: the arena is device memory reached
+// through the view, and an offset stays valid however the view is passed.
+struct QeAppliedMatch {
+    uint32_t instance;          // the bucket is shared, so the record carries its own instance
+    uint32_t match_id;
+    uint32_t event;
+    uint32_t num_consumed;
+    uint32_t consumed_offset;   // into arr_words
+};
+
 // No event produced this slot's edge: it was in the initial state. Matches the host's
 // Hypergraph::QC_NO_PRODUCER.
 inline constexpr uint32_t kQeNoProducer = 0xFFFFFFFFu;
@@ -123,6 +134,14 @@ struct QeView {
     DedupMap::DeviceView causal_pairs;
     uint32_t* num_causal_pairs;
     uint32_t* num_causal_edges;
+
+    // The reconstructed branchial relation. `inst_applied` is bucketed by instance id: an
+    // application publishes itself there and then scans the bucket, so the later of any two
+    // sees the earlier. `branchial_pairs` claims the unordered pair, since both sides can see
+    // each other when their pushes and scans interleave.
+    typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
+    DedupMap::DeviceView branchial_pairs;
+    uint32_t* num_branchial;
 
     // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
     // +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0 could never
@@ -532,6 +551,38 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
         }
     }
 
+    // Branchial: siblings expanding the SAME instance whose consumed edges overlap. Publish
+    // before scanning -- membership of the list is the proof the other application happened,
+    // and an application that never claims never publishes.
+    if (m.num_consumed) {
+        const uint32_t bucket = qe_bucket(hgcommon::id_key(inst.id), qe.inst_applied.num_keys);
+        if (qe.inst_applied.push(bucket,
+                QeAppliedMatch{inst.id, m.id, ev, m.num_consumed, m.arr_offset}) == INVALID_ID) {
+            ds.errors.record(ErrorKind::kQcNodes);
+        } else {
+            __threadfence();
+            const uint32_t* mine = qe.arr_words + m.arr_offset;
+            qe.inst_applied.for_each(bucket, [&](const QeAppliedMatch& other) {
+                // The bucket is shared, so the record's own instance is what selects this
+                // instance's applications out of it. Slots are positions in the class frame,
+                // so comparing them across two different instances would compare coordinates
+                // in the same frame that belong to different occurrences of it.
+                if (other.instance != inst.id) return;
+                if (other.event == ev) return;   // self
+                const uint32_t* theirs = qe.arr_words + other.consumed_offset;
+                bool overlaps = false;
+                for (uint32_t i = 0; i < m.num_consumed && !overlaps; ++i)
+                    for (uint32_t j = 0; j < other.num_consumed; ++j)
+                        if (mine[i] == theirs[j]) { overlaps = true; break; }
+                if (!overlaps) return;
+                const uint32_t lo = ev < other.event ? ev : other.event;
+                const uint32_t hi = ev < other.event ? other.event : ev;
+                if (qe.branchial_pairs.insert_if_absent(hgcommon::id_key(lo, hi), 1u).inserted)
+                    atomicAdd(qe.num_branchial, 1u);
+            });
+        }
+    }
+
     // The child instance: survivors carry their producer across, produced slots take THIS event.
     const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
     if (off == UINT32_MAX) return;
@@ -571,6 +622,8 @@ public:
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
           causal_pairs_(on ? max_events * 4u : 8u),
+          branchial_pairs_(on ? max_events * 4u : 8u),
+          inst_applied_(on ? (1u << 16) : 1u, on ? max_events * 2u : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
@@ -584,6 +637,7 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&num_canon_, sizeof(uint32_t)), "QeState canon alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_causal_pairs_, sizeof(uint32_t)), "QeState c-pairs alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_causal_edges_, sizeof(uint32_t)), "QeState c-edges alloc");
+        HG_CUDA_CHECK(cudaMalloc(&num_branchial_, sizeof(uint32_t)), "QeState branchial alloc");
         clear();
     }
     ~QeState() {
@@ -597,6 +651,7 @@ public:
         if (num_canon_) cudaFree(num_canon_);
         if (num_causal_pairs_) cudaFree(num_causal_pairs_);
         if (num_causal_edges_) cudaFree(num_causal_edges_);
+        if (num_branchial_) cudaFree(num_branchial_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -616,6 +671,8 @@ public:
         applied_.clear();
         canon_seen_.clear();
         causal_pairs_.clear();
+        branchial_pairs_.clear();
+        inst_applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
@@ -623,6 +680,7 @@ public:
         HG_CUDA_CHECK(cudaMemset(num_canon_, 0, sizeof(uint32_t)), "QeState canon clear");
         HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
         HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
+        HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -641,6 +699,10 @@ public:
     // and num_reconstructed_causal_edges.
     uint32_t num_causal_pairs_host() { return read_counter(num_causal_pairs_, "QeState c-pairs read"); }
     uint32_t num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
+
+    // Distinct branchial pairs: sibling applications of one instance whose consumed edges
+    // overlap. The host's num_reconstructed_branchial.
+    uint32_t num_branchial_host() { return read_counter(num_branchial_, "QeState branchial read"); }
 
     // Distinct event identities the replay produced under the run's mode. The host's
     // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.
@@ -667,6 +729,9 @@ public:
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;
+        q.inst_applied     = inst_applied_.view();
+        q.branchial_pairs  = branchial_pairs_.view();
+        q.num_branchial    = num_branchial_;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;
@@ -700,6 +765,8 @@ private:
     DedupMap                  applied_;
     DedupMap                  canon_seen_;
     DedupMap                  causal_pairs_;
+    DedupMap                  branchial_pairs_;
+    LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
     uint32_t*                 align_moved_    = nullptr;
@@ -707,6 +774,7 @@ private:
     uint32_t*                 num_canon_        = nullptr;
     uint32_t*                 num_causal_pairs_ = nullptr;
     uint32_t*                 num_causal_edges_ = nullptr;
+    uint32_t*                 num_branchial_    = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;
