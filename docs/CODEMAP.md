@@ -51,6 +51,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`ir_core.hpp`** -- the single shared EXACT canonicalizer (individualization-refinement), one implementation for host and device.
   - `IR_HOST_GENERATORS`/`IR_DEVICE_GENERATORS` (search-budget split), `ir_scratch_words()` (caller-sized span, no allocation), `IrScratch`, `IrPartition`, `ir_heapsort_idx`/`ir_isort_u64`
   - `ir_canonical_hash()` -- refine, search by individualizing the lowest non-singleton cell, lexicographically smallest form wins; optional outputs per input edge: canonical RANK (`out_edge_rank`), automorphism ORBIT and content CLASS (`out_edge_orbit`/`out_edge_class`, computed in input space from the discovered generators -- the quotient-causal DP's keys)
+- **`slot_core.hpp`** -- FRAME SLOTS, one definition for host and device: an edge's rank when a state's edges are ordered by (Aut orbit, `EdgeId`). This is the coordinate system a canonical class's matches are recorded in, which is what lets a match found on one raw instance replay against any other instance of the class; two copies drifting by one tie-break would produce replayed events that are wrong and invisible.
 - **`join_core.hpp`** -- THE JOIN: one backtracking-join body for host and device.
   - `JoinState<>` (per-thread frame: bound edge and pattern position per depth, binding + mask, `already_taken` edge-injectivity, `bound_pattern_mask`)
   - `join_next_position()` -- which pattern position to bind next: the first UNBOUND one in the schedule, never `order[depth]`, so a seeded join still binds the positions before its anchor
@@ -66,6 +67,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
   - quotient reconstruction types: `CanonicalEdgeKey` (the quotient-aware edge identity that meets producers with consumers -- orbit-keyed under quotient, raw `EdgeId` otherwise), `EdgeOrbitTable` (per-state edge orbits + SLOTS), `CanonicalTransition` (orbit-deduplicated), `SlotMatch` (undeduplicated, slot-named)
   - `EMPTY_STATE_CANONICAL_HASH` -- the empty state's own canonical hash; it cannot be 0, which means "not computed" for `State::canonical_hash` and is `ConcurrentMap`'s `EMPTY_KEY`
+- **`atomic_compat.hpp`** -- `hypergraph::atomic_ref<T>`: an atomic view over a plain, non-atomic member. `State` keeps some fields as plain scalars so it stays trivially copyable and single-threaded paths touch them directly, while concurrent paths need atomic access to the same words. Selects `std::atomic_ref` where it exists and falls back where it does not -- the OSXCross SDK's bundled libc++ predates C++20, so the macOS cross build cannot name it directly
 - **`arena.hpp`** -- arena allocators (foundation of off-hot-path, malloc-free allocation).
   - `Arena<T>`, `ConcurrentArena<T>`, `ConcurrentHeterogeneousArena` (**per-worker bump cursors** — each thread bumps a private non-atomic offset, no shared atomic on the fast path, only a lock-free head CAS to grab a fresh ~1 MB block; scratch arenas keep the shared `allocate_shared` path for `mark/release/reset`; `create`/`create_untracked`), `ArenaWorkerRegistry` (thread→dense index, released at exit), `ArenaVector<T>`; `worker_scratch()` — the recycling scratch arena bumps `current_block_` with plain relaxed accesses (`allocate_single`), not the shared atomic claim: it is single-threaded, and the locked RMW cost 4.35x on the bump path
 - **`scratch_alloc.hpp`** -- STL-compatible allocators over the scratch/persistent arenas.
@@ -103,7 +105,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`ir_canonicalization.hpp`** -- McKay individualization-refinement exact canonicalizer (the reference algorithm).
   - `IRPartition`; `IRCanonicalizer` (`canonicalize_edges`, `compute_canonical_hash[_with_edge_map/_with_edge_orbits]`, `are_isomorphic`; private `build_adjacency`/`initial_partition`/`refine`/`individualize`/`find_canonical_labeling`)
 - **`causal_graph.hpp`** -- online lock-free causal + branchial relationships with online transitive reduction.
-  - `CausalGraph` (`set_edge_producer`/`add_edge_consumer`/`propagate_producers` -- all keyed by `CanonicalEdgeKey`, not raw `EdgeId`, so orbit-shared edges meet at one key under quotient; `add_causal_edge`/`add_branchial_edge`, `update_transitive_closure`/`is_reachable_via_desc`, `register_event_from_state_with_overlap_check`, `for_each_causal_edge`/`for_each_branchial_edge`)
+  - `CausalGraph` (`set_edge_producer`/`add_edge_consumer`/`propagate_producers` -- all keyed by `CanonicalEdgeKey`, not raw `EdgeId`, so orbit-shared edges meet at one key under quotient; `add_causal_edge`/`add_branchial_edge`; `record_state_event` + `record_branchial_overlaps` (the per-state event list and the branchial pairs it induces, each pair claimed once); the reduction as `record_reduced_edge`/`is_reachable`/`reduces_on_read`/`ids_are_topological`, which is a TAG on one base relation rather than a second graph; `for_each_causal_edge`/`for_each_branchial_edge`)
   - `causal_pair_key(producer, consumer)` offsets both ids so a self-loop on event 0 is not the map's EMPTY sentinel
 - **`hypergraph.hpp`** -- central store: edges/states/events, indices, canonicalization, causal graph.
   - `Hypergraph` (`create_edge`/`create_state`/`create_event`, `create_or_get_canonical_state`/`get_canonical_state`, `compute_canonical_hash`/`compute_wl_hash`/`compute_content_ordered_hash`, `try_lower_explore_depth`/`try_claim_expanded` for quotient mode, genesis support), result structs `CanonicalStateResult`/`CreateEventResult`
@@ -124,7 +126,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 - **`hypergraph.cpp`** -- `Hypergraph` methods: creation + index registration, `create_or_get_canonical_state` dedup, event creation/canonicalization, hashing, edge-correspondence dispatch.
 - **`ir_canonicalization.cpp`** -- `IRCanonicalizer` pipeline: `build_adjacency`/`initial_partition`/`refine`/`individualize`/`find_canonical_labeling` + the public hash/canonicalize entries.
-- **`causal_graph.cpp`** -- `CausalGraph` methods: lazy slot/list creation, producer/consumer rendezvous, `add_causal_edge`/`update_transitive_closure`/`add_branchial_edge`, `get_causal_edges`/`get_branchial_edges` export.
+- **`causal_graph.cpp`** -- `CausalGraph` methods: lazy slot/list creation, producer/consumer rendezvous, `add_causal_edge`/`record_reduced_edge`/`add_branchial_edge`, `is_reachable` (the backward walk over KEPT predecessors that decides whether a pair is bypassed), `get_causal_edges`/`get_branchial_edges` export.
 - **`parallel_evolution.cpp`** -- the engine's implementation: `evolve` loops, the `execute_*`/`submit_*` task engine, match forwarding, pruning/quotient bookkeeping.
 - **`rewriter.cpp`** -- `Rewriter::apply`: validate match, derive child edge set, allocate fresh vertices, create RHS edges/state/event, register causal/branchial (consumed edges in descending-producer order for correct online TR).
 
@@ -150,6 +152,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`rewrite.hpp`** -- device `apply_one_match` (returns the state it created); host `run_rewrite_kernel[_with][_nosync]`
 - **`exploration.hpp`** -- `DedupMap` + device `state_survives_dedup` (which new states get expanded; one predicate for both schedulers)
 - **`persistent.hpp`** -- `MatchWorkItem`, `PersistentRunStats`/`PersistentEvolveStats` (incl. the phase-cycle attribution counters); host `run_persistent_match`/`run_persistent_match_rewrite`/`run_persistent_evolve` (the device-resident schedulers), `run_qc_seed_roots`/`run_qc_register_range` (the step loop's quotient-causal drive), `default_persistent_grid()`/`persistent_arena_words()`
+- **`quotient_expansion.hpp`** -- expansion capture and per-instance replay, device side: the twin of the host's `qc_capture_expansion`/`for_each_expansion_match` and the `(instance, match)` rendezvous. `DeviceSlotMatch`/`DeviceQcInstance`/`QeAppliedMatch`/`QePredRef`, the `QeView`/`QeState` split, `qe_frame_slot_of`/`qe_register_frame`/`qe_apply`/`qe_drive_instance`/`qe_drive_match`/`qe_reachable`. Under quotient exploration only one raw state per class is expanded, so the raw events the other instances would have produced are never created; this replays them from the class's captured matches
 - **`quotient_causal.hpp`** -- the orbit-keyed quotient-causal DP, device twin of the host's `register_quotient_transition` + `qc_*` propagation: `DeviceCanonicalTransition`/`QcProducerNode`/`QcTransitionRef`, `QcView`, host `QcState` (engine-lifetime owner, cleared per run); device `qc_register_transition`/`qc_add_producer`/`qc_process_transition`/`qc_reach`/`qc_emit`. Keys are (state canonical hash, depth, edge orbit) -- no raw ids -- so the causal set under quotient exploration is schedule-independent and equal to the CPU's (gate: `tools/quotient_causal_probe_gpu`)
 - **`wl_hash.hpp` / `ir_canon.hpp`** -- device `wl_hash_state_device`, `state_exact_hash_device` (arena-backed, sized per state); host `compute_state_wl/ir_hashes*`
 - **`initial_upload.hpp`** -- host `rebuild_indices`/`upload_initial_state[s]`
@@ -158,7 +161,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `gpu/src/` -- CUDA kernels + drivers
 
-- **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_dedup_and_append`/`k_fill_unique_keys`; device `state_survives_dedup`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
+- **`evolve.cu`** -- the driver: `Engine::Impl` level-synchronised step loop (match->rewrite->hash->dedup); kernels `k_seed_roots`/`k_fill_unique_keys`; device `state_survives_dedup`; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`
 - **`match.cu`** -- device `match_state_rule` + kernel `k_match_batch`. The JOIN is `hgcommon/join_core.hpp`; this file supplies `MatchJoinCtx` (CSR-slice / pivot-inverted / signature-bucket candidate enumeration) and the block-striped depth-0 parallelism. Host `schedule_lhs_edges`/`make_device_rule`/`run_match_kernel*`
 - **`rewrite.cu`** -- device `apply_one_match` + kernel `k_rewrite` (preflight-reserve pools, build RHS/new-state CSR, write Event, causal+branchial rendezvous; the raw-edge causal rendezvous is skipped under `DeviceState::quotient_causal`, where the orbit-keyed DP replaces it); online TR is the `preds_list` backward-reachability oracle (`is_reachable_preds`, the device twin of `CausalGraph::is_reachable` -- no stored closure); `try_add_causal_edge` has external linkage (the DP emits through it); host `run_rewrite_kernel*`
 - **`event_identity.hpp` / `event_identity.cu`** -- event identity shared by both schedulers: `event_keys_need_ranks`, `edge_rank_in_state_device`, `stamp_event_signature` (computes the signature AND applies it through a signature -> EventId map, so two applications with the same identity are one event), plus `fill_event_identity_inputs` / `stamp_event_identity_range` for the level-synchronous loop's post-hash phase
@@ -172,6 +175,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`job.hpp`** -- `Job<JobType>` (abstract), `FunctionJob<>`, `make_job()`, `ScheduleMode`, `CompatibilityAwareJob<>`
 - **`job_system.hpp`** -- `JobSystem<JobType>` (the scheduler: per-worker Chase-Lev deques + shared injector, `submit`/`start`/`shutdown`/`wait_for_completion`, `set_on_job_complete` scratch recycle), nested `WorkerData`/`SystemStatistics`; `ErrorType`
   - a WORKER never blocks pushing to the injector (`try_push_back`, else run the job inline): a worker parked in a push cannot pop, so all workers parked there would wedge the system. The inline path passes `recycle_scratch=false`, since the outer job on the same stack still holds live scratch allocations.
+- **`job_pool.hpp`** -- `JobSlotPool`: fixed-size job slots recycled through a per-thread free list (`SlotHeader`, `TlsGuard`), so submitting a job does not allocate on the hot path
 - **`work_stealing_deque.hpp`** -- `WorkStealingDeque<T>` (bounded Chase-Lev; owner `push`/`pop`, thief `steal`)
 - **`lockfree_deque/deque.hpp`** -- `Deque<T>` (bounded MPMC via one packed {tag,head,tail} atomic, ABA-defeating tag; try/blocking push/pop both ends)
 
@@ -186,7 +190,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`hypergraph_ffi.cpp`** -- the marshaling TU: `run_rewriting_core` (WXF<->engine, parses all options, routes CPU or GPU, serializes States/Events/Causal/Branchial), `ffi_helpers::read_rules_association`, plus the LibraryLink DLL export `performRewriting` + `WolframLibrary_initialize/uninitialize`. Builds the `GraphData` block (for the `*Graph` properties) via the shared `hgmarshal::build_graph_data`, adapting the engine through a `CpuGraphSource`
 - **`graph_marshal.hpp`** -- the shared `*Graph` marshaller: `hgmarshal::build_graph_data(source, properties, opts)`, templated over a `Source` that exposes the evolved multiway as effective (canonicalization-collapsed) ids + per-vertex tooltips. Both `hypergraph_ffi.cpp` (CPU engine) and `hg_gpu_backend.cpp` (GPU result) drive it, so CPU and GPU emit identical graph structure for every property -- ONE graph-building code path, no divergent copies
 - **`hg_evolve_main.cpp`** -- the `hg_evolve` binary: `run_one_shot`, `run_serve` (stdio worker), `run_serve_socket` (loopback-TCP worker), frame I/O helpers, `main` (flag dispatch, progress->stderr)
-- **`hg_gpu_backend.hpp`/`.cpp`** -- `GpuJob` struct + `run_gpu_evolution` (builds `hg_gpu::EvolveInput`, runs `PersistentEvolver`, regroups the raw GPU result into canonical-class WXF matching the CPU FFI, and builds `GraphData` through the shared `hgmarshal::build_graph_data` via a `GpuGraphSource`); `build_input`
+- **`hg_gpu_backend.hpp`** / **`hg_gpu_backend.cpp`** -- `GpuJob` struct + `run_gpu_evolution` (builds `hg_gpu::EvolveInput`, runs `PersistentEvolver`, regroups the raw GPU result into canonical-class WXF matching the CPU FFI, and builds `GraphData` through the shared `hgmarshal::build_graph_data` via a `GpuGraphSource`); `build_input`
 
 ## `paclet/` -- the Wolfram Language paclet
 
@@ -196,6 +200,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `reference/` -- validation oracle
 
+- **`oracle_corpus.hpp`** -- the shared measurement substrate: `corpus()` (the named rule cases spanning the rule-type space -- single/mixed arity, productive/idempotent/reductive, self-loop, disconnected LHS, multi-rule, automorphic), `Case`/`Counts`/`LatticeCounts`, the engine drivers `engine_full_count`/`engine_counts`, and the brute-force isomorphism oracle `brute_force_iso_count`/`brute_canonical`/`content_canonical`, which is INDEPENDENT of the engine's WL and IR. One source of truth for what is tested and how it is checked, used by the oracle gate and by `tools/cost_matrix.cpp`
+- **`golden_matrix.hpp`** -- the cached identity matrix: every corpus workload across every identity mode, each `Row` carrying the `Provenance` that says what checked it. The brute-force oracle is `O(V! * E log E)` and the WL reference needs wolframscript, so neither runs on every build; caching the expected values lets the gate compare in milliseconds. `event_keys_from_name`/`state_mode_from_name`
 - **`MultiwayReference.wl`** -- brute-force ground-truth oracle: `MultiwayEvolve`, `CanonicalForm` (refinement + lex-min), helpers `refineColors`/`findMatches`/`eventSig*`
 - **`golden_corpus.wl`** -- `hgGoldenCases`: 12 named cases with expected `{states, rawEvents, causal, branchial}`
 - **`verify_paclet.wls` / `verify_paclet_gpu.wls`** -- load the local paclet, check `HGEvolve` against the golden corpus (CPU; GPU via `TargetDevice->"GPU"`)
@@ -218,7 +224,7 @@ Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown
 
 ## `benchmarks/` + `benchmarking/`
 
-- **`benchmarks/*.cpp`** -> the `benchmark_suite` exe: `canonicalization_`, `pattern_matching_`, `state_management_`, `event_relationship_`, `evolution_`, `job_system_`, `wxf_`, `wolfram_integration_benchmarks`.
+- **`benchmarks/*.cpp`** -> the `benchmark_suite` exe: `canonicalization_`, `pattern_matching_`, `state_management_`, `event_relationship_`, `evolution_`, `job_system_`, `wxf_`, `wolfram_integration_benchmark`.
 - **`benchmarking/`** -- the reusable framework: `benchmark_framework.hpp`, `benchmark_main.cpp` (lib `benchmark_framework`), `random_hypergraph_generator.hpp`, `plot_benchmarks.py`.
 
 ## `visualisation/` -- the viz-event interface

@@ -12,6 +12,16 @@ on:
 # (reference/verify_paclet.wls) needs a Wolfram Engine + a macOS/Windows leg -- both
 # tracked as follow-ups.
 jobs:
+  # The code map describes a tree that changes under it. Prose cannot be generated, but the
+  # inventory can be checked, and unchecked is how it drifted: it listed a type nothing used
+  # and three CausalGraph methods that no longer exist. Needs no build -- it reads the sources.
+  codemap-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs/CODEMAP.md names what exists, and names everything that exists
+        run: python3 tools/dev/codemap_check.py
+
   linux-tests:
     runs-on: ubuntu-latest
     steps:
