@@ -941,10 +941,12 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         }
         const size_t host_raw = hg.num_reconstructed_raw_events();
         const size_t host_ids = hg.num_reconstructed_events();
+        const size_t host_cp = hg.num_reconstructed_causal_pairs(false);
+        const size_t host_ce = hg.num_reconstructed_causal_edges();
 
-        std::printf("%-28s frame matches %4zu  raw %4zu  identities %4zu  moved %3u  "
-                    "align-fail %u\n", w.name.c_str(), host_matches, host_raw, host_ids,
-                    gpu.frame_alignments, gpu.frame_align_failures);
+        std::printf("%-28s frame matches %4zu  raw %4zu  identities %4zu  causal %4zu/%4zu  "
+                    "moved %3u  align-fail %u\n", w.name.c_str(), host_matches, host_raw,
+                    host_ids, host_cp, host_ce, gpu.frame_alignments, gpu.frame_align_failures);
 
         EXPECT_GT(host_matches, 0u) << w.name << ": the host captured no expansion at all -- "
                                        "every comparison below would pass on a device that "
@@ -964,6 +966,13 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         EXPECT_EQ(gpu_ids, host_ids)
             << w.name << ": the replay carries " << gpu_ids << " distinct event identities, "
             << "host " << host_ids;
+
+        EXPECT_EQ(gpu.reconstructed_causal_pairs, host_cp)
+            << w.name << ": the replay recorded " << gpu.reconstructed_causal_pairs
+            << " distinct causal pairs, host " << host_cp;
+        EXPECT_EQ(gpu.reconstructed_causal_edges, host_ce)
+            << w.name << ": the replay recorded " << gpu.reconstructed_causal_edges
+            << " causal edge occurrences, host " << host_ce;
 
         EXPECT_EQ(gpu.frame_align_failures, 0u)
             << w.name << ": " << gpu.frame_align_failures << " slots had no image in their "

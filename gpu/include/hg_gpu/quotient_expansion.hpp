@@ -117,6 +117,13 @@ struct QeView {
     uint32_t* num_canon;
     EventSignatureKeys keys;
 
+    // The reconstructed causal relation. `pairs` claims each (producer, consumer) exactly once;
+    // `num_causal_edges` counts every consumed-edge occurrence, so a pair joined by several
+    // edges is one pair and several edges -- the two the host reports separately.
+    DedupMap::DeviceView causal_pairs;
+    uint32_t* num_causal_pairs;
+    uint32_t* num_causal_edges;
+
     // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
     // +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0 could never
     // be stored -- the same offset, for the same reason, as the None-mode dedup key.
@@ -497,6 +504,34 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
         if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
     }
 
+    // Causal: one relationship per consumed edge that has a producer. Fed in DESCENDING
+    // producer order, so nearer producers enter the relation before farther ones -- the same
+    // discipline the full-capture rendezvous keeps.
+    {
+        uint32_t producers[kMaxPatternEdges];
+        uint32_t np = 0;
+        const uint32_t* cs = qe.arr_words + m.arr_offset;
+        for (uint32_t i = 0; i < m.num_consumed && np < kMaxPatternEdges; ++i) {
+            const uint32_t s = cs[i];
+            if (s >= inst.nslots) continue;
+            const uint32_t p = qe.arr_words[inst.prod_offset + s];
+            if (p != kQeNoProducer) producers[np++] = p;
+        }
+        // Descending, by insertion sort: np is at most kMaxPatternEdges.
+        for (uint32_t i = 1; i < np; ++i) {
+            const uint32_t v = producers[i];
+            uint32_t j = i;
+            while (j > 0 && producers[j - 1] < v) { producers[j] = producers[j - 1]; --j; }
+            producers[j] = v;
+        }
+        for (uint32_t i = 0; i < np; ++i) {
+            atomicAdd(qe.num_causal_edges, 1u);
+            const uint64_t pk = hgcommon::id_key(producers[i], ev);
+            if (qe.causal_pairs.insert_if_absent(pk, 1u).inserted)
+                atomicAdd(qe.num_causal_pairs, 1u);
+        }
+    }
+
     // The child instance: survivors carry their producer across, produced slots take THIS event.
     const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
     if (off == UINT32_MAX) return;
@@ -535,6 +570,7 @@ public:
           frame_step_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
+          causal_pairs_(on ? max_events * 4u : 8u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
@@ -546,6 +582,8 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&align_moved_, sizeof(uint32_t)), "QeState align moved alloc");
         HG_CUDA_CHECK(cudaMalloc(&align_fail_, sizeof(uint32_t)), "QeState align fail alloc");
         HG_CUDA_CHECK(cudaMalloc(&num_canon_, sizeof(uint32_t)), "QeState canon alloc");
+        HG_CUDA_CHECK(cudaMalloc(&num_causal_pairs_, sizeof(uint32_t)), "QeState c-pairs alloc");
+        HG_CUDA_CHECK(cudaMalloc(&num_causal_edges_, sizeof(uint32_t)), "QeState c-edges alloc");
         clear();
     }
     ~QeState() {
@@ -557,6 +595,8 @@ public:
         if (align_moved_) cudaFree(align_moved_);
         if (align_fail_) cudaFree(align_fail_);
         if (num_canon_) cudaFree(num_canon_);
+        if (num_causal_pairs_) cudaFree(num_causal_pairs_);
+        if (num_causal_edges_) cudaFree(num_causal_edges_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
@@ -575,11 +615,14 @@ public:
         frame_step_.clear();
         applied_.clear();
         canon_seen_.clear();
+        causal_pairs_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
         HG_CUDA_CHECK(cudaMemset(align_fail_, 0, sizeof(uint32_t)), "QeState align fail clear");
         HG_CUDA_CHECK(cudaMemset(num_canon_, 0, sizeof(uint32_t)), "QeState canon clear");
+        HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
+        HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -592,6 +635,12 @@ public:
     // Raw events the replay minted: one per (instance, match) application. The host's
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
     uint32_t num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
+
+    // The reconstructed causal relation: distinct (producer, consumer) pairs, and the
+    // consumed-edge occurrences behind them. The host's num_reconstructed_causal_pairs(false)
+    // and num_reconstructed_causal_edges.
+    uint32_t num_causal_pairs_host() { return read_counter(num_causal_pairs_, "QeState c-pairs read"); }
+    uint32_t num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
 
     // Distinct event identities the replay produced under the run's mode. The host's
     // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.
@@ -618,6 +667,9 @@ public:
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;
+        q.causal_pairs   = causal_pairs_.view();
+        q.num_causal_pairs = num_causal_pairs_;
+        q.num_causal_edges = num_causal_edges_;
         q.keys           = keys;
         q.align_fail     = align_fail_;
         q.next_raw_event = next_raw_event_;
@@ -647,11 +699,14 @@ private:
     DedupMap                  frame_step_;
     DedupMap                  applied_;
     DedupMap                  canon_seen_;
+    DedupMap                  causal_pairs_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
     uint32_t*                 align_moved_    = nullptr;
     uint32_t*                 align_fail_     = nullptr;
-    uint32_t*                 num_canon_      = nullptr;
+    uint32_t*                 num_canon_        = nullptr;
+    uint32_t*                 num_causal_pairs_ = nullptr;
+    uint32_t*                 num_causal_edges_ = nullptr;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     uint32_t*                 cursor_ = nullptr;

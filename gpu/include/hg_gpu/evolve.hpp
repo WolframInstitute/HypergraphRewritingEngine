@@ -159,6 +159,11 @@ struct EvolveResult {
     // application count under EVENT_SIG_NONE, where every application is its own event.
     uint32_t reconstructed_events = 0;
 
+    // The reconstruction's causal relation: distinct (producer, consumer) pairs, and the
+    // consumed-edge occurrences behind them. 0 when the route is off.
+    uint32_t reconstructed_causal_pairs = 0;
+    uint32_t reconstructed_causal_edges = 0;
+
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;
 

@@ -71,6 +71,35 @@ HG_HD inline uint64_t splitmix64(uint64_t z) {
     return z ^ (z >> 31);
 }
 
+// A map key built from engine ids.
+//
+// The map reserves EMPTY(0) and LOCKED and REJECTS a key equal to either, so an id packed raw
+// collides exactly when the id is zero -- which is the first state, the first edge and the
+// first event. Offsetting each id by one is injective and cannot produce zero: the high word is
+// at least one. Ids are engine-minted and bounded well below INVALID_ID, so neither offset can
+// wrap into LOCKED.
+//
+// Every map keyed by ids goes through this, on BOTH engines. Two sites packing ids their own
+// way is how one of them ends up without the offset.
+HG_HD inline constexpr uint64_t id_key(uint32_t a) {
+    return static_cast<uint64_t>(a) + 1;
+}
+HG_HD inline constexpr uint64_t id_key(uint32_t a, uint32_t b) {
+    return ((static_cast<uint64_t>(a) + 1) << 32) | (static_cast<uint64_t>(b) + 1);
+}
+HG_HD inline constexpr uint32_t id_from_key(uint64_t k) {
+    return static_cast<uint32_t>(k - 1);
+}
+
+// The inverse of the two-id form, beside it for the same reason the forward map is shared: a
+// reader that unpacks a packed pair its own way is a second implementation of the packing, and
+// the offset is exactly what such a copy leaves out.
+struct IdPair { uint32_t a, b; };
+HG_HD inline constexpr IdPair id_pair_from_key(uint64_t k) {
+    return IdPair{ static_cast<uint32_t>(k >> 32) - 1u,
+                   static_cast<uint32_t>(k & 0xFFFFFFFFu) - 1u };
+}
+
 // Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it, so it
 // is an ordinary canonical form and needs a hash of its own -- a canonicalizer given no edges
 // has nothing to compute one from, so it is reserved rather than derived.

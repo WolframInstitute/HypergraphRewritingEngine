@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include "hgcommon/core.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 #include "arena.hpp"
 #include "debug_log.hpp"
@@ -18,34 +19,12 @@
 
 namespace hypergraph {
 
-// A ConcurrentMap key from one or two dense ids.
-//
-// The map reserves EMPTY(0) and LOCKED and REJECTS a key equal to either, so an id packed raw
-// collides exactly when the id is zero -- which is the first state, the first edge and the
-// first event. Offsetting each id by one is injective and cannot produce zero: the high word is
-// at least one. Ids are engine-minted and bounded well below INVALID_ID, so neither offset can
-// wrap into LOCKED.
-//
-// Every map keyed by ids goes through this. Two sites packing ids their own way is how one of
-// them ends up without the offset.
-inline constexpr uint64_t id_key(uint32_t a) {
-    return static_cast<uint64_t>(a) + 1;
-}
-inline constexpr uint64_t id_key(uint32_t a, uint32_t b) {
-    return ((static_cast<uint64_t>(a) + 1) << 32) | (static_cast<uint64_t>(b) + 1);
-}
-inline constexpr uint32_t id_from_key(uint64_t k) {
-    return static_cast<uint32_t>(k - 1);
-}
-
-// The inverse of the two-id form, beside it for the same reason the forward map is shared: a
-// reader that unpacks a packed pair its own way is a second implementation of the packing, and
-// the offset is exactly what such a copy leaves out.
-struct IdPair { uint32_t a, b; };
-inline constexpr IdPair id_pair_from_key(uint64_t k) {
-    return IdPair{ static_cast<uint32_t>(k >> 32) - 1u,
-                   static_cast<uint32_t>(k & 0xFFFFFFFFu) - 1u };
-}
+// Map keys built from engine ids are packed by ONE rule, shared with the device
+// (hgcommon/core.hpp), and named here so host call sites reach them unqualified.
+using hgcommon::id_key;
+using hgcommon::id_from_key;
+using hgcommon::IdPair;
+using hgcommon::id_pair_from_key;
 
 // =============================================================================
 // ConcurrentMap<K, V>: Lock-free hash map with open addressing
