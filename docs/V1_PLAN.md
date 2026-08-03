@@ -65,10 +65,11 @@ the work list, each with its reproducer:
    (two hash functions disagreed on the empty state; one returned 0, the ConcurrentMap EMPTY
    sentinel). `Unified_CanonicalHash.EmptyingRuleEvolvesWithoutError` now crosses all four
    identity modes and both exploration strategies.
-2. **ONLINE TR IS NOT EXACT over the reconstructed relation.**
-   `CausalTrExactnessTest.OnlineTrMatchesOfflineTr`: wolfram/s4 gives online TR **68 edges**
-   against offline TR **48** of a full relation of **76**. This is the live blocker and it
-   invalidates P3.6 — see there.
+2. ~~**ONLINE TR IS NOT EXACT over the reconstructed relation.**~~ **CLOSED** in `65740dc`.
+   Was 68 kept against a minimal 48; now minimal at every thread count, and the guard that
+   refused to serve it is deleted. Three causes, all measured: the oracle's id-order prune
+   (canonical ids are not monotonic), test-once-on-arrival, and retraction being one-shot
+   under concurrency — closed by reducing on READ where the arrival discipline cannot hold.
 3. **POSITIONAL identity.** `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`:
    87 events against full capture's 86. Positional reads ranks from each raw state's own
    canonical labelling; the reconstruction does not materialise raw presentations.
@@ -114,7 +115,7 @@ and the two devices agree on it.
 | P3.3 | #32: sweep the FFI and GPU paths for the six defect classes the engine audit found. | each class either absent or fixed, listed in the commit | |
 | P3.4 | **GPU ignores the sampling caps.** `MaxStatesPerStep` / `MaxSuccessorStatesPerParent` are applied to the CPU engine (`hypergraph_ffi.cpp:425-426`) and have no GPU equivalent in `gpu/include/hg_gpu/evolve.hpp`, with no warning on the GPU path — so the same call returns a different state set per device. Either implement on device or emit `OptionSkipped`. | a capped run agrees CPU vs GPU, or warns | **DONE** `warns`, see below |
 | P3.5 | **A dropped frontier state records no error.** `gpu/src/evolve.cu:183` is `pos = atomicAdd(out_count,1); if (pos < out_cap) out_ids[pos] = sid;` — past capacity the state is discarded silently. `kFrontierCapFull` exists and drives grow-and-retry at `:656`, but is not recorded at the drop site. | overflowing the frontier warns and returns partial, per the overflow contract | **DONE** `28c5cc2` |
-| P3.6 | ~~**TR is force-disabled under quotient**; the blocker it cites was closed in `d37fcc6`.~~ **PREMISE REFUTED — DO NOT ACTION.** The online TR is NOT exact over the reconstructed relation: with the reconstruction serving every mode, `CausalTrExactnessTest.OnlineTrMatchesOfflineTr` gives online 68 edges vs offline 48 of a full 76. The guard is protecting users from a wrong reduced causal graph. Same defect as P1.5 gap 2. | make the online TR exact over the reconstructed relation FIRST (reproducer: that test with `qc` forced true in `configure_identity_and_quotient`), THEN lift the guard | **BLOCKED — premise false** |
+| P3.6 | **TR under quotient.** The item's premise ("the cited blocker is already closed") was FALSE — the reduction over the reconstructed relation really was non-minimal. So the guard was not lifted; the defect was fixed and the guard then had nothing to do and was DELETED. Three causes: the oracle's id-order prune, test-once-on-arrival, and retraction being one-shot under concurrency. | Automatic arm EXACT at th 1/2/4/8 (512/30/37); full capture ALL EXACT at 1/2/4/8/16; `quotient_determinism_rate_probe` 0/360 at `--load 4`; `all_tests` 229/229 | **DONE** `65740dc` |
 
 ---
 
@@ -211,6 +212,7 @@ record — `git show <hash>` is the record.
 | `50d0408` | Crossed the TR exactness probe with event identity — it swept rule/workload/threads while holding identity at the default, so every EXACT it printed was about the rendezvous | Found the defect below. Its order-replay model does NOT reproduce the engine (714/87/59 vs 654/43/50), so the probe reports three numbers and names NO cause |
 | `6895746` | The reduction's id-order assumption was asserted as a fact of the engine; it is a fact of the ID ASSIGNMENT, and the reconstruction violates it | Canonical ids are not monotonic: measured on chain6, producer 9 -> consumer 8, 36 -> 5/10/14, 70 -> 10. `set_ids_are_topological` parameterises it; chain6 43 -> 32 (minimal 30), others unmoved, so it was one cause of two |
 | `d15e1b1` | **Retract a kept edge when a later edge supersedes it** — the reduction tested each pair once on arrival and never again, exact only when the consumer's ancestry is already complete | th=1 now EXACT on all three: wolfram5 654 -> 512, chain6 32 -> 30, tri4 50 -> 37. Full capture unchanged, ALL EXACT at 1/2/4/8/16. Cost +0.25%/+0.31%/+0.27%. A test asserting the defect as the spec ("all 3 edges should be stored") now asserts the minimal answer |
+| `65740dc` | **Reduce on READ where the arrival discipline cannot hold; guard DELETED** | Retraction is still one-shot under concurrency, so th>=2 stayed non-minimal and varying (chain6 36/38/37). The stored relation is a set and a DAG's reduction is unique, so reducing on read is minimal at ANY thread count by construction. Automatic arm 512/30/37 at th 1/2/4/8; full capture ALL EXACT at 1/2/4/8/16; determinism 0/360 at --load 4; cost +0.24%/+0.29%/+0.26% |
 | `84d7c07` | **Automatic event identity returned a REDUCED, non-minimal causal graph.** The TR guard tested the exploration strategy; what makes the reduction wrong is the RECONSTRUCTION serving the graph, which Automatic turns on under full capture too | Before: wolfram5 654 vs minimal 512, chain6 43 vs 30, tri4 50 vs 37. After: un-reduced returned, with a user-visible warning. Rendezvous arm EXACT at 1/2/4/8/16 threads throughout |
 
 ### What `114c903` says about the verification, and what was done about it
@@ -238,7 +240,6 @@ Open, reproducible, with the command. Anything here that is closed moves to the 
 
 | what | reproducer | rate / size |
 |---|---|---|
-| **Reconstruction's TR is schedule-dependent at th >= 2** | `tools/causal_tr_exactness_probe` Automatic arm (sweeps th 1/2/4/8) | th=1 is now EXACT (`6895746` + `d15e1b1`). At th >= 2 chain6 gives 36/38/37 against a minimal 30 — not minimal AND varying. NOT introduced by those fixes: without retraction wolfram5 already gave 654/652/654/654 across th=1/2/4/8. Cause: a retraction decision is itself taken once, against whatever concurrent threads have published; the maintenance must reach a FIXPOINT rather than fire once. Still blocks P1.5 and P3.6; not served, since TR stays refused under the reconstruction |
 | **Positional identity cannot run through the reconstruction** | `EventIdentityAuthority.PositionalPreservedAndForcesFullCapture`, same forcing | 87 events vs 86 |
 | **Cross-thread causal determinism breaks when the reconstruction covers the whole corpus** | `OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads`, same forcing | fails; note the probe is 0/650 on the CURRENT routing |
 | **Forwarding loses matches under EAGER submission** | `MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch` | 1–6 of 204 runs, always `fwd=1 delta=0`, on the non-default path. Batched arm asserts 0 and holds. Unchanged across the join extraction (2b624c8: 5,2,3,5,2; 59b3cd8: 4,1,6,4,1) |
