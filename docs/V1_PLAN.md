@@ -192,7 +192,7 @@ Strict order: each unblocks the next.
 
 | id | what | gate | status |
 |---|---|---|---|
-| P6.1 | #41 design doc: split shared rewrite semantics from hardware orchestration. Measured input: `gpu → hypergraph` is only **27** references, so the GPU duplicates rather than depends. | Richard has read and approved it | |
+| P6.1 | #41 design doc: split shared rewrite semantics from hardware orchestration. | **WRITTEN: `docs/P6_ARCHITECTURE_SPLIT.md`.** It revises the item's own premise: `gpu → hypergraph` is **0** library references, not 27 — no GPU library file includes `hypergraph/`, only two test files do, so there is no dependency to break. Every device semantic file already routes through an `hgcommon` core except ONE rule: the quotient reconstruction, 421 host lines against 1,358 device lines. Both copies had already drifted and no gate caught either — the device walk has no visited set where the host does, and the device cascades faulted on a 7-step run (`00e21ee`). Done-line is one body over a container policy, on the `join_core` precedent; schedulers, memory strategy and overflow policy stay per-device by design | **AWAITING RICHARD** |
 | P6.2 | #41 execution, in the order the doc fixes. | each step green on both devices | |
 | P6.3 | #20 de-header / restructure, as one dedicated phase, alone. | full suite green; no behaviour change in any gate | |
 
