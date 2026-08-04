@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-**State at 2026-08-04: 18 verified, 1 partly, 1 outstanding.** The Windows GPU stack is
+**State at 2026-08-04: 19 verified, 1 partly, 0 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
@@ -139,9 +139,23 @@ Keep it current: a release that skips a line here is not released.*
       isomorphism oracle (independent of the engine's WL and IR) on every rule type.
 
 ## v1.0 additions to the above
-- [ ] **No user-facing doc states something a user can act on and be wrong about.** The five known
-      cases were `HashStrategy`, `EquilibriumAnalysis`, the quotient/TR interaction, `Automatic`
-      semantics and the `"States"` return shape (board #5, closed).
+- [x] **No user-facing doc states something a user can act on and be wrong about.** The five
+      original cases were `HashStrategy`, `EquilibriumAnalysis`, the quotient/TR interaction,
+      `Automatic` semantics and the `"States"` return shape (board #5, closed). Two more were
+      found and fixed on 2026-08-04, both the same shape as the `.def` break — a manifest that
+      outlived what it described when the visualisation split landed:
+      **(6) 21 reference pages + 48 links** for symbols that do not exist (`90bced2`), gated by
+      `tools/dev/doc_symbols_check.py`, ground-truthed **107 findings → 0**.
+      **(7) 39 documented OPTIONS that `HGEvolve` does not accept** (`cb50daf`) — the whole
+      analysis surface (`DimensionAnalysis`, `CurvatureAnalysis`, `GeodesicAnalysis`,
+      `EntropyAnalysis`, `TopologicalAnalysis`, `HilbertSpaceAnalysis`, `MultispaceAnalysis`,
+      `BranchAlignment` and their parameters). Setting one did nothing and said nothing.
+      `OptionSurface.EveryDocumentedOptionIsAnOptionHGEvolveAccepts` was green because it matched
+      only `### "Name"` headings — 10 of the page's 78 names — so it now reads the option TABLES
+      too, ground-truthed **39 failures → 0**.
+      Each of the three copies of the option surface is now checked against the others by a test,
+      and the documentation inventory by a CI gate; what no checker can decide is whether the
+      remaining prose is accurate, and that is read rather than proved.
       **A sixth was found and CLOSED 2026-08-04 — 21 reference pages documented symbols that do
       not exist.**
       `paclet/Kernel/HypergraphRewriting.wl:5` is `PackageExport["HGEvolve"]` and the file carries
