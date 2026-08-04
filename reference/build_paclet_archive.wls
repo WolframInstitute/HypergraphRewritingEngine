@@ -44,10 +44,11 @@ CreateDirectory[FileNameJoin[{stage, "Documentation"}]];
 CopyDirectory[FileNameJoin[{src, "Documentation", "English"}],
               FileNameJoin[{stage, "Documentation", "English"}]];
 
-(* The doc build leaves its own markers inside English/; they are gitignored and are not
-   documentation. *)
-Do[If[FileExistsQ[f], DeleteFile[f]],
-   {f, FileNameJoin[{stage, "Documentation", "English", #}] & /@ {".build_ok", ".doc_manifest.wl"}}];
+(* Documentation is notebooks. The doc build leaves its own markers inside English/, and a
+   working file can be sitting there too -- neither is documentation, and copying the
+   directory wholesale is how they would ship. *)
+Do[If[!DirectoryQ[f] && FileExtension[f] =!= "nb", DeleteFile[f]],
+   {f, FileNames["*", FileNameJoin[{stage, "Documentation", "English"}], Infinity]}];
 
 (* FileNames returns directories too, and FileByteCount rejects them. *)
 treeBytes[d_] := Total[FileByteCount /@ Select[FileNames["*", d, Infinity], !DirectoryQ[#] &]];

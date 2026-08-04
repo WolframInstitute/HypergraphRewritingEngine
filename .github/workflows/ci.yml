@@ -30,6 +30,13 @@ jobs:
       - name: The Windows export list names only functions that exist
         run: python3 tools/dev/def_exports_check.py
 
+      # The shipped documentation is a set of BUILT notebooks, tracked in git and generated
+      # from three markdown sources, so a page outlives the symbol it documents and nothing
+      # regenerates or removes it. 21 reference pages and 42 guide links described functions
+      # the visualisation split had deleted, and all of them were inside the archive.
+      - name: The documentation names only symbols the paclet exports
+        run: python3 tools/dev/doc_symbols_check.py
+
   linux-tests:
     runs-on: ubuntu-latest
     steps:
