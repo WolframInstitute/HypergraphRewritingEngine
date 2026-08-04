@@ -9,14 +9,21 @@
 
 #include <cstdint>
 
+#include "hgcommon/core.hpp"
+
+// MSVC declares _BitScanForward and __popcnt here. Without it they are undefined
+// identifiers, and nvcc driving cl.exe reports exactly that -- which is how the native
+// Windows CUDA build failed while every GCC/Clang build passed.
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
 namespace hgcommon {
 
-inline int popcount(uint32_t x) {
-#if defined(_MSC_VER)
+HG_HD inline int popcount(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+    return __popc(x);
+#elif defined(_MSC_VER)
     return static_cast<int>(__popcnt(x));
 #else
     return __builtin_popcount(x);
@@ -32,8 +39,10 @@ inline int popcount64(uint64_t x) {
 }
 
 // Count trailing zeros. Undefined for x == 0, matching __builtin_ctz.
-inline int ctz(uint32_t x) {
-#if defined(_MSC_VER)
+HG_HD inline int ctz(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+    return __ffs(static_cast<int>(x)) - 1;
+#elif defined(_MSC_VER)
     unsigned long i;
     _BitScanForward(&i, x);
     return static_cast<int>(i);

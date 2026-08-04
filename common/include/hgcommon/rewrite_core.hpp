@@ -33,33 +33,13 @@
 
 #include <cstdint>
 #include "hgcommon/core.hpp"
+#include "hgcommon/portable_intrinsics.hpp"
 
 namespace hgcommon {
 
-// Count trailing zeros of a 32-bit word, host and device. Undefined for x == 0.
-HG_HD inline uint8_t rw_ctz32(uint32_t x) {
-#if defined(__CUDA_ARCH__)
-    return static_cast<uint8_t>(__ffs(static_cast<int>(x)) - 1);
-#elif defined(_MSC_VER)
-    unsigned long i; _BitScanForward(&i, x); return static_cast<uint8_t>(i);
-#else
-    return static_cast<uint8_t>(__builtin_ctz(x));
-#endif
-}
-
-HG_HD inline uint8_t rw_popcount32(uint32_t x) {
-#if defined(__CUDA_ARCH__)
-    return static_cast<uint8_t>(__popc(x));
-#elif defined(_MSC_VER)
-    return static_cast<uint8_t>(__popcnt(x));
-#else
-    return static_cast<uint8_t>(__builtin_popcount(x));
-#endif
-}
-
 // How many fresh vertices a rule needs: one per new variable.
 HG_HD inline uint8_t num_fresh_variables(uint32_t new_var_mask) {
-    return rw_popcount32(new_var_mask);
+    return static_cast<uint8_t>(popcount(new_var_mask));
 }
 
 // Bind the rule's new variables to a consecutive block of fresh vertices, ascending by
@@ -73,7 +53,7 @@ HG_HD inline void assign_fresh_consecutive(
 {
     VertexId next = first_fresh;
     while (new_var_mask) {
-        const uint8_t var = rw_ctz32(new_var_mask);
+        const uint8_t var = static_cast<uint8_t>(ctz(new_var_mask));
         fresh[var] = next++;
         new_var_mask &= new_var_mask - 1;
     }
