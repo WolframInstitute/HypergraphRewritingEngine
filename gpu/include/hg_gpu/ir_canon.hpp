@@ -75,6 +75,7 @@ enum class ExactHashStatus : uint8_t {
     kOk = 0,
     kArenaExhausted,
     kDepthExceeded,
+    kGeneratorsExceeded,
     kMalformedState,
 };
 
@@ -94,6 +95,7 @@ HG_HD inline ErrorKind error_kind_for(ExactHashStatus s) {
     switch (s) {
         case ExactHashStatus::kArenaExhausted: return ErrorKind::kIRArenaExhausted;
         case ExactHashStatus::kDepthExceeded:  return ErrorKind::kIRDepthExceeded;
+        case ExactHashStatus::kGeneratorsExceeded: return ErrorKind::kIRGeneratorsExceeded;
         default:                               return ErrorKind::kScratchOverflow;
     }
 }

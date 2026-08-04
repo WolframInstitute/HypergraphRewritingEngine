@@ -110,6 +110,11 @@ struct DeviceState {
     // Per-edge consumer list (LockFreeList keyed by EdgeId)
     // Which artifacts this run records. Read by the rewrite kernel before each rendezvous, so
     // an artifact nobody asked for costs no map inserts and no list nodes.
+    // Automorphism generators the IR search may retain, per thread. Carried here rather than
+    // read from a constant so grow-and-retry can raise it: orbits are fused over the
+    // generators found, so a short table yields orbits that are too FINE and the quotient
+    // reconstruction keys instance identity on them.
+    uint32_t ir_generators;
     uint32_t record_causal;
     uint32_t record_branchial;
 
@@ -369,6 +374,7 @@ public:
         d.state_edge_ids_counter  = state_edge_ids_counter_;
         d.state_edge_ids_capacity = cfg_.max_state_edge_total;
         d.max_states              = cfg_.max_states;
+        d.ir_generators           = cfg_.ir_generators;
         d.state_count             = state_count_;
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;

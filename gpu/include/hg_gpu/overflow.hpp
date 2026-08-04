@@ -62,6 +62,15 @@ enum class ErrorKind : uint32_t {
     // -- so growing cannot help, and that path takes no 1-WL fallback: the state is left
     // un-canonicalized rather than keyed by a hash that MERGES non-isomorphic states.
     kIRDepthExceeded     = 24,
+    // The individualization search found MORE automorphisms than the generator table holds,
+    // while ORBITS were being computed. Generators serve two purposes: for search pruning a
+    // short table costs time only, because automorphic branches reach the same canonical form
+    // either way; for ORBITS it changes the answer, since orbits are fused over the generators
+    // found and a short table fuses less, giving orbits that are too FINE. Those orbits are
+    // what the quotient reconstruction identifies instances by, so a truncated table is a
+    // wrong answer rather than a slow one. The budget is config-controlled, so growing it is a
+    // real remedy and the host's grow-and-retry treats this as retryable.
+    kIRGeneratorsExceeded = 28,
     // A state was keyed by the 1-WL hash because it did not fit the IR slot, or wanted an
     // individualization depth the slot is not shaped for (k_ir_canon_range). 1-WL is
     // isomorphism-invariant in one direction only: it never separates isomorphic states, but it
@@ -121,6 +130,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (not config-controlled)";
+        case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";
         case ErrorKind::kIRDegradedToWL:      return "state keyed by 1-WL, not exact IR";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";

@@ -69,7 +69,17 @@ HG_HD inline uint32_t ir_generator_cap(uint32_t max_depth, uint32_t max_generato
     return max_depth > 1 ? max_generators : 0u;
 }
 
-enum IrStatus : uint32_t { IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2 };
+// IR_NEED_GENERATORS is returned ONLY when orbits were requested and the generator table
+// filled. Generators serve two purposes and the distinction is the whole point: for SEARCH
+// PRUNING a short table costs time and cannot change the canonical form, because automorphic
+// branches reach the same form either way; for ORBITS it changes the answer, since orbits are
+// fused over the generators found and a short table fuses less, yielding orbits that are too
+// FINE. So a caller that asked only for a hash never sees this status, and a caller that asked
+// for orbits is told to retry with a larger budget rather than handed a finer partition than
+// the automorphism group licenses.
+enum IrStatus : uint32_t {
+    IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
+};
 
 // Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell
 // and its covered flags. A search node writes the next depth from the current one and refines
@@ -637,6 +647,9 @@ HG_HD inline IrResult ir_canonical_hash(
     store_ncells(0, pi.ncells);
 
     uint32_t n_gens = 0;
+    // Set when an automorphism was found and the table was already full. Only consulted when
+    // orbits were asked for; see IR_NEED_GENERATORS.
+    bool gens_truncated = false;
     bool has_best = false, has_first = false;
 
     // A discrete partition names every vertex: the label of a vertex is the id of its
@@ -655,17 +668,22 @@ HG_HD inline IrResult ir_canonical_hash(
             for (uint32_t i = 0; i < form_words; ++i) first_form[i] = cur_form[i];
             for (uint32_t v = 0; v < n; ++v) first_lab[v] = labeling[v];
             has_first = true;
-        } else if (ir_cmp_form(cur_form, first_form, form_words) == 0
-                   && n_gens < gen_cap) {
-            // sigma maps this leaf's naming back to the first's: an automorphism.
-            for (uint32_t vi = 0; vi < n; ++vi) inv[labeling[vi]] = vi;
-            uint32_t* g = gens + uint64_t(n_gens) * n;
-            bool identity = true;
-            for (uint32_t u = 0; u < n; ++u) {
-                g[u] = inv[first_lab[u]];
-                if (g[u] != u) identity = false;
+        } else if (ir_cmp_form(cur_form, first_form, form_words) == 0) {
+            // sigma maps this leaf's naming back to the first's: an automorphism. Recording it
+            // needs a free row; without one the automorphism is REAL but unrecorded, which is
+            // what gens_truncated exists to report.
+            if (n_gens >= gen_cap) {
+                gens_truncated = true;
+            } else {
+                for (uint32_t vi = 0; vi < n; ++vi) inv[labeling[vi]] = vi;
+                uint32_t* g = gens + uint64_t(n_gens) * n;
+                bool identity = true;
+                for (uint32_t u = 0; u < n; ++u) {
+                    g[u] = inv[first_lab[u]];
+                    if (g[u] != u) identity = false;
+                }
+                if (!identity) ++n_gens;
             }
-            if (!identity) ++n_gens;
         }
     };
 
@@ -786,7 +804,7 @@ HG_HD inline IrResult ir_canonical_hash(
         emit_ranks();
         emit_orbits();
         out.hash = ir_hash_form(best_form, n_edges, n);
-        out.status = IR_OK;
+        out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
         out.n_verts = n;
         return out;
     }
@@ -870,7 +888,7 @@ HG_HD inline IrResult ir_canonical_hash(
     emit_ranks();
     emit_orbits();
     out.hash = ir_hash_form(best_form, n_edges, n);
-    out.status = IR_OK;
+    out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
     out.n_verts = n;
     return out;
 }

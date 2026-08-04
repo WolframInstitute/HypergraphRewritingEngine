@@ -24,6 +24,9 @@ struct IrSlotShape {
     uint32_t cap_verts = 0;
     uint32_t cap_edges = 0;
     uint32_t cap_occs  = 0;
+    // Generator rows the scratch is sized for. Must match the budget handed to the core, or
+    // the search would write past what this slot reserved.
+    uint32_t generators = hgcommon::IR_DEVICE_GENERATORS;
     uint32_t depth     = 0;
 
     HG_HD uint32_t ea_words()   const { return (cap_edges + 3) / 4; }
@@ -37,7 +40,7 @@ struct IrSlotShape {
     HG_HD uint64_t words() const {
         return ea_words() + eoff_words() + cap_occs + cap_verts + rank_words()
              + hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth,
-                                          hgcommon::IR_DEVICE_GENERATORS)
+                                          generators)
              + 8;
     }
     // Even, so every slot base keeps the 8-byte alignment the pool starts with.
@@ -180,7 +183,7 @@ __global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
         for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
             r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
                                             scratch, depth, nullptr,
-                                            hgcommon::IR_DEVICE_GENERATORS);
+                                            shape.generators);
             if (r.status != hgcommon::IR_NEED_DEPTH) break;
         }
         if (r.status == hgcommon::IR_NEED_DEPTH) {
@@ -275,6 +278,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     shape.cap_occs  = total_occ + 1;
     shape.cap_verts = total_occ + 1;   // every occurrence could be a distinct vertex
     shape.depth     = kIRDeviceDepth;
+    shape.generators = ds.ir_generators;
 
     const uint64_t need = shape.stride();
     if (need > slot_words) {
@@ -311,11 +315,14 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
         r = hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
                                         scratch, depth, ranks ? rank_buf : nullptr,
-                                        hgcommon::IR_DEVICE_GENERATORS,
+                                        shape.generators,
                                         orbits ? orbit_buf : nullptr, nullptr);
         if (r.status != hgcommon::IR_NEED_DEPTH) break;
     }
     if (r.status == hgcommon::IR_NEED_DEPTH) return ExactHashStatus::kDepthExceeded;
+    // Orbits fused over a truncated generator table are too fine, and the quotient
+    // reconstruction slots on them. Report rather than publish them.
+    if (r.status == hgcommon::IR_NEED_GENERATORS) return ExactHashStatus::kGeneratorsExceeded;
     out_hash = r.hash;
 
     if (ranks) {
@@ -385,6 +392,7 @@ void compute_state_ir_hashes_range(const EngineState& engine,
     shape.cap_occs  = max_occs + 1;
     shape.cap_verts = max_occs + 1;      // every occurrence could be a distinct vertex
     shape.depth     = kIRDeviceDepth;
+    shape.generators = engine.device().ir_generators;
 
     const uint64_t slot_words = shape.stride();
     const uint64_t slot_bytes = slot_words * sizeof(uint32_t);

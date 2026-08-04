@@ -659,6 +659,13 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             // than degraded.
             dbl(cfg.ir_arena_share_words);
             return true;
+        case ErrorKind::kIRGeneratorsExceeded:
+            // Config-controlled, so doubling is a real remedy -- and it MUST be retried rather
+            // than reported: the alternative is orbits fused over a truncated generator table,
+            // which are too fine, and the quotient reconstruction keys instance identity on
+            // them. A wrong answer, not a slow one.
+            dbl(cfg.ir_generators);
+            return true;
         case ErrorKind::kIRDepthExceeded:
             // The individualization search wanted to go deeper than the device attempts. The
             // depth is a constant the slot is shaped for, not a config field, so no amount of

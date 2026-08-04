@@ -281,6 +281,16 @@ struct EngineConfig {
     // measured average demand on multiway state sizes; a big-state workload that outgrows the
     // pool records kIRArenaExhausted, which grow-and-retry answers by doubling THIS.
     uint32_t ir_arena_share_words = 65536;
+
+    // Automorphism generators the device IR search may retain, per thread. NOT a correctness
+    // limit and not a tuning nicety: for search PRUNING a short table costs time only, but for
+    // ORBITS it changes the answer, since orbits are fused over the generators found and a
+    // short table gives orbits that are too FINE. A state whose automorphism group outruns
+    // this records kIRGeneratorsExceeded, which grow-and-retry answers by doubling THIS rather
+    // than by publishing a finer partition than the group licenses. Scratch cost is
+    // generators x n_verts words PER THREAD, which is why the device default is far below the
+    // host's.
+    uint32_t ir_generators = 32;
 };
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,
