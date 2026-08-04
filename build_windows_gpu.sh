@@ -63,7 +63,13 @@ echo "==> configuring (native MSVC + nvcc)"
 # has no VC++ redistributable dependency. Combined with the static CUDA runtime (CUDA_RUNTIME_LIBRARY
 # Static), the only remaining runtime dependency is the NVIDIA driver (nvcuda.dll), which is present
 # wherever a usable GPU is. Needs CMake policy CMP0091 (NEW) -- default in the CMake versions we use.
-"$WINCMAKE" -S "$SRC" -B "$BUILD_WIN" -G "$GEN" -A x64 -T "cuda=$CUDA_DIR_WIN" \
+# RUN cmake.exe FROM A WINDOWS-LOCAL DIRECTORY. This script cds to the repository, which on
+# WSL is a \\wsl.localhost UNC path; a Windows process inheriting that as its working
+# directory fails with "Invalid argument" before it reads an argument. -S and -B are absolute
+# Windows paths, so the working directory decides nothing here except whether cmake starts.
+run_wincmake() { ( cd /mnt/c/Temp && "$WINCMAKE" "$@" ); }
+
+run_wincmake -S "$SRC" -B "$BUILD_WIN" -G "$GEN" -A x64 -T "cuda=$CUDA_DIR_WIN" \
     -DBUILD_GPU=ON -DHG_GPU_ARCHS="$ARCHS" -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
     -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
     -DBUILD_VISUALIZATION=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF
@@ -77,7 +83,7 @@ echo "==> configuring (native MSVC + nvcc)"
 }
 
 echo "==> building hg_evolve_gpu (compiles the CUDA kernels + host, then device-links)"
-"$WINCMAKE" --build "$BUILD_WIN" --config Release --target hg_evolve_gpu --parallel
+run_wincmake --build "$BUILD_WIN" --config Release --target hg_evolve_gpu --parallel
 
 EXE="$BUILD_WSL/hg_evolve_gpu.exe"
 [[ -f "$EXE" ]] || { echo "error: build did not produce $EXE"; exit 1; }
