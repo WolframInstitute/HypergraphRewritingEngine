@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-**State at 2026-08-04: 19 verified, 1 partly, 0 outstanding.** The Windows GPU stack is
+**State at 2026-08-04: 20 verified, 0 partly, 0 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
@@ -34,26 +34,19 @@ Keep it current: a release that skips a line here is not released.*
       (`29c9345`). Neither was visible to any gate — every gate here runs on Linux, and a Linux
       `.so` links with undefined symbols and says nothing.
 - [x] All 6 `hg_evolve` process binaries built. Same run, all six dated 2026-08-03.
-- [~] `hg_evolve_gpu` built on both CUDA platforms. **BOTH exist** — `Linux-x86-64/hg_evolve_gpu`
-      (rebuilt 2026-08-03) and `Windows-x86-64/hg_evolve_gpu.exe` (2026-07-22, stale).
-      *THE "v1.0 BLOCKER" BELOW IS STALE AND IS STRUCK. It read: "the native Windows MSVC+nvcc
-      whole-stack config — until it lands, `TargetDevice->"GPU"` silently falls back to CPU on
-      Windows." It landed. The evidence is the binary itself: its import table is exactly
-      `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — the static-link contract this checklist
-      specifies — with no `VCRUNTIME`/`MSVCP` (so not a dynamic MSVC link) and no
-      `libgcc`/`libstdc++`/`mingw` (so not MinGW). That is a fully static native MSVC build with
-      nvcc. What remains is a REBUILD from current source, not the config.*
-      Outstanding for ARM64 Windows: `/MD` rather than `/MT` (recorded, unchanged).
-      **THE EXPERIMENT THAT SETTLES THIS EXISTS BUT HAS NOT BEEN RUN:** the Windows CI leg
-      configures with `-DBUILD_GPU=OFF`, so "the config does not work" and "nobody has tried it"
-      are indistinguishable from outside. `.github/workflows/windows-gpu.yml` builds and LINKS the
-      stack under `cl.exe` — which is the whole config question, including the explicit device link
-      `gpu/CMakeLists.txt` claims is generator-independent. It is `workflow_dispatch` only, because
-      its first outcome is unknown and an unproven leg on `push` would turn CI red to answer a
-      question nobody asked. **Run it from the Actions tab; if green, move it onto `push` in the
-      same change that ticks this line.** It does NOT run a kernel — hosted Windows runners have no
-      NVIDIA GPU, so the "GPU results match CPU with no fallback" line below still needs real
-      hardware.
+- [x] `hg_evolve_gpu` built on both CUDA platforms. **2026-08-04, BOTH FROM CURRENT SOURCE.**
+      `./build_all_platforms.sh` now reports **7 built, 0 skipped, 0 failed** — the first fully
+      green matrix. The Windows CUDA binary was never a hardware problem: `build_windows_gpu.sh`
+      ran `cmake.exe` with the repository as its working directory, which under WSL is a
+      `\\wsl.localhost` UNC path, and a Windows process inheriting that fails with
+      "Invalid argument" before reading an argument (`436de63`). Behind it was a real portability
+      defect — `rewrite_core.hpp` had its own copy of `ctz`/`popcount` without `<intrin.h>`, so
+      `_BitScanForward` and `__popcnt` were undefined under MSVC; merged into the single
+      `hgcommon` pair (`967526b`).
+      **Static-link contract, re-verified on the new binary**: the import table is exactly
+      `KERNEL32.dll` and `WS2_32.dll` — no `VCRUNTIME`, no `MSVCP`, no `libgcc`.
+      **`reference/verify_paclet_gpu.wls` drives it through `HGEvolve[..., TargetDevice -> "GPU"]`
+      on an RTX 4090: 12/12, Failed NONE.**
 - [x] `.paclet` archive produced. **2026-08-03**: `reference/build_paclet_archive.wls` →
       `dist/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet`, **30 MB, 41 entries, a
       library present for each of the six declared SystemIDs**, checked by reading the archive
