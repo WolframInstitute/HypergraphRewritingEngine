@@ -469,12 +469,26 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
     Identity
   ];
 
-  (* Build edges with appropriate constructors based on Type *)
+  (* Build edges with appropriate constructors based on Type.
+
+     THE TAG DROPS THE ENDPOINT STATE CONTENTS, and that is what keeps the graph from
+     growing as edges x state size. An event's payload carries InputStateEdges and
+     OutputStateEdges -- the complete edge lists of the states it runs between -- and
+     tagging every edge with them stores each state's contents once per incident edge.
+     Nothing reads them there: formatEventTooltip uses Id, CanonicalId, RuleIndex,
+     InputState, OutputState, ConsumedEdges and ProducedEdges, and the only reader of the
+     two heavy keys is makeStyledEventVertexShapeFn, which takes them from vertexData --
+     where they are held once per vertex.
+
+     MEASURED on {{1,2},{1,3}} -> {{1,2},{1,3},{2,3}} from {{1,2},{1,3}}, the rule the
+     tutorial uses, at 5 steps / 475 states: the default EvolutionCausalBranchialGraph was
+     2,482,714,476 bytes. *)
+  edgeTag[a_] := If[AssociationQ[a], KeyDrop[a, {"InputStateEdges", "OutputStateEdges"}], a];
   edgeList = Map[
     Switch[#["Type"],
-      "StateEvent", UndirectedEdge[#["From"], #["To"], Lookup[#, "Data", <||>]],
-      "Branchial", UndirectedEdge[#["From"], #["To"], Lookup[#, "Data", <||>]],
-      _, DirectedEdge[#["From"], #["To"], Lookup[#, "Data", #]]
+      "StateEvent", UndirectedEdge[#["From"], #["To"], edgeTag[Lookup[#, "Data", <||>]]],
+      "Branchial", UndirectedEdge[#["From"], #["To"], edgeTag[Lookup[#, "Data", <||>]]],
+      _, DirectedEdge[#["From"], #["To"], edgeTag[Lookup[#, "Data", #]]]
     ] &,
     graphData["Edges"]
   ];
@@ -530,7 +544,7 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
         edgeStyles = Join[
           edgeStyles,
           Map[With[{e = #},
-            DirectedEdge[e["From"], e["To"], e["Data"]] ->
+            DirectedEdge[e["From"], e["To"], edgeTag[e["Data"]]] ->
               Directive[ruleColor[e["Data"]["RuleIndex"]], Thickness[Medium]]] &,
             ruleEdges]];
         addLegend = Composition[
@@ -565,20 +579,26 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
   If[styled,
     (* Styled mode: use shape functions for hypergraph rendering *)
     (* When dimension data available, color state backgrounds *)
-    vertexShapes = Map[
-      Function[v,
-        With[{data = vertexData[v]},
-          v -> If[AssociationQ[data] && isStateVertexData[data],
-            If[hasDimData,
-              makeStyledStateVertexWithDimensionFn[vertexData, dimensionData, dimPalette, dimColorBy, dimRange],
-              makeStyledStateVertexShapeFn[vertexData]
-            ],
-            makeStyledEventVertexShapeFn[vertexData]
-          ]
-        ]
-      ],
-      vertices
-    ];
+    (* ONE shape function for every vertex, not one per vertex.
+       Each of these functions closes over the whole vertexData, so binding one PER VERTEX
+       stored the entire vertex set once for each vertex -- quadratic in the vertex count,
+       and the dominant term in the result by a wide margin. MEASURED at 4 steps / 75
+       states on the tutorial's rule: VertexShapeFunction was 9,393,744 bytes of a
+       10,205,036-byte graph (92%), 75 entries of 125,240 each.
+       The two shape functions already dispatch on vertexData[v] internally, so a single
+       function that picks between them is behaviour-preserving and captures vertexData a
+       fixed number of times. *)
+    vertexShapes = With[{
+        stateFn = If[hasDimData,
+          makeStyledStateVertexWithDimensionFn[vertexData, dimensionData, dimPalette, dimColorBy, dimRange],
+          makeStyledStateVertexShapeFn[vertexData]],
+        eventFn = makeStyledEventVertexShapeFn[vertexData]},
+      (* Slots, not named parameters: stateFn and eventFn are themselves
+         Function[{pos, v, size}, ...], and a named dispatcher binds the same three names,
+         so the inner application does not reduce. #1 is the position, #2 the vertex,
+         #3 the size; ## forwards all three unchanged. *)
+      Function[If[AssociationQ[vertexData[#2]] && isStateVertexData[vertexData[#2]],
+        stateFn[##], eventFn[##]]]];
     addLegend[Graph[vertices, edgeList,
       VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
