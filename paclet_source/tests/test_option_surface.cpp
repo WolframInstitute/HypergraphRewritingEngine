@@ -17,6 +17,7 @@
 #include <fstream>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -88,12 +89,43 @@ TEST(OptionSurface, EveryDocumentedOptionIsAnOptionHGEvolveAccepts) {
 
     const std::set<std::string> declared =
         names_in_region(wl, "Options[HGEvolve] = {", "\n};", std::regex("\"([A-Za-z]+)\"\\s*->"));
+    // MOST OPTIONS ARE DOCUMENTED IN A TABLE, NOT UNDER A HEADING. Matching only
+    // `### "Name"` checked 10 of the 78 names the page carried, and the 68 it skipped
+    // included 41 for analyses that moved to the companion project -- documented, accepted
+    // by nothing, and green here throughout. So both shapes are collected: the heading, and
+    // the FIRST CELL of a table row, which may name several options at once
+    // (`| "GridWidth", "GridHeight" | 10, 10 | ... |`).
     std::set<std::string> documented;
     {
-        const std::regex re("### \"([A-Za-z]+)\"");
-        for (auto it = std::sregex_iterator(doc.begin(), doc.end(), re);
+        const std::regex heading("### \"([A-Za-z]+)\"");
+        for (auto it = std::sregex_iterator(doc.begin(), doc.end(), heading);
              it != std::sregex_iterator(); ++it) {
             documented.insert((*it)[1].str());
+        }
+        // ONLY TABLES THAT HAVE A `Default` COLUMN. The page also carries a table of
+        // PROPERTIES -- "StatesGraph", "CausalEdges", "NumStates" -- which are the third
+        // argument, not options, and are correctly absent from Options[HGEvolve]. A scan
+        // that took every table would report all of them as undeclared options.
+        const std::regex quoted("\"([A-Za-z]+)\"");
+        std::istringstream lines(doc);
+        bool in_option_table = false;
+        for (std::string line; std::getline(lines, line);) {
+            if (line.empty() || line[0] != '|') {
+                in_option_table = false;     // any non-row ends the table
+                continue;
+            }
+            if (line.find("Default") != std::string::npos) {
+                in_option_table = true;      // this is the header row
+                continue;
+            }
+            if (!in_option_table) continue;
+            const size_t cell_end = line.find('|', 1);
+            if (cell_end == std::string::npos) continue;
+            const std::string cell = line.substr(1, cell_end - 1);
+            for (auto it = std::sregex_iterator(cell.begin(), cell.end(), quoted);
+                 it != std::sregex_iterator(); ++it) {
+                documented.insert((*it)[1].str());
+            }
         }
     }
     ASSERT_FALSE(declared.empty()) << "found no Options[HGEvolve] list; the regex has stopped "

@@ -67,79 +67,14 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"ShowGenesisEvents"` | `False` | include the synthetic genesis events that create the initial states |
 | `"AspectRatio"` | `None` | aspect ratio for the returned graph |
 | `"DebugFFI"` | `False` | print low-level foreign-function-interface diagnostics |
+| `"ColorByRule"` | `False` | colour each transition edge by the rule that produced it; applies to the styled graph properties, whose edge payloads carry the rule index (the `Structure` variants carry topology only and are unaffected) |
 
 ### Analysis options
 
-- *Dimension* — local Hausdorff-dimension estimation per vertex:
-
-| Option | Default | |
-|---|---|---|
-| `"DimensionAnalysis"` | `False` | compute local dimensions for all states |
-| `"DimensionFormula"` | `"LinearRegression"` | estimator: `"LinearRegression"` or `"DiscreteDerivative"` |
-| `"DimensionRadius"` | `{1, 5}` | `{minR, maxR}` ball radii used for the fit |
-| `"DimensionColorBy"` | `"Mean"` | statistic used for coloring: `"Mean"`, `"Variance"`, `"Min"`, `"Max"` |
-| `"DimensionPalette"` | `"TemperatureMap"` | `ColorData` palette for dimension coloring |
-| `"DimensionRange"` | `Automatic` | `{min, max}` color-scale range, or `Automatic` |
-| `"DimensionPerVertex"` | `False` | include per-vertex dimension data |
-| `"DimensionTimestepAggregation"` | `False` | include a per-timestep aggregation section |
-
-- *Geodesic* — test-particle paths traced through a state:
-
-| Option | Default | |
-|---|---|---|
-| `"GeodesicAnalysis"` | `False` | trace geodesic paths through the graph |
-| `"GeodesicSources"` | `Automatic` | source vertex IDs, or `Automatic` (near high-dimension regions) |
-| `"GeodesicMaxSteps"` | `50` | maximum path length |
-| `"GeodesicBundleWidth"` | `5` | number of paths per bundle |
-| `"GeodesicFollowGradient"` | `False` | follow the dimension gradient rather than a random walk |
-| `"GeodesicDimensionPercentile"` | `0.9` | percentile used when auto-selecting sources |
-
-- *Topological / particle* — Robertson–Seymour defect detection:
-
-| Option | Default | |
-|---|---|---|
-| `"TopologicalAnalysis"` | `False` | detect topological defects (K5 / K3,3 minors) |
-| `"TopologicalCharge"` | `False` | compute per-vertex topological charge |
-| `"DetectK5Minors"` | `True` | look for K5 minors (non-planarity) |
-| `"DetectK33Minors"` | `True` | look for K3,3 minors (non-planarity) |
-| `"DetectDimensionSpikes"` | `True` | detect defects via dimension anomalies |
-| `"DetectHighDegree"` | `True` | detect high-degree vertices |
-| `"DimensionSpikeThreshold"` | `1.5` | multiplier above the mean to flag a spike |
-| `"DegreePercentile"` | `0.95` | degree percentile treated as "high" |
-| `"ChargeRadius"` | `3.` | radius for local charge computation |
-| `"ChargePerVertex"` | `False` | include per-vertex charge data |
-| `"ChargeTimestepAggregation"` | `False` | include a per-timestep aggregation section |
-
-- *Curvature* — Ollivier–Ricci, Wolfram–Ricci, and dimension-gradient curvature:
-
-| Option | Default | |
-|---|---|---|
-| `"CurvatureAnalysis"` | `False` | compute per-vertex curvature |
-| `"CurvatureMethod"` | `"All"` | `"OllivierRicci"`, `"WolframRicci"`, `"DimensionGradient"`, `"Both"`, or `"All"` |
-| `"CurvaturePerVertex"` | `False` | include per-vertex curvature data |
-| `"CurvatureTimestepAggregation"` | `False` | include a per-timestep aggregation section |
-
-- *Branch alignment* — curvature shape-space via PCA (requires `"CurvatureAnalysis"`):
-
-| Option | Default | |
-|---|---|---|
-| `"BranchAlignment"` | `False` | compute branch alignment |
-| `"BranchAlignmentMethod"` | `"WolframRicci"` | curvature used: `"WolframRicci"` or `"OllivierRicci"` |
-
-- *Entropy*, *Hilbert space*, *branchial*, and *multispace* measures:
-
-| Option | Default | |
-|---|---|---|
-| `"EntropyAnalysis"` | `False` | compute graph-entropy and information measures |
-| `"EntropyTimestepAggregation"` | `False` | include a per-timestep aggregation section |
-| `"HilbertSpaceAnalysis"` | `False` | compute state-bitvector inner products and vertex probabilities |
-| `"HilbertStep"` | `-1` | step to analyze (`-1` = final) |
-| `"HilbertScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"` |
-| `"BranchialAnalysis"` | `False` | compute branchial distribution sharpness and branch entropy |
-| `"BranchialScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"` |
-| `"BranchialPerVertex"` | `False` | include per-vertex sharpness data |
-| `"MultispaceAnalysis"` | `False` | compute vertex/edge probabilities across branches |
-| `"MultispaceScope"` | `"Global"` | `"Global"`, `"PerTimestep"`, or `"Both"` |
+Geometry and physics analyses — dimension, curvature, geodesics, entropy, topological
+charge, branchial sharpness — are **not** part of this paclet. They live in the companion
+`hypergraph_viz` project, which consumes this engine as a dependency. `HGEvolve` accepts no
+options for them; use `Options[HGEvolve]` for the list it does accept.
 
 ### Initial-condition options
 
