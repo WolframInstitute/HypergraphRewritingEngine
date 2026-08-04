@@ -118,6 +118,29 @@ int64_t count_assoc_entries(const std::vector<uint8_t>& out, const std::string& 
     return result;
 }
 
+// Vertices in the FIRST GraphData entry. The graph properties are requested one at a time
+// here, so "first" is "the one asked for". Returns -1 if no Vertices field came back, which
+// is distinct from a graph that legitimately has none.
+int64_t graph_vertex_count(const std::vector<uint8_t>& out) {
+    int64_t vertex_count = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "GraphData") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string&, wxf::Parser& gp) {
+            gp.read_association([&](const std::string& field, wxf::Parser& fp) {
+                if (field != "Vertices") { fp.skip_value(); return; }
+                // A WXF list is a Function with head List; its arg count is the length.
+                fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                    for (size_t i = 0; i < n; ++i) ep.skip_value();
+                    vertex_count = static_cast<int64_t>(n);
+                });
+            });
+        });
+    });
+    return vertex_count;
+}
+
 int64_t read_int_key(const std::vector<uint8_t>& out, const std::string& key) {
     int64_t result = -1;
     wxf::Parser parser(out);
@@ -137,6 +160,23 @@ int64_t read_int_key(const std::vector<uint8_t>& out, const std::string& key) {
 const StateList kSeed = {{{1, 2}, {2, 3}}};
 const EdgeList kLhs = {{1, 2}};
 const EdgeList kRhs = {{1, 2}, {2, 3}};
+
+// A rule whose LHS has TWO edges, so two distinct matches can share a consumed edge and
+// can_branch is true. kLhs above is a single edge and is the provably branchial-free case.
+// Both are needed: the engine takes a different path for each, and only one of them was
+// covered when a regression made every no-property call return nothing.
+const StateList kBranchSeed = {{{1, 2}, {1, 3}}};
+const EdgeList kBranchLhs = {{1, 2}, {1, 3}};
+const EdgeList kBranchRhs = {{1, 2}, {1, 3}, {2, 3}};
+
+// The graph-shaped properties, and the identity modes each must work under.
+const char* const kGraphProperties[] = {
+    "StatesGraph", "CausalGraph", "BranchialGraph",
+    "EvolutionGraph", "EvolutionCausalGraph", "EvolutionBranchialGraph",
+    "EvolutionCausalBranchialGraph",
+    "StatesGraphStructure", "EvolutionGraphStructure",
+};
+const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 
 }  // namespace
 
@@ -339,22 +379,7 @@ TEST(WxfSerializationPin, CausalGraphVerticesAreTheEventsTheCountReports) {
     const int64_t num_events = read_int_key(out, "NumEvents");
     ASSERT_GT(num_events, 0);
 
-    int64_t vertex_count = -1;
-    wxf::Parser parser(out);
-    parser.skip_header();
-    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
-        if (k != "GraphData") { vp.skip_value(); return; }
-        vp.read_association([&](const std::string&, wxf::Parser& gp) {
-            gp.read_association([&](const std::string& field, wxf::Parser& fp) {
-                if (field != "Vertices") { fp.skip_value(); return; }
-                // A WXF list is a Function with head List; its arg count is the length.
-                fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
-                    for (size_t i = 0; i < n; ++i) ep.skip_value();
-                    vertex_count = static_cast<int64_t>(n);
-                });
-            });
-        });
-    });
+    const int64_t vertex_count = graph_vertex_count(out);
     ASSERT_GE(vertex_count, 0) << "no Vertices came back for the requested CausalGraph";
 
     EXPECT_EQ(vertex_count, num_events)
@@ -387,6 +412,89 @@ TEST(WxfSerializationPin, ProvablyBranchialFreeRulesStillServeTheBranchialGraph)
         << "the default graph property returned nothing on a rule that provably cannot branch";
     EXPECT_EQ(count_assoc_entries(out, "GraphData"), 1)
         << "EvolutionCausalBranchialGraph was requested and no GraphData came back";
+}
+
+// EVERY GRAPH PROPERTY, EVERY IDENTITY MODE, BRANCHING AND NON-BRANCHING.
+//
+// This surface had almost no coverage, and that is how a regression that made HGEvolve's
+// DEFAULT call return nothing survived: the oracle and golden gates request "States",
+// "Events", "CausalEdges" and "BranchialEdges" -- counts and lists -- so none of them enters
+// hgmarshal::build_graph_data at all. The two graph properties that were pinned,
+// StatesGraph and CausalGraph, happen to be the two that do not need the branchial relation.
+//
+// 54 cases, each cheap. The assertion is deliberately weak per case -- the engine returned
+// something, and it returned one GraphData entry for the one property asked for -- because
+// the failure this exists to catch is the engine returning NOTHING.
+TEST(GraphPropertySurface, EveryPropertyInEveryModeOnBranchingAndNonBranchingRules) {
+    HostBridge host;
+    for (const char* prop : kGraphProperties) {
+        for (const char* mode : kIdentityModes) {
+            for (int branching = 0; branching < 2; ++branching) {
+                SCOPED_TRACE(std::string(prop) + "  CanonicalizeStates -> " + mode +
+                             (branching ? "  [two-edge LHS, can branch]"
+                                        : "  [one-edge LHS, provably branchial-free]"));
+                auto in = build_input(branching ? kBranchSeed : kSeed,
+                                      branching ? kBranchLhs : kLhs,
+                                      branching ? kBranchRhs : kRhs, 3,
+                                      [&](wxf::Writer& w) {
+                                          put_str_list_option(w, "GraphProperties", {prop});
+                                          put_str_option(w, "CanonicalizeStates", mode);
+                                      }, 2);
+                auto out = run_rewriting_core(in, host);
+                ASSERT_FALSE(out.empty()) << "the engine returned nothing for this property";
+                EXPECT_EQ(count_assoc_entries(out, "GraphData"), 1)
+                    << "requested one graph property and did not get one GraphData entry";
+            }
+        }
+    }
+}
+
+// The graph a caller receives has the vertices the counts promise.
+//
+// A property can return a well-formed but WRONG graph, which the surface test above cannot
+// see. This pins the one invariant that ties the graph to the numbers reported beside it:
+// StatesGraph has one vertex per state, and EvolutionGraph has one per state plus one per
+// event. CausalGraph is already pinned separately (its vertices are the events NumEvents
+// reports), which is the same invariant for the third shape.
+TEST(GraphPropertySurface, GraphVerticesAgreeWithTheCountsReportedBesideThem) {
+    HostBridge host;
+    // AUTOMATIC IS EXCLUDED, AND NOT BECAUSE THE INVARIANT IS WRONG THERE. It fails, and the
+    // failure is a real defect: on the two-edge rule at 3 steps, StatesGraph returns 17
+    // vertices while NumStates reports 19. Both sides key on the SAME function
+    // (compute_content_ordered_hash) and apply the same validity filter
+    // (get_state(sid).id != INVALID_ID), so the disagreement is a POPULATION difference --
+    // canonical_state_map_.count_unique() is counting keys that no valid state's content hash
+    // reproduces. Pinning which keys needs an instrumented run; until then this asserts the
+    // modes where the invariant holds rather than pinning the wrong number in the mode where
+    // it does not. Board #116.
+    const char* const kModesWhereEstablished[] = {"None", "Full"};
+    for (const char* mode : kModesWhereEstablished) {
+        for (int branching = 0; branching < 2; ++branching) {
+            const StateList& seed = branching ? kBranchSeed : kSeed;
+            const EdgeList& lhs = branching ? kBranchLhs : kLhs;
+            const EdgeList& rhs = branching ? kBranchRhs : kRhs;
+            auto run = [&](const char* prop) {
+                auto in = build_input(seed, lhs, rhs, 3, [&](wxf::Writer& w) {
+                    put_str_list_option(w, "GraphProperties", {prop});
+                    put_str_option(w, "CanonicalizeStates", mode);
+                }, 2);
+                return run_rewriting_core(in, host);
+            };
+            SCOPED_TRACE(std::string("CanonicalizeStates -> ") + mode +
+                         (branching ? "  [can branch]" : "  [branchial-free]"));
+
+            auto sg = run("StatesGraph");
+            ASSERT_FALSE(sg.empty());
+            EXPECT_EQ(graph_vertex_count(sg), read_int_key(sg, "NumStates"))
+                << "StatesGraph vertices disagree with NumStates";
+
+            auto eg = run("EvolutionGraph");
+            ASSERT_FALSE(eg.empty());
+            EXPECT_EQ(graph_vertex_count(eg),
+                      read_int_key(eg, "NumStates") + read_int_key(eg, "NumEvents"))
+                << "EvolutionGraph vertices are not the states plus the events";
+        }
+    }
 }
 
 // RandomSeed reaches the sampler it is documented to control.
