@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-**State at 2026-08-03: 16 verified, 1 partly, 3 outstanding.** The Windows GPU stack is
+**State at 2026-08-04: 17 verified, 1 partly, 2 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
@@ -61,15 +61,17 @@ Keep it current: a release that skips a line here is not released.*
       `Documentation/Source/generated/`, a gitignored doc-build intermediate. The script now
       copies only what `PacletInfo.wl` declares and fails if a `Documentation/Source` entry
       appears in the result.
-- [ ] `DocumentationBuild` passes (was 24/24) — note this **evaluates every example cell**, so it is
-      also the docs-can't-rot gate. **KNOWN FINDING, 2026-08-03**: the last build left
-      `Documentation/Source/generated/Tutorials/Getting Started with Hypergraph Rewriting.nb` at
-      **535 MB / 8.47 M lines**. The cause is in the notebook's own content, not the doc
-      toolchain: the graph it embeds annotates EVERY edge with the full `InputStateEdges` and
-      `OutputStateEdges` lists of its endpoint states, so the payload grows as events × state
-      size. It does not reach a user — the archive ships `Documentation/English` and the staging
-      check now fails if `Documentation/Source` appears — but a tutorial that emits a
-      half-gigabyte cell is not a tutorial that can be maintained, and this line stays open on it.
+- [x] `DocumentationBuild` passes — **2026-08-04**: `./build_docs.sh` (FULL EVALUATION, not
+      `structure`) → **`DONE 3 docs`, 3 placed, 0 failed**. Because it evaluates every example
+      cell against the local engine, this is also the docs-can't-rot gate, and it is the same
+      run that would have caught the `$Failed` default call had it existed before `e2f6f75`.
+      Output: tutorial 3.1 MB, `HGEvolve.nb` 1.79 MB, guide 7.3 KB, and
+      `tools/dev/doc_symbols_check.py` reports **0 findings against the regenerated tree** — so
+      the three markdown sources and the built notebooks now agree, which is what had drifted.
+      *(A 535 MB notebook under `Documentation/Source/generated/` dated 2026-07-22 is residue
+      from a superseded converter path. The build run above did not touch it; nothing current
+      writes that directory, and it cannot ship. Earlier notes here that treated it as this
+      gate's input were wrong.)*
 - [x] **Static-link contract holds.** Verified 2026-08-03 on
       `paclet/LibraryResources/Windows-x86-64/hg_evolve_gpu.exe`: the import set is exactly
       `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — nothing else — so `libcudart_static` + `/MT`
