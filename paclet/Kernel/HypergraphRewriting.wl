@@ -367,11 +367,27 @@ formatBranchialEdgeTooltip[data_Association] := Column[{
 (* Graph Creation Functions *)
 (* ============================================================================ *)
 
-(* Edge styles by type for GraphData-based graphs *)
-graphDataEdgeStyles = <|
+(* Edge styles by type for GraphData-based graphs.
+
+   MEMOIZED ON FIRST USE, NOT EVALUATED AT LOAD. The branchial style comes from a
+   ResourceFunction, and an immediate assignment here put a resource-system lookup on the
+   package-load path: every Needs["HypergraphRewriting`"] reached for it, including in
+   kernels that never draw a graph, and on a machine without that resource cached it
+   reaches for the network. The lookup belongs where the style is used, which is the
+   styled-graph path inside HGEvolve.
+
+   The memoization is the whole point of SetDelayed plus the self-assignment: the resource
+   is fetched at most once per kernel, on the first styled graph, and never again. If it
+   cannot be resolved the branchial edges fall back to a plain directive rather than
+   leaving an unevaluated ResourceFunction in the graph. *)
+branchialEdgeStyle[] := branchialEdgeStyle[] = Module[{s},
+  s = Quiet@Check[ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"], $Failed];
+  If[Head[s] === Directive || Head[s] === RGBColor, s, Directive[Pink, Arrowheads[0.02]]]];
+
+graphDataEdgeStyles[] := <|
   "Directed" -> Directive[Gray, Arrowheads[0.02]],
   "Causal" -> Directive[Orange, Arrowheads[0.02]],
-  "Branchial" -> ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"],
+  "Branchial" -> branchialEdgeStyle[],
   "StateEvent" -> Directive[Gray],  (* Same gray as EventState for consistency *)
   "EventState" -> Directive[Gray, Arrowheads[0.02]]
 |>;
@@ -452,7 +468,7 @@ getDimensionColor[stateId_, dimensionData_, palette_, colorBy_, dimRange_] := Mo
 (* styled: True for full hypergraph rendering, False for structure only *)
 (* dimensionData: optional dimension data for coloring states *)
 createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, colorByRule_:False] := Module[
-  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeLabels, hasDimData, epilogLegend, g, addLegend},
+  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, hasDimData, epilogLegend, g, addLegend},
 
   vertices = graphData["Vertices"];
   vertexData = graphData["VertexData"];
@@ -516,12 +532,13 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
   ];
 
   (* Edge styles by type *)
+  edgeStyleTable = graphDataEdgeStyles[];
   edgeStyles = Map[
     With[{e = #},
       Switch[e["Type"],
-        "StateEvent", UndirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles["StateEvent"],
-        "Branchial", UndirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles["Branchial"],
-        _, DirectedEdge[e["From"], e["To"], _] -> graphDataEdgeStyles[e["Type"]]
+        "StateEvent", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["StateEvent"],
+        "Branchial", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["Branchial"],
+        _, DirectedEdge[e["From"], e["To"], _] -> edgeStyleTable[e["Type"]]
       ]
     ] &,
     graphData["Edges"]
