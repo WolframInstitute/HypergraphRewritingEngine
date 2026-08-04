@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-**State at 2026-08-04: 17 verified, 1 partly, 2 outstanding.** The Windows GPU stack is
+**State at 2026-08-04: 18 verified, 1 partly, 1 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
 a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
@@ -103,7 +103,18 @@ Keep it current: a release that skips a line here is not released.*
       **2026-08-03**: `gpu_differential_tests` 36/36 on an RTX 4090, with ZERO `kIRDegradedToWL`
       in the run — the differential compares states, events, causal and branchial as SETS on both
       routes, so a silent degrade would change a set rather than only a count.
-- [ ] `HGEvolve` example pages evaluate cleanly against the local engine.
+- [x] `HGEvolve` example pages evaluate cleanly against the local engine. **2026-08-04**, two
+      independent checks. `./build_docs.sh` evaluates EVERY example cell while generating the
+      notebooks and reports 3/3 built, 0 failed. `reference/verify_doc_examples.wls` evaluates all
+      **33 fenced blocks** in the three markdown sources in one shared context (they are written as
+      a running session) and treats an unevaluated `HGEvolve` head as a failure, not only a
+      message — because a documented option the engine does not accept returns unevaluated rather
+      than erroring. **`HGEvolve.md` 26/26**, up from 20/26 before `e2f6f75`.
+      *Two `GettingStarted.md` blocks are flagged, and for messages ONLY — both return correct
+      results. A user's FIRST `HGEvolve` call in a kernel emits 7 Wolfram messages
+      (`RemoveInputStreamMethod::name` ×4, `RemoveOutputStreamMethod::name` ×2,
+      `MIMETypeToFormatList::fmterr`); the second emits none. One-time setup noise, board #109,
+      not a blocker — but it is the first thing a user sees.*
 
 ## Test gates
 - [x] CPU suite green. **244 at 2026-08-03**: 213 engine + 28 WXF + 3 Paclet. (WXF and Paclet shell
