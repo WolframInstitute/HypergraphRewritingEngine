@@ -20,6 +20,60 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MAP = os.path.join(ROOT, "SOURCE_MAP.md")
 
+# ---- body similarity ----------------------------------------------------------------
+# Names catch a duplicate only when both copies were given the same name. The pair that
+# cost the most here -- one canonicalizer as `IRCanonicalizer::compute_canonical_hash`
+# and the other as `ir_canonical_hash` -- shares no name at all, and a name-based audit
+# is blind to it by construction. So this compares BODIES.
+#
+# k-gram shingles over a normalised token stream, Jaccard over the shingle sets. Not a
+# semantic equivalence check and not claimed as one: it finds bodies that are TEXTUALLY
+# near-identical, which is what a copy-paste port produces, and misses a reimplementation
+# that shares the algorithm and no phrasing. What it reports is a list to read.
+SHINGLE_K = 9          # tokens per shingle
+MIN_TOKENS = 60        # below this a body is too small for a match to mean anything
+MAX_SHINGLE_DEFS = 24  # a shingle in more than this many bodies is boilerplate
+MIN_SHARED = 4         # candidate pairs must share at least this many shingles
+MIN_JACCARD = 0.45
+
+TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*|[^\s\w]")
+COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
+
+
+def body_tokens(text, start_line):
+    """(tokens, end_line) of the definition beginning at `start_line` (1-based), or None
+    if it has no body -- a declaration, or one the brace scan cannot close. `end_line` is
+    what lets a class and its own inline method be recognised as nested rather than
+    duplicated."""
+    lines = text.split("\n")
+    if start_line < 1 or start_line > len(lines):
+        return None
+    rest = "\n".join(lines[start_line - 1:])
+    rest = STRING_RE.sub('""', COMMENT_RE.sub(" ", rest))
+    open_at = rest.find("{")
+    semi = rest.find(";")
+    if open_at < 0 or (0 <= semi < open_at):
+        return None                      # declaration, not a definition
+    depth, i = 0, open_at
+    while i < len(rest):
+        if rest[i] == "{":
+            depth += 1
+        elif rest[i] == "}":
+            depth -= 1
+            if depth == 0:
+                body = rest[open_at:i + 1]
+                return TOKEN_RE.findall(body), start_line + body.count("\n")
+        i += 1
+    return None                          # unbalanced within the file
+
+
+def shingles(tokens):
+    out = set()
+    for i in range(len(tokens) - SHINGLE_K + 1):
+        out.add(hash(" ".join(tokens[i:i + SHINGLE_K])))
+    return out
+
 DEF_RE = re.compile(r"^- \*\*(.+?)\*\* \*\((.+?)\)\* `:(\d+)`$")
 REF_RE = re.compile(r"^  - references: (.+)$")
 FILE_RE = re.compile(r"^## `(.+?)` — (\d+) definitions$")
@@ -134,6 +188,120 @@ def main():
     W(f"\n{rest} duplicates have at least one site in tests/ or tools/ and are not listed: "
       "two standalone binaries each defining `main` or `run` share a name and nothing else.\n")
 
+    # ---- 1b. same UNQUALIFIED name across areas ------------------------------------
+    # Everything above keys on the QUALIFIED name, so `hg_gpu::qc_emit` and the host's
+    # `qc_emit` are two names and never collide -- which is exactly the shape a
+    # host/device pair takes. Grouping by the last `::` component finds them.
+    #
+    # The container vocabulary (`size`, `clear`, `view`) matches across every area and
+    # says nothing, so a name is only reported when it appears in FEWER areas than the
+    # cutoff: a concept implemented on two sides is a pair, a method every container has
+    # is not.
+    MAX_AREAS = 2
+    by_short = defaultdict(list)
+    for name, sites in by_name.items():
+        short = name.split("::")[-1]
+        for p, l, _ in sites:
+            by_short[short].append((name, p, l))
+    pairs = {}
+    for short, sites in by_short.items():
+        qualified = {n for n, _, _ in sites}
+        areas = {area(p) for _, p, _ in sites}
+        if len(qualified) < 2 or len(areas) < 2 or len(areas) > MAX_AREAS:
+            continue
+        if all(is_consumer(p) for _, p, _ in sites):
+            continue
+        pairs[short] = sorted({(n, p, l) for n, p, l in sites})
+    W(f"\n### Same unqualified name in {MAX_AREAS} areas under different qualified names "
+      f"— {len(pairs)}\n")
+    W("A concept implemented once per device. Each is either a shared body with two thin "
+      "adapters (which is the target shape) or two bodies deciding the same thing (which "
+      "is the prime directive's defect) -- the name alone does not say which; section 1c "
+      "does.\n")
+    for short in sorted(pairs, key=lambda s: (-len(pairs[s]), s))[:60]:
+        W(f"- **{short}** — "
+          + ", ".join(f"`{n}` @ `{p}:{l}`" for n, p, l in pairs[short]))
+
+    # ---- 1c. near-identical bodies -------------------------------------------------
+    # ONE ENTRY PER (path, line). A macro that expands to several definitions reports them
+    # all at the macro's line -- TEST(X, Y) gives a class, its constructor, destructor,
+    # TestBody and test_info_ at one line -- and reading the body from that line gives all
+    # five the same tokens. Keyed by site, they are one body, which is what they are.
+    file_text = {}
+    sig = {}                                # (path, line) -> (name, path, line, shingles, ntok)
+    for path, line, kind, name, _refs in defs:
+        if (path, line) in sig:
+            continue
+        full = os.path.join(ROOT, path)
+        if path not in file_text:
+            try:
+                file_text[path] = open(full, encoding="utf-8", errors="replace").read()
+            except OSError:
+                file_text[path] = None
+        text = file_text[path]
+        if text is None:
+            continue
+        got = body_tokens(text, line)
+        if not got or len(got[0]) < MIN_TOKENS:
+            continue
+        toks, end = got
+        sh = shingles(toks)
+        if sh:
+            sig[(path, line)] = (name, path, line, sh, len(toks), end)
+
+    index = defaultdict(list)
+    for key, (_n, _p, _l, sh, _t, _e) in sig.items():
+        for h in sh:
+            index[h].append(key)
+    shared = defaultdict(int)
+    for h, idxs in index.items():
+        if len(idxs) > MAX_SHINGLE_DEFS:
+            continue                        # boilerplate, present everywhere
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                shared[(idxs[a], idxs[b])] += 1
+
+    clones = []
+    for (a, b), n in shared.items():
+        if n < MIN_SHARED:
+            continue
+        # A class and one of its own inline methods share every token of that method, and
+        # are one body, not two. Recognised by containment: same file, one's line inside
+        # the other's brace span.
+        (_na, pa, la, sa, _ta, ea) = sig[a]
+        (_nb, pb, lb, sb, _tb, eb) = sig[b]
+        if pa == pb and (la <= lb <= ea or lb <= la <= eb):
+            continue
+        j = len(sa & sb) / len(sa | sb)
+        if j >= MIN_JACCARD:
+            clones.append((j, a, b))
+    # Both sides shipped is the class the prime directive is about: two bodies linked into
+    # one product, free to drift. A repeated test body is a repeated test body.
+    shipped = [c for c in clones if not is_consumer(c[1][0]) and not is_consumer(c[2][0])]
+    shipped.sort(reverse=True)
+
+    W(f"\n### Near-identical bodies, both sides shipped — {len(shipped)} pairs at "
+      f"Jaccard >= {MIN_JACCARD}\n")
+    W(f"{len(sig)} definition SITES of at least {MIN_TOKENS} tokens compared by "
+      f"{SHINGLE_K}-gram shingles over a comment- and string-stripped token stream. This is "
+      "the section that does not care what the two copies are CALLED, which is what makes it "
+      "the one that catches a port: `IRCanonicalizer::compute_canonical_hash` and "
+      "`ir_canonical_hash` share no name and every name-based check was blind to them.\n")
+    W("It finds bodies that are TEXTUALLY near-identical -- what a copy-paste port produces "
+      "-- and misses a reimplementation sharing the algorithm and no phrasing. A pair here "
+      "is a list entry to READ: overload forwarding and a template's two instantiations look "
+      "the same from here as a second implementation does.\n")
+    for j, a, b in shipped[:80]:
+        na, pa, la, _, ta, _ea = sig[a]
+        nb, pb, lb, _, tb, _eb = sig[b]
+        cross_area = "" if area(pa) == area(pb) else "  **[cross-area]**"
+        W(f"- **{j:.2f}** — `{na}` @ `{pa}:{la}` ({ta} tok) vs `{nb}` @ `{pb}:{lb}` "
+          f"({tb} tok){cross_area}")
+    if len(shipped) > 80:
+        W(f"\n({len(shipped) - 80} further shipped pairs not listed.)")
+    W(f"\n{len(clones) - len(shipped)} further pairs have at least one side in tests/ or "
+      "tools/ and are not listed: a test that repeats its neighbour's shape is a test.\n")
+
     # ---- 2. unreferenced definitions ---------------------------------------------
     # Zero referrers from any project definition. Split by whether the definition is
     # itself in a consumer directory, because unreferenced test code is expected.
@@ -217,6 +385,8 @@ def main():
     dest = os.path.join(ROOT, "SOURCE_AUDIT.md")
     open(dest, "w").write("\n".join(out) + "\n")
     print(f"{len(dupes)} duplicated names ({len(cross)} spanning areas, {len(same)} same-area shipped), "
+          f"{len(pairs)} unqualified-name pairs across areas, "
+          f"{len(shipped)} near-identical shipped bodies, "
           f"{len(ship)} unreferenced in shipped code, "
           f"{len(only_consumer)} shipped-but-test-only -> {dest}")
 
