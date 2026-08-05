@@ -554,27 +554,26 @@ private:
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
 
-    // Batched matching: collect all matches then spawn REWRITEs (vs eager spawning)
-    // Batching eliminates race conditions in match forwarding, but eager may have
-    // better cache locality for some workloads. When disabled with match forwarding,
-    // requires push-based forwarding to cover race windows.
-    // Default TRUE, on the completeness measurement rather than on cache locality.
+    // Batched matching: the parent finishes matching, THEN its children are created. Eager
+    // creates each child as its match is found, so the parent is still matching when the child
+    // exists and a match found afterwards has to reach it by push.
     //
-    // Eager submission creates children while their parent is still matching, so a match the
-    // parent discovers afterwards has to reach that child by push, and the push window does not
-    // fully cover it. Measured over the oracle corpus x workers {1,2,4,8} x 3 reps:
+    // Default TRUE, and the reason is the SHAPE of the two, not a defect rate. Both are measured
+    // complete: MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch runs the oracle corpus x
+    // workers {1,4,8} x reps under EAGER with validate_match_forwarding on and reports 0 LOST
+    // (matches counted absent by the validator and still absent when the run ended, tested with
+    // contains_match), against a positive control -- disabling push_match_to_children makes the
+    // same gate report 10 lost in 7 runs. Batched reports 0 of 51 with no residual at all.
     //
-    //     eager     1 to 7 of 204 runs lose at least one match
-    //     batched   0 of 51, every time
+    // Batched CLOSES the window; eager COVERS it with the push rendezvous. Forwarding is
+    // INDUCTIVE, so a match lost at depth d removes the whole subtree below it while the run
+    // stays self-consistent and simply produces less -- nothing downstream can notice. A window
+    // that cannot open is worth more than a window a rendezvous is measured to cover, because the
+    // measurement is over the interleavings that happened to run.
     //
-    // Forwarding is INDUCTIVE, so a lost match removes the whole subtree below it and the run
-    // stays self-consistent while being wrong. A rate of a few percent of RUNS is therefore not a
-    // few percent of error.
-    //
-    // It costs 13.52% more arena (cost_matrix, 17 cases; worst case star4-automorphic at
+    // It costs: 13.52% more arena (cost_matrix, 17 cases; worst case star4-automorphic at
     // 20.88%), because push_match_to_children walks a populated child registry here where under
-    // eager it finds an empty one. That overlap is skippable in principle and is tracked as #77;
-    // the memory is recoverable, the lost matches are not.
+    // eager it finds an empty one. That overlap is skippable in principle and is tracked as #77.
     bool batched_matching_{true};  // false: submit each match eagerly; true: batch per step
 
     // Validation mode: cross-check forwarded+delta matches against a full scan

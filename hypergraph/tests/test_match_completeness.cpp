@@ -177,9 +177,11 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
         << "self-consistent.";
 }
 
-// Batched submission is documented as eliminating the forwarding races that eager submission
-// covers with the push path. If eager ever shows a miss that batched does not, this separates
-// them rather than leaving the default to an argument.
+// The default arm. Batched CLOSES the window eager covers with the push path, so this is the
+// mode that must be at zero with no residual: the arm above tolerates late arrivals because the
+// validator can observe a push mid-flight, and here there is no push to observe. If eager ever
+// shows a loss batched does not, the two arms separate them rather than leaving the default to
+// an argument.
 TEST(MatchCompleteness, BatchedSubmissionIsAlsoComplete) {
     const std::vector<unsigned> worker_counts = {1, 4, 8};
 
