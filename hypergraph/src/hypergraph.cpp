@@ -1,6 +1,8 @@
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
 #include "hypergraph/hypergraph.hpp"
+
+#include <unordered_map>
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
 #include "hgcommon/slot_core.hpp"
@@ -782,13 +784,64 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     uint32_t num_orbits = 0;
 
     if (n > 0) {
-        IRCanonicalizer ir;
         // Reused per worker rather than allocated per state: this runs once for every state
-        // created under quotient, and the two vectors would otherwise be a heap round-trip
-        // each time. The IR entry point takes std::vector, so the storage is kept alive here
-        // instead of being handed to the scratch arena.
+        // created under quotient, and the vectors would otherwise be a heap round-trip each
+        // time.
         thread_local std::vector<uint32_t> orbit, klass;
-        hash = ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass);
+        orbit.assign(n, 0);
+        klass.assign(n, 0);
+
+        // Flatten to the core's convention. Local vertex indices in encounter order; the
+        // core's result does not depend on which order they are assigned in, because the only
+        // place an index is read as a value is the initial partition's tie-break, which orders
+        // vertices WITHIN a cell and no output reads within-cell order.
+        SVec<uint8_t> ea;
+        SVec<uint32_t> eoff, ev;
+        ea.reserve(n); eoff.reserve(n); ev.reserve(size_t(n) * 2);
+        for (uint32_t i = 0; i < n; ++i) {
+            eoff.push_back(static_cast<uint32_t>(ev.size()));
+            ea.push_back(static_cast<uint8_t>(edge_vecs[i].size()));
+            for (VertexId v : edge_vecs[i]) ev.push_back(static_cast<uint32_t>(v));
+        }
+        std::unordered_map<uint32_t, uint32_t> local;
+        uint32_t n_verts = 0;
+        for (uint32_t& x : ev) {
+            auto it = local.find(x);
+            if (it == local.end()) { local.emplace(x, n_verts); x = n_verts++; }
+            else x = it->second;
+        }
+        const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+
+        // ESCALATE OVER BOTH BOUNDS, because both can stop the search short and only one of
+        // them used to say so. Depth reports IR_NEED_DEPTH; the generator table reports
+        // IR_NEED_GENERATORS when ORBITS were requested, which they are here -- orbits are
+        // fused over the generators found, so a short table gives orbits that are too FINE and
+        // the slot rule below keys instance identity on them. Neither bound may silently cap:
+        // a run spans sprinkled spacetimes and highly symmetric states, and no constant covers
+        // both.
+        bool got = false;
+        for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+            for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= (1u << 16); gens *= 4u) {
+                const uint64_t words =
+                    hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
+                auto* scratch = static_cast<uint32_t*>(worker_scratch().allocate_raw(
+                    (words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+                auto r = hgcommon::ir_canonical_hash(
+                    ea.data(), eoff.data(), ev.data(), n, n_verts, total_occ, scratch, depth,
+                    nullptr, gens, orbit.data(), klass.data());
+                if (r.status == hgcommon::IR_OK) { hash = r.hash; got = true; break; }
+                if (r.status == hgcommon::IR_EMPTY) { got = true; break; }
+                if (r.status == hgcommon::IR_NEED_DEPTH) break;   // more generators will not help
+            }
+            if (got) break;
+        }
+        if (!got) {
+            // Beyond every depth AND generator budget above. Reported rather than published:
+            // orbits from a short table are too fine, and a wrong instance identity is worse
+            // than a slower run.
+            IRCanonicalizer ir;
+            hash = ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass);
+        }
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
             arr_edges[i] = ids[i];
