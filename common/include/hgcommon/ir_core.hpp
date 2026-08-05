@@ -815,11 +815,19 @@ HG_HD inline IrResult ir_canonical_hash(
             }
         }
 
-        // Ascending root class id -> orbit id, then per edge through its class. pos_class is
-        // dead by now, so its span holds the root->orbit map.
-        uint32_t* orbit_of = pos_class;                 // [n_classes]
+        // Orbits numbered by their SMALLEST member class, which is what makes the numbering
+        // canonical: class ids come from the canonical form, so the smallest class in an orbit
+        // is a property of the isomorphism class, while the union-find ROOT is a property of
+        // the order the generators happened to union in. Walking c upward and numbering each
+        // orbit the first time it is reached numbers by smallest member in one pass.
+        // pos_class is dead by now, so its span holds the root->orbit map.
+        uint32_t* orbit_of = pos_class;                 // [n_classes], indexed by root class
+        for (uint32_t c = 0; c < n_classes; ++c) orbit_of[c] = 0xFFFFFFFFu;
         uint32_t next = 0;
-        for (uint32_t c = 0; c < n_classes; ++c) if (cfind(c) == c) orbit_of[c] = next++;
+        for (uint32_t c = 0; c < n_classes; ++c) {
+            const uint32_t r = cfind(c);
+            if (orbit_of[r] == 0xFFFFFFFFu) orbit_of[r] = next++;
+        }
         for (uint32_t e2 = 0; e2 < n_edges; ++e2)
             out_edge_orbit[e2] = orbit_of[cfind(klass_of[e2])];
     };
