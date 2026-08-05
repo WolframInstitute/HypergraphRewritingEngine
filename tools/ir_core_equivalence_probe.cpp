@@ -69,6 +69,38 @@ static uint64_t core_hash(const Edges& edges, uint32_t* status_out) {
     return r.hash;
 }
 
+// The core's CANONICAL FORM: arity-prefixed edges in canonical order, under the winning
+// labelling. Empty when the core reported anything but IR_OK.
+static std::vector<uint32_t> core_form(const Edges& edges, uint32_t* status_out) {
+    std::vector<uint32_t> form;
+    if (edges.empty()) { *status_out = hgcommon::IR_EMPTY; return form; }
+    Flat f = flatten(edges);
+    const uint32_t n_e = static_cast<uint32_t>(f.ea.size());
+    const uint32_t depth = hgcommon::IR_MAX_DEPTH_DEFAULT;
+    const uint64_t words = hgcommon::ir_scratch_words(f.n_verts, n_e, f.total_occ, depth);
+    if (g_scratch.size() < (words + 1) / 2 + 8) g_scratch.assign((words + 1) / 2 + 8, 0);
+    form.assign(hgcommon::ir_canonical_form_words(n_e, f.total_occ), 0);
+    auto r = hgcommon::ir_canonical_hash(
+        f.ea.data(), f.eoff.data(), f.ev.data(), n_e, f.n_verts, f.total_occ,
+        reinterpret_cast<uint32_t*>(g_scratch.data()), depth,
+        nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, form.data());
+    *status_out = r.status;
+    if (r.status != hgcommon::IR_OK) form.clear();
+    return form;
+}
+
+// The same shape from the host implementation, so the two can be compared word for word.
+static std::vector<uint32_t> host_form(const Edges& edges) {
+    std::vector<uint32_t> form;
+    hypergraph::IRCanonicalizer ir;
+    auto res = ir.canonicalize_edges(edges);
+    for (const auto& e : res.canonical_form.edges) {
+        form.push_back(static_cast<uint32_t>(e.size()));
+        for (auto v : e) form.push_back(static_cast<uint32_t>(v));
+    }
+    return form;
+}
+
 static uint64_t host_hash(const Edges& edges) {
     hypergraph::IRCanonicalizer ir;
     return ir.compute_canonical_hash(edges);
@@ -151,7 +183,7 @@ int main(int argc, char** argv) {
         corpus.push_back(std::move(e));
     }
 
-    size_t mismatch = 0, noniso = 0, need_depth = 0;
+    size_t mismatch = 0, noniso = 0, need_depth = 0, form_mismatch = 0;
     for (size_t i = 0; i < corpus.size(); ++i) {
         uint32_t st = 0;
         const uint64_t hc = core_hash(corpus[i], &st);
@@ -163,6 +195,23 @@ int main(int argc, char** argv) {
                        i, (unsigned long long)hc, (unsigned long long)hh, corpus[i].size());
             ++mismatch;
         }
+        // The CANONICAL FORM, not just the hash. Equal hashes would be satisfied by two
+        // implementations agreeing on an identity while disagreeing about the representative
+        // they name, and the FFI serializes the representative.
+        {
+            uint32_t stf = 0;
+            const std::vector<uint32_t> fc = core_form(corpus[i], &stf);
+            if (stf == hgcommon::IR_OK) {
+                const std::vector<uint32_t> fh = host_form(corpus[i]);
+                if (fc != fh) {
+                    if (form_mismatch < 10)
+                        printf("  FORM MISMATCH case %zu: %zu core words vs %zu host words\n",
+                               i, fc.size(), fh.size());
+                    ++form_mismatch;
+                }
+            }
+        }
+
         // Isomorphism invariance of the core itself.
         for (int t = 0; t < 3; ++t) {
             uint32_t st2 = 0;
@@ -178,7 +227,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    printf("\n%zu states | hash mismatches vs host: %zu | isomorphism violations: %zu | depth-limited: %zu\n",
-           corpus.size(), mismatch, noniso, need_depth);
-    return (mismatch || noniso) ? 1 : 0;
+    printf("\n%zu states | hash mismatches vs host: %zu | FORM mismatches vs host: %zu"
+           " | isomorphism violations: %zu | depth-limited: %zu\n",
+           corpus.size(), mismatch, form_mismatch, noniso, need_depth);
+    return (mismatch || noniso || form_mismatch) ? 1 : 0;
 }

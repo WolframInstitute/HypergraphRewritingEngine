@@ -77,6 +77,12 @@ HG_HD inline uint32_t ir_generator_cap(uint32_t max_depth, uint32_t max_generato
 // FINE. So a caller that asked only for a hash never sees this status, and a caller that asked
 // for orbits is told to retry with a larger budget rather than handed a finer partition than
 // the automorphism group licenses.
+// Words a caller must provide for out_canonical_form: one arity word per edge plus one word
+// per vertex occurrence, which is the form's own layout.
+HG_HD inline uint32_t ir_canonical_form_words(uint32_t n_edges, uint32_t total_occ) {
+    return n_edges + total_occ;
+}
+
 enum IrStatus : uint32_t {
     IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
 };
@@ -581,7 +587,8 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
     uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
     uint32_t max_generators = IR_HOST_GENERATORS,
-    uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr)
+    uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
+    uint32_t* out_canonical_form = nullptr)
 {
     IrResult out{0, IR_EMPTY, 0};
     if (n_edges == 0 || n_verts == 0) return out;
@@ -700,6 +707,16 @@ HG_HD inline IrResult ir_canonical_hash(
     // one, and orbit ids follow ascending union-find root class id, so the assignment is a
     // deterministic function of the state alone. Runs entirely on scratch the search no longer
     // reads (cur_form, first_form, form_order); see the arity >= 1 requirement above.
+    // The canonical form itself: for each edge in CANONICAL ORDER, its arity followed by its
+    // canonically-labelled vertices -- total_occ + n_edges words, which is what
+    // ir_canonical_form_words reports. This is the form the hash is taken over, so a caller
+    // that needs the relabelled edges reads exactly what the identity was decided on rather
+    // than reconstructing it from ranks and risking a second convention.
+    auto emit_form = [&]() {
+        if (!out_canonical_form) return;
+        for (uint32_t i = 0; i < form_words; ++i) out_canonical_form[i] = best_form[i];
+    };
+
     auto emit_orbits = [&]() {
         if (!out_edge_orbit && !out_edge_class) return;
 
@@ -803,6 +820,7 @@ HG_HD inline IrResult ir_canonical_hash(
         leaf(pi);
         emit_ranks();
         emit_orbits();
+        emit_form();
         out.hash = ir_hash_form(best_form, n_edges, n);
         out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
         out.n_verts = n;
@@ -887,6 +905,7 @@ HG_HD inline IrResult ir_canonical_hash(
     if (!has_best) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }
     emit_ranks();
     emit_orbits();
+    emit_form();
     out.hash = ir_hash_form(best_form, n_edges, n);
     out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
     out.n_verts = n;
