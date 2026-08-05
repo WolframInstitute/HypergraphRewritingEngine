@@ -31,7 +31,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
-#include "hgcommon/ir_core.hpp"     // ir_isort_u64
+#include "hgcommon/core.hpp"        // isort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 
 #include <cuda/atomic>
@@ -364,7 +364,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
             surv[ns++] = (static_cast<uint64_t>(ps) << 32) | cs;
         }
-        hgcommon::ir_isort_u64(surv, ns);
+        hgcommon::isort_u64(surv, ns);
     }
 
     // Copy the slot arrays into the expansion arena, then publish the record.

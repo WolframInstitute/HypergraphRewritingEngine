@@ -39,7 +39,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/rewrite.hpp"       // try_add_causal_edge
-#include "hgcommon/ir_core.hpp"     // ir_isort_u64
+#include "hgcommon/core.hpp"        // isort_u64
 
 #include <cuda/atomic>
 
@@ -360,7 +360,7 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
             if (ns >= kQcMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
             surv[ns++] = (static_cast<uint64_t>(po) << 32) | ds.state_edge_orbit[csl.offset + k];
         }
-        hgcommon::ir_isort_u64(surv, ns);
+        hgcommon::isort_u64(surv, ns);
     }
 
     // Dedup signature over (from, to, rule, consumed orbits, survivor orbit pairs) -- the

@@ -45,6 +45,19 @@ constexpr uint8_t MAX_VARS          = 32;
 constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;  // 14695981039346656037
 constexpr uint64_t FNV_PRIME  = 0x100000001b3ULL;       // 1099511628211
 
+// Insertion sort of a small uint64 run. The canonicalizers sort per-vertex signature
+// multisets, which are a handful of entries each, so the constant beats a heapsort's --
+// and it is here rather than in either canonicalizer because both sort the same thing
+// and the device has no std::sort.
+HG_HD inline void isort_u64(uint64_t* a, uint32_t n) {
+    for (uint32_t i = 1; i < n; ++i) {
+        uint64_t key = a[i];
+        uint32_t j = i;
+        while (j > 0 && a[j - 1] > key) { a[j] = a[j - 1]; --j; }
+        a[j] = key;
+    }
+}
+
 // MurmurHash3 finalizer — avalanche a small raw integer (e.g. a vertex id).
 HG_HD inline uint64_t mix64(uint64_t x) {
     x ^= x >> 33;

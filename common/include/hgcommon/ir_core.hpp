@@ -186,15 +186,6 @@ HG_HD inline void ir_heapsort_idx(uint32_t* a, uint32_t n, Cmp cmp) {
     }
 }
 
-HG_HD inline void ir_isort_u64(uint64_t* a, uint32_t n) {
-    for (uint32_t i = 1; i < n; ++i) {
-        uint64_t key = a[i];
-        uint32_t j = i;
-        while (j > 0 && a[j - 1] > key) { a[j] = a[j - 1]; --j; }
-        a[j] = key;
-    }
-}
-
 // Lexicographic compare of two sorted uint64 runs, shorter-is-smaller on a prefix. This is the
 // order the per-vertex signature multisets are compared in.
 HG_HD inline int ir_cmp_run(const uint64_t* a, uint32_t na, const uint64_t* b, uint32_t nb) {
@@ -245,7 +236,7 @@ HG_HD inline void ir_initial_partition(
             const uint32_t e = occ_edge[s + k];
             sig_buf[s + k] = (uint64_t(ea[e]) << 32) | uint64_t(occ_pos[s + k]);
         }
-        ir_isort_u64(sig_buf + s, len);
+        isort_u64(sig_buf + s, len);
         order[v] = v;
     }
 
@@ -366,7 +357,7 @@ HG_HD inline void ir_refine(
             }
         }
         for (uint32_t i = 0; i < n_touched; ++i)
-            ir_isort_u64(sig_buf + sig_off[touched[i]], sig_cnt[touched[i]]);
+            isort_u64(sig_buf + sig_off[touched[i]], sig_cnt[touched[i]]);
 
         // Order touched vertices by (cell id, signature); both keys are structural. Ties are
         // vertices of one cell with equal signatures, which land in the same group -- their

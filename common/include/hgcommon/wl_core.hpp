@@ -24,16 +24,6 @@ HG_HD inline uint32_t wl_find(uint32_t* parent, uint32_t x) {
     return x;
 }
 
-// Insertion sort — small n, no std:: on device.
-HG_HD inline void wl_isort(uint64_t* a, uint32_t n) {
-    for (uint32_t i = 1; i < n; ++i) {
-        uint64_t key = a[i];
-        uint32_t j = i;
-        while (j > 0 && a[j - 1] > key) { a[j] = a[j - 1]; --j; }
-        a[j] = key;
-    }
-}
-
 // Compute the WL canonical hash of a state given as local-index edges:
 //   ea[e]           = arity of edge e            (e in [0, n_edges))
 //   ev[eoff[e] + p] = local vertex index of edge e position p   (p in [0, ea[e]))
@@ -75,7 +65,7 @@ HG_HD inline uint64_t wl_canonical_hash(
         uint32_t cnt = 0;
         for (uint32_t j = occ_off[v]; j < occ_off[v + 1] && cnt < nbr_cap; ++j)
             nbr[cnt++] = ((uint64_t)ea[occ_edge[j]] << 8) | (uint64_t)occ_pos[j];
-        wl_isort(nbr, cnt);
+        isort_u64(nbr, cnt);
         for (uint32_t i = 0; i < cnt; ++i) {
             h = fnv_hash(h, nbr[i] >> 8);      // arity
             h = fnv_hash(h, nbr[i] & 0xFFu);   // pos
@@ -87,7 +77,7 @@ HG_HD inline uint64_t wl_canonical_hash(
     // (uses dscr as sort scratch — CSR write-cursor use above is finished)
     #define HG_WL_NDISTINCT(dst) do { \
         for (uint32_t v = 0; v < n_verts; ++v) dscr[v] = cur[v]; \
-        wl_isort(dscr, n_verts); \
+        isort_u64(dscr, n_verts); \
         (dst) = 0; \
         for (uint32_t v = 0; v < n_verts; ++v) if (v == 0 || dscr[v] != dscr[v-1]) ++(dst); \
     } while (0)
@@ -106,7 +96,7 @@ HG_HD inline uint64_t wl_canonical_hash(
                     if (nn < nbr_cap) nbr[nn++] = fnv_hash(cur[ev[eoff[e] + k]], k);
                 }
             }
-            wl_isort(nbr, nn);
+            isort_u64(nbr, nn);
             for (uint32_t i = 0; i < nn; ++i) h = fnv_hash(h, nbr[i]);
             nxt[v] = h;
         }

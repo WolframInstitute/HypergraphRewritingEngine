@@ -20,18 +20,6 @@ __host__ __device__ inline uint64_t fnv_mix(uint64_t h, uint64_t x) {
     return h;
 }
 
-__device__ void insertion_sort_u64(uint64_t* a, uint32_t n) {
-    for (uint32_t i = 1; i < n; ++i) {
-        uint64_t key = a[i];
-        uint32_t j = i;
-        while (j > 0 && a[j - 1] > key) {
-            a[j] = a[j - 1];
-            --j;
-        }
-        a[j] = key;
-    }
-}
-
 }  // namespace (close anon; wl_hash_state_device needs external linkage)
 
 __device__ uint64_t wl_hash_state_device(DeviceState ds, StateId sid) {

@@ -42,14 +42,14 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `common/include/hgcommon/` -- shared CPU/GPU foundation
 
-- **`core.hpp`** -- id typedefs, structural limits, integer hash primitives (`HG_HD` host/device).
+- **`core.hpp`** -- id typedefs, structural limits, integer hash primitives and the small-run sort both canonicalizers use (`HG_HD` host/device).
   - id aliases `VertexId`/`EdgeId`/`StateId`/`EventId`/`MatchId`, `INVALID_ID`; limits `MAX_ARITY`/`MAX_PATTERN_EDGES`/`MAX_VARS`
   - `HG_INLINE` -- force-inline, for functions whose inlining must not track unrelated code size
-  - `mix64()` (Murmur3 finalizer), `fnv_hash()` (FNV-1a combine), `splitmix64()` (commutative-sum finalizer)
+  - `mix64()` (Murmur3 finalizer), `fnv_hash()` (FNV-1a combine), `splitmix64()` (commutative-sum finalizer), `isort_u64()` (small-run insertion sort -- both canonicalizers sort per-vertex signature multisets and the device has no `std::sort`)
 - **`wl_core.hpp`** -- the single shared Weisfeiler-Leman canonical-hash impl, bit-identical CPU/GPU.
-  - `WL_MAX_REFINE_ITERS`; `wl_isort()` (device-safe insertion sort); `wl_canonical_hash()` (occurrence-CSR build -> initial colouring -> refinement to fixpoint -> commutative fold)
+  - `WL_MAX_REFINE_ITERS`; `wl_canonical_hash()` (occurrence-CSR build -> initial colouring -> refinement to fixpoint -> commutative fold)
 - **`ir_core.hpp`** -- the single shared EXACT canonicalizer (individualization-refinement), one implementation for host and device.
-  - `IR_HOST_GENERATORS`/`IR_DEVICE_GENERATORS` (search-budget split), `ir_scratch_words()` (caller-sized span, no allocation), `IrScratch`, `IrPartition`, `ir_heapsort_idx`/`ir_isort_u64`
+  - `IR_HOST_GENERATORS`/`IR_DEVICE_GENERATORS` (search-budget split), `ir_scratch_words()` (caller-sized span, no allocation), `IrScratch`, `IrPartition`, `ir_heapsort_idx`
   - `ir_canonical_hash()` -- refine, search by individualizing the lowest non-singleton cell, smallest form ACROSS THE TREE'S LEAVES wins (a complete isomorphism invariant, not the minimum over all n! relabellings); optional outputs per input edge: canonical RANK (`out_edge_rank`), automorphism ORBIT and content CLASS (`out_edge_orbit`/`out_edge_class`, computed in input space from the discovered generators -- the quotient-causal DP's keys), and the winning form and labelling (`out_canonical_form`/`out_vertex_label`)
 - **`slot_core.hpp`** -- FRAME SLOTS, one definition for host and device: an edge's rank when a state's edges are ordered by (Aut orbit, `EdgeId`). This is the coordinate system a canonical class's matches are recorded in, which is what lets a match found on one raw instance replay against any other instance of the class; two copies drifting by one tie-break would produce replayed events that are wrong and invisible.
 - **`join_core.hpp`** -- THE JOIN: one backtracking-join body for host and device.
