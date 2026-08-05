@@ -383,6 +383,25 @@ The release CHECKLIST is 20/20 (`docs/RELEASE_CHECKLIST.md`); what follows is th
 work v1.0.0 needs beyond shipping mechanics. Ordered so nothing is built on something that is
 about to be replaced. De-header is last and alone, by standing decision.
 
+## What actually remains — FIVE items
+
+Read this before the tables. The task list carries many open entries; most are not blockers, and
+counting them as such has misread the state more than once.
+
+| # | what | why it is not done | needs |
+|---|---|---|---|
+| #41 | device half of the per-instance replay | WRITTEN and reverted. It faults, because `EngineState::kDeviceStackBytesPerDepth = 5632` is a MEASURED property of the replay's recursion cycle and the extraction adds two frames to that cycle, so the depth guard fires after the frame that faults. Holding the Ctx by reference was tried and is insufficient. Patch saved. | re-measure the constant, then ONE CUDA build |
+| #119 | one CSR lookup instead of three | WRITTEN, gate-ready, parked unbuilt. Patch saved. | the same CUDA build |
+| #114 | intra-state IR parallelism on device — decide | needs the per-state canonicalisation time DISTRIBUTION before anything is built | a GPU measurement run |
+| #12 | FFI session model | engine half DONE (`evolve_more` resumes the frontier, gated on three frontier definitions x 17 workloads). The FFI half is a TRANSPORT REDESIGN: today's transport is one-shot WXF over `RunProcess`, and a session needs state to survive a call (P4.4) | design, then build |
+| #20 | de-header + redesign | standing decision: LAST, alone, once the native code is locked. #41 is its real prerequisite — de-headering two copies of a rule bakes the divergence in | #41 first |
+
+**NOT blockers, and marked so they stop reading as such:** #58 and #30 are out of v1.0 by this
+plan; #24 (paper) is deferred by standing instruction; #77 is DIAGNOSED (`da97c1b`) and its fix is
+a design change to match forwarding, not a v1.0 obligation; #14 is CLOSED for v1.0 with an
+on-demand knob as residue. **Needing Richard, not me:** #109 (reproduces on his laptop) and #116
+(a semantics decision about what `Automatic` means).
+
 | | item | why it is where it is | status |
 |---|---|---|---|
 | **S2** | Gate the graph-property marshalling surface | The count/list surface is heavily gated and the marshalling surface was not, which is how a regression making `HGEvolve`'s default call return nothing lived for hours. Coverage must exist BEFORE the things under it are rebuilt. | **DONE** `877a77b` — 54 cases, found #116 on run one |
