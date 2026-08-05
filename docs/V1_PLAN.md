@@ -659,9 +659,7 @@ magnitudes are not current.
   function, `run_rewriting_core`, is **1,664 of those 1,849 lines** -- every other definition in
   the file is under 40 -- and the WL file carries 98 top-level definitions. So the cut is a
   function decomposition, not a file split, and the op-boundary work (#12) already found where
-  its first seam is. **FIRST CUT LANDED, `4f66efc`:** the envelope parse leaves
-  `run_rewriting_core` (1664 -> **1408** lines) as `parse_job` writing `hgffi::ParsedJob` --
-  the one phase whose dependency runs ONE WAY. No field is renamed; a field's initialiser is
+  its first seam is. **FOUR CUTS LANDED: `run_rewriting_core` is 1664 -> 1129 lines.** `4f66efc` `parse_job` (256), `d4d9ef9` `run_gpu_job` (80), `7d6a929` `configure_and_evolve` (182), `8ef5254` `read_back_session_identity` (8, and it is D16 getting a name rather than a paragraph). Each is a phase whose dependency runs ONE WAY, and after being wrong twice about which ones those are, each was established by LISTING what the block reads from its enclosing scope -- `configure_and_evolve` reads `req` 20, `engine` 18, `hg` 8, `host` 4, `record` 1 and nothing else. No field is renamed; a field's initialiser is
   now the option's DEFAULT in one place. The compiler proved the rename complete (the locals
   are gone, so a miss stops resolving) and found the one thing an eye does not: the parse
   reports a malformed option through `core_progress(host, ...)`, so `host` is a real input. `types.hpp` **is done** (757 -> 170 ms, 765 -> 503 lines, floor measured);
