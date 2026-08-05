@@ -5,7 +5,6 @@
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
-#include <stdexcept>
 
 #include "bitset.hpp"
 #include "hgcommon/core.hpp"

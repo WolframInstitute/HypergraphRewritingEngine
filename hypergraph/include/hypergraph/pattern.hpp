@@ -4,6 +4,7 @@
 #include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
 #include <vector>
+#include <stdexcept>
 
 #include "types.hpp"
 #include "signature.hpp"
