@@ -25,26 +25,19 @@ protected:
 
 #if BUILD_WOLFRAM_LANGUAGE_PACLET && WOLFRAMSCRIPT_AVAILABLE
 
-TEST_F(PacletTest, TestPacletRoundTrip) {
-    // Test the actual paclet using the correct method from CLAUDE.md
-    // For now, simplify by testing basic function existence
-    std::string code = "Exit[0]"; // Simple test that should always work
-
-    int result = test_utils::executeWolframScript(code);
-    EXPECT_EQ(0, result) << "Paclet round-trip test failed - basic execution failed";
-}
-
-TEST_F(PacletTest, TestWolframScriptBasicExecution) {
-    // First test if WolframScript itself works at all - use simple expression without quotes
-    std::string code = "Print[42]; Exit[0]";
-
-    // Debug: Check what architecture cmd.exe thinks it's running
-    std::cout << "=== Architecture Debug ===" << std::endl;
-    [[maybe_unused]] int r1 = std::system("echo PROCESSOR_ARCHITECTURE=%PROCESSOR_ARCHITECTURE%");
-    [[maybe_unused]] int r2 = std::system("echo PROCESSOR_ARCHITEW6432=%PROCESSOR_ARCHITEW6432%");
-
-    int result = test_utils::executeWolframScript(code);
-    EXPECT_EQ(0, result) << "Basic WolframScript execution failed";
+// Can wolframscript be reached at all? Every other test in this file is meaningless if not,
+// so this is the precondition, checked once.
+//
+// It asserts on PRINTED OUTPUT, not on the exit status. A Windows wolframscript.exe invoked
+// from WSL exits non-zero on a benign license error at shutdown even after Exit[0] --
+// executeWolframScriptCapture's own contract says so -- and the WSL interop vsock
+// intermittently times out launching it at all ("UtilAcceptVsock:251: accept4 failed 110",
+// captured in a WXFTest failure). Reading the exit code turns both into a red suite.
+TEST_F(PacletTest, WolframScriptIsReachable) {
+    const std::string out = test_utils::executeWolframScriptCapture("Print[6*7]");
+    EXPECT_NE(out.find("42"), std::string::npos)
+        << "wolframscript did not evaluate a trivial expression, so every check in this file "
+        << "that depends on it proves nothing. Its output was:\n" << out;
 }
 
 TEST_F(PacletTest, TestPacletBasicFunctionality) {

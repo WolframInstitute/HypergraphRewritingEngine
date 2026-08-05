@@ -25,14 +25,54 @@ protected:
         }
         byte_array += "}]";
 
-        // Round-trip test
+        // ASSERT ON A PRINTED MARKER, NOT ON THE EXIT CODE.
+        //
+        // A Windows wolframscript.exe invoked from WSL exits non-zero on a benign license
+        // error at shutdown, AFTER the script's own Exit -- executeWolframScriptCapture's
+        // own contract says so, and it is why that function exists. Reading the exit status
+        // therefore reports a round-trip failure for a run whose round-trip succeeded.
+        //
+        // Measured before this change: a DIFFERENT WXFTest failed on each full-suite run
+        // (String, then VerifyTestInfrastructureDetectsFailures, then Integer64), each
+        // passing in isolation -- the signature of a per-invocation shutdown code, not of a
+        // serialization defect.
+        //
+        // The two markers are distinguished so a genuine disagreement with Wolfram is not
+        // reported as infrastructure, and infrastructure is not reported as a disagreement.
         std::string code = "cppBytes = " + byte_array + "; "
                           "mathData = BinaryDeserialize[cppBytes]; "
                           "mathBytes = BinarySerialize[mathData]; "
-                          "If[mathBytes === cppBytes, Exit[0], Exit[1]]";
+                          "Print[If[mathBytes === cppBytes, "
+                          "\"WXF_ROUNDTRIP_OK\", \"WXF_ROUNDTRIP_MISMATCH\"]]";
 
-        int result = test_utils::executeWolframScript(code);
-        return result == 0;
+        // THE ORACLE NOT ANSWERING IS NOT THE ORACLE DISAGREEING, and the two must not be
+        // reported as one. Measured cause of the former, captured by this very branch:
+        //
+        //   <3>WSL (2781446 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110
+        //
+        // errno 110 is ETIMEDOUT on the WSL interop vsock -- the bridge that launches a
+        // Windows .exe from Linux timed out accepting the connection, so wolframscript never
+        // started and the round-trip was never performed. The attempt took 16 s and printed
+        // nothing else.
+        //
+        // Retried ONCE, because the failure is transient and independent per launch: at the
+        // observed rate of roughly one consultation per full suite, a second independent
+        // failure is rare enough to stop being the reason a green run reads as red. The retry
+        // covers ONLY the no-verdict case -- a MISMATCH is returned immediately and is never
+        // retried, because retrying a disagreement is how a real regression gets buried.
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const std::string out = test_utils::executeWolframScriptCapture(code);
+            if (out.find("WXF_ROUNDTRIP_OK") != std::string::npos) return true;
+            if (out.find("WXF_ROUNDTRIP_MISMATCH") != std::string::npos) {
+                ADD_FAILURE() << "Wolfram re-serialized this payload to different bytes";
+                return false;
+            }
+            if (attempt == 1) {
+                ADD_FAILURE() << "wolframscript printed neither round-trip marker on two "
+                              << "attempts, so nothing was checked. Its output was:\n" << out;
+            }
+        }
+        return false;
 #else
         return true; // Skip if not available
 #endif
@@ -549,24 +589,45 @@ TEST_F(WXFTest, ConvenienceFunctions) {
 // TEST INFRASTRUCTURE VALIDATION
 // ============================================================================
 
+// POSITIVE CONTROL for the mechanism every round-trip above depends on.
+//
+// Those tests pass when wolframscript PRINTS a success marker. A marker check that could
+// never print the failure marker would pass silently forever, so this drives both branches
+// and a genuinely corrupt payload through the same capture path.
+//
+// It deliberately does NOT assert on exit codes. A Windows wolframscript.exe invoked from
+// WSL exits non-zero on a benign license error at shutdown even after Exit[0], so
+// `EXPECT_EQ(0, result)` for a successful script is a coin flip -- this test asserted exactly
+// that and was one of the tests failing at random in the full suite.
 TEST_F(WXFTest, VerifyTestInfrastructureDetectsFailures) {
 #if WOLFRAMSCRIPT_AVAILABLE
-    // Verify that Exit[1] is detected as failure
-    std::string fail_code = "Exit[1]";
-    int result = test_utils::executeWolframScript(fail_code);
-    EXPECT_NE(0, result) << "Exit[1] should produce non-zero exit code";
+    // The success branch prints the OK marker and nothing else.
+    const std::string ok = test_utils::executeWolframScriptCapture(
+        "Print[If[1 === 1, \"WXF_ROUNDTRIP_OK\", \"WXF_ROUNDTRIP_MISMATCH\"]]");
+    EXPECT_NE(ok.find("WXF_ROUNDTRIP_OK"), std::string::npos)
+        << "the success marker never arrived, so a passing round-trip cannot be "
+        << "distinguished from a script that did not run. Output:\n" << ok;
+    EXPECT_EQ(ok.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+        << "the failure marker appeared on the success branch";
 
-    // Verify that Exit[0] is detected as success
-    std::string success_code = "Exit[0]";
-    result = test_utils::executeWolframScript(success_code);
-    EXPECT_EQ(0, result) << "Exit[0] should produce zero exit code";
+    // The failure branch prints the mismatch marker, and NOT the OK marker -- a substring
+    // check that matched both would report every mismatch as a pass.
+    const std::string bad = test_utils::executeWolframScriptCapture(
+        "Print[If[1 === 2, \"WXF_ROUNDTRIP_OK\", \"WXF_ROUNDTRIP_MISMATCH\"]]");
+    EXPECT_NE(bad.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+        << "the failure marker never arrived, so a real disagreement would read as "
+        << "infrastructure trouble. Output:\n" << bad;
+    EXPECT_EQ(bad.find("WXF_ROUNDTRIP_OK"), std::string::npos)
+        << "the success marker appeared on the failure branch";
 
-    // Verify that $Failed in round-trip is detected
-    std::string failed_deserialize = "cppBytes = ByteArray[{56, 58, 255}]; "
-                                     "mathData = BinaryDeserialize[cppBytes]; "
-                                     "If[FailureQ[mathData], Exit[1], Exit[0]]";
-    result = test_utils::executeWolframScript(failed_deserialize);
-    EXPECT_NE(0, result) << "Failed deserialization should be detected";
+    // A corrupt payload reaches the same failure branch through BinaryDeserialize rather
+    // than through a hand-written condition.
+    const std::string corrupt = test_utils::executeWolframScriptCapture(
+        "cppBytes = ByteArray[{56, 58, 255}]; "
+        "mathData = Quiet@BinaryDeserialize[cppBytes]; "
+        "Print[If[FailureQ[mathData], \"WXF_ROUNDTRIP_MISMATCH\", \"WXF_ROUNDTRIP_OK\"]]");
+    EXPECT_NE(corrupt.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+        << "a corrupt payload did not reach the failure branch. Output:\n" << corrupt;
 #endif
 }
 

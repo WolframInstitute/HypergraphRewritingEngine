@@ -76,65 +76,21 @@ inline std::string getWolframScriptPath() {
 }
 
 /**
- * Execute WolframScript with proper path handling and quoting
- * Uses bash -c to execute WolframScript from WSL cross-compiled environment
- */
-inline int executeWolframScript(const std::string& code) {
-// WSL_ENVIRONMENT is always defined, as 0 or 1, so it is tested by VALUE -- a
-// defined() test would take this branch on any native Windows build. The branch
-// also needs the wolframscript path macro, which only exists when CMake found one.
-#if WSL_ENVIRONMENT && defined(_WIN32) && defined(WOLFRAMSCRIPT_EXECUTABLE)
-    // Use bash -c with original /mnt/c path - avoid Windows path conversion
-    std::string wolfram_path = WOLFRAMSCRIPT_EXECUTABLE;  // Use original path
-
-    // For complex commands, write to temporary file to avoid quoting issues
-    if (code.find("\"") != std::string::npos) {
-        // Create temporary file that WolframScript can access via UNC path
-        std::string linux_temp_file = "/tmp/wolfram_test_" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + ".wl";
-        std::string windows_temp_file = "\\\\\\\\wsl.localhost\\\\Ubuntu\\\\tmp\\\\wolfram_test_" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + ".wl";
-        // Write to Linux temp file
-        std::ofstream f(linux_temp_file);
-        f << code << std::endl;
-        f.close();
-
-        // Use Windows UNC path for WolframScript to access
-        std::string cmd = "bash -c '\"" + wolfram_path + "\" -file \"" + windows_temp_file + "\"'";
-        int result = std::system(cmd.c_str());
-        std::remove(linux_temp_file.c_str());
-        return result;
-    } else {
-        // Simple command without quotes - use direct -code
-        std::string cmd = "bash -c '\"" + wolfram_path + "\" -code \"" + code + "\"'";
-        return std::system(cmd.c_str());
-    }
-#else
-    // Native Linux (including a Linux binary under WSL invoking a Windows
-    // wolframscript.exe). Write the code to a temp file and run it with -file: passing
-    // WL code that contains double quotes via -code "<...>" breaks shell quoting.
-    // wslpath -w converts the Linux temp path to a Windows path for a Windows
-    // wolframscript.exe; on a native install (no wslpath) the Linux path is used.
-    std::string wolfram_path = getWolframScriptPath();
-    std::string tmp = "/tmp/wolfram_test_" + std::to_string(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count()) + ".wl";
-    {
-        std::ofstream f(tmp);
-        f << code << std::endl;
-    }
-    std::string cmd = "\"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
-                    + "' 2>/dev/null || echo '" + tmp + "')\"";
-    int result = std::system(cmd.c_str());
-    std::remove(tmp.c_str());
-    return result;
-#endif
-}
-
-/**
- * Run WL code and capture its combined stdout+stderr. Prefer this over the exit code
- * for integration checks: a Windows wolframscript.exe invoked from WSL frequently
- * exits with a benign "license error" at shutdown (non-zero exit) even after the
- * script's own Exit[0], so the exit status is not a reliable pass/fail signal --
- * assert on a success marker the script prints instead.
+ * Run WL code and return its combined stdout+stderr.
+ *
+ * THE ONLY WAY THIS PROJECT CONSULTS WOLFRAM, because the exit status cannot carry the
+ * verdict. Two independent failures make it lie, both observed here:
+ *
+ *   - A Windows wolframscript.exe invoked from WSL exits non-zero on a benign license
+ *     error at shutdown, AFTER the script's own Exit[0].
+ *   - The WSL interop vsock intermittently times out launching it at all
+ *     ("UtilAcceptVsock:251: accept4 failed 110" -- ETIMEDOUT), so the script never runs
+ *     and produces no output at all.
+ *
+ * So a caller asserts on a MARKER the script prints. That also separates the two answers a
+ * caller needs to tell apart: Wolfram disagreed (marker says so) versus Wolfram was never
+ * consulted (no marker at all). Retrying the second is legitimate; retrying the first buries
+ * a regression.
  */
 inline std::string executeWolframScriptCapture(const std::string& code) {
     std::string wolfram_path = getWolframScriptPath();
