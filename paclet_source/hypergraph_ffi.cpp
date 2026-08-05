@@ -340,6 +340,95 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
         });
 }
 
+#ifdef HG_GPU_BACKEND
+// The GPU binary's whole job: translate a ParsedJob into a GpuJob, run hg_gpu::evolve, and
+// marshal the result through the same WXF path the CPU uses.
+//
+// A phase like the parse: it reads the job and produces the reply, and touches no engine
+// this file owns. Extracted for that reason -- run_rewriting_core's remaining length is the
+// CPU path, and this block was never part of it.
+// `req` is not const: the device has no implementation for the per-step caps and appends an
+// OptionSkipped warning for each, so the job it was handed carries what it did not apply.
+static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
+        // Sessions are a CPU capability in this build. The device evolver rebuilds its graph
+        // from `initial_states` on every call, so there is nothing here for a handle to name
+        // (D13). Refused rather than answered, because an `Open` that returned a result with
+        // no handle would look like a session to every field a caller can read.
+        if (!req.session_op.empty() && req.session_op != "Evolve") {
+            throw std::runtime_error(
+                "Op '" + req.session_op + "' has no GPU implementation; sessions are served on "
+                "the CPU. Use TargetDevice -> \"CPU\".");
+        }
+
+        // The per-step caps have no device implementation: EvolveInput carries no
+        // max_states_per_step / max_successor_states_per_parent, so a capped run on the
+        // GPU returns the UNCAPPED state set while the same call on the CPU returns a
+        // capped one. Reported rather than applied -- silently returning a different
+        // answer per device is the divergence class the differential suite exists to
+        // catch, and a cap the caller asked for and did not get is exactly that.
+        if (req.max_states_per_step > 0) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'MaxStatesPerStep' has no GPU implementation and was not applied; "
+                 "the returned state set is uncapped. Use TargetDevice -> \"CPU\" to "
+                 "apply it."});
+        }
+        if (req.max_successor_states_per_parent > 0) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'MaxSuccessorStatesPerParent' has no GPU implementation and was not "
+                 "applied; the returned state set is uncapped. Use TargetDevice -> "
+                 "\"CPU\" to apply it."});
+        }
+        if (req.uniform_random && req.matches_per_step > 0) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'MatchesPerStep' maps to the MaxStatesPerStep cap, which has no GPU "
+                 "implementation and was not applied."});
+        }
+
+        GpuJob job{
+            req.parsed_rules_raw,
+            req.initial_states_raw,
+            req.steps,
+            // 0 None, 1 Full, 2 Automatic -- GpuJob::event_canon_mode's own order, which is
+            // NOT the state order below and is not the enum order either. Collapsing this to
+            // "0 if None else 1" sent code 1 for an AUTOMATIC request, and the backend reads
+            // 1 as FULL: the caller silently got a coarser event identity than asked for, and
+            // code 2 was never sent at all.
+            (req.event_signature_keys == hypergraph::EVENT_SIG_NONE)      ? GpuJob::EventCanonCode::kNone :
+            (req.event_signature_keys == hypergraph::EVENT_SIG_AUTOMATIC) ? GpuJob::EventCanonCode::kAutomatic
+                                                                      : GpuJob::EventCanonCode::kFull,
+            // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
+            (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? GpuJob::StateCanonCode::kFull :
+            (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? GpuJob::StateCanonCode::kAutomatic
+                                                                                   : GpuJob::StateCanonCode::kNone,
+            req.causal_transitive_reduction,
+            req.explore_from_canonical_states_only,
+            req.quotient_initial_states,
+            req.exploration_probability,
+            0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
+            req.include_states,
+            req.include_events || req.include_events_minimal,
+            req.include_causal_edges,
+            req.include_branchial_edges,
+            req.include_canonical_hashes,
+            req.graph_properties,
+            req.edge_deduplication,
+            req.branchial_step,
+            req.show_genesis_events,
+        };
+        if (req.show_progress) {
+            core_progress(host, "HGEvolve: Starting GPU evolution...");
+        }
+        std::vector<uint8_t> out = run_gpu_evolution(job, host);
+        if (req.show_progress) {
+            core_progress(host, "HGEvolve: GPU evolution complete.");
+        }
+        return out;
+}
+#endif  // HG_GPU_BACKEND
+
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
     try {
@@ -382,86 +471,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
 #ifdef HG_GPU_BACKEND
-        // GPU binary: route the parsed job to hg_gpu::evolve and marshal its
-        // result into the same WXF output.
-        {
-            // Sessions are a CPU capability in this build. The device evolver rebuilds its graph
-            // from `initial_states` on every call, so there is nothing here for a handle to name
-            // (D13). Refused rather than answered, because an `Open` that returned a result with
-            // no handle would look like a session to every field a caller can read.
-            if (!req.session_op.empty() && req.session_op != "Evolve") {
-                throw std::runtime_error(
-                    "Op '" + req.session_op + "' has no GPU implementation; sessions are served on "
-                    "the CPU. Use TargetDevice -> \"CPU\".");
-            }
-
-            // The per-step caps have no device implementation: EvolveInput carries no
-            // req.max_states_per_step / req.max_successor_states_per_parent, so a capped run on the
-            // GPU returns the UNCAPPED state set while the same call on the CPU returns a
-            // capped one. Reported rather than applied -- silently returning a different
-            // answer per device is the divergence class the differential suite exists to
-            // catch, and a cap the caller asked for and did not get is exactly that.
-            if (req.max_states_per_step > 0) {
-                req.ffi_warnings.push_back(
-                    {"OptionSkipped", 1,
-                     "'MaxStatesPerStep' has no GPU implementation and was not applied; "
-                     "the returned state set is uncapped. Use TargetDevice -> \"CPU\" to "
-                     "apply it."});
-            }
-            if (req.max_successor_states_per_parent > 0) {
-                req.ffi_warnings.push_back(
-                    {"OptionSkipped", 1,
-                     "'MaxSuccessorStatesPerParent' has no GPU implementation and was not "
-                     "applied; the returned state set is uncapped. Use TargetDevice -> "
-                     "\"CPU\" to apply it."});
-            }
-            if (req.uniform_random && req.matches_per_step > 0) {
-                req.ffi_warnings.push_back(
-                    {"OptionSkipped", 1,
-                     "'MatchesPerStep' maps to the MaxStatesPerStep cap, which has no GPU "
-                     "implementation and was not applied."});
-            }
-
-            GpuJob job{
-                req.parsed_rules_raw,
-                req.initial_states_raw,
-                req.steps,
-                // 0 None, 1 Full, 2 Automatic -- GpuJob::event_canon_mode's own order, which is
-                // NOT the state order below and is not the enum order either. Collapsing this to
-                // "0 if None else 1" sent code 1 for an AUTOMATIC request, and the backend reads
-                // 1 as FULL: the caller silently got a coarser event identity than asked for, and
-                // code 2 was never sent at all.
-                (req.event_signature_keys == hypergraph::EVENT_SIG_NONE)      ? GpuJob::EventCanonCode::kNone :
-                (req.event_signature_keys == hypergraph::EVENT_SIG_AUTOMATIC) ? GpuJob::EventCanonCode::kAutomatic
-                                                                          : GpuJob::EventCanonCode::kFull,
-                // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
-                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? GpuJob::StateCanonCode::kFull :
-                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? GpuJob::StateCanonCode::kAutomatic
-                                                                                       : GpuJob::StateCanonCode::kNone,
-                req.causal_transitive_reduction,
-                req.explore_from_canonical_states_only,
-                req.quotient_initial_states,
-                req.exploration_probability,
-                0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
-                req.include_states,
-                req.include_events || req.include_events_minimal,
-                req.include_causal_edges,
-                req.include_branchial_edges,
-                req.include_canonical_hashes,
-                req.graph_properties,
-                req.edge_deduplication,
-                req.branchial_step,
-                req.show_genesis_events,
-            };
-            if (req.show_progress) {
-                core_progress(host, "HGEvolve: Starting GPU evolution...");
-            }
-            std::vector<uint8_t> out = run_gpu_evolution(job, host);
-            if (req.show_progress) {
-                core_progress(host, "HGEvolve: GPU evolution complete.");
-            }
-            return out;
-        }
+        // The GPU binary answers the whole job on the device; nothing below runs.
+        return run_gpu_job(req, host);
 #endif
 
         // The graph and its engine, owned together by a holder rather than as two locals.
@@ -503,7 +514,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // built under one convention using another: `Full` at `Open` and nothing at `Query` would
         // report exact canonical forms as tree-mode ones, in fields that all still parse.
         //
-        // `req.steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
+        // `Steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
         // end is defined against that total, not against the increment a `Step` just asked for.
         if (held_session) {
             req.state_canon_mode = hg.state_canonicalization_mode();
@@ -1187,7 +1198,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     // 1-based indexing: 1 = step 1, 2 = step 2, etc.
                     target_step = static_cast<uint32_t>(req.branchial_step);
                 } else {
-                    // Negative from end: -1 = final step (req.steps), -2 = req.steps-1, etc.
+                    // Negative from end: -1 = final step (steps), -2 = steps-1, etc.
                     target_step = static_cast<uint32_t>(req.steps + 1 + req.branchial_step);
                 }
             }
@@ -1348,7 +1359,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // more events than states paid for the same state's canonical form many times over.
             //
             // The cache holds what the frame is about to carry anyway, and stays empty for the
-            // Structure properties, which serialize ids and req.steps and never ask for edges.
+            // Structure properties, which serialize ids and steps and never ask for edges.
             std::unordered_map<uint32_t, wxf::WXFValueList> state_edges_memo;
             auto build_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
                 wxf::WXFValueList edge_list;
@@ -1602,7 +1613,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
         if (req.include_num_causal_edges) {
             // Count unique (producer, consumer) event pairs for v1 semantics
-            // When req.show_genesis_events is false, we must filter out pairs involving genesis events
+            // When ShowGenesisEvents is false, we must filter out pairs involving genesis events
             // to match reference behavior ("IncludeInitialEvent" -> False)
             //
             // Reconstruction branch first: its pairs live in its own store over its own event
