@@ -334,6 +334,79 @@ TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
     EXPECT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle2), host));
 }
 
+// EVERY HELPER IN THIS FILE THAT REDUCES A RESULT TO A COMPARABLE VALUE, FED TWO RESULTS KNOWN TO
+// DIFFER. Nothing else in this suite can catch a helper that returns the same thing for different
+// inputs: such a helper makes assertions PASS, so the suite goes green and says nothing.
+//
+// This is not hypothetical. `value_bytes` computed its slice offset from a SUB-parser's position,
+// which is always 0, so it returned the first N bytes of the whole stream for every key -- for
+// NumStates that is `8:`, the two-byte WXF header, identical for every run. Three assertions here
+// were comparing the header to itself, and the defect surfaced only because an unrelated new test
+// asserted two runs must differ before comparing them.
+//
+// So each helper below gets the same treatment: a pair that MUST come out different, asserted
+// before any test relies on the helper to tell two things apart.
+TEST(WxfSerializationPin, EveryResultHelperDistinguishesTwoResultsThatDiffer) {
+    HostBridge host;
+
+    // Two runs that differ in every count, by construction: one step against three.
+    const auto shallow = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 1,
+                                                        [](wxf::Writer&) {}, 0), host);
+    const auto deep = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+                                                     [](wxf::Writer&) {}, 0), host);
+    ASSERT_FALSE(shallow.empty());
+    ASSERT_FALSE(deep.empty());
+
+    // read_int_key: the counts must differ, and must not be the -1 the helper returns for an
+    // absent key -- which would also "differ" from a real count and prove nothing.
+    for (const char* key : {"NumStates", "NumEvents"}) {
+        const int64_t a = read_int_key(shallow, key), b = read_int_key(deep, key);
+        EXPECT_NE(a, -1) << key << " is absent from the shallow run, so read_int_key is "
+                            "reporting absence rather than a value";
+        EXPECT_NE(b, -1) << key << " is absent from the deep run";
+        EXPECT_NE(a, b) << "read_int_key returns the same " << key << " for a 1-step and a "
+                           "3-step run, so it cannot tell two results apart";
+    }
+
+    // value_bytes: the payload of a key that differs must itself differ. This is the exact
+    // assertion the old implementation failed.
+    EXPECT_NE(value_bytes(shallow, "NumStates"), value_bytes(deep, "NumStates"))
+        << "value_bytes returns identical bytes for two runs with different NumStates";
+    EXPECT_FALSE(value_bytes(shallow, "NumStates").empty())
+        << "value_bytes found nothing for a key that is present";
+    // And it must address the KEY, not a fixed offset: two different keys of the same run have
+    // no reason to share a payload, and a helper that slices from position 0 returns the same
+    // prefix for both.
+    EXPECT_NE(value_bytes(deep, "NumStates"), value_bytes(deep, "NumEvents"))
+        << "value_bytes returns the same bytes for two different keys of one result";
+
+    // count_assoc_entries: States is an association whose size tracks the run.
+    const int64_t sa = count_assoc_entries(shallow, "States");
+    const int64_t sb = count_assoc_entries(deep, "States");
+    EXPECT_GT(sa, 0) << "count_assoc_entries reports no States entries at all";
+    EXPECT_NE(sa, sb) << "count_assoc_entries returns the same States size for a 1-step and a "
+                         "3-step run";
+    EXPECT_EQ(count_assoc_entries(deep, "NoSuchKey"), -1)
+        << "an absent key must be distinguishable from an empty association, or 'nothing was "
+           "returned' reads as 'the system has none'";
+
+    // graph_vertex_count: the same property on the two runs, which have different state counts.
+    auto with_graph = [&](int64_t steps) {
+        return run_rewriting_core(
+            build_input(kSeed, kLhs, kRhs, steps,
+                        [](wxf::Writer& w) {
+                            put_str_list_option(w, "GraphProperties", {"StatesGraph"});
+                            put_str_option(w, "CanonicalizeStates", "Full");
+                        }, 2), host);
+    };
+    const int64_t va = graph_vertex_count(with_graph(1));
+    const int64_t vb = graph_vertex_count(with_graph(3));
+    EXPECT_NE(va, -1) << "graph_vertex_count found no Vertices field, which it reports the same "
+                         "way whether the field is missing or the graph is empty";
+    EXPECT_NE(va, vb) << "graph_vertex_count returns the same vertex count for a 1-step and a "
+                         "3-step StatesGraph";
+}
+
 // THE CLAIM A SESSION EXISTS TO MAKE: an exploration continued in pieces is the exploration run
 // whole. Open at depth 1, Step by 2, and the counts must equal a plain 3-step Evolve's -- if
 // `Step` re-ran instead of resuming it would still return a 3-deep graph, with new raw ids and a
