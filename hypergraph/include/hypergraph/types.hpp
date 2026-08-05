@@ -464,55 +464,6 @@ enum class StateCanonicalizationMode : uint8_t {
 };
 
 // =============================================================================
-// SubtreeBloomFilter: Compact representation of vertices in a subtree
-// =============================================================================
-// Uses bloom filter to track subtree membership with O(1) membership test.
-// False positives possible (may say vertex is in subtree when it isn't),
-// but no false negatives (never says vertex is not in subtree when it is).
-// This is safe: false positives just cause unnecessary recomputation.
-
-struct SubtreeBloomFilter {
-    static constexpr size_t NUM_BITS = 256;  // 32 bytes per filter
-    static constexpr size_t NUM_WORDS = NUM_BITS / 64;
-    static constexpr size_t NUM_HASHES = 3;  // Number of hash functions
-
-    uint64_t bits[NUM_WORDS] = {0};
-
-    void clear() {
-        for (size_t i = 0; i < NUM_WORDS; ++i) bits[i] = 0;
-    }
-
-    void add(VertexId v) {
-        // Use different hash functions (simple mixing)
-        uint64_t h1 = v * 0x9e3779b97f4a7c15ULL;
-        uint64_t h2 = v * 0xc6a4a7935bd1e995ULL;
-        uint64_t h3 = v * 0x85ebca6b;
-
-        bits[(h1 >> 6) % NUM_WORDS] |= (1ULL << (h1 & 63));
-        bits[(h2 >> 6) % NUM_WORDS] |= (1ULL << (h2 & 63));
-        bits[(h3 >> 6) % NUM_WORDS] |= (1ULL << (h3 & 63));
-    }
-
-    bool might_contain(VertexId v) const {
-        uint64_t h1 = v * 0x9e3779b97f4a7c15ULL;
-        uint64_t h2 = v * 0xc6a4a7935bd1e995ULL;
-        uint64_t h3 = v * 0x85ebca6b;
-
-        return (bits[(h1 >> 6) % NUM_WORDS] & (1ULL << (h1 & 63))) &&
-               (bits[(h2 >> 6) % NUM_WORDS] & (1ULL << (h2 & 63))) &&
-               (bits[(h3 >> 6) % NUM_WORDS] & (1ULL << (h3 & 63)));
-    }
-
-    // Check if any vertex in the given set might be in this subtree
-    template<typename Container>
-    bool might_contain_any(const Container& vertices) const {
-        for (VertexId v : vertices) {
-            if (might_contain(v)) return true;
-        }
-        return false;
-    }
-};
-
 // =============================================================================
 // VertexHashCache: Cached vertex subtree hashes for a state
 // =============================================================================
@@ -524,12 +475,11 @@ struct VertexHashCache {
     // Using simple arrays + count for arena-friendly storage
     VertexId* vertices;
     uint64_t* hashes;
-    SubtreeBloomFilter* subtree_filters;  // Bloom filter for each vertex's subtree
     void* adjacency_ptr;  // Type-erased pointer to adjacency map for this state
     uint32_t count;
     uint32_t capacity;
 
-    VertexHashCache() : vertices(nullptr), hashes(nullptr), subtree_filters(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
+    VertexHashCache() : vertices(nullptr), hashes(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
 
     uint64_t lookup(VertexId v) const {
         // vertices[] is built sorted ascending (WL hash builds it from a sorted,
@@ -542,15 +492,6 @@ struct VertexHashCache {
         return 0;
     }
 
-    // Lookup hash and return subtree filter if found
-    std::pair<uint64_t, const SubtreeBloomFilter*> lookup_with_subtree(VertexId v) const {
-        for (uint32_t i = 0; i < count; ++i) {
-            if (vertices[i] == v) {
-                return {hashes[i], subtree_filters ? &subtree_filters[i] : nullptr};
-            }
-        }
-        return {0, nullptr};
-    }
 
     void insert(VertexId v, uint64_t hash) {
         // Note: caller must ensure capacity
@@ -559,14 +500,6 @@ struct VertexHashCache {
         ++count;
     }
 
-    void insert_with_subtree(VertexId v, uint64_t hash, const SubtreeBloomFilter& filter) {
-        vertices[count] = v;
-        hashes[count] = hash;
-        if (subtree_filters) {
-            subtree_filters[count] = filter;
-        }
-        ++count;
-    }
 };
 
 // =============================================================================
