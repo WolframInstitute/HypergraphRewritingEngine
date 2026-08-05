@@ -344,8 +344,9 @@ T Parser::read() {
         return read_real64();
     } else if constexpr (std::is_same_v<T, std::string>) {
         // Handle both String and Symbol tokens for std::string type
-        // This allows reading Wolfram Symbols (True, False, etc.) as strings
-        Token token = peek_token();
+        // This allows reading Wolfram Symbols (True, False, etc.) as strings.
+        // `token` is the one peeked at the top of this function: nothing has consumed a byte
+        // since, so re-peeking would return the same value under a second name.
         if (token == Token::String) {
             return read_string();
         } else if (token == Token::Symbol) {
@@ -357,7 +358,6 @@ T Parser::read() {
         return read_binary_string();
     } else if constexpr (is_vector_v<T>) {
         // Generic vector support - recursive template
-        Token token = peek_token();
         if (token != Token::Function) {
             throw TypeError("Expected List function", read_position_);
         }

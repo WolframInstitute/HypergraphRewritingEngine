@@ -759,8 +759,8 @@ TEST(Unified_Integration, SingleStepEvolution) {
     // Apply all matches to create new states
     std::set<StateId> new_states;
     size_t events_created = 0;
-    for (const auto& [e1, e2, binding] : matches) {
-        EdgeId matched[] = {e1, e2};
+    for (const auto& [matched_a, matched_b, binding] : matches) {
+        EdgeId matched[] = {matched_a, matched_b};
         RewriteResult result = rewriter.apply(rule, initial, matched, 2, binding, 1);
         EXPECT_TRUE(result.success);
         new_states.insert(result.new_state);

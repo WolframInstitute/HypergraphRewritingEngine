@@ -100,10 +100,13 @@ public:
         enumerate_compatible_signatures(
             pattern_sig,
             [](const EdgeSignature& data_sig, void* user_data) {
-                auto* ctx = static_cast<Context*>(user_data);
-                ctx->self->for_each_edge_with_signature(
-                    data_sig, *ctx->state_edges,
-                    *ctx->visitor
+                // Named apart from the `ctx` this call passes as user_data: the lambda is
+                // captureless (it must convert to a function pointer), so the outer one is not
+                // reachable here and one name for both only invites the reader to think it is.
+                auto* c = static_cast<Context*>(user_data);
+                c->self->for_each_edge_with_signature(
+                    data_sig, *c->state_edges,
+                    *c->visitor
                 );
             },
             &ctx
