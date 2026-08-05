@@ -103,8 +103,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - `WLHash` (`compute_state_hash_with_cache`, `find_edge_correspondence`, `compute_event_signature`)
 - **`canonical_types.hpp`** -- shared canonicalization result types.
   - `CanonicalForm`, `VertexMapping`, `CanonicalizationResult` (`are_isomorphic`)
-- **`ir_canonicalization.hpp`** -- McKay individualization-refinement exact canonicalizer (the reference algorithm).
-  - `IRPartition`; `IRCanonicalizer` (`canonicalize_edges`, `compute_canonical_hash[_with_edge_map/_with_edge_orbits]`, `are_isomorphic`; private `build_adjacency`/`initial_partition`/`refine`/`individualize`/`find_canonical_labeling`)
+- **`ir_canonicalization.hpp`** -- host face of the McKay individualization-refinement exact canonicalizer; the algorithm is `hgcommon/ir_core.hpp`, shared with the device.
+  - `IRCanonicalizer` (`canonicalize_edges`, `compute_canonical_hash[_with_edge_map/_with_edge_rank/_with_edge_orbits]`, `are_isomorphic`)
 - **`causal_graph.hpp`** -- online lock-free causal + branchial relationships with online transitive reduction.
   - `CausalGraph` (`set_edge_producer`/`add_edge_consumer`/`propagate_producers` -- all keyed by `CanonicalEdgeKey`, not raw `EdgeId`, so orbit-shared edges meet at one key under quotient; `add_causal_edge`/`add_branchial_edge`; `record_state_event` + `record_branchial_overlaps` (the per-state event list and the branchial pairs it induces, each pair claimed once); the reduction as `record_reduced_edge`/`is_reachable`/`reduces_on_read`/`ids_are_topological`, which is a TAG on one base relation rather than a second graph; `for_each_causal_edge`/`for_each_branchial_edge`)
   - `causal_pair_key(producer, consumer)` offsets both ids so a self-loop on event 0 is not the map's EMPTY sentinel
@@ -126,7 +126,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `hypergraph/src/` -- core engine (out-of-line implementations)
 
 - **`hypergraph.cpp`** -- `Hypergraph` methods: creation + index registration, `create_or_get_canonical_state` dedup, event creation/canonicalization, hashing, edge-correspondence dispatch.
-- **`ir_canonicalization.cpp`** -- `IRCanonicalizer` pipeline: `build_adjacency`/`initial_partition`/`refine`/`individualize`/`find_canonical_labeling` + the public hash/canonicalize entries.
+- **`ir_canonicalization.cpp`** -- the adapter from this project's edge lists to `hgcommon/ir_core.hpp`: `ir_core_call` (sorted-unique vertex numbering, depth and generator escalation) + the public hash/canonicalize entries built on it.
 - **`causal_graph.cpp`** -- `CausalGraph` methods: lazy slot/list creation, producer/consumer rendezvous, `add_causal_edge`/`record_reduced_edge`/`add_branchial_edge`, `is_reachable` (the backward walk over KEPT predecessors that decides whether a pair is bypassed), `get_causal_edges`/`get_branchial_edges` export.
 - **`parallel_evolution.cpp`** -- the engine's implementation: `evolve` loops, the `execute_*`/`submit_*` task engine, match forwarding, pruning/quotient bookkeeping.
 - **`rewriter.cpp`** -- `Rewriter::apply`: validate match, derive child edge set, allocate fresh vertices, create RHS edges/state/event, register causal/branchial (consumed edges in descending-producer order for correct online TR).

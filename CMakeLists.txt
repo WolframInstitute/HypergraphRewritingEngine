@@ -246,10 +246,10 @@ foreach(tool_src ${HG_TOOL_SOURCES})
     file(READ ${tool_src} tool_text)
     string(FIND "${tool_text}" "hg_gpu/" tool_needs_gpu)
     # A tool that is not part of the repository. ir_incremental_probe.cpp is one clone's local
-    # scratch (.git/info/exclude), and it reads IRCanonicalizer::last_stats, which no longer
-    # exists -- so the glob, which sees the working tree rather than the index, would break
-    # host_tools for everyone who happens to have it. Named rather than silently skipped: a
-    # skip by pattern is how an unbuilt file stops being noticed.
+    # scratch (.git/info/exclude), and it reads IRCanonicalizer::last_stats, which the class
+    # does not have -- so the glob, which sees the working tree rather than the index, would
+    # break host_tools for everyone who happens to have it. Named rather than silently skipped:
+    # a skip by pattern is how an unbuilt file stops being noticed.
     set(HG_UNTRACKED_TOOLS ir_incremental_probe)
     list(FIND HG_UNTRACKED_TOOLS ${tool_name} tool_untracked)
     if(NOT TARGET ${tool_name} AND tool_needs_gpu EQUAL -1 AND tool_untracked EQUAL -1)
