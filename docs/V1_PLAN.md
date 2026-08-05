@@ -659,7 +659,12 @@ magnitudes are not current.
   function, `run_rewriting_core`, is **1,664 of those 1,849 lines** -- every other definition in
   the file is under 40 -- and the WL file carries 98 top-level definitions. So the cut is a
   function decomposition, not a file split, and the op-boundary work (#12) already found where
-  its first seam is. `types.hpp` **is done** (757 -> 170 ms, 765 -> 503 lines, floor measured);
+  its first seam is. **FIRST CUT LANDED, `4f66efc`:** the envelope parse leaves
+  `run_rewriting_core` (1664 -> **1408** lines) as `parse_job` writing `hgffi::ParsedJob` --
+  the one phase whose dependency runs ONE WAY. No field is renamed; a field's initialiser is
+  now the option's DEFAULT in one place. The compiler proved the rename complete (the locals
+  are gone, so a miss stops resolving) and found the one thing an eye does not: the parse
+  reports a malformed option through `core_progress(host, ...)`, so `host` is a real input. `types.hpp` **is done** (757 -> 170 ms, 765 -> 503 lines, floor measured);
   namespaces are
   inconsistent (`hypergraph`, `hgcommon`, `hgmarshal`, `hg_gpu`, `wxf`, `job_system`,
   `lockfree_deque`). **Naming decisions are Richard's** — the convention doc comes before any
