@@ -123,6 +123,12 @@ function(create_test_executable TARGET_NAME)
     target_link_libraries(${TARGET_NAME} PRIVATE ${TEST_COMMON_LIBS})
     target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
 
+    # Where the repository is, baked in at configure time. A test that needs a file from the
+    # source tree -- the paclet, a corpus, a golden -- resolves it from here. A relative path
+    # would resolve against the working directory, which is whatever the caller happened to be
+    # in, so the same binary passes from one directory and fails from another.
+    target_compile_definitions(${TARGET_NAME} PRIVATE HG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
     if(DEBUG_OUTPUT)
         target_compile_definitions(${TARGET_NAME} PRIVATE ENABLE_DEBUG_OUTPUT)
     endif()

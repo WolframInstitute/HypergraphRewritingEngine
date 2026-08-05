@@ -41,16 +41,15 @@ TEST_F(PacletTest, WolframScriptIsReachable) {
 }
 
 TEST_F(PacletTest, TestPacletBasicFunctionality) {
-    // Test that the paclet loads and basic functions work
-    std::string paclet_dir;
-
-#if defined(WSL_ENVIRONMENT) && defined(_WIN32)
-    // WSL cross-compilation - use UNC path so WolframScript can access it
-    paclet_dir = "\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\fly\\\\my_projects\\\\efficient_rewriting_final\\\\paclet";
-#else
-    // Native Windows or Linux - use relative path
-    paclet_dir = "../paclet";
-#endif
+    // The paclet is found from where the REPOSITORY is, which CMake bakes in at configure time,
+    // translated to whichever side of the WSL boundary the wolframscript being invoked runs on
+    // and escaped for the WL string it goes into. A path relative to the working directory
+    // resolves against whatever directory the caller happened to be in, so the same binary
+    // passed from one and failed from another; a path naming one machine's home directory
+    // passes only on that machine.
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
 
     std::string code = "Print[\"Loading paclet from: " + paclet_dir + "\"]; "
                       "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
@@ -101,10 +100,9 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
     // Reported before the functional assertions, because when the package did not load they
     // cannot mean anything and their message would send the reader after the engine instead.
     ASSERT_EQ(out.find("PACLET_LOAD_FAIL"), std::string::npos)
-        << "The paclet did not load, so nothing below was exercised. `" << paclet_dir
-        << "` is resolved RELATIVE TO THE WORKING DIRECTORY, so the suite has to run from a "
-           "directory one level under the repository root (build_linux); from the repository "
-           "root it resolves one level too high and finds no paclet. WolframScript output:\n"
+        << "The paclet did not load, so nothing below was exercised. It was looked for at `"
+        << paclet_dir << "`, an absolute path from the configured source tree; if that directory "
+           "holds no built paclet, build the `paclet` target. WolframScript output:\n"
         << out;
 
     EXPECT_NE(out.find("PACLET_TEST_OK"), std::string::npos)

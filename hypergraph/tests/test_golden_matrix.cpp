@@ -43,10 +43,12 @@ namespace {
 std::vector<golden::Row> load_rows(bool* found) {
     std::vector<golden::Row> rows;
     *found = false;
-    // Run from the build directory or the source root; try both rather than depend on cwd.
-    for (const char* path : {"reference/golden_matrix.txt", "../reference/golden_matrix.txt"}) {
-        std::ifstream in(path);
-        if (!in) continue;
+    // From the source tree CMake configured, not from the working directory. A prefix guessed
+    // from the caller's cwd finds the file from some directories and not others, and "not found"
+    // here means the gate abstains rather than fails.
+    {
+        std::ifstream in(std::string(HG_SOURCE_DIR) + "/reference/golden_matrix.txt");
+        if (!in) return rows;
         *found = true;
         std::string line;
         while (std::getline(in, line)) {
@@ -67,7 +69,6 @@ std::vector<golden::Row> load_rows(bool* found) {
                                                  : golden::Provenance::Pin;
             rows.push_back(std::move(r));
         }
-        break;
     }
     return rows;
 }

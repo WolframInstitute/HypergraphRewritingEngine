@@ -23,15 +23,15 @@
 
 namespace {
 
-// The repo file, found from wherever the test binary was launched.
+// A repository file, addressed from the source tree CMake configured rather than from the working
+// directory. Guessing a prefix off the caller's cwd finds the file from some directories and not
+// others, and an empty result here reads as "the option is not declared anywhere" -- a missing
+// file would make this gate pass by finding no options to disagree about.
 std::string read_repo_file(const std::string& rel) {
-    for (const std::string& prefix : {"", "../", "../../"}) {
-        std::ifstream in(prefix + rel);
-        if (!in) continue;
-        return std::string((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-    }
-    return {};
+    std::ifstream in(std::string(HG_SOURCE_DIR) + "/" + rel);
+    if (!in) return {};
+    return std::string((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
 }
 
 // Names captured by `re` inside the region between `begin` and `end` markers. An empty region

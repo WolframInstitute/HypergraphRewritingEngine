@@ -92,6 +92,45 @@ inline std::string getWolframScriptPath() {
  * consulted (no marker at all). Retrying the second is legitimate; retrying the first buries
  * a regression.
  */
+// A path the wolframscript this suite invokes can actually open. `getWolframScriptPath` may name
+// a Windows .exe reached across the WSL boundary, and such a process cannot open a POSIX path; on
+// a native Linux or native Windows box the path is already right and wslpath does not exist.
+// Asking wslpath and falling back is the same rule the temporary script file goes through below,
+// so there is one answer to "which side is this path for" rather than two.
+inline std::string hostVisiblePath(const std::string& path) {
+    std::string cmd = "wslpath -w '" + path + "' 2>/dev/null";
+#if defined(_MSC_VER)
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    std::string translated;
+    if (pipe) {
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) translated += buf;
+#if defined(_MSC_VER)
+        _pclose(pipe);
+#else
+        pclose(pipe);
+#endif
+    }
+    while (!translated.empty() && (translated.back() == '\n' || translated.back() == '\r'))
+        translated.pop_back();
+    return translated.empty() ? path : translated;
+}
+
+// The same path, escaped for embedding in Wolfram Language source. A Windows path is full of
+// backslashes and WL reads `\` in a string as the start of an escape, so an unescaped one either
+// changes the path or fails to parse.
+inline std::string wlStringLiteralBody(const std::string& path) {
+    std::string out;
+    for (char c : path) {
+        if (c == '\\' || c == '"') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
 inline std::string executeWolframScriptCapture(const std::string& code) {
     std::string wolfram_path = getWolframScriptPath();
     std::string tmp = "/tmp/wolfram_test_" + std::to_string(
