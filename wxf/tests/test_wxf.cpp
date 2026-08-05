@@ -90,32 +90,52 @@ protected:
         //
         // The retry covers ONLY the no-verdict case. A MISMATCH is returned immediately and is
         // never retried, because retrying a disagreement is how a real regression gets buried.
-        ++s_consultations;
-        constexpr int kAttempts = 3;
-        for (int attempt = 0; attempt < kAttempts; ++attempt) {
-            if (attempt > 0) {
-                std::this_thread::sleep_for(std::chrono::seconds(2 * attempt));
-            }
-            const std::string out = test_utils::executeWolframScriptCapture(code);
-            if (out.find("WXF_ROUNDTRIP_OK") != std::string::npos) return true;
-            if (out.find("WXF_ROUNDTRIP_MISMATCH") != std::string::npos) {
-                ADD_FAILURE() << "Wolfram re-serialized this payload to different bytes";
-                return false;
-            }
-            if (attempt == kAttempts - 1) {
-                // NOT a failure of this test. The oracle was never reached, so this payload
-                // was neither confirmed nor refuted; it is counted and the suite-level bound
-                // in TearDownTestSuite decides whether that has gone too far.
-                ++s_unavailable;
-                std::printf("#   oracle unavailable (%d spaced attempts): %s\n",
-                            kAttempts, out.empty() ? "(no output)" : out.c_str());
-            }
+        const OracleReply r = consult(code);
+        if (!r.verdict) return true;   // unproven, not disproven -- see the counter in consult()
+        if (r.out.find("WXF_ROUNDTRIP_MISMATCH") != std::string::npos) {
+            ADD_FAILURE() << "Wolfram re-serialized this payload to different bytes";
+            return false;
         }
-        return true;   // unproven, not disproven -- see the counter above
+        return true;
 #else
         return true; // Skip if not available
 #endif
     }
+
+#if WOLFRAMSCRIPT_AVAILABLE
+    struct OracleReply {
+        std::string out;
+        bool verdict;   // one of the two markers arrived, so the oracle actually answered
+    };
+
+    // One consultation, retried ONLY while it is verdictless. Every caller goes through here:
+    // the retry policy and the unavailability accounting are one rule, and a second copy would
+    // drift into asserting on a transport fault the other tolerates -- which is exactly what
+    // VerifyTestInfrastructureDetectsFailures did, failing the suite on an accept4/ETIMEDOUT
+    // that the round-trips were already counting and bounding.
+    static OracleReply consult(const std::string& code) {
+        ++s_consultations;
+        constexpr int kAttempts = 3;
+        std::string out;
+        for (int attempt = 0; attempt < kAttempts; ++attempt) {
+            if (attempt > 0) {
+                std::this_thread::sleep_for(std::chrono::seconds(2 * attempt));
+            }
+            out = test_utils::executeWolframScriptCapture(code);
+            if (out.find("WXF_ROUNDTRIP_OK") != std::string::npos ||
+                out.find("WXF_ROUNDTRIP_MISMATCH") != std::string::npos) {
+                return {out, true};
+            }
+        }
+        // NOT a failure of the caller. The oracle was never reached, so whatever was asked is
+        // neither confirmed nor refuted; it is counted, and the suite-level bound in
+        // TearDownTestSuite decides whether that has gone too far.
+        ++s_unavailable;
+        std::printf("#   oracle unavailable (%d spaced attempts): %s\n",
+                    kAttempts, out.empty() ? "(no output)" : out.c_str());
+        return {out, false};
+    }
+#endif
 };
 
 int WXFTest::s_consultations = 0;
@@ -643,33 +663,44 @@ TEST_F(WXFTest, ConvenienceFunctions) {
 // that and was one of the tests failing at random in the full suite.
 TEST_F(WXFTest, VerifyTestInfrastructureDetectsFailures) {
 #if WOLFRAMSCRIPT_AVAILABLE
+    // Each branch goes through consult(), so an oracle that could not be reached is counted
+    // and bounded exactly as it is for the round-trips rather than failing here. A control
+    // that fails on the transport asserts something about WSL's vsock, not about the markers.
+    // The bound in TearDownTestSuite is what notices if the oracle stops being reachable.
+
     // The success branch prints the OK marker and nothing else.
-    const std::string ok = test_utils::executeWolframScriptCapture(
+    const OracleReply ok = consult(
         "Print[If[1 === 1, \"WXF_ROUNDTRIP_OK\", \"WXF_ROUNDTRIP_MISMATCH\"]]");
-    EXPECT_NE(ok.find("WXF_ROUNDTRIP_OK"), std::string::npos)
-        << "the success marker never arrived, so a passing round-trip cannot be "
-        << "distinguished from a script that did not run. Output:\n" << ok;
-    EXPECT_EQ(ok.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
-        << "the failure marker appeared on the success branch";
+    if (ok.verdict) {
+        EXPECT_NE(ok.out.find("WXF_ROUNDTRIP_OK"), std::string::npos)
+            << "the success branch did not print the success marker, so a passing round-trip "
+            << "cannot be distinguished from a script that did not run. Output:\n" << ok.out;
+        EXPECT_EQ(ok.out.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+            << "the failure marker appeared on the success branch";
+    }
 
     // The failure branch prints the mismatch marker, and NOT the OK marker -- a substring
     // check that matched both would report every mismatch as a pass.
-    const std::string bad = test_utils::executeWolframScriptCapture(
+    const OracleReply bad = consult(
         "Print[If[1 === 2, \"WXF_ROUNDTRIP_OK\", \"WXF_ROUNDTRIP_MISMATCH\"]]");
-    EXPECT_NE(bad.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
-        << "the failure marker never arrived, so a real disagreement would read as "
-        << "infrastructure trouble. Output:\n" << bad;
-    EXPECT_EQ(bad.find("WXF_ROUNDTRIP_OK"), std::string::npos)
-        << "the success marker appeared on the failure branch";
+    if (bad.verdict) {
+        EXPECT_NE(bad.out.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+            << "the failure branch did not print the failure marker, so a real disagreement "
+            << "would read as infrastructure trouble. Output:\n" << bad.out;
+        EXPECT_EQ(bad.out.find("WXF_ROUNDTRIP_OK"), std::string::npos)
+            << "the success marker appeared on the failure branch";
+    }
 
     // A corrupt payload reaches the same failure branch through BinaryDeserialize rather
     // than through a hand-written condition.
-    const std::string corrupt = test_utils::executeWolframScriptCapture(
+    const OracleReply corrupt = consult(
         "cppBytes = ByteArray[{56, 58, 255}]; "
         "mathData = Quiet@BinaryDeserialize[cppBytes]; "
         "Print[If[FailureQ[mathData], \"WXF_ROUNDTRIP_MISMATCH\", \"WXF_ROUNDTRIP_OK\"]]");
-    EXPECT_NE(corrupt.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
-        << "a corrupt payload did not reach the failure branch. Output:\n" << corrupt;
+    if (corrupt.verdict) {
+        EXPECT_NE(corrupt.out.find("WXF_ROUNDTRIP_MISMATCH"), std::string::npos)
+            << "a corrupt payload did not reach the failure branch. Output:\n" << corrupt.out;
+    }
 #endif
 }
 
