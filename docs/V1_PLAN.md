@@ -393,8 +393,14 @@ counting them as such has misread the state more than once.
 | #41 | device half of the per-instance replay | WRITTEN and reverted. It faults, because `EngineState::kDeviceStackBytesPerDepth = 5632` is a MEASURED property of the replay's recursion cycle and the extraction adds two frames to that cycle, so the depth guard fires after the frame that faults. Holding the Ctx by reference was tried and is insufficient. Patch saved. | re-measure the constant, then ONE CUDA build |
 | #119 | one CSR lookup instead of three | WRITTEN, gate-ready, parked unbuilt. Patch saved. | the same CUDA build |
 | #114 | intra-state IR parallelism on device — decide | needs the per-state canonicalisation time DISTRIBUTION before anything is built | a GPU measurement run |
-| #12 | FFI session model | engine half DONE (`evolve_more` resumes the frontier, gated on three frontier definitions x 17 workloads). The FFI half is a TRANSPORT REDESIGN: today's transport is one-shot WXF over `RunProcess`, and a session needs state to survive a call (P4.4) | design, then build |
+| #12 | FFI session model | **DESIGN CLOSED 2026-08-05 (D7-D11, `FFI_INTERFACE_DESIGN` 3.4b).** Three of its four parts were already done and had to be MEASURED to find that out: the transport ships (`--serve-socket`), the artifact set is honoured in the rewrite hot path, and canonicalization runs at **1.00 per state** (the floor). What remains is session semantics: an opaque `uint64` handle, a worker-side handle->engine map, the four verbs, a lifetime rule, and **raw vertex labels preserved across `Open`** (D10). One session at a time (D7), `Query` returns one blob with chunking deferred (D8) | build — but see the ordering below |
+| #12b | **GPU sessions** (D9) | Richard put these IN v1.0, and they are the largest remaining item. `PersistentEvolver` is an allocation CACHE, not a session — `run()` resets the engine between calls — so this needs retained device state across jobs: a new device-side API, a lifetime rule for device memory, and the retained paths under `gpu_differential_tests` | **#41 and #119 first.** Building a session over a device whose replay is mid-extraction means doing the device work twice |
 | #20 | de-header + redesign | standing decision: LAST, alone, once the native code is locked. #41 is its real prerequisite — de-headering two copies of a rule bakes the divergence in | #41 first |
+
+**ORDERING, after D9.** #41 and #119 are no longer just "two parked device items" — they are now
+the prerequisite for the largest remaining feature. The single CUDA window they are waiting on is
+the critical path for #12b as well as for #114 and #20. Everything else in v1.0 can proceed on the
+host while the box is busy; that window cannot.
 
 **NOT blockers, and marked so they stop reading as such:** #58 and #30 are out of v1.0 by this
 plan; #24 (paper) is deferred by standing instruction; #77 is DIAGNOSED (`da97c1b`) and its fix is
