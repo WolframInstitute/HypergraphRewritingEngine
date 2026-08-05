@@ -33,6 +33,7 @@
 #include "hg_gpu/exploration.hpp"   // DedupMap
 #include "hgcommon/core.hpp"        // isort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
+#include "hgcommon/quotient_replay_core.hpp"  // qr_content_hash -- the event content identity
 
 #include <cuda/atomic>
 
@@ -592,14 +593,13 @@ __device__ inline void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstanc
     }
 
     // The event's content triple: isomorphism-invariant and independent of the schedule, so it
-    // is the identity a cross-run or cross-engine comparison of the relations is made on.
-    if (ev < qe.event_sig_capacity) {
-        uint64_t s = 1469598103934665603ULL;
-        s ^= state_hash; s *= 1099511628211ULL;
-        s ^= m.to_hash;  s *= 1099511628211ULL;
-        s ^= m.rule;     s *= 1099511628211ULL;
-        qe.event_sig[ev] = s;
-    }
+    // is the identity a cross-run or cross-engine comparison of the relations is made on -- and
+    // therefore the one value here that MUST be bit-identical to the host's. It comes from
+    // hgcommon, not from an open-coding, because an open-coding of it was wrong: it seeded FNV
+    // with 1469598103934665603, the 64-bit basis with its last digit missing, so every
+    // reconstructed identity the device reported was a relabelling of the right one.
+    if (ev < qe.event_sig_capacity)
+        qe.event_sig[ev] = hgcommon::qr_content_hash(state_hash, m.to_hash, m.rule);
 
     // The run's event identity. Under EVENT_SIG_NONE there is none: every application is its
     // own event, and the raw count above is what a caller is told.
