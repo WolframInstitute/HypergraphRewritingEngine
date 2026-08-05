@@ -395,15 +395,16 @@ about to be replaced. De-header is last and alone, by standing decision.
 
 | — | De-header + redesign | Standing decision: last, alone, once the native code is locked. | pending, #20 |
 
-**ONE CUDA BUILD WINDOW IS QUEUED.** Three device items are held for it, batched because each
-touches a `gpu/include/hg_gpu/` header most `.cu` files include, and paying that recompile once
-is the difference between a minute and an hour. Build `-j1`, FOREGROUND, nothing else compiling
-(`CLAUDE.md`, first hard rule — `-j2` drove this box into swap twice).
+**THE DEVICE QUEUE.** Every item here touches a `gpu/include/hg_gpu/` header that most `.cu`
+files include, so each one costs a near-full recompile — batch them. Build `-j1`, ONE at a time,
+with nothing else started while it runs (`CLAUDE.md`, first hard rule: `-j2` drove this box into
+swap twice, and a single CUDA TU at `-j1` exceeds the 600 s foreground cap, so background exactly
+one and wait).
 
 | item | what | gate |
 |---|---|---|
-| #41 | point `hg_gpu::qe_apply` at `hgcommon/quotient_replay_core.hpp` with a `DeviceQrCtx`, delete its body | `hg_gpu_tests`, `gpu_differential_tests` |
-| #119 | collapse `qc_orbit_of`/`qe_slot_of`/`qe_rank_of` onto one `qc_edge_index`; put it in `engine_state.hpp` beside the CSR, NOT behind a new include into a central header. Patch saved in the session scratchpad | same |
+| #41 | **BLOCKED, mechanism identified.** Pointing `hg_gpu::qe_apply` at `hgcommon/quotient_replay_core.hpp` inserts TWO frames (`qr_apply`, `DeviceQrCtx::descend`) into the replay's recursion cycle. `EngineState::kDeviceStackBytesPerDepth = 5632` is a MEASURED property of that cycle -- its own comment records the measurement ("a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13") -- so the guard now fires AFTER the frame that faults, and `QuotientReconstruction.PastTheStackDepthItRecordsRatherThanFaults` reports an illegal memory access. That test exists to assert the contract "bounded partial result, NEVER a fault". Holding the Ctx by reference instead of by value was tried and is insufficient: the added frames are the cost, not the aggregates in them. Patch saved, `scratchpad/qe_replay_core.patch` | re-measure `kDeviceStackBytesPerDepth` for the new cycle, by its comment's own method or from `-Xptxas -v` frame sizes; do NOT inflate it until the test passes, because a guessed constant is how this fault returns. Then `hg_gpu_tests` + `gpu_differential_tests` |
+
 | #114 | measure the per-state IR canonicalisation time distribution, to decide whether intra-state parallelism is worth building | a distribution, not a single number |
 
 # Live defect register
