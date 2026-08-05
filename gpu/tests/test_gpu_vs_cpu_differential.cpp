@@ -12,11 +12,14 @@
 
 #include "hg_gpu/evolve.hpp"
 
+#include "hgcommon/quotient_replay_core.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <set>
 #include <string>
 #include <vector>
@@ -85,6 +88,12 @@ struct NormalizedResult {
     std::multiset<uint64_t> recon_causal, recon_branchial;
     // The TR view of the same relation: the pairs tagged in-reduction.
     std::multiset<uint64_t> recon_causal_reduced;
+    // The same relations' ENDPOINTS, flattened, before they are combined into a pair key.
+    // Separates two failures a pair-key comparison cannot: endpoints that disagree (the two
+    // engines identify the reconstructed events differently) from endpoints that agree while the
+    // pairs do not (they identify the same events and relate them differently). The pair key
+    // hashes both into one number, so a mismatch there says only that something differs.
+    std::multiset<uint64_t> recon_causal_endpoints, recon_branchial_endpoints;
     // The COUNTS HGEvolve returns for the two relations, from each engine's observable_*
     // accessor -- the same one its FFI reads, so the gated number is the shipped number.
     size_t observable_causal = 0, observable_branchial = 0;
@@ -304,11 +313,19 @@ NormalizedResult run_cpu(const Workload& w) {
     if (hg.quotient_reconstruction()) {
         auto triple = [&](uint32_t e) { return hg.reconstructed_raw_triple(e); };
         hg.for_each_reconstructed_causal_as(/*reduced=*/false, triple,
-            [&](uint64_t p, uint64_t c) { out.recon_causal.insert(causal_key(p, c)); });
+            [&](uint64_t p, uint64_t c) {
+                out.recon_causal.insert(causal_key(p, c));
+                out.recon_causal_endpoints.insert(p);
+                out.recon_causal_endpoints.insert(c);
+            });
         hg.for_each_reconstructed_causal_as(/*reduced=*/true, triple,
             [&](uint64_t p, uint64_t c) { out.recon_causal_reduced.insert(causal_key(p, c)); });
         hg.for_each_reconstructed_branchial_as(triple,
-            [&](uint64_t a, uint64_t b) { out.recon_branchial.insert(edge_pair_key(a, b)); });
+            [&](uint64_t a, uint64_t b) {
+                out.recon_branchial.insert(edge_pair_key(a, b));
+                out.recon_branchial_endpoints.insert(a);
+                out.recon_branchial_endpoints.insert(b);
+            });
     }
     return out;
 }
@@ -377,15 +394,21 @@ NormalizedResult run_gpu(const Workload& w) {
         out.event_keys.insert(ek);
     }
 
-    for (const auto& p : result.reconstructed_causal_relation)
+    for (const auto& p : result.reconstructed_causal_relation) {
         out.recon_causal.insert(causal_key(p.first, p.second));
+        out.recon_causal_endpoints.insert(p.first);
+        out.recon_causal_endpoints.insert(p.second);
+    }
     out.observable_causal = result.observable_num_causal_pairs(w.transitive_reduction);
     out.observable_branchial = result.observable_num_branchial();
 
     for (const auto& p : result.reconstructed_causal_relation_reduced)
         out.recon_causal_reduced.insert(causal_key(p.first, p.second));
-    for (const auto& p : result.reconstructed_branchial_relation)
+    for (const auto& p : result.reconstructed_branchial_relation) {
         out.recon_branchial.insert(edge_pair_key(p.first, p.second));
+        out.recon_branchial_endpoints.insert(p.first);
+        out.recon_branchial_endpoints.insert(p.second);
+    }
 
     // Count diagnostics (GPU side).
     out.raw_states = result.states.size();
@@ -460,6 +483,87 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
     // The RECONSTRUCTED relations, compared as SETS. Both engines reconstruct them online from
     // the class-frame expansion, and both report endpoints as the schedule-stable content
     // triple, so this is a cross-engine invariant wherever the route is taken.
+    // Reported BEFORE the pair comparisons, because it says which of two very different faults
+    // the pair mismatch below is. A pair key hashes both endpoints into one number, so a
+    // difference there is silent about whether the two engines identified the reconstructed
+    // events differently or identified them identically and related them differently.
+    if (cpu.recon_causal != gpu.recon_causal ||
+        cpu.recon_branchial != gpu.recon_branchial) {
+        const bool causal_ends_agree = cpu.recon_causal_endpoints == gpu.recon_causal_endpoints;
+        const bool branchial_ends_agree =
+            cpu.recon_branchial_endpoints == gpu.recon_branchial_endpoints;
+        // How MANY distinct identities the two share. Zero means the disagreement is systematic
+        // -- every reconstructed event is identified differently, so some component of the
+        // content triple is computed from a different quantity on one side. A partial overlap
+        // would mean the opposite: the rule is shared and some particular states break it.
+        std::set<uint64_t> ca(cpu.recon_causal_endpoints.begin(),
+                              cpu.recon_causal_endpoints.end());
+        std::set<uint64_t> ga(gpu.recon_causal_endpoints.begin(),
+                              gpu.recon_causal_endpoints.end());
+        std::vector<uint64_t> shared;
+        std::set_intersection(ca.begin(), ca.end(), ga.begin(), ga.end(),
+                              std::back_inserter(shared));
+        std::printf("[recon-endpoints %s] causal endpoints %s (cpu=%zu gpu=%zu), "
+                    "branchial endpoints %s (cpu=%zu gpu=%zu); DISTINCT causal identities "
+                    "cpu=%zu gpu=%zu shared=%zu\n",
+                    w.name.c_str(),
+                    causal_ends_agree ? "AGREE -> the pairing differs, not the identities"
+                                      : "DIFFER -> the two engines identify events differently",
+                    cpu.recon_causal_endpoints.size(), gpu.recon_causal_endpoints.size(),
+                    branchial_ends_agree ? "AGREE -> the pairing differs, not the identities"
+                                         : "DIFFER -> the two engines identify events differently",
+                    cpu.recon_branchial_endpoints.size(), gpu.recon_branchial_endpoints.size(),
+                    ca.size(), ga.size(), shared.size());
+        // Resolve each side's smallest identity back to the triple that made it. Both engines
+        // agree on canonical_state_hashes (that assertion passes), and qr_content_hash is the
+        // shared mixing, so a search over that set x the rule indices names WHICH component of
+        // (from_class, to_class, rule) the two disagree on -- which is the thing a hash
+        // comparison cannot say.
+        // Every class hash either engine could plausibly have mixed. The harness-recomputed set
+        // is NOT sufficient on its own: it is a fresh IR pass over the returned edges, whereas
+        // the reconstruction mixes what the ENGINE computed and stored. Zero is admitted too,
+        // because DeviceState::state_canonical_hash is documented "0 until computed" and a
+        // capture racing that fill would mix a class no canonical hash ever takes.
+        std::set<uint64_t> cand;
+        cand.insert(0ULL);
+        cand.insert(cpu.canonical_state_hashes.begin(), cpu.canonical_state_hashes.end());
+        cand.insert(cpu.engine_state_hashes.begin(), cpu.engine_state_hashes.end());
+        cand.insert(gpu.engine_state_hashes.begin(), gpu.engine_state_hashes.end());
+
+        auto resolve = [&](uint64_t want, const char* side) {
+            if (cand.size() > 96) return;                         // keep the search trivial
+            for (uint64_t a : cand)
+                for (uint64_t b : cand)
+                    for (uint32_t r = 0; r < 16; ++r)
+                        if (hgcommon::qr_content_hash(a, b, r) == want) {
+                            std::printf("[recon-triple %s] %s identity %llu = "
+                                        "(from=%llu, to=%llu, rule=%u)\n",
+                                        w.name.c_str(), side, (unsigned long long)want,
+                                        (unsigned long long)a, (unsigned long long)b, r);
+                            return;
+                        }
+            std::printf("[recon-triple %s] %s identity %llu is NOT any (class, class, rule<16) "
+                        "over the %zu candidate class hashes (harness-recomputed + BOTH engines' "
+                        "own + zero) -- that side mixes something this run never called a class\n",
+                        w.name.c_str(), side, (unsigned long long)want, cand.size());
+        };
+        if (!ca.empty()) resolve(*ca.begin(), "cpu");
+        if (!ga.empty()) resolve(*ga.begin(), "gpu");
+
+        // The device's OWN canonical hashes against the host's. canonical_state_hashes above
+        // cannot answer this: the harness recomputes it on the host from each engine's returned
+        // edges, so it agrees whenever the state SETS agree, however each engine labelled them.
+        // engine_state_hashes is what each engine actually COMPUTED -- and it is what the
+        // reconstruction mixes into the content triple, so if these differ the identities must.
+        std::printf("[engine-hashes %s] device's own canonical hashes %s the host's "
+                    "(cpu=%zu gpu=%zu distinct); harness-recomputed sets %s\n",
+                    w.name.c_str(),
+                    cpu.engine_state_hashes == gpu.engine_state_hashes ? "MATCH" : "DIFFER",
+                    cpu.engine_state_hashes.size(), gpu.engine_state_hashes.size(),
+                    cpu.canonical_state_hashes == gpu.canonical_state_hashes ? "match"
+                                                                             : "differ");
+    }
+
     EXPECT_EQ(cpu.recon_causal, gpu.recon_causal)
         << "Workload: " << w.name << " reconstructed causal relations differ; cpu="
         << cpu.recon_causal.size() << " gpu=" << gpu.recon_causal.size();
