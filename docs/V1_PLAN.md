@@ -5,6 +5,19 @@ a wiped machine, and a lost conversation. Everything else about v1.0 — rationa
 arguments, per-defect history — lives in the untracked working notes and is NOT needed to
 continue.
 
+## State of the five named blockers, with the evidence for each
+
+Written down here because it was re-derived from scattered rows several times, and a claim that
+has to be re-derived gets re-litigated. Each line is checkable in one command.
+
+| # | state | the code, not the commit message | gate |
+|---|---|---|---|
+| **#41** device replay | **CLOSED** `b300af0` | `hgcommon::qr_apply` is called from `gpu/include/hg_gpu/quotient_expansion.hpp:733`; the device's own replay is deleted. `kDeviceStackBytesPerDepth` is **8704**, `engine_state.hpp:236` — re-measured from 4-frame depot 2000 + 6-frame 3168 + the ABI's 865/frame, NOT inflated. `__forceinline__` REFUTED: nvcc declines it inside a recursive cycle | `gpu_differential_tests` 36/36 incl. `QuotientReconstruction.PastTheStackDepthItRecordsRatherThanFaults` |
+| **#119** state edge index | **CLOSED** `73a0d60` | `state_edge_index` at `engine_state.hpp:180`, three call sites (`quotient_causal.hpp:181`, `quotient_expansion.hpp:267,281`) | `hg_gpu_tests` 98/98 |
+| **#114** intra-state IR | **CLOSED, DO NOT BUILD** `3a35bde` | A DISTRIBUTION, not one number: 15,967 states — never-searched 99.4%, leaves p50/p90/p99/max 1/1/1/2; 23,116 states — 0.0%, 2/3/3/4; `C_6`–`C_384` leaves=2 nodes=2 depth=1 at every size, both generator budgets; heaviest 1% carry ~1.5%. Ground-truthed on a 6-cycle first. Does NOT settle per-NODE cost — refinement is 31% and is where any future work must go | `all_tests` |
+| **#12** session semantics | **CLOSED (CPU)** `68f8e55` `1ac2f22` `d7e8d1d` `4269df3` | Five questions answered as D7–D11 (`e6d4160`) and each implemented: opaque `uint64` (`session.hpp:62,118`), one at a time (`:73`), one blob (`session_ack`), GPU refused naming `TargetDevice`, raw labels preserved. All four verbs serve; the op boundary is WHERE THE ENGINE COMES FROM, so one serializer answers all four | `all_tests` 257/257 |
+| **#20** de-header | **IN PROGRESS** | Build-time lever exhausted with a per-header reason; `types.hpp` 757 → 170 ms and 765 → 503 lines; engine closure −142 ms; `run_rewriting_core` 1664 → 1129 over four one-way cuts. **Open: the namespace convention, and a done-line — the plan names no build-time target number** | all five, per commit |
+
 ## Cold pickup, in three commands
 
 ```
