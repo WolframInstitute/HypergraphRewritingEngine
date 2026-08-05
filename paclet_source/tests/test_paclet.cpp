@@ -56,6 +56,14 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
                       "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
                       "Print[\"Loading HypergraphRewriting package...\"]; "
                       "<< \"HypergraphRewriting`\"; "
+                      // Separate "the package is not loaded" from "HGEvolve returned the wrong
+                      // thing". Without this the two are indistinguishable downstream: an
+                      // unloaded package leaves HGEvolve undefined, so it returns UNEVALUATED,
+                      // which is not an association -- and the run reports the same
+                      // PACLET_TEST_FAIL a real defect would, pointing the reader at the engine.
+                      "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], "
+                      "Print[\"PACLET_LOAD_FAIL: package not on $Packages after loading "
+                      + paclet_dir + "\"]; Exit[0]]; "
                       "Print[\"Testing HGEvolve with Debug option...\"]; "
                       "Print[\"About to call HGEvolve...\"]; "
                       "result = HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, {{1, 2}, {2, 3}}, 4, \"Debug\"]; "
@@ -85,9 +93,19 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
     for (; attempts < kMaxAttempts; ++attempts) {
         out = test_utils::executeWolframScriptCapture(code);
         const bool verdict = out.find("PACLET_TEST_OK") != std::string::npos ||
-                             out.find("PACLET_TEST_FAIL") != std::string::npos;
+                             out.find("PACLET_TEST_FAIL") != std::string::npos ||
+                             out.find("PACLET_LOAD_FAIL") != std::string::npos;
         if (verdict) break;
     }
+
+    // Reported before the functional assertions, because when the package did not load they
+    // cannot mean anything and their message would send the reader after the engine instead.
+    ASSERT_EQ(out.find("PACLET_LOAD_FAIL"), std::string::npos)
+        << "The paclet did not load, so nothing below was exercised. `" << paclet_dir
+        << "` is resolved RELATIVE TO THE WORKING DIRECTORY, so the suite has to run from a "
+           "directory one level under the repository root (build_linux); from the repository "
+           "root it resolves one level too high and finds no paclet. WolframScript output:\n"
+        << out;
 
     EXPECT_NE(out.find("PACLET_TEST_OK"), std::string::npos)
         << "Paclet basic functionality test failed after " << (attempts + 1) << " attempt(s) - "
