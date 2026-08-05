@@ -180,6 +180,87 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 
 }  // namespace
 
+// The same job with one extra top-level key, so the session envelope can be exercised without
+// disturbing the builder every other pin test uses.
+std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op) {
+    wxf::Writer w;
+    w.write_header();
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(5);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(kSeed);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Rules"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("r0"));
+    w.write_function("Rule", 2);
+    w.write(kLhs);
+    w.write(kRhs);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(steps);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(0);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Op"));
+    w.write(op);
+
+    return w.release_data();
+}
+
+// The session envelope's compatibility guarantee, which is the whole of its first commit: a job
+// that names no `Op` is an `Evolve` job. Asserted on BYTES rather than counts, because equal
+// counts would also hold for two runs that returned different states.
+//
+// Every other test in this suite sends an envelope with neither key, so they already gate the
+// absent case. What they cannot gate is the two things below: that naming `Evolve` explicitly
+// changes nothing, and that naming a verb which is not served is REFUSED. A silently ignored
+// `Op` is the failure that matters -- a caller would read a one-shot result as a session's.
+TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndUnservedOpsAreRefused) {
+    HostBridge host;
+
+    const auto plain = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+                                                      [](wxf::Writer&) {}, 0), host);
+    const auto plain_again = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+                                                            [](wxf::Writer&) {}, 0), host);
+    const auto explicit_evolve = run_rewriting_core(build_input_with_op(3, "Evolve"), host);
+    ASSERT_FALSE(plain.empty());
+    ASSERT_FALSE(explicit_evolve.empty());
+
+    // Which payloads a byte comparison can speak about at all. The engine runs on
+    // hardware_concurrency threads and RAW ids follow discovery order, so `States` and `Events`
+    // need not be byte-stable between two runs of the SAME job -- that is measured here rather
+    // than assumed, by running the identical job twice. Only payloads that survive that are
+    // compared against the Op-bearing run; asserting on the rest would be asserting on the
+    // scheduler.
+    for (const char* key : {"States", "Events", "NumStates", "NumEvents"}) {
+        const bool stable = value_bytes(plain, key) == value_bytes(plain_again, key);
+        if (!stable) continue;
+        EXPECT_EQ(value_bytes(plain, key), value_bytes(explicit_evolve, key))
+            << "naming Op -> Evolve changed the " << key << " payload, and that payload IS "
+            << "byte-stable across two runs of the same job, so the envelope is not inert";
+    }
+    // At least the counts must be stable, or the comparison above skipped everything and the
+    // test asserts nothing.
+    ASSERT_EQ(value_bytes(plain, "NumStates"), value_bytes(plain_again, "NumStates"));
+    ASSERT_EQ(value_bytes(plain, "NumEvents"), value_bytes(plain_again, "NumEvents"));
+
+    // Named but not wired. Refused, not ignored.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Step"), host), std::runtime_error);
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Open"), host), std::runtime_error);
+}
+
 TEST(WxfSerializationPin, DefaultStatesAndEvents) {
     auto input = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer&) {}, 0);
     HostBridge host;

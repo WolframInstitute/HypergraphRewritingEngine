@@ -165,6 +165,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         std::vector<std::string> graph_properties;  // e.g., {"StatesGraph", "CausalGraphStructure"}
         std::string canonicalize_states_mode = "None";  // Track actual mode string for effective ID computation
 
+        // The session envelope. Empty `Op` means `Evolve`, which is the whole of today's
+        // protocol, so a caller that sends neither key is served exactly as before. `Session` is
+        // the opaque handle; 0 is "no session", the same reserved-zero discipline every other id
+        // space here follows.
+        std::string session_op;
+        uint64_t session_handle = 0;
+
         // Parse main association
         parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
             if (key == "InitialStates") {
@@ -346,10 +353,32 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // Handle numeric options that may have been parsed as integers
                 // (these need special handling since they come after the bool options)
             }
+            // The session envelope. A job that names no `Op` is an `Evolve` job, which is the
+            // whole of today's protocol -- so an existing caller's bytes take exactly the path
+            // they took before, and the compatibility guarantee is a property of the parser
+            // rather than of a later branch remembering to preserve it.
+            //
+            // `Session` is the opaque handle: a per-worker counter, 0 reserved for "no session",
+            // so no client can construct one and none is confused with absence.
+            else if (key == "Op") {
+                session_op = value_parser.read<std::string>();
+            }
+            else if (key == "Session") {
+                session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
+            }
             else {
                 value_parser.skip_value();
             }
         });
+
+        // Named, but not yet served. The verbs land on a handle->engine holder that can carry
+        // either device; refusing here is what keeps a caller from reading a one-shot result as
+        // a session's, which is the one way this can be wrong while looking right.
+        if (!session_op.empty() && session_op != "Evolve") {
+            throw std::runtime_error(
+                "Op '" + session_op + "' is not served yet; only 'Evolve' (or no Op) is. "
+                "Session verbs need the handle registry, which is not wired.");
+        }
 
         if (parsed_rules_raw.empty()) {
             throw std::runtime_error("No valid rules found");
