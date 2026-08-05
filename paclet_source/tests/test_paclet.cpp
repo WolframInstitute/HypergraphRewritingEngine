@@ -33,11 +33,27 @@ protected:
 // executeWolframScriptCapture's own contract says so -- and the WSL interop vsock
 // intermittently times out launching it at all ("UtilAcceptVsock:251: accept4 failed 110",
 // captured in a WXFTest failure). Reading the exit code turns both into a red suite.
+// A LAUNCH FAILURE IS RETRIED; A WRONG ANSWER IS NOT. The same rule the paclet test below
+// follows, and this one needs it for the same reason: the vsock timeout means wolframscript
+// never started, so there is no verdict to respect, and one transient reds a suite whose other
+// 255 tests passed. Observed: this test failed on `accept4 failed 110` in a run where the paclet
+// test immediately after it -- which does retry -- passed.
+//
+// If wolframscript DOES run and prints something other than 42, that is a verdict and it stands.
 TEST_F(PacletTest, WolframScriptIsReachable) {
-    const std::string out = test_utils::executeWolframScriptCapture("Print[6*7]");
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        out = test_utils::executeWolframScriptCapture("Print[6*7]");
+        // It ran if it produced anything that is not purely the interop's own complaint.
+        const bool never_launched =
+            out.empty() || out.find("UtilAcceptVsock") != std::string::npos;
+        if (!never_launched) break;
+    }
     EXPECT_NE(out.find("42"), std::string::npos)
-        << "wolframscript did not evaluate a trivial expression, so every check in this file "
-        << "that depends on it proves nothing. Its output was:\n" << out;
+        << "wolframscript did not evaluate a trivial expression in " << kMaxAttempts
+        << " attempts, so every check in this file that depends on it proves nothing. Its last "
+           "output was:\n" << out;
 }
 
 TEST_F(PacletTest, TestPacletBasicFunctionality) {
