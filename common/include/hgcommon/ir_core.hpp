@@ -103,7 +103,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + e + e + e                           // inc_edges, edge_epoch, form_order
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
-      + n + n + n + n + n                   // path, uf, labeling, first_labeling, inv
+      + n + n + n + n + n + n               // path, uf, labeling, first_labeling, inv, best_lab
       + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
       + uint64_t(ir_generator_cap(max_depth, max_generators)) * n  // generators, row-major
@@ -588,7 +588,7 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
     uint32_t max_generators = IR_HOST_GENERATORS,
     uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
-    uint32_t* out_canonical_form = nullptr)
+    uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr)
 {
     IrResult out{0, IR_EMPTY, 0};
     if (n_edges == 0 || n_verts == 0) return out;
@@ -614,6 +614,10 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* uf        = sc.u32(n);
     uint32_t* labeling  = sc.u32(n);
     uint32_t* first_lab = sc.u32(n);
+    // The WINNING leaf's labelling. first_lab is the FIRST leaf's, which the generator
+    // derivation needs; the winner is not necessarily the first or the last leaf visited, so
+    // the vertex mapping has to be captured where the winner is chosen.
+    uint32_t* best_lab  = sc.u32(n);
     uint32_t* inv       = sc.u32(n);
     uint32_t* cur_form  = sc.u32(form_words);
     uint32_t* best_form = sc.u32(form_words);
@@ -669,6 +673,7 @@ HG_HD inline IrResult ir_canonical_hash(
             // The winning leaf's edge order IS the canonical rank assignment, and the winner
             // is not necessarily the last leaf visited, so it is captured here.
             for (uint32_t i = 0; i < n_edges; ++i) best_order[i] = form_order[i];
+            for (uint32_t v = 0; v < n; ++v) best_lab[v] = labeling[v];
             has_best = true;
         }
         if (!has_first) {
@@ -713,8 +718,11 @@ HG_HD inline IrResult ir_canonical_hash(
     // that needs the relabelled edges reads exactly what the identity was decided on rather
     // than reconstructing it from ranks and risking a second convention.
     auto emit_form = [&]() {
-        if (!out_canonical_form) return;
-        for (uint32_t i = 0; i < form_words; ++i) out_canonical_form[i] = best_form[i];
+        if (out_canonical_form)
+            for (uint32_t i = 0; i < form_words; ++i) out_canonical_form[i] = best_form[i];
+        // local vertex index -> canonical label, under the winning labelling. n_verts words.
+        if (out_vertex_label)
+            for (uint32_t v = 0; v < n; ++v) out_vertex_label[v] = best_lab[v];
     };
 
     auto emit_orbits = [&]() {
