@@ -617,6 +617,7 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
+    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Full mode uses the exact IR hash as the canonical identity (it is also the
     // dedup key), so there is no separate WL pass. Other modes use the fast WL hash.
     bool full = state_canonicalization_mode_.load(std::memory_order_acquire)
@@ -645,6 +646,7 @@ uint64_t Hypergraph::compute_reported_canonical_hash(const SparseBitset& edges) 
 }
 
 uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) const {
+    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Exact canonical hash via individualization-refinement.
     // Flattened straight from the edge set into the per-worker scratch arena (no heap) and
     // handed to the shared CPU/GPU core, so both devices agree bit for bit.
@@ -825,6 +827,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
 }  // namespace
 
 uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges) {
+    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Materialize the state's edges (id-sorted via SparseBitset iteration) into scratch,
     // run the exact IR canonicalization with edge orbits, then copy a compact table into
     // the persistent arena and publish it under the state id. Called once per state on its

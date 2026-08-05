@@ -71,6 +71,10 @@ struct Measured {
     size_t arena_bytes;
     uint64_t heap_allocs;   // global new calls during the evolution
     uint64_t heap_bytes;    // global new bytes during the evolution
+    // Times a reported canonical hash was actually computed. Reported against the RAW state
+    // count, because that is what it is per: every state that carries a hash needs one, so a
+    // ratio of 1.0 is the floor and anything above it is duplication.
+    uint64_t canon_computations;
 };
 
 // Full mode, single-threaded (deterministic memory), online causal+branchial+TR.
@@ -104,6 +108,7 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
     m.arena_bytes      = hg.arena().bytes_allocated();
     m.heap_allocs      = g_alloc_count.load(std::memory_order_relaxed) - a0;
     m.heap_bytes       = g_alloc_bytes.load(std::memory_order_relaxed) - b0;
+    m.canon_computations = hg.canonical_hash_computations();
     return m;
 }
 
@@ -146,13 +151,13 @@ int main(int argc, char** argv) {
     // arenaB is what the causal and branchial graphs cost a caller who asked for neither.
     std::printf("engine: %s\n",
                 g_mode == ParallelEvolutionEngine::ExecutionMode::Serial ? "serial" : "threaded");
-    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s %10s\n",
+    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s %10s %9s\n",
                 "case", "type", "oracle", "canon", "events",
-                "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB");
+                "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB", "canon/st");
     // The last column is the SAME evolution recording neither relation, so the difference
     // against arenaB is what the causal and branchial graphs cost a caller who asked for
     // neither.
-    std::printf("%s\n", std::string(120, '-').c_str());
+    std::printf("%s\n", std::string(130, '-').c_str());
 
     bool all_exact = true;
     bool any_unverified = false;   // a row the oracle could not check
@@ -184,15 +189,16 @@ int main(int argc, char** argv) {
         total_all += m.arena_bytes;
         total_states_only += s.arena_bytes;
 
-        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu %10zu\n",
+        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu %10zu %9.2f\n",
                     c.name, c.type, verdict,
                     m.canonical_states, m.events,
                     m.causal_edges, m.branchial_edges, m.arena_bytes,
                     (unsigned long long)m.heap_bytes, (unsigned long long)m.heap_allocs,
-                    s.arena_bytes);
+                    s.arena_bytes,
+                    m.raw_states ? double(m.canon_computations) / double(m.raw_states) : 0.0);
     }
 
-    std::printf("%s\n", std::string(120, '-').c_str());
+    std::printf("%s\n", std::string(130, '-').c_str());
     std::printf("arena bytes, all artifacts / neither relation: %zu / %zu  (%.1f%% of the arena "
                 "is the causal and branchial graphs)\n", total_all, total_states_only,
                 total_all ? 100.0 * double(total_all - total_states_only) / double(total_all) : 0.0);

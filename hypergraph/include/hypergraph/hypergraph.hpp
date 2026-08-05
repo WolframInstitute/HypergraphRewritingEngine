@@ -420,6 +420,17 @@ class Hypergraph {
     // Such a signature is not an isomorphism invariant, so a non-zero count means the event
     // set is approximate; see the fallback in create_event.
     std::atomic<uint64_t> event_sig_raw_fallbacks_{0};
+
+    // Times a state's REPORTED canonical hash was actually computed, against the number of
+    // states that hold one. Both are needed: the ratio is the question, and a raw call count
+    // says nothing without the denominator.
+    //
+    // Why it exists: FFI_INTERFACE_DESIGN section 5 recorded "IR canonicalization up to 3x per
+    // state" in 2026-07-25 and named it the biggest measurable win. get_or_compute_canonical_hash
+    // has memoized into State::canonical_hash since, so the steady state is one computation per
+    // state plus whatever racing writers duplicate -- and NOTHING MEASURED THAT. A number that
+    // cannot be re-derived is not a number to plan against.
+    mutable std::atomic<uint64_t> canonical_hash_computations_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
     std::atomic<bool> positional_event_identity_{false};
 
@@ -729,6 +740,14 @@ public:
     // approximate rather than canonical.
     uint64_t event_signature_raw_fallbacks() const {
         return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
+    }
+
+    // How many times a reported canonical hash was computed. Divide by the state count for the
+    // per-state figure; anything above 1.0 is duplication, and under contention a small excess
+    // is expected rather than a defect (racing writers compute the same value and the last
+    // store wins).
+    uint64_t canonical_hash_computations() const {
+        return canonical_hash_computations_.load(std::memory_order_relaxed);
     }
 
     // Quotient exploration support. try_lower_explore_depth records a shorter path to a
