@@ -10,7 +10,6 @@
 #include <functional>
 #include <thread>
 #include <cstring>
-#include <random>
 #include <algorithm>
 
 #include "types.hpp"
@@ -1349,10 +1348,11 @@ private:
     void configure_identity_and_quotient();
 
 
-    // Per-thread sampling RNG used by should_explore() and get_shuffled_rule_indices().
-    // Re-seeds from random_seed_ (mixed with the thread id) whenever the run's
-    // sampling_generation_ advances; random_seed_==0 draws a fresh random_device seed.
-    std::mt19937& sampling_rng() const;
+    // The per-thread sampling RNG lives in parallel_evolution.cpp, as a file-local function
+    // taking the two values it reads -- sampling_generation_ and random_seed_. Declaring it
+    // here instead would spell std::mt19937 in the header, and <random> is the second most
+    // expensive standard header this engine's headers reach: dropping it and <sstream> from
+    // the closure together is 196 ms off a 1198 ms translation unit.
 
     // Quotient exploration: canonical transitions discovered so far, parent canonical
     // state to child canonical state. Relaxing a state's depth walks these to push the

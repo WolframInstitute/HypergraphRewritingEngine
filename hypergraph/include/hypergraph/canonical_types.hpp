@@ -2,9 +2,7 @@
 
 #include <vector>
 #include <unordered_map>
-#include <string>
-#include <sstream>
-#include <cstdint>
+#include <cstddef>
 
 #include "types.hpp"
 
@@ -24,21 +22,6 @@ struct CanonicalForm {
         return !(*this == other);
     }
 
-    std::string to_string() const {
-        std::ostringstream oss;
-        oss << "CanonicalForm(vertices=" << vertex_count << ", edges=[";
-        for (std::size_t i = 0; i < edges.size(); ++i) {
-            oss << "[";
-            for (std::size_t j = 0; j < edges[i].size(); ++j) {
-                oss << edges[i][j];
-                if (j < edges[i].size() - 1) oss << ",";
-            }
-            oss << "]";
-            if (i < edges.size() - 1) oss << ", ";
-        }
-        oss << "])";
-        return oss.str();
-    }
 };
 
 struct VertexMapping {

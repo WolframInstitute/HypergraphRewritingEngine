@@ -1421,20 +1421,30 @@ void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
     }
 }
 
-std::mt19937& ParallelEvolutionEngine::sampling_rng() const {
+// The per-thread sampling RNG. A free function taking the two values it reads rather than a
+// member, because a member has to be DECLARED in the header and its return type spells
+// std::mt19937 there -- and <random> is one of the two standard headers whose removal from
+// this engine's header closure is worth 196 ms of a 1198 ms translation unit.
+//
+// Re-seeds whenever the run's sampling generation advances; `seed` of 0 draws a fresh
+// random_device seed, which is what makes an unseeded run differ between invocations.
+namespace {
+
+std::mt19937& sampling_rng(uint64_t generation, uint64_t seed) {
     thread_local std::mt19937 rng;
     thread_local uint64_t seen_gen = std::numeric_limits<uint64_t>::max();
-    uint64_t gen = sampling_generation_.load(std::memory_order_relaxed);
-    if (seen_gen != gen) {
-        uint64_t s = random_seed_
-            ? (random_seed_ ^ (0x9e3779b97f4a7c15ULL *
+    if (seen_gen != generation) {
+        uint64_t s = seed
+            ? (seed ^ (0x9e3779b97f4a7c15ULL *
                  static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()))))
             : static_cast<uint64_t>(std::random_device{}());
         rng.seed(static_cast<std::mt19937::result_type>(s));
-        seen_gen = gen;
+        seen_gen = generation;
     }
     return rng;
 }
+
+}  // namespace
 
 
 void ParallelEvolutionEngine::configure_identity_and_quotient() {
@@ -1537,7 +1547,8 @@ bool ParallelEvolutionEngine::should_explore() {
     if (exploration_probability_ >= 1.0) return true;
     if (exploration_probability_ <= 0.0) return false;
 
-    auto& rng = sampling_rng();
+    auto& rng = sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
+                             random_seed_);
     thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
 
     return dist(rng) < exploration_probability_;
@@ -1547,7 +1558,9 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
     SVec<uint16_t> indices(rules_.size());
     std::iota(indices.begin(), indices.end(), 0);
 
-    std::shuffle(indices.begin(), indices.end(), sampling_rng());
+    std::shuffle(indices.begin(), indices.end(),
+                 sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
+                              random_seed_));
 
     return indices;
 }

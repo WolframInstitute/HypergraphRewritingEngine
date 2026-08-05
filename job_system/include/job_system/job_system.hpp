@@ -4,6 +4,7 @@
 #include <job_system/work_stealing_deque.hpp>
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
+#include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -13,7 +14,6 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
-#include <random>
 #include <string>
 
 namespace job_system {
@@ -190,12 +190,22 @@ private:
         return nullptr;
     }
 
-    JobRaw find_work(WorkerData* data, std::mt19937& rng) {
+    // The steal victim is drawn by advancing a per-worker splitmix64 state, which is one
+    // multiply-shift chain over a single uint64. std::mt19937 was 2.5 KB of state per worker,
+    // seeded once, to produce `rng() % n` -- and it put <random> in this header, one of the two
+    // standard headers whose joint removal from the engine's closure is 196 ms of a 1198 ms
+    // translation unit. splitmix64 is hgcommon's, so there is one mixer here rather than a
+    // second one written for this call site.
+    //
+    // The draw does not have to be reproducible: which worker a job is stolen from does not
+    // change what the run computes, only who computes it. The gates that assert results are
+    // independent of thread count already cover that.
+    JobRaw find_work(WorkerData* data, uint64_t& rng) {
         if (JobRaw j = data->deque.pop()) return j;            // own work (LIFO)
         size_t n = workers_.size();
         if (n > 1) {                                            // steal a victim's top
             for (size_t attempt = 0; attempt < n; ++attempt) {
-                WorkerData* victim = workers_[rng() % n].get();
+                WorkerData* victim = workers_[hgcommon::splitmix64(++rng) % n].get();
                 if (victim == data) continue;
                 if (JobRaw j = victim->deque.steal()) {
                     data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
@@ -257,7 +267,7 @@ private:
     void worker_loop(WorkerData* data, size_t index) {
         t_sys_ = this;
         t_worker_ = data;
-        std::mt19937 rng(static_cast<uint32_t>(index) * 2654435761u + 1u);
+        uint64_t rng = static_cast<uint64_t>(index) * 2654435761ull + 1ull;
 
         while (true) {
             if (JobRaw job = find_work(data, rng)) {

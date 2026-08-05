@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <cstdio>
 
 namespace test_utils {
@@ -29,6 +30,26 @@ public:
     }
 };
 
+// A canonical form written out, for an assertion message that has to say WHICH two forms
+// differed. It lives here because these two assertions are its only callers: as a member of
+// CanonicalForm it pulled <sstream> into every translation unit that includes hypergraph.hpp,
+// for a function none of them call.
+inline std::string canonical_form_string(const hypergraph::CanonicalForm& cf) {
+    std::ostringstream oss;
+    oss << "CanonicalForm(vertices=" << cf.vertex_count << ", edges=[";
+    for (std::size_t i = 0; i < cf.edges.size(); ++i) {
+        oss << "[";
+        for (std::size_t j = 0; j < cf.edges[i].size(); ++j) {
+            oss << cf.edges[i][j];
+            if (j + 1 < cf.edges[i].size()) oss << ",";
+        }
+        oss << "]";
+        if (i + 1 < cf.edges.size()) oss << ", ";
+    }
+    oss << "])";
+    return oss.str();
+}
+
 /**
  * Expectation helpers for hypergraph comparisons using edge vectors
  */
@@ -40,7 +61,8 @@ inline void expect_canonical_equal(
     auto canon2 = canonicalizer.canonicalize_edges(edges2);
     EXPECT_EQ(canon1.canonical_form, canon2.canonical_form)
         << "Hypergraphs should have same canonical form: "
-        << canon1.canonical_form.to_string() << " vs " << canon2.canonical_form.to_string();
+        << canonical_form_string(canon1.canonical_form) << " vs "
+        << canonical_form_string(canon2.canonical_form);
 }
 
 inline void expect_canonical_different(
@@ -51,7 +73,7 @@ inline void expect_canonical_different(
     auto canon2 = canonicalizer.canonicalize_edges(edges2);
     EXPECT_NE(canon1.canonical_form, canon2.canonical_form)
         << "Hypergraphs should have different canonical forms but both are: "
-        << canon1.canonical_form.to_string();
+        << canonical_form_string(canon1.canonical_form);
 }
 
 /**
