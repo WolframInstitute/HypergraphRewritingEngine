@@ -621,7 +621,8 @@ namespace {
 // which orders vertices WITHIN a cell, and no output reads within-cell order --
 // ir_core_equivalence_probe checks this from the other side by relabelling every corpus state
 // three times.
-uint64_t ir_core_hash(const SVec<SVec<VertexId>>& edges) {
+uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
+                      uint32_t* rank, uint32_t* orbit, uint32_t* klass) {
     const uint32_t n_edges = static_cast<uint32_t>(edges.size());
     std::vector<uint8_t> ea;
     std::vector<uint32_t> eoff, ev;
@@ -631,25 +632,42 @@ uint64_t ir_core_hash(const SVec<SVec<VertexId>>& edges) {
         ea.push_back(static_cast<uint8_t>(e.size()));
         for (VertexId v : e) ev.push_back(static_cast<uint32_t>(v));
     }
-    std::unordered_map<uint32_t, uint32_t> local;
-    uint32_t n_verts = 0;
-    for (uint32_t& x : ev) {
-        auto it = local.find(x);
-        if (it == local.end()) { local.emplace(x, n_verts); x = n_verts++; }
-        else x = it->second;
-    }
+    // SORTED-UNIQUE vertex order, not encounter order, and the difference is not cosmetic.
+    // The canonical labelling of a state with a nontrivial automorphism group is a COSET, and
+    // the core's within-cell tie-break is what picks one representative out of it. That
+    // tie-break reads the vertex NUMBERING, so two numberings pick two different
+    // representatives -- each internally valid, agreeing on the canonical HASH, and
+    // disagreeing about which edge holds which RANK. Measured: encounter order differs from
+    // this on 103 of the equivalence probe's 4063 states, all of them the symmetric ones.
+    // This class's callers expect the sorted convention, which is what build_adjacency used.
+    std::vector<uint32_t> sorted(ev.begin(), ev.end());
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    const uint32_t n_verts = static_cast<uint32_t>(sorted.size());
+    for (uint32_t& x : ev)
+        x = static_cast<uint32_t>(
+            std::lower_bound(sorted.begin(), sorted.end(), x) - sorted.begin());
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
 
+    // The generator budget escalates only when ORBITS are requested: for search pruning a
+    // short table costs time and cannot change the canonical form, since automorphic branches
+    // reach the same form either way. For orbits it changes the answer.
+    const bool want_orbits = (orbit != nullptr) || (klass != nullptr);
+    const uint32_t gen_hi = want_orbits ? (1u << 16) : hgcommon::IR_HOST_GENERATORS;
     std::vector<uint32_t> scratch;
     for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
-        const uint64_t words =
-            hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
-        if (scratch.size() < words + 2) scratch.assign(words + 2, 0);
-        auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
-                                             n_edges, n_verts, total_occ,
-                                             scratch.data(), depth);
-        if (r.status == hgcommon::IR_OK) return r.hash;
-        if (r.status == hgcommon::IR_EMPTY) return 0;
+        for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= gen_hi; gens *= 4u) {
+            const uint64_t words =
+                hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth, gens);
+            if (scratch.size() < words + 2) scratch.assign(words + 2, 0);
+            auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
+                                                 n_edges, n_verts, total_occ,
+                                                 scratch.data(), depth, rank, gens,
+                                                 orbit, klass);
+            if (r.status == hgcommon::IR_OK) return r.hash;
+            if (r.status == hgcommon::IR_EMPTY) return 0;
+            if (r.status == hgcommon::IR_NEED_DEPTH) break;   // more generators cannot help
+        }
     }
     return 0;
 }
@@ -669,7 +687,7 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
     // over 4063 corpus states, on the hash, the canonical form, and the per-edge rank, class
     // and orbit arrays.
     auto scratch_mark = worker_scratch().mark();
-    const uint64_t hash = ir_core_hash(edges);
+    const uint64_t hash = ir_core_call(edges, nullptr, nullptr, nullptr);
     worker_scratch().release(scratch_mark);
     return hash;
 }
@@ -751,57 +769,14 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_rank(
     out_edge_rank.assign(edges.size(), 0u);
     if (edges.empty()) return 0;
 
+    // The core assigns the rank: the edge's position when edges are ordered by (canonical
+    // content, ORIGINAL INDEX). The index tie-break is what makes this a RANK -- a distinct
+    // value per edge -- rather than a content class, and it is what keeps duplicate-content
+    // edges apart. Positional event identity is defined this way precisely so it does NOT
+    // quotient state automorphisms: two symmetric edge-role assignments keep distinct ranks
+    // and stay distinct events.
     auto scratch_mark = worker_scratch().mark();
-    HypergraphAdj adj;
-    SVec<uint32_t> labeling;
-    bool ok = find_canonical_labeling(edges, adj, labeling);
-
-    uint64_t hash = 14695981039346656037ULL;
-    constexpr uint64_t prime = 1099511628211ULL;
-    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
-    hash *= prime;
-
-    if (ok) {
-        struct MappedEdge {
-            std::vector<VertexId> mapped;
-            size_t orig_idx;
-        };
-        std::vector<MappedEdge> mapped;
-        mapped.reserve(edges.size());
-        for (size_t ei = 0; ei < edges.size(); ++ei) {
-            MappedEdge me;
-            me.orig_idx = ei;
-            me.mapped.reserve(edges[ei].size());
-            for (VertexId v : edges[ei]) {
-                uint32_t vi = adj.idx_of(v);
-                me.mapped.push_back(static_cast<VertexId>(labeling[vi]));
-            }
-            mapped.push_back(std::move(me));
-        }
-        // Ordered by (canonical content, ORIGINAL INDEX). The index tie-break is what makes
-        // this a RANK -- a distinct value per edge -- rather than a content class, and it is
-        // what keeps duplicate-content edges apart. Positional event identity is defined this
-        // way precisely so it does NOT quotient state automorphisms: two symmetric edge-role
-        // assignments keep distinct ranks and stay distinct events.
-        std::sort(mapped.begin(), mapped.end(),
-                  [](const MappedEdge& a, const MappedEdge& b) {
-                      if (a.mapped != b.mapped) return a.mapped < b.mapped;
-                      return a.orig_idx < b.orig_idx;
-                  });
-
-        for (const auto& me : mapped) {
-            for (auto vertex : me.mapped) {
-                hash ^= static_cast<uint64_t>(vertex);
-                hash *= prime;
-            }
-            hash ^= 0xDEADBEEF;
-            hash *= prime;
-        }
-        for (size_t i = 0; i < mapped.size(); ++i) {
-            out_edge_rank[mapped[i].orig_idx] = static_cast<uint32_t>(i);
-        }
-    }
-
+    const uint64_t hash = ir_core_call(edges, out_edge_rank.data(), nullptr, nullptr);
     worker_scratch().release(scratch_mark);
     return hash;
 }
