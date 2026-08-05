@@ -35,7 +35,7 @@
 //   using Transition = ...;                     the engine's canonical-transition record
 //   uint32_t max_steps() const;                 the DP runs depths 0..max_steps-1, producing
 //                                               into max_steps but never reading it
-//   bool enter(uint32_t depth) const;           false to stop the cascade at this depth; the
+//   bool enter(uint32_t depth);                 false to stop the cascade at this depth; the
 //                                               Ctx records why. A host with a heap-sized
 //                                               stack always returns true.
 //   bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth);
@@ -43,10 +43,10 @@
 //                                               THIS call was the one that inserted
 //   bool mark_producer_seen(uint64_t seen_key); same, on the (key, producer) seen set
 //   void push_producer(uint64_t key, uint32_t producer);
-//   template <class F> void for_each_producer(uint64_t key, F&& f) const;   f(producer)
-//   template <class F> void for_each_transition_from(uint64_t hash, F&& f) const;  f(const Transition&)
+//   template <class F> void for_each_producer(uint64_t key, F&& f);   f(producer)
+//   template <class F> void for_each_transition_from(uint64_t hash, F&& f);  f(const Transition&)
 //   void emit(uint32_t producer, uint32_t consumer);   record a causal edge
-//   void fence() const;                         sequentially consistent, engine-scoped
+//   void fence();                               sequentially consistent, engine-scoped
 //
 // A Transition must supply: to_hash, canon_event, num_consumed, num_produced, num_survivors,
 // and consumed(i) / produced(i) / surv_from(i) / surv_to(i).

@@ -304,16 +304,16 @@ class Hypergraph {
             hg.qc_dsup_list(key)->push(producer, hg.arena_);
         }
         template <class F>
-        void for_each_producer(uint64_t key, F&& f) const {
+        void for_each_producer(uint64_t key, F&& f) {
             auto r = hg.qc_dsup_.lookup(key);
             if (r.has_value()) (*r)->for_each([&](EventId p) { f(p); });
         }
         template <class F>
-        void for_each_transition_from(uint64_t hash, F&& f) const {
+        void for_each_transition_from(uint64_t hash, F&& f) {
             hg.for_each_transition_from(hash, [&](const CanonicalTransition& t) { f(t); });
         }
         void emit(uint32_t producer, uint32_t consumer) { hg.qc_emit(producer, consumer); }
-        void fence() const { std::atomic_thread_fence(std::memory_order_seq_cst); }
+        void fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
     };
     QcCtx qc_ctx() {
         return QcCtx{*this,

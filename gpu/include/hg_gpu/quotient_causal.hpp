@@ -40,6 +40,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/rewrite.hpp"       // try_add_causal_edge
 #include "hgcommon/core.hpp"        // isort_u64
+#include "hgcommon/quotient_causal_core.hpp"   // the DP itself
 
 #include <cuda/atomic>
 
@@ -164,20 +165,9 @@ private:
     bool                            on_ = false;
 };
 
-__device__ __forceinline__ uint64_t qc_key(uint64_t state_hash, uint32_t depth,
-                                           uint32_t orbit) {
-    uint64_t h = 1469598103934665603ULL;
-    h ^= state_hash; h *= 1099511628211ULL;
-    h ^= (static_cast<uint64_t>(depth) << 32) | orbit; h *= 1099511628211ULL;
-    return h;
-}
-
-__device__ __forceinline__ uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
-    uint64_t h = 1469598103934665603ULL;
-    h ^= state_hash; h *= 1099511628211ULL;
-    h ^= depth; h *= 1099511628211ULL;
-    return h ? h : 1;
-}
+// The DP's key spaces come from hgcommon, so the device indexes the ones the host does.
+using hgcommon::qc_key;
+using hgcommon::qc_rkey;
 
 __device__ __forceinline__ uint32_t qc_bucket(uint64_t key, uint32_t num_keys) {
     uint64_t h = key;
@@ -212,100 +202,101 @@ __device__ __forceinline__ void qc_emit(DeviceState ds, EventId producer, EventI
     try_add_causal_edge(ds, producer, consumer, 0);
 }
 
-__device__ void qc_add_producer(DeviceState ds, QcView qc, uint64_t state_hash,
-                                uint32_t depth, uint32_t orbit, EventId producer);
-__device__ void qc_reach(DeviceState ds, QcView qc, uint64_t state_hash,
-                         uint32_t depth);
+// The storage face hgcommon/quotient_causal_core.hpp drives. It supplies WHERE things are
+// held and nothing else: the decisions -- when a point is entered, what a producer landing
+// does, which rendezvous scan follows which publish -- are in the core, which is the same body
+// the host runs.
+//
+// The transition record is read through accessors because the device packs its four orbit
+// arrays into one contiguous word arena while the host holds four pointers. The DP walks both
+// through the same four calls and knows neither layout.
+struct DeviceQcTransition {
+    const uint32_t* words;                  // consumed | produced | surv_from | surv_to
+    uint64_t to_hash;
+    EventId  canon_event;
+    uint32_t num_consumed, num_produced, num_survivors;
 
-__device__ inline void qc_process_transition(DeviceState ds, QcView qc,
-                                             const DeviceCanonicalTransition& t,
-                                             uint64_t from_hash, uint32_t depth) {
-    if (depth + 1 > qc.max_steps) return;
-    qc_reach(ds, qc, t.to_hash, depth + 1);
-    const uint32_t* consumed  = qc.arr_words + t.arr_offset;
-    const uint32_t* produced  = consumed + t.num_consumed;
-    const uint32_t* surv_from = produced + t.num_produced;
-    const uint32_t* surv_to   = surv_from + t.num_survivors;
-    for (uint32_t i = 0; i < t.num_produced; ++i)
-        qc_add_producer(ds, qc, t.to_hash, depth + 1, produced[i], t.canon_event);
-    // Rendezvous with producers already present at (from, depth): publish (reach/produce
-    // above) before this scan.
-    cuda::atomic_thread_fence(cuda::memory_order_seq_cst, cuda::thread_scope_device);
-    for (uint32_t i = 0; i < t.num_consumed; ++i) {
-        const uint64_t k = qc_key(from_hash, depth, consumed[i]);
-        qc.dsup.for_each(qc_bucket(k, qc.dsup.num_keys), [&](const QcProducerNode& nd) {
-            if (nd.key == k) qc_emit(ds, nd.producer, t.canon_event);
+    __device__ DeviceQcTransition(const DeviceCanonicalTransition& t, const uint32_t* arr)
+        : words(arr + t.arr_offset), to_hash(t.to_hash), canon_event(t.canon_event),
+          num_consumed(t.num_consumed), num_produced(t.num_produced),
+          num_survivors(t.num_survivors) {}
+
+    __device__ uint32_t consumed(uint32_t i)  const { return words[i]; }
+    __device__ uint32_t produced(uint32_t i)  const { return words[num_consumed + i]; }
+    __device__ uint32_t surv_from(uint32_t i) const {
+        return words[num_consumed + num_produced + i];
+    }
+    __device__ uint32_t surv_to(uint32_t i) const {
+        return words[num_consumed + num_produced + num_survivors + i];
+    }
+};
+
+struct DeviceQcCtx {
+    using Transition = DeviceQcTransition;
+    DeviceState ds;
+    QcView qc;
+
+    __device__ uint32_t max_steps() const { return qc.max_steps; }
+    // The device recurses on a per-thread stack the launch reserved, so past the bound the
+    // cascade stops and records rather than faulting -- a fault takes the whole run's result,
+    // not just the part past the bound.
+    __device__ bool enter(uint32_t depth) {
+        if (depth < qc.max_recursion_depth) return true;
+        ds.errors.record(ErrorKind::kScratchOverflow);
+        return false;
+    }
+    __device__ bool mark_reached(uint64_t rkey, uint64_t, uint32_t) {
+        return qc.reached.insert_if_absent(rkey, 1u).inserted;
+    }
+    __device__ bool mark_producer_seen(uint64_t seen_key) {
+        return qc.dsup_seen.insert_if_absent(seen_key, 1u).inserted;
+    }
+    __device__ void push_producer(uint64_t key, uint32_t producer) {
+        if (qc.dsup.push(qc_bucket(key, qc.dsup.num_keys),
+                         QcProducerNode{key, producer}) == INVALID_ID) {
+            ds.errors.record(ErrorKind::kQcNodes);
+        }
+    }
+    template <class F>
+    __device__ void for_each_producer(uint64_t key, F&& f) {
+        // The dsup list is bucketed, so a walker filters on the node's exact key.
+        qc.dsup.for_each(qc_bucket(key, qc.dsup.num_keys), [&](const QcProducerNode& nd) {
+            if (nd.key == key) f(nd.producer);
         });
     }
-    for (uint32_t i = 0; i < t.num_survivors; ++i) {
-        const uint64_t k = qc_key(from_hash, depth, surv_from[i]);
-        const uint32_t to_orbit = surv_to[i];
-        qc.dsup.for_each(qc_bucket(k, qc.dsup.num_keys), [&](const QcProducerNode& nd) {
-            if (nd.key == k)
-                qc_add_producer(ds, qc, t.to_hash, depth + 1, to_orbit, nd.producer);
+    template <class F>
+    __device__ void for_each_transition_from(uint64_t hash, F&& f) {
+        qc.trans_from.for_each(qc_bucket(hash, qc.trans_from.num_keys),
+                               [&](const QcTransitionRef& ref) {
+            if (ref.from_hash != hash) return;
+            f(DeviceQcTransition(qc.transitions.at(ref.record), qc.arr_words));
         });
     }
-}
+    __device__ void emit(uint32_t producer, uint32_t consumer) {
+        qc_emit(ds, producer, consumer);
+    }
+    __device__ void fence() {
+        cuda::atomic_thread_fence(cuda::memory_order_seq_cst, cuda::thread_scope_device);
+    }
+};
 
-__device__ inline void qc_for_each_transition_from(DeviceState ds, QcView qc,
-                                                   uint64_t from_hash, uint32_t depth) {
-    qc.trans_from.for_each(qc_bucket(from_hash, qc.trans_from.num_keys),
-                           [&](const QcTransitionRef& ref) {
-        if (ref.from_hash != from_hash) return;
-        qc_process_transition(ds, qc, qc.transitions.at(ref.record), from_hash, depth);
-    });
+__device__ inline void qc_add_producer(DeviceState ds, QcView qc, uint64_t state_hash,
+                                       uint32_t depth, uint32_t orbit, EventId producer) {
+    DeviceQcCtx c{ds, qc};
+    hgcommon::qc_add_producer(c, state_hash, depth, orbit, producer);
 }
 
 __device__ inline void qc_reach(DeviceState ds, QcView qc, uint64_t state_hash,
                                 uint32_t depth) {
-    if (depth > qc.max_steps) return;
-    if (depth >= qc.max_recursion_depth) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
-    if (!qc.reached.insert_if_absent(qc_rkey(state_hash, depth), 1u).inserted) return;
-    // Publish (the insert above) before scanning; pairs with the fence in
-    // qc_register_transition. Without seq_cst on BOTH sides a thread reaching (state, depth)
-    // and a thread registering a transition out of that state can each read the other as
-    // absent, and the (transition, depth) pair is processed by neither.
-    cuda::atomic_thread_fence(cuda::memory_order_seq_cst, cuda::thread_scope_device);
-    qc_for_each_transition_from(ds, qc, state_hash, depth);
+    DeviceQcCtx c{ds, qc};
+    hgcommon::qc_reach(c, state_hash, depth);
 }
 
-__device__ inline void qc_add_producer(DeviceState ds, QcView qc, uint64_t state_hash,
-                                       uint32_t depth, uint32_t orbit, EventId producer) {
-    if (depth > qc.max_steps) return;
-    if (depth >= qc.max_recursion_depth) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
-    const uint64_t key = qc_key(state_hash, depth, orbit);
-    uint64_t seenk = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
-    seenk *= 1099511628211ULL; if (seenk == 0 || seenk == ~0ULL) seenk = 1;
-    if (!qc.dsup_seen.insert_if_absent(seenk, 1u).inserted) return;
-    if (qc.dsup.push(qc_bucket(key, qc.dsup.num_keys),
-                     QcProducerNode{key, producer}) == INVALID_ID) {
-        ds.errors.record(ErrorKind::kQcNodes);
-    }
-
-    // A producer landing at (state, depth) witnesses reachability, so mark it and process its
-    // transitions once; a producer arriving via the survivor cascade would otherwise leave
-    // (state, depth) unreached and a later consuming transition would be skipped.
-    qc_reach(ds, qc, state_hash, depth);
-
-    // Producers landing at the final depth are stored and dead: the DP processes depths
-    // 0..steps-1, producing into depth steps but never reading it.
-    if (depth >= qc.max_steps) return;
-
-    // Rendezvous with transitions already known from this state: publish before scan.
-    cuda::atomic_thread_fence(cuda::memory_order_seq_cst, cuda::thread_scope_device);
-    qc.trans_from.for_each(qc_bucket(state_hash, qc.trans_from.num_keys),
-                           [&](const QcTransitionRef& ref) {
-        if (ref.from_hash != state_hash) return;
-        const DeviceCanonicalTransition& t = qc.transitions.at(ref.record);
-        const uint32_t* consumed  = qc.arr_words + t.arr_offset;
-        const uint32_t* surv_from = consumed + t.num_consumed + t.num_produced;
-        const uint32_t* surv_to   = surv_from + t.num_survivors;
-        for (uint32_t i = 0; i < t.num_consumed; ++i)
-            if (consumed[i] == orbit) { qc_emit(ds, producer, t.canon_event); break; }
-        for (uint32_t i = 0; i < t.num_survivors; ++i)
-            if (surv_from[i] == orbit)
-                qc_add_producer(ds, qc, t.to_hash, depth + 1, surv_to[i], producer);
-    });
+__device__ inline void qc_process_transition(DeviceState ds, QcView qc,
+                                             const DeviceCanonicalTransition& t,
+                                             uint64_t from_hash, uint32_t depth) {
+    DeviceQcCtx c{ds, qc};
+    hgcommon::qc_process_transition(c, DeviceQcTransition(t, qc.arr_words), from_hash, depth);
 }
 
 // Survivor pairs a registration can hold in local scratch. A state with more surviving edges
