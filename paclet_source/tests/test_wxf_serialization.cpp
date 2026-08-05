@@ -183,27 +183,33 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 
 // The same job with one extra top-level key, so the session envelope can be exercised without
 // disturbing the builder every other pin test uses.
+//
+// `with_rules` is false for the verbs that address a HELD engine: a session's rule set was fixed
+// when it opened, so `Step` and `Query` carry none and sending them is an error rather than a
+// no-op. Keeping it a parameter is what lets that error be gated too.
 std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
-                                         int64_t session = 0) {
+                                         int64_t session = 0, bool with_rules = true) {
     wxf::Writer w;
     w.write_header();
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(session ? 6 : 5);
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("InitialStates"));
     w.write(kSeed);
 
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Rules"));
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("r0"));
-    w.write_function("Rule", 2);
-    w.write(kLhs);
-    w.write(kRhs);
+    if (with_rules) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(kLhs);
+        w.write(kRhs);
+    }
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Steps"));
@@ -233,9 +239,9 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
 //
 // Every other test in this suite sends an envelope with neither key, so they already gate the
 // absent case. What they cannot gate is the two things below: that naming `Evolve` explicitly
-// changes nothing, and that naming a verb which is not served is REFUSED. A silently ignored
-// `Op` is the failure that matters -- a caller would read a one-shot result as a session's.
-TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndUnservedOpsAreRefused) {
+// changes nothing, and that a word which is not a verb is REFUSED. A silently ignored `Op` is
+// the failure that matters -- a caller would read a one-shot result as a session's.
+TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
     HostBridge host;
 
     const auto plain = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
@@ -264,19 +270,23 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndUnservedOpsAreRefused) {
     ASSERT_EQ(value_bytes(plain, "NumStates"), value_bytes(plain_again, "NumStates"));
     ASSERT_EQ(value_bytes(plain, "NumEvents"), value_bytes(plain_again, "NumEvents"));
 
-    // Named but not wired. Refused, not ignored. `Open` and `Close` ARE served, so they are not
-    // listed here -- an unserved-verb test that names a served one asserts nothing and, worse,
-    // leaves a session behind for whatever runs next.
-    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Step"), host), std::runtime_error);
-    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Query"), host), std::runtime_error);
+    // Not a verb at all. Refused, not ignored, and refused BEFORE any engine is built: a job
+    // whose Op the worker does not recognise is a caller and a worker that disagree about the
+    // protocol, and answering it as an Evolve would hide that for as long as the answer looked
+    // plausible.
     EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Nonsense"), host), std::runtime_error);
+
+    // A verb that addresses a held engine, with no session live and no handle given. The slot is
+    // what refuses this, so it is refused whether or not the verb is wired.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Step", 0, /*with_rules=*/false), host),
+                 std::runtime_error);
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(0, "Query", 0, /*with_rules=*/false), host),
+                 std::runtime_error);
 }
 
-// Open and Close against a live engine. Step and Query are not served yet -- they need the
-// serialization below reachable on its own -- so what is asserted here is the LIFETIME: that a
-// session is retained, that retaining it does not change the answer, and that the one-at-a-time
-// rule is enforced against the real worker slot rather than only against SessionSlot in
-// isolation.
+// Open and Close against a live engine: the LIFETIME, asserted against the real worker slot
+// rather than only against SessionSlot in isolation -- that a session is retained, that
+// retaining it does not change the answer, and that the one-at-a-time rule holds here too.
 TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
     HostBridge host;
 
@@ -322,6 +332,71 @@ TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
     const int64_t handle2 = read_int_key(reopened, "Session");
     EXPECT_NE(handle2, handle);
     EXPECT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle2), host));
+}
+
+// THE CLAIM A SESSION EXISTS TO MAKE: an exploration continued in pieces is the exploration run
+// whole. Open at depth 1, Step by 2, and the counts must equal a plain 3-step Evolve's -- if
+// `Step` re-ran instead of resuming it would still return a 3-deep graph, with new raw ids and a
+// second copy of every state, and only a comparison against the one-shot run distinguishes them.
+//
+// `Query` is asserted to change NOTHING, twice: once against the Open it follows and once against
+// the Step. A verb that reports on a session must be a pure read, or a caller cannot look at its
+// own exploration without perturbing it.
+TEST(WxfSerializationPin, StepContinuesTheHeldExplorationAndQueryOnlyReportsIt) {
+    HostBridge host;
+
+    const auto whole = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+                                                      [](wxf::Writer&) {}, 0), host);
+
+    const auto opened = run_rewriting_core(build_input_with_op(1, "Open"), host);
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+
+    // Non-vacuity: depth 1 and depth 3 have to be DIFFERENT graphs, or every equality below is
+    // satisfied by a Step that did nothing at all.
+    ASSERT_NE(read_int_key(opened, "NumStates"), read_int_key(whole, "NumStates"))
+        << "this system converges before depth 3, so the continuation is not being tested";
+
+    // A held verb carries no rules: the session's rule set was fixed at Open, and rules sent now
+    // would describe a system the session is not exploring. Refused rather than ignored, and
+    // refused without disturbing the session -- the Query below still has to work.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(1, "Step", handle, /*with_rules=*/true),
+                                    host),
+                 std::runtime_error);
+
+    const auto queried = run_rewriting_core(
+        build_input_with_op(0, "Query", handle, /*with_rules=*/false), host);
+    EXPECT_EQ(read_int_key(queried, "Session"), handle)
+        << "a reply that came from a session must name it";
+    EXPECT_EQ(read_int_key(opened, "NumStates"), read_int_key(queried, "NumStates"));
+    EXPECT_EQ(read_int_key(opened, "NumEvents"), read_int_key(queried, "NumEvents"));
+
+    const auto stepped = run_rewriting_core(
+        build_input_with_op(2, "Step", handle, /*with_rules=*/false), host);
+    EXPECT_EQ(read_int_key(whole, "NumStates"), read_int_key(stepped, "NumStates"))
+        << "1 step then 2 more is not the same exploration as 3 steps: either the continuation "
+           "resumed from the wrong frontier or it re-ran from the initial states";
+    EXPECT_EQ(read_int_key(whole, "NumEvents"), read_int_key(stepped, "NumEvents"));
+    EXPECT_EQ(read_int_key(whole, "NumCausalEdges"), read_int_key(stepped, "NumCausalEdges"));
+    EXPECT_EQ(read_int_key(whole, "NumBranchialEdges"), read_int_key(stepped, "NumBranchialEdges"));
+
+    const auto after = run_rewriting_core(
+        build_input_with_op(0, "Query", handle, /*with_rules=*/false), host);
+    EXPECT_EQ(read_int_key(stepped, "NumStates"), read_int_key(after, "NumStates"));
+    EXPECT_EQ(read_int_key(stepped, "NumEvents"), read_int_key(after, "NumEvents"));
+
+    // A handle this worker never issued reaches no engine, whichever verb names it.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(1, "Step", handle + 1000,
+                                                       /*with_rules=*/false), host),
+                 std::runtime_error);
+
+    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
+
+    // The engine is gone; the verbs that addressed it say so rather than answering from a fresh
+    // one, which would report an empty exploration as the caller's own.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(0, "Query", handle, /*with_rules=*/false),
+                                    host),
+                 std::runtime_error);
 }
 
 TEST(WxfSerializationPin, DefaultStatesAndEvents) {

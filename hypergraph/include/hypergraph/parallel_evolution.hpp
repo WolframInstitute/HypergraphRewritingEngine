@@ -833,6 +833,11 @@ public:
     }
 
     void set_max_steps(size_t max) { max_steps_ = max; }
+    // The depth this run is budgeted to, which evolve_more RAISES rather than replaces. A caller
+    // that continues an exploration and then reports on it needs the accumulated depth, not the
+    // increment it just asked for: a step index counted from the end ("the final step") is
+    // defined against this total.
+    size_t max_steps() const { return max_steps_; }
     void set_max_states(size_t max) { max_states_ = max; }
     void set_max_events(size_t max) { max_events_ = max; }
     void set_match_forwarding(bool enable) { enable_match_forwarding_ = enable; }
@@ -850,6 +855,7 @@ public:
     // "produces" all edges in that state. This allows causal edges to be
     // tracked from the initial state's edges to events that consume them.
     void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
+    bool genesis_events() const { return enable_genesis_events_; }
 
     // Enable task-based matching (HGMatch SCAN→EXPAND join model)
     // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
