@@ -93,9 +93,11 @@ Keep it current: a release that skips a line here is not released.*
 - [x] CPU results correct across `None` / `Automatic` / `Full`. **2026-08-03**: `GoldenMatrix.*`
       + `Unified_CanonicalHash.*` + the event-identity gates, 12/12.
 - [x] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.
-      **2026-08-03**: `gpu_differential_tests` 36/36 on an RTX 4090, with ZERO `kIRDegradedToWL`
-      in the run — the differential compares states, events, causal and branchial as SETS on both
-      routes, so a silent degrade would change a set rather than only a count.
+      **2026-08-05**: `gpu_differential_tests` 36/36 on an RTX 4090. The device has no coarser
+      key to fall back TO: `state_exact_hash_device` reports `kIRArenaExhausted` /
+      `kIRDepthExceeded` / `kIRGeneratorsExceeded` and the wrapper doubles the corresponding
+      `EngineConfig` field. The differential compares states, events, causal and branchial as
+      SETS on both routes, so a wrong key would change a set rather than only a count.
 - [x] `HGEvolve` example pages evaluate cleanly against the local engine. **2026-08-04**, two
       independent checks. `./build_docs.sh` evaluates EVERY example cell while generating the
       notebooks and reports 3/3 built, 0 failed. `reference/verify_doc_examples.wls` evaluates all
@@ -171,10 +173,10 @@ Keep it current: a release that skips a line here is not released.*
       a fresh clone, which is what a release is, cannot follow it.*
 - [x] **An OSS license exists.** `LICENSE.md` (MIT, The Wolfram Institute), tracked, and declared
       as `"License" -> "MIT"` in `paclet/PacletInfo.wl`.
-- [x] No silent correctness degradation anywhere: the GPU IR→1-WL fallback is surfaced
-      (`ErrorKind::kIRDegradedToWL`, `last_ir_degraded_states()`); an option the engine ignores is
-      reported as `OptionSkipped` rather than dropped (`hypergraph_ffi.cpp`, surfaced by the WL
-      layer's advisory kinds).
+- [x] No silent correctness degradation anywhere: the GPU has no IR→1-WL fallback to be silent
+      about — every cause of an unproduced exact hash is a config-controlled capacity kind the
+      wrapper grows and retries; an option the engine ignores is reported as `OptionSkipped`
+      rather than dropped (`hypergraph_ffi.cpp`, surfaced by the WL layer's advisory kinds).
 - [x] Every advertised option exists and every existing option is documented. Gated by
       `OptionSurface.*`, which reconciles all FOUR copies — declared, sent by the wrapper, parsed,
       documented — by reading the sources: 18 sent all parsed, 10 documented all accepted.

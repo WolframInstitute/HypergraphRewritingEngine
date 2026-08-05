@@ -291,6 +291,13 @@ struct EngineConfig {
     // generators x n_verts words PER THREAD, which is why the device default is far below the
     // host's.
     uint32_t ir_generators = 32;
+
+    // Individualization depth the device IR search explores before giving up. A path fixes at
+    // least one vertex per level, so n levels always suffice; this bounds the per-thread slot
+    // instead, since the depth blocks are its bulk. A state needing more records
+    // kIRDepthExceeded, which grow-and-retry answers by doubling THIS -- the device never keys
+    // a state by a coarser hash, because a coarser key MERGES non-isomorphic states.
+    uint32_t ir_depth = 8;
 };
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,

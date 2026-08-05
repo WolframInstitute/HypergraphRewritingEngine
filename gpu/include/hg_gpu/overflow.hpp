@@ -71,15 +71,6 @@ enum class ErrorKind : uint32_t {
     // wrong answer rather than a slow one. The budget is config-controlled, so growing it is a
     // real remedy and the host's grow-and-retry treats this as retryable.
     kIRGeneratorsExceeded = 28,
-    // A state was keyed by the 1-WL hash because it did not fit the IR slot, or wanted an
-    // individualization depth the slot is not shaped for (k_ir_canon_range). 1-WL is
-    // isomorphism-invariant in one direction only: it never separates isomorphic states, but it
-    // DOES merge non-isomorphic ones -- tools/ir_vs_wl collides the prism against K3,3 on six
-    // vertices, and the rook's graph against Shrikhande. So under CanonicalizeStates -> Full
-    // this is a state whose dedup key is not exact, and the caller is promised exactness.
-    // Nothing bounds how often an evolution reaches such a state, which is why it is reported
-    // rather than tallied privately.
-    kIRDegradedToWL      = 27,
     // A state reached deduplication with a canonical hash of 0, which is not a hash: 0 is what
     // the per-state hash array holds for "not computed yet", and the empty state -- the one
     // case with nothing to compute a hash from -- has its own reserved value
@@ -103,8 +94,6 @@ static_assert(static_cast<uint32_t>(ErrorKind::kUncomputedStateHash) <
               static_cast<uint32_t>(ErrorKind::kCount), "kUncomputedStateHash is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
-static_assert(static_cast<uint32_t>(ErrorKind::kIRDegradedToWL) <
-              static_cast<uint32_t>(ErrorKind::kCount), "kIRDegradedToWL is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
               static_cast<uint32_t>(ErrorKind::kCount), "kPersistentStall is unrecordable");
 
@@ -129,9 +118,8 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
         case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
-        case ErrorKind::kIRDepthExceeded:     return "IR search depth (not config-controlled)";
+        case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";
         case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";
-        case ErrorKind::kIRDegradedToWL:      return "state keyed by 1-WL, not exact IR";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         default:                              return "unknown";

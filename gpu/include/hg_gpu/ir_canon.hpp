@@ -12,53 +12,30 @@ namespace hg_gpu {
 // The algorithm itself lives in hgcommon/ir_core.hpp and is the SAME code the host engine
 // runs, so the two devices produce identical canonical hashes by construction rather than by
 // two implementations being kept in step. What is device-specific is only the orchestration:
-// how a state is flattened out of the CSR, where the core's scratch comes from, and the
-// launch shape.
+// how a state is flattened out of the CSR and where the core's scratch comes from.
 //
-// One thread per state, grid-stride: the parallelism in this computation is ACROSS states.
-// Each thread owns one slot of a device scratch pool, holding the flattened state and the
-// core's working buffers.
-//
-// The range entry point sizes its slot to the largest state in the range, so size alone does
-// not force a fallback. A state whose individualization search wants more depth than the pool
-// is sized for, or a range whose single slot exceeds the whole pool budget, falls back to the
-// 1-WL hash, and that hash then serves as the state's DEDUP KEY.
-//
-// That is a correctness exposure, not a tuning knob. Isomorphism-invariance is one
-// directional: WL never separates two isomorphic states, but it does MERGE non-isomorphic
-// ones. tools/ir_vs_wl demonstrates it constructively on the prism against K3,3 -- six
-// vertices -- and on the rook's 4x4 graph against Shrikhande. Nothing bounds how often an
+// ONE state per call, sized from that state's own counts and taken from a device arena. There
+// is no per-state ceiling and so no fallback: a state the exact path cannot key is REPORTED,
+// never keyed by something coarser. That is not a tuning stance. Isomorphism-invariance is one
+// directional -- 1-WL never separates two isomorphic states, but it does MERGE non-isomorphic
+// ones, which tools/ir_vs_wl demonstrates constructively on the prism against K3,3 (six
+// vertices) and on the rook's 4x4 graph against Shrikhande. Nothing bounds how often an
 // evolution reaches such a state, so no measured collision rate over some other corpus
 // licenses assuming it is rare.
+
+// Exact hash of ONE state.
 //
-// last_ir_degraded_states() reports how many states took the fallback. A non-zero count means
-// the state set may contain wrongly merged states.
-
-uint64_t compute_state_ir_hash_host(const EngineState& engine, StateId sid);
-
-// States in the most recent range that fell back to the coarser 1-WL hash.
-uint32_t last_ir_degraded_states();
-
-void compute_state_ir_hashes_range(const EngineState& engine,
-                                   uint32_t lo, uint32_t hi,
-                                   uint64_t* out_hashes_device);
-
-// Exact hash of ONE state, for callers with no batch to measure.
-//
-// The range entry point above sizes its slot on the host from the largest state in the range.
-// A device-resident loop has no range: states arrive continuously and the largest is not
-// knowable before the launch. This sizes the slot from THIS state's own edge and occurrence
-// counts and claims it from a device arena, so the exact path has no per-state ceiling and
-// therefore no 1-WL fallback -- the fallback's merge hazard is the reason the ceiling had to
-// go.
+// The slot is sized from THIS state's own edge and occurrence counts and claimed from a device
+// arena, so the path has no per-state ceiling and states arriving continuously in a
+// device-resident loop need no host-side batch measurement.
 //
 // `slot`/`slot_words` are the caller's scratch, carried across items: a worker reuses its slot
 // and claims again only when the next state needs a larger one. Initialise them to
 // {nullptr, 0}.
 //
 // Returns false when the arena is exhausted or the search wants more depth than the device
-// attempts. Both are capacity overflows -- record the warning and return partial work, never a
-// coarser hash, and never a host round trip to grow.
+// attempts. Both are capacity overflows -- record the warning and let the wrapper grow and
+// retry, never a coarser hash, and never a host round trip mid-run.
 // Why an exact hash could not be produced. Carried rather than collapsed to a bool because the
 // three causes call for three different responses, and treating them alike made a recoverable
 // capacity failure indistinguishable from a fixed kernel limit:
@@ -67,8 +44,8 @@ void compute_state_ir_hashes_range(const EngineState& engine,
 //                     from the config, so growing the config is a real remedy -- the host's
 //                     grow-and-retry treats it as retryable.
 //   kDepthExceeded    the individualization search wanted to go deeper than the device
-//                     attempts. The depth is a constant the slot is shaped for, so growing
-//                     cannot help.
+//                     attempts. The depth is EngineConfig::ir_depth, so growing the config is a
+//                     real remedy -- the host's grow-and-retry doubles it.
 //   kMalformedState   the flattening did not fit a shape sized from this state's own counts,
 //                     which cannot happen; reported rather than silently hashing something else.
 enum class ExactHashStatus : uint8_t {
@@ -99,5 +76,14 @@ HG_HD inline ErrorKind error_kind_for(ExactHashStatus s) {
         default:                               return ErrorKind::kScratchOverflow;
     }
 }
+
+// Every state in [lo, hi) keyed by state_exact_hash_device, one thread per state, grid-stride.
+// A launch shape over the same body the device-resident loop calls, not a second rule: a state
+// the exact path cannot key leaves 0 in `out_hashes_device` and records its capacity kind.
+void compute_state_ir_hashes_range(EngineState& engine, uint32_t lo, uint32_t hi,
+                                   uint64_t* out_hashes_device);
+
+// One state through the same launcher, for callers with a single state to key.
+uint64_t compute_state_ir_hash_host(EngineState& engine, StateId sid);
 
 }  // namespace hg_gpu

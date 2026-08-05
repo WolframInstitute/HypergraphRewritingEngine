@@ -23,6 +23,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/ir_canon.hpp"
+#include "hg_gpu/evolve.hpp"
 
 #include <cuda_runtime.h>
 
@@ -185,15 +186,15 @@ TEST(IRCanonGPU, K4RelabellingsAgree) {
     EXPECT_EQ(gpu_ir_hash(make_k4(0)), gpu_ir_hash(make_k4(100)));
 }
 
-// A state larger than the old fixed slot bounds must still get an EXACT hash.
+// A LARGE state gets an EXACT, relabelling-invariant hash -- there is no size at which the
+// canonicalizer starts keying states by something coarser.
 //
-// The bounds used to be compile-time constants (128 verts / 128 edges / 256 occurrences), and
-// a state past any of them was deduplicated by the 1-WL hash instead. That is a wrong dedup
-// key, not a coarser one: 1-WL never separates isomorphic states but it does MERGE
-// non-isomorphic ones, which tools/ir_vs_wl demonstrates on six-vertex graphs. The slot is now
-// sized from the batch, so size alone no longer forces the fallback --
-// last_ir_degraded_states() reports zero and the hash is iso-invariant.
-TEST(IrCanon, StateLargerThanTheOldFixedBoundsIsStillExact) {
+// The slot is sized from the state's own edge and occurrence counts and claimed from a device
+// arena, so 400 edges is no different in kind from 4. The property matters because a coarser
+// key would be a WRONG dedup key rather than a conservative one: 1-WL never separates
+// isomorphic states but it does MERGE non-isomorphic ones, which tools/ir_vs_wl demonstrates
+// on six-vertex graphs.
+TEST(IrCanon, ALargeStateIsStillHashedExactly) {
     const uint32_t kEdges = 400;   // well past the old 128-edge cap
 
     hg_gpu::EngineConfig cfg;
@@ -214,9 +215,7 @@ TEST(IrCanon, StateLargerThanTheOldFixedBoundsIsStillExact) {
     hg_gpu::EngineState eng(cfg);
     hg_gpu::upload_initial_state(eng, edges);
     const uint64_t h = hg_gpu::compute_state_ir_hash_host(eng, /*sid=*/0);
-    EXPECT_EQ(hg_gpu::last_ir_degraded_states(), 0u)
-        << "a state of " << kEdges << " edges fell back to the 1-WL hash";
-    EXPECT_NE(h, 0u);
+    EXPECT_NE(h, 0u) << "a state of " << kEdges << " edges was not keyed at all";
 
     // Same graph, vertices relabelled by a shift: an exact canonical hash is invariant.
     EdgeList shifted;
@@ -228,66 +227,45 @@ TEST(IrCanon, StateLargerThanTheOldFixedBoundsIsStillExact) {
     hg_gpu::EngineState eng2(cfg2);
     hg_gpu::upload_initial_state(eng2, shifted);
     const uint64_t h2 = hg_gpu::compute_state_ir_hash_host(eng2, /*sid=*/0);
-    EXPECT_EQ(hg_gpu::last_ir_degraded_states(), 0u);
     EXPECT_EQ(h, h2) << "relabelling changed the exact hash";
 }
 
-// Degradation to the 1-WL key must REACH THE CALLER, not just a counter nobody reads.
+// A state whose individualization search outruns the device depth is RETRIED, not degraded.
 //
-// k_ir_canon_range keys a state with wl_hash_state_device when it cannot canonicalize it
-// exactly. That key is not exact -- 1-WL never separates isomorphic states but it does MERGE
-// non-isomorphic ones -- so under CanonicalizeStates -> Full the caller is promised exactness
-// and does not get it. The count was tallied into a file-static that only this test file read,
-// so a production run degraded in silence; it is now recorded as ErrorKind::kIRDegradedToWL and
-// travels the same path every other capacity warning does.
+// Many identical disjoint components give an automorphism group 1-WL cannot discretise, so the
+// search individualizes repeatedly and runs past EngineConfig::ir_depth. What must NOT happen
+// is a coarser dedup key: 1-WL never separates isomorphic states but it DOES merge
+// non-isomorphic ones (tools/ir_vs_wl collides the prism against K3,3 on six vertices), so a
+// caller promised exactness under CanonicalizeStates -> Full would silently not get it.
 //
-// Reached here by individualization DEPTH, which is the path a real workload hits: many
-// identical disjoint components give a large automorphism group that 1-WL cannot discretise, so
-// IR individualizes repeatedly and runs past kIRDeviceDepth.
-TEST(IrCanon, DegradingToTheWlKeyIsReportedToTheCaller) {
+// The depth is a config field, so the exhaustion is a capacity overflow the wrapper answers by
+// doubling it. Checked through hg_gpu::evolve, which is where the retry lives.
+TEST(IrCanon, ADeepIndividualizationSearchIsRetriedRatherThanDegraded) {
     const uint32_t kComponents = 64;    // 64 indistinguishable 2-edge paths
 
-    hg_gpu::EngineConfig cfg;
-    cfg.max_edges            = kComponents * 8;
-    cfg.max_state_edge_total = kComponents * 16;
-    cfg.max_states           = 8;
-    cfg.max_vertex_slots     = kComponents * 16;
-    cfg.max_vertices         = kComponents * 16;
-    cfg.sig_index_buckets    = 64;
-    cfg.sig_index_pool       = kComponents * 16;
-    cfg.inverted_pool        = kComponents * 16;
-
-    EdgeList edges;
+    std::vector<std::vector<hg_gpu::VertexId>> edges;
     for (uint32_t c = 0; c < kComponents; ++c) {
-        const VertexId a = static_cast<VertexId>(c * 3);
-        edges.push_back({a, static_cast<VertexId>(a + 1)});
-        edges.push_back({static_cast<VertexId>(a + 1), static_cast<VertexId>(a + 2)});
+        const hg_gpu::VertexId a = static_cast<hg_gpu::VertexId>(c * 3);
+        edges.push_back({a, static_cast<hg_gpu::VertexId>(a + 1)});
+        edges.push_back({static_cast<hg_gpu::VertexId>(a + 1),
+                         static_cast<hg_gpu::VertexId>(a + 2)});
     }
 
-    hg_gpu::EngineState eng(cfg);
-    hg_gpu::upload_initial_state(eng, edges);
+    hg_gpu::EvolveInput in;
+    in.rules = {};                 // no rewriting: the root's canonicalization is the subject
+    in.initial_state = edges;
+    in.num_steps = 0;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.explore_from_canonical_states_only = true;
 
-    // Drain whatever the upload recorded, so what is collected below belongs to this call.
-    std::vector<hg_gpu::OverflowWarning> pre;
-    eng.collect_warnings_into(pre, "setup");
+    hg_gpu::EvolveResult r = hg_gpu::evolve(in);
 
-    uint64_t* d_out = nullptr;
-    ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
-    hg_gpu::compute_state_ir_hashes_range(eng, 0, 1, d_out);
-    cudaFree(d_out);
-
-    std::vector<hg_gpu::OverflowWarning> w;
-    eng.collect_warnings_into(w, "ir canon");
-
-    // Whatever the canonicalizer decided, the two channels must AGREE: if it degraded, the
-    // caller hears about it; if it did not, no warning is invented. A silent degradation --
-    // counter non-zero, warnings empty -- is the defect this gate exists for.
-    uint32_t warned = 0;
-    for (const auto& x : w)
-        if (x.kind == hg_gpu::ErrorKind::kIRDegradedToWL) warned += x.count;
-    const uint32_t counted = hg_gpu::last_ir_degraded_states();
-    EXPECT_EQ(warned > 0u, counted > 0u)
-        << "the degradation counter says " << counted << " states were keyed by 1-WL while the "
-           "warning channel reported " << warned << "; a caller promised an exact dedup key "
-           "cannot tell it did not get one";
+    ASSERT_FALSE(r.states.empty()) << "the state was not returned at all";
+    for (const auto& w : r.warnings) {
+        EXPECT_NE(w.kind, hg_gpu::ErrorKind::kUncomputedStateHash)
+            << "a state reached deduplication with no hash, so the depth retry did not converge";
+        EXPECT_NE(w.kind, hg_gpu::ErrorKind::kIRDepthExceeded)
+            << "the depth was exhausted and the run finished anyway; grow-and-retry should have "
+               "doubled EngineConfig::ir_depth until the search fit";
+    }
 }

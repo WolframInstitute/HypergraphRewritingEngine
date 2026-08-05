@@ -279,18 +279,37 @@ CSR indices and bitsets give us **coalesced memory access** for the hot kernels.
 
 **IR is the only canonicalization strategy on GPU.** It is exact (no false positives or false negatives), whereas WL has documented false positives on highly symmetric graphs (Cai–Fürer–Immerman, strongly regular, certain Cayley graphs) and UT (Gorard-style uniqueness trees) is a polynomial approximation with known collisions. Because the deduplication invariant requires *isomorphism-correct* equivalence — false positives merge non-isomorphic states and corrupt the multiway graph — IR is the only strategy that is unconditionally safe, and the alternatives have been removed from the public API.
 
-GPU IR canonicalization (mirrors the CPU `IRCanonicalizer` in `hypergraph/src/ir_canonicalization.cpp`):
+GPU IR canonicalization runs **the same body as the host**: the algorithm is
+`common/include/hgcommon/ir_core.hpp`, compiled `HG_HD`, and both `hypergraph::IRCanonicalizer`
+and `gpu/src/ir_canon.cu` are adapters onto it. There is no GPU-side reimplementation to keep in
+step, and `tools/ir_core_equivalence_probe` gates the two adapters against each other and against
+a brute-force definition.
 
-- **Fast path (≈ 99 % of Wolfram-evolution states):** one block per state, one warp per block. Per-vertex initial colour = hash over the sorted multiset of `(arity, position)` occurrences. 1-WL refinement iterates: `new_colour[v] = hash(sorted[{(arity, position, sorted co-vertex colours)}])`. If the refined colours are all distinct (discrete partition), the per-vertex rank-in-sorted-colours is the canonical labelling. Apply labelling to edges, sort edges lex, emit FNV-1a.
-- **Slow path (non-discrete after 1-WL):** individualisation-refinement backtrack. Pick the first non-singleton cell, for each vertex in it individualise → re-refine → recurse; keep the lex-smallest canonical form across the tree. Only triggers on graphs with non-trivial automorphism group (rare in evolutions from asymmetric initial conditions).
+What is device-specific is only the orchestration:
 
-Per-state block layout (see `gpu/src/ir_canon.cu`):
-- Shared-memory `IRBlock` holds the state's packed edge list, vertex list, per-vertex occurrence CSR, current/next colour arrays, and a per-thread scratch buffer sized for `kMaxIROccs` neighbour-signature entries.
-- Scratch bounds: `kMaxIRVerts=128`, `kMaxIREdges=128`, `kMaxIROccs=256`. Cover typical evolution states up to ≈ 100 vertices / 100 edges. **When a state doesn't fit** (large initial states like n=1000, or deep evolutions that accumulate), the kernel keys it with `wl_hash_state_device` — a 1-WL sorted-colour-multiset hash over the CSR slice. That is iso-invariant in one direction only: it never separates isomorphic states, but it does MERGE non-isomorphic ones, so under `CanonicalizeStates -> Full` the key is not exact. Every such state records `kIRDegradedToWL`, which surfaces in the run's warnings.
-- The slow-path IR backtrack is S3.5 (pending). It is **not** required for the current differential corpus (`wolfram_canonical_steps5` passes — its historical failure was a dedup-scratch-map bug, not IR discrimination), but the non-discrete fallback to a 1-WL multiset hash remains a latent correctness gap on states where 1-WL is strictly weaker than IR (Cai-Fürer-Immerman, strongly regular). Closing S3.5 removes that gap.
-- A global-memory `IRBlock` variant is the eventual fix for fast-path oversize states (so we get exact IR even on n=1000-class workloads); deferred until after the differential close.
+- **One thread per state.** The parallelism in this computation is ACROSS states; the search
+  within a state is sequential on both devices. `state_exact_hash_device` measures the state's
+  own edge and occurrence counts, shapes a slot for exactly that, and claims it from a
+  `DeviceArena`. There is no fixed per-state ceiling, so state SIZE never forces a fallback.
+- **Depth and generators are config fields**, `EngineConfig::ir_depth` and
+  `EngineConfig::ir_generators`, carried on `DeviceState`. The search first tries depth 1, which
+  is enough for the state that is discrete after refinement -- the common one -- and only then
+  pays for the full depth.
+- **No fallback, ever.** A state the exact path cannot key reports its cause
+  (`kIRArenaExhausted`, `kIRDepthExceeded`, `kIRGeneratorsExceeded`) and the wrapper's
+  grow-and-retry doubles the corresponding config field. The alternative would be keying it by
+  the 1-WL hash, and that is a WRONG dedup key rather than a coarser one: 1-WL never separates
+  isomorphic states but it does MERGE non-isomorphic ones. `tools/ir_vs_wl` demonstrates it
+  constructively on the prism against K3,3 (six vertices) and the rook's 4x4 graph against
+  Shrikhande. Nothing bounds how often an evolution reaches such a state.
+- **`wl_hash_state_device` is not a fallback.** It serves `CanonicalizationMode::Automatic`,
+  where non-isomorphism-invariant content-ordered identity is the requested semantics, and it is
+  never used under `Full`.
 
-The `HashStrategy` enum / `set_hash_strategy` surface is gone from the public `EvolveInput`. `gpu/src/wl_hash.cu` is retained specifically as the IR fast-path's oversize-state fallback — it is NOT user-selectable.
+`compute_state_ir_hashes_range` is a grid-stride LAUNCH SHAPE over that same single-state body,
+for callers with a batch: it measures the range so the arena covers a thread's largest claim,
+caps resident threads against an arena budget so a batch of big states runs with fewer threads
+rather than with a coarser hash, and leaves 0 in the output for any state that reported.
 
 **CPU-vs-GPU state representation:** CPU uses `hypergraph::SparseBitset` (chunked 512-bit segments, only allocating non-empty chunks) for O(1) membership with sparse-proportional memory. GPU uses CSR (sorted per-state edge-id slice + global flat pool) for O(log state-size) membership with sparse-proportional memory. Both avoid the dense-bitset memory cliff. A GPU-side port of the sparse chunked bitset (pool of 64 B chunks with per-state chunk index) would restore O(1) membership on GPU too and is logged as a future optimisation; CSR is good enough for the current benchmark targets.
 

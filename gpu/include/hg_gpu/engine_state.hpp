@@ -115,6 +115,10 @@ struct DeviceState {
     // generators found, so a short table yields orbits that are too FINE and the quotient
     // reconstruction keys instance identity on them.
     uint32_t ir_generators;
+    // Individualization depth the IR search explores. Carried here for the same reason as the
+    // generator budget: grow-and-retry raises it, because the alternative to searching deeper
+    // is a key that merges non-isomorphic states.
+    uint32_t ir_depth;
     uint32_t record_causal;
     uint32_t record_branchial;
 
@@ -375,6 +379,7 @@ public:
         d.state_edge_ids_capacity = cfg_.max_state_edge_total;
         d.max_states              = cfg_.max_states;
         d.ir_generators           = cfg_.ir_generators;
+        d.ir_depth                = cfg_.ir_depth;
         d.state_count             = state_count_;
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;

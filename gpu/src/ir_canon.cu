@@ -1,7 +1,6 @@
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/cuda_check.hpp"
-#include "hg_gpu/wl_hash.hpp"   // wl_hash_state_device — the size-tolerant fallback
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
 
 #include <cuda_runtime.h>
@@ -47,9 +46,6 @@ struct IrSlotShape {
     HG_HD uint64_t stride() const { return (words() + 1ull) & ~1ull; }
 };
 
-// Depth the device attempts. A state discrete after refinement needs none of it; this bounds
-// what a state that does search may use, and the pool is sized for it.
-constexpr uint32_t kIRDeviceDepth = 8;
 
 // Flatten a state's CSR slice to the core's convention: local vertex indices assigned in SORTED
 // VERTEX ID order, which is what the host does. Returns false if the state exceeds the slot's
@@ -136,97 +132,6 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
     return true;
 }
 
-// Grid-stride over the requested state range. One thread canonicalizes one state at a time,
-// exactly as the shared WL core is driven: the parallelism in this computation is ACROSS
-// states, and the pool is bounded by the grid rather than by the range.
-__global__ void k_ir_canon_range(DeviceState ds, uint32_t lo, uint32_t hi,
-                                 uint64_t* out, uint32_t* pool, uint64_t slot_words,
-                                 IrSlotShape shape, uint32_t* degraded)
-{
-    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t stride = gridDim.x * blockDim.x;
-
-    // A null pool means the host could not afford even one slot for this batch's state size.
-    // Every state then keeps the 1-WL hash, and the host has already counted them.
-    if (pool == nullptr) {
-        for (uint32_t i = lo + tid; i < hi; i += stride) {
-            out[i - lo] = wl_hash_state_device(ds, i);
-            ds.errors.record(ErrorKind::kIRDegradedToWL);
-        }
-        return;
-    }
-    uint32_t* slot = pool + tid * slot_words;
-
-    for (uint32_t i = lo + tid; i < hi; i += stride) {
-        const StateId sid = i;
-        uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
-        uint32_t n_edges, n_verts, total_occ;
-
-        if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, n_edges, n_verts, total_occ,
-                           verts_local)) {
-            // Larger than the slot's bounds, so the dedup key for this state is the 1-WL
-            // hash. That is NOT a correct dedup key. Isomorphism-invariance is one
-            // directional: WL never separates isomorphic states, but it does MERGE
-            // non-isomorphic ones -- tools/ir_vs_wl collides on the prism against K3,3, six
-            // vertices, and on the rook's graph against Shrikhande. Nothing bounds how often
-            // an evolution reaches such a state, so the count below is the only honest
-            // signal, and it is a report of a defect rather than of a tuning parameter.
-            out[i - lo] = wl_hash_state_device(ds, sid);
-            atomicAdd(degraded, 1u);
-            ds.errors.record(ErrorKind::kIRDegradedToWL);
-            continue;
-        }
-        if (n_edges == 0) { out[i - lo] = 0; continue; }
-
-        uint32_t* scratch = verts_local + shape.cap_verts + shape.rank_words();
-        hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
-        for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
-            r = hgcommon::ir_canonical_hash(ea, eoff, ev, n_edges, n_verts, total_occ,
-                                            scratch, depth, nullptr,
-                                            shape.generators);
-            if (r.status != hgcommon::IR_NEED_DEPTH) break;
-        }
-        if (r.status == hgcommon::IR_NEED_DEPTH) {
-            // An individualization path deeper than the pool is sized for. Same hazard as
-            // above: the fallback key can merge non-isomorphic states.
-            out[i - lo] = wl_hash_state_device(ds, sid);
-            atomicAdd(degraded, 1u);
-            ds.errors.record(ErrorKind::kIRDegradedToWL);
-        } else {
-            out[i - lo] = r.hash;
-        }
-    }
-}
-
-// Largest (edge count, occurrence count) over a state range, so the slot can be sized to the
-// batch instead of to a constant. One cheap pass: the alternative is bounding occurrences by
-// edges * kMaxArity, which is 8x loose on the arity-2 edges that dominate real rules.
-// Every state in the launched range is empty, so each takes the reserved empty-state hash.
-__global__ void k_fill_empty_state_hashes(uint64_t* out, uint32_t n) {
-    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = hgcommon::EMPTY_STATE_CANONICAL_HASH;
-}
-
-__global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
-    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t stride = gridDim.x * blockDim.x;
-    const uint32_t num_edges_live = ds.edge_pool.size();
-    for (uint32_t i = lo + tid; i < hi; i += stride) {
-        if (i >= ds.max_states) continue;
-        StateEdgeSlice sl = ds.state_edge_slices[i];
-        uint32_t n = 0, occ = 0;
-        for (uint32_t k = 0; k < sl.count; ++k) {
-            EdgeId eid = ds.state_edge_ids[sl.offset + k];
-            if (eid >= num_edges_live || eid >= ds.edge_pool.capacity) continue;
-            const Edge& e = ds.edge_pool.at(eid);
-            if (e.arity == 0 || e.arity > kMaxArity) continue;
-            ++n; occ += e.arity;
-        }
-        atomicMax(&out_max[0], n);
-        atomicMax(&out_max[1], occ);
-    }
-}
-
 }  // namespace
 
 // Exact canonical hash of ONE state, sized and allocated entirely on device.
@@ -277,7 +182,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     shape.cap_edges = n_edges + 1;
     shape.cap_occs  = total_occ + 1;
     shape.cap_verts = total_occ + 1;   // every occurrence could be a distinct vertex
-    shape.depth     = kIRDeviceDepth;
+    shape.depth     = ds.ir_depth;
     shape.generators = ds.ir_generators;
 
     const uint64_t need = shape.stride();
@@ -310,15 +215,18 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
         return ExactHashStatus::kMalformedState;
     }
 
+    // Depth 1 is "root only": it sizes for the state that is discrete after refinement, which
+    // is the common one, and reports IR_NEED_DEPTH for the rest. Only then is the full depth
+    // worth the scratch.
     uint32_t* scratch = orbit_buf + shape.cap_edges;
-    hgcommon::IrResult r{0, hgcommon::IR_NEED_DEPTH, 0};
-    for (uint32_t depth = 1; depth <= shape.depth; depth *= shape.depth) {
-        r = hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                                        scratch, depth, ranks ? rank_buf : nullptr,
-                                        shape.generators,
-                                        orbits ? orbit_buf : nullptr, nullptr);
-        if (r.status != hgcommon::IR_NEED_DEPTH) break;
-    }
+    auto run_at = [&](uint32_t depth) {
+        return hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
+                                           scratch, depth, ranks ? rank_buf : nullptr,
+                                           shape.generators,
+                                           orbits ? orbit_buf : nullptr, nullptr);
+    };
+    hgcommon::IrResult r = run_at(1);
+    if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
     if (r.status == hgcommon::IR_NEED_DEPTH) return ExactHashStatus::kDepthExceeded;
     // Orbits fused over a truncated generator table are too fine, and the quotient
     // reconstruction slots on them. Report rather than publish them.
@@ -345,24 +253,68 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     return ExactHashStatus::kOk;
 }
 
-// Memory the scratch pool may take. Slot size grows with state size, so this trades
-// concurrency against state size rather than refusing large states: a batch of big states
-// runs with fewer resident threads, not with a coarser hash.
-static constexpr uint64_t kIRPoolBudgetBytes = 512ull << 20;   // 512 MB
-static constexpr uint32_t kIRMaxThreads      = 1024;
+namespace {
 
-static uint32_t g_last_degraded_states = 0;
+// Grid-stride over a state range, one thread per state at a time. The RULE is
+// state_exact_hash_device above; this is only a launch shape, so a range and a device-resident
+// loop cannot drift apart on what a state's exact hash is.
+//
+// A state the exact path cannot key leaves its hash at 0 -- which the readers already treat as
+// "not computed", and which kUncomputedStateHash reports -- rather than taking a coarser key.
+__global__ void k_exact_hash_range(DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out,
+                                   DeviceArena::View arena) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t stride = gridDim.x * blockDim.x;
+    uint32_t* slot = nullptr;
+    uint64_t slot_words = 0;
+    for (uint32_t i = lo + tid; i < hi; i += stride) {
+        uint64_t h = 0;
+        const ExactHashStatus st =
+            state_exact_hash_device(ds, i, arena, slot, slot_words, h, false, false);
+        if (st != ExactHashStatus::kOk) { ds.errors.record(error_kind_for(st)); h = 0; }
+        out[i - lo] = h;
+    }
+}
 
-void compute_state_ir_hashes_range(const EngineState& engine,
-                                   uint32_t lo, uint32_t hi,
+// Largest (edge count, occurrence count) over a state range, so the ARENA can be sized to the
+// batch. One cheap pass: the alternative is bounding occurrences by edges * kMaxArity, which is
+// 8x loose on the arity-2 edges real rules produce, and the depth blocks scale with it.
+__global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t stride = gridDim.x * blockDim.x;
+    const uint32_t num_edges_live = ds.edge_pool.size();
+    for (uint32_t i = lo + tid; i < hi; i += stride) {
+        if (i >= ds.max_states) continue;
+        StateEdgeSlice sl = ds.state_edge_slices[i];
+        uint32_t n = 0, occ = 0;
+        for (uint32_t k = 0; k < sl.count; ++k) {
+            EdgeId eid = ds.state_edge_ids[sl.offset + k];
+            if (eid >= num_edges_live || eid >= ds.edge_pool.capacity) continue;
+            const Edge& e = ds.edge_pool.at(eid);
+            if (e.arity == 0 || e.arity > kMaxArity) continue;
+            ++n; occ += e.arity;
+        }
+        atomicMax(&out_max[0], n);
+        atomicMax(&out_max[1], occ);
+    }
+}
+
+// Memory the arena may take for this launch. Slot size grows with state size, so this trades
+// CONCURRENCY against state size rather than refusing large states: a batch of big states runs
+// with fewer resident threads, never with a coarser hash.
+constexpr uint64_t kExactHashArenaBudgetBytes = 512ull << 20;   // 512 MB
+constexpr uint32_t kExactHashRangeThreads     = 1024;
+
+}  // namespace
+
+void compute_state_ir_hashes_range(EngineState& engine, uint32_t lo, uint32_t hi,
                                    uint64_t* out_hashes_device) {
     if (hi <= lo) return;
     const uint32_t n = hi - lo;
 
-    // Measure the batch, then size the slot to it. The previous fixed bounds meant any state
-    // past them was deduplicated by the 1-WL hash, which MERGES non-isomorphic states -- a
-    // wrong dedup key, not a coarser one (tools/ir_vs_wl collides on six-vertex graphs). A
-    // state's size is knowable here, so nothing has to be given up for it.
+    // Measure the batch so the arena covers a thread's largest claim. A thread whose state
+    // needs more than the arena can give records kIRArenaExhausted and its hash stays 0; the
+    // measurement is what keeps that from happening for a reason the host could have known.
     uint32_t* d_max = nullptr;
     HG_CUDA_CHECK(cudaMalloc(&d_max, sizeof(uint32_t) * 2), "measure alloc");
     HG_CUDA_CHECK(cudaMemset(d_max, 0, sizeof(uint32_t) * 2), "measure clear");
@@ -376,63 +328,29 @@ void compute_state_ir_hashes_range(const EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpy(h_max, d_max, sizeof(h_max), cudaMemcpyDeviceToHost), "measure copy");
     cudaFree(d_max);
 
-    const uint32_t max_edges = h_max[0], max_occs = h_max[1];
-    if (max_edges == 0) {
-        // Every state in the range is empty: each takes the reserved empty-state hash, which a
-        // memset cannot write, so one thread per state does it.
-        const uint32_t block = 128;
-        k_fill_empty_state_hashes<<<(n + block - 1) / block, block>>>(out_hashes_device, n);
-        HG_CUDA_CHECK(cudaDeviceSynchronize(), "empty range fill sync");
-        g_last_degraded_states = 0;
-        return;
-    }
-
     IrSlotShape shape;
-    shape.cap_edges = max_edges + 1;
-    shape.cap_occs  = max_occs + 1;
-    shape.cap_verts = max_occs + 1;      // every occurrence could be a distinct vertex
-    shape.depth     = kIRDeviceDepth;
-    shape.generators = engine.device().ir_generators;
-
+    shape.cap_edges  = h_max[0] + 1;
+    shape.cap_occs   = h_max[1] + 1;
+    shape.cap_verts  = h_max[1] + 1;    // every occurrence could be a distinct vertex
+    shape.depth      = engine.config().ir_depth;
+    shape.generators = engine.config().ir_generators;
     const uint64_t slot_words = shape.stride();
-    const uint64_t slot_bytes = slot_words * sizeof(uint32_t);
 
-    uint32_t threads = n < kIRMaxThreads ? n : kIRMaxThreads;
-    const uint64_t affordable = kIRPoolBudgetBytes / (slot_bytes ? slot_bytes : 1);
-    if (affordable == 0) {
-        // A single slot exceeds the whole budget. Rather than silently hand back a wrong
-        // dedup key, refuse: the caller sees the count and the states keep the 1-WL hash.
-        k_ir_canon_range<<<1, 1>>>(engine.device(), lo, hi, out_hashes_device,
-                                   nullptr, 0, IrSlotShape{}, nullptr);
-        HG_CUDA_CHECK(cudaDeviceSynchronize(), "degenerate range sync");
-        g_last_degraded_states = n;
-        return;
-    }
-    if (threads > affordable) threads = static_cast<uint32_t>(affordable);
+    uint32_t threads = n < kExactHashRangeThreads ? n : kExactHashRangeThreads;
+    const uint64_t affordable =
+        kExactHashArenaBudgetBytes / (slot_words * sizeof(uint32_t) + 1);
+    if (affordable == 0) threads = 1;                 // one slot, however big it is
+    else if (threads > affordable) threads = static_cast<uint32_t>(affordable);
 
-    uint32_t* pool = nullptr;
-    HG_CUDA_CHECK(cudaMalloc(&pool, size_t(threads) * slot_bytes), "pool alloc");
-    uint32_t* degraded = nullptr;
-    HG_CUDA_CHECK(cudaMalloc(&degraded, sizeof(uint32_t)), "degraded alloc");
-    HG_CUDA_CHECK(cudaMemset(degraded, 0, sizeof(uint32_t)), "degraded clear");
-
+    DeviceArena& arena = engine.ir_arena(slot_words * threads + 2ull * threads);
+    arena.reset();
     const uint32_t block = threads < 64 ? threads : 64;
     const uint32_t grid = (threads + block - 1) / block;
-    k_ir_canon_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device,
-                                      pool, slot_words, shape, degraded);
-    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_ir_canon_range sync");
-
-    uint32_t h_degraded = 0;
-    HG_CUDA_CHECK(cudaMemcpy(&h_degraded, degraded, sizeof(uint32_t), cudaMemcpyDeviceToHost),
-          "degraded copy");
-    cudaFree(degraded);
-    cudaFree(pool);
-    g_last_degraded_states = h_degraded;
+    k_exact_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device, arena.view());
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_exact_hash_range sync");
 }
 
-uint32_t last_ir_degraded_states() { return g_last_degraded_states; }
-
-uint64_t compute_state_ir_hash_host(const EngineState& engine, StateId sid) {
+uint64_t compute_state_ir_hash_host(EngineState& engine, StateId sid) {
     uint64_t* d = nullptr;
     HG_CUDA_CHECK(cudaMalloc(&d, sizeof(uint64_t)), "alloc");
     compute_state_ir_hashes_range(engine, sid, sid + 1, d);
