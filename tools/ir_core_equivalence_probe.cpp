@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <numeric>
 
+#include "hypergraph/arena.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
 
@@ -99,6 +100,53 @@ static std::vector<uint32_t> host_form(const Edges& edges) {
         for (auto v : e) form.push_back(static_cast<uint32_t>(v));
     }
     return form;
+}
+
+// The three per-edge arrays the hash and form do NOT pin: canonical RANK, content CLASS and
+// automorphism ORBIT. Event identity keys on rank and class; the quotient reconstruction keys
+// instance identity on orbit. An implementation can agree on the canonical hash and the
+// canonical form and still disagree here -- measured, when a thin adapter over the core passed
+// this probe on hash and form and lost 18 tests in all_tests, one of them reporting an event
+// count that depended on the worker count. That is the hole this closes.
+struct Arrays {
+    std::vector<uint32_t> rank, klass, orbit;
+    bool ok = false;
+};
+
+static Arrays core_arrays(const Edges& edges) {
+    Arrays a;
+    if (edges.empty()) return a;
+    Flat f = flatten(edges);
+    const uint32_t n_e = static_cast<uint32_t>(f.ea.size());
+    const uint32_t depth = hgcommon::IR_MAX_DEPTH_DEFAULT;
+    const uint64_t words = hgcommon::ir_scratch_words(f.n_verts, n_e, f.total_occ, depth);
+    if (g_scratch.size() < (words + 1) / 2 + 8) g_scratch.assign((words + 1) / 2 + 8, 0);
+    a.rank.assign(n_e, 0); a.klass.assign(n_e, 0); a.orbit.assign(n_e, 0);
+    auto r = hgcommon::ir_canonical_hash(
+        f.ea.data(), f.eoff.data(), f.ev.data(), n_e, f.n_verts, f.total_occ,
+        reinterpret_cast<uint32_t*>(g_scratch.data()), depth,
+        a.rank.data(), hgcommon::IR_HOST_GENERATORS, a.orbit.data(), a.klass.data());
+    a.ok = (r.status == hgcommon::IR_OK);
+    return a;
+}
+
+static Arrays host_arrays(const Edges& edges) {
+    Arrays a;
+    if (edges.empty()) return a;
+    hypergraph::IRCanonicalizer ir;
+    // The rank entry point takes the scratch-allocated edge list only, so the corpus case is
+    // copied into one. The other two have heap overloads.
+    auto mk = hypergraph::worker_scratch().mark();
+    {
+        hypergraph::SVec<hypergraph::SVec<VertexId>> sv;
+        for (const auto& e : edges) sv.emplace_back(e.begin(), e.end());
+        ir.compute_canonical_hash_with_edge_rank(sv, a.rank);
+    }
+    hypergraph::worker_scratch().release(mk);
+    ir.compute_canonical_hash_with_edge_map(edges, a.klass);
+    ir.compute_canonical_hash_with_edge_orbits(edges, a.orbit);
+    a.ok = true;
+    return a;
 }
 
 static uint64_t host_hash(const Edges& edges) {
@@ -184,6 +232,7 @@ int main(int argc, char** argv) {
     }
 
     size_t mismatch = 0, noniso = 0, need_depth = 0, form_mismatch = 0;
+    size_t rank_mismatch = 0, class_mismatch = 0, orbit_mismatch = 0;
     for (size_t i = 0; i < corpus.size(); ++i) {
         uint32_t st = 0;
         const uint64_t hc = core_hash(corpus[i], &st);
@@ -212,6 +261,26 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The three per-edge arrays, which the hash and the form both leave free.
+        {
+            const Arrays ac = core_arrays(corpus[i]);
+            if (ac.ok) {
+                const Arrays ah = host_arrays(corpus[i]);
+                if (ac.rank != ah.rank) {
+                    if (rank_mismatch < 5) printf("  RANK MISMATCH case %zu\n", i);
+                    ++rank_mismatch;
+                }
+                if (ac.klass != ah.klass) {
+                    if (class_mismatch < 5) printf("  CLASS MISMATCH case %zu\n", i);
+                    ++class_mismatch;
+                }
+                if (ac.orbit != ah.orbit) {
+                    if (orbit_mismatch < 5) printf("  ORBIT MISMATCH case %zu\n", i);
+                    ++orbit_mismatch;
+                }
+            }
+        }
+
         // Isomorphism invariance of the core itself.
         for (int t = 0; t < 3; ++t) {
             uint32_t st2 = 0;
@@ -227,8 +296,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    printf("\n%zu states | hash mismatches vs host: %zu | FORM mismatches vs host: %zu"
+    printf("\n%zu states | hash: %zu | form: %zu | rank: %zu | class: %zu | orbit: %zu"
            " | isomorphism violations: %zu | depth-limited: %zu\n",
-           corpus.size(), mismatch, form_mismatch, noniso, need_depth);
-    return (mismatch || noniso || form_mismatch) ? 1 : 0;
+           corpus.size(), mismatch, form_mismatch, rank_mismatch, class_mismatch,
+           orbit_mismatch, noniso, need_depth);
+    return (mismatch || noniso || form_mismatch || rank_mismatch || class_mismatch
+            || orbit_mismatch) ? 1 : 0;
 }
