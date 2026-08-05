@@ -390,10 +390,21 @@ about to be replaced. De-header is last and alone, by standing decision.
 | **S3** | One quotient reconstruction (P6.2, P6.2a rewritten) | The other duplicated rule: the causal DP and the per-instance replay, each implemented on both sides. Both copies have already drifted, neither drift caught by a gate. | **CAUSAL DP DONE** `98d185d` `2ad5b29` — `hgcommon/quotient_causal_core.hpp` holds `qc_reach`/`qc_process_transition`/`qc_add_producer` and the three key spaces; host and device each supply a storage Ctx and their own bodies are deleted (169 lines). **REPLAY: HOST DONE** `39b8d5a` — `hgcommon/quotient_replay_core.hpp` holds `qr_apply` (eight decisions that were made twice: the exactly-once claim, the from_slots drop, minting, the content triple, the run signature with out_step from the FRAME, causal in descending producer order, branchial by publish-then-scan, the child instance); `Hypergraph::QrCtx` supplies storage. **DEVICE PENDING** one `-j1` CUDA build, batched with #119. The body-similarity audit missed this pair (names differ `qc_`/`qe_`, phrasing under Jaccard 0.45) — its documented caveat, found by reading. #41 |
 
 | **S4** | Fix the duplication audit's two blind spots | It reported ONE cross-area duplicate (`main`) and missed both real ones — it compared names, so same-algorithm-different-name was invisible, and it compared QUALIFIED names, so host/device pairs in different namespaces were too. | **DONE** `45873bd` `323f6a1` — body-shingle similarity (Jaccard over 9-grams) plus unqualified-name grouping; ground-truthed on a positive control (three copies of one insertion sort at 1.00, under three names — fixed) and a negative (the join, correctly absent). 41 shipped pairs to read. #113 |
-| **S5** | Decide intra-state IR parallelism on device | `state_exact_hash_device` is one thread per state, so the GPU cannot accelerate a single hard canonicalisation — exactly the high-symmetry case where quotienting pays. Measure the distribution before building anything. | pending, #114 |
+| **S5** | Decide intra-state IR parallelism on device | `state_exact_hash_device` is one thread per state, so the GPU cannot accelerate a single hard canonicalisation — exactly the high-symmetry case where quotienting pays. Measure the distribution before building anything. | pending, #114. Needs a GPU measurement run, so it batches with the queued CUDA window below |
 | **S6** | Re-read the incrementalisation probes | Their recorded verdict is what justified dropping incremental WL and pointing the lever at IR. Read what they measured before repeating it. | **DONE** — the verdict had two legs and ONE IS STALE. (a) warm-starting `refine` cannot be exact (the canonical order IS the refinement trajectory) — STANDS, and it is a correctness argument. (b) "no parent→child locality, each match is its own work-stealing task" — FALSE at HEAD: `dispatch_expansion` runs up to `kExpandChunkSize` of one parent's children inline on the discovering thread. The unlock path the refutation itself named has landed. What it blocked — reusing the child's occurrence CSR from the parent's, patched by the delta — is exact and now has its hook. Recorded in `docs/BACKLOG.md` §2; a fresh profile comes before any build, since `build_adjacency` no longer exists. #115 |
 
 | — | De-header + redesign | Standing decision: last, alone, once the native code is locked. | pending, #20 |
+
+**ONE CUDA BUILD WINDOW IS QUEUED.** Three device items are held for it, batched because each
+touches a `gpu/include/hg_gpu/` header most `.cu` files include, and paying that recompile once
+is the difference between a minute and an hour. Build `-j1`, FOREGROUND, nothing else compiling
+(`CLAUDE.md`, first hard rule — `-j2` drove this box into swap twice).
+
+| item | what | gate |
+|---|---|---|
+| #41 | point `hg_gpu::qe_apply` at `hgcommon/quotient_replay_core.hpp` with a `DeviceQrCtx`, delete its body | `hg_gpu_tests`, `gpu_differential_tests` |
+| #119 | collapse `qc_orbit_of`/`qe_slot_of`/`qe_rank_of` onto one `qc_edge_index`; put it in `engine_state.hpp` beside the CSR, NOT behind a new include into a central header. Patch saved in the session scratchpad | same |
+| #114 | measure the per-state IR canonicalisation time distribution, to decide whether intra-state parallelism is worth building | a distribution, not a single number |
 
 # Live defect register
 
