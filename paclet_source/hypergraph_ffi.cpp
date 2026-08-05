@@ -30,6 +30,7 @@
 // Include comprehensive WXF library
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
+#include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 
 using namespace hypergraph;
@@ -129,92 +130,38 @@ static std::vector<uint8_t> session_ack(uint64_t handle) {
     return w.release_data();
 }
 
-std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
-                                        const HostBridge& host) {
-    try {
+// The envelope, parsed. Split out of run_rewriting_core because it is the one phase whose
+// dependency runs one way -- it writes ParsedJob and reads nothing a later phase produces.
+// Everything after it in that function reads the same fields, which is why the op boundary
+// (#12) had to be drawn by binding references rather than by extracting a second function.
+static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& host,
+                      hgffi::ParsedJob& req) {
         // Parse WXF input
         wxf::Parser parser(wxf_bytes);
         parser.skip_header();
 
-        std::vector<std::vector<std::vector<int64_t>>> initial_states_raw;
-        std::vector<std::pair<std::string, std::vector<std::vector<std::vector<int64_t>>>>> parsed_rules_raw;
-        int steps = 1;
-
-        // Warning trail served under the "Warnings" result key, schema shared with the GPU
-        // backend (Kind/Count/Context) so the WL formatter handles both backends. Collects
-        // option-parse skips, analysis refusals, and the engine's own warnings.
-        struct FfiWarning { std::string kind; int64_t count; std::string context; };
-        std::vector<FfiWarning> ffi_warnings;
-
-        // Option values
-        hypergraph::StateCanonicalizationMode state_canon_mode = hypergraph::StateCanonicalizationMode::None;  // Default: tree mode
-        hypergraph::EventSignatureKeys event_signature_keys = hypergraph::EVENT_SIG_NONE;  // Default: no event canonicalization
-        bool positional_event_identity = false;  // CanonicalizeEvents -> "Positional"
-        bool show_genesis_events = false;
-        bool show_progress = false;
-        bool causal_transitive_reduction = true;
-        size_t max_successor_states_per_parent = 0;
-        size_t max_states_per_step = 0;
-        double exploration_probability = 1.0;
-        bool explore_from_canonical_states_only = false;  // Exploration deduplication
-        bool quotient_initial_states = false;             // Collapse isomorphic initial states
-        // ir_verification and return_canonical_states are derived from state_canon_mode == Full
-        uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
-        bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
-        size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
-
-        // Data selection flags - which components to include in output
-        // By default all are included for backward compatibility
-        bool include_states = true;
-        bool include_canonical_hashes = false;  // Emit per-state IR canonical hash (CanonicalHash); stable across runs, for cross-run fusion
-        bool include_events = true;
-        bool include_events_minimal = false;  // Minimal event data: Id, InputState, OutputState only
-        bool include_causal_edges = true;
-        bool include_branchial_edges = true;       // Event-to-event (for Evolution*Branchial)
-        bool include_branchial_state_edges = false; // State-to-state (for BranchialGraph) - overlap-based
-        bool include_branchial_state_edges_all_siblings = false; // State-to-state all siblings (no overlap check)
-        int branchial_step = 0;  // 0=All steps, positive=1-based step, negative=from end (-1=final)
-        bool edge_deduplication = true;  // True: one edge per (from,to) pair; False: N edges for N shared hypergraph edges
-        bool include_num_states = true;
-        bool include_num_events = true;
-        bool include_num_causal_edges = true;
-        bool include_num_branchial_edges = true;
-        bool include_global_edges = false;      // All edges created during evolution
-        bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
-
-        // GraphProperties option for graph-ready data output (list of properties)
-        std::vector<std::string> graph_properties;  // e.g., {"StatesGraph", "CausalGraphStructure"}
-        std::string canonicalize_states_mode = "None";  // Track actual mode string for effective ID computation
-
-        // The session envelope. Empty `Op` means `Evolve`, which is the whole of today's
-        // protocol, so a caller that sends neither key is served exactly as before. `Session` is
-        // the opaque handle; 0 is "no session", the same reserved-zero discipline every other id
-        // space here follows.
-        std::string session_op;
-        uint64_t session_handle = 0;
-
         // Parse main association
         parser.read_association([&](const std::string& key, wxf::Parser& value_parser) {
             if (key == "InitialStates") {
-                initial_states_raw = value_parser.read<std::vector<std::vector<std::vector<int64_t>>>>();
+                req.initial_states_raw = value_parser.read<std::vector<std::vector<std::vector<int64_t>>>>();
             }
             else if (key == "InitialEdges") {
                 // Legacy single-state format
                 auto edges_data = value_parser.read<std::vector<std::vector<int64_t>>>();
-                initial_states_raw.push_back(edges_data);
+                req.initial_states_raw.push_back(edges_data);
             }
             else if (key == "Rules") {
-                parsed_rules_raw = ffi_helpers::read_rules_association(value_parser);
+                req.parsed_rules_raw = ffi_helpers::read_rules_association(value_parser);
             }
             else if (key == "Steps") {
-                steps = value_parser.read<int>();
+                req.steps = value_parser.read<int>();
                 // Every budget check in the engine is `step > max_steps_`, and this is cast to
                 // size_t downstream -- so a negative value becomes SIZE_MAX and no check ever
                 // fires. The run then ends only by exhausting the SegmentedArray ceiling,
                 // after multi-GB of arena, as a hard failure.
-                if (steps < 0) {
+                if (req.steps < 0) {
                     throw std::runtime_error("Steps must be non-negative, got " +
-                                             std::to_string(steps));
+                                             std::to_string(req.steps));
                 }
             }
             else if (key == "Options") {
@@ -225,55 +172,55 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     const size_t option_value_start = option_parser.position();
                     try {
                         if (option_key == "MaxSuccessorStatesPerParent") {
-                            max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "MaxStatesPerStep") {
-                            max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "MatchesPerStep") {
-                            matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "RandomSeed") {
-                            random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
+                            req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
-                            exploration_probability = option_parser.read<double>();
+                            req.exploration_probability = option_parser.read<double>();
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
-                            branchial_step = static_cast<int>(option_parser.read<int64_t>());
+                            req.branchial_step = static_cast<int>(option_parser.read<int64_t>());
                         } else if (option_key == "EdgeDeduplication") {
                             std::string symbol = option_parser.read<std::string>();
-                            edge_deduplication = (symbol == "True");
+                            req.edge_deduplication = (symbol == "True");
                         } else if (option_key == "IncludeCanonicalHashes") {
                             std::string symbol = option_parser.read<std::string>();
-                            include_canonical_hashes = (symbol == "True");
+                            req.include_canonical_hashes = (symbol == "True");
                         } else if (option_key == "RequestedData") {
                             // Parse list of data component names
                             // When specified, only include requested components
-                            include_states = false;
-                            include_events = false;
-                            include_events_minimal = false;
-                            include_causal_edges = false;
-                            include_branchial_edges = false;
-                            include_branchial_state_edges = false;
+                            req.include_states = false;
+                            req.include_events = false;
+                            req.include_events_minimal = false;
+                            req.include_causal_edges = false;
+                            req.include_branchial_edges = false;
+                            req.include_branchial_state_edges = false;
 
                             // Reset all include flags when RequestedData is specified
-                            include_num_states = false;
-                            include_num_events = false;
-                            include_num_causal_edges = false;
-                            include_num_branchial_edges = false;
+                            req.include_num_states = false;
+                            req.include_num_events = false;
+                            req.include_num_causal_edges = false;
+                            req.include_num_branchial_edges = false;
 
                             auto components = option_parser.read<std::vector<std::string>>();
                             for (const auto& comp : components) {
-                                if (comp == "States") include_states = true;
-                                else if (comp == "Events") include_events = true;
-                                else if (comp == "EventsMinimal") include_events_minimal = true;
-                                else if (comp == "CausalEdges") include_causal_edges = true;
-                                else if (comp == "BranchialEdges") include_branchial_edges = true;
-                                else if (comp == "BranchialStateEdges") include_branchial_state_edges = true;
-                                else if (comp == "BranchialStateEdgesAllSiblings") include_branchial_state_edges_all_siblings = true;
-                                else if (comp == "NumStates") include_num_states = true;
-                                else if (comp == "NumEvents") include_num_events = true;
-                                else if (comp == "NumCausalEdges") include_num_causal_edges = true;
-                                else if (comp == "NumBranchialEdges") include_num_branchial_edges = true;
-                                else if (comp == "GlobalEdges") include_global_edges = true;
-                                else if (comp == "StateBitvectors") include_state_bitvectors = true;
+                                if (comp == "States") req.include_states = true;
+                                else if (comp == "Events") req.include_events = true;
+                                else if (comp == "EventsMinimal") req.include_events_minimal = true;
+                                else if (comp == "CausalEdges") req.include_causal_edges = true;
+                                else if (comp == "BranchialEdges") req.include_branchial_edges = true;
+                                else if (comp == "BranchialStateEdges") req.include_branchial_state_edges = true;
+                                else if (comp == "BranchialStateEdgesAllSiblings") req.include_branchial_state_edges_all_siblings = true;
+                                else if (comp == "NumStates") req.include_num_states = true;
+                                else if (comp == "NumEvents") req.include_num_events = true;
+                                else if (comp == "NumCausalEdges") req.include_num_causal_edges = true;
+                                else if (comp == "NumBranchialEdges") req.include_num_branchial_edges = true;
+                                else if (comp == "GlobalEdges") req.include_global_edges = true;
+                                else if (comp == "StateBitvectors") req.include_state_bitvectors = true;
                             }
                         } else if (option_key == "CanonicalizeEvents") {
                             // Can be: None, Full, Automatic (symbols), or {"InputState", "OutputState", ...} (list)
@@ -282,30 +229,30 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                 // parses, an element does not) leaves the cursor inside the
                                 // list, so the symbol fallback re-aligns to the value start.
                                 auto keys = option_parser.read<std::vector<std::string>>();
-                                event_signature_keys = hypergraph::EVENT_SIG_NONE;
+                                req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 for (const auto& key : keys) {
-                                    if (key == "InputState") event_signature_keys |= hypergraph::EventKey_InputState;
-                                    else if (key == "OutputState") event_signature_keys |= hypergraph::EventKey_OutputState;
-                                    else if (key == "Step") event_signature_keys |= hypergraph::EventKey_Step;
-                                    else if (key == "Rule") event_signature_keys |= hypergraph::EventKey_Rule;
-                                    else if (key == "ConsumedEdges") event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
-                                    else if (key == "ProducedEdges") event_signature_keys |= hypergraph::EventKey_ProducedEdges;
+                                    if (key == "InputState") req.event_signature_keys |= hypergraph::EventKey_InputState;
+                                    else if (key == "OutputState") req.event_signature_keys |= hypergraph::EventKey_OutputState;
+                                    else if (key == "Step") req.event_signature_keys |= hypergraph::EventKey_Step;
+                                    else if (key == "Rule") req.event_signature_keys |= hypergraph::EventKey_Rule;
+                                    else if (key == "ConsumedEdges") req.event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
+                                    else if (key == "ProducedEdges") req.event_signature_keys |= hypergraph::EventKey_ProducedEdges;
                                 }
                             } catch (...) {
                                 // Read as symbol, from the START of the value.
                                 option_parser.seek(option_value_start);
                                 std::string symbol = option_parser.read<std::string>();
                                 if (symbol == "None") {
-                                    event_signature_keys = hypergraph::EVENT_SIG_NONE;
+                                    req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 } else if (symbol == "Full") {
-                                    event_signature_keys = hypergraph::EVENT_SIG_FULL;
+                                    req.event_signature_keys = hypergraph::EVENT_SIG_FULL;
                                 } else if (symbol == "Automatic") {
-                                    event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
+                                    req.event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
                                 } else if (symbol == "Positional") {
                                     // Same key set as Automatic; ranks read from each raw
                                     // state's own labelling rather than the class frame.
-                                    event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
-                                    positional_event_identity = true;
+                                    req.event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
+                                    req.positional_event_identity = true;
                                 }
                                 // else keep default (None)
                             }
@@ -317,39 +264,39 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             // display-time grouping via ContentStateId computed in the FFI.
                             std::string symbol = option_parser.read<std::string>();
                             if (symbol == "None" || symbol == "False") {
-                                state_canon_mode = hypergraph::StateCanonicalizationMode::None;
-                                canonicalize_states_mode = "None";
+                                req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
+                                req.canonicalize_states_mode = "None";
                             } else if (symbol == "Automatic") {
                                 // Automatic behaves like None for evolution (no deduplication)
                                 // ContentStateId is computed separately for display-time grouping
-                                state_canon_mode = hypergraph::StateCanonicalizationMode::None;
-                                canonicalize_states_mode = "Automatic";
+                                req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
+                                req.canonicalize_states_mode = "Automatic";
                             } else if (symbol == "Full" || symbol == "True") {
-                                state_canon_mode = hypergraph::StateCanonicalizationMode::Full;
-                                canonicalize_states_mode = "Full";
+                                req.state_canon_mode = hypergraph::StateCanonicalizationMode::Full;
+                                req.canonicalize_states_mode = "Full";
                             }
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
-                            graph_properties = option_parser.read<std::vector<std::string>>();
+                            req.graph_properties = option_parser.read<std::vector<std::string>>();
                         } else {
                             std::string symbol = option_parser.read<std::string>();
                             bool value = (symbol == "True");
 
                             if (option_key == "ShowGenesisEvents") {
-                                show_genesis_events = value;
+                                req.show_genesis_events = value;
                             } else if (option_key == "ShowProgress") {
-                                show_progress = value;
+                                req.show_progress = value;
                             } else if (option_key == "CausalTransitiveReduction") {
-                                causal_transitive_reduction = value;
+                                req.causal_transitive_reduction = value;
                             } else if (option_key == "QuotientInitialStates") {
-                                quotient_initial_states = value;
+                                req.quotient_initial_states = value;
                             } else if (option_key == "ExploreFromCanonicalStatesOnly") {
                                 // Exploration deduplication: only explore from canonical states
                                 // Requires CanonicalizeStates -> Full to have any effect
-                                explore_from_canonical_states_only = value;
+                                req.explore_from_canonical_states_only = value;
                             } else if (option_key == "UniformRandom") {
                                 // Use uniform random evolution mode (reservoir sampling)
-                                uniform_random = value;
+                                req.uniform_random = value;
                             }
                         }
                     } catch (const std::exception& e) {
@@ -363,7 +310,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         // progress callback is a no-op under performRewriting).
                         option_parser.seek(option_value_start);
                         option_parser.skip_value();
-                        ffi_warnings.push_back(
+                        req.ffi_warnings.push_back(
                             {"OptionSkipped", 1,
                              "option '" + option_key + "' ignored: " + e.what()});
                         core_progress(host,
@@ -382,21 +329,29 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // `Session` is the opaque handle: a per-worker counter, 0 reserved for "no session",
             // so no client can construct one and none is confused with absence.
             else if (key == "Op") {
-                session_op = value_parser.read<std::string>();
+                req.session_op = value_parser.read<std::string>();
             }
             else if (key == "Session") {
-                session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
+                req.session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
             }
             else {
                 value_parser.skip_value();
             }
         });
+}
+
+std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
+                                        const HostBridge& host) {
+    try {
+        hgffi::ParsedJob req;
+        parse_job(wxf_bytes, host, req);
+
 
         // Close needs nothing else from the job: it names a handle and releases what that handle
         // holds. Answered before the rules are checked, because a Close carries no rules and
         // demanding them would make releasing a session harder than opening one.
-        if (session_op == "Close") {
-            worker_session().close(session_handle);
+        if (req.session_op == "Close") {
+            worker_session().close(req.session_handle);
             return session_ack(hgffi::SessionSlot::kNoSession);
         }
 
@@ -406,22 +361,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // the entire serialization -- reads `hg` and `engine` and cannot tell which produced
         // them, so the four verbs share ONE serializer rather than growing a second one that
         // would be right on the day it was written.
-        const bool opening_session = (session_op == "Open");
-        const bool held_session = (session_op == "Step" || session_op == "Query");
-        if (!session_op.empty() && !opening_session && !held_session && session_op != "Evolve") {
+        const bool opening_session = (req.session_op == "Open");
+        const bool held_session = (req.session_op == "Step" || req.session_op == "Query");
+        if (!req.session_op.empty() && !opening_session && !held_session && req.session_op != "Evolve") {
             throw std::runtime_error(
-                "Op '" + session_op + "' is not a verb; 'Evolve', 'Open', 'Step', 'Query' and "
+                "Op '" + req.session_op + "' is not a verb; 'Evolve', 'Open', 'Step', 'Query' and "
                 "'Close' are");
         }
 
         // A held session already has its rules; sending them again would be sending rules the
         // job cannot apply, since the engine's rule set was fixed when it opened.
-        if (!held_session && parsed_rules_raw.empty()) {
+        if (!held_session && req.parsed_rules_raw.empty()) {
             throw std::runtime_error("No valid rules found");
         }
-        if (held_session && !parsed_rules_raw.empty()) {
+        if (held_session && !req.parsed_rules_raw.empty()) {
             throw std::runtime_error(
-                "Op '" + session_op + "' carries rules, but a session's rule set was fixed when "
+                "Op '" + req.session_op + "' carries rules, but a session's rule set was fixed when "
                 "it opened; applying these would answer about a system the session is not "
                 "exploring");
         }
@@ -434,75 +389,75 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // from `initial_states` on every call, so there is nothing here for a handle to name
             // (D13). Refused rather than answered, because an `Open` that returned a result with
             // no handle would look like a session to every field a caller can read.
-            if (!session_op.empty() && session_op != "Evolve") {
+            if (!req.session_op.empty() && req.session_op != "Evolve") {
                 throw std::runtime_error(
-                    "Op '" + session_op + "' has no GPU implementation; sessions are served on "
+                    "Op '" + req.session_op + "' has no GPU implementation; sessions are served on "
                     "the CPU. Use TargetDevice -> \"CPU\".");
             }
 
             // The per-step caps have no device implementation: EvolveInput carries no
-            // max_states_per_step / max_successor_states_per_parent, so a capped run on the
+            // req.max_states_per_step / req.max_successor_states_per_parent, so a capped run on the
             // GPU returns the UNCAPPED state set while the same call on the CPU returns a
             // capped one. Reported rather than applied -- silently returning a different
             // answer per device is the divergence class the differential suite exists to
             // catch, and a cap the caller asked for and did not get is exactly that.
-            if (max_states_per_step > 0) {
-                ffi_warnings.push_back(
+            if (req.max_states_per_step > 0) {
+                req.ffi_warnings.push_back(
                     {"OptionSkipped", 1,
                      "'MaxStatesPerStep' has no GPU implementation and was not applied; "
                      "the returned state set is uncapped. Use TargetDevice -> \"CPU\" to "
                      "apply it."});
             }
-            if (max_successor_states_per_parent > 0) {
-                ffi_warnings.push_back(
+            if (req.max_successor_states_per_parent > 0) {
+                req.ffi_warnings.push_back(
                     {"OptionSkipped", 1,
                      "'MaxSuccessorStatesPerParent' has no GPU implementation and was not "
                      "applied; the returned state set is uncapped. Use TargetDevice -> "
                      "\"CPU\" to apply it."});
             }
-            if (uniform_random && matches_per_step > 0) {
-                ffi_warnings.push_back(
+            if (req.uniform_random && req.matches_per_step > 0) {
+                req.ffi_warnings.push_back(
                     {"OptionSkipped", 1,
                      "'MatchesPerStep' maps to the MaxStatesPerStep cap, which has no GPU "
                      "implementation and was not applied."});
             }
 
             GpuJob job{
-                parsed_rules_raw,
-                initial_states_raw,
-                steps,
+                req.parsed_rules_raw,
+                req.initial_states_raw,
+                req.steps,
                 // 0 None, 1 Full, 2 Automatic -- GpuJob::event_canon_mode's own order, which is
                 // NOT the state order below and is not the enum order either. Collapsing this to
                 // "0 if None else 1" sent code 1 for an AUTOMATIC request, and the backend reads
                 // 1 as FULL: the caller silently got a coarser event identity than asked for, and
                 // code 2 was never sent at all.
-                (event_signature_keys == hypergraph::EVENT_SIG_NONE)      ? GpuJob::EventCanonCode::kNone :
-                (event_signature_keys == hypergraph::EVENT_SIG_AUTOMATIC) ? GpuJob::EventCanonCode::kAutomatic
+                (req.event_signature_keys == hypergraph::EVENT_SIG_NONE)      ? GpuJob::EventCanonCode::kNone :
+                (req.event_signature_keys == hypergraph::EVENT_SIG_AUTOMATIC) ? GpuJob::EventCanonCode::kAutomatic
                                                                           : GpuJob::EventCanonCode::kFull,
                 // 0 None, 1 Automatic, 2 Full (hg_gpu::CanonicalizationMode order)
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? GpuJob::StateCanonCode::kFull :
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? GpuJob::StateCanonCode::kAutomatic
+                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? GpuJob::StateCanonCode::kFull :
+                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? GpuJob::StateCanonCode::kAutomatic
                                                                                        : GpuJob::StateCanonCode::kNone,
-                causal_transitive_reduction,
-                explore_from_canonical_states_only,
-                quotient_initial_states,
-                exploration_probability,
+                req.causal_transitive_reduction,
+                req.explore_from_canonical_states_only,
+                req.quotient_initial_states,
+                req.exploration_probability,
                 0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
-                include_states,
-                include_events || include_events_minimal,
-                include_causal_edges,
-                include_branchial_edges,
-                include_canonical_hashes,
-                graph_properties,
-                edge_deduplication,
-                branchial_step,
-                show_genesis_events,
+                req.include_states,
+                req.include_events || req.include_events_minimal,
+                req.include_causal_edges,
+                req.include_branchial_edges,
+                req.include_canonical_hashes,
+                req.graph_properties,
+                req.edge_deduplication,
+                req.branchial_step,
+                req.show_genesis_events,
             };
-            if (show_progress) {
+            if (req.show_progress) {
                 core_progress(host, "HGEvolve: Starting GPU evolution...");
             }
             std::vector<uint8_t> out = run_gpu_evolution(job, host);
-            if (show_progress) {
+            if (req.show_progress) {
                 core_progress(host, "HGEvolve: GPU evolution complete.");
             }
             return out;
@@ -529,10 +484,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         hgffi::CpuEngineHolder* holder = nullptr;
         if (held_session) {
             holder = dynamic_cast<hgffi::CpuEngineHolder*>(
-                &worker_session().engine(session_handle));
+                &worker_session().engine(req.session_handle));
             if (!holder)
                 throw std::runtime_error(
-                    "session " + std::to_string(session_handle) +
+                    "session " + std::to_string(req.session_handle) +
                     " is not held by this binary's engine");
         } else {
             engine_holder =
@@ -548,24 +503,24 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // built under one convention using another: `Full` at `Open` and nothing at `Query` would
         // report exact canonical forms as tree-mode ones, in fields that all still parse.
         //
-        // `steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
+        // `req.steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
         // end is defined against that total, not against the increment a `Step` just asked for.
         if (held_session) {
-            state_canon_mode = hg.state_canonicalization_mode();
-            canonicalize_states_mode =
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? "Full" :
-                (state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? "Automatic"
+            req.state_canon_mode = hg.state_canonicalization_mode();
+            req.canonicalize_states_mode =
+                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? "Full" :
+                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? "Automatic"
                                                                                       : "None";
-            event_signature_keys = hg.event_signature_keys();
-            positional_event_identity = hg.positional_event_identity();
-            show_genesis_events = engine.genesis_events();
+            req.event_signature_keys = hg.event_signature_keys();
+            req.positional_event_identity = hg.positional_event_identity();
+            req.show_genesis_events = engine.genesis_events();
         }
 
         // The hot-path state hash is always Weisfeiler-Leman; exact IR
         // canonicalization is selected via CanonicalizeStates -> Full.
 
         // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
-        const bool full_canonicalization = (state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
+        const bool full_canonicalization = (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
 
         // What this call must RECORD, derived from what it will return. An artifact nothing asked
         // for is not built at all. Every consumer is named here and nowhere else:
@@ -580,13 +535,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Which graph properties need which comes from graph_property_needs, the same test the
         // marshaller builds them with, so the two cannot disagree about a name. The serialization
         // reads `gneeds` too, so it is derived once for every op rather than per path.
-        const hgmarshal::GraphPropertyNeeds gneeds = hgmarshal::graph_property_needs(graph_properties);
+        const hgmarshal::GraphPropertyNeeds gneeds = hgmarshal::graph_property_needs(req.graph_properties);
         hypergraph::RecordSet record;
-        record.causal = include_causal_edges || include_num_causal_edges || gneeds.causal ||
-                        show_progress;
-        record.branchial = include_branchial_edges || include_num_branchial_edges ||
-                           include_branchial_state_edges || gneeds.branchial || show_progress;
-        record.state_events = include_branchial_state_edges_all_siblings;
+        record.causal = req.include_causal_edges || req.include_num_causal_edges || gneeds.causal ||
+                        req.show_progress;
+        record.branchial = req.include_branchial_edges || req.include_num_branchial_edges ||
+                           req.include_branchial_state_edges || gneeds.branchial || req.show_progress;
+        record.state_events = req.include_branchial_state_edges_all_siblings;
 
         // A session records what it was OPENED for, and an artifact it does not record cannot be
         // produced afterwards: the evolution that would have built it has already run. Asking a
@@ -596,7 +551,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (held_session) {
             const hypergraph::RecordSet held = hg.record_set();
             auto unrecorded = [&](const char* what) {
-                ffi_warnings.push_back(
+                req.ffi_warnings.push_back(
                     {"OptionSkipped", 1,
                      std::string("this session does not record ") + what + ": it was opened "
                      "without asking for it, so what is returned here is empty for that reason "
@@ -610,32 +565,32 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (!held_session) {
 
             // Configure event canonicalization
-            hg.set_event_signature_keys(event_signature_keys);
-            hg.set_positional_event_identity(positional_event_identity);
+            hg.set_event_signature_keys(req.event_signature_keys);
+            hg.set_positional_event_identity(req.positional_event_identity);
 
             // Configure state canonicalization mode
-            hg.set_state_canonicalization_mode(state_canon_mode);
+            hg.set_state_canonicalization_mode(req.state_canon_mode);
 
             hg.set_record_set(record);
 
             hypergraph::ParallelEvolutionEngine& engine = engine_holder->engine();
 
             // Configure engine options
-            engine.set_max_steps(static_cast<size_t>(steps));
-            engine.set_transitive_reduction(causal_transitive_reduction);
-            engine.set_exploration_probability(exploration_probability);
+            engine.set_max_steps(static_cast<size_t>(req.steps));
+            engine.set_transitive_reduction(req.causal_transitive_reduction);
+            engine.set_exploration_probability(req.exploration_probability);
             // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
             // sampling draws reproducible, which is the whole content of the option.
-            engine.set_random_seed(random_seed);
-            engine.set_max_successor_states_per_parent(max_successor_states_per_parent);
-            engine.set_max_states_per_step(max_states_per_step);
-            engine.set_genesis_events(show_genesis_events);
-            engine.set_explore_from_canonical_states_only(explore_from_canonical_states_only);
-            engine.set_quotient_initial_states(quotient_initial_states);
+            engine.set_random_seed(req.random_seed);
+            engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
+            engine.set_max_states_per_step(req.max_states_per_step);
+            engine.set_genesis_events(req.show_genesis_events);
+            engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
+            engine.set_quotient_initial_states(req.quotient_initial_states);
 
             // Convert rules to unified format
             uint16_t rule_index = 0;
-            for (const auto& [rule_name, rule_data] : parsed_rules_raw) {
+            for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
                 if (rule_data.size() != 2) continue;
 
                 hypergraph::RewriteRule rule;
@@ -725,7 +680,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
             std::unordered_map<int64_t, hypergraph::VertexId> initial_vertex_map;
 
-            for (const auto& state_raw : initial_states_raw) {
+            for (const auto& state_raw : req.initial_states_raw) {
                 // Create a per-state vertex mapping: input_vertex -> canonical_vertex
                 // Always start from 0 for canonical form
                 std::unordered_map<int64_t, hypergraph::VertexId> vertex_map;
@@ -764,7 +719,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // Run the evolution. Abort is a process kill by the parent, so there is
             // no cooperative abort; progress (when requested) is reported through the
             // host bridge.
-            if (show_progress) {
+            if (req.show_progress) {
                 core_progress(host, "HGEvolve: Starting evolution...");
             }
             auto evolution_start = std::chrono::steady_clock::now();
@@ -775,12 +730,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
             // always was, and the uniformity it used to claim moves to TransitionRate, which is a
             // rate and needs no depth to be defined over.
-            if (uniform_random && matches_per_step > 0) {
-                engine.set_max_states_per_step(matches_per_step);
+            if (req.uniform_random && req.matches_per_step > 0) {
+                engine.set_max_states_per_step(req.matches_per_step);
             }
-            engine.evolve(initial_states, static_cast<size_t>(steps));
+            engine.evolve(initial_states, static_cast<size_t>(req.steps));
 
-            if (show_progress) {
+            if (req.show_progress) {
                 auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - evolution_start).count();
                 std::ostringstream oss;
@@ -803,18 +758,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // it says so, rather than being served from a fresh engine that would satisfy every
         // internal check while having lost the caller's work.
         if (held_session) {
-            if (show_progress)
-                core_progress(host, "HGEvolve: " + session_op + " on session " +
-                                        std::to_string(session_handle) + "...");
-            if (session_op == "Step") {
+            if (req.show_progress)
+                core_progress(host, "HGEvolve: " + req.session_op + " on session " +
+                                        std::to_string(req.session_handle) + "...");
+            if (req.session_op == "Step") {
                 try {
-                    holder->extend(steps);
+                    holder->extend(req.steps);
                 } catch (...) {
                     worker_session().invalidate();
                     throw;
                 }
             }
-            steps = static_cast<int>(engine.max_steps());
+            req.steps = static_cast<int>(engine.max_steps());
         }
 
         // Content identity of every state: the hash the engine deduplicates on under Automatic,
@@ -847,7 +802,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         };
 
         for (const auto& w : engine.warnings())
-            ffi_warnings.push_back({"Engine", 1, w});
+            req.ffi_warnings.push_back({"Engine", 1, w});
 
         // Build WXF output - only include requested data components
         wxf::Writer wxf_writer;
@@ -876,7 +831,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // Echoed so every reply that came from a session says which one, and a caller
             // multiplexing over replies never has to match one to a request to find out.
             full_result.push_back({wxf::WXFValue("Session"),
-                                   wxf::WXFValue(static_cast<int64_t>(session_handle))});
+                                   wxf::WXFValue(static_cast<int64_t>(req.session_handle))});
         }
 
         // The States and Events sections dominate the result size, so they are
@@ -894,7 +849,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // - CanonicalId: isomorphism-based (for Full mode) - isomorphic states share ID
         // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
         // This matches reference behavior where canonicalization is applied at display time
-        if (include_states) {
+        if (req.include_states) {
             const uint32_t num_states = hg.num_states();
             const ContentIndex& ci = content_index();
             const auto& content_hash_to_id = ci.first_with;
@@ -935,7 +890,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // state_data association: Id, CanonicalId, ContentStateId, Step, Edges,
                 // IsInitial, and (optionally) CanonicalHash.
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(include_canonical_hashes ? 7u : 6u);
+                sections.write_varint(req.include_canonical_hashes ? 7u : 6u);
 
                 auto put_i64 = [&](const char* k, int64_t v) {
                     sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -990,7 +945,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 sections.write(std::string("IsInitial"));
                 sections.write(static_cast<int64_t>(state.step == 0));
 
-                if (include_canonical_hashes) {
+                if (req.include_canonical_hashes) {
                     // The option's contract is the IR canonical hash: identical for isomorphic
                     // states within and across runs, so it can key cross-run fusion. The dedup
                     // map's own key (state.canonical_hash) IS that hash under Full but the WL
@@ -1020,7 +975,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Events -> Association[event_id -> event_data]
         // Only canonical events are sent (for graph vertices)
         // State IDs are mapped through get_canonical_state() so edges connect canonical states
-        if (include_events) {
+        if (req.include_events) {
             // Send ALL events (not just canonical) - WL uses CanonicalId for vertex merging
             // This preserves event multiplicity: multiple events with same canonical ID
             // map to one vertex, but their edges to different output states are preserved.
@@ -1033,7 +988,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
                 if (event.id == hypergraph::INVALID_ID) continue;
-                if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
+                if (!req.show_genesis_events && hg.is_genesis_event(eid)) continue;
                 emit_eids.push_back(eid);
             }
 
@@ -1097,7 +1052,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // EventsMinimal -> Association[event_id -> {Id, CanonicalId, RuleIndex, InputState, OutputState, CanonicalInputState, CanonicalOutputState}]
         // Reduced event data for graph structure variants that don't need full event details
         // Send ALL events - WL uses CanonicalId for vertex merging, RuleIndex for Event=Automatic grouping
-        if (include_events_minimal && !include_events) {
+        if (req.include_events_minimal && !req.include_events) {
             uint32_t num_raw_events = hg.num_raw_events();
 
             std::vector<uint32_t> emit_eids;
@@ -1105,7 +1060,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
                 const hypergraph::Event& event = hg.get_event(eid);
                 if (event.id == hypergraph::INVALID_ID) continue;
-                if (!show_genesis_events && hg.is_genesis_event(eid)) continue;
+                if (!req.show_genesis_events && hg.is_genesis_event(eid)) continue;
                 emit_eids.push_back(eid);
             }
 
@@ -1154,7 +1109,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Endpoints are mapped to canonical event IDs for graph structure
         // Deduplicated by RAW (producer, consumer) pairs to remove internal duplication
         // but preserving all unique raw relationships (which may share canonical endpoints)
-        if (include_causal_edges) {
+        if (req.include_causal_edges) {
             wxf::WXFValueList causal_edges;
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
 
@@ -1168,7 +1123,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
             for (const auto& edge : causal_edge_vec) {
                 // Skip edges involving genesis events if ShowGenesisEvents is false
-                if (!show_genesis_events &&
+                if (!req.show_genesis_events &&
                     (hg.is_genesis_event(edge.producer) || hg.is_genesis_event(edge.consumer))) {
                     continue;
                 }
@@ -1196,12 +1151,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
         // For Evolution*Branchial graphs where event vertices need canonical IDs
         // NO deduplication - multiplicity matters for branchial edges
-        if (include_branchial_edges) {
+        if (req.include_branchial_edges) {
             wxf::WXFValueList branchial_edges;
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
             for (const auto& edge : branchial_edge_vec) {
                 // Skip edges involving genesis events if ShowGenesisEvents is false
-                if (!show_genesis_events &&
+                if (!req.show_genesis_events &&
                     (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) {
                     continue;
                 }
@@ -1221,27 +1176,27 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // BranchialStateVertices -> List of unique state IDs that appear in branchial edges
         // For BranchialGraph where state vertices are the output states of events
         // NOTE: Do NOT deduplicate by canonical state pair - reference preserves edge multiplicity
-        if (include_branchial_state_edges) {
+        if (req.include_branchial_state_edges) {
             wxf::WXFValueList branchial_state_edges;
             std::set<hypergraph::StateId> unique_states;
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
 
             // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
             uint32_t target_step = 0;
-            bool filter_by_step = (branchial_step != 0);
+            bool filter_by_step = (req.branchial_step != 0);
             if (filter_by_step) {
-                if (branchial_step > 0) {
+                if (req.branchial_step > 0) {
                     // 1-based indexing: 1 = step 1, 2 = step 2, etc.
-                    target_step = static_cast<uint32_t>(branchial_step);
+                    target_step = static_cast<uint32_t>(req.branchial_step);
                 } else {
-                    // Negative from end: -1 = final step (steps), -2 = steps-1, etc.
-                    target_step = static_cast<uint32_t>(steps + 1 + branchial_step);
+                    // Negative from end: -1 = final step (req.steps), -2 = req.steps-1, etc.
+                    target_step = static_cast<uint32_t>(req.steps + 1 + req.branchial_step);
                 }
             }
 
             for (const auto& edge : branchial_edge_vec) {
                 // Skip edges involving genesis events if ShowGenesisEvents is false
-                if (!show_genesis_events &&
+                if (!req.show_genesis_events &&
                     (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) {
                     continue;
                 }
@@ -1282,18 +1237,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         // BranchialStateEdgesAllSiblings: ALL pairs of output states from same input state
         // This matches reference BranchialGraph behavior (no overlap check, all siblings)
-        if (include_branchial_state_edges_all_siblings) {
+        if (req.include_branchial_state_edges_all_siblings) {
             wxf::WXFValueList branchial_state_edges;
             std::set<hypergraph::StateId> unique_states;
 
             // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
             uint32_t target_step = 0;
-            bool filter_by_step = (branchial_step != 0);
+            bool filter_by_step = (req.branchial_step != 0);
             if (filter_by_step) {
-                if (branchial_step > 0) {
-                    target_step = static_cast<uint32_t>(branchial_step);
+                if (req.branchial_step > 0) {
+                    target_step = static_cast<uint32_t>(req.branchial_step);
                 } else {
-                    target_step = static_cast<uint32_t>(steps + 1 + branchial_step);
+                    target_step = static_cast<uint32_t>(req.steps + 1 + req.branchial_step);
                 }
             }
 
@@ -1303,7 +1258,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 std::vector<hypergraph::EventId> events;
                 event_list->for_each([&](hypergraph::EventId eid) {
                     // Skip genesis events if not showing them
-                    if (!show_genesis_events && hg.is_genesis_event(eid)) {
+                    if (!req.show_genesis_events && hg.is_genesis_event(eid)) {
                         return;
                     }
                     events.push_back(eid);
@@ -1362,13 +1317,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // ========================================================================
         // GraphData - Graph-ready data for direct Graph[] construction in WL
         // ========================================================================
-        if (!graph_properties.empty()) {
+        if (!req.graph_properties.empty()) {
 
             // Helper: Get effective state ID based on canonicalization mode
             auto get_effective_state_id = [&](hypergraph::StateId sid) -> int64_t {
-                if (canonicalize_states_mode == "Full")
+                if (req.canonicalize_states_mode == "Full")
                     return static_cast<int64_t>(hg.get_canonical_state(sid));
-                if (canonicalize_states_mode == "Automatic") {
+                if (req.canonicalize_states_mode == "Automatic") {
                     const ContentIndex& ci = content_index();
                     return static_cast<int64_t>(ci.first_with.at(ci.hash_of[sid]));
                 }
@@ -1380,7 +1335,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // When CanonicalizeStates=None, we must use raw event IDs because canonical_event_id
             // was computed using canonical state IDs during evolution.
             auto get_effective_event_id = [&](hypergraph::EventId eid) -> int64_t {
-                if (canonicalize_states_mode == "None" || event_signature_keys == hypergraph::EVENT_SIG_NONE)
+                if (req.canonicalize_states_mode == "None" || req.event_signature_keys == hypergraph::EVENT_SIG_NONE)
                     return static_cast<int64_t>(eid);
                 const hypergraph::Event& e = hg.get_event(eid);
                 return e.is_canonical() ? static_cast<int64_t>(eid)
@@ -1395,7 +1350,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // more events than states paid for the same state's canonical form many times over.
             //
             // The cache holds what the frame is about to carry anyway, and stays empty for the
-            // Structure properties, which serialize ids and steps and never ask for edges.
+            // Structure properties, which serialize ids and req.steps and never ask for edges.
             std::unordered_map<uint32_t, wxf::WXFValueList> state_edges_memo;
             auto build_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
                 wxf::WXFValueList edge_list;
@@ -1475,7 +1430,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             auto is_valid_event = [&](hypergraph::EventId eid) -> bool {
                 const hypergraph::Event& e = hg.get_event(eid);
                 if (e.id == hypergraph::INVALID_ID) return false;
-                if (!show_genesis_events && hg.is_genesis_event(eid)) return false;
+                if (!req.show_genesis_events && hg.is_genesis_event(eid)) return false;
                 return true;
             };
 
@@ -1622,23 +1577,23 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return out;
                 }
             };
-            CpuGraphSource gsrc{hg, recon, show_genesis_events,
+            CpuGraphSource gsrc{hg, recon, req.show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
                 serialize_state_data, serialize_event_data,
                 gneeds.causal, gneeds.branchial};
             hgmarshal::GraphOptions gopts;
-            gopts.edge_deduplication = edge_deduplication;
-            gopts.branchial_step = branchial_step;
-            gopts.steps = steps;
+            gopts.edge_deduplication = req.edge_deduplication;
+            gopts.branchial_step = req.branchial_step;
+            gopts.steps = req.steps;
             full_result.push_back({wxf::WXFValue("GraphData"),
-                                   hgmarshal::build_graph_data(gsrc, graph_properties, gopts)});
+                                   hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts)});
         }
 
         // Only include counts when requested
-        if (include_num_states) {
+        if (req.include_num_states) {
             full_result.push_back({wxf::WXFValue("NumStates"), wxf::WXFValue(static_cast<int64_t>(hg.num_canonical_states()))});
         }
-        if (include_num_events) {
+        if (req.include_num_events) {
             // Under the reconstruction (quotient exploration, or Automatic identity on either
             // path) the observable event count is the reconstruction's -- the authority-anchored
             // identity count the golden matrix pins -- not the materialised dedup count.
@@ -1647,9 +1602,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 : static_cast<int64_t>(engine.num_events());
             full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(n_events)});
         }
-        if (include_num_causal_edges) {
+        if (req.include_num_causal_edges) {
             // Count unique (producer, consumer) event pairs for v1 semantics
-            // When show_genesis_events is false, we must filter out pairs involving genesis events
+            // When req.show_genesis_events is false, we must filter out pairs involving genesis events
             // to match reference behavior ("IncludeInitialEvent" -> False)
             //
             // Reconstruction branch first: its pairs live in its own store over its own event
@@ -1660,7 +1615,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             if (hg.quotient_reconstruction()) {
                 causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
                     hg.causal_graph().transitive_reduction_enabled()));
-            } else if (show_genesis_events) {
+            } else if (req.show_genesis_events) {
                 // Include all pairs
                 causal_count = static_cast<int64_t>(hg.num_causal_event_pairs());
             } else {
@@ -1684,7 +1639,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
             full_result.push_back({wxf::WXFValue("NumCausalEdges"), wxf::WXFValue(causal_count)});
         }
-        if (include_num_branchial_edges) {
+        if (req.include_num_branchial_edges) {
             const int64_t n_branchial = hg.quotient_reconstruction()
                 ? static_cast<int64_t>(hg.observable_num_branchial())
                 : static_cast<int64_t>(hg.num_branchial_edges());
@@ -1693,7 +1648,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         // GlobalEdges -> List of all edges created during evolution
         // Each edge is {edge_id, v1, v2, ...}
-        if (include_global_edges) {
+        if (req.include_global_edges) {
             wxf::WXFValueList global_edges;
             uint32_t num_edges = hg.num_edges();
             for (uint32_t eid = 0; eid < num_edges; ++eid) {
@@ -1712,7 +1667,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]
         // Represents each state's edge set (the bitvector) as a list of edge indices
-        if (include_state_bitvectors) {
+        if (req.include_state_bitvectors) {
             wxf::WXFValueAssociation state_bitvectors;
             uint32_t num_states = hg.num_states();
             for (uint32_t sid = 0; sid < num_states; ++sid) {
@@ -1734,9 +1689,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
         // Warning trail (engine warnings + analysis refusals), same schema as the GPU backend.
-        if (!ffi_warnings.empty()) {
+        if (!req.ffi_warnings.empty()) {
             wxf::WXFValueList warn;
-            for (const auto& w : ffi_warnings) {
+            for (const auto& w : req.ffi_warnings) {
                 wxf::WXFValueAssociation wa;
                 wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(w.kind)});
                 wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(w.count)});
@@ -1783,7 +1738,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
         }
 
-        if (show_progress) {
+        if (req.show_progress) {
             core_progress(host, "HGEvolve: Serialization complete.");
         }
 
