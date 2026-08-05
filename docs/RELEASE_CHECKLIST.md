@@ -124,8 +124,18 @@ Keep it current: a release that skips a line here is not released.*
       reports the rate and bounds it (`# wolfram oracle: 0/47 consultations returned no verdict`).
       Before `4f0ff63` the retry existed at one call site and not at its sibling, so a single
       wedge failed `VerifyTestInfrastructureDetectsFailures` on a fault the round-trips were
-      already tolerating. Any CI leg calling wolframscript still needs that bound, not a bare
-      pass/fail.
+      already tolerating.
+- [ ] **A green CI suite is not a green oracle, and the difference is not small.** Verified against
+      `.github/workflows/ci.yml`: the leg runs `./build/all_tests --gtest_filter=-PacletTest.*`, so
+      **244 of 246** tests, and the runner has no wolframscript, so `testing/CMakeLists.txt` sets
+      `WOLFRAMSCRIPT_AVAILABLE=0`. With the oracle compiled out `test_wolfram_roundtrip` returns
+      `true` without consulting anything, and the **12** tests that call it therefore assert
+      vacuously — they still exercise the C++ serializer, but nothing cross-checks it against
+      Wolfram. `TearDownTestSuite` correctly prints nothing rather than claiming a rate
+      (`if (s_consultations == 0) return;`), so CI makes no false statement; the point is that
+      **the Wolfram cross-check runs only on a machine that has Wolfram**, which today means this
+      one. Any release sign-off has to include a local `all_tests` run from `build_linux` with a
+      non-zero consultation count, not a CI badge.
 - [x] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
       plus per-mode `NumStates`. **2026-08-03: `gpu_differential_tests` 36/36 on an RTX 4090**, a
       full 21-minute run. This line and the `gpu_differential_tests` line below are the SAME
