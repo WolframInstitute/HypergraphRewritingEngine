@@ -230,13 +230,13 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // list, so the symbol fallback re-aligns to the value start.
                                 auto keys = option_parser.read<std::vector<std::string>>();
                                 req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
-                                for (const auto& key : keys) {
-                                    if (key == "InputState") req.event_signature_keys |= hypergraph::EventKey_InputState;
-                                    else if (key == "OutputState") req.event_signature_keys |= hypergraph::EventKey_OutputState;
-                                    else if (key == "Step") req.event_signature_keys |= hypergraph::EventKey_Step;
-                                    else if (key == "Rule") req.event_signature_keys |= hypergraph::EventKey_Rule;
-                                    else if (key == "ConsumedEdges") req.event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
-                                    else if (key == "ProducedEdges") req.event_signature_keys |= hypergraph::EventKey_ProducedEdges;
+                                for (const auto& sig_key : keys) {
+                                    if (sig_key == "InputState") req.event_signature_keys |= hypergraph::EventKey_InputState;
+                                    else if (sig_key == "OutputState") req.event_signature_keys |= hypergraph::EventKey_OutputState;
+                                    else if (sig_key == "Step") req.event_signature_keys |= hypergraph::EventKey_Step;
+                                    else if (sig_key == "Rule") req.event_signature_keys |= hypergraph::EventKey_Rule;
+                                    else if (sig_key == "ConsumedEdges") req.event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
+                                    else if (sig_key == "ProducedEdges") req.event_signature_keys |= hypergraph::EventKey_ProducedEdges;
                                 }
                             } catch (...) {
                                 // Read as symbol, from the START of the value.
@@ -572,8 +572,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             hg.set_state_canonicalization_mode(req.state_canon_mode);
 
             hg.set_record_set(record);
-
-            hypergraph::ParallelEvolutionEngine& engine = engine_holder->engine();
 
             // Configure engine options
             engine.set_max_steps(static_cast<size_t>(req.steps));
