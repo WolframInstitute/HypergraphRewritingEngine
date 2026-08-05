@@ -16,6 +16,7 @@
 #include "bitset.hpp"
 #include "segmented_array.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
+#include "hgcommon/quotient_replay_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "wl_hash.hpp"
@@ -181,7 +182,9 @@ class Hypergraph {
         uint32_t nslots = 0;
         const uint32_t* prod = nullptr;   // length nslots; QC_NO_PRODUCER for initial edges
     };
-    static constexpr uint32_t QC_NO_PRODUCER = 0xFFFFFFFFu;
+    // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
+    // child's producer vector and this class reads it back, so one value or neither works.
+    static constexpr uint32_t QC_NO_PRODUCER = hgcommon::QR_NO_PRODUCER;
     ConcurrentMap<uint64_t, LockFreeList<QcInstance>*> qc_instances_;   // key(hash,depth,0)
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
@@ -213,6 +216,8 @@ class Hypergraph {
         uint32_t event;                   // the raw event this application minted
         uint32_t num_consumed;
         const uint32_t* consumed_slots;   // arena-backed, stable
+
+        uint32_t consumed(uint32_t j) const { return consumed_slots[j]; }
     };
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
     std::atomic<uint32_t> qc_next_instance_{0};
@@ -319,6 +324,76 @@ class Hypergraph {
         return QcCtx{*this,
                      static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed))};
     }
+
+    // The storage face hgcommon/quotient_replay_core.hpp drives. Same division as QcCtx above:
+    // WHERE a producer vector, an applied list or a claim set lives is here; what an
+    // application DOES -- what it claims, what it identifies the event by, which causal and
+    // branchial relations follow -- is in the core, which is the body the device runs too.
+    struct QrCtx {
+        using Instance = QcInstance;
+        using Match    = SlotMatch;
+        using Applied  = QcAppliedMatch;
+        Hypergraph& hg;
+
+        bool claim(uint64_t apply_key) {
+            return hg.qc_applied_.insert_if_absent(apply_key, true).second;
+        }
+        uint32_t mint_event() {
+            return hg.qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+        }
+        void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule) {
+            hg.qc_event_sig_.emplace_at(ev, hg.arena_,
+                                        QcEventContent{from_class, to_class, rule});
+        }
+        hgcommon::EventSignatureKeys keys() const { return hg.event_signature_keys(); }
+        uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
+            if (auto fo = hg.qc_frame_.lookup(class_hash))
+                return hg.get_state(static_cast<StateId>(*fo - 1)).step;
+            return fallback;
+        }
+        void record_runsig(uint32_t ev, uint64_t csig) {
+            // Kept per event as well as counted, so the causal and branchial accessors report
+            // the relation under the identity the CALLER selected -- reporting the internal
+            // triple instead makes every pair look like a disagreement with full capture.
+            hg.qc_event_runsig_.emplace_at(ev, hg.arena_, csig);
+            if (hg.qc_canon_event_seen_.insert_if_absent(csig, true).second)
+                hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+        }
+        bool want_causal() const    { return hg.record_set().causal; }
+        bool want_branchial() const { return hg.record_set().branchial; }
+        uint32_t producer_at(const QcInstance& inst, uint32_t slot) const {
+            return inst.prod[slot];
+        }
+        void record_causal(uint32_t producer, uint32_t consumer) {
+            hg.qc_record_causal(producer, consumer);
+        }
+        bool publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev) {
+            auto& applied = hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_);
+            applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
+            return true;
+        }
+        template <class F>
+        void for_each_applied(const QcInstance& inst, F&& f) {
+            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each(f);
+        }
+        void record_branchial_pair(uint32_t lo, uint32_t hi) {
+            if (hg.qc_branchial_pairs_.insert_if_absent(qc_pair_key(lo, hi), true).second)
+                hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
+        }
+        void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent) {
+            uint32_t* cp = hg.arena_.allocate_array<uint32_t>(m.to_slots ? m.to_slots : 1);
+            for (uint32_t i = 0; i < m.to_slots; ++i) cp[i] = hgcommon::QR_NO_PRODUCER;
+            for (uint32_t i = 0; i < m.num_survivors; ++i) {
+                const uint32_t a = m.surv_from(i), b = m.surv_to(i);
+                if (a < parent.nslots && b < m.to_slots) cp[b] = parent.prod[a];
+            }
+            for (uint32_t i = 0; i < m.num_produced; ++i) {
+                const uint32_t s = m.produced(i);
+                if (s < m.to_slots) cp[s] = ev;
+            }
+            hg.qc_add_instance(m.to_hash, depth + 1, cp, m.to_slots);
+        }
+    };
     void qc_capture_expansion(EventId e);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);

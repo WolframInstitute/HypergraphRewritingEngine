@@ -182,6 +182,17 @@ struct SlotMatch {
     const uint32_t* produced_slots = nullptr;    // length num_produced (slot in `to`)
     const uint32_t* surv_from_slot = nullptr;    // length num_survivors (slot in `from`)
     const uint32_t* surv_to_slot = nullptr;      // length num_survivors (slot in `to`)
+
+    // Accessors, because hgcommon/quotient_replay_core.hpp reads the slot arrays through them
+    // and the device packs its four into one contiguous word arena. The replay walks both
+    // through the same calls and knows neither layout.
+    uint32_t consumed(uint32_t i) const { return consumed_slots[i]; }
+    uint32_t produced(uint32_t i) const { return produced_slots[i]; }
+    uint32_t surv_from(uint32_t i) const { return surv_from_slot[i]; }
+    uint32_t surv_to(uint32_t i) const { return surv_to_slot[i]; }
+    // The signature reads consumed/produced as CONTIGUOUS runs in match/RHS order.
+    const uint32_t* consumed_ptr() const { return consumed_slots; }
+    const uint32_t* produced_ptr() const { return produced_slots; }
 };
 
 // =============================================================================
