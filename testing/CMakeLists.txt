@@ -183,6 +183,9 @@ create_test_executable(all_tests
     # The option surface is written down in four places (declared, sent, parsed, documented)
     # and nothing links them; this reconciles them by reading the sources.
     ../paclet_source/tests/test_option_surface.cpp
+    # The session handle space and lifetime rule, asserted while the slot is still small enough
+    # to read in one sitting -- these are the contract the verbs get written against.
+    ../paclet_source/tests/test_session.cpp
     ../paclet_source/hypergraph_ffi.cpp
 )
 # run_rewriting_core is the standalone-binary marshaling path (WXF over the FFI):
