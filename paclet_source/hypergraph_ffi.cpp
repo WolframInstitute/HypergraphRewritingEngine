@@ -429,6 +429,201 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
 }
 #endif  // HG_GPU_BACKEND
 
+// Everything a FRESH run needs before it can be serialized: the identity and recording
+// configuration, the rules, the initial states, and the evolution itself.
+//
+// One-way, like the parse and the GPU job: it reads the parsed job and writes the engine,
+// and reads nothing the serialization below produces. A HELD session (Step/Query) skips it
+// entirely -- its engine already has all of this, which is what makes the op boundary a
+// question of where the engine comes from rather than where serialization begins.
+static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& hg,
+                                 hypergraph::ParallelEvolutionEngine& engine,
+                                 const hypergraph::RecordSet& record,
+                                 const HostBridge& host) {
+
+    // Configure event canonicalization
+    hg.set_event_signature_keys(req.event_signature_keys);
+    hg.set_positional_event_identity(req.positional_event_identity);
+
+    // Configure state canonicalization mode
+    hg.set_state_canonicalization_mode(req.state_canon_mode);
+
+    hg.set_record_set(record);
+
+    // Configure engine options
+    engine.set_max_steps(static_cast<size_t>(req.steps));
+    engine.set_transitive_reduction(req.causal_transitive_reduction);
+    engine.set_exploration_probability(req.exploration_probability);
+    // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
+    // sampling draws reproducible, which is the whole content of the option.
+    engine.set_random_seed(req.random_seed);
+    engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
+    engine.set_max_states_per_step(req.max_states_per_step);
+    engine.set_genesis_events(req.show_genesis_events);
+    engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
+    engine.set_quotient_initial_states(req.quotient_initial_states);
+
+    // Convert rules to unified format
+    uint16_t rule_index = 0;
+    for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
+        if (rule_data.size() != 2) continue;
+
+        hypergraph::RewriteRule rule;
+        rule.index = rule_index++;
+
+        // Track max variable seen for variable counting
+        uint8_t max_lhs_var = 0;
+        uint8_t max_rhs_var = 0;
+
+        // Parse one side of the rule. Every limit is REPORTED, not absorbed: silently
+        // truncating an over-long pattern, dropping an out-of-range variable or skipping a
+        // negative id all hand back a DIFFERENT rule than the caller wrote, and the run
+        // then succeeds, so nothing downstream can tell that it happened.
+        //
+        // The variable bound is the one that matters most. A pattern variable is an index
+        // into VariableBinding's MAX_VARS-entry array and a bit position in its 32-bit
+        // bound_mask, so a variable at or above MAX_VARS writes out of bounds and shifts
+        // by more than the width -- memory corruption, not a wrong answer. Above 255 it
+        // also wraps through uint8_t, silently merging two distinct variables.
+        auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
+                              uint8_t& num_edges, uint8_t& max_var, const char* side) {
+            num_edges = 0;
+            size_t edge_index = 0;
+            for (const auto& edge : edges) {
+                if (num_edges >= hypergraph::MAX_PATTERN_EDGES) {
+                    throw std::runtime_error(
+                        std::string("rule ") + std::to_string(rule.index) + " " + side +
+                        " has more than " + std::to_string(hypergraph::MAX_PATTERN_EDGES) +
+                        " edges");
+                }
+                hypergraph::PatternEdge& pe = out[num_edges];
+                pe.arity = 0;
+                for (int64_t v : edge) {
+                    if (v < 0) {
+                        throw std::runtime_error(
+                            std::string("rule ") + std::to_string(rule.index) + " " + side +
+                            " edge " + std::to_string(edge_index) +
+                            " has a negative pattern variable");
+                    }
+                    if (v >= static_cast<int64_t>(hypergraph::MAX_VARS)) {
+                        throw std::runtime_error(
+                            std::string("rule ") + std::to_string(rule.index) + " " + side +
+                            " uses pattern variable " + std::to_string(v) +
+                            ", but the maximum is " +
+                            std::to_string(hypergraph::MAX_VARS - 1));
+                    }
+                    if (pe.arity >= hypergraph::MAX_ARITY) {
+                        throw std::runtime_error(
+                            std::string("rule ") + std::to_string(rule.index) + " " + side +
+                            " edge " + std::to_string(edge_index) + " has arity above " +
+                            std::to_string(hypergraph::MAX_ARITY));
+                    }
+                    pe.vars[pe.arity++] = static_cast<uint8_t>(v);
+                    if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
+                }
+                if (pe.arity > 0) num_edges++;
+                ++edge_index;
+            }
+        };
+
+        parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var, "LHS");
+        parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var, "RHS");
+
+        rule.num_lhs_vars = max_lhs_var + 1;
+        rule.num_rhs_vars = max_rhs_var + 1;
+        rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
+
+        // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the
+        // engine gives the resulting empty state a canonical hash of its own precisely so
+        // it works. Only an empty LHS is rejected, since it matches everywhere and would
+        // not terminate.
+        if (rule.num_lhs_edges == 0) {
+            throw std::runtime_error(std::string("rule ") + std::to_string(rule.index) +
+                                     " has an empty left-hand side");
+        }
+        engine.add_rule(rule);
+    }
+
+
+    // Convert all initial states to vectors of edges
+    // Multiple initial states are supported for exploring the full multiway system
+    // CRITICAL: Each initial state gets CANONICAL vertex numbering (starting from 0)
+    // This ensures isomorphic initial states like {{0,0},{0,0}} and {{1,1},{1,1}}
+    // get the SAME internal representation and thus the SAME canonical hash.
+    // The engine handles multiplicity - if the same canonical state appears multiple
+    // times, it spawns MATCH tasks for each instance.
+    std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
+    std::unordered_map<int64_t, hypergraph::VertexId> initial_vertex_map;
+
+    for (const auto& state_raw : req.initial_states_raw) {
+        // Create a per-state vertex mapping: input_vertex -> canonical_vertex
+        // Always start from 0 for canonical form
+        std::unordered_map<int64_t, hypergraph::VertexId> vertex_map;
+        hypergraph::VertexId next_vertex = 0;
+
+        std::vector<std::vector<hypergraph::VertexId>> state_edges;
+        for (const auto& edge : state_raw) {
+            std::vector<hypergraph::VertexId> edge_vertices;
+            for (int64_t v : edge) {
+                if (v >= 0) {
+                    // Map this input vertex to a canonical vertex ID
+                    auto it = vertex_map.find(v);
+                    if (it == vertex_map.end()) {
+                        vertex_map[v] = next_vertex;
+                        edge_vertices.push_back(next_vertex);
+                        next_vertex++;
+                    } else {
+                        edge_vertices.push_back(it->second);
+                    }
+                }
+            }
+            if (!edge_vertices.empty()) {
+                state_edges.push_back(edge_vertices);
+            }
+        }
+        if (!state_edges.empty()) {
+            // GeodesicSources are given in the USER'S labels; the engine sees only the
+            // dense renumbering above. Keep the first state's map so the sources can be
+            // translated at the geodesic block (initial vertices keep their engine ids
+            // through the evolution, so the translation stays valid on evolved states).
+            if (initial_states.empty()) initial_vertex_map = vertex_map;
+            initial_states.push_back(std::move(state_edges));
+        }
+    }
+
+    // Run the evolution. Abort is a process kill by the parent, so there is
+    // no cooperative abort; progress (when requested) is reported through the
+    // host bridge.
+    if (req.show_progress) {
+        core_progress(host, "HGEvolve: Starting evolution...");
+    }
+    auto evolution_start = std::chrono::steady_clock::now();
+
+    // MatchesPerStep is a per-DEPTH count, and a count over a depth cannot be sampled
+    // without a barrier. What the step-synchronised path actually did with it was stop
+    // applying once that many states existed for the step -- a cap by arrival order, which
+    // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
+    // always was, and the uniformity it used to claim moves to TransitionRate, which is a
+    // rate and needs no depth to be defined over.
+    if (req.uniform_random && req.matches_per_step > 0) {
+        engine.set_max_states_per_step(req.matches_per_step);
+    }
+    engine.evolve(initial_states, static_cast<size_t>(req.steps));
+
+    if (req.show_progress) {
+        auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - evolution_start).count();
+        std::ostringstream oss;
+        oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. "
+            << "States: " << hg.num_canonical_states() << ", "
+            << "Events: " << hg.num_events() << ", "
+            << "Causal: " << hg.num_causal_event_pairs() << ", "
+            << "Branchial: " << hg.num_branchial_edges();
+        core_progress(host, oss.str());
+        core_progress(host, "HGEvolve: Starting serialization...");
+    }
+}
+
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
     try {
@@ -573,190 +768,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             if (record.state_events && !held.state_events) unrecorded("per-state event lists");
         }
 
-        if (!held_session) {
-
-            // Configure event canonicalization
-            hg.set_event_signature_keys(req.event_signature_keys);
-            hg.set_positional_event_identity(req.positional_event_identity);
-
-            // Configure state canonicalization mode
-            hg.set_state_canonicalization_mode(req.state_canon_mode);
-
-            hg.set_record_set(record);
-
-            // Configure engine options
-            engine.set_max_steps(static_cast<size_t>(req.steps));
-            engine.set_transitive_reduction(req.causal_transitive_reduction);
-            engine.set_exploration_probability(req.exploration_probability);
-            // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
-            // sampling draws reproducible, which is the whole content of the option.
-            engine.set_random_seed(req.random_seed);
-            engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
-            engine.set_max_states_per_step(req.max_states_per_step);
-            engine.set_genesis_events(req.show_genesis_events);
-            engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
-            engine.set_quotient_initial_states(req.quotient_initial_states);
-
-            // Convert rules to unified format
-            uint16_t rule_index = 0;
-            for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
-                if (rule_data.size() != 2) continue;
-
-                hypergraph::RewriteRule rule;
-                rule.index = rule_index++;
-
-                // Track max variable seen for variable counting
-                uint8_t max_lhs_var = 0;
-                uint8_t max_rhs_var = 0;
-
-                // Parse one side of the rule. Every limit is REPORTED, not absorbed: silently
-                // truncating an over-long pattern, dropping an out-of-range variable or skipping a
-                // negative id all hand back a DIFFERENT rule than the caller wrote, and the run
-                // then succeeds, so nothing downstream can tell that it happened.
-                //
-                // The variable bound is the one that matters most. A pattern variable is an index
-                // into VariableBinding's MAX_VARS-entry array and a bit position in its 32-bit
-                // bound_mask, so a variable at or above MAX_VARS writes out of bounds and shifts
-                // by more than the width -- memory corruption, not a wrong answer. Above 255 it
-                // also wraps through uint8_t, silently merging two distinct variables.
-                auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
-                                      uint8_t& num_edges, uint8_t& max_var, const char* side) {
-                    num_edges = 0;
-                    size_t edge_index = 0;
-                    for (const auto& edge : edges) {
-                        if (num_edges >= hypergraph::MAX_PATTERN_EDGES) {
-                            throw std::runtime_error(
-                                std::string("rule ") + std::to_string(rule.index) + " " + side +
-                                " has more than " + std::to_string(hypergraph::MAX_PATTERN_EDGES) +
-                                " edges");
-                        }
-                        hypergraph::PatternEdge& pe = out[num_edges];
-                        pe.arity = 0;
-                        for (int64_t v : edge) {
-                            if (v < 0) {
-                                throw std::runtime_error(
-                                    std::string("rule ") + std::to_string(rule.index) + " " + side +
-                                    " edge " + std::to_string(edge_index) +
-                                    " has a negative pattern variable");
-                            }
-                            if (v >= static_cast<int64_t>(hypergraph::MAX_VARS)) {
-                                throw std::runtime_error(
-                                    std::string("rule ") + std::to_string(rule.index) + " " + side +
-                                    " uses pattern variable " + std::to_string(v) +
-                                    ", but the maximum is " +
-                                    std::to_string(hypergraph::MAX_VARS - 1));
-                            }
-                            if (pe.arity >= hypergraph::MAX_ARITY) {
-                                throw std::runtime_error(
-                                    std::string("rule ") + std::to_string(rule.index) + " " + side +
-                                    " edge " + std::to_string(edge_index) + " has arity above " +
-                                    std::to_string(hypergraph::MAX_ARITY));
-                            }
-                            pe.vars[pe.arity++] = static_cast<uint8_t>(v);
-                            if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
-                        }
-                        if (pe.arity > 0) num_edges++;
-                        ++edge_index;
-                    }
-                };
-
-                parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var, "LHS");
-                parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var, "RHS");
-
-                rule.num_lhs_vars = max_lhs_var + 1;
-                rule.num_rhs_vars = max_rhs_var + 1;
-                rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
-
-                // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the
-                // engine gives the resulting empty state a canonical hash of its own precisely so
-                // it works. Only an empty LHS is rejected, since it matches everywhere and would
-                // not terminate.
-                if (rule.num_lhs_edges == 0) {
-                    throw std::runtime_error(std::string("rule ") + std::to_string(rule.index) +
-                                             " has an empty left-hand side");
-                }
-                engine.add_rule(rule);
-            }
-
-
-            // Convert all initial states to vectors of edges
-            // Multiple initial states are supported for exploring the full multiway system
-            // CRITICAL: Each initial state gets CANONICAL vertex numbering (starting from 0)
-            // This ensures isomorphic initial states like {{0,0},{0,0}} and {{1,1},{1,1}}
-            // get the SAME internal representation and thus the SAME canonical hash.
-            // The engine handles multiplicity - if the same canonical state appears multiple
-            // times, it spawns MATCH tasks for each instance.
-            std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
-            std::unordered_map<int64_t, hypergraph::VertexId> initial_vertex_map;
-
-            for (const auto& state_raw : req.initial_states_raw) {
-                // Create a per-state vertex mapping: input_vertex -> canonical_vertex
-                // Always start from 0 for canonical form
-                std::unordered_map<int64_t, hypergraph::VertexId> vertex_map;
-                hypergraph::VertexId next_vertex = 0;
-
-                std::vector<std::vector<hypergraph::VertexId>> state_edges;
-                for (const auto& edge : state_raw) {
-                    std::vector<hypergraph::VertexId> edge_vertices;
-                    for (int64_t v : edge) {
-                        if (v >= 0) {
-                            // Map this input vertex to a canonical vertex ID
-                            auto it = vertex_map.find(v);
-                            if (it == vertex_map.end()) {
-                                vertex_map[v] = next_vertex;
-                                edge_vertices.push_back(next_vertex);
-                                next_vertex++;
-                            } else {
-                                edge_vertices.push_back(it->second);
-                            }
-                        }
-                    }
-                    if (!edge_vertices.empty()) {
-                        state_edges.push_back(edge_vertices);
-                    }
-                }
-                if (!state_edges.empty()) {
-                    // GeodesicSources are given in the USER'S labels; the engine sees only the
-                    // dense renumbering above. Keep the first state's map so the sources can be
-                    // translated at the geodesic block (initial vertices keep their engine ids
-                    // through the evolution, so the translation stays valid on evolved states).
-                    if (initial_states.empty()) initial_vertex_map = vertex_map;
-                    initial_states.push_back(std::move(state_edges));
-                }
-            }
-
-            // Run the evolution. Abort is a process kill by the parent, so there is
-            // no cooperative abort; progress (when requested) is reported through the
-            // host bridge.
-            if (req.show_progress) {
-                core_progress(host, "HGEvolve: Starting evolution...");
-            }
-            auto evolution_start = std::chrono::steady_clock::now();
-
-            // MatchesPerStep is a per-DEPTH count, and a count over a depth cannot be sampled
-            // without a barrier. What the step-synchronised path actually did with it was stop
-            // applying once that many states existed for the step -- a cap by arrival order, which
-            // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
-            // always was, and the uniformity it used to claim moves to TransitionRate, which is a
-            // rate and needs no depth to be defined over.
-            if (req.uniform_random && req.matches_per_step > 0) {
-                engine.set_max_states_per_step(req.matches_per_step);
-            }
-            engine.evolve(initial_states, static_cast<size_t>(req.steps));
-
-            if (req.show_progress) {
-                auto evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - evolution_start).count();
-                std::ostringstream oss;
-                oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. "
-                    << "States: " << hg.num_canonical_states() << ", "
-                    << "Events: " << hg.num_events() << ", "
-                    << "Causal: " << hg.num_causal_event_pairs() << ", "
-                    << "Branchial: " << hg.num_branchial_edges();
-                core_progress(host, oss.str());
-                core_progress(host, "HGEvolve: Starting serialization...");
-            }
-        }  // !held_session
+        if (!held_session) configure_and_evolve(req, hg, engine, record, host);
 
         // A `Step` carries the exploration further from the frontier the budget stopped it
         // at, keeping every state, event and relation already built and the raw ids that
