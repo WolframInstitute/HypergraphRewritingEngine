@@ -1,11 +1,7 @@
 #include "hg_gpu/engine_state.hpp"
-#include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/evolve.hpp"
-#include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/exploration.hpp"
-#include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/initial_upload.hpp"
-#include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
@@ -112,30 +108,6 @@ __device__ __forceinline__ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-// Seed the initial roots. Every root's hash is inserted into the canonical map so
-// that later children isomorphic to a root deduplicate against it. All roots are
-// appended to the frontier, unless quotient_roots is set, in which case only the
-// first of each canonical class is (isomorphic roots collapse). Default (false)
-// matches the reference MultiwaySystem semantics: provided roots are distinct
-// entry points even when isomorphic.
-__global__ void k_seed_roots(DeviceState ds, uint32_t num_roots, const uint64_t* hashes,
-                             DedupMap::DeviceView map, bool quotient_roots,
-                             StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= num_roots) return;
-    const uint64_t h = hashes[tid];
-    bool merged = false;
-    if (h == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
-    else        merged = !map.insert_if_absent(h, tid).inserted;
-    if (quotient_roots && merged) return;
-    uint32_t pos = atomicAdd(out_count, 1u);
-    // Past capacity the state is not written, and a state missing from the frontier is a
-    // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
-    // so the run reports partial work rather than looking complete; the host's grow-and-retry
-    // reads the same kind and doubles max_states.
-    if (pos < out_cap) out_ids[pos] = tid;
-    else               ds.errors.record(ErrorKind::kFrontierCapFull);
-}
 
 }  // namespace
 
@@ -162,24 +134,15 @@ struct Engine::Impl {
         : cfg_(cfg)
         , state_(cfg)
         , matches_(cfg.max_states * 8u)
-        , canonical_map_(cfg.max_states * 4u)
-    {
-        HG_CUDA_CHECK(cudaMalloc(&d_frontier_,      sizeof(StateId) * cfg.max_states), "d_frontier");
-        HG_CUDA_CHECK(cudaMalloc(&d_next_frontier_, sizeof(StateId) * cfg.max_states), "d_next_frontier");
-        HG_CUDA_CHECK(cudaMalloc(&d_next_count_,    sizeof(uint32_t)),                 "d_next_count");
-    }
+    {}
 
     ~Impl() {
-        if (d_rules_)         cudaFree(d_rules_);
-        if (d_frontier_)      cudaFree(d_frontier_);
-        if (d_next_frontier_) cudaFree(d_next_frontier_);
-        if (d_next_count_)    cudaFree(d_next_count_);
+        if (d_rules_) cudaFree(d_rules_);
     }
 
     void reset() {
         state_.clear();
         matches_.reset();
-        canonical_map_.clear();
     }
 
     EvolveResult run(const EvolveInput& in);
@@ -187,14 +150,10 @@ struct Engine::Impl {
     EngineConfig                       cfg_;
     EngineState                        state_;
     Pool<MatchRecord>                  matches_;
-    DedupMap                           canonical_map_;
     // Engine-lifetime, cleared per run: rebuilding its maps costs tens of MB of cudaMalloc
     // per evolve. Constructed on the first run that routes quotient causal.
     std::unique_ptr<QcState>           qc_state_;
     std::unique_ptr<QeState>           qe_state_;
-    StateId*                           d_frontier_       = nullptr;
-    StateId*                           d_next_frontier_  = nullptr;
-    uint32_t*                          d_next_count_     = nullptr;
     DeviceRule*                        d_rules_          = nullptr;
     uint32_t                           d_rules_capacity_ = 0;
 };
@@ -207,33 +166,6 @@ EvolveResult Engine::run(const EvolveInput& in) { return impl_->run(in); }
 
 namespace {
 // Fill each state's dedup key with a unique value so NONE of them merge —
-// the GPU equivalent of the CPU's None mode (map_key = state id, no iso-dedup).
-__global__ void k_fill_unique_keys(uint32_t lo, uint32_t hi, uint64_t* out) {
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t n = hi - lo;
-    if (tid >= n) return;
-    out[tid] = static_cast<uint64_t>(lo + tid) + 1u;  // unique, nonzero
-}
-
-// Per-state dedup keys by canonicalization mode, mirroring the CPU's
-// create_or_get_canonical_state map_key: None -> unique (tree mode, no dedup),
-// Full -> exact IR canonical hash; Automatic -> content-ordered (non-iso) hash.
-void compute_state_dedup_keys(EngineState& engine, uint32_t lo, uint32_t hi,
-                              uint64_t* out, CanonicalizationMode mode) {
-    if (hi <= lo) return;
-    if (mode == CanonicalizationMode::None) {
-        uint32_t n = hi - lo;
-        int b = 64, g = static_cast<int>((n + b - 1) / b);
-        k_fill_unique_keys<<<g, b>>>(lo, hi, out);
-        cudaDeviceSynchronize();
-        return;
-    }
-    if (mode == CanonicalizationMode::Automatic) {
-        compute_state_content_hashes_range(engine, lo, hi, out);
-        return;
-    }
-    compute_state_ir_hashes_range(engine, lo, hi, out);
-}
 }  // namespace
 
 EvolveResult Engine::Impl::run(const EvolveInput& in) {
@@ -327,17 +259,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
     const EngineConfig& cfg = engine.config();
     Pool<MatchRecord>& matches = matches_;
 
-    // Per-run aliases for the persistent device buffers.
-    StateId*  d_frontier      = d_frontier_;
-    StateId*  d_next_frontier = d_next_frontier_;
-    uint32_t* d_next_count    = d_next_count_;
     // The per-state hash lives on DeviceState, not in this driver: the persistent kernel
     // writes it when it hashes a child for dedup, and the readback at the end reads that same
     // array. A buffer owned by Engine::Impl would have made the assembly private to the host.
     uint64_t* d_state_hashes  = engine.device().state_canonical_hash;
-
-    // Canonical-state dedup map: hash → first-seen StateId. Cleared in reset().
-    DedupMap& canonical_map = canonical_map_;
 
     // Resolve exploration-probability parameters once per run.
     //   threshold == UINT32_MAX → fast path: always explore (zero overhead).
@@ -355,21 +280,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         explore_threshold_u32 = static_cast<uint32_t>(
             static_cast<double>(clamped_p) * 4294967296.0);
     }
-    // Event identity, shared with the persistent scheduler. The map is keyed by signature and
-    // sized off the event budget: an evolution has as many applications as matches, which its
-    // state count does not bound. The arena backs the individualization passes that produce the
-    // exact hashes and ranks; both are inert under EventCanonicalizationMode::None.
-    const EventSignatureKeys ekeys_step = event_keys_for(in.event_canonicalization);
-    // Same grid-derived sizing as the persistent path, and for the same reason: the identity
-    // kernel's threads each hold their own slot, and its grid is capped to the resident worker
-    // count so demand is bounded by the device rather than by how many states a step produced.
-    DeviceArena& identity_arena = engine.ir_arena(
-        (ekeys_step == EVENT_SIG_NONE && !qc_route)
-            ? 1024ull
-            : persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
-    DedupMap event_identity_map(ekeys_step == EVENT_SIG_NONE ? 8u : cfg.max_events * 2u);
-    event_identity_map.clear();
-
     // The quotient-causal DP's device structures, one body of state whichever scheduler
     // drives it; token-sized when the route is off, engine-lifetime and cleared per run.
     if (!qc_state_ || qc_state_->enabled() != qc_route)
@@ -393,45 +303,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
         std::random_device rd;
         resolved_seed = (static_cast<uint64_t>(rd()) << 32) | rd();
         if (resolved_seed == 0) resolved_seed = 0xA5A5A5A5A5A5A5A5ull;
-    }
-
-    // Seed the frontier with the initial (root) states 0..num_roots-1. Roots are
-    // never coin-flipped — they always enter the frontier so step 0 has work.
-    compute_state_dedup_keys(engine, 0, num_roots, d_state_hashes, in.canonicalization);
-    // The roots' exact hashes, which an event leaving a root reads as its input hash. Separate
-    // from the dedup key above because event identity is defined over isomorphism classes
-    // whatever the state mode is (SPEC.md sec 4); in Full the two coincide and this is free.
-    const bool key_is_exact = (in.canonicalization == CanonicalizationMode::Full);
-    fill_event_identity_inputs(engine, 0, num_roots, ekeys_step, key_is_exact, identity_arena,
-                               qc_route);
-    if (in.explore_from_canonical_states_only) {
-        uint32_t zero32c = 0;
-        HG_CUDA_CHECK(cudaMemcpy(d_next_count, &zero32c, sizeof(uint32_t), cudaMemcpyHostToDevice),
-              "seed count");
-        // Insert every root into the canonical map (children dedup against roots)
-        // and seed the frontier; roots collapse only when quotient_initial_states.
-        int b = 64, g = static_cast<int>((num_roots + b - 1) / b);
-        k_seed_roots<<<g, b>>>(engine.device(), num_roots, d_state_hashes, canonical_map.view(),
-                               in.quotient_initial_states,
-                               d_frontier, d_next_count, cfg.max_states);
-        HG_CUDA_CHECK(cudaDeviceSynchronize(), "seed roots sync");
-    } else {
-        std::vector<StateId> root_ids(num_roots);
-        for (uint32_t i = 0; i < num_roots; ++i) root_ids[i] = i;
-        HG_CUDA_CHECK(cudaMemcpy(d_frontier, root_ids.data(), sizeof(StateId) * num_roots,
-                         cudaMemcpyHostToDevice),
-              "seed frontier");
-    }
-    // Unique roots after dedup (explore-from-canonical), or all roots (full multiway).
-    // Read back for the debug trace only; the persistent loop takes its roots directly.
-    [[maybe_unused]] uint32_t frontier_count = 0;
-    if (num_roots > 0) {
-        if (in.explore_from_canonical_states_only) {
-            HG_CUDA_CHECK(cudaMemcpy(&frontier_count, d_next_count, sizeof(uint32_t),
-                             cudaMemcpyDeviceToHost), "read seed count");
-        } else {
-            frontier_count = num_roots;
-        }
     }
 
     const bool dbg = std::getenv("HG_GPU_DBG_TIME") != nullptr;
