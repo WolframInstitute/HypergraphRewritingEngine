@@ -112,10 +112,20 @@ Keep it current: a release that skips a line here is not released.*
       not a blocker — but it is the first thing a user sees.*
 
 ## Test gates
-- [x] CPU suite green. **244 at 2026-08-03**: 213 engine + 28 WXF + 3 Paclet. (WXF and Paclet shell
-      out to wolframscript and flake on this machine's WSL interop socket — `accept4 failed 110`,
-      10-20 s timeouts; 28/28 and 3/3 when the socket is healthy. Not a code failure, but it will
-      make any CI leg that calls wolframscript unreliable.)
+- [x] CPU suite green. **246/246 at 2026-08-05**, run from `build_linux`.
+      *Run it from `build_linux`, not the repository root:* `PacletTest` loads the paclet from
+      `../paclet`, which a Windows `wolframscript` resolves through the UNC mapping of the
+      inherited working directory. From the root it resolves one level too high; the test now says
+      so (`PACLET_LOAD_FAIL`) instead of reporting an unevaluated `HGEvolve` as an engine defect
+      (`2b9a285`).
+      *The wolframscript legs shell out and flake on this machine's WSL interop socket —*
+      `accept4 failed 110`, *ETIMEDOUT, 10–20 s.* Every consultation now goes through one
+      `consult()` helper that retries only a VERDICTLESS run, never a verdict, and the suite
+      reports the rate and bounds it (`# wolfram oracle: 0/47 consultations returned no verdict`).
+      Before `4f0ff63` the retry existed at one call site and not at its sibling, so a single
+      wedge failed `VerifyTestInfrastructureDetectsFailures` on a fault the round-trips were
+      already tolerating. Any CI leg calling wolframscript still needs that bound, not a bare
+      pass/fail.
 - [x] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
       plus per-mode `NumStates`. **2026-08-03: `gpu_differential_tests` 36/36 on an RTX 4090**, a
       full 21-minute run. This line and the `gpu_differential_tests` line below are the SAME
