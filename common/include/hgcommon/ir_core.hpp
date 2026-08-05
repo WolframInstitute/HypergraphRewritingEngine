@@ -546,6 +546,24 @@ struct IrResult {
     uint32_t n_verts;
 };
 
+// How much searching one state cost. Optional: passed as null, nothing is counted.
+//
+// The search's SIZE, not its duration. Wall clock on this hardware drifts more than 10% run to
+// run, which is larger than most effects worth attributing, while these are exact and depend
+// only on (state, max_depth, max_generators) -- so the same state reports the same numbers on
+// host and device, and the two engines' only differing input is the generator cap.
+//
+// What they answer: whether the per-state cost is flat or has a tail. One thread canonicalizes
+// one state start to finish on both engines, so a kernel's critical path is the MAX over its
+// states, and splitting a state across threads is only worth building if a minority of states
+// carries the work.
+struct IrWork {
+    uint32_t leaves;      // discrete partitions reached -- the search's size
+    uint32_t nodes;       // individualizations, one refinement each
+    uint32_t max_depth;   // deepest individualization reached
+    uint32_t searched;    // 0 when the initial refinement was already discrete, so no search ran
+};
+
 // -----------------------------------------------------------------------------------------
 // Canonical hash of a state.
 //
@@ -579,9 +597,12 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* scratch, uint32_t max_depth, uint32_t* out_edge_rank = nullptr,
     uint32_t max_generators = IR_HOST_GENERATORS,
     uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
-    uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr)
+    uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr,
+    IrWork* out_work = nullptr)
 {
     IrResult out{0, IR_EMPTY, 0};
+    if (out_work) { out_work->leaves = 0; out_work->nodes = 0;
+                    out_work->max_depth = 0; out_work->searched = 0; }
     if (n_edges == 0 || n_verts == 0) return out;
 
     const uint32_t n = n_verts;
@@ -657,6 +678,7 @@ HG_HD inline IrResult ir_canonical_hash(
     // A discrete partition names every vertex: the label of a vertex is the id of its
     // singleton cell, and refinement leaves ids contiguous from zero.
     auto leaf = [&](const IrPartition& p) {
+        if (out_work) ++out_work->leaves;
         for (uint32_t v = 0; v < n; ++v) labeling[v] = p.cell_of[v];
         ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order);
         if (!has_best || ir_cmp_form(cur_form, best_form, form_words) < 0) {
@@ -834,6 +856,9 @@ HG_HD inline IrResult ir_canonical_hash(
         return out;
     }
 
+    // Past the discrete fast path above, so this state pays for a search.
+    if (out_work) out_work->searched = 1;
+
     uint32_t d = 0;
     bool returning = false;
     for (;;) {
@@ -907,6 +932,10 @@ HG_HD inline IrResult ir_canonical_hash(
                   sig_off, sig_cnt, gstart, sig_buf);
         store_ncells(d + 1, child.ncells);
         ++d;
+        if (out_work) {
+            ++out_work->nodes;
+            if (d > out_work->max_depth) out_work->max_depth = d;
+        }
     }
 
     if (!has_best) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }

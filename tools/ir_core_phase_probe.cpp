@@ -21,13 +21,25 @@
 using namespace hypergraph;
 using Edges = std::vector<std::vector<VertexId>>;
 
-static std::vector<Edges> collect_states(int steps) {
+static std::vector<Edges> collect_states(int steps, int workload = 0) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
     ParallelEvolutionEngine engine(&hg, 1);
-    engine.add_rule(make_rule(0).lhs({0,1}).lhs({0,2})
-                        .rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build());
-    std::vector<std::vector<VertexId>> init = {{0u, 1u}, {0u, 2u}};
+
+    std::vector<std::vector<VertexId>> init;
+    if (workload == 0) {
+        engine.add_rule(make_rule(0).lhs({0,1}).lhs({0,2})
+                            .rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build());
+        init = {{0u, 1u}, {0u, 2u}};
+    } else {
+        // Edge subdivision on a cycle. A subdivided cycle is a cycle, so every state carries a
+        // dihedral automorphism group that grows with it -- the case where the initial
+        // refinement CANNOT be discrete, because every vertex has the same degree and the same
+        // neighbourhood signature. Without a workload of this shape the search counters are
+        // measured only on rigid states, where they are all 1 by construction.
+        engine.add_rule(make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build());
+        init = {{0u, 1u}, {1u, 2u}, {2u, 0u}};
+    }
     engine.evolve(init, steps);
 
     std::vector<Edges> out;
@@ -102,6 +114,123 @@ struct Views {
     }
     std::vector<uint64_t> wl, sig;
 };
+
+// How the SEARCH cost is spread across states, at a given automorphism-generator budget.
+//
+// The phase timings above are population totals, which is what phase attribution needs and is
+// exactly what hides this: a mean over states says nothing about whether one state costs a
+// thousand times another. Both engines run one thread per state start to finish
+// (gpu/src/ir_canon.cu:264 is a grid-stride loop over states), so a kernel finishes when its
+// WORST state finishes. Splitting a single state across threads is worth building only if a
+// minority of states carries the work -- which is a question about the tail, not the mean.
+//
+// Counted, not timed: leaves and individualization nodes are exact and depend only on the state,
+// the depth limit and the generator budget, so the numbers are the DEVICE's too. The generator
+// budget is the one input the two engines differ on (IR_HOST_GENERATORS 512 against
+// IR_DEVICE_GENERATORS 32), and a smaller table prunes fewer symmetric branches, so it is passed
+// in rather than assumed.
+static void work_distribution_at(const std::vector<Flat>& flat, uint32_t generators,
+                                 const char* label) {
+    std::vector<uint32_t> leaves;
+    leaves.reserve(flat.size());
+    uint64_t total_leaves = 0, total_nodes = 0;
+    size_t never_searched = 0;
+    uint32_t deepest = 0;
+
+    std::vector<uint32_t> scratch;
+    for (const auto& f : flat) {
+        const uint64_t need = hgcommon::ir_scratch_words(
+            f.n_verts, f.n_edges(), f.total_occ, hgcommon::IR_MAX_DEPTH_DEFAULT, generators);
+        if (scratch.size() < need) scratch.assign(need, 0);
+
+        hgcommon::IrWork w{};
+        hgcommon::ir_canonical_hash(f.ea.data(), f.eoff.data(), f.ev.data(),
+                                    f.n_edges(), f.n_verts, f.total_occ,
+                                    scratch.data(), hgcommon::IR_MAX_DEPTH_DEFAULT,
+                                    nullptr, generators,
+                                    nullptr, nullptr, nullptr, nullptr, &w);
+        leaves.push_back(w.leaves);
+        total_leaves += w.leaves;
+        total_nodes  += w.nodes;
+        if (!w.searched) ++never_searched;
+        if (w.max_depth > deepest) deepest = w.max_depth;
+    }
+
+    std::sort(leaves.begin(), leaves.end());
+    const size_t n = leaves.size();
+    auto pct = [&](double p) { return leaves[std::min(n - 1, size_t(p * n))]; };
+
+    // The decisive figure: the share of all search that the heaviest 1% of states accounts for.
+    // Intra-state parallelism can only ever attack that share.
+    const size_t top1_from = n - std::max<size_t>(1, n / 100);
+    uint64_t top1_leaves = 0;
+    for (size_t i = top1_from; i < n; ++i) top1_leaves += leaves[i];
+
+    printf("\n  --- per-state search cost, %s (%u generators) ---\n", label, generators);
+    printf("  never searched (initial refinement already discrete): %zu/%zu  (%.1f%%)\n",
+           never_searched, n, 100.0 * double(never_searched) / double(n));
+    printf("  leaves per state:  p50 %u   p90 %u   p99 %u   max %u\n",
+           pct(0.50), pct(0.90), pct(0.99), leaves.back());
+    printf("  totals: %llu leaves, %llu nodes, deepest individualization %u\n",
+           (unsigned long long)total_leaves, (unsigned long long)total_nodes, deepest);
+    printf("  heaviest 1%% of states (%zu of %zu) carry %.1f%% of all leaves\n",
+           n - top1_from, n, total_leaves ? 100.0 * double(top1_leaves) / double(total_leaves) : 0.0);
+}
+
+static void work_distribution(const std::vector<Flat>& flat) {
+    if (flat.empty()) return;
+    work_distribution_at(flat, hgcommon::IR_HOST_GENERATORS, "host budget");
+    work_distribution_at(flat, hgcommon::IR_DEVICE_GENERATORS, "device budget");
+}
+
+// The counters against a state whose answer is known independently.
+//
+// A 6-cycle's automorphism group is dihedral of order 12, and its initial refinement puts all
+// six vertices in one cell -- every vertex has the same degree and the same neighbourhood
+// signature -- so the search MUST individualize and MUST reach more than one leaf. A population
+// whose states are all rigid exercises none of that, and counters that are never exercised are
+// not evidence. If this case reports no search, the numbers above mean nothing.
+static hgcommon::IrWork canonicalize_cycle(uint32_t len, uint32_t generators) {
+    Edges cycle;
+    for (uint32_t i = 0; i < len; ++i)
+        cycle.push_back({VertexId(i), VertexId((i + 1) % len)});
+    const Flat f = flatten(cycle);
+
+    std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(
+        f.n_verts, f.n_edges(), f.total_occ, hgcommon::IR_MAX_DEPTH_DEFAULT, generators), 0);
+    hgcommon::IrWork w{};
+    hgcommon::ir_canonical_hash(f.ea.data(), f.eoff.data(), f.ev.data(),
+                                f.n_edges(), f.n_verts, f.total_occ,
+                                scratch.data(), hgcommon::IR_MAX_DEPTH_DEFAULT,
+                                nullptr, generators,
+                                nullptr, nullptr, nullptr, nullptr, &w);
+    return w;
+}
+
+static void ground_truth() {
+    // A 6-cycle's automorphism group is dihedral of order 12, and its initial refinement puts
+    // all six vertices in one cell -- every vertex has the same degree and the same
+    // neighbourhood signature -- so the search MUST individualize and MUST reach more than one
+    // leaf. Counters that are never exercised are not evidence.
+    const hgcommon::IrWork g = canonicalize_cycle(6, hgcommon::IR_HOST_GENERATORS);
+    const bool ok = g.searched == 1 && g.leaves >= 2 && g.nodes >= 1 && g.max_depth >= 1;
+    printf("\n  ground truth, 6-cycle (Aut = D6, order 12): searched=%u leaves=%u nodes=%u "
+           "depth=%u  -> %s\n", g.searched, g.leaves, g.nodes, g.max_depth,
+           ok ? "counters respond" : "COUNTERS ARE DEAD -- numbers above are meaningless");
+
+    // Does the search GROW with the state? A population sampled at one evolution depth cannot
+    // say, because its states are all about one size. C_n is the worst case symmetry can
+    // present -- one cell containing every vertex, Aut of order 2n -- so if the search stays
+    // bounded here it stays bounded, and the answer does not depend on how far a run evolved.
+    printf("  cycle size sweep (worst case for symmetry), host budget then device budget:\n");
+    for (uint32_t len : {6u, 12u, 24u, 48u, 96u, 192u, 384u}) {
+        const hgcommon::IrWork h = canonicalize_cycle(len, hgcommon::IR_HOST_GENERATORS);
+        const hgcommon::IrWork d = canonicalize_cycle(len, hgcommon::IR_DEVICE_GENERATORS);
+        printf("    C_%-4u  host leaves=%-5u nodes=%-5u depth=%-3u | device leaves=%-5u "
+               "nodes=%-5u depth=%u\n",
+               len, h.leaves, h.nodes, h.max_depth, d.leaves, d.nodes, d.max_depth);
+    }
+}
 
 int main(int argc, char** argv) {
     const int steps = argc > 1 ? atoi(argv[1]) : 6;
@@ -186,5 +315,19 @@ int main(int argc, char** argv) {
            100 * t_flat / total, 100 * t_occ / total, 100 * t_init / total,
            100 * refine_only / total, 100 * t_form / total);
     printf("(sink %llu)\n", (unsigned long long)sink);
+
+    ground_truth();
+
+    printf("\n================ workload 0: branching rule (states are rigid) ================");
+    work_distribution(flat);
+
+    // The same measurement where symmetry is the norm rather than the exception. One rule's
+    // population answers for one rule; the decision this feeds is about the engine.
+    auto sym_states = collect_states(steps, 1);
+    std::vector<Flat> sym_flat;
+    sym_flat.reserve(sym_states.size());
+    for (const auto& s : sym_states) sym_flat.push_back(flatten(s));
+    printf("\n================ workload 1: cycle subdivision (Aut grows with the state) ======");
+    work_distribution(sym_flat);
     return 0;
 }
