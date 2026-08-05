@@ -223,37 +223,23 @@ __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
 // the capture rather than recording a slot that means nothing, because a record built from a
 // wrong slot replays as a wrong event and would be invisible.
 __device__ __forceinline__ uint32_t qe_slot_of(DeviceState ds, StateId sid, EdgeId edge) {
-    if (!ds.state_edge_orbit || sid >= ds.max_states) return UINT32_MAX;
+    if (!ds.state_edge_orbit) return UINT32_MAX;
+    const uint32_t i = state_edge_index(ds, sid, edge);
+    if (i == UINT32_MAX || ds.state_edge_orbit[i] == UINT32_MAX) return UINT32_MAX;
     const StateEdgeSlice sl = ds.state_edge_slices[sid];
-
-    // Locate the edge; the slice is sorted ascending (the DP binary-searches it the same way).
-    uint32_t lo = 0, hi = sl.count;
-    while (lo < hi) {
-        const uint32_t mid = (lo + hi) >> 1;
-        if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
-    }
-    if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
-    if (ds.state_edge_orbit[sl.offset + lo] == UINT32_MAX) return UINT32_MAX;
-
     // The rule itself is hgcommon's, not this file's: the host records the same coordinates
     // (hypergraph.cpp, via slots_from_orbits) and two readings that drift by one tie-break
     // would replay wrong events invisibly.
-    return hgcommon::slot_rank(ds.state_edge_orbit + sl.offset, sl.count, lo);
+    return hgcommon::slot_rank(ds.state_edge_orbit + sl.offset, sl.count, i - sl.offset);
 }
 
 // The canonical rank of `edge` within `sid` -- its position in the state's canonical order,
 // from the same individualization-refinement pass that produced the state's exact hash.
 // UINT32_MAX when the edge is absent or no rank was computed.
 __device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, EdgeId edge) {
-    if (!ds.state_edge_rank || sid >= ds.max_states) return UINT32_MAX;
-    const StateEdgeSlice sl = ds.state_edge_slices[sid];
-    uint32_t lo = 0, hi = sl.count;
-    while (lo < hi) {
-        const uint32_t mid = (lo + hi) >> 1;
-        if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
-    }
-    if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
-    return ds.state_edge_rank[sl.offset + lo];
+    if (!ds.state_edge_rank) return UINT32_MAX;
+    const uint32_t i = state_edge_index(ds, sid, edge);
+    return i == UINT32_MAX ? UINT32_MAX : ds.state_edge_rank[i];
 }
 
 // Register `sid` as the frame of its class if no state holds it yet, recording the step the

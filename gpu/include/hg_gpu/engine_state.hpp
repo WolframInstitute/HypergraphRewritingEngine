@@ -170,6 +170,26 @@ struct DeviceState {
     DeviceErrors::DeviceView errors;
 };
 
+// Position of `edge` in state `sid`'s CSR slice, or UINT32_MAX if the edge is not in it. The
+// slice is sorted ascending, so this is a binary search.
+//
+// ONE function, because EVERY per-edge array above is laid out parallel to state_edge_ids and
+// indexed by the same position: the orbit, the canonical rank, and the frame slot derived from
+// the orbit. Three callers each binary-searching the same slice for a different array is three
+// copies of one lookup.
+__device__ __forceinline__ uint32_t state_edge_index(const DeviceState& ds, StateId sid,
+                                                     EdgeId edge) {
+    if (sid >= ds.max_states) return UINT32_MAX;
+    const StateEdgeSlice sl = ds.state_edge_slices[sid];
+    uint32_t lo = 0, hi = sl.count;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) >> 1;
+        if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
+    }
+    if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
+    return sl.offset + lo;
+}
+
 class EngineState {
 public:
     // Per-thread device stack. See the constructor for why the default is not enough.

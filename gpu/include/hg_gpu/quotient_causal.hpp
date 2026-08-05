@@ -175,18 +175,11 @@ __device__ __forceinline__ uint32_t qc_bucket(uint64_t key, uint32_t num_keys) {
     return static_cast<uint32_t>(h) & (num_keys - 1u);
 }
 
-// Orbit of `edge` within state `sid`: binary search the sorted CSR slice, read the parallel
-// orbit array. UINT32_MAX when the edge is not in the state or no orbits were scattered.
-__device__ __forceinline__ uint32_t qc_orbit_of(DeviceState ds, QcView qc,
+// Orbit of `edge` within `sid`. UINT32_MAX when the edge is absent or no orbits were scattered.
+__device__ __forceinline__ uint32_t qc_orbit_of(DeviceState ds, QcView,
                                                 StateId sid, EdgeId edge) {
-    const StateEdgeSlice sl = ds.state_edge_slices[sid];
-    uint32_t lo = 0, hi = sl.count;
-    while (lo < hi) {
-        const uint32_t mid = (lo + hi) >> 1;
-        if (ds.state_edge_ids[sl.offset + mid] < edge) lo = mid + 1; else hi = mid;
-    }
-    if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
-    return ds.state_edge_orbit[sl.offset + lo];
+    const uint32_t i = state_edge_index(ds, sid, edge);
+    return i == UINT32_MAX ? UINT32_MAX : ds.state_edge_orbit[i];
 }
 
 __device__ __forceinline__ EventId qc_canonical_event(DeviceState ds, EventId e) {
