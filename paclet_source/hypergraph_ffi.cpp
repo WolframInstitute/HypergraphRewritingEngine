@@ -30,6 +30,7 @@
 // Include comprehensive WXF library
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
+#include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 
 using namespace hypergraph;
 
@@ -457,8 +458,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 #endif
 
-        // Create hypergraph
-        hypergraph::Hypergraph hg;
+        // The graph and its engine, owned together by a holder rather than as two locals.
+        // ParallelEvolutionEngine holds a POINTER to its Hypergraph, so the pair has one
+        // lifetime and cannot be handed anywhere by value; heap-allocating the holder is what
+        // lets a session outlive this call and keep the graph's address stable. `hg` and
+        // `engine` below are references to what the holder owns, so everything that reads them
+        // reads the same objects it always did.
+        //
+        // Not continuable: a job that names no session is one-shot, and the frontier a
+        // continuation resumes from costs about 12.5 MB across the oracle corpus and 3.9% of
+        // the arena. A session will construct this with continuable = true and pay for it.
+        auto engine_holder = std::make_unique<hgffi::CpuEngineHolder>(/*continuable=*/false);
+        hypergraph::Hypergraph& hg = engine_holder->hypergraph();
 
         // The hot-path state hash is always Weisfeiler-Leman; exact IR
         // canonicalization is selected via CanonicalizeStates -> Full.
@@ -496,7 +507,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         record.state_events = include_branchial_state_edges_all_siblings;
         hg.set_record_set(record);
 
-        hypergraph::ParallelEvolutionEngine engine(&hg, std::thread::hardware_concurrency());
+        hypergraph::ParallelEvolutionEngine& engine = engine_holder->engine();
 
         // Configure engine options
         engine.set_max_steps(static_cast<size_t>(steps));
