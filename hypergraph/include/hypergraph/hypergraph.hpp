@@ -421,9 +421,15 @@ class Hypergraph {
     // set is approximate; see the fallback in create_event.
     std::atomic<uint64_t> event_sig_raw_fallbacks_{0};
 
-    // Times a state's REPORTED canonical hash was actually computed, against the number of
-    // states that hold one. Both are needed: the ratio is the question, and a raw call count
-    // says nothing without the denominator.
+    // Times a canonical hash was actually COMPUTED, against the number of states that hold
+    // one. Both are needed: the ratio is the question, and a raw call count says nothing
+    // without the denominator.
+    //
+    // Incremented at the LEAVES ONLY -- compute_exact_canonical_hash, compute_wl_hash,
+    // compute_and_cache_state_orbits. NOT at compute_canonical_hash, which is a dispatcher
+    // that tail-calls one of them: counting it too counted one canonicalization twice and
+    // reported a uniform 2.00 per state on all 17 cost_matrix cases. The uniformity was the
+    // tell -- real duplication varies with the workload, an off-by-a-factor does not.
     //
     // Why it exists: FFI_INTERFACE_DESIGN section 5 recorded "IR canonicalization up to 3x per
     // state" in 2026-07-25 and named it the biggest measurable win. get_or_compute_canonical_hash

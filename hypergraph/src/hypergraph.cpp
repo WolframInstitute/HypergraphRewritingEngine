@@ -617,7 +617,6 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
-    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Full mode uses the exact IR hash as the canonical identity (it is also the
     // dedup key), so there is no separate WL pass. Other modes use the fast WL hash.
     bool full = state_canonicalization_mode_.load(std::memory_order_acquire)
@@ -739,6 +738,7 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
+    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     if (edges.empty()) {
         return EMPTY_STATE_CANONICAL_HASH;
     }
