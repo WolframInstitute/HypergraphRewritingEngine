@@ -199,12 +199,29 @@ public:
     // bounded by kMaxPatternEdges.
     static constexpr size_t kDeviceStackFloorBytes = 32u * 1024u;
 
-    // The reconstruction's replay is different in kind: qe_apply -> qe_add_instance ->
-    // qe_drive_instance -> qe_apply is a cycle, and it descends once per reconstruction DEPTH,
-    // which the caller chooses through num_steps. Its cost per level is MEASURED, not guessed:
-    // on sm_89 a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13, so
-    // 32768/6 == 65536/12 == 5461 bytes per level, linear with no significant intercept.
-    // Rounded up for margin.
+    // The reconstruction's replay is different in kind: qe_apply -> qr_apply -> descend ->
+    // qe_add_instance -> qe_drive_instance -> qe_apply is a cycle, and it descends once per
+    // reconstruction DEPTH, which the caller chooses through num_steps.
+    //
+    // DERIVED FROM TWO MEASUREMENTS, because the cycle gained frames when the replay moved to
+    // hgcommon and a per-level cost measured for the old shape does not carry to the new one.
+    //
+    //   1. Fault bisection on the FOUR-frame cycle, the method this constant was first set by:
+    //      on sm_89 a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13,
+    //      so 32768/6 == 65536/12 == 5461 bytes per level, linear with no significant intercept.
+    //   2. Per-frame `.local` depots, read out of the built PTX by
+    //      tools/dev/ptx_frame_sizes.py --cycle:
+    //        four-frame cycle (replay open-coded here)  2000 bytes over 4 frames
+    //        six-frame cycle  (replay in hgcommon)      3168 bytes over 6 frames
+    //
+    // A level costs its depots PLUS the ABI save area, which the depots do not include and the
+    // PTX does not name. The first measurement pins that: (5461 - 2000) / 4 == 865 bytes of ABI
+    // per frame. So six frames cost 3168 + 6*865 == 8360, and this is that rounded up to the
+    // next multiple of 512 -- a 4.1% margin, against the 3.1% the four-frame value carried.
+    //
+    // THE ABI TERM IS AN AVERAGE. It varies per function with the registers each saves, so 865
+    // is not a constant of the hardware. If the cycle changes shape again, re-run the depot tool
+    // AND re-do the fault bisection rather than reusing this arithmetic.
     //
     // TO RE-DERIVE IT after changing anything the cycle calls, run
     //
@@ -216,7 +233,7 @@ public:
     // a change that only adds BYTES moves the reported sum and a change that adds a CALL does
     // not, while costing a level's worth of ABI frame all the same. Both invalidate this number,
     // and the fault-bisection above is what settles the total.
-    static constexpr size_t kDeviceStackBytesPerDepth = 5632;
+    static constexpr size_t kDeviceStackBytesPerDepth = 8704;
 
     // Stack is per-thread and the driver reserves it for every resident thread, so this is
     // multiplied by the occupancy of the whole device -- it cannot simply be made large. Past
