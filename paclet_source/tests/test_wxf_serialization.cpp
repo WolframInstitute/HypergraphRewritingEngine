@@ -75,10 +75,11 @@ std::vector<uint8_t> value_bytes(const std::vector<uint8_t>& out, const std::str
     wxf::Parser parser(out);
     parser.skip_header();
     parser.read_association([&](const std::string& k, wxf::Parser& vp) {
-        const size_t begin = vp.position();
+        // vp is a sub-parser over the value, so its position() counts from the value's first
+        // byte. The offset into `out` is where vp's view begins, which is what data() gives.
+        const uint8_t* begin = vp.data();
         vp.skip_value();
-        if (k == key) got.assign(out.begin() + static_cast<long>(begin),
-                                 out.begin() + static_cast<long>(vp.position()));
+        if (k == key) got.assign(begin, begin + vp.position());
     });
     return got;
 }

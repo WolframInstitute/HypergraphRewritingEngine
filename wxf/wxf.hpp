@@ -207,6 +207,12 @@ public:
 
     // Utility methods
     size_t position() const noexcept { return read_position_; }
+    // Where this parser's view begins. read_association hands each value a SUB-PARSER over the
+    // remaining bytes, so its position() counts from that value's first byte and says nothing
+    // about the offset into the original buffer. A caller that wants a value's bytes needs the
+    // base too, and computing the offset from position() alone yields the start of the whole
+    // stream for every value -- a slice that compares equal for any two outputs.
+    const uint8_t* data() const noexcept { return data_; }
     size_t remaining() const noexcept { return size_ - read_position_; }
     bool at_end() const noexcept { return read_position_ >= size_; }
     // Restore the cursor to a position previously obtained from position(). A read that
