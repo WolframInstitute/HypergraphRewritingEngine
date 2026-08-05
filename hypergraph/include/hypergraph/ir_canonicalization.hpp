@@ -11,8 +11,13 @@ namespace hypergraph {
 
 // The host face of the McKay-style individualization-refinement canonicalizer for directed
 // hypergraphs: it adapts this project's edge lists to hgcommon/ir_core.hpp, which holds the
-// algorithm and is the same code the device runs. The canonical form is the lexicographically
-// smallest relabelled edge list, so it matches brute force.
+// algorithm and is the same code the device runs.
+//
+// The canonical form is the smallest relabelled edge list over the LEAVES OF THE IR TREE, which
+// is not the smallest over all n! relabellings -- refinement only reaches labellings that
+// respect the structural cell order. What holds, and what the engine needs, is that the form is
+// a COMPLETE ISOMORPHISM INVARIANT: isomorphic states reach one form, and states reaching one
+// form are isomorphic. Both halves are gated in tools/ir_core_equivalence_probe.cpp.
 class IRCanonicalizer {
 public:
     // Engine entry points: edges already materialized in the per-worker scratch

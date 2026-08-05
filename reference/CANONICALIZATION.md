@@ -16,9 +16,12 @@ hypergraphs (vertex relabeling; within-edge order preserved; multiplicity preser
 | `"None"` | keep all states distinct | `None` | `None` / `False` | `Identity` |
 
 The exact canonicalizer is McKay-style individualization–refinement (IR) in the engine;
-the reference uses color-refinement + exhaustive within-cell lex-min relabeling (same
-result, simpler). The Weisfeiler–Leman hash is a fast **approximation** of `Canonical`,
-never the reference.
+the reference uses color-refinement + exhaustive within-cell lex-min relabeling (simpler,
+and slower). Both are complete isomorphism invariants, so they agree on **which states
+merge**, which is what this axis means. They need not agree on the canonical form itself
+— the reference's is the lex-minimum over all relabelings, the engine's is the smallest
+over the leaves its refinement reaches — and nothing compares the two forms. The
+Weisfeiler–Leman hash is a fast **approximation** of `Canonical`, never the reference.
 
 `"FullCapture"` is a separate flag: when on, every raw successor state is its own node
 (the multiway *forest*) and `states` reports the count of distinct canonical classes —
