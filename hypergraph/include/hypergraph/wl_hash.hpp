@@ -39,8 +39,51 @@ namespace hypergraph {
 // - State hash computation: Thread-safe, uses shared read-only data
 // - Hash caching: Lock-free via ConcurrentMap
 //
-// Note: Common types (VertexHashCache, EdgeCorrespondence,
-// EventSignature, FNV constants) are defined in types.hpp
+// Note: EdgeCorrespondence, EventSignature and the FNV constants are defined in
+// types.hpp; VertexHashCache is below, because this file is its only consumer.
+
+// The per-state vertex-hash cache. It lives here rather than in types.hpp because this
+// file is its only consumer, and because its lookup() is the one std::lower_bound
+// types.hpp contained -- carrying it there put <algorithm> into every header that
+// includes types.hpp, which is all of them.
+// =============================================================================
+// =============================================================================
+// VertexHashCache: Cached vertex subtree hashes for a state
+// =============================================================================
+// Used by the WL hash implementation
+// Includes subtree bloom filters for O(1) dirty detection
+
+struct VertexHashCache {
+    // The hash for each vertex in the state
+    // Using simple arrays + count for arena-friendly storage
+    VertexId* vertices;
+    uint64_t* hashes;
+    void* adjacency_ptr;  // Type-erased pointer to adjacency map for this state
+    uint32_t count;
+    uint32_t capacity;
+
+    VertexHashCache() : vertices(nullptr), hashes(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
+
+    uint64_t lookup(VertexId v) const {
+        // vertices[] is built sorted ascending (WL hash builds it from a sorted,
+        // deduplicated vertex list), so binary-search for v and read the parallel
+        // hashes[] slot at the same index. Returns 0 when v is absent.
+        const VertexId* pos = std::lower_bound(vertices, vertices + count, v);
+        if (pos != vertices + count && *pos == v) {
+            return hashes[pos - vertices];
+        }
+        return 0;
+    }
+
+
+    void insert(VertexId v, uint64_t hash) {
+        // Note: caller must ensure capacity
+        vertices[count] = v;
+        hashes[count] = hash;
+        ++count;
+    }
+
+};
 
 // Forward declarations
 class Hypergraph;

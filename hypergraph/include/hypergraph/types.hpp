@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
@@ -461,45 +460,6 @@ enum class StateCanonicalizationMode : uint8_t {
     None,       // Tree mode: no deduplication, each state is unique
     Automatic,  // Content-ordered hash: hash(edge_contents) - fast but not isomorphism-invariant
     Full        // Isomorphism-invariant hash: WL approximate / IR exact - detects isomorphic states
-};
-
-// =============================================================================
-// =============================================================================
-// VertexHashCache: Cached vertex subtree hashes for a state
-// =============================================================================
-// Used by the WL hash implementation
-// Includes subtree bloom filters for O(1) dirty detection
-
-struct VertexHashCache {
-    // The hash for each vertex in the state
-    // Using simple arrays + count for arena-friendly storage
-    VertexId* vertices;
-    uint64_t* hashes;
-    void* adjacency_ptr;  // Type-erased pointer to adjacency map for this state
-    uint32_t count;
-    uint32_t capacity;
-
-    VertexHashCache() : vertices(nullptr), hashes(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
-
-    uint64_t lookup(VertexId v) const {
-        // vertices[] is built sorted ascending (WL hash builds it from a sorted,
-        // deduplicated vertex list), so binary-search for v and read the parallel
-        // hashes[] slot at the same index. Returns 0 when v is absent.
-        const VertexId* pos = std::lower_bound(vertices, vertices + count, v);
-        if (pos != vertices + count && *pos == v) {
-            return hashes[pos - vertices];
-        }
-        return 0;
-    }
-
-
-    void insert(VertexId v, uint64_t hash) {
-        // Note: caller must ensure capacity
-        vertices[count] = v;
-        hashes[count] = hash;
-        ++count;
-    }
-
 };
 
 // =============================================================================
