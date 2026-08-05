@@ -185,6 +185,17 @@ public:
     // on sm_89 a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13, so
     // 32768/6 == 65536/12 == 5461 bytes per level, linear with no significant intercept.
     // Rounded up for margin.
+    //
+    // TO RE-DERIVE IT after changing anything the cycle calls, run
+    //
+    //     tools/dev/ptx_frame_sizes.py <build>/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o --cycle
+    //
+    // which reads each frame's `.local` depot out of the PTX of an object that is already built
+    // -- no GPU, no run, and it names WHICH frame moved. Two terms make up a level: the depot
+    // sum it reports, and the ABI save area of the frames in the cycle, which it cannot see. So
+    // a change that only adds BYTES moves the reported sum and a change that adds a CALL does
+    // not, while costing a level's worth of ABI frame all the same. Both invalidate this number,
+    // and the fault-bisection above is what settles the total.
     static constexpr size_t kDeviceStackBytesPerDepth = 5632;
 
     // Stack is per-thread and the driver reserves it for every resident thread, so this is

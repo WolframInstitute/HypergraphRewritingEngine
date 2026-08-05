@@ -125,6 +125,12 @@ run_or_skip "Device unit suite" \
     "test -x $GPU_BUILD/hg_gpu_tests && nvidia-smi" \
     "$GPU_BUILD/hg_gpu_tests"
 
+# Reads a built object, so it needs no GPU and no run -- the only leg here that
+# reports a device number on a machine with no device.
+run_or_skip "Replay recursion: device stack depot per level" \
+    "test -f $GPU_BUILD/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o && test -x ${CUOBJDUMP:-/usr/local/cuda/bin/cuobjdump}" \
+    python3 tools/dev/ptx_frame_sizes.py "$GPU_BUILD/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o" --cycle
+
 say ""
 say "---"
 say ""
