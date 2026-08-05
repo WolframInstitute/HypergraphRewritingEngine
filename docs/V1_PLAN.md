@@ -5,6 +5,30 @@ a wiped machine, and a lost conversation. Everything else about v1.0 — rationa
 arguments, per-defect history — lives in the untracked working notes and is NOT needed to
 continue.
 
+## Namespace convention — DECIDED (Richard, 2026-08-06)
+
+One root, `hg::`, with everything inside it. No exceptions for the standalone libraries: they
+ship in this archive, so their names are this project's namespace pollution.
+
+    hg::engine     was hypergraph        28 files
+    hg::common     was hgcommon          13
+    hg::gpu        was hg_gpu            34
+    hg::marshal    was hgmarshal          1
+    hg::ffi        was hgffi              3
+    hg::jobs       was job_system         4
+    hg::wxf        was wxf                2
+    hg::deque      was lockfree           1   (directory says lockfree_deque; namespace said lockfree)
+
+The root is **overridable at configure time** -- `-DHG_NAMESPACE=foo` -- so a consumer with a
+collision can rename the whole tree without patching it.
+
+BLOCKER, and it is why `hg` reads as taken: `atomic_compat.hpp:16` already declares `namespace hg`
+for one thing, `hg::atomic_ref`. That is what forced
+`hypergraph/tests/test_causal_determinism.cpp:28` to write `namespace hgraph = hypergraph;  // hg is
+the engine's atomic_compat namespace`, and three other tests to invent `namespace v2 = hypergraph`.
+Four files, three short names for one thing, because the good name was held by a portability shim.
+`hg::atomic_ref` moves to `hg::common::atomic_ref` first; then the root is free.
+
 ## State of the five named blockers, with the evidence for each
 
 Written down here because it was re-derived from scattered rows several times, and a claim that
