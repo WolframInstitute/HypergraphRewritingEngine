@@ -624,6 +624,26 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     }
 }
 
+// A SESSION'S IDENTITY IS FIXED WHEN IT OPENS, and these four are read back from the
+// engine rather than from the job. They decide what a state and an event ARE, so serving
+// a `Query` under the identity its own envelope happened to carry would describe a graph
+// built under one convention using another: `Full` at `Open` and nothing at `Query` would
+// report exact canonical forms as tree-mode ones, in fields that all still parse.
+//
+// `Steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
+// end is defined against that total, not against the increment a `Step` just asked for.
+static void read_back_session_identity(hgffi::ParsedJob& req, const hypergraph::Hypergraph& hg,
+                                const hypergraph::ParallelEvolutionEngine& engine) {
+    req.state_canon_mode = hg.state_canonicalization_mode();
+    req.canonicalize_states_mode =
+        (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? "Full" :
+        (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? "Automatic"
+                                                                              : "None";
+    req.event_signature_keys = hg.event_signature_keys();
+    req.positional_event_identity = hg.positional_event_identity();
+    req.show_genesis_events = engine.genesis_events();
+}
+
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
     try {
@@ -703,24 +723,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         hypergraph::Hypergraph& hg = holder->hypergraph();
         hypergraph::ParallelEvolutionEngine& engine = holder->engine();
 
-        // A SESSION'S IDENTITY IS FIXED WHEN IT OPENS, and these four are read back from the
-        // engine rather than from the job. They decide what a state and an event ARE, so serving
-        // a `Query` under the identity its own envelope happened to carry would describe a graph
-        // built under one convention using another: `Full` at `Open` and nothing at `Query` would
-        // report exact canonical forms as tree-mode ones, in fields that all still parse.
-        //
-        // `Steps` is the accumulated depth, which `evolve_more` raises. A step counted from the
-        // end is defined against that total, not against the increment a `Step` just asked for.
-        if (held_session) {
-            req.state_canon_mode = hg.state_canonicalization_mode();
-            req.canonicalize_states_mode =
-                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full)      ? "Full" :
-                (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Automatic) ? "Automatic"
-                                                                                      : "None";
-            req.event_signature_keys = hg.event_signature_keys();
-            req.positional_event_identity = hg.positional_event_identity();
-            req.show_genesis_events = engine.genesis_events();
-        }
+        // D16: a held verb takes its identity from the SESSION, not from its own envelope.
+        if (held_session) read_back_session_identity(req, hg, engine);
 
         // The hot-path state hash is always Weisfeiler-Leman; exact IR
         // canonicalization is selected via CanonicalizeStates -> Full.
