@@ -10,6 +10,7 @@
 #include "bitset.hpp"
 #include "hgcommon/core.hpp"
 #include "hgcommon/event_core.hpp"
+#include "hgcommon/quotient_replay_core.hpp"   // qr_content_hash -- the event content identity
 
 namespace hypergraph {
 
@@ -47,12 +48,11 @@ struct QcEventContent {
     uint64_t to_class = 0;
     uint32_t rule = 0;
 
+    // From hgcommon, because the DEVICE stores this hash where the host stores the triple and
+    // hashes on demand. Two engines writing the same identity is exactly one rule, and two
+    // open-codings of the same arithmetic agree only until one is edited.
     uint64_t triple_hash() const {
-        uint64_t s = 1469598103934665603ULL;
-        s ^= from_class; s *= 1099511628211ULL;
-        s ^= to_class;   s *= 1099511628211ULL;
-        s ^= rule;       s *= 1099511628211ULL;
-        return s;
+        return hgcommon::qr_content_hash(from_class, to_class, rule);
     }
 };
 
