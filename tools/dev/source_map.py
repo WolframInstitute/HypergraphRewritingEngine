@@ -261,6 +261,70 @@ def referenced_types(cur):
     return found
 
 
+# A definition's SIZE and whether it is pinned to the header it sits in. The de-header question
+# (#20) is not "how much is in headers" -- that is a line count anyone can take -- but "how much
+# of it CAN move", and three things pin a body where it is:
+#
+#   template        instantiated at the point of use, so the body must be visible
+#   device code     `HG_HD`/`__device__`/`__global__`: nvcc compiles these into device code, and
+#                   a .cu cannot link them out of a host .cpp. This is why hgcommon is excluded
+#                   from #20 by design rather than by preference.
+#   constexpr       usable in a constant expression only where the body is visible
+#
+# `inline` is NOT a pin. It is a request, and moving an inline body into a TU is exactly the
+# trade #20's done-line measures -- build time against benchmark parity -- so it is reported as
+# a property to weigh rather than an exclusion.
+_SRC_CACHE = {}
+
+
+def _source_lines(path):
+    if path not in _SRC_CACHE:
+        try:
+            _SRC_CACHE[path] = open(path, errors="replace").read().splitlines()
+        except OSError:
+            _SRC_CACHE[path] = []
+    return _SRC_CACHE[path]
+
+
+def movability(c):
+    lines = 0
+    ext = c.extent
+    if ext and ext.start.file and ext.end.file:
+        lines = max(1, ext.end.line - ext.start.line + 1)
+
+    is_template = c.kind in (ci.CursorKind.FUNCTION_TEMPLATE, ci.CursorKind.CLASS_TEMPLATE)
+    # A method of a class template is itself dependent even though its own kind is CXX_METHOD.
+    p = c.semantic_parent
+    while p is not None and p.kind != ci.CursorKind.TRANSLATION_UNIT:
+        if p.kind == ci.CursorKind.CLASS_TEMPLATE:
+            is_template = True
+            break
+        p = p.semantic_parent
+
+    # DEVICE-NESS COMES FROM THE SOURCE TEXT, NOT FROM THE CURSOR. args_for() parses a .cu as
+    # C++ with `-D__device__=` and friends, so the qualifiers are ERASED before clang sees them
+    # and no CUDADEVICE_ATTR child ever exists. Asking the cursor reports every device body as
+    # movable -- the one answer this instrument must not give, since moving one breaks the link.
+    device = False
+    if ext and ext.start.file:
+        src = _source_lines(ext.start.file.name)
+        if src:
+            # The qualifier sits on the definition's own line or the one above it (a return type
+            # on its own line is the common wrap).
+            head = " ".join(src[max(0, ext.start.line - 2):ext.start.line])
+            device = any(m in head for m in ("HG_HD", "__device__", "__global__", "__host__"))
+
+    pin = "template" if is_template else "device" if device else ""
+    if not pin:
+        try:
+            if any(t.spelling in ("constexpr", "consteval")
+                   for t in list(c.get_tokens())[:8]):
+                pin = "constexpr"
+        except Exception:
+            pass
+    return lines, pin
+
+
 def walk(cur, out, tu_path):
     for c in cur.get_children():
         loc = c.location.file
@@ -283,7 +347,7 @@ def walk(cur, out, tu_path):
             continue
         refs = referenced_types(c)
         refs.discard(name)
-        key = (rel(path), c.location.line, kind, name)
+        key = (rel(path), c.location.line, kind, name, *movability(c))
         out[key] |= refs
         # descend for nested definitions (methods inside a class body)
         if c.kind in (ci.CursorKind.CLASS_DECL, ci.CursorKind.STRUCT_DECL,
@@ -324,7 +388,7 @@ def main():
     merged = defaultdict(set)
     errors = []
     done = 0
-    with ProcessPoolExecutor(max_workers=8) as pool:
+    with ProcessPoolExecutor(max_workers=int(os.environ.get("HG_MAP_JOBS", "4"))) as pool:
         futs = {pool.submit(do_tu, e): e for e in uniq}
         for f in as_completed(futs):
             res, err = f.result()
@@ -341,7 +405,7 @@ def main():
     # a false "referenced" is one name read by hand and the cost of a false "unreferenced"
     # is deleting live code.
     by_last = defaultdict(set)
-    for (_p, _l, _k, name) in merged:
+    for (_p, _l, _k, name, _sz, _pin) in merged:
         by_last[name.rsplit("::", 1)[-1]].add(name)
 
     resolved_ct = unresolved_ct = 0
@@ -361,8 +425,8 @@ def main():
           f"definition", file=sys.stderr)
 
     by_file = defaultdict(list)
-    for (path, line, kind, name), refs in merged.items():
-        by_file[path].append((line, kind, name, sorted(refs)))
+    for (path, line, kind, name, size, pin), refs in merged.items():
+        by_file[path].append((line, kind, name, size, pin, sorted(refs)))
 
     total_defs = sum(len(v) for v in by_file.values())
     out = []
@@ -372,11 +436,48 @@ def main():
                f"Under each definition: the project types it references.\n")
     out.append("A definition with no listed references touches no other project type.\n")
 
+    # THE DE-HEADER WORKLIST (#20). "68% of the engine is in headers" is a line count and it
+    # answers nothing: the question is how much of that CAN move, and a template or a device
+    # body cannot. Reported per directory so the answer is per area rather than one number.
+    BODY_KINDS = {"function", "method", "constructor", "destructor"}
+    area = defaultdict(lambda: defaultdict(lambda: [0, 0]))   # dir -> pin -> [count, lines]
+    movable = []
+    for path in by_file:
+        if not path.endswith((".hpp", ".h", ".cuh")):
+            continue
+        d = os.path.dirname(path)
+        for line, kind, name, size, pin, _refs in by_file[path]:
+            if kind not in BODY_KINDS:
+                continue
+            slot = area[d][pin or "movable"]
+            slot[0] += 1
+            slot[1] += size
+            if not pin:
+                movable.append((size, path, line, name))
+
+    out.append("\n## De-header worklist — what can actually move out of a header\n")
+    out.append("A body is PINNED where it sits if it is a template (instantiated at the point of "
+               "use) or device code (`HG_HD`/`__device__`: nvcc compiles it into device code and "
+               "a `.cu` cannot link it out of a host `.cpp`) or `constexpr`. Everything else is "
+               "movable, and moving it trades implicit inlining for build time — which is the "
+               "measurement, not a foregone conclusion.\n")
+    out.append("| directory | movable defs | movable lines | template | device | constexpr |")
+    out.append("|---|---:|---:|---:|---:|---:|")
+    for d in sorted(area):
+        a = area[d]
+        out.append(f"| `{d}` | {a['movable'][0]} | {a['movable'][1]} | "
+                   f"{a['template'][1]} | {a['device'][1]} | {a['constexpr'][1]} |")
+
+    out.append("\nLargest movable bodies, which is where a header shrinks first:\n")
+    for size, path, line, name in sorted(movable, reverse=True)[:40]:
+        out.append(f"- {size:4d} lines  `{path}:{line}`  **{name}**")
+
     for path in sorted(by_file):
         defs = sorted(by_file[path])
         out.append(f"\n## `{path}` — {len(defs)} definitions\n")
-        for line, kind, name, refs in defs:
-            out.append(f"- **{name}** *({kind})* `:{line}`")
+        for line, kind, name, size, pin, refs in defs:
+            tag = f", pinned: {pin}" if pin else ""
+            out.append(f"- **{name}** *({kind}, {size} lines{tag})* `:{line}`")
             if refs:
                 out.append(f"  - references: {', '.join('`'+r+'`' for r in refs)}")
     if errors:
