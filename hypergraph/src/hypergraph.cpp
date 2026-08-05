@@ -918,75 +918,19 @@ void Hypergraph::qc_emit(EventId producer, EventId consumer) {
 
 void Hypergraph::qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
                                  EventId producer) {
-    const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    if (static_cast<int>(depth) > maxs) return;
-    const uint64_t key = qc_key(state_hash, depth, orbit);
-    // Newly added producer for this (state, depth, orbit)?
-    uint64_t seenk = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
-    seenk *= 1099511628211ULL; if (seenk == 0 || seenk == ~0ULL) seenk = 1;
-    if (!qc_dsup_seen_.insert_if_absent(seenk, true).second) return;
-    qc_dsup_list(key)->push(producer, arena_);
-
-    // A producer landing at (state, depth) witnesses that (state, depth) is reachable, so
-    // mark it and process its transitions once. Without this a producer arriving via the
-    // survivor cascade would leave (state, depth) unreached, and a consuming transition
-    // registered later would be skipped by the register trigger. Idempotent; bounded by depth.
-    qc_reach(state_hash, depth);
-
-    // A state is only *processed* (emits, propagates survivors) at depth < steps -- the DP
-    // runs its transition loop for depths 0..steps-1, producing into depth steps but never
-    // reading depth steps. Producers landing at the final depth are stored and dead.
-    if (static_cast<int>(depth) >= maxs) return;
-
-    // Rendezvous with transitions already known from this state: publish before scan.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
-        for (uint32_t i = 0; i < t.num_consumed; ++i)
-            if (t.consumed_orbits[i] == orbit) { qc_emit(producer, t.canon_event); break; }
-        for (uint32_t i = 0; i < t.num_survivors; ++i)
-            if (t.surv_from[i] == orbit)
-                qc_add_producer(t.to_hash, depth + 1, t.surv_to[i], producer);
-    });
+    auto c = qc_ctx();
+    hgcommon::qc_add_producer(c, state_hash, depth, orbit, producer);
 }
 
 void Hypergraph::qc_process_transition(const CanonicalTransition& t, uint64_t from_hash,
                                        uint32_t depth) {
-    const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    if (static_cast<int>(depth) + 1 > maxs) return;
-    qc_reach(t.to_hash, depth + 1);
-    // Produced edges are produced by this canonical event, at the child depth.
-    for (uint32_t i = 0; i < t.num_produced; ++i)
-        qc_add_producer(t.to_hash, depth + 1, t.produced_orbits[i], t.canon_event);
-    // Rendezvous with producers already present at (from, depth): publish (reach/produce
-    // above) before this scan.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    for (uint32_t i = 0; i < t.num_consumed; ++i) {
-        auto r = qc_dsup_.lookup(qc_key(from_hash, depth, t.consumed_orbits[i]));
-        if (r.has_value()) (*r)->for_each([&](EventId p) { qc_emit(p, t.canon_event); });
-    }
-    for (uint32_t i = 0; i < t.num_survivors; ++i) {
-        auto r = qc_dsup_.lookup(qc_key(from_hash, depth, t.surv_from[i]));
-        if (r.has_value()) (*r)->for_each([&](EventId p) {
-            qc_add_producer(t.to_hash, depth + 1, t.surv_to[i], p);
-        });
-    }
+    auto c = qc_ctx();
+    hgcommon::qc_process_transition(c, t, from_hash, depth);
 }
 
 void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
-    const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    if (static_cast<int>(depth) > maxs) return;
-    if (!qc_reached_.insert_if_absent(qc_rkey(state_hash, depth), true).second) return;
-    qc_reached_list_.push(QcReachPoint{state_hash, depth}, arena_);
-
-    // Publish (the insert above) before scanning; pairs with the fence in
-    // register_quotient_transition. The two sides write different locations and then read the
-    // other's, so without a sequentially consistent fence on BOTH of them a thread reaching
-    // (state, depth) and a thread registering a transition out of that state can each read
-    // the other as absent, and the (transition, depth) pair is processed by neither.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
-        qc_process_transition(t, state_hash, depth);
-    });
+    auto c = qc_ctx();
+    hgcommon::qc_reach(c, state_hash, depth);
 }
 
 void Hypergraph::raise_quotient_max_steps(int max_steps) {
@@ -1471,7 +1415,7 @@ void Hypergraph::register_quotient_transition(EventId e) {
     t->num_survivors = nsurv;
     t->consumed_orbits = copy(consumed);
     t->produced_orbits = copy(produced);
-    t->surv_from = sf; t->surv_to = st;
+    t->surv_from_orbits = sf; t->surv_to_orbits = st;
     worker_scratch().release(mk);
 
     LockFreeList<CanonicalTransition>* lst;

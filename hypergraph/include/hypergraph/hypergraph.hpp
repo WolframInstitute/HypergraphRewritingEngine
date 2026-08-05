@@ -15,6 +15,7 @@
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "segmented_array.hpp"
+#include "hgcommon/quotient_causal_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "wl_hash.hpp"
@@ -266,19 +267,58 @@ class Hypergraph {
     // the key cannot reach the LOCKED sentinel either.
     static uint64_t qc_pair_key(uint32_t a, uint32_t b) { return id_key(a, b); }
 
+    // The DP's key spaces come from hgcommon so the device indexes the same ones.
     static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
-        uint64_t h = 1469598103934665603ULL;
-        h ^= state_hash; h *= 1099511628211ULL;
-        h ^= (static_cast<uint64_t>(depth) << 32) | orbit; h *= 1099511628211ULL;
-        return h;
+        return hgcommon::qc_key(state_hash, depth, orbit);
     }
     static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
-        uint64_t h = 1469598103934665603ULL;
-        h ^= state_hash; h *= 1099511628211ULL;
-        h ^= depth; h *= 1099511628211ULL;
-        return h ? h : 1;
+        return hgcommon::qc_rkey(state_hash, depth);
     }
+
     LockFreeList<EventId>* qc_dsup_list(uint64_t key);
+
+    // The storage face hgcommon/quotient_causal_core.hpp drives. It supplies WHERE things are
+    // held and nothing else -- when a point is entered, what a producer landing does, and which
+    // rendezvous scan follows which publish are in the core, which is the same body the device
+    // runs. Nested so it reaches this class's private state without a friend declaration.
+    struct QcCtx {
+        using Transition = CanonicalTransition;
+        Hypergraph& hg;
+        uint32_t steps;
+
+        uint32_t max_steps() const { return steps; }
+        // The host recurses on the ordinary stack, which is heap-sized here, so no depth is out
+        // of reach and the cascade is bounded by max_steps alone.
+        bool enter(uint32_t) const { return true; }
+        bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
+            if (!hg.qc_reached_.insert_if_absent(rkey, true).second) return false;
+            // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made
+            // terminal; nothing else reads the list.
+            hg.qc_reached_list_.push(QcReachPoint{state_hash, depth}, hg.arena_);
+            return true;
+        }
+        bool mark_producer_seen(uint64_t seen_key) {
+            return hg.qc_dsup_seen_.insert_if_absent(seen_key, true).second;
+        }
+        void push_producer(uint64_t key, uint32_t producer) {
+            hg.qc_dsup_list(key)->push(producer, hg.arena_);
+        }
+        template <class F>
+        void for_each_producer(uint64_t key, F&& f) const {
+            auto r = hg.qc_dsup_.lookup(key);
+            if (r.has_value()) (*r)->for_each([&](EventId p) { f(p); });
+        }
+        template <class F>
+        void for_each_transition_from(uint64_t hash, F&& f) const {
+            hg.for_each_transition_from(hash, [&](const CanonicalTransition& t) { f(t); });
+        }
+        void emit(uint32_t producer, uint32_t consumer) { hg.qc_emit(producer, consumer); }
+        void fence() const { std::atomic_thread_fence(std::memory_order_seq_cst); }
+    };
+    QcCtx qc_ctx() {
+        return QcCtx{*this,
+                     static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed))};
+    }
     void qc_capture_expansion(EventId e);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);

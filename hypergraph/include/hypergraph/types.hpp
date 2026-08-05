@@ -145,9 +145,16 @@ struct CanonicalTransition {
     uint32_t num_consumed = 0, num_produced = 0, num_survivors = 0;
     const uint32_t* consumed_orbits = nullptr;   // length num_consumed, sorted
     const uint32_t* produced_orbits = nullptr;   // length num_produced, sorted
-    const uint32_t* surv_from = nullptr;         // length num_survivors (orbit in `from`)
-    const uint32_t* surv_to = nullptr;           // length num_survivors (orbit in `to`)
+    const uint32_t* surv_from_orbits = nullptr;  // length num_survivors (orbit in `from`)
+    const uint32_t* surv_to_orbits = nullptr;    // length num_survivors (orbit in `to`)
 
+    // Accessors, because hgcommon/quotient_causal_core.hpp reads the orbit arrays through them
+    // and the device packs its four into one contiguous word arena. The DP does not know or
+    // care which layout it is walking.
+    uint32_t consumed(uint32_t i) const { return consumed_orbits[i]; }
+    uint32_t produced(uint32_t i) const { return produced_orbits[i]; }
+    uint32_t surv_from(uint32_t i) const { return surv_from_orbits[i]; }
+    uint32_t surv_to(uint32_t i) const { return surv_to_orbits[i]; }
 };
 
 // One match of the expanded representative of a canonical state, named in SLOTS -- the unit
