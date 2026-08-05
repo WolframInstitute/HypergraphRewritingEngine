@@ -1,5 +1,9 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
+#include "hgcommon/ir_core.hpp"
+
+#include <unordered_map>
+#include <vector>
 
 #include <algorithm>
 #include <cassert>
@@ -608,37 +612,64 @@ bool IRCanonicalizer::are_isomorphic(
     return r1.canonical_form == r2.canonical_form;
 }
 
+namespace {
+
+// The shared core, over one state's edges, escalating the individualization depth.
+//
+// Local vertex indices are assigned in encounter order. The core's result does not depend on
+// that order: the only place an index is read as a value is the initial partition's tie-break,
+// which orders vertices WITHIN a cell, and no output reads within-cell order --
+// ir_core_equivalence_probe checks this from the other side by relabelling every corpus state
+// three times.
+uint64_t ir_core_hash(const SVec<SVec<VertexId>>& edges) {
+    const uint32_t n_edges = static_cast<uint32_t>(edges.size());
+    std::vector<uint8_t> ea;
+    std::vector<uint32_t> eoff, ev;
+    ea.reserve(n_edges); eoff.reserve(n_edges);
+    for (const auto& e : edges) {
+        eoff.push_back(static_cast<uint32_t>(ev.size()));
+        ea.push_back(static_cast<uint8_t>(e.size()));
+        for (VertexId v : e) ev.push_back(static_cast<uint32_t>(v));
+    }
+    std::unordered_map<uint32_t, uint32_t> local;
+    uint32_t n_verts = 0;
+    for (uint32_t& x : ev) {
+        auto it = local.find(x);
+        if (it == local.end()) { local.emplace(x, n_verts); x = n_verts++; }
+        else x = it->second;
+    }
+    const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+
+    std::vector<uint32_t> scratch;
+    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+        const uint64_t words =
+            hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
+        if (scratch.size() < words + 2) scratch.assign(words + 2, 0);
+        auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
+                                             n_edges, n_verts, total_occ,
+                                             scratch.data(), depth);
+        if (r.status == hgcommon::IR_OK) return r.hash;
+        if (r.status == hgcommon::IR_EMPTY) return 0;
+    }
+    return 0;
+}
+
+}  // namespace
+
 uint64_t IRCanonicalizer::compute_canonical_hash(
     const SVec<SVec<VertexId>>& edges) const {
+    // ZERO, not EMPTY_STATE_CANONICAL_HASH. This entry point's empty-set convention is 0, and
+    // it is load-bearing: the value is a dedup key, so changing it moves which states merge
+    // and therefore the event counts. An earlier rewrite of this file returned
+    // EMPTY_STATE_CANONICAL_HASH here and GoldenMatrix reported an event count that depended
+    // on the worker count.
     if (edges.empty()) return 0;
 
-    // Hash-only path: the canonical labeling fully determines the hash, so hash the
-    // canonical edge ordering directly and skip build_result -- the CanonicalizationResult
-    // it would materialize (per-edge maps and vectors) is never read here. This is the
-    // per-state hot path; the mark/release reclaims all scratch in bulk.
+    // The shared core decides the hash. ir_core_equivalence_probe compares this against it
+    // over 4063 corpus states, on the hash, the canonical form, and the per-edge rank, class
+    // and orbit arrays.
     auto scratch_mark = worker_scratch().mark();
-    HypergraphAdj adj;
-    SVec<uint32_t> labeling;
-    bool ok = find_canonical_labeling(edges, adj, labeling);
-
-    uint64_t hash = 14695981039346656037ULL;
-    constexpr uint64_t prime = 1099511628211ULL;
-
-    hash ^= static_cast<uint64_t>(ok ? adj.num_vertices : 0u);
-    hash *= prime;
-
-    if (ok) {
-        SVec<SVec<VertexId>> canonical = apply_labeling(edges, adj, labeling);
-        for (const auto& edge : canonical) {
-            for (auto vertex : edge) {
-                hash ^= static_cast<uint64_t>(vertex);
-                hash *= prime;
-            }
-            hash ^= 0xDEADBEEF;
-            hash *= prime;
-        }
-    }
-
+    const uint64_t hash = ir_core_hash(edges);
     worker_scratch().release(scratch_mark);
     return hash;
 }
