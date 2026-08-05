@@ -66,6 +66,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 ## `hypergraph/include/hypergraph/` -- core CPU engine (headers)
 
 - **`types.hpp`** -- core value types, IDs, bindings, mode enums.
+- **`quotient_types.hpp`** -- what a state, an edge and an event ARE once isomorphic states are identified: `QcEventContent`, `CanonicalEdgeKey`, `EdgeRankTable`, `EdgeOrbitTable`, `CanonicalTransition`, `SlotMatch`. Separate from `types.hpp` because they are the only types needing `hgcommon/quotient_replay_core.hpp`, which `types.hpp` would otherwise hand to every engine header.
   - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCorrespondence`, `EventSignature`, `VertexHashCache`, `SubtreeBloomFilter`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
   - quotient reconstruction types: `CanonicalEdgeKey` (the quotient-aware edge identity that meets producers with consumers -- orbit-keyed under quotient, raw `EdgeId` otherwise), `EdgeOrbitTable` (per-state edge orbits + SLOTS), `CanonicalTransition` (orbit-deduplicated), `SlotMatch` (undeduplicated, slot-named)
   - `EMPTY_STATE_CANONICAL_HASH` -- the empty state's own canonical hash; it cannot be 0, which means "not computed" for `State::canonical_hash` and is `ConcurrentMap`'s `EMPTY_KEY`
