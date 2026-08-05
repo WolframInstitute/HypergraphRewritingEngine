@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
+#include <vector>
 
 #include "types.hpp"
 #include "signature.hpp"
