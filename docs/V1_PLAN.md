@@ -653,8 +653,14 @@ magnitudes are not current.
 - **Reclamation hazard:** forward-by-reference `MatchCore`s live *across* generations, so a
   per-generation arena reset is unsafe for match data. Reclamation must split per-state list
   nodes (freeable at expansion quiescence) from `MatchCore`s.
-- **Structural debt for P6:** `hypergraph_ffi.cpp` ~4,700 lines and `HypergraphRewriting.wl`
-  ~3,800 both need splitting; `types.hpp` is a grab-bag of ~12 unrelated structs; namespaces are
+- **Structural debt for P6, RE-MEASURED 2026-08-05 (the recorded numbers were stale by 2.5x
+  and 1.8x):** `hypergraph_ffi.cpp` is **1,849** lines, not ~4,700, and `HypergraphRewriting.wl`
+  is **2,142**, not ~3,800. The file size is not the problem in either case. What is: ONE
+  function, `run_rewriting_core`, is **1,664 of those 1,849 lines** -- every other definition in
+  the file is under 40 -- and the WL file carries 98 top-level definitions. So the cut is a
+  function decomposition, not a file split, and the op-boundary work (#12) already found where
+  its first seam is. `types.hpp` **is done** (757 -> 170 ms, 765 -> 503 lines, floor measured);
+  namespaces are
   inconsistent (`hypergraph`, `hgcommon`, `hgmarshal`, `hg_gpu`, `wxf`, `job_system`,
   `lockfree_deque`). **Naming decisions are Richard's** — the convention doc comes before any
   mechanical rename. De-header tension: header-only is implicit inlining, so moving hot code
