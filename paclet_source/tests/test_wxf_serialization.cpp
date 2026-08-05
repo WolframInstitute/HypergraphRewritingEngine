@@ -182,12 +182,13 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 
 // The same job with one extra top-level key, so the session envelope can be exercised without
 // disturbing the builder every other pin test uses.
-std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op) {
+std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
+                                         int64_t session = 0) {
     wxf::Writer w;
     w.write_header();
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(5);
+    w.write_varint(session ? 6 : 5);
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("InitialStates"));
@@ -215,6 +216,12 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op) {
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Op"));
     w.write(op);
+
+    if (session) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Session"));
+        w.write(session);
+    }
 
     return w.release_data();
 }
@@ -256,9 +263,64 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndUnservedOpsAreRefused) {
     ASSERT_EQ(value_bytes(plain, "NumStates"), value_bytes(plain_again, "NumStates"));
     ASSERT_EQ(value_bytes(plain, "NumEvents"), value_bytes(plain_again, "NumEvents"));
 
-    // Named but not wired. Refused, not ignored.
+    // Named but not wired. Refused, not ignored. `Open` and `Close` ARE served, so they are not
+    // listed here -- an unserved-verb test that names a served one asserts nothing and, worse,
+    // leaves a session behind for whatever runs next.
     EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Step"), host), std::runtime_error);
-    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Open"), host), std::runtime_error);
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Query"), host), std::runtime_error);
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(3, "Nonsense"), host), std::runtime_error);
+}
+
+// Open and Close against a live engine. Step and Query are not served yet -- they need the
+// serialization below reachable on its own -- so what is asserted here is the LIFETIME: that a
+// session is retained, that retaining it does not change the answer, and that the one-at-a-time
+// rule is enforced against the real worker slot rather than only against SessionSlot in
+// isolation.
+TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
+    HostBridge host;
+
+    const auto evolved = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+                                                        [](wxf::Writer&) {}, 0), host);
+    const auto opened = run_rewriting_core(build_input_with_op(3, "Open"), host);
+    ASSERT_FALSE(opened.empty());
+
+    // The reply must name the session, or the caller has a handle it cannot close.
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0) << "Open must return a non-zero Session handle; 0 means 'no session'";
+
+    // Opening returns the same ANSWER as evolving. The session is something the caller gains,
+    // not a different result -- and the counts are the payloads that are byte-stable run to run
+    // (States/Events carry raw ids, which follow discovery order across threads).
+    EXPECT_EQ(value_bytes(evolved, "NumStates"), value_bytes(opened, "NumStates"));
+    EXPECT_EQ(value_bytes(evolved, "NumEvents"), value_bytes(opened, "NumEvents"));
+
+    // One at a time (D7): the second Open is refused, and refusing it does not disturb the
+    // first. The message has to say a session is already live, or a caller cannot tell this
+    // from a malformed job.
+    try {
+        run_rewriting_core(build_input_with_op(3, "Open"), host);
+        ADD_FAILURE() << "a second Open while one is live must be refused";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("already live"), std::string::npos) << e.what();
+    }
+
+    // A handle this worker never issued is refused, so a stale or invented one cannot close
+    // somebody else's session.
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle + 1000), host),
+                 std::runtime_error);
+
+    // Close releases it, and a second Close is an error rather than a silent success -- closing
+    // what is not open means the caller's model has diverged from the worker's.
+    EXPECT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
+    EXPECT_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host),
+                 std::runtime_error);
+
+    // With the slot empty, opening succeeds again -- and issues a DIFFERENT handle, because a
+    // reissued one would let a stale caller address a session that is not its own.
+    const auto reopened = run_rewriting_core(build_input_with_op(2, "Open"), host);
+    const int64_t handle2 = read_int_key(reopened, "Session");
+    EXPECT_NE(handle2, handle);
+    EXPECT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle2), host));
 }
 
 TEST(WxfSerializationPin, DefaultStatesAndEvents) {

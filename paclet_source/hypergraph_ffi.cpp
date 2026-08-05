@@ -109,6 +109,26 @@ static void handle_error(WolframLibraryData libData, const char* message) {
  * When CanonicalizeStates is Full, states are deduplicated and edges are
  * IR-canonicalized (vertices relabeled to 0..n-1, edges sorted).
  */
+// The worker's one session (D7). Function-local so it lives exactly as long as the process
+// serving jobs -- which is what `--serve` and `--serve-socket` give it. A one-shot invocation
+// opens and closes within its single call or not at all, so the same code serves both.
+static hgffi::SessionSlot& worker_session() {
+    static hgffi::SessionSlot slot;
+    return slot;
+}
+
+// A reply that carries only a status, for verbs that return no evolution.
+static std::vector<uint8_t> session_ack(uint64_t handle) {
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Session"));
+    w.write(static_cast<int64_t>(handle));
+    return w.release_data();
+}
+
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
     try {
@@ -372,13 +392,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
         });
 
-        // Named, but not yet served. The verbs land on a handle->engine holder that can carry
-        // either device; refusing here is what keeps a caller from reading a one-shot result as
-        // a session's, which is the one way this can be wrong while looking right.
-        if (!session_op.empty() && session_op != "Evolve") {
+        // Close needs nothing else from the job: it names a handle and releases what that handle
+        // holds. Answered before the rules are checked, because a Close carries no rules and
+        // demanding them would make releasing a session harder than opening one.
+        if (session_op == "Close") {
+            worker_session().close(session_handle);
+            return session_ack(hgffi::SessionSlot::kNoSession);
+        }
+
+        // Step and Query need to run against a HELD engine rather than a job's, and Query in
+        // particular needs the serialization below reachable on its own. That is the
+        // op-boundary split; until it lands they are refused rather than answered from a fresh
+        // engine, which would look right in every field.
+        if (!session_op.empty() && session_op != "Evolve" && session_op != "Open") {
             throw std::runtime_error(
-                "Op '" + session_op + "' is not served yet; only 'Evolve' (or no Op) is. "
-                "Session verbs need the handle registry, which is not wired.");
+                "Op '" + session_op + "' is not served yet; 'Evolve', 'Open' and 'Close' are. "
+                "Step and Query need the serialization split.");
         }
 
         if (parsed_rules_raw.empty()) {
@@ -465,10 +494,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // `engine` below are references to what the holder owns, so everything that reads them
         // reads the same objects it always did.
         //
-        // Not continuable: a job that names no session is one-shot, and the frontier a
-        // continuation resumes from costs about 12.5 MB across the oracle corpus and 3.9% of
-        // the arena. A session will construct this with continuable = true and pay for it.
-        auto engine_holder = std::make_unique<hgffi::CpuEngineHolder>(/*continuable=*/false);
+        // Continuable only for a session. The frontier a continuation resumes from costs about
+        // 12.5 MB across the oracle corpus and 3.9% of the arena, and a one-shot job never
+        // resumes -- so `Evolve` does not pay for it and `Open` does, which is the only
+        // difference between the two paths.
+        const bool opening_session = (session_op == "Open");
+        auto engine_holder =
+            std::make_unique<hgffi::CpuEngineHolder>(/*continuable=*/opening_session);
         hypergraph::Hypergraph& hg = engine_holder->hypergraph();
 
         // The hot-path state hash is always Weisfeiler-Leman; exact IR
@@ -719,6 +751,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         wxf_writer.write_header();
 
         wxf::WXFValueAssociation full_result;
+
+        // An `Open` retains the engine, and the reply has to carry the handle -- a session the
+        // caller cannot name is a leak it cannot close. Taken HERE, before serialization, so the
+        // handle is a value in the result rather than something appended after the bytes are
+        // built. Moving the unique_ptr does not move the objects: the holder owns them on the
+        // heap, so the `hg` and `engine` references below stay valid.
+        //
+        // A refusal (one session is already live, D7) aborts the job rather than silently
+        // returning an unretained result, because a caller that asked for a session and got a
+        // plain answer has no way to tell.
+        if (opening_session) {
+            try {
+                const uint64_t h = worker_session().open(std::move(engine_holder));
+                full_result.push_back({wxf::WXFValue("Session"),
+                                       wxf::WXFValue(static_cast<int64_t>(h))});
+            } catch (const hgffi::SessionError& e) {
+                throw std::runtime_error(std::string("Open refused: ") + e.what());
+            }
+        }
 
         // The States and Events sections dominate the result size, so they are
         // streamed straight into this scratch Writer as complete key->value blobs
