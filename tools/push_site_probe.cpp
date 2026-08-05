@@ -26,11 +26,31 @@
 //   empty/calls per site -- how often a push has anything to push to. Cheap to fix (a probe that
 //   returns), but it is not where the arena goes.
 //
-//   dedup allocs and WASTED allocs -- where the arena DOES go. claim_match must have a stable
-//   MatchRecord copy before the exchange that publishes it, so it allocates on the strength of a
-//   lookup that just missed; another thread can claim the key in that window. The arena is a bump
-//   pointer with no per-object free, so every copy that loses is permanent. A fix for the 13.52%
-//   has to move the wasted count, and nothing else in this output is that number.
+//   dedup allocs and WASTED allocs. claim_match must have a stable MatchRecord copy before the
+//   exchange that publishes it, so it allocates on the strength of a lookup that just missed;
+//   another thread can claim the key in that window, and the arena is a bump pointer with no
+//   per-object free, so a copy that loses is permanent.
+//
+// AND THAT IS NOT WHERE THE ARENA GOES EITHER -- this probe's own output refutes the sentence
+// that used to stand here ("a fix for the 13.52% has to move the wasted count"). Measured,
+// steps=4, threads {1,4}:
+//
+//   batched   8487 stable copies allocated, 3 lost the claim   (0.035%)
+//   eager     4350 stable copies allocated, 0 lost the claim   (0%)
+//
+// Three lost copies cannot be 13.52% of anything. The gap is the ALLOCATION COUNT, 8487 against
+// 4350, and essentially every one of those allocations WINS its claim -- they are distinct
+// (state, match) records, not race debris.
+//
+// So batched stores about twice as many forwarded match records as eager while producing
+// IDENTICAL output. The mechanism is visible in the same table: batched makes 7200 forwarding-
+// site calls against eager's 3066, because by the time a match is pushed more of the parent's
+// children exist to push it to. Those extra records are redundant with what each child's PULL
+// would have found on its own -- the waste is TWO MECHANISMS COVERING AN OVERLAPPING WINDOW,
+// not allocations lost to a race.
+//
+// A fix therefore has to make push and pull partition the window instead of overlapping it,
+// and the number it must move is the allocation count, not the wasted count.
 //
 // This measures; it does not change behaviour. Removing or reordering anything is a separate step
 // gated on these numbers, on cost_matrix over the same 17 cases, and on test_match_completeness
