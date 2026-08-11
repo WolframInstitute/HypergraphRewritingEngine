@@ -353,6 +353,11 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
             else if (key == "From") {
                 req.session_from = value_parser.read<std::vector<int64_t>>();
             }
+            // "Delta" sends only what this session has not been sent; anything else is a full
+            // delivery, which also resets the record.
+            else if (key == "Delivery") {
+                req.delivery_delta = (value_parser.read<std::string>() == "Delta");
+            }
             else {
                 value_parser.skip_value();
             }
@@ -1710,8 +1715,33 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             gopts.edge_deduplication = req.edge_deduplication;
             gopts.branchial_step = req.branchial_step;
             gopts.steps = req.steps;
-            full_result.push_back({wxf::WXFValue("GraphData"),
-                                   hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts)});
+            // DELTA DELIVERY is a session's, because only a session has a record of what it has
+            // already been sent. An `Evolve` has no history to be a delta against.
+            //
+            // REFUSED ON THE QUOTIENT RECONSTRUCTION ROUTE, and reported rather than silently
+            // downgraded. There the causal relation is REDUCED ON READ -- the stored base is a
+            // set and a DAG's transitive reduction is unique -- so an edge already SERVED can
+            // drop out of the reduction once a later path makes it redundant. A delta has no way
+            // to say "withdraw that edge", so the caller's merged graph would keep an edge the
+            // engine no longer serves. Retraction entries would fix it; until they exist the
+            // route delivers in full.
+            hgffi::DeliveryCursor* cursor = nullptr;
+            if (held_session && req.delivery_delta) {
+                if (recon.active) {
+                    req.ffi_warnings.push_back(
+                        {"OptionSkipped", 1,
+                         "Delivery -> \"Delta\" is not served on the quotient reconstruction "
+                         "route: its causal relation is reduced on read, so an edge already sent "
+                         "can leave the reduction, and a delta cannot withdraw one. This reply "
+                         "carries the whole graph."});
+                } else {
+                    cursor = &holder->delivery_cursor();
+                }
+            }
+            if (held_session && !req.delivery_delta) holder->delivery_cursor().reset();
+            full_result.push_back(
+                {wxf::WXFValue("GraphData"),
+                 hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor)});
         }
 
         // Only include counts when requested

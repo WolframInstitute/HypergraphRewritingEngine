@@ -33,6 +33,19 @@
 //   // (event1, event2) raw branchial event-id pairs, genesis already filtered.
 //   std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const;
 
+//
+// DELTA DELIVERY. build_graph_data takes an optional DeliveryCursor: with one, it emits only the
+// vertices and edges that session has not already been sent, and records what it emits. Without
+// one -- every `Evolve`, and any session asking for a full delivery -- it emits everything.
+// There is ONE walk either way: a cursor that has never seen a property answers "not sent" to
+// every question, so the full delivery is the delta against an empty record rather than a second
+// code path that agrees until one of them is edited.
+//
+// WHY IT MATTERS HERE: a Step re-serialised the whole accumulated graph, and
+// tools/dev/session_step_cost.wls measured that as ~100% of a Step's wall time (24.8 MB and
+// 1.9 s at depth 7, against a Query that explores nothing and costs the same).
+
+#include "delivery_cursor.hpp"
 #include "wxf.hpp"
 
 #include <cstdint>
@@ -44,6 +57,24 @@
 
 namespace HG_NAMESPACE {
 namespace marshal {
+
+// Edge-kind tags for the delivery cursor's keys. They distinguish edges that share endpoints
+// but not meaning -- a causal edge and a branchial edge between the same two events are two
+// edges, and a record that conflated them would drop the second from every later delta.
+inline constexpr uint32_t kEdgeDirected       = 1;   // states graph
+inline constexpr uint32_t kEdgeCausal         = 2;
+inline constexpr uint32_t kEdgeBranchialState = 3;   // branchial graph, state endpoints
+inline constexpr uint32_t kEdgeBranchialEvent = 4;   // evolution graph, event endpoints
+inline constexpr uint32_t kEdgeStateEvent     = 5;
+inline constexpr uint32_t kEdgeEventState     = 6;
+
+// An event vertex's payload never changes after it is minted, so it has one revision forever.
+inline constexpr uint32_t kEventRevision = 0;
+
+// The evolution graph tags states and events separately but the cursor records one id space per
+// property, so state ids are biased out of the event range. Far above any event count and
+// exactly representable, so the sum is the id it looks like rather than a rounded one.
+inline constexpr int64_t kStateVertexBias = 1ll << 40;
 
 struct GraphOptions {
     bool edge_deduplication = true;   // one causal edge per (producer, consumer) pair
@@ -93,7 +124,8 @@ inline GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& p
 template <typename Source>
 wxf::WXFValue build_graph_data(const Source& src,
                                const std::vector<std::string>& graph_properties,
-                               const GraphOptions& opts) {
+                               const GraphOptions& opts,
+                               ffi::DeliveryCursor* cursor = nullptr) {
     wxf::WXFValueAssociation all_graph_data;
 
     for (const std::string& graph_property : graph_properties) {
@@ -116,6 +148,9 @@ wxf::WXFValue build_graph_data(const Source& src,
         // carries Id and its endpoint state ids (InputState doubles as the state/event vertex
         // discriminator), a states-graph edge carries the event id its tooltip names.
         const bool is_structure = graph_property.find("Structure") != std::string::npos;
+        // Read before the walk records anything: after it, every property has been delivered.
+        const bool delivered_before =
+            cursor != nullptr && cursor->delivered_before(graph_property);
 
         auto lean_state_data = [&](uint32_t raw_sid) {
             wxf::WXFValueAssociation d;
@@ -147,6 +182,28 @@ wxf::WXFValue build_graph_data(const Source& src,
             return d;
         };
 
+        // A vertex is emitted when the cursor has not seen it at this REVISION. A state's
+        // revision is its step, which try_lower_explore_depth may lower after the state was
+        // delivered -- the one field of a delivered vertex that changes. An event's payload is
+        // immutable, so its revision is constant.
+        auto send_vertex = [&](int64_t id, uint32_t revision) {
+            return cursor == nullptr || cursor->take_vertex(graph_property, id, revision);
+        };
+        // An edge's key must distinguish every edge the walk can emit and nothing else: its two
+        // endpoints, its type, and -- for the un-deduplicated causal case, where N edges share a
+        // pair -- its index among them.
+        auto edge_key = [](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
+            uint64_t k = hgcommon::FNV_OFFSET;
+            k = hgcommon::fnv_hash(k, static_cast<uint64_t>(from));
+            k = hgcommon::fnv_hash(k, static_cast<uint64_t>(to));
+            k = hgcommon::fnv_hash(k, type_tag);
+            k = hgcommon::fnv_hash(k, index);
+            return k;
+        };
+        auto send_edge = [&](uint64_t key) {
+            return cursor == nullptr || cursor->take_edge(graph_property, key);
+        };
+
         auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
                                   wxf::WXFValueAssociation data = {}) {
             wxf::WXFValueAssociation edge;
@@ -172,6 +229,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                 wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(pair.second)};
                 size_t num_edges = opts.edge_deduplication ? 1 : count;
                 for (size_t k = 0; k < num_edges; ++k) {
+                    if (!send_edge(edge_key(pair.first, pair.second, kEdgeCausal,
+                                            static_cast<uint32_t>(k)))) continue;
                     wxf::WXFValueAssociation causal_data;
                     causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(pair.first)});
                     causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(pair.second)});
@@ -190,13 +249,21 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (!state_verts.count(eff)) state_verts[eff] = sid;
             }
             for (auto& [eff, raw] : state_verts) {
+                if (!send_vertex(eff, src.state_step(raw))) continue;
                 vertices.push_back(wxf::WXFValue(eff));
                 vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
             }
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
-                add_graph_edge(wxf::WXFValue(src.effective_state_id(src.event_input_state(eid))),
-                               wxf::WXFValue(src.effective_state_id(src.event_output_state(eid))),
+                const int64_t in  = src.effective_state_id(src.event_input_state(eid));
+                const int64_t out = src.effective_state_id(src.event_output_state(eid));
+                // Keyed by the EVENT as well as the endpoints: two distinct events can join the
+                // same pair of states, and a states-graph edge carries the event id its tooltip
+                // names, so collapsing them would drop an edge a full delivery emits.
+                if (!send_edge(edge_key(in, out, kEdgeDirected,
+                                        static_cast<uint32_t>(src.effective_event_id(eid)))))
+                    continue;
+                add_graph_edge(wxf::WXFValue(in), wxf::WXFValue(out),
                                "Directed", states_edge_payload(eid));
             }
         }
@@ -208,6 +275,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (!event_verts.count(eff)) event_verts[eff] = eid;
             }
             for (auto& [eff, raw] : event_verts) {
+                if (!send_vertex(eff, kEventRevision)) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
                 vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
@@ -228,6 +296,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (!state_verts.count(s2)) state_verts[s2] = src.event_output_state(e2);
             }
             for (auto& [eff, raw] : state_verts) {
+                if (!send_vertex(eff, src.state_step(raw))) continue;
                 vertices.push_back(wxf::WXFValue(eff));
                 vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
             }
@@ -235,6 +304,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                 int64_t s1 = src.effective_state_id(src.event_output_state(e1));
                 int64_t s2 = src.effective_state_id(src.event_output_state(e2));
+                if (!send_edge(edge_key(s1, s2, kEdgeBranchialState, 0))) continue;
                 wxf::WXFValueAssociation branchial_data;
                 branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(s1)});
                 branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(s2)});
@@ -256,12 +326,16 @@ wxf::WXFValue build_graph_data(const Source& src,
                 int64_t eff = src.effective_event_id(eid);
                 if (!event_verts.count(eff)) event_verts[eff] = eid;
             }
+            // The two vertex kinds share one id space here (both are tagged), so a state and an
+            // event with the same number must not collide in the record: states are offset.
             for (int64_t sid : state_ids) {
+                if (!send_vertex(kStateVertexBias + sid, src.state_step(raw_states[sid]))) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
                 vertices.push_back(wxf::WXFValue(tag));
                 vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(state_payload(raw_states[sid]))});
             }
             for (auto& [eff, raw] : event_verts) {
+                if (!send_vertex(eff, kEventRevision)) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
                 vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
@@ -274,8 +348,12 @@ wxf::WXFValue build_graph_data(const Source& src,
                 wxf::WXFValueList e_tag = {wxf::WXFValue("E"), wxf::WXFValue(eff_eid)};
                 wxf::WXFValueAssociation edge_data;
                 edge_data.push_back({wxf::WXFValue("EventId"), wxf::WXFValue(eff_eid)});
-                add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
-                add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
+                const int64_t in_id  = src.effective_state_id(src.event_input_state(eid));
+                const int64_t out_id = src.effective_state_id(src.event_output_state(eid));
+                if (send_edge(edge_key(in_id, eff_eid, kEdgeStateEvent, 0)))
+                    add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
+                if (send_edge(edge_key(eff_eid, out_id, kEdgeEventState, 0)))
+                    add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
             }
             if (has_causal) add_causal_edges();
             if (has_branchial) {
@@ -285,6 +363,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                     if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                     int64_t from = src.effective_event_id(e1);
                     int64_t to   = src.effective_event_id(e2);
+                    if (!send_edge(edge_key(from, to, kEdgeBranchialEvent, 0))) continue;
                     wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
                     wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(to)};
                     wxf::WXFValueAssociation branchial_data;
@@ -296,6 +375,18 @@ wxf::WXFValue build_graph_data(const Source& src,
         }
 
         wxf::WXFValueAssociation graph_data;
+        // WHETHER THIS IS A WHOLE GRAPH OR AN INCREMENT, stated rather than inferred. A caller
+        // cannot tell from the content: an increment that happens to contain every vertex looks
+        // exactly like a full delivery, and a delta over an unchanged graph is empty, which looks
+        // exactly like a system with nothing in it. The FIRST delta for a property is marked
+        // False, because a cursor that has not seen the property emits everything.
+        // As an INTEGER, which is this wire's boolean convention (`IsInitial` on a state is
+        // written the same way). WXFValue has no bool overload, so writing one here silently
+        // selects the integer constructor anyway -- stating it is the difference between a
+        // convention and an accident.
+        graph_data.push_back(
+            {wxf::WXFValue("IsDelta"),
+             wxf::WXFValue(static_cast<int64_t>(cursor != nullptr && delivered_before))});
         graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
         graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edges)});
         graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(vertex_data)});

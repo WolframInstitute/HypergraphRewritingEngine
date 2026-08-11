@@ -1001,6 +1001,43 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
   |>
 ]
 
+(* WHAT A SESSION HAS ACCUMULATED, per graph property, so a delta reply can be turned back into
+   a whole graph.
+
+   The engine sends only what this session has not been sent (paclet_source/delivery_cursor.hpp),
+   which it can do because the stored graph is append-only: states are created once, their edge
+   lists are immutable, effective ids are first-writer-wins, and causal edges are only ever
+   pushed. The ONE thing that changes after delivery is a state's step, which the engine may
+   lower, so the engine re-sends that vertex and the merge below lets the later payload win.
+
+   `IsDelta` is read rather than inferred. An increment that happens to contain every vertex
+   looks exactly like a full delivery, and a delta over an unchanged graph is empty, which looks
+   exactly like a system with nothing in it -- so the reply says which it is. *)
+$hgSessionGraphData = <||>;   (* handle -> property -> accumulated GraphData *)
+
+hgMergeGraphData[handle_, graphData_Association] := Module[{acc, merged},
+  acc = Lookup[$hgSessionGraphData, handle, <||>];
+  merged = Association @ KeyValueMap[
+    Function[{prop, data},
+      Module[{old = Lookup[acc, prop, None], whole},
+        (* The marker is an INTEGER, which is this wire's boolean convention -- a state's
+           "IsInitial" is written the same way. Reading it as a symbol makes every delta look
+           like a full delivery, which REPLACES rather than merges and silently discards
+           everything sent before the last call. *)
+        whole = If[data["IsDelta"] === 1 && AssociationQ[old],
+          <|"Vertices"   -> DeleteDuplicates[Join[old["Vertices"], data["Vertices"]]],
+            (* Association Join: the later payload wins, which is what a re-sent vertex means. *)
+            "VertexData" -> Join[old["VertexData"], data["VertexData"]],
+            "Edges"      -> Join[old["Edges"], data["Edges"]]|>,
+          KeyDrop[data, "IsDelta"]];
+        prop -> whole]],
+    graphData];
+  $hgSessionGraphData[handle] = Join[acc, merged];
+  merged
+];
+
+hgForgetSessionGraphData[handle_] := ($hgSessionGraphData = KeyDrop[$hgSessionGraphData, handle];);
+
 (* Serialize a job, run it, deserialize the reply, and surface the engine's warning trail.
    Returns the reply association, or $Failed.
 
@@ -1010,7 +1047,16 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
    every session verb: an `Open` served that way mints a handle inside a process that exits with
    the reply, so the caller holds a handle naming nothing and the next `Step` reports an unknown
    session. So a session verb takes the worker or it takes nothing. *)
-hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, resultBytes, wxfData},
+(* WHAT THE ENGINE CALL ITSELF COST, recorded on every call. A caller splitting a Step into
+   "the engine" and "turning the reply into a property" cannot get the first by subtraction --
+   that is a difference of two noisy numbers -- and an instrument that redefines this function
+   from outside silently fails, because the definition below is more specific than any wrapper
+   and matches first. So the measurement lives here. One AbsoluteTiming per job. *)
+$hgLastEngineTime = 0.;
+$hgLastReplyBytes = 0;
+
+hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, resultBytes, wxfData, t0},
+  t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
   resultBytes = If[TrueQ[sessionQ],
     Module[{r = hgWorkerTry[If[device === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"],
@@ -1021,6 +1067,8 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
   wxfData = BinaryDeserialize[resultBytes];
+  $hgLastEngineTime = AbsoluteTime[] - t0;
+  $hgLastReplyBytes = Length[resultBytes];
   If[!AssociationQ[wxfData], Return[$Failed]];
 
   (* Surface the engine's warning trail. Both backends serve it under "Warnings"
@@ -1056,7 +1104,8 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
    AspectRatio, IncludeStateContents, IncludeEventContents, CanonicalizeStates,
    CanonicalizeEvents, ColorByRule, DebugFFI. They are values here rather than OptionValue[]
    reads because a session's Step is not an HGEvolve call and has no OptionsPattern to read. *)
-hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Association] :=
+hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Association,
+         sessionHandle_ : None] :=
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
    branchialStateEdges, branchialStateVertices, aspectRatio, includeStateContents,
@@ -1073,6 +1122,11 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
 
   wxfData = hgSendJob[inputData, device, TrueQ[view["SessionQ"]]];
   If[!AssociationQ[wxfData], Return[$Failed]];
+  (* A delta reply carries only what this session had not been sent, so it is merged into what
+     the session already holds BEFORE anything reads it. Callers therefore always see a whole
+     graph: the wire is incremental, the answer is not. *)
+  If[sessionHandle =!= None && KeyExistsQ[wxfData, "GraphData"],
+    wxfData["GraphData"] = hgMergeGraphData[sessionHandle, wxfData["GraphData"]]];
 
   (* Extract data - validate that requested data was returned *)
   (* Only use defaults for data we didn't request *)
@@ -1308,7 +1362,7 @@ HGSessionOpen[rules_List, initialEdges_List,
 (* Step and Query differ in ONE field. Writing them as two bodies would be two chances to
    disagree about what a held verb's envelope contains. *)
 hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_,
-              from_ : All] := Module[
+              from_ : All, delivery_ : "Full"] := Module[
   {props, wasList, requiredData, graphProperties, view, options, inputData},
 
   props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
@@ -1334,20 +1388,25 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
   (* `from` names which frontier states this Step expands. Absent means all of them, which is
      what every unsteered call sends, so the bytes on the wire are unchanged for them. *)
   If[from =!= All, inputData["From"] = from];
+  If[delivery === "Delta", inputData["Delivery"] = "Delta"];
 
-  hgRunJob[inputData, d["Device"], props, wasList, view]
+  hgRunJob[inputData, d["Device"], props, wasList, view, d["Handle"]]
 ];
 
-Options[HGSessionStep] = {"From" -> All};
+Options[HGSessionStep] = {"From" -> All, "Delivery" -> "Full"};
 HGSessionStep[s_HGSessionObject, steps_Integer, property_ : Automatic,
               opts : OptionsPattern[]] :=
   If[steps < 0,
     Message[HGSessionStep::negsteps, steps]; $Failed,
-    hgSessionVerb[s, "Step", steps, property, OptionValue[HGSessionStep, {opts}, "From"]]];
+    hgSessionVerb[s, "Step", steps, property,
+                  OptionValue[HGSessionStep, {opts}, "From"],
+                  OptionValue[HGSessionStep, {opts}, "Delivery"]]];
 HGSessionStep[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
 
-HGSessionQuery[s_HGSessionObject, property_ : Automatic] :=
-  hgSessionVerb[s, "Query", 0, property];
+Options[HGSessionQuery] = {"Delivery" -> "Full"};
+HGSessionQuery[s_HGSessionObject, property_ : Automatic, opts : OptionsPattern[]] :=
+  hgSessionVerb[s, "Query", 0, property, All,
+                OptionValue[HGSessionQuery, {opts}, "Delivery"]];
 
 (* THE FRONTIER: the states a continuation would resume from, as the ids every other field
    uses. A caller cannot steer toward states it cannot name, and it has no other way to learn
@@ -1366,6 +1425,7 @@ HGSessionFrontier[other_] := (Message[HGSessionStep::badsession, other]; $Failed
 HGSessionQuery[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
 
 HGSessionClose[HGSessionObject[d_Association]] := Module[{reply},
+  hgForgetSessionGraphData[d["Handle"]];
   reply = hgSendJob[<|"Op" -> "Close", "Session" -> d["Handle"],
                       "Options" -> <|"Op" -> "Close"|>|>, d["Device"], True];
   If[AssociationQ[reply], Null, $Failed]

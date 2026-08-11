@@ -28,6 +28,8 @@
 // Handles are NOT reused after Close. A reissued handle would let a stale caller address a
 // different session and be answered as if it were its own.
 
+#include "delivery_cursor.hpp"
+
 #include "hgcommon/core.hpp"
 
 #include <cstdint>
@@ -66,6 +68,15 @@ public:
     // The states an extend would resume from, in the holder's raw id space. Meaningful only
     // between calls: during a run the frontier is the set of refusals so far, not a boundary.
     virtual std::vector<hgcommon::StateId> frontier() const = 0;
+
+    // What this session has already been sent, so a Step can report what it ADDED. Not virtual
+    // and not per-device: the record is of the SERIALISATION, which both devices marshal through
+    // one build_graph_data, so a second copy per engine would be a second answer to a question
+    // that has one.
+    DeliveryCursor& delivery_cursor() { return delivery_cursor_; }
+
+private:
+    DeliveryCursor delivery_cursor_;
 };
 
 // Why a live handle cannot be served.

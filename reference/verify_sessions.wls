@@ -100,6 +100,27 @@ If[Head[s4] === HGSessionObject,
           Quiet[HGSessionStep[s4, 1, Automatic, "From" -> {999999}]] === $Failed]];
   HGSessionClose[s4]];
 
+(* DELTA DELIVERY. The wire is incremental; the ANSWER is not. So the check is not "is the reply
+   smaller" -- it is that stepping with Delta and stepping with Full produce the SAME graph at
+   every depth. A merge that dropped a delta silently converges to whatever the last reply
+   carried, which is a smaller graph that is internally consistent and wrong; that is the failure
+   this actually caught during development, when the delta marker was read as a symbol while the
+   wire carries it as an integer. *)
+Module[{gFull, gDelta, sA, sB},
+  sA = HGSessionOpen[rules, init, "StatesGraphStructure"];
+  gFull = Table[Module[{g = HGSessionStep[sA, 1]},
+                  {VertexCount[g], EdgeCount[g]}], {maxDepth}];
+  HGSessionClose[sA];
+  sB = HGSessionOpen[rules, init, "StatesGraphStructure"];
+  gDelta = Table[Module[{g = HGSessionStep[sB, 1, Automatic, "Delivery" -> "Delta"]},
+                   {VertexCount[g], EdgeCount[g]}], {maxDepth}];
+  check["Delta delivery gives the SAME graph as Full at every depth  " <> ToString[gDelta],
+        gDelta === gFull];
+  (* And a full delivery mid-session resynchronises rather than merging into a stale record. *)
+  check["a Full delivery after deltas still gives the whole graph",
+        Module[{g = HGSessionQuery[sB]}, {VertexCount[g], EdgeCount[g]}] === Last[gFull]];
+  HGSessionClose[sB]];
+
 (* A property the session was not opened to record is reported, not served as emptiness. *)
 s3 = HGSessionOpen[rules, init, "NumStates"];
 If[Head[s3] === HGSessionObject,

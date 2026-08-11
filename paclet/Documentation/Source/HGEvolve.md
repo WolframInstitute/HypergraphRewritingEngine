@@ -413,3 +413,17 @@ which reaches 7 states where an unsteered step of the same depth reaches 10.
 **The unselected branches are retained, not discarded.** They stay on the frontier and a later step resumes them, so a steered detour costs nothing in what remains reachable: continuing the session above without a selection lands on 34 states, exactly what `HGEvolve[rules, {{1, 2}}, 4, "NumStates"]` gives. Steering narrows what runs *next*, never what is *reachable*.
 
 Naming a state that is not on the frontier is an error rather than a step that quietly does nothing, since a caller steering toward a state the exploration has already passed would otherwise get an unexplained empty result. Steered continuation is CPU-only: a device session carries its frontier as device state ids with no host-visible identity, so the selection cannot be resolved there, and `TargetDevice -> "GPU"` reports that rather than running unsteered.
+
+### Sending only what a step added
+
+A step re-serialises the whole accumulated graph. `"Delivery" -> "Delta"` sends only what the session has not already been sent, and the Wolfram side merges it back into the graph the session holds — so the wire is incremental and the *answer* is not: `HGSessionStep` returns the whole accumulated graph either way.
+
+```wl
+rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
+s = HGSessionOpen[rules, {{1, 2}}, "StatesGraphStructure"];
+Table[HGSessionStep[s, 1, Automatic, "Delivery" -> "Delta"], {6}];
+```
+
+Measured on this evolution at depth 7 (5,914 states), `tools/dev/session_step_cost.wls`: the engine leg falls from 381 ms to 269 ms and the reply from 516,535 to 443,660 bytes. That is a 29% cut to the engine call and 8% to the step, because the rest of a step is the Wolfram Graph construction — 1,640 ms of the 2,021 ms total — which a delta cannot reduce, since the graph being built is the whole accumulated one either way.
+
+Ask for a full delivery at any time to resynchronise; doing so resets what the session believes you hold, so the next delta is measured from it. Delta delivery is not served on the quotient reconstruction route (`"ExploreFromCanonicalStatesOnly" -> True` with causal output), where the causal relation is reduced on read and an edge already sent can leave the reduction — a delta has no way to withdraw one, so those replies carry the whole graph and say so.
