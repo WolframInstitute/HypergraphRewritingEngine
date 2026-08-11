@@ -714,9 +714,13 @@ private:
     // Per-state match-task join. See docs/ASYNC_SAMPLING_DESIGN.md §5.
     //
     // Matching one state is a tree of MATCH/SCAN/EXPAND tasks, so no single task sees all of
-    // that state's matches. Anything that has to act on the state's matches AS A SET -- a
-    // reservoir, whose population is exactly "the matches of this state" -- needs to know when
-    // that tree has drained.
+    // that state's matches. Anything that has to act on the state's matches AS A SET needs to
+    // know when that tree has drained. Today that is the sampling spine: a state whose every
+    // draw failed keeps its lowest-keyed own-found transition, and "every draw failed" is only
+    // decidable once no more draws can arrive. A size-k cap per (state, rule) would be the
+    // other such consumer and is #58's remaining half -- it must choose AT the drain, because
+    // exactly-k needs the population, which is what makes it different from a cap by arrival
+    // order.
     //
     // Two monotone counters and the task that equalises them is the drainer. This is a JOIN
     // over one state's own tasks, not a barrier: every other state runs through untouched, and
@@ -748,8 +752,9 @@ private:
     };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 
-    // Fires once per state, after that state's last match task. Set by tests today; the
-    // per-state reservoir hangs off it.
+    // Fires once per state, after that state's last match task. Set by tests today; nothing in
+    // the shipping path installs one, and the spine reaches the drain through spine_at_drain
+    // rather than through this hook.
     std::function<void(StateId, uint32_t)> on_state_matches_complete_;
     std::atomic<size_t> states_drained_{0};
 
@@ -1289,7 +1294,7 @@ private:
     //
     //   note_match_task_pushed  runs BEFORE the task it counts can be seen. Pushing after would
     //                           let the drain fire on a tree that is still growing, so the
-    //                           reservoir would be finalised over part of its population.
+    //                           decision would be taken over part of the population.
     //   note_match_task_done    runs AFTER every effect of its task is visible -- which is what
     //                           a scope guard buys, since the match tasks have many exits.
     //
@@ -1299,13 +1304,6 @@ private:
     void note_match_task_pushed(StateId state);
     void note_match_task_done(StateId state, uint32_t step);
 
-    // Offer an accepted match to this state's reservoir. Returns true when the caller must NOT
-    // rewrite it itself, because the reservoir now owns the decision and the drain will submit
-    // whatever survives. False when sampling is off, and then the caller rewrites eagerly as
-    // it always has.
-    // `n` is the match's position in this state's stream, from the caller's single bump of
-    // MatchJoin::matches -- one owner for that counter, so the position and the accepted-match
-    // count cannot disagree.
     // Isomorphism-invariant identity of the transition (state, rule, consumed edges), from the
     // shared EVENT_SIG_TRANSITION lattice point. Builds the state's canonical rank table on
     // first use, which is why it is not const.

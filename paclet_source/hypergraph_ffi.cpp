@@ -299,7 +299,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // Requires CanonicalizeStates -> Full to have any effect
                                 req.explore_from_canonical_states_only = value;
                             } else if (option_key == "UniformRandom") {
-                                // Use uniform random evolution mode (reservoir sampling)
+                                // With MatchesPerStep, a per-step cap by arrival order
                                 req.uniform_random = value;
                             }
                         }

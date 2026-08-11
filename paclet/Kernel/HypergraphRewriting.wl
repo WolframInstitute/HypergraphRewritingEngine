@@ -32,8 +32,7 @@ Options[HGEvolve] = {
   "IncludeEventContents" -> False,
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
-  (* Uniform Random Evolution (reservoir sampling like blackhole_viz) *)
-  "UniformRandom" -> False,  (* True: use uniform random match selection with reservoir sampling *)
+  "UniformRandom" -> False,  (* True: with "MatchesPerStep", stop keeping new states once that many exist for the step. A cap by ARRIVAL ORDER, which depends on the schedule, not a uniform draw. "TransitionRate" is the uniform, reproducible sampler. *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph

@@ -60,8 +60,10 @@ struct ParsedJob {
     bool quotient_initial_states = false;             // Collapse isomorphic initial states
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full
     uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
-    bool uniform_random = false;  // Use uniform random match selection (reservoir sampling)
-    size_t matches_per_step = 0;  // Matches per step in uniform random mode (0 = all)
+    // With matches_per_step, a cap by ARRIVAL ORDER on the states kept per step. Not a uniform
+    // draw: transition_rate is that. Kept because callers depend on the option name.
+    bool uniform_random = false;
+    size_t matches_per_step = 0;  // The cap above (0 = all)
 
     // Data selection flags - which components to include in output
     // By default all are included for backward compatibility

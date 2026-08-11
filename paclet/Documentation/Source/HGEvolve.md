@@ -57,8 +57,8 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"ExplorationProbability"` | `1.` | probability of exploring each branch; below 1 prunes stochastically |
 | `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate (CPU only) |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order (CPU only) |
-| `"UniformRandom"` | `False` | select matches by uniform random reservoir sampling instead of exhaustively |
-| `"MatchesPerStep"` | `0` | matches applied per step in uniform-random mode (0 = all) |
+| `"UniformRandom"` | `False` | with `"MatchesPerStep"`, cap the states kept per step by arrival order; see `"TransitionRate"` for sampling that is actually uniform |
+| `"MatchesPerStep"` | `0` | with `"UniformRandom"`, the per-step cap described above (0 = all) |
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
 | `"EdgeDeduplication"` | `True` | one causal/branchial edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"`, where a GPU build is bundled (falls back to CPU with a message otherwise) |
@@ -323,12 +323,16 @@ HGEvolve[rules, {{1, 1}, {1, 1}}, 4, "StatesGraphStructure",
 
 ### "UniformRandom"
 
-Uniform-random mode applies a random subset of matches per step via reservoir sampling, tracing a single stochastic history rather than the full multiway system:
+With `"MatchesPerStep"`, this stops keeping new states once that many exist for the step, tracing a narrow history rather than the full multiway system:
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
 HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "UniformRandom" -> True, "MatchesPerStep" -> 1]
 ```
+
+It is a cap by ARRIVAL ORDER, not a uniform draw, and which states arrive first depends on the schedule. Two runs of the same input can therefore keep different states, and the states kept are not a uniform sample of the ones available: capping clips the offspring distribution to a point mass.
+
+Use `"TransitionRate"` for sampling that is uniform and reproducible. A rate is defined per transition and needs no notion of a step, so it needs no barrier, it is drawn from the transition's own identity and the seed rather than from arrival order, and it preserves the branching structure a sample exists to represent.
 
 ### "AspectRatio"
 
