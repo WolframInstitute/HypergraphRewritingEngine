@@ -1140,7 +1140,20 @@ public:
     // Throws unless the run was made continuable before evolve(): without the frontier there is
     // nothing to resume from, and returning the unchanged graph would be a wrong answer that
     // looks like a converged one.
-    void evolve_more(size_t additional_steps);
+    // `only_from` STEERS the continuation: when non-null, only those frontier states are
+    // expanded and every other frontier entry is PUT BACK, so a later call can still resume it.
+    // Retention is the point -- dropping the unselected entries would make "explore this branch"
+    // mean "abandon the others", and a caller comparing a steered exploration against an
+    // exhaustive one would find states missing with nothing to say why. A deferred rewrite is
+    // selected by the state its match sits on, since submitting it while retaining that state
+    // would half-expand a branch the caller asked to leave alone.
+    void evolve_more(size_t additional_steps,
+                     const std::unordered_set<StateId>* only_from = nullptr);
+
+    // The states a continuation would resume from, with the step each is waiting at. Read
+    // between runs (no worker is running), which is also the only time it is meaningful: during
+    // a run the frontier is the set of refusals so far, not a boundary.
+    std::vector<std::pair<StateId, uint32_t>> frontier() const;
 
     // Overload for multiple initial states (without abort callback)
     // Each initial state is evolved from independently, exploring the full multiway system

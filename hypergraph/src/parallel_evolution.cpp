@@ -1278,7 +1278,14 @@ void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint3
     deferred_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
+std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() const {
+    std::vector<std::pair<StateId, uint32_t>> out;
+    deferred_frontier_.for_each([&](const DeferredMatch& d) { out.emplace_back(d.state, d.step); });
+    return out;
+}
+
+void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
+                                          const std::unordered_set<StateId>* only_from) {
     if (!hg_ || rules_.empty() || additional_steps == 0) return;
     if (!continuable_) {
         throw std::runtime_error(
@@ -1311,10 +1318,31 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps) {
     deferred_rewrites_.reset();
     deferred_count_.store(0, std::memory_order_release);
 
+    // A SUBSET CONTINUATION STEERS THE EXPLORATION: expand the named frontier states and put the
+    // rest BACK, so a later call can still resume them. Retention is the whole point -- dropping
+    // the unselected entries would make "explore this branch" mean "abandon the others", and a
+    // caller comparing a steered run against an exhaustive one would find states missing with
+    // nothing to say why.
+    //
+    // Re-deferring goes through defer_match_task / defer_rewrite_task rather than pushing the
+    // lists directly, because those are what maintain deferred_count_; a second spelling of the
+    // push is how the count and the list come to disagree.
+    //
+    // A deferred REWRITE is selected by the state its match sits on, not independently. The
+    // rewrite is a transition out of that state, so submitting it while retaining the state
+    // would half-expand a branch the caller asked to leave alone.
+    auto selected = [&](StateId s) {
+        return only_from == nullptr || only_from->find(s) != only_from->end();
+    };
+
     // Rewrites first: they mint the transitions the budget stranded, and doing them before the
     // frontier's matching means the states they create are matched in the same pass.
-    for (const DeferredRewrite& d : resume_rw) submit_rewrite_task(d.match, d.step);
+    for (const DeferredRewrite& d : resume_rw) {
+        if (!selected(d.match.source_state)) { defer_rewrite_task(d.match, d.step); continue; }
+        submit_rewrite_task(d.match, d.step);
+    }
     for (const DeferredMatch& d : resume) {
+        if (!selected(d.state)) { defer_match_task(d.state, d.step); continue; }
         // Quotient exploration matches a canonical state once, under a claim, so its frontier
         // resumes through the same decision the relaxation walk makes rather than a second
         // copy of it.

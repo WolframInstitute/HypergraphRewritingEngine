@@ -95,6 +95,12 @@ struct ParsedJob {
     // 0 is "no session", the same reserved-zero discipline every other id space here follows.
     std::string session_op;
     uint64_t session_handle = 0;
+
+    // `From`: which frontier states a `Step` expands, by EFFECTIVE id. Empty means all of them,
+    // which is what every caller that does not steer sends. Naming a subset expands those and
+    // RETAINS the rest, so the unselected branches stay resumable -- steering narrows what runs
+    // next, never what remains reachable.
+    std::vector<int64_t> session_from;
 };
 
 }  // namespace ffi

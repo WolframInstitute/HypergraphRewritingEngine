@@ -27,6 +27,8 @@
 
 #include <cstddef>
 #include <thread>
+#include <unordered_set>
+#include <vector>
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -43,10 +45,25 @@ public:
 
     hypergraph::Hypergraph& hypergraph() { return hg_; }
     hypergraph::ParallelEvolutionEngine& engine() { return engine_; }
+    const hypergraph::ParallelEvolutionEngine& engine() const { return engine_; }
 
-    void extend(int steps) override {
+    void extend(int steps, const std::vector<hgcommon::StateId>& only_from) override {
         if (steps <= 0) return;
-        engine_.evolve_more(static_cast<std::size_t>(steps));
+        if (only_from.empty()) {
+            engine_.evolve_more(static_cast<std::size_t>(steps));
+            return;
+        }
+        const std::unordered_set<hgcommon::StateId> sel(only_from.begin(), only_from.end());
+        engine_.evolve_more(static_cast<std::size_t>(steps), &sel);
+    }
+
+    std::vector<hgcommon::StateId> frontier() const override {
+        std::vector<hgcommon::StateId> out;
+        for (const auto& [state, step] : engine_.frontier()) {
+            (void)step;
+            out.push_back(state);
+        }
+        return out;
     }
 
 private:

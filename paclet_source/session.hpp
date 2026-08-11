@@ -28,8 +28,11 @@
 // Handles are NOT reused after Close. A reissued handle would let a stale caller address a
 // different session and be answered as if it were its own.
 
+#include "hgcommon/core.hpp"
+
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <stdexcept>
 #include <string>
 
@@ -48,7 +51,21 @@ public:
     // device, `PersistentEvolver::run` takes a whole EvolveInput and evolves from
     // `in.initial_states` every call, so what persists across calls is the ALLOCATION, not the
     // explored graph (D13). A session needs the graph.
-    virtual void extend(int steps) = 0;
+    //
+    // `only_from`, when non-empty, names the frontier states to expand. Every other frontier
+    // entry is RETAINED, so a later extend resumes it: a steered exploration narrows what runs
+    // next, never what remains reachable.
+    //
+    // THE IDS HERE ARE THE HOLDER'S OWN RAW STATE IDS, not the effective ids the wire carries.
+    // Translating between the two is a function of the canonicalization mode and the run's
+    // content index, which the FFI already computes once for everything else it serialises;
+    // giving the holder a second way to decide what a state's id is would be a second rule, and
+    // the two would agree only until one of them was edited.
+    virtual void extend(int steps, const std::vector<hgcommon::StateId>& only_from) = 0;
+
+    // The states an extend would resume from, in the holder's raw id space. Meaningful only
+    // between calls: during a run the frontier is the set of refusals so far, not a boundary.
+    virtual std::vector<hgcommon::StateId> frontier() const = 0;
 };
 
 // Why a live handle cannot be served.

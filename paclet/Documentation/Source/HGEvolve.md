@@ -395,3 +395,21 @@ Three things are fixed when the session opens, and the later verbs refuse to cha
 - **What the run records.** An artifact the session was not opened for cannot be produced afterwards — the evolution that would have built it has already run. Open with the property you intend to ask for; asking for another returns an empty relation and the engine says so rather than serving the emptiness silently.
 
 A session's handle names a live engine process, so one session at a time is served per worker: a second `HGSessionOpen` while one is live is an error rather than an eviction, because evicting would discard an exploration without being asked.
+
+### Steering: continuing from part of the frontier
+
+An exploration that branches faster than it is worth exploring can be carried forward along a chosen branch. `HGSessionFrontier` reports the states a continuation would resume from, and `HGSessionStep[..., "From" -> {...}]` expands only those:
+
+```wl
+rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
+s = HGSessionOpen[rules, {{1, 2}}, "NumStates"];
+HGSessionStep[s, 2];
+f = HGSessionFrontier[s];
+HGSessionStep[s, 1, Automatic, "From" -> {First[f]}]
+```
+
+which reaches 7 states where an unsteered step of the same depth reaches 10.
+
+**The unselected branches are retained, not discarded.** They stay on the frontier and a later step resumes them, so a steered detour costs nothing in what remains reachable: continuing the session above without a selection lands on 34 states, exactly what `HGEvolve[rules, {{1, 2}}, 4, "NumStates"]` gives. Steering narrows what runs *next*, never what is *reachable*.
+
+Naming a state that is not on the frontier is an error rather than a step that quietly does nothing, since a caller steering toward a state the exploration has already passed would otherwise get an unexplained empty result. Steered continuation is CPU-only: a device session carries its frontier as device state ids with no host-visible identity, so the selection cannot be resolved there, and `TargetDevice -> "GPU"` reports that rather than running unsteered.

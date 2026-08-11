@@ -206,6 +206,20 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             held.steps_done = 0;
             held.handle = next_handle++;
         }
+        // STEERING A DEVICE SESSION IS NOT IMPLEMENTED, and it is refused rather than ignored.
+        // The device's frontier lives in `SessionState` as a flat array of child state ids with
+        // no host-visible identity attached, so there is nothing here to match a caller's
+        // effective ids against; running the step unsteered would explore the branches the
+        // caller asked to leave alone and return a graph that looks like a correct answer to a
+        // different question.
+        if (is_step && !job.session_from.empty()) {
+            throw std::runtime_error(
+                "Step with a frontier subset is not implemented on the GPU. The device session "
+                "carries its frontier as device state ids with no host-visible identity, so "
+                "the selection cannot be resolved; running unsteered would explore the branches "
+                "you asked to leave alone. Use TargetDevice -> \"CPU\" for a steered "
+                "continuation.");
+        }
         // A Step's budget is the TOTAL depth, and start_step is where the last call stopped --
         // the frontier is seeded at that depth rather than the roots at zero.
         const uint32_t from = held.steps_done;

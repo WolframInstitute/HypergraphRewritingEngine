@@ -11,6 +11,7 @@ PackageExport["HGSessionOpen"]
 PackageExport["HGSessionStep"]
 PackageExport["HGSessionQuery"]
 PackageExport["HGSessionClose"]
+PackageExport["HGSessionFrontier"]
 
 
 (* Public symbols *)
@@ -94,6 +95,11 @@ HGSessionStep::usage =
 HGSessionQuery::usage =
   "HGSessionQuery[session] re-reads the session's accumulated graph without exploring further. " <>
   "HGSessionQuery[session, property] reads a different property of it.";
+HGSessionFrontier::usage =
+  "HGSessionFrontier[session] gives the states a continuation would resume from, as the ids " <>
+  "the session's results use. Pass a subset of them as HGSessionStep[session, n, \"From\" -> " <>
+  "{...}] to expand only those; the rest are retained and stay resumable. An empty frontier " <>
+  "means the exploration has nothing deferred.";
 HGSessionClose::usage =
   "HGSessionClose[session] releases the engine holding the session. The handle is not reused, " <>
   "so a later verb on a closed session reports that rather than answering from another one.";
@@ -1301,7 +1307,8 @@ HGSessionOpen[rules_List, initialEdges_List,
 
 (* Step and Query differ in ONE field. Writing them as two bodies would be two chances to
    disagree about what a held verb's envelope contains. *)
-hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_] := Module[
+hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_,
+              from_ : All] := Module[
   {props, wasList, requiredData, graphProperties, view, options, inputData},
 
   props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
@@ -1324,18 +1331,38 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
 
   inputData = <|"Steps" -> steps, "Options" -> options, "Op" -> op,
                 "Session" -> d["Handle"]|>;
+  (* `from` names which frontier states this Step expands. Absent means all of them, which is
+     what every unsteered call sends, so the bytes on the wire are unchanged for them. *)
+  If[from =!= All, inputData["From"] = from];
 
   hgRunJob[inputData, d["Device"], props, wasList, view]
 ];
 
-HGSessionStep[s_HGSessionObject, steps_Integer, property_ : Automatic] :=
+Options[HGSessionStep] = {"From" -> All};
+HGSessionStep[s_HGSessionObject, steps_Integer, property_ : Automatic,
+              opts : OptionsPattern[]] :=
   If[steps < 0,
     Message[HGSessionStep::negsteps, steps]; $Failed,
-    hgSessionVerb[s, "Step", steps, property]];
+    hgSessionVerb[s, "Step", steps, property, OptionValue[HGSessionStep, {opts}, "From"]]];
 HGSessionStep[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
 
 HGSessionQuery[s_HGSessionObject, property_ : Automatic] :=
   hgSessionVerb[s, "Query", 0, property];
+
+(* THE FRONTIER: the states a continuation would resume from, as the ids every other field
+   uses. A caller cannot steer toward states it cannot name, and it has no other way to learn
+   which states are still unexpanded -- a state's presence in the graph says nothing about
+   whether the budget stopped before or after expanding it. Empty means the exploration has
+   nothing deferred, which is what convergence looks like from here. *)
+HGSessionFrontier[HGSessionObject[d_Association]] := Module[{reply},
+  reply = hgSendJob[<|"Steps" -> 0, "Op" -> "Query", "Session" -> d["Handle"],
+                      "Options" -> Join[d["Options"], <|"Op" -> "Query",
+                                                        "RequestedData" -> {"NumStates"},
+                                                        "GraphProperties" -> {}|>]|>,
+                    d["Device"], True];
+  If[AssociationQ[reply], Lookup[reply, "Frontier", {}], $Failed]
+];
+HGSessionFrontier[other_] := (Message[HGSessionStep::badsession, other]; $Failed);
 HGSessionQuery[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
 
 HGSessionClose[HGSessionObject[d_Association]] := Module[{reply},

@@ -77,6 +77,29 @@ If[Head[s2] === HGSessionObject,
         HGSessionStep[s2, maxDepth] === oneShot[[-1]]];
   HGSessionClose[s2]];
 
+(* SUBSET CONTINUATION. Steering must narrow what runs NEXT without narrowing what remains
+   REACHABLE, and the only check that separates those two is: steer, then resume, and land on
+   the exhaustive answer. A run that dropped the unselected frontier entries would pass a
+   "fewer states" check and fail this one. *)
+s4 = HGSessionOpen[rules, init, prop];
+If[Head[s4] === HGSessionObject,
+  Module[{f, steered, resumed},
+    HGSessionStep[s4, 2];
+    f = HGSessionFrontier[s4];
+    check["the frontier is reported and has more than one branch to choose from",
+          ListQ[f] && Length[f] > 1];
+    steered = HGSessionStep[s4, 1, Automatic, "From" -> {First[f]}];
+    check["a steered step explores LESS than the exhaustive one  " <> ToString[steered],
+          steered["NumStates"] < oneShot[[4]]["NumStates"]];
+    check["the unselected branch is RETAINED, not dropped",
+          MemberQ[HGSessionFrontier[s4], Last[f]]];
+    resumed = HGSessionStep[s4, 1];
+    check["steer then resume lands on the exhaustive answer  " <> ToString[resumed],
+          resumed === oneShot[[-1]]];
+    check["naming a state that is not on the frontier is an error, not a silent no-op",
+          Quiet[HGSessionStep[s4, 1, Automatic, "From" -> {999999}]] === $Failed]];
+  HGSessionClose[s4]];
+
 (* A property the session was not opened to record is reported, not served as emptiness. *)
 s3 = HGSessionOpen[rules, init, "NumStates"];
 If[Head[s3] === HGSessionObject,

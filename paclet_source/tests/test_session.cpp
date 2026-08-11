@@ -9,6 +9,7 @@
 #include "paclet_source/session.hpp"
 
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -19,7 +20,13 @@ struct CountingHolder : hgffi::EngineHolder {
     int* destroyed = nullptr;
     explicit CountingHolder(int* d = nullptr) : destroyed(d) {}
     ~CountingHolder() override { if (destroyed) ++*destroyed; }
-    void extend(int steps) override { extended += steps; }
+    std::vector<hgcommon::StateId> pretend_frontier{7, 9};
+    std::vector<hgcommon::StateId> last_selection;
+    void extend(int steps, const std::vector<hgcommon::StateId>& only_from) override {
+        extended += steps;
+        last_selection = only_from;
+    }
+    std::vector<hgcommon::StateId> frontier() const override { return pretend_frontier; }
 };
 
 std::unique_ptr<hgffi::EngineHolder> holder(int* destroyed = nullptr) {
@@ -108,8 +115,8 @@ TEST(Session, TheSlotHandsBackTheEngineItWasGiven) {
     CountingHolder* raw = owned.get();
     const uint64_t h = s.open(std::move(owned));
 
-    s.engine(h).extend(3);
-    s.engine(h).extend(4);
+    s.engine(h).extend(3, {});
+    s.engine(h).extend(4, {});
     EXPECT_EQ(raw->extended, 7) << "the slot must hand back the SAME holder, not any holder";
 }
 
@@ -121,4 +128,25 @@ TEST(Session, AForeignHandleIsRefused) {
     // The refusals did not disturb the live session.
     EXPECT_TRUE(s.is_live());
     EXPECT_NO_THROW(s.engine(h));
+}
+
+// A subset continuation reaches the holder UNCHANGED. The FFI resolves the caller's effective
+// ids against the frontier and hands the holder its own raw ids; if the slot dropped or
+// reordered them the holder would expand a different branch than the one named, and the result
+// would still be a valid graph -- which is why this is checked by value rather than by outcome.
+TEST(Session, TheSelectionReachesTheHolderExactly) {
+    hgffi::SessionSlot s;
+    auto owned = std::make_unique<CountingHolder>();
+    CountingHolder* raw = owned.get();
+    const uint64_t h = s.open(std::move(owned));
+
+    s.engine(h).extend(1, {9});
+    EXPECT_EQ(raw->last_selection, (std::vector<hgcommon::StateId>{9}));
+
+    // An empty selection is "all of them", NOT "none of them". The two are one keystroke apart
+    // and the second would silently converge an exploration that has work left.
+    s.engine(h).extend(1, {});
+    EXPECT_TRUE(raw->last_selection.empty());
+
+    EXPECT_EQ(s.engine(h).frontier(), (std::vector<hgcommon::StateId>{7, 9}));
 }

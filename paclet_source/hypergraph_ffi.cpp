@@ -349,6 +349,10 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
             else if (key == "Session") {
                 req.session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
             }
+            // The frontier states a `Step` expands, by effective id. Absent means all of them.
+            else if (key == "From") {
+                req.session_from = value_parser.read<std::vector<int64_t>>();
+            }
             else {
                 value_parser.skip_value();
             }
@@ -822,29 +826,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         if (!held_session) configure_and_evolve(req, hg, engine, record, host);
 
-        // A `Step` carries the exploration further from the frontier the budget stopped it
-        // at, keeping every state, event and relation already built and the raw ids that
-        // name them. `Query` extends by nothing and reports what the session holds.
-        //
-        // D14: a throw here leaves an engine whose run latched an error, and the session's
-        // accumulated exploration with it. The handle stays addressable so the next verb on
-        // it says so, rather than being served from a fresh engine that would satisfy every
-        // internal check while having lost the caller's work.
-        if (held_session) {
-            if (req.show_progress)
-                core_progress(host, "HGEvolve: " + req.session_op + " on session " +
-                                        std::to_string(req.session_handle) + "...");
-            if (req.session_op == "Step") {
-                try {
-                    holder->extend(req.steps);
-                } catch (...) {
-                    worker_session().invalidate();
-                    throw;
-                }
-            }
-            req.steps = static_cast<int>(engine.max_steps());
-        }
-
         // Content identity of every state: the hash the engine deduplicates on under Automatic,
         // and the first state carrying each. TWO output sections need this same map, and it is a
         // pass over every state, so it is built at most once and only if something asks.
@@ -873,6 +854,70 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
             return content_index_storage;
         };
+
+        // WHAT A STATE'S ID IS, in one place. Both the subset Step below and the whole
+        // serialisation ask this, and a second body would answer differently the moment one was
+        // edited -- the defect this project removed from its canonicalizer, its matcher and its
+        // event identity. Under `Full` the engine's canonical id; under `Automatic` the first
+        // raw state carrying the same content hash; otherwise the raw id itself.
+        auto get_effective_state_id = [&](hypergraph::StateId sid) -> int64_t {
+            if (req.canonicalize_states_mode == "Full")
+                return static_cast<int64_t>(hg.get_canonical_state(sid));
+            if (req.canonicalize_states_mode == "Automatic") {
+                const ContentIndex& ci = content_index();
+                return static_cast<int64_t>(ci.first_with.at(ci.hash_of[sid]));
+            }
+            return static_cast<int64_t>(sid);
+        };
+
+        // A `Step` carries the exploration further from the frontier the budget stopped it
+        // at, keeping every state, event and relation already built and the raw ids that
+        // name them. `Query` extends by nothing and reports what the session holds.
+        //
+        // D14: a throw here leaves an engine whose run latched an error, and the session's
+        // accumulated exploration with it. The handle stays addressable so the next verb on
+        // it says so, rather than being served from a fresh engine that would satisfy every
+        // internal check while having lost the caller's work.
+        if (held_session) {
+            if (req.show_progress)
+                core_progress(host, "HGEvolve: " + req.session_op + " on session " +
+                                        std::to_string(req.session_handle) + "...");
+            if (req.session_op == "Step") {
+                // A steered Step names frontier states by effective id. Resolving them against
+                // the frontier -- rather than against every state -- is what makes an id that
+                // is not on the frontier an ERROR rather than a silent no-op: a caller steering
+                // toward a state the exploration already passed would otherwise get an
+                // unexplained empty step.
+                std::vector<hgcommon::StateId> only_from;
+                if (!req.session_from.empty()) {
+                    std::unordered_map<int64_t, hgcommon::StateId> by_effective;
+                    for (hgcommon::StateId raw : holder->frontier())
+                        by_effective.emplace(get_effective_state_id(raw), raw);
+                    for (int64_t want : req.session_from) {
+                        auto it = by_effective.find(want);
+                        if (it == by_effective.end())
+                            throw std::runtime_error(
+                                "Step: state " + std::to_string(want) + " is not on this "
+                                "session's frontier, so there is nothing to continue from it. "
+                                "The frontier is reported as \"Frontier\" in every session "
+                                "reply.");
+                        only_from.push_back(it->second);
+                    }
+                }
+                try {
+                    holder->extend(req.steps, only_from);
+                } catch (...) {
+                    worker_session().invalidate();
+                    throw;
+                }
+                // The graph grew: the snapshot above named states by the identity they had
+                // BEFORE the step, which is right for reading the caller's selection and wrong
+                // for everything after it.
+                content_index_built = false;
+            }
+            req.steps = static_cast<int>(engine.max_steps());
+        }
+
 
         for (const auto& w : engine.warnings())
             req.ffi_warnings.push_back({"Engine", 1, w});
@@ -905,6 +950,23 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // multiplexing over replies never has to match one to a request to find out.
             full_result.push_back({wxf::WXFValue("Session"),
                                    wxf::WXFValue(static_cast<int64_t>(req.session_handle))});
+        }
+
+        // THE FRONTIER, in every reply a session gives. A caller cannot steer a continuation
+        // toward states it cannot name, and it has no other way to learn which states are
+        // still unexpanded: a state's presence in the graph says nothing about whether the
+        // budget stopped before or after expanding it. Reported as effective ids, the same
+        // identity every other field uses, and deduplicated because several raw states of one
+        // canonical class can sit on the frontier together while the caller sees one id.
+        if (opening_session || held_session) {
+            hgffi::EngineHolder* h = holder;
+            std::set<int64_t> seen;
+            wxf::WXFValueList frontier;
+            for (hgcommon::StateId raw : h->frontier()) {
+                const int64_t eff = get_effective_state_id(raw);
+                if (seen.insert(eff).second) frontier.push_back(wxf::WXFValue(eff));
+            }
+            full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(frontier)});
         }
 
         // The States and Events sections dominate the result size, so they are
@@ -1393,16 +1455,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (!req.graph_properties.empty()) {
 
             // Helper: Get effective state ID based on canonicalization mode
-            auto get_effective_state_id = [&](hypergraph::StateId sid) -> int64_t {
-                if (req.canonicalize_states_mode == "Full")
-                    return static_cast<int64_t>(hg.get_canonical_state(sid));
-                if (req.canonicalize_states_mode == "Automatic") {
-                    const ContentIndex& ci = content_index();
-                    return static_cast<int64_t>(ci.first_with.at(ci.hash_of[sid]));
-                }
-                return static_cast<int64_t>(sid);
-            };
-
             // Helper: Get effective event ID based on event canonicalization
             // Note: EVENT_SIG_FULL uses InputState/OutputState which require canonical state IDs.
             // When CanonicalizeStates=None, we must use raw event IDs because canonical_event_id
