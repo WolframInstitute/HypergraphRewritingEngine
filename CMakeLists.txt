@@ -111,6 +111,25 @@ if(ENABLE_UBSAN)
     add_link_options(-fsanitize=undefined)
 endif()
 
+# A name that shadows another is how two different things end up called one thing in a scope
+# where both are live. Two were found in hypergraph_ffi.cpp by running this by hand -- `engine`
+# re-bound to the same object it already named, and `key` meaning the OPTION name outside and a
+# signature key inside, in the parse that decides event identity. Neither changed behaviour;
+# both cost a reader the work of proving that.
+#
+# The whole tree is clean as of this flag being added -- 7 engine translation units, the FFI, and
+# every test source -- so it costs nothing to keep it that way, and a sweep run once protects
+# only the day it was run. GNU/Clang only: MSVC spells its shadow diagnostics differently and the
+# Windows leg has no equivalent to enable here.
+# CXX ONLY, via the generator expression: add_compile_options applies to EVERY language, so an
+# unscoped -Wshadow lands on the nvcc command line, changes it, and invalidates every .cu object
+# -- including persistent.cu, which needs about 12.5 GB to compile (#123) and cannot be rebuilt
+# on a shared box. Scoped this way the CUDA compile lines are unchanged and nothing device-side
+# rebuilds.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
+endif()
+
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
 
