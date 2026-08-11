@@ -17,6 +17,20 @@
 
 namespace {
 
+// A reply carrying only the handle, for a verb that returns no evolution. Same shape as the
+// CPU FFI's session_ack, because a caller cannot tell which device answered it and must not
+// have to.
+std::vector<uint8_t> session_ack_wxf(uint64_t handle) {
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Session"));
+    w.write(static_cast<int64_t>(handle));
+    return w.release_data();
+}
+
 // Build a hg_gpu::EvolveInput from the parsed job. Rule vertices double as
 // pattern-variable indices; each initial state's vertices are remapped to
 // 0..n-1 (matching the FFI, so isomorphic roots share a representation).
@@ -140,7 +154,76 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // a process-lifetime evolver is safe; the one-shot binary just uses it once.
     // The evolver grows on overflow and never shrinks (high-water-mark).
     static hg_gpu::PersistentEvolver evolver;
-    hg_gpu::EvolveResult result = evolver.run(in);
+
+    // THE HELD SESSION, if any. One per process: a session pins the engine, because a rebuild
+    // would drop its accumulated states while handing back something shaped like a
+    // continuation, and the worker runs jobs serially against one device anyway.
+    //
+    // `last` is kept so Query costs nothing: it reports what the session holds and extends by
+    // nothing, which is exactly the previous result.
+    struct HeldSession {
+        std::unique_ptr<hg_gpu::GpuSession> state;
+        hg_gpu::EvolveInput  input;
+        hg_gpu::EvolveResult last;
+        uint32_t steps_done = 0;
+        uint64_t handle     = 0;
+    };
+    static HeldSession held;
+    static uint64_t next_handle = 1;
+
+    const std::string& op = job.session_op;
+    const bool is_open  = (op == "Open");
+    const bool is_step  = (op == "Step");
+    const bool is_query = (op == "Query");
+    const bool is_close = (op == "Close");
+    if (!op.empty() && !is_open && !is_step && !is_query && !is_close && op != "Evolve") {
+        throw std::runtime_error(
+            "Op '" + op + "' is not a verb; 'Evolve', 'Open', 'Step', 'Query' and 'Close' are");
+    }
+    if ((is_step || is_query || is_close) && (held.handle == 0 || job.session_handle != held.handle)) {
+        throw std::runtime_error(
+            "Op '" + op + "' names a session this worker does not hold. A GPU session lives in "
+            "the worker process that opened it, so a restarted worker invalidates it rather "
+            "than reissuing the handle.");
+    }
+
+    if (is_close) {
+        held.state.reset();
+        held = HeldSession{};
+        return session_ack_wxf(0);
+    }
+
+    hg_gpu::EvolveResult result;
+    if (is_open || is_step) {
+        if (is_open && held.handle != 0) {
+            throw std::runtime_error(
+                "this worker already holds a GPU session; Close it before opening another");
+        }
+        if (is_open) {
+            const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+            held.state = std::make_unique<hg_gpu::GpuSession>(cfg.max_states, cfg.max_events);
+            held.input = in;
+            held.steps_done = 0;
+            held.handle = next_handle++;
+        }
+        // A Step's budget is the TOTAL depth, and start_step is where the last call stopped --
+        // the frontier is seeded at that depth rather than the roots at zero.
+        const uint32_t from = held.steps_done;
+        held.input.num_steps = from + in.num_steps;
+        auto sr = evolver.run_session(held.input, held.state->view(), from);
+        if (!sr.ok) {
+            held.state.reset();
+            held = HeldSession{};
+            throw std::runtime_error("GPU session: " + sr.error);
+        }
+        held.steps_done = held.input.num_steps;
+        held.last = std::move(sr.result);
+        result = held.last;
+    } else if (is_query) {
+        result = held.last;
+    } else {
+        result = evolver.run(in);
+    }
 
     hypergraph::IRCanonicalizer ir;
 
@@ -477,6 +560,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
 
     wxf::Writer writer;
     writer.write_header();
+    // A session's result names the session, so the caller can Step it. Same key the CPU emits,
+    // because a caller cannot tell which device answered and must not have to.
+    if (held.handle != 0 && (is_open || is_step || is_query)) {
+        full_result.push_back({wxf::WXFValue("Session"),
+                               wxf::WXFValue(static_cast<int64_t>(held.handle))});
+    }
     writer.write(wxf::WXFValue(full_result));
     return writer.data();
 }

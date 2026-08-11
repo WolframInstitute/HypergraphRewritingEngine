@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include "hgcommon/core.hpp"
 
 #include <set>
@@ -340,6 +341,9 @@ EvolveResult evolve(const EvolveInput& input);
 // wants auto-grow-and-retry behaviour, use the free `evolve()` wrapper
 // — Engine.run() is the explicit-control path that benchmarks use.
 class EngineState;  // forward decl
+// Declared in persistent.hpp, which includes THIS header, so a forward declaration is what
+// keeps the two from cycling. Only ever used through a pointer here.
+struct SessionView;
 
 // Build a sensible EngineConfig for a given workload. Used by the
 // one-shot evolve() and exposed publicly so callers building their own
@@ -353,6 +357,30 @@ EngineConfig config_from_input(const EvolveInput& input);
 // before construction. Monotonic in every capacity field.
 uint64_t estimated_device_bytes(const EngineConfig& cfg);
 
+// A device session, as HOST code can hold one.
+//
+// SessionState itself lives in persistent.hpp and reaches for cuda/atomic, so a host translation
+// unit -- hg_gpu_backend.cpp is compiled by the host compiler, not nvcc -- cannot include it.
+// This is the same object behind a pimpl, so the backend can own a session without seeing a
+// single device type. view() hands back a pointer the evolver understands and the caller never
+// dereferences.
+class GpuSession {
+public:
+    GpuSession(uint32_t max_states, uint32_t max_events);
+    ~GpuSession();
+    GpuSession(const GpuSession&)            = delete;
+    GpuSession& operator=(const GpuSession&) = delete;
+
+    SessionView* view();
+    // Boundary states the last call's budget refused, so a caller can tell a converged run from
+    // one that stopped at its budget.
+    uint32_t frontier_size() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 class Engine {
 public:
     explicit Engine(EngineConfig cfg);
@@ -360,7 +388,12 @@ public:
     Engine(const Engine&)            = delete;
     Engine& operator=(const Engine&) = delete;
 
-    EvolveResult run(const EvolveInput& input);
+    // `session` non-null makes the run CONTINUABLE: identity is remembered across calls and
+    // the budget's boundary states are recorded. `start_step` non-zero continues from that
+    // frontier instead of re-seeding the roots. See persistent.hpp for why a frontier is
+    // required rather than simply re-running.
+    EvolveResult run(const EvolveInput& input, SessionView* session = nullptr,
+                     uint32_t start_step = 0);
     void reset();
 
     const EngineConfig& config() const;
@@ -387,6 +420,24 @@ public:
     PersistentEvolver& operator=(const PersistentEvolver&) = delete;
 
     EvolveResult run(const EvolveInput& input);
+
+    // A SESSION PINS THE ENGINE. run() above may rebuild engine_ -- on a config change, or after
+    // an overflow throw, which deliberately discards it so a poisoned device does not infect
+    // every later call. Either would destroy a session's accumulated states while returning a
+    // result that looks like a continuation, so a session run REFUSES rather than rebuilds:
+    // `ok` false means the handle is dead and the caller must reopen. That is the device twin of
+    // the host invalidating its session slot on a throw.
+    struct SessionRun {
+        EvolveResult result;
+        bool ok = false;
+        std::string error;
+    };
+    SessionRun run_session(const EvolveInput& input, SessionView* session, uint32_t start_step);
+
+    // The config the engine was built with, so a session can tell whether a later call would
+    // rebuild it.
+    bool has_engine() const { return has_engine_; }
+    const EngineConfig& engine_config() const { return cfg_; }
 
 private:
     std::unique_ptr<Engine> engine_;

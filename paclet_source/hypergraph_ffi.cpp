@@ -352,15 +352,11 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
 // `req` is not const: the device has no implementation for the per-step caps and appends an
 // OptionSkipped warning for each, so the job it was handed carries what it did not apply.
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
-        // Sessions are a CPU capability in this build. The device evolver rebuilds its graph
-        // from `initial_states` on every call, so there is nothing here for a handle to name
-        // (D13). Refused rather than answered, because an `Open` that returned a result with
-        // no handle would look like a session to every field a caller can read.
-        if (!req.session_op.empty() && req.session_op != "Evolve") {
-            throw std::runtime_error(
-                "Op '" + req.session_op + "' has no GPU implementation; sessions are served on "
-                "the CPU. Use TargetDevice -> \"CPU\".");
-        }
+        // Sessions are served on the device too. What used to make that impossible -- the
+        // evolver rebuilding its graph from `initial_states` every call -- no longer holds:
+        // SessionState carries the identity maps and the budget's frontier across calls, and
+        // run_session refuses to rebuild the engine rather than silently continuing against a
+        // fresh one. The verb rides on the job and the backend answers it.
 
         // The per-step caps have no device implementation: EvolveInput carries no
         // max_states_per_step / max_successor_states_per_parent, so a capped run on the
@@ -431,6 +427,8 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.edge_deduplication,
             req.branchial_step,
             req.show_genesis_events,
+            req.session_op,
+            req.session_handle,
         };
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");

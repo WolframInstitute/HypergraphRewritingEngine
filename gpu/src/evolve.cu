@@ -145,7 +145,8 @@ struct Engine::Impl {
         matches_.reset();
     }
 
-    EvolveResult run(const EvolveInput& in);
+    EvolveResult run(const EvolveInput& in, SessionView* session = nullptr,
+                     uint32_t start_step = 0);
 
     EngineConfig                       cfg_;
     EngineState                        state_;
@@ -162,13 +163,17 @@ Engine::Engine(EngineConfig cfg) : impl_(new Impl(cfg)) {}
 Engine::~Engine() { delete impl_; }
 void Engine::reset() { impl_->reset(); }
 const EngineConfig& Engine::config() const { return impl_->cfg_; }
-EvolveResult Engine::run(const EvolveInput& in) { return impl_->run(in); }
+EvolveResult Engine::run(const EvolveInput& in, SessionView* session,
+                         uint32_t start_step) {
+    return impl_->run(in, session, start_step);
+}
 
 namespace {
 // Fill each state's dedup key with a unique value so NONE of them merge —
 }  // namespace
 
-EvolveResult Engine::Impl::run(const EvolveInput& in) {
+EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
+                               uint32_t start_step) {
     // Reset device state from any prior run().
     reset();
 
@@ -349,7 +354,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in) {
             in.canonicalization, ekeys, /*blocks=*/0,
             /*quotient_roots=*/in.quotient_initial_states,
             qc_route ? &qc_view : nullptr,
-            qc_route ? &qe_view : nullptr);
+            qc_route ? &qe_view : nullptr,
+            session, start_step);
 
         state_count_host = engine.num_states_host();
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
@@ -782,8 +788,77 @@ EvolveResult evolve(const EvolveInput& in) {
 // ---------------------------------------------------------------------------
 // PersistentEvolver: evolve() with the device Engine kept alive across calls.
 // ---------------------------------------------------------------------------
+// GpuSession: the pimpl that lets a HOST translation unit own a device session. Holds the
+// SessionState and hands out the view; nothing else.
+struct GpuSession::Impl {
+    SessionState state;
+    SessionView  view;
+    Impl(uint32_t max_states, uint32_t max_events)
+        : state(max_states, max_events), view(state.view()) {}
+};
+
+GpuSession::GpuSession(uint32_t max_states, uint32_t max_events)
+    : impl_(std::make_unique<Impl>(max_states, max_events)) {}
+GpuSession::~GpuSession() = default;
+
+SessionView* GpuSession::view() { return &impl_->view; }
+uint32_t GpuSession::frontier_size() const { return impl_->state.frontier_size(); }
+
 PersistentEvolver::PersistentEvolver()  = default;
 PersistentEvolver::~PersistentEvolver() = default;
+
+// A session run REFUSES to rebuild the engine. run() below may replace engine_ -- when the
+// config changes, or after an overflow throw, which discards it deliberately so a poisoned
+// device cannot infect every later call in this worker. Either would drop a session's
+// accumulated states while handing back something shaped exactly like a continuation, so this
+// reports a dead handle instead and the caller reopens. The host does the same thing by
+// invalidating its session slot on a throw.
+PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& in,
+                                                             SessionView* session,
+                                                             uint32_t start_step) {
+    SessionRun out;
+    if (session == nullptr) {
+        out.error = "run_session called without a session";
+        return out;
+    }
+
+    // Opening: size the engine from this input, exactly as a first run would.
+    if (!has_engine_) {
+        if (start_step != 0) {
+            out.error = "this session has no engine to continue; it was never opened, or a "
+                        "previous call discarded it";
+            return out;
+        }
+        EngineConfig cfg = config_from_input(in);
+        try {
+            engine_ = std::make_unique<Engine>(cfg);
+        } catch (const std::exception& e) {
+            out.error = std::string("could not build a device engine for this session: ") + e.what();
+            return out;
+        }
+        cfg_        = cfg;
+        has_engine_ = true;
+    } else if (start_step == 0) {
+        // Reopening onto a live engine would continue the PREVIOUS session's graph, since the
+        // pools and the session's maps both persist. Refused: a handle names one evolution.
+        out.error = "this evolver already holds a session; close it before opening another";
+        return out;
+    }
+
+    try {
+        out.result = engine_->run(in, session, start_step);
+    } catch (const std::exception& e) {
+        // Same reasoning as run(): the engine may be inconsistent, so it goes. The session dies
+        // with it rather than continuing against a rebuilt device.
+        engine_.reset();
+        has_engine_ = false;
+        out.error = std::string("the device run failed and the session is no longer valid: ")
+                  + e.what();
+        return out;
+    }
+    out.ok = true;
+    return out;
+}
 
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
     constexpr int kMaxRetries = 6;

@@ -52,6 +52,17 @@ struct GpuJob {
     bool edge_deduplication = true;
     int  branchial_step = 0;      // 0=all, >0 1-based step, <0 from end (-1=final)
     bool show_genesis_events = false;
+
+    // THE SESSION ENVELOPE, carried through so the device can answer the same four verbs the
+    // host does. Empty `op` means Evolve, which is a one-shot run and the whole of the older
+    // protocol, so a caller sending neither field is served exactly as before.
+    //
+    // ONE SESSION PER PROCESS. The worker runs jobs serially against one device engine, and a
+    // session pins that engine (a rebuild would drop its accumulated states while returning
+    // something shaped like a continuation), so a second Open before a Close is refused rather
+    // than silently answering about a different evolution.
+    std::string session_op;
+    uint64_t    session_handle = 0;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same
