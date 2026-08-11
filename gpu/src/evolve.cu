@@ -174,8 +174,12 @@ namespace {
 
 EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                uint32_t start_step) {
-    // Reset device state from any prior run().
-    reset();
+    // Reset device state from any prior run() -- EXCEPT when continuing a session. A Step's
+    // accumulated states ARE the graph being extended, and the frontier it seeds from holds ids
+    // into those pools, so clearing them leaves the run seeding ids that no longer name
+    // anything and it produces nothing. Opening (start_step 0) still resets, which is what
+    // keeps a session from inheriting a previous job's graph.
+    if (start_step == 0) reset();
 
     EvolveResult out;
     if (in.rules.empty() && in.num_steps == 0 && in.initial_state.empty()) {
@@ -236,7 +240,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     const size_t max_state_edges =
         max_root_edges + max_growth * static_cast<size_t>(in.num_steps);
     engine.set_maintain_indices(max_state_edges > engine.config_slice_scan_max_edges());
-    const uint32_t num_roots = upload_initial_states(engine, roots);
+    // Continuing: the roots are already in the pools from the call that opened the session, so
+    // uploading them again would add a second copy of every root and re-seed the evolution from
+    // depth 0 alongside the frontier.
+    const uint32_t num_roots = (start_step == 0)
+                                   ? upload_initial_states(engine, roots)
+                                   : static_cast<uint32_t>(roots.size());
 
     // Upload rules. Resize the device-side rules buffer if this run has more
     // rules than any prior run. Re-upload every run so the caller can pass a
@@ -839,10 +848,12 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
         cfg_        = cfg;
         has_engine_ = true;
     } else if (start_step == 0) {
-        // Reopening onto a live engine would continue the PREVIOUS session's graph, since the
-        // pools and the session's maps both persist. Refused: a handle names one evolution.
-        out.error = "this evolver already holds a session; close it before opening another";
-        return out;
+        // OPENING ONTO A LIVE ENGINE IS NORMAL, not an error: this evolver is reused for every
+        // job the worker handles, so it has an engine after any prior Evolve. The session must
+        // not inherit that run's graph, and Engine::Impl::run already clears it whenever
+        // start_step is 0 -- one place decides that, rather than two that can disagree.
+        // Refusing instead would make a plain Evolve poison the next Open, which is what the
+        // process-boundary gate caught.
     }
 
     try {

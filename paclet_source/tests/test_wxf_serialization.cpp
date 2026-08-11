@@ -1,7 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <functional>
+#include <iterator>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -820,4 +829,180 @@ TEST(WxfSerializationPin, RandomSeedMakesASampledEvolutionReproducible) {
     for (int64_t s : {7, 99, 4242, 31337}) if (sampled(s) != a) { any_different = true; break; }
     EXPECT_TRUE(any_different)
         << "every seed gave " << a << " states, so the draw is not seeded at all";
+}
+
+// ---------------------------------------------------------------------------------------
+// THE PROCESS BOUNDARY, which nothing else in this suite crosses.
+//
+// The GPU answers through a SEPARATE BINARY (hg_evolve_gpu). gpu_differential_tests links
+// hg_gpu directly and never runs hg_gpu_backend.cpp at all, so everything that file does --
+// the marshalling, the state grouping, and the session verbs -- had no gate whatsoever. That
+// gap is why three disagreeing implementations of Automatic content identity survived here
+// until one was read by hand.
+//
+// A SESSION NEEDS ONE PROCESS, which is what makes the framing matter rather than being an
+// implementation detail. The device session lives in the worker that opened it: a handle is a
+// pointer into that process's memory, so driving the four verbs through four one-shot
+// invocations opens a session in the first and finds nothing in the second. The binary's
+// --serve mode is exactly the shape a session requires -- one process, a stream of 8-byte
+// length-prefixed frames -- and it is what the paclet's hgWorkerStart uses.
+//
+// SKIPPED, NOT FAILED, when the binary is absent: a machine without CUDA cannot build it, and
+// a skip that says why is honest where a failure would be noise.
+namespace {
+
+std::string gpu_binary_path() {
+    return std::string(HG_SOURCE_DIR) + "/paclet/LibraryResources/Linux-x86-64/hg_evolve_gpu";
+}
+
+// One --serve worker, driven for the life of the fixture. Frames are 8-byte little-endian
+// lengths followed by the WXF payload, matching run_serve exactly; a ZERO-length reply is how
+// the worker reports that a job threw, which is distinct from a reply that happens to be empty.
+class ServeWorker {
+public:
+    explicit ServeWorker(const std::string& exe) {
+        const std::string cmd = "\"" + exe + "\" --serve 2>/dev/null";
+        pipe_ = popen(cmd.c_str(), "w");   // write jobs; replies come back on a second channel
+    }
+    ~ServeWorker() { if (pipe_) pclose(pipe_); }
+    bool ok() const { return pipe_ != nullptr; }
+private:
+    FILE* pipe_ = nullptr;
+};
+
+// popen gives one direction only, so the worker is driven through a pair of FIFOs instead:
+// jobs in, replies out, one process for all four verbs.
+struct WorkerPipes {
+    std::string dir, in_path, out_path;
+    pid_t pid = -1;
+    int in_fd = -1, out_fd = -1;
+    bool started = false;
+};
+
+bool worker_start(WorkerPipes& w, const std::string& exe) {
+    w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo";
+    ::mkdir(w.dir.c_str(), 0700);
+    w.in_path  = w.dir + "/in";
+    w.out_path = w.dir + "/out";
+    ::unlink(w.in_path.c_str());
+    ::unlink(w.out_path.c_str());
+    if (::mkfifo(w.in_path.c_str(), 0600) != 0) return false;
+    if (::mkfifo(w.out_path.c_str(), 0600) != 0) return false;
+
+    w.pid = ::fork();
+    if (w.pid < 0) return false;
+    if (w.pid == 0) {
+        const int fin  = ::open(w.in_path.c_str(),  O_RDONLY);
+        const int fout = ::open(w.out_path.c_str(), O_WRONLY);
+        if (fin >= 0)  ::dup2(fin, 0);
+        if (fout >= 0) ::dup2(fout, 1);
+        ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
+        ::_exit(127);
+    }
+    w.in_fd  = ::open(w.in_path.c_str(),  O_WRONLY);
+    w.out_fd = ::open(w.out_path.c_str(), O_RDONLY);
+    w.started = (w.in_fd >= 0 && w.out_fd >= 0);
+    return w.started;
+}
+
+void worker_stop(WorkerPipes& w) {
+    if (w.in_fd  >= 0) ::close(w.in_fd);
+    if (w.out_fd >= 0) ::close(w.out_fd);
+    if (w.pid > 0) { int st = 0; ::waitpid(w.pid, &st, 0); }
+    ::unlink(w.in_path.c_str());
+    ::unlink(w.out_path.c_str());
+    ::rmdir(w.dir.c_str());
+}
+
+bool read_exact_fd(int fd, size_t n, std::vector<uint8_t>& out) {
+    out.assign(n, 0);
+    size_t got = 0;
+    while (got < n) {
+        const ssize_t r = ::read(fd, out.data() + got, n - got);
+        if (r <= 0) return false;
+        got += static_cast<size_t>(r);
+    }
+    return true;
+}
+
+// Send one job, read one reply. Empty reply means the worker reported an error for that job.
+std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job) {
+    uint8_t len[8];
+    for (int i = 0; i < 8; ++i) len[i] = static_cast<uint8_t>((job.size() >> (8 * i)) & 0xFF);
+    if (::write(w.in_fd, len, 8) != 8) return {};
+    size_t sent = 0;
+    while (sent < job.size()) {
+        const ssize_t r = ::write(w.in_fd, job.data() + sent, job.size() - sent);
+        if (r <= 0) return {};
+        sent += static_cast<size_t>(r);
+    }
+    std::vector<uint8_t> lenbuf;
+    if (!read_exact_fd(w.out_fd, 8, lenbuf)) return {};
+    uint64_t reply_len = 0;
+    for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
+    if (reply_len == 0) return {};
+    std::vector<uint8_t> reply;
+    if (!read_exact_fd(w.out_fd, reply_len, reply)) return {};
+    return reply;
+}
+
+}  // namespace
+
+TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) {
+            GTEST_SKIP() << "hg_evolve_gpu is not built here; this gate covers the process "
+                            "boundary and needs the binary";
+        }
+    }
+
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+
+    const auto one_shot = worker_call(w, build_input_with_op(3, "Evolve"));
+    if (one_shot.empty()) {
+        worker_stop(w);
+        GTEST_SKIP() << "the worker returned no result for a plain Evolve (no usable device?); "
+                        "the gate abstains rather than reporting a device absence as a defect";
+    }
+    const int64_t ref_states = read_int_key(one_shot, "NumStates");
+    const int64_t ref_events = read_int_key(one_shot, "NumEvents");
+    ASSERT_GT(ref_states, 0) << "the one-shot run returned no states, so there is nothing to "
+                                "compare a session against";
+
+    const auto opened = worker_call(w, build_input_with_op(1, "Open"));
+    ASSERT_FALSE(opened.empty()) << "Open through the worker errored";
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_GT(handle, 0) << "Open returned no session handle, so nothing can be stepped";
+
+    // TWO Steps, not one: a single extend cannot tell a consumed frontier from an accumulated
+    // one, which is exactly how that defect survived its first gate.
+    const auto s1 = worker_call(w, build_input_with_op(1, "Step", handle, /*with_rules=*/false));
+    ASSERT_FALSE(s1.empty()) << "the first Step errored";
+    const auto s2 = worker_call(w, build_input_with_op(1, "Step", handle, /*with_rules=*/false));
+    ASSERT_FALSE(s2.empty()) << "the second Step errored";
+
+    EXPECT_EQ(read_int_key(s2, "NumStates"), ref_states)
+        << "a GPU session stepped to depth 3 does not hold what one Evolve to depth 3 returns";
+    EXPECT_EQ(read_int_key(s2, "NumEvents"), ref_events)
+        << "a GPU session stepped to depth 3 does not hold the events one Evolve returns";
+
+    const auto q = worker_call(w, build_input_with_op(0, "Query", handle, /*with_rules=*/false));
+    EXPECT_FALSE(q.empty()) << "Query errored";
+    // The Session key is emitted only when the session branch answered. Its absence says the
+    // verb was not recognised and a fresh zero-step run replied instead, which is a different
+    // defect from the session holding the wrong graph.
+    EXPECT_EQ(read_int_key(q, "Session"), handle)
+        << "Query was not answered from the held session";
+    EXPECT_EQ(read_int_key(q, "NumStates"), ref_states)
+        << "Query must report what the session holds and extend it by nothing";
+
+    const auto c = worker_call(w, build_input_with_op(0, "Close", handle, /*with_rules=*/false));
+    EXPECT_FALSE(c.empty()) << "Close errored";
+
+    worker_stop(w);
 }

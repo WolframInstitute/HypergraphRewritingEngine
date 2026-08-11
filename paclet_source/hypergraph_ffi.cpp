@@ -670,8 +670,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // holds. Answered before the rules are checked, because a Close carries no rules and
         // demanding them would make releasing a session harder than opening one.
         if (req.session_op == "Close") {
+            // ANSWERED BEFORE THE RULES ARE CHECKED, on either device: a Close carries no
+            // rules, and demanding them would make releasing a session harder than opening
+            // one. Which SESSION it releases is the only difference -- in the GPU binary the
+            // handle names a device session, and closing a CPU slot this binary never
+            // populated would leave the device holding its engine forever. The
+            // process-boundary gate caught exactly that: Close was the one verb that errored.
+#ifdef HG_GPU_BACKEND
+            return run_gpu_job(req, host);
+#else
             worker_session().close(req.session_handle);
             return session_ack(hgffi::SessionSlot::kNoSession);
+#endif
         }
 
         // WHERE THE ENGINE COMES FROM is the whole of the op boundary. `Step` and `Query` answer
