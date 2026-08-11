@@ -151,16 +151,6 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // The class representative (first-seen id) is the stable handle emitted. state_hash always
     // holds the IR canonical hash so the optional CanonicalHash output is available in any mode.
     const hg_gpu::CanonicalizationMode canon_mode = in.canonicalization;
-    auto content_key = [](const std::vector<std::vector<hg_gpu::VertexId>>& edges) -> uint64_t {
-        std::vector<std::vector<hg_gpu::VertexId>> e = edges;
-        std::sort(e.begin(), e.end());
-        uint64_t h = 1469598103934665603ull;               // FNV-1a over the sorted edge multiset
-        for (const auto& ed : e) {
-            for (auto v : ed) h = (h ^ static_cast<uint64_t>(v)) * 1099511628211ull;
-            h = (h ^ 0x2Cull) * 1099511628211ull;          // edge separator
-        }
-        return h;
-    };
     std::unordered_map<uint64_t, hg_gpu::StateId> hash_to_rep;
     std::unordered_map<hg_gpu::StateId, hg_gpu::StateId> state_to_rep;
     std::unordered_map<hg_gpu::StateId, uint64_t> state_hash;
@@ -169,9 +159,21 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     for (const auto& s : result.states) {
         state_hash[s.id] = ir.compute_canonical_hash(s.edges);
         state_edges[s.id] = &s.edges;
+        // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
+        // carries what state_key_device wrote for the requested mode, so under Automatic it is
+        // the content hash the evolution itself used. Recomputing content identity here would be
+        // a second opinion about it, and a second opinion that disagreed would merge states the
+        // device had kept distinct -- one silently missing from the result.
+        //
+        // A hash of 0 means the device never wrote one for this state. Grouping by it would put
+        // every such state in ONE class and drop the rest from the result, so an absent key
+        // falls back to the state's own id: unmerged is a visible over-count, merged is a
+        // silent loss. This is the EMPTY=0 collision class that has bitten four maps here.
+        const uint64_t auto_key = s.canonical_hash != 0 ? s.canonical_hash
+                                                        : static_cast<uint64_t>(s.id);
         uint64_t key =
             canon_mode == hg_gpu::CanonicalizationMode::None      ? static_cast<uint64_t>(s.id) :
-            canon_mode == hg_gpu::CanonicalizationMode::Automatic ? content_key(s.edges)
+            canon_mode == hg_gpu::CanonicalizationMode::Automatic ? auto_key
                                                                   : state_hash[s.id];
         auto it = hash_to_rep.find(key);
         if (it == hash_to_rep.end()) {
