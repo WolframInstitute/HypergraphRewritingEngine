@@ -3,16 +3,25 @@
 **State at 2026-08-04: 20 verified, 0 partly, 0 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
-a Linux+CUDA workstation has been, with the run that proves it recorded beside it. The 9 that
-remain — 4 partly done, 5 not — split into exactly two kinds, and neither is new engineering:
+a Linux+CUDA workstation has been, with the run that proves it recorded beside it.
 
-- **Needs the Wolfram documentation toolchain** — `DocumentationBuild` and the example pages.
-  The `.paclet` archive and the installed-archive exercise are DONE (2026-08-03), and the doc
-  build has an open finding of its own recorded on its line.
-- **Needs a Windows host** — only `Windows-x86-64/hg_evolve_gpu.exe`, which requires native
-  MSVC+nvcc. The cross attempt failed on the WSL interop socket, not on code, and the config
-  itself is proven: that binary's predecessor passes the golden corpus 12/12.
+Two lines are not engineering and stay open until someone acts on them:
+
+- **Needs the Wolfram documentation toolchain** — the example pages. `DocumentationBuild` passed
+  2026-08-04 via `./build_docs.sh`, and the `.paclet` archive and installed-archive exercise are
+  DONE (2026-08-03).
 - **Needs a decision** — the doc-accuracy line, which is a judgement about user-facing text.
+  Three copies of the option surface are cross-checked by tests and the doc inventory by a CI
+  gate, but no checker decides whether a sentence is TRUE.
+
+The Windows GPU binary is not among them. `./build_windows_gpu.sh` drives a native MSVC+nvcc
+build from WSL through the Windows `cmake.exe`, and `build_all_platforms.sh` calls it. Its two
+historic failures are both fixed: `436de63` (cmake.exe inheriting a `\\wsl.localhost` UNC path as
+its working directory, which fails before it reads an argument) and `967526b` (`rewrite_core.hpp`
+carrying its own `ctz`/`popcount` without `<intrin.h>`, undefined under MSVC). What DOES need
+watching is that `build_all_platforms.sh` routes a GPU-build failure to SKIPPED rather than
+FAILED, deliberately, so the six required platform libraries cannot be blocked by it — which
+means a broken CUDA config ships CPU-only Windows silently.
 
 The Windows MSVC+nvcc config is NOT among them: it landed, and the binary's import table proves it
 (see the `hg_evolve_gpu` line). `.github/workflows/windows-gpu.yml` exists to keep it from rotting,

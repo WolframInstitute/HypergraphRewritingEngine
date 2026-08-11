@@ -3,6 +3,7 @@
 #include "test_helpers.hpp"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -26,6 +27,29 @@ protected:
     static void SetUpTestSuite() { s_consultations = 0; s_unavailable = 0; }
 
     static void TearDownTestSuite() {
+        // RELEASE SIGN-OFF CANNOT ACCEPT A VACUOUS PASS. Built without wolframscript --
+        // which is exactly the CI runner's case, where testing/CMakeLists.txt sets
+        // WOLFRAMSCRIPT_AVAILABLE=0 -- the round-trip helper returns true without consulting
+        // anything, so every test that calls it asserts nothing while reporting green. That is
+        // correct for a developer build and wrong for a release: the whole point of these
+        // cases is that Wolfram agrees.
+        //
+        // Setting HG_REQUIRE_ORACLE=1 turns the absence into a failure, so the sign-off run
+        // proves the oracle was actually asked rather than the operator remembering to check.
+        if (const char* req = std::getenv("HG_REQUIRE_ORACLE")) {
+            if (req[0] == '1') {
+#if WOLFRAMSCRIPT_AVAILABLE
+                EXPECT_GT(s_consultations, 0)
+                    << "HG_REQUIRE_ORACLE=1 but the oracle was never consulted, so these "
+                       "round-trips assert nothing.";
+#else
+                ADD_FAILURE()
+                    << "HG_REQUIRE_ORACLE=1 but this build has WOLFRAMSCRIPT_AVAILABLE=0, so "
+                       "the oracle is compiled out and every round-trip returns true without "
+                       "consulting anything. Build where wolframscript is installed.";
+#endif
+            }
+        }
 #if WOLFRAMSCRIPT_AVAILABLE
         if (s_consultations == 0) return;
         std::printf("# wolfram oracle: %d/%d consultations returned no verdict "
