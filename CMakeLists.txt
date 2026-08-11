@@ -33,6 +33,34 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+# The commit every shipped artifact is stamped with (paclet_source/build_stamp.hpp).
+#
+# A release ships binaries for six platforms and the host that assembles them can run at most
+# one, so "is this artifact current?" has to be answerable by READING the file. The stamp is how,
+# and this is where the value it carries comes from.
+#
+# CMAKE_CONFIGURE_DEPENDS on .git/HEAD makes a branch switch or a checkout re-configure, so the
+# stamp cannot outlive the commit it names. A commit ON the same branch does not touch HEAD's
+# contents, which is why sign-off compares the stamp to `git rev-parse HEAD` rather than assuming
+# a configured tree is up to date.
+find_package(Git QUIET)
+set(HG_BUILD_COMMIT "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                    OUTPUT_VARIABLE HG_BUILD_COMMIT
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(HG_BUILD_COMMIT STREQUAL "")
+        set(HG_BUILD_COMMIT "unknown")
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/.git/HEAD")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                     "${CMAKE_SOURCE_DIR}/.git/HEAD")
+    endif()
+endif()
+message(STATUS "Build stamp commit: ${HG_BUILD_COMMIT}")
+
 # Export compile commands for clangd and other tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

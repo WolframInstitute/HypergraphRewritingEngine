@@ -37,6 +37,15 @@ jobs:
       - name: The documentation names only symbols the paclet exports
         run: python3 tools/dev/doc_symbols_check.py
 
+      # artifact_stamp_check.py runs at release sign-off, over binaries a hosted runner does
+      # not have. What CI can check is that the checker still catches what it claims to: its
+      # self-test builds one fixture per defect class (stale commit, absent stamp, wrong
+      # variant, two stamps in one file, an empty tree) and requires the exact finding. A
+      # checker whose regex silently stopped matching would otherwise report 0 findings over
+      # a stale release and read as green.
+      - name: The build-stamp checker still detects what it claims to
+        run: python3 tools/dev/artifact_stamp_check_selftest.py
+
   linux-tests:
     runs-on: ubuntu-latest
     steps:

@@ -184,6 +184,19 @@ if selected "MacOSX-x86-64" || selected "MacOSX-ARM64"; then
     fi
 fi
 
+# ---- What is actually in the paclet now ----
+#
+# A per-target BUILT line says a build ran; it says nothing about the other files sitting in the
+# platform directories, which are what a release ships. Every artifact carries the commit it was
+# built from (paclet_source/build_stamp.hpp), so one scan reports the whole shipped set against
+# HEAD -- including the ones this run skipped, which is precisely where a stale file hides.
+#
+# Advisory here and REQUIRED at sign-off: a filtered or single-platform run is expected to leave
+# other platforms behind, so failing this script on it would make the filter useless.
+echo -e "\n${GREEN}=== Shipped artifacts vs HEAD ===${NC}"
+python3 tools/dev/artifact_stamp_check.py || \
+    echo -e "${YELLOW}(advisory here; release sign-off requires this to be clean)${NC}"
+
 # ---- Summary ----
 echo -e "\n${GREEN}=== Summary ===${NC}"
 for t in "${BUILT[@]:-}";   do [[ -n "$t" ]] && echo -e "${GREEN}  ✓ built    $t${NC}"; done

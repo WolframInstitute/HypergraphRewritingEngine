@@ -32,8 +32,19 @@
 #include "graph_marshal.hpp"
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
+#include "build_stamp.hpp"         // the commit this artifact was built from
 
 using namespace hypergraph;
+
+// The build stamp lives HERE because this translation unit is compiled into all three shipped
+// artifacts -- the paclet library, hg_evolve and hg_evolve_gpu -- so one definition stamps every
+// one of them, and a fourth artifact could not be added without also compiling this file.
+namespace HG_NAMESPACE {
+namespace ffi {
+const char kBuildStamp[] =
+    "HGBUILDSTAMP/1 commit=" HG_BUILD_COMMIT " variant=" HG_BUILD_VARIANT " :HGBUILDSTAMP";
+}  // namespace ffi
+}  // namespace HG_NAMESPACE
 
 
 // WXF Helper Functions using comprehensive wxf library
@@ -1858,6 +1869,12 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 }
 
 EXTERN_C DLLEXPORT int WolframLibrary_initialize(WolframLibraryData /* libData */) {
+    // Reference the stamp from an exported entry point so it reaches the DLL's .rodata. An
+    // object nothing refers to is what a linker is entitled to drop, and a stamp that can be
+    // dropped is not evidence about the artifact.
+    static const char* volatile stamp_anchor = nullptr;
+    stamp_anchor = hgffi::kBuildStamp;
+    (void)stamp_anchor;
     return LIBRARY_NO_ERROR;
 }
 

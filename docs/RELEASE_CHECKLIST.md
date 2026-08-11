@@ -74,6 +74,24 @@ Keep it current: a release that skips a line here is not released.*
       from a superseded converter path. The build run above did not touch it; nothing current
       writes that directory, and it cannot ship. Earlier notes here that treated it as this
       gate's input were wrong.)*
+- [ ] **Every shipped artifact is stamped with HEAD.**
+      `python3 tools/dev/artifact_stamp_check.py --require-clean` → 0 findings.
+      This is the line that replaces reading file dates. A release ships binaries for six
+      platforms plus two CUDA executables and the assembling host can EXECUTE at most one of
+      them, so `--version` cannot answer "is this current?" for the rest; each artifact instead
+      carries `HGBUILDSTAMP/1 commit=<sha> variant=<name>` in its .rodata, written by the build
+      (`paclet_source/build_stamp.hpp`), and the checker reads it out of the file.
+      It catches exactly the hazard the next line describes: the Windows GPU build routes a
+      failure to SKIPPED, so a stale `hg_evolve_gpu.exe` from a previous release stays in the
+      directory and ships. A stale stamp names it.
+      `--require-clean` is a SEPARATE assertion, because the stamp is written at configure time
+      and cannot know what the tree looked like at build time. The stamp answers "which commit";
+      `git status` answers "plus what".
+      **Ground-truthed**: `tools/dev/artifact_stamp_check_selftest.py` builds one fixture per
+      defect class — stale commit, no stamp, wrong variant, two stamps in one file, empty tree —
+      and requires the exact finding, **7/7**, and the seventh case requires the literal
+      `hg_evolve --version` prints to be the literal the checker extracts from that same file.
+      It runs in the CI no-build job, so a regex that stopped matching cannot read as green.
 - [x] **Static-link contract holds.** Verified 2026-08-03 on
       `paclet/LibraryResources/Windows-x86-64/hg_evolve_gpu.exe`: the import set is exactly
       `KERNEL32.dll`, `WS2_32.dll`, `nvcuda.dll` — nothing else — so `libcudart_static` + `/MT`
