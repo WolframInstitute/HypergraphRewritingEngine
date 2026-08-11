@@ -259,19 +259,19 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // else keep default (None)
                             }
                         } else if (option_key == "CanonicalizeStates") {
-                            // Can be: None, Automatic, Full symbols (or legacy True/False)
-                            // NOTE: Only Full mode does evolution-time deduplication.
-                            // Automatic mode does NOT do evolution-time deduplication to match
-                            // reference behavior (MultiwaySystem). Instead, Automatic only affects
-                            // display-time grouping via ContentStateId computed in the FFI.
+                            // None, Automatic or Full (legacy False/True). Each names the identity
+                            // the EVOLUTION deduplicates states by, so each is answered by the
+                            // engine as it runs: None gives every state its own id, Automatic
+                            // deduplicates by content, Full by the exact canonical form. A mode
+                            // that only regrouped the finished output would make the identity a
+                            // property of how results are read rather than of the run.
                             std::string symbol = option_parser.read<std::string>();
                             if (symbol == "None" || symbol == "False") {
                                 req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
                                 req.canonicalize_states_mode = "None";
                             } else if (symbol == "Automatic") {
-                                // Automatic behaves like None for evolution (no deduplication)
-                                // ContentStateId is computed separately for display-time grouping
-                                req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
+                                req.state_canon_mode =
+                                    hypergraph::StateCanonicalizationMode::Automatic;
                                 req.canonicalize_states_mode = "Automatic";
                             } else if (symbol == "Full" || symbol == "True") {
                                 req.state_canon_mode = hypergraph::StateCanonicalizationMode::Full;

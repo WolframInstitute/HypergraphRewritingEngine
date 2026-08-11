@@ -750,16 +750,12 @@ TEST(GraphPropertySurface, EveryPropertyInEveryModeOnBranchingAndNonBranchingRul
 // reports), which is the same invariant for the third shape.
 TEST(GraphPropertySurface, GraphVerticesAgreeWithTheCountsReportedBesideThem) {
     HostBridge host;
-    // AUTOMATIC IS EXCLUDED, AND NOT BECAUSE THE INVARIANT IS WRONG THERE. It fails, and the
-    // failure is a real defect: on the two-edge rule at 3 steps, StatesGraph returns 17
-    // vertices while NumStates reports 19. Both sides key on the SAME function
-    // (compute_content_ordered_hash) and apply the same validity filter
-    // (get_state(sid).id != INVALID_ID), so the disagreement is a POPULATION difference --
-    // canonical_state_map_.count_unique() is counting keys that no valid state's content hash
-    // reproduces. Pinning which keys needs an instrumented run; until then this asserts the
-    // modes where the invariant holds rather than pinning the wrong number in the mode where
-    // it does not. Board #116.
-    const char* const kModesWhereEstablished[] = {"None", "Full"};
+    // ALL THREE MODES, because all three now name an identity the EVOLUTION applies. The
+    // graph's vertices and the count are two readings of one population only when the run
+    // deduplicated by the mode it was asked for: while Automatic deduplicated nothing and was
+    // regrouped afterwards, the two disagreed (17 vertices against 19 states on the two-edge
+    // rule at 3 steps), because the map held keys that no surviving state's content reproduced.
+    const char* const kModesWhereEstablished[] = {"None", "Automatic", "Full"};
     for (const char* mode : kModesWhereEstablished) {
         for (int branching = 0; branching < 2; ++branching) {
             const StateList& seed = branching ? kBranchSeed : kSeed;
