@@ -47,7 +47,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 
 | Option | Default | |
 |---|---|---|
-| `"CanonicalizeStates"` | `None` | merge states by isomorphism class: `None`, `Automatic` (fast content hash, may merge some non-isomorphic states), or `Full` (exact isomorphism) |
+| `"CanonicalizeStates"` | `None` | the identity states are merged by: `None` (every provenance distinct), `Automatic` (equal contents), or `Full` (equal up to isomorphism) |
 | `"CanonicalizeEvents"` | `None` | merge equivalent events: `None`, `Automatic`, `Full`, or a list of keys |
 | `"CausalTransitiveReduction"` | `True` | remove redundant transitive causal edges |
 | `"ExploreFromCanonicalStatesOnly"` | `False` | quotient exploration: expand each canonical state once, at its shortest depth (off by default, so every provenance is explored) |
@@ -213,19 +213,32 @@ rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
 
 ### "CanonicalizeStates"
 
-State canonicalization equivalences states by isomorphism class. `Automatic` uses a fast content hash; `Full` is exact. With canonicalization off, each provenance is its own state:
+This chooses WHEN two states are the same state, and the three settings are three different
+questions, not three accuracies of one question. Each is applied as the run proceeds, so it
+decides what gets explored and not merely how results are grouped.
+
+`None` asks nothing: every provenance is its own state, so a hypergraph reached by two different
+histories appears twice.
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
 HGEvolve[rules, {{1, 2}}, 2, "StatesGraph", "CanonicalizeStates" -> None]
 ```
 
-With exact canonicalization, isomorphic states merge:
+`Full` asks whether two states are the same up to isomorphism, exactly. Relabelled copies of one
+hypergraph become one state:
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
 HGEvolve[rules, {{1, 2}}, 2, "StatesGraph", "CanonicalizeStates" -> Full]
 ```
+
+`Automatic` asks whether their CONTENTS are equal — the same hyperedges over the same vertex
+names. That is cheap, and it is FINER than isomorphism, not an approximation of it: two
+isomorphic states whose vertices are labelled differently are different states under
+`Automatic`, and stay separate. On a chain rule at 5 steps it merges nothing where `Full`
+collapses 154 states to 6. Choose it when vertex names are meaningful and you want them
+respected; choose `Full` when they are arbitrary and only the shape matters.
 
 ### "CanonicalizeEvents"
 
