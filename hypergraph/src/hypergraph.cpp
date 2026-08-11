@@ -599,21 +599,17 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
 // =============================================================================
 
 uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) const {
-    uint64_t h = FNV_OFFSET;
-
-    // Hash edge count first
-    h = fnv_hash(h, mix64(edges.count()));
-
+    // The rule is hgcommon::ContentHasher; only the ITERATION is ours. The device walks an edge
+    // slice with a liveness filter and cannot share this loop, but it must share every constant
+    // and every mixing step, which is what the hasher holds.
+    hgcommon::ContentHasher ch(static_cast<uint32_t>(edges.count()));
     edges.for_each([&](EdgeId eid) {
         const Edge& e = edges_[eid];
-        h = fnv_hash(h, mix64(static_cast<uint64_t>(e.arity)));
-        for (uint8_t i = 0; i < e.arity; ++i) {
-            h = fnv_hash(h, mix64(static_cast<uint64_t>(e.vertices[i])));
-        }
-        h = fnv_hash(h, 0xDEADBEEFCAFEBABEULL);
+        ch.edge_begin(e.arity);
+        for (uint8_t i = 0; i < e.arity; ++i) ch.vertex(static_cast<uint64_t>(e.vertices[i]));
+        ch.edge_end();
     });
-
-    return h;
+    return ch.value();
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {

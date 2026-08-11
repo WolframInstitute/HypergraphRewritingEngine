@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include "hgcommon/slot_core.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
+#include "hgcommon/wl_core.hpp"
 #include <random>
 #include <vector>
 
@@ -124,4 +125,73 @@ TEST(QcTransitionSig, PinnedValueIsTheDeviceContract) {
     // And the basis is the real FNV offset, not the digit-dropped literal that shipped in two
     // open-coded copies of this rule.
     EXPECT_EQ(hgcommon::FNV_OFFSET, 14695981039346656037ULL);
+}
+
+// ---------------------------------------------------------------------------------------
+// Content-ordered identity: what Automatic deduplicates states by, and the LAST rule in this
+// codebase that was written twice. The host walks a SparseBitset, the device walks an edge
+// slice with a liveness filter, so the iteration cannot be shared -- but every constant and
+// every mixing step must be, and hgcommon::ContentHasher is where they now live.
+//
+// Pinned by VALUE, not by comparing the two callers. Comparing them is what a duplicated rule
+// always passes: the marshaller's own third copy of this concept agreed with nothing and no
+// test noticed, because no test asked what the answer should BE.
+
+TEST(ContentHasher, EdgeCountIsHashedSoASubStateCannotCollide) {
+    // Without the leading count, {{1,2}} and {{1,2},{}} differ only by an edge that contributes
+    // nothing, and a state whose edges are a prefix of another's could land on the same key.
+    hgcommon::ContentHasher one(1);
+    one.edge_begin(2); one.vertex(1); one.vertex(2); one.edge_end();
+
+    hgcommon::ContentHasher two(2);
+    two.edge_begin(2); two.vertex(1); two.vertex(2); two.edge_end();
+
+    EXPECT_NE(one.value(), two.value());
+}
+
+TEST(ContentHasher, TheSeparatorSeparates) {
+    // Same vertex sequence, different edge boundaries. Without edge_end these are one input.
+    hgcommon::ContentHasher a(2);
+    a.edge_begin(2); a.vertex(1); a.vertex(2); a.edge_end();
+    a.edge_begin(1); a.vertex(3); a.edge_end();
+
+    hgcommon::ContentHasher b(2);
+    b.edge_begin(1); b.vertex(1); b.edge_end();
+    b.edge_begin(2); b.vertex(2); b.vertex(3); b.edge_end();
+
+    EXPECT_NE(a.value(), b.value());
+}
+
+TEST(ContentHasher, OrderIsPartOfTheIdentity) {
+    // CONTENT-ordered, deliberately not isomorphism-invariant: a relabelling is a different
+    // state under Automatic. That is the whole difference from the Full path, so a hasher that
+    // ignored order would silently make Automatic mean Full-lite.
+    hgcommon::ContentHasher fwd(1);
+    fwd.edge_begin(2); fwd.vertex(1); fwd.vertex(2); fwd.edge_end();
+
+    hgcommon::ContentHasher rev(1);
+    rev.edge_begin(2); rev.vertex(2); rev.vertex(1); rev.edge_end();
+
+    EXPECT_NE(fwd.value(), rev.value());
+}
+
+TEST(ContentHasher, PinnedValueIsTheDeviceContract) {
+    hgcommon::ContentHasher ch(2);
+    ch.edge_begin(2); ch.vertex(7); ch.vertex(9); ch.edge_end();
+    ch.edge_begin(3); ch.vertex(1); ch.vertex(2); ch.vertex(3); ch.edge_end();
+
+    // Recomputed from the documented definition rather than from the object: count, then per
+    // edge the arity, its vertices, and the separator -- every step through mix64 and fnv_hash.
+    uint64_t want = hgcommon::fnv_hash(hgcommon::FNV_OFFSET, hgcommon::mix64(2));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(2));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(7));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(9));
+    want = hgcommon::fnv_hash(want, 0xDEADBEEFCAFEBABEull);
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(3));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(1));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(2));
+    want = hgcommon::fnv_hash(want, hgcommon::mix64(3));
+    want = hgcommon::fnv_hash(want, 0xDEADBEEFCAFEBABEull);
+
+    EXPECT_EQ(ch.value(), want);
 }
