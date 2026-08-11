@@ -63,37 +63,6 @@ __global__ void k_seed_match_queue_counted(
     queue.try_push(item);   // capacity >= kept_cap * num_rules, so this cannot fail here
 }
 
-// Quotient-causal seeding for a scheduler that hashed its roots elsewhere: every orbit of each
-// root gains the INIT sentinel producer (initial edges have no producing event) and the root
-// is marked reached at depth 0. Root state ids are [0, num_roots).
-__global__ void k_qc_seed_roots(DeviceState ds, QcView qc, QeView qe, uint32_t num_roots) {
-    const uint32_t sid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (sid >= num_roots) return;
-    const uint64_t h = ds.state_canonical_hash[sid];
-    const uint32_t norb = ds.state_num_orbits[sid];
-    for (uint32_t j = 0; j < norb; ++j) qc_add_producer(ds, qc, h, 0, j, INVALID_ID);
-    qc_reach(ds, qc, h, 0);
-    // The class's root instance: every slot's edge came with the initial state.
-    qe_seed_root_instance(ds, qe, sid);
-}
-
-// Register a range of raw events, one thread each -- the host-driven
-// per-step drive, run after the step's identity phase so both endpoints' hashes and orbit
-// tables exist.
-__global__ void k_qc_register_range(DeviceState ds, QcView qc, QeView qe,
-                                    uint32_t lo, uint32_t hi) {
-    const uint32_t eid = lo + blockIdx.x * blockDim.x + threadIdx.x;
-    if (eid >= hi) return;
-    const DeviceEvent& ev = ds.event_pool.at(eid);
-    if (ev.id == INVALID_ID || ev.input_state == INVALID_ID ||
-        ev.output_state == INVALID_ID)
-        return;
-    const uint32_t depth = ev.step > 0 ? ev.step - 1 : 0;
-    qc_register_transition(ds, qc, ev.input_state, ev.output_state, eid, ev.rule, depth);
-    // The class frame's matches, in slots -- the input the per-instance replay reads.
-    qe_capture_expansion(ds, qe, ev.input_state, ev.output_state, eid, ev.rule, depth);
-}
-
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
 // must stay the twin: the seeding and the loop deduplicating different equivalences is not a
 // performance difference, it is a different evolution.
@@ -722,23 +691,6 @@ uint32_t default_persistent_grid() {
     }
     cached = static_cast<uint32_t>(sms) * 8u;
     return cached;
-}
-
-void run_qc_seed_roots(EngineState& engine, QcView qc, QeView qe, uint32_t num_roots) {
-    if (num_roots == 0) return;
-    const uint32_t block = 64;
-    k_qc_seed_roots<<<(num_roots + block - 1) / block, block>>>(engine.device(), qc, qe,
-                                                                num_roots);
-    HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc seed roots sync");
-}
-
-void run_qc_register_range(EngineState& engine, QcView qc, QeView qe,
-                           uint32_t lo, uint32_t hi) {
-    if (hi <= lo) return;
-    const uint32_t block = 64;
-    k_qc_register_range<<<((hi - lo) + block - 1) / block, block>>>(engine.device(), qc, qe, lo,
-                                                                    hi);
-    HG_CUDA_CHECK(cudaDeviceSynchronize(), "qc register range sync");
 }
 
 uint32_t run_persistent_match(const EngineState& engine,

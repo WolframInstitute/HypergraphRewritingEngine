@@ -61,19 +61,4 @@ inline int ctz64(uint64_t x) {
 #endif
 }
 
-// CPU relaxation hint for bounded spin-wait loops: PAUSE on x86, YIELD on ARM.
-inline void cpu_relax() {
-#if defined(_MSC_VER)
-#if defined(_M_ARM64) || defined(_M_ARM)
-    __yield();
-#else
-    _mm_pause();
-#endif
-#elif defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ volatile("yield" ::: "memory");
-#endif
-}
-
 }  // namespace hgcommon
