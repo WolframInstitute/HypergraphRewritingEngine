@@ -21,6 +21,11 @@
 #     clean and FILTER are order-independent, e.g. `./build_all_platforms.sh clean Windows`.
 #
 #   Env: BUILD_JOBS (default: nproc), OSXCROSS_ROOT (default: ~/osxcross)
+#        HG_REQUIRE_GPU=1  the Windows CUDA exe becomes a REQUIRED target: an absent toolchain
+#                          or a failed build is FAILED, not SKIPPED. Set this for a release. A
+#                          skip leaves the previous exe in the platform directory to be
+#                          archived, so without this a broken CUDA config ships a stale binary
+#                          and says only "skipped".
 #
 #   Toolchain deps (Debian/Ubuntu host):
 #     sudo apt install cmake build-essential \
@@ -128,14 +133,24 @@ if selected "Windows-x86-64"; then
     if [[ -e "/mnt/c/Program Files/CMake/bin/cmake.exe" \
           && -d "/mnt/c/Program Files/Microsoft Visual Studio/2022" \
           && -n "$(ls -d '/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/'v*.* 2>/dev/null)" ]]; then
-        # Optional/best-effort: a GPU-build failure must NOT block the release (the six platform
-        # libraries are the required artifacts; the GPU exe is a bonus and HGEvolve falls back to
-        # CPU without it). Route a failure to SKIPPED, not FAILED.
+        # Best-effort by default: the six platform libraries are the required artifacts, and an
+        # optional GPU build must not block them, so a failure routes to SKIPPED.
+        #
+        # HG_REQUIRE_GPU=1 is what a RELEASE run sets. Skipping does not remove the previous
+        # exe from the platform directory -- it leaves it there to be archived -- so on a
+        # release the difference between SKIPPED and FAILED is the difference between shipping
+        # a stale binary and knowing you cannot ship.
         if ./build_windows_gpu.sh; then
             BUILT+=("Windows-x86-64/hg_evolve_gpu.exe")
+        elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
+            echo -e "${RED}Windows-x86-64/hg_evolve_gpu.exe: build failed and HG_REQUIRE_GPU=1${NC}"
+            FAILED+=("Windows-x86-64/hg_evolve_gpu.exe")
         else
             skip "Windows-x86-64/hg_evolve_gpu.exe" "optional GPU build did not complete (see log above); shipping CPU-only Windows"
         fi
+    elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
+        echo -e "${RED}Windows-x86-64/hg_evolve_gpu.exe: no native MSVC+CUDA toolchain and HG_REQUIRE_GPU=1${NC}"
+        FAILED+=("Windows-x86-64/hg_evolve_gpu.exe (toolchain absent)")
     else
         skip "Windows-x86-64/hg_evolve_gpu.exe" "native Windows MSVC+CUDA toolchain not found (VS2022 + CUDA Toolkit + CMake)"
     fi

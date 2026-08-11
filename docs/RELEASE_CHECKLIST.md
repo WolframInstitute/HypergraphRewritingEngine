@@ -18,10 +18,11 @@ The Windows GPU binary is not among them. `./build_windows_gpu.sh` drives a nati
 build from WSL through the Windows `cmake.exe`, and `build_all_platforms.sh` calls it. Its two
 historic failures are both fixed: `436de63` (cmake.exe inheriting a `\\wsl.localhost` UNC path as
 its working directory, which fails before it reads an argument) and `967526b` (`rewrite_core.hpp`
-carrying its own `ctz`/`popcount` without `<intrin.h>`, undefined under MSVC). What DOES need
-watching is that `build_all_platforms.sh` routes a GPU-build failure to SKIPPED rather than
-FAILED, deliberately, so the six required platform libraries cannot be blocked by it — which
-means a broken CUDA config ships CPU-only Windows silently.
+carrying its own `ctz`/`popcount` without `<intrin.h>`, undefined under MSVC). `build_all_platforms.sh` routes a GPU-build failure to SKIPPED rather than
+FAILED, deliberately, so the six required platform libraries cannot be blocked by it. **A release
+run sets `HG_REQUIRE_GPU=1`**, which makes an absent toolchain or a failed build FAILED instead —
+without it a skip leaves the previous exe in the platform directory to be archived, so a broken
+CUDA config ships a stale binary and reports only "skipped".
 
 The Windows MSVC+nvcc config is NOT among them: it landed, and the binary's import table proves it
 (see the `hg_evolve_gpu` line). `.github/workflows/windows-gpu.yml` exists to keep it from rotting,
