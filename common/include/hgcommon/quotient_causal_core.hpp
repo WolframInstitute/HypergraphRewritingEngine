@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // THE QUOTIENT-CAUSAL DP, one body for host and device.
 //
 // The quotient route explores CANONICAL states and reconstructs the raw causal relation from
@@ -55,7 +56,8 @@
 
 #include "hgcommon/core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // The DP's three key spaces. Shared because host and device index ONE conceptual set each:
 // a producer set keyed by (state, depth, orbit), a reached set keyed by (state, depth), and a
@@ -189,4 +191,5 @@ HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t
     });
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

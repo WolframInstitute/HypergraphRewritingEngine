@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU edge-signature rules.
 //
 // An edge's signature is its vertex-REPETITION pattern: position i gets the label of the
@@ -15,7 +16,8 @@
 #include <cstdint>
 #include "hgcommon/core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Repetition pattern of a vertex tuple. out_pattern must hold at least `arity` bytes.
 // {a,b,a} -> {0,1,0}; {a,a,a} -> {0,0,0}; {a,b,c} -> {0,1,2}.
@@ -81,4 +83,5 @@ HG_HD inline uint8_t signature_num_distinct(uint8_t arity, const uint8_t* patter
     return static_cast<uint8_t>(max_label + 1);
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

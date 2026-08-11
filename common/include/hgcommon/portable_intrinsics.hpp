@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 // Portable spellings of the compiler intrinsics the engine relies on, so the
 // same source builds under GCC/Clang (the cross-compiles we ship today) and
@@ -18,7 +19,8 @@
 #include <intrin.h>
 #endif
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 HG_HD inline int popcount(uint32_t x) {
 #if defined(__CUDA_ARCH__)
@@ -61,4 +63,5 @@ inline int ctz64(uint64_t x) {
 #endif
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

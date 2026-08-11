@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU core definitions — the single source of truth for identifiers,
 // fixed-size limits, and integer hash primitives used by both the host engine
 // (namespace hypergraph) and the CUDA port (namespace hg_gpu).
@@ -25,7 +26,8 @@
   #define HG_INLINE inline __attribute__((always_inline))
 #endif
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Identifiers — all 32-bit (4 billion is ample and halves cache pressure vs 64-bit).
 using VertexId = uint32_t;
@@ -148,4 +150,5 @@ struct RecordSet {
 // caller compares canonical hashes across runs and across devices.
 inline constexpr uint64_t EMPTY_STATE_CANONICAL_HASH = 0x9E3779B97F4A7C15ULL;
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

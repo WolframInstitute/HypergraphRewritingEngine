@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU event identity.
 //
 // Two applications are the same EVENT when their signatures agree. Which components go into
@@ -20,7 +21,8 @@
 #include <cstdint>
 #include "hgcommon/core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Components of an event signature. The presets below name the points of the lattice.
 enum EventSignatureKey : uint8_t {
@@ -81,4 +83,5 @@ HG_HD inline uint64_t event_signature(
     return sig;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

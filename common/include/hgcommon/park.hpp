@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 // Park/unpark on a 32-bit address, calling the OS primitive directly.
 //
@@ -52,7 +53,8 @@
 #  define HG_PARK_OS_SYNC 1
 #endif
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 enum class ParkBackend { Futex, WaitOnAddress, OsSync, StdAtomicWait };
 
@@ -124,4 +126,5 @@ inline void unpark_all(const std::atomic<uint32_t>& addr) {
 #endif
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

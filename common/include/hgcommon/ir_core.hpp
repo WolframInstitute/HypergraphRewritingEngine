@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU individualization-refinement canonical-hash core.
 //
 // ONE implementation, so the host engine and the CUDA port agree bit for bit on the exact
@@ -21,7 +22,8 @@
 #include <cstdint>
 #include "hgcommon/core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Cells whose vertices all share an edge with the splitter are separated by a 64-bit key per
 // incident edge: arity in bits 56-63, the vertex's own position in 48-55, and a bitmask of the
@@ -948,4 +950,5 @@ HG_HD inline IrResult ir_canonical_hash(
     return out;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

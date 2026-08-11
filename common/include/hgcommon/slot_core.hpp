@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // FRAME SLOTS: one definition, host and device.
 //
@@ -31,7 +32,8 @@
 
 #include <cstdint>
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Rank of edge `i` under (orbit, index). O(n), no scratch. This is the definition of a slot;
 // every other form is an optimisation of it and must agree with it.
@@ -66,4 +68,5 @@ HG_HD inline void slots_from_orbits(const uint32_t* orbit, uint32_t n,
     for (uint32_t i = 0; i < n; ++i) out_slot[i] = counts[orbit[i]]++;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

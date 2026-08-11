@@ -195,3 +195,33 @@ TEST(ContentHasher, PinnedValueIsTheDeviceContract) {
 
     EXPECT_EQ(ch.value(), want);
 }
+
+// ---------------------------------------------------------------------------------------
+// THE NAMESPACE ROOT. Linking this engine into another program must add exactly ONE name to
+// the global namespace, and the root must be renameable by whoever links it -- a library
+// cannot know it has not collided.
+//
+// Compile-time, because that is what the claim is: these are assertions about NAMES, and a
+// runtime check could only observe what the compiler already decided.
+
+TEST(NamespaceRoot, TheRootExistsAndTheShortAliasNamesTheSameEntity) {
+    // The symbol genuinely lives under the root...
+    static_assert(HG_NAMESPACE::common::FNV_OFFSET == 14695981039346656037ULL,
+                  "hgcommon's symbols are not reachable through the namespace root");
+    // ...and the short alias is that same entity, not a second declaration of it. If the alias
+    // ever bound to a separate namespace, these would be two constants that merely agree.
+    static_assert(&HG_NAMESPACE::common::FNV_OFFSET == &hgcommon::FNV_OFFSET,
+                  "the short alias does not name the root's namespace");
+    SUCCEED();
+}
+
+TEST(NamespaceRoot, TheRootIsAMacroSoALinkerCanRenameIt) {
+    // -DHG_NAMESPACE=whatever has to move every symbol without editing the engine, which is
+    // only true while the declarations open the root through the macro rather than naming it.
+    // A build that hardcoded `namespace hg {` would still compile and would silently ignore the
+    // override, so the check is that the macro is what is defined.
+#ifndef HG_NAMESPACE
+    FAIL() << "HG_NAMESPACE is not defined; the root cannot be overridden at build time";
+#endif
+    SUCCEED();
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU rewrite semantics: which vertices the produced edges carry.
 //
 // A rewrite consumes the edges the match bound and produces one edge per RHS pattern edge.
@@ -35,7 +36,8 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // How many fresh vertices a rule needs: one per new variable.
 HG_HD inline uint8_t num_fresh_variables(uint32_t new_var_mask) {
@@ -84,4 +86,5 @@ HG_HD inline bool resolve_rhs_vertices(
     return true;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

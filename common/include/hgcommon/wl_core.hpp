@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU Weisfeiler-Leman canonical-hash core.
 //
 // ONE implementation, so the host engine and the CUDA port produce bit-identical
@@ -13,7 +14,8 @@
 #include <cstdint>
 #include "hgcommon/core.hpp"  // HG_HD, FNV_OFFSET, fnv_hash, mix64
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // CONTENT-ORDERED STATE IDENTITY -- what Automatic deduplicates states by.
 //
@@ -199,4 +201,5 @@ HG_HD inline uint64_t wl_canonical_hash(
     return hash;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

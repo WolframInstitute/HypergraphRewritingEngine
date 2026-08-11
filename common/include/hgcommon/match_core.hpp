@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Shared CPU/GPU matching semantics.
 //
 // What CONSTITUTES a match is the rewrite system; how candidates are enumerated is the
@@ -15,7 +16,8 @@
 #include <cstdint>
 #include "hgcommon/core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Bind a data edge against a pattern edge under the current variable binding.
 //
@@ -46,4 +48,5 @@ HG_HD inline bool bind_pattern_edge(
     return true;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

@@ -42,6 +42,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `common/include/hgcommon/` -- shared CPU/GPU foundation
 
+- **`namespace.hpp`** -- the ONE namespace root, and the knob that renames it. Every namespace this project defines nests under `HG_NAMESPACE` (default `hg`), so linking the engine adds one name to global scope rather than the nine it used to. The root is a MACRO because a library cannot know it has not collided: a host program with its own `hg` builds with `-DHG_NAMESPACE=whatever` and every symbol moves without editing the engine, which is only true while declarations open it as `namespace HG_NAMESPACE { namespace common {` rather than naming the root. The short aliases (`namespace hgcommon = HG_NAMESPACE::common;`) are the MIGRATION SEAM: they keep existing call sites resolving while subsystems move one at a time, they are the only thing still in global scope, and they are what a later pass deletes. Gated by `NamespaceRoot` in `test_slot_core.cpp`, which asserts at compile time that the root resolves AND that the alias names the same entity rather than a second declaration that merely agrees.
+
 - **`core.hpp`** -- id typedefs, structural limits, integer hash primitives and the small-run sort both canonicalizers use (`HG_HD` host/device).
   - id aliases `VertexId`/`EdgeId`/`StateId`/`EventId`/`MatchId`, `INVALID_ID`; limits `MAX_ARITY`/`MAX_PATTERN_EDGES`/`MAX_VARS`
   - `HG_INLINE` -- force-inline, for functions whose inlining must not track unrelated code size

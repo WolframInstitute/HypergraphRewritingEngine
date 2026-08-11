@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // THE JOIN: one body, host and device.
 //
@@ -45,7 +46,8 @@
 
 #include <cstdint>
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // Per-thread join state. Templated on the bounds so host and device can size it from their own
 // limits without a second definition.
@@ -205,4 +207,5 @@ HG_HD bool join_seed(const Ctx& ctx, St& st, EdgeIdT anchor, uint8_t at_pattern,
     return true;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE

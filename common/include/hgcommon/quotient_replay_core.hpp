@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // THE PER-INSTANCE REPLAY, one body for host and device.
 //
 // The quotient route explores CANONICAL states. A canonical class is expanded ONCE, and its
@@ -61,7 +62,8 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/event_core.hpp"
 
-namespace hgcommon {
+namespace HG_NAMESPACE {
+namespace common {
 
 // A slot with no producer: the edge came with the initial state, so no event made it.
 constexpr uint32_t QR_NO_PRODUCER = 0xFFFFFFFFu;
@@ -175,4 +177,5 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     return ev;
 }
 
-}  // namespace hgcommon
+}  // namespace common
+}  // namespace HG_NAMESPACE
