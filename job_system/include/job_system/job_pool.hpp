@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
-#include <mutex>
 
 namespace job_system {
 
@@ -97,39 +96,84 @@ private:
         local_free_head_ = head;
     }
 
-    // ---- process-lifetime pool registry (off the hot path) ----
+    // ---- process-lifetime pool registry ----
+    //
+    // A retired pool is offered back for reuse by the next thread that needs one. The obvious
+    // shape is an intrusive free list, and the obvious lock-free form of that is a Treiber
+    // stack -- which here would carry an ABA hazard, because a pool is popped, reused and
+    // pushed again, so a CAS on the head can succeed against a value that has been reused
+    // underneath it.
+    //
+    // A SLOT ARRAY HAS NO POINTER TO COMPARE, so there is no ABA to defend against. Pools are
+    // never destroyed and their number is bounded by the threads that ever ask for one, so a
+    // fixed array of claimable slots holds every pool that will exist. Acquiring is a scan for
+    // a slot whose owner can be taken; releasing is a store. Both are lock-free, and neither
+    // is on the allocation hot path -- which is a reason the lock was never measured, not a
+    // reason to keep it.
+    static constexpr std::size_t kMaxPools = 1024;
 
-    static std::mutex& registry_mutex() {
-        static std::mutex m;
-        return m;
-    }
-    static JobSlotPool*& free_list_head() {   // retired pools available for reuse
-        static JobSlotPool* head = nullptr;
-        return head;
+    struct Registry {
+        // occupied[i] true means slots[i] holds a RETIRED pool available for reuse. A slot is
+        // claimed by winning the true -> false transition, so exactly one thread can take it.
+        std::atomic<JobSlotPool*> slots[kMaxPools];
+        std::atomic<bool> occupied[kMaxPools];
+        Registry() {
+            for (std::size_t i = 0; i < kMaxPools; ++i) {
+                slots[i].store(nullptr, std::memory_order_relaxed);
+                occupied[i].store(false, std::memory_order_relaxed);
+            }
+        }
+    };
+    static Registry& registry() {
+        static Registry r;
+        return r;
     }
 
+    // A POOL HOMES TO ONE SLOT FOR ITS LIFETIME. Choosing a slot per release would let the same
+    // pool sit in two slots at once -- released into a fresh slot while its previous one still
+    // held the pointer -- and both could then be claimed, handing one pool to two threads.
+    // Recording the index makes release O(1) and the ownership single-valued.
     static JobSlotPool* acquire_pool() {
-        std::lock_guard<std::mutex> lock(registry_mutex());
-        if (JobSlotPool* p = free_list_head()) {
-            free_list_head() = p->next_free_;
-            p->next_free_ = nullptr;
-            return p;
+        Registry& r = registry();
+        for (std::size_t i = 0; i < kMaxPools; ++i) {
+            if (!r.occupied[i].load(std::memory_order_acquire)) continue;
+            bool expected = true;
+            // Acquire on success pairs with the release below, so the retiring thread's writes
+            // -- including registry_slot_ -- are visible to whoever claims the pool.
+            if (r.occupied[i].compare_exchange_strong(expected, false,
+                                                      std::memory_order_acquire,
+                                                      std::memory_order_relaxed)) {
+                return r.slots[i].load(std::memory_order_relaxed);
+            }
         }
         return new JobSlotPool();  // never freed by design (bounded, process-lifetime)
     }
+
     static void release_pool(JobSlotPool* p) {
-        std::lock_guard<std::mutex> lock(registry_mutex());
-        p->next_free_ = free_list_head();
-        free_list_head() = p;
+        Registry& r = registry();
+        if (p->registry_slot_ >= 0) {
+            r.occupied[p->registry_slot_].store(true, std::memory_order_release);
+            return;
+        }
+        for (std::size_t i = 0; i < kMaxPools; ++i) {
+            JobSlotPool* empty = nullptr;
+            if (r.slots[i].compare_exchange_strong(empty, p, std::memory_order_relaxed,
+                                                   std::memory_order_relaxed)) {
+                p->registry_slot_ = static_cast<int>(i);
+                r.occupied[i].store(true, std::memory_order_release);
+                return;
+            }
+        }
+        // Registry full: more than kMaxPools threads have ever held a pool. This one is simply
+        // not offered for reuse, which costs the next thread one allocation. Never blocks, and
+        // never hands out a pool another thread still owns.
     }
 
     static JobSlotPool* tls_pool() {
         if (t_pool_ == nullptr) {
-            // Touch the registry statics before constructing the guard so they outlive it:
-            // the guard runs release_pool() at thread/process exit and must still find a
-            // live mutex and free list.
-            (void)registry_mutex();
-            (void)free_list_head();
+            // Touch the registry before constructing the guard so it outlives it: the guard
+            // runs release_pool() at thread/process exit and must still find a live registry.
+            (void)registry();
             // Function-local guard, NOT a class-scope `inline thread_local`: a non-trivial
             // inline thread_local emits a per-TU TLS-init function GCC folds via COMDAT but
             // MinGW's ld does not (the Windows paclet failed to link on t_guard_). A
@@ -149,7 +193,7 @@ private:
     void* local_free_head_ = nullptr;                                  // owner-thread only
     alignas(64) std::atomic<void*> foreign_free_head_{nullptr};        // cross-thread frees
     char* chunk_list_head_ = nullptr;                                  // for completeness
-    JobSlotPool* next_free_ = nullptr;                                 // reuse free list
+    int registry_slot_ = -1;                                           // home slot, or -1
 
     static inline thread_local JobSlotPool* t_pool_ = nullptr;         // trivial; MinGW-safe
 };

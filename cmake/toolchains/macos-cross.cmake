@@ -5,7 +5,7 @@
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake \
 #         -DCMAKE_SYSTEM_PROCESSOR=x86_64|arm64 \
-#         -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+#         -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
 #         ..
 #
 # Environment variables:
@@ -29,9 +29,16 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     set(CMAKE_SYSTEM_PROCESSOR "arm64")
 endif()
 
-# macOS deployment target (minimum macOS version)
+# macOS deployment target (minimum macOS version).
+#
+# 11.0 IS A FLOOR THE BLOCKING PRIMITIVE SETS. libc++ gates std::atomic::wait behind
+# _LIBCPP_AVAILABILITY_SYNC and marks it unavailable below macOS 11, and the native
+# os_sync_wait_on_address arrived only in the 14.4 SDK. A lower target therefore has NEITHER
+# lock-free way to block a thread on an address, and hgcommon/park.hpp would have to fall back
+# to a mutex and a condition variable -- which this engine does not permit anywhere. Lowering
+# this reintroduces that lock rather than merely widening support.
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
 # Helper function to find macOS compiler
