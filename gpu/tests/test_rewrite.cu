@@ -868,7 +868,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 
     uint32_t ref_states = 0, ref_events = 0;
     {
-        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(3));
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(4));
         hg_gpu::EngineState eng(cfg);
         hg_gpu::upload_initial_state(eng, init);
         std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
@@ -876,7 +876,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         matches.reset();
         hg_gpu::DeviceArena arena(32ull << 20);
         const auto st = hg_gpu::run_persistent_evolve(
-            eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
+            eng, rules, /*roots=*/{0u}, /*max_steps=*/4u, matches, arena, /*dedup=*/true,
             0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
         ref_states = st.states_after;
         ref_events = st.canonical_events;
@@ -884,7 +884,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 
     uint32_t ext_states = 0, ext_events = 0, frontier_after_first = 0;
     {
-        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(3));
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(4));
         hg_gpu::EngineState eng(cfg);
         hg_gpu::upload_initial_state(eng, init);
         std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
@@ -903,12 +903,20 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         // The budget stopped somewhere, so it must have recorded where.
         frontier_after_first = sess.frontier_size();
 
-        const auto st2 = hg_gpu::run_persistent_evolve(
+        hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
             0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
             /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/2u);
-        ext_states = st2.states_after;
-        ext_events = st2.canonical_events;
+
+        // A THIRD CALL, because two cannot tell consume from accumulate. If the frontier were
+        // not consumed when it is seeded, this call would re-seed the depth-2 boundary as well
+        // as the depth-3 one, submitting states at a depth they have already passed.
+        const auto st3 = hg_gpu::run_persistent_evolve(
+            eng, rules, /*roots=*/{0u}, /*max_steps=*/4u, matches, arena, /*dedup=*/true,
+            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/3u);
+        ext_states = st3.states_after;
+        ext_events = st3.canonical_events;
     }
 
     EXPECT_GT(frontier_after_first, 0u)

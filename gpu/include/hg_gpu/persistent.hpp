@@ -159,7 +159,8 @@ public:
         events_.clear();
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
         HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
-        clear_frontier();
+        HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)),
+                      "session frontier count clear");
     }
     ~SessionState() {
         if (frontier_) cudaFree(frontier_);
@@ -168,11 +169,6 @@ public:
     SessionState(const SessionState&)            = delete;
     SessionState& operator=(const SessionState&) = delete;
 
-    // Between calls the frontier is CONSUMED, not accumulated: the states it held are being
-    // expanded now, and whatever the new budget refuses takes their place.
-    void clear_frontier() {
-        HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)), "session frontier count clear");
-    }
     uint32_t frontier_size() const {
         uint32_t n = 0;
         HG_CUDA_CHECK(cudaMemcpy(&n, count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),

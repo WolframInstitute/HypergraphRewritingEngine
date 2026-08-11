@@ -956,6 +956,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                 match_q.view(), sess_v.frontier, sess_v.frontier_count, sess_v.frontier_cap,
                 num_rules, start_step, term.view());
         }
+        // THE FRONTIER IS CONSUMED, NOT ACCUMULATED. The states it held are being expanded now,
+        // and this run's own boundary takes their place -- so the counter is reset between the
+        // seed reading it and the workers appending to it. Stream order is what makes that safe:
+        // both are on the default stream, so the seed sees the old count and the workers start
+        // from zero. Without this a SECOND extend re-seeds the first extend's boundary, at a
+        // depth those states have already passed.
+        HG_CUDA_CHECK(cudaMemsetAsync(sess_v.frontier_count, 0, sizeof(uint32_t)),
+                      "session frontier consume");
     } else
     {
         const uint32_t block = 64;
