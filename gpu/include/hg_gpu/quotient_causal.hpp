@@ -347,16 +347,9 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
         hgcommon::isort_u64(surv, ns);
     }
 
-    // Dedup signature over (from, to, rule, consumed orbits, survivor orbit pairs) -- the
-    // host's key exactly.
-    uint64_t sig = 1469598103934665603ULL;
-    auto mix = [&](uint64_t v) { sig ^= v; sig *= 1099511628211ULL; };
-    mix(from); mix(to); mix(rule);
-    for (uint32_t i = 0; i < nc; ++i) { mix(0x1111); mix(consumed[i]); }
-    for (uint32_t i = 0; i < ns; ++i) {
-        mix(0x2222); mix(surv[i] >> 32); mix(surv[i] & 0xFFFFFFFFu);
-    }
-    if (sig == 0 || sig == ~0ULL) sig = 1;
+    // Dedup signature over (from, to, rule, consumed orbits, survivor orbit pairs). One body,
+    // shared with the host, because it decides which raw events ARE the same transition.
+    const uint64_t sig = hgcommon::qc_transition_sig(from, to, rule, consumed, nc, surv, ns);
     if (!qc.seen_transitions.insert_if_absent(sig, 1u).inserted) return;
 
     // Copy the orbit arrays into the qc arena, then publish the record.

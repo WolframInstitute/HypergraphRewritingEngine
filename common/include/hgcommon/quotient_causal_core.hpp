@@ -84,6 +84,40 @@ HG_HD inline uint64_t qc_seen_key(uint64_t key, uint32_t producer) {
     return (k == 0 || k == ~uint64_t(0)) ? 1 : k;
 }
 
+// One canonical transition's dedup signature, over (from, to, rule, consumed orbits, survivor
+// orbit pairs). Host and device index ONE set of canonical transitions, so this is one body:
+// the signature decides which raw events are the same transition, and two spellings of it
+// decide differently the moment either is edited.
+//
+// `consumed` is ascending. `survivors` are packed (orbit in `from` << 32 | orbit in `to`) and
+// ascending, which orders them by parent orbit then child orbit -- what sorting the pairs
+// lexicographically gives, so a caller holding pairs packs and sorts rather than sorting pairs.
+//
+// The tags 0x1111 and 0x2222 separate the two runs: without them a consumed orbit and a
+// survivor orbit of the same value are the same input, and two different transitions collide.
+//
+// Never 0 or all-ones, because the seen set's map reserves both as sentinels. A key equal to
+// one of them is REJECTED rather than stored, so a transition carrying it would either abort
+// the run or be captured twice depending on which side computed it.
+HG_HD inline uint64_t qc_transition_sig(uint64_t from, uint64_t to, uint32_t rule,
+                                        const uint32_t* consumed, uint32_t num_consumed,
+                                        const uint64_t* survivors, uint32_t num_survivors) {
+    uint64_t sig = FNV_OFFSET;
+    sig = fnv_hash(sig, from);
+    sig = fnv_hash(sig, to);
+    sig = fnv_hash(sig, static_cast<uint64_t>(rule));
+    for (uint32_t i = 0; i < num_consumed; ++i) {
+        sig = fnv_hash(sig, 0x1111);
+        sig = fnv_hash(sig, static_cast<uint64_t>(consumed[i]));
+    }
+    for (uint32_t i = 0; i < num_survivors; ++i) {
+        sig = fnv_hash(sig, 0x2222);
+        sig = fnv_hash(sig, survivors[i] >> 32);
+        sig = fnv_hash(sig, survivors[i] & 0xFFFFFFFFu);
+    }
+    return (sig == 0 || sig == ~uint64_t(0)) ? 1 : sig;
+}
+
 template <class Ctx>
 HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t orbit,
                            uint32_t producer);

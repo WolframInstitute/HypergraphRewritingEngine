@@ -1115,8 +1115,8 @@ bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitT
 }
 
 void Hypergraph::qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_t n) {
-    uint64_t h = 1469598103934665603ULL;
-    for (uint32_t i = 0; i < n; ++i) { h ^= slots[i]; h *= 1099511628211ULL; }
+    uint64_t h = hgcommon::FNV_OFFSET;
+    for (uint32_t i = 0; i < n; ++i) h = hgcommon::fnv_hash(h, slots[i]);
     h = h ? h : 1;
     auto r = qc_frame_sig_.insert_if_absent(static_cast<uint64_t>(s) + 1, h);
     if (!r.second && r.first != h) qc_frame_disagree_.fetch_add(1, std::memory_order_relaxed);
@@ -1240,26 +1240,26 @@ void Hypergraph::register_quotient_transition(EventId e) {
     std::sort(produced.begin(), produced.end());
 
     // Survivors: output edges that also live in the input state and were not freshly
-    // produced -- they passed through, carrying their producer forward. Recorded as the
-    // (orbit in `from`, orbit in `to`) pair, sorted.
+    // produced -- they passed through, carrying their producer forward. Packed as
+    // (orbit in `from` << 32 | orbit in `to`) and sorted, which is the order and the layout
+    // hgcommon::qc_transition_sig reads them in.
     const SparseBitset& in_edges = get_state(ev.input_state).edges;
-    SVec<std::pair<uint32_t,uint32_t>> survivors;
+    SVec<uint64_t> survivors;
     for (uint32_t i = 0; i < out_orb->n; ++i) {
         const EdgeId oe = out_orb->edges[i];
         bool produced_here = false;
         for (uint8_t j = 0; j < ev.num_produced; ++j) if (ev.produced_edges[j] == oe) { produced_here = true; break; }
         if (produced_here) continue;
-        if (in_edges.contains(oe)) survivors.push_back({in_orb->orbit_of(oe), out_orb->orbit[i]});
+        if (in_edges.contains(oe))
+            survivors.push_back((static_cast<uint64_t>(in_orb->orbit_of(oe)) << 32) |
+                                out_orb->orbit[i]);
     }
     std::sort(survivors.begin(), survivors.end());
 
-    // Dedup signature over (from, to, rule, consumed orbits, survivor orbit pairs) -- the
-    // same key the validated prototype dedups canonical transitions on.
-    uint64_t sig = 1469598103934665603ULL;
-    auto mix = [&](uint64_t v){ sig ^= v; sig *= 1099511628211ULL; };
-    mix(from); mix(to); mix(ev.rule_index);
-    for (uint32_t o : consumed) { mix(0x1111); mix(o); }
-    for (auto& pr : survivors) { mix(0x2222); mix(pr.first); mix(pr.second); }
+    const uint64_t sig = hgcommon::qc_transition_sig(
+        from, to, ev.rule_index,
+        consumed.data(), static_cast<uint32_t>(consumed.size()),
+        survivors.data(), static_cast<uint32_t>(survivors.size()));
 
     auto seen = seen_transitions_.insert_if_absent(sig, true);
     if (!seen.second) { worker_scratch().release(mk); return; }  // already captured
@@ -1274,7 +1274,10 @@ void Hypergraph::register_quotient_transition(EventId e) {
     const uint32_t nsurv = static_cast<uint32_t>(survivors.size());
     uint32_t* sf = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
     uint32_t* st = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
-    for (uint32_t i = 0; i < nsurv; ++i) { sf[i] = survivors[i].first; st[i] = survivors[i].second; }
+    for (uint32_t i = 0; i < nsurv; ++i) {
+        sf[i] = static_cast<uint32_t>(survivors[i] >> 32);
+        st[i] = static_cast<uint32_t>(survivors[i] & 0xFFFFFFFFu);
+    }
 
 
     CanonicalTransition* t = arena_.template create<CanonicalTransition>();

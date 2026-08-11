@@ -93,9 +93,9 @@ struct QeMatchRef {
 // index the same (class, depth) space and a reader comparing them must not have to check that
 // two spellings agree.
 __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
-    uint64_t h = 1469598103934665603ULL;
-    h ^= state_hash; h *= 1099511628211ULL;
-    h ^= (static_cast<uint64_t>(depth) << 32); h *= 1099511628211ULL;
+    uint64_t h = hgcommon::FNV_OFFSET;
+    h ^= state_hash; h *= hgcommon::FNV_PRIME;
+    h ^= (static_cast<uint64_t>(depth) << 32); h *= hgcommon::FNV_PRIME;
     return h;
 }
 
@@ -508,9 +508,9 @@ __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint
 // The (instance, match) claim key. Same mixing as the host's apply_key, and nudged off both
 // map sentinels for the same reason.
 __device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t match) {
-    uint64_t k = 1469598103934665603ULL;
-    k ^= instance; k *= 1099511628211ULL;
-    k ^= match;    k *= 1099511628211ULL;
+    uint64_t k = hgcommon::FNV_OFFSET;
+    k ^= instance; k *= hgcommon::FNV_PRIME;
+    k ^= match;    k *= hgcommon::FNV_PRIME;
     return (k == 0 || k == ~0ULL) ? 1 : k;
 }
 
