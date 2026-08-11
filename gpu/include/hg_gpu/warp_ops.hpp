@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
@@ -7,7 +8,8 @@
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace cg = cooperative_groups;
 
@@ -109,4 +111,5 @@ struct VWarp {
     }
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

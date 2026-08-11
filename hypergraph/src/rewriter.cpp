@@ -1,10 +1,12 @@
+#include "hgcommon/namespace.hpp"
 // rewriter.cpp - Implementation of Rewriter class
 
 #include "hypergraph/rewriter.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 #include "hgcommon/rewrite_core.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 RewriteResult Rewriter::apply(
     const RewriteRule& rule,
@@ -202,4 +204,5 @@ RewriteResult Rewriter::apply(
     return result;
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

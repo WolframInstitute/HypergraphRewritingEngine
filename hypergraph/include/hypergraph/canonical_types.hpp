@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -6,7 +7,8 @@
 
 #include "types.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 constexpr VertexId INVALID_VERTEX = INVALID_ID;
 
@@ -56,5 +58,5 @@ struct CanonicalizationResult {
     }
 };
 
-} // namespace hypergraph
-
+}  // namespace engine
+}  // namespace HG_NAMESPACE

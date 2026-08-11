@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // One parsed job: everything `run_rewriting_core` reads out of the WXF envelope, and nothing it
 // derives afterwards.
@@ -20,7 +21,8 @@
 
 #include "hypergraph/types.hpp"
 
-namespace hgffi {
+namespace HG_NAMESPACE {
+namespace ffi {
 
 // The warning trail served under the "Warnings" result key, schema shared with the GPU backend
 // (Kind/Count/Context) so the WL formatter handles both backends. Collects option-parse skips,
@@ -95,4 +97,5 @@ struct ParsedJob {
     uint64_t session_handle = 0;
 };
 
-}  // namespace hgffi
+}  // namespace ffi
+}  // namespace HG_NAMESPACE

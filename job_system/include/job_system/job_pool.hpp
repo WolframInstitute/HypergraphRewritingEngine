@@ -1,10 +1,12 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
 
-namespace job_system {
+namespace HG_NAMESPACE {
+namespace jobs {
 
 // Per-thread slab pool for job objects, so task submission does no malloc.
 //
@@ -198,4 +200,5 @@ private:
     static inline thread_local JobSlotPool* t_pool_ = nullptr;         // trivial; MinGW-safe
 };
 
-} // namespace job_system
+}  // namespace jobs
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -25,7 +26,8 @@
 // Shared types: CanonicalizationResult, CanonicalForm, VertexMapping
 #include "canonical_types.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Hypergraph
@@ -713,7 +715,7 @@ public:
         // Acquires the canonical_id released by create_or_get_canonical_state. The load
         // itself carries the edge, which matters on a weak model like ARM64.
         const State& state = get_state(raw_state);
-        return hg::atomic_ref<StateId>(const_cast<StateId&>(state.canonical_id))
+        return hgcommon::atomic_ref<StateId>(const_cast<StateId&>(state.canonical_id))
             .load(std::memory_order_acquire);
     }
 
@@ -1349,4 +1351,5 @@ public:
     }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -11,7 +12,8 @@
 #include <string>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace {
 
@@ -530,4 +532,5 @@ uint32_t run_match_kernel(const EngineState&             engine,
     return out_matches.size_host();
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
 
 #include "hypergraph/parallel_evolution.hpp"
@@ -12,7 +13,8 @@
 #include <thread>
 #include <unordered_set>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Constructor / Destructor
@@ -2304,4 +2306,5 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     return true;
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

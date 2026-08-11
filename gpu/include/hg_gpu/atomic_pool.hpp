@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -9,7 +10,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Host-managed pre-allocated device array plus a device atomic counter for
 // claiming indices. Append-only during a kernel run; reset between runs.
@@ -107,4 +109,5 @@ public:
     uint32_t  capacity_ = 0;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

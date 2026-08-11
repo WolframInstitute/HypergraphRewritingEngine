@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 // Portable atomic-view over a plain (non-atomic) object.
 //
@@ -13,7 +14,11 @@
 #include <atomic>
 #include <cstdint>
 
-namespace hg {
+// In `common`, not directly in the root: the root holds SUBSYSTEMS, and a type sitting beside
+// them would be the one name in it that is not one. `hgcommon::atomic_ref` still resolves through the
+// alias below, so no call site moves.
+namespace HG_NAMESPACE {
+namespace common {
 
 #if defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L
 
@@ -69,4 +74,5 @@ public:
 
 #endif
 
-}  // namespace hg
+}  // namespace common
+}  // namespace HG_NAMESPACE

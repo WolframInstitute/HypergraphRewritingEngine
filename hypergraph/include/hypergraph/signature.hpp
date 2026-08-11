@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -6,7 +7,8 @@
 #include "types.hpp"
 #include "hgcommon/signature_core.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Constants
@@ -291,4 +293,5 @@ struct CompatibleSignatureCache {
     }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

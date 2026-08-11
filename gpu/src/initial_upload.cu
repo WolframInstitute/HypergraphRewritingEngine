@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -7,7 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Kernel that, for every edge in [0, num_edges), pushes (signature_hash →
 // edge_id) into the signature index and (each vertex → edge_id) into the
@@ -225,4 +227,5 @@ void rebuild_indices(EngineState& engine, uint32_t num_edges) {
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "rebuild_indices sync");
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

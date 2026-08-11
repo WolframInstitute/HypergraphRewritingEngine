@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Device-resident scheduling: workers that PULL work from a queue, instead of being launched
 // once per phase per step. See docs/GPU_PERSISTENT_DESIGN.md.
 //
@@ -28,7 +29,8 @@
 
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // One unit of matching work: a (state, rule) pair, which is the granularity
 // match_state_rule already wants -- one block, its threads striping the depth-0 candidates.
@@ -267,4 +269,5 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // restarting it.
                                             uint32_t start_step = 0);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

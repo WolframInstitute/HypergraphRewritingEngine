@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <vector>
 #include <string>
@@ -17,6 +18,7 @@
  * Full specification compliance with template-based generic API
  * Supports bidirectional serialization/deserialization
  */
+namespace HG_NAMESPACE {
 namespace wxf {
 
 // WXF Token definitions from specification
@@ -494,5 +496,5 @@ T deserialize(const uint8_t* data, size_t size) {
     return parser.read<T>();
 }
 
-} // namespace wxf
-
+}  // namespace wxf
+}  // namespace HG_NAMESPACE

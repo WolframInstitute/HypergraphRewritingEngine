@@ -1,10 +1,12 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include "hgcommon/core.hpp"
 #include "hgcommon/event_core.hpp"
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 using hgcommon::VertexId;
 using hgcommon::EdgeId;
@@ -135,4 +137,5 @@ enum class EventCanonicalizationMode : uint8_t {
     Automatic,
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

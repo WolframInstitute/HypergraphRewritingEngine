@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -8,7 +9,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace {
 
@@ -360,4 +362,5 @@ uint64_t compute_state_ir_hash_host(EngineState& engine, StateId sid) {
     return h;
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

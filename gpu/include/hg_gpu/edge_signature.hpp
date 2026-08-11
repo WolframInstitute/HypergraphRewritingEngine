@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/types.hpp"
 
@@ -6,7 +7,8 @@
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Vertex-repetition pattern signature, mirroring the CPU EdgeSignature in
 // hypergraph/include/hypergraph/signature.hpp. Two edges have the same
@@ -61,4 +63,5 @@ __host__ __device__ inline bool signature_compatible(const EdgeSignature& data,
                                           pattern.arity, pattern.pattern);
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

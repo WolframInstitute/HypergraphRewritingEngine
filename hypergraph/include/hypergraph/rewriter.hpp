@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,7 +12,8 @@
 #include "hypergraph.hpp"
 #include "hypergraph/debug_log.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // RewriteResult
@@ -92,4 +94,5 @@ inline RewriteResult apply_rewrite(
     return rewriter.apply(rule, input_state, matched_edges, num_matched, binding, output_step);
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

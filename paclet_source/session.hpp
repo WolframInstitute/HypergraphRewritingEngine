@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // The session's handle space and lifetime rule, independent of which engine holds the work.
 //
@@ -32,7 +33,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hgffi {
+namespace HG_NAMESPACE {
+namespace ffi {
 
 // A session's work, whichever engine performs it. The verbs are added here as they are served;
 // what matters now is that the slot below owns one of THESE and not a device type.
@@ -119,4 +121,5 @@ private:
     SessionState state_ = SessionState::None;
 };
 
-}  // namespace hgffi
+}  // namespace ffi
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -13,7 +14,8 @@
 // and the only part of this file that needs hgcommon/quotient_replay_core.hpp.
 #include "quotient_types.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Identifiers
@@ -500,4 +502,5 @@ struct EventSignature {
     }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

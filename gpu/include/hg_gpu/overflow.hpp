@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 // Capacity-overflow types shared between the device-side error channel
 // (errors.hpp, which depends on CUDA) and the public EvolveResult API
@@ -9,7 +10,8 @@
 #include <cstdint>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // A capacity-bounded resource the GPU kernels can hit at runtime. When
 // such a resource overflows, the kernel records the kind here (via the
@@ -142,4 +144,5 @@ struct OverflowWarning {
     std::string context;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

@@ -1,9 +1,11 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // LockFreeList<T>: Append-only lock-free linked list
@@ -275,4 +277,5 @@ private:
     Node* head_;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

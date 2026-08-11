@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // ONE CUDA error check.
 //
@@ -21,7 +22,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Out of line from the check itself so the success path is a single comparison with no string
 // machinery for the optimiser to carry through it.
@@ -35,6 +37,6 @@ inline void cuda_check_at(cudaError_t err, const char* what, const char* file, i
     if (err != cudaSuccess) cuda_fail(err, what, file, line);
 }
 
-}  // namespace hg_gpu
-
+}  // namespace gpu
+}  // namespace HG_NAMESPACE
 #define HG_CUDA_CHECK(err, what) ::hg_gpu::cuda_check_at((err), (what), __FILE__, __LINE__)

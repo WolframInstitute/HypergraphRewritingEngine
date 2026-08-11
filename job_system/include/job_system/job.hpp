@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -8,7 +9,8 @@
 
 #include <job_system/job_pool.hpp>
 
-namespace job_system {
+namespace HG_NAMESPACE {
+namespace jobs {
 
 template<typename JobType>
 class Job {
@@ -108,5 +110,5 @@ auto make_compatible_job(JobPtr<JobType> job, F&& compatibility_func) {
         std::move(job), std::forward<F>(compatibility_func));
 }
 
-} // namespace job_system
-
+}  // namespace jobs
+}  // namespace HG_NAMESPACE

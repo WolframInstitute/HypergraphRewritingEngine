@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/types.hpp"
@@ -6,7 +7,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Device-inline WL hash of a single state. Safe to call from any kernel that
 // has the DeviceState. See gpu/src/wl_hash.cu for the algorithm comments.
@@ -51,4 +53,5 @@ void compute_state_content_hashes_range(const EngineState& engine,
                                         uint32_t lo, uint32_t hi,
                                         uint64_t* out_hashes_device);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

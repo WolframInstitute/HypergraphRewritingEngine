@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 // causal_graph.cpp - Implementation of CausalGraph class
 
 #include "hypergraph/causal_graph.hpp"
@@ -7,7 +8,8 @@
 #include <vector>
 #include "hypergraph/scratch_alloc.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Edge Causal Tracking
@@ -292,4 +294,5 @@ std::vector<BranchialEdge> CausalGraph::get_branchial_edges() const {
     return result;
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

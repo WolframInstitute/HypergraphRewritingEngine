@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -9,7 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // SparseBitset: Sparse chunked bitset for edge membership tracking
@@ -385,4 +387,5 @@ private:
     mutable std::atomic<bool> count_valid_;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

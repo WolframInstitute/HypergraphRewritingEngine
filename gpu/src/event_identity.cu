@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -6,7 +7,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 namespace {
 
 // One thread per state, grid-stride. Each claims its own arena slot, sized from its own state,
@@ -97,4 +99,5 @@ void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "stamp_event_identity_range sync");
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

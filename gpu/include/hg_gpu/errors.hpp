@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/overflow.hpp"   // ErrorKind / error_kind_name / OverflowWarning
 
@@ -10,7 +11,8 @@
 #include <string>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Device-side error channel for kernel-observed capacity overflows.
 //
@@ -144,4 +146,5 @@ private:
     uint32_t* counters_ = nullptr;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

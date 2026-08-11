@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/engine_state.hpp"
@@ -10,7 +11,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Maximum number of compatible data signatures per pattern edge. Equal to the
 // largest Bell number we admit: Bell(5)=52, Bell(6)=203 — pick 64 to cover up
@@ -139,4 +141,5 @@ void run_match_kernel_batch_nosync(const EngineState& engine,
                                    Pool<MatchRecord>& out_matches,
                                    uint32_t           step = 0);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -17,7 +18,8 @@
 #include <string>
 #include <utility>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // Map keys built from engine ids are packed by ONE rule, shared with the device
 // (hgcommon/core.hpp), and named here so host call sites reach them unqualified.
@@ -680,4 +682,5 @@ private:
     ConcurrentHeterogeneousArena* arena_ = nullptr;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

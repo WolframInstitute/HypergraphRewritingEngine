@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 
@@ -10,7 +11,8 @@
 #include "concurrent_map.hpp"
 #include "bitset.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // SignatureIndex
@@ -372,4 +374,5 @@ public:
     InvertedVertexIndex& inverted_index() { return inverted_index_; }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

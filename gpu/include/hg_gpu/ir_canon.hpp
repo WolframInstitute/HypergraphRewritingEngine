@@ -1,11 +1,13 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 #include <cstdint>
 
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/types.hpp"
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Exact individualization-refinement canonicalization of a state's edge list.
 //
@@ -86,4 +88,5 @@ void compute_state_ir_hashes_range(EngineState& engine, uint32_t lo, uint32_t hi
 // One state through the same launcher, for callers with a single state to key.
 uint64_t compute_state_ir_hash_host(EngineState& engine, StateId sid);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

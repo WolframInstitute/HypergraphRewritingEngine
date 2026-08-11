@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Event identity on the device.
 //
 // One statement of the signature rule, read by the persistent kernel and by the host-driven
@@ -22,7 +23,8 @@
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // True when the run's key set reads per-edge canonical ranks, so the rank array is worth its
 // four bytes per edge slot. Derived from the keys rather than passed alongside them, so the
@@ -119,4 +121,5 @@ void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
 void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,
                                 EventSignatureKeys keys, DedupMap& event_map);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

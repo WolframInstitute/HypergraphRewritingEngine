@@ -5,7 +5,10 @@
 #include "hgcommon/slot_core.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/wl_core.hpp"
+#include "hypergraph/atomic_compat.hpp"
+#include "hypergraph/types.hpp"
 #include <random>
+#include <type_traits>
 #include <vector>
 
 TEST(SlotCore, BulkFormEqualsDefinition) {
@@ -212,6 +215,19 @@ TEST(NamespaceRoot, TheRootExistsAndTheShortAliasNamesTheSameEntity) {
     // ever bound to a separate namespace, these would be two constants that merely agree.
     static_assert(&HG_NAMESPACE::common::FNV_OFFSET == &hgcommon::FNV_OFFSET,
                   "the short alias does not name the root's namespace");
+    SUCCEED();
+}
+
+TEST(NamespaceRoot, EverySubsystemIsUnderTheRootAndItsShortNameIsAnAlias) {
+    // Eight subsystems moved, and each short name must be an ALIAS of the nested one rather
+    // than a namespace that still exists in its own right. A namespace alias and its target are
+    // the same scope, so a type named through either is one type -- which is what these assert.
+    static_assert(std::is_same_v<hgcommon::ContentHasher, HG_NAMESPACE::common::ContentHasher>);
+    static_assert(std::is_same_v<hypergraph::StateCanonicalizationMode,
+                                 HG_NAMESPACE::engine::StateCanonicalizationMode>);
+    static_assert(std::is_same_v<hgcommon::atomic_ref<uint32_t>,
+                                 HG_NAMESPACE::common::atomic_ref<uint32_t>>,
+                  "atomic_ref must live in a subsystem, not directly in the root");
     SUCCEED();
 }
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/types.hpp"
@@ -11,7 +12,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Lock-free per-key list. For each key in [0, num_keys), maintains an
 // append-only stack of nodes. Mirrors the CPU lock_free_list.hpp pattern
@@ -138,4 +140,5 @@ private:
     uint32_t*  heads_ = nullptr;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -10,7 +11,8 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // SegmentedArray<T>: Append-only array with O(1) random access
@@ -318,4 +320,5 @@ private:
     std::atomic<T*> segments_[MAX_SEGMENTS];
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

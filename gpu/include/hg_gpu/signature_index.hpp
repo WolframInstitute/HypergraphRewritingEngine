@@ -1,11 +1,13 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/lock_free_list.hpp"
 #include "hg_gpu/types.hpp"
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Incremental signature index. Edges are bucketed by their signature hash
 // (mod num_buckets); each bucket is a LockFreeList of EdgeIds. Lookup walks
@@ -54,4 +56,5 @@ private:
     uint32_t             mask_;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

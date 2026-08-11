@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <set>
@@ -18,7 +19,8 @@
 #include <events/viz_event_sink.hpp>
 #endif
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // CausalGraph
@@ -415,4 +417,5 @@ public:
 
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

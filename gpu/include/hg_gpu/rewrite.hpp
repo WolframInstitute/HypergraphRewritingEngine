@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/engine_state.hpp"
@@ -7,7 +8,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Run the rewrite kernel for a batch of matches. For each match:
 //   1. Re-derive variable bindings from (lhs, matched_edges).
@@ -71,4 +73,5 @@ void run_rewrite_kernel_with_nosync(EngineState&             engine,
                                     uint32_t                 num_matches,
                                     uint32_t                 step);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

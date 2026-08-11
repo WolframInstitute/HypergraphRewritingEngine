@@ -1,8 +1,10 @@
+#include "hgcommon/namespace.hpp"
 #include "wxf.hpp"
 #include <cstring>
 #include <algorithm>
 #include <cmath>
 
+namespace HG_NAMESPACE {
 namespace wxf {
 
 // Portable 64-bit byte swap for the (cold) big-endian serialization path.
@@ -508,4 +510,5 @@ void Writer::write_function(const std::string& head, size_t arg_count) {
     write_symbol(head);
 }
 
-} // namespace wxf
+}  // namespace wxf
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -7,7 +8,8 @@
 
 #include "arena.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // ConcurrentIdSet: lock-free, append-only, open-addressed SET of uint32 keys
@@ -200,4 +202,5 @@ private:
     ConcurrentHeterogeneousArena* arena_ = nullptr;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

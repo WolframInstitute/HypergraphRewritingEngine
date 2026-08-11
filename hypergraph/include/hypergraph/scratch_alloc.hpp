@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "arena.hpp"
 
@@ -11,7 +12,8 @@
 #include <utility>
 #include <vector>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // std::allocator that draws from the calling thread's worker_scratch() arena.
 // deallocate() is a no-op: memory is reclaimed in bulk by the arena's reset()
@@ -85,4 +87,5 @@ template<class K, class V, class H = std::hash<K>, class E = std::equal_to<K>>
 template<class K, class V, class H = std::hash<K>, class E = std::equal_to<K>>
     using PUMap = std::unordered_map<K, V, H, E, PersistAlloc<std::pair<const K, V>>>;
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/engine_state.hpp"
@@ -7,7 +8,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Upload an initial-state edge list to the engine and create state 0 from
 // those edges. Returns the new StateId.
@@ -35,4 +37,5 @@ StateId upload_initial_state(EngineState&                          engine,
 uint32_t upload_initial_states(EngineState& engine,
                                const std::vector<std::vector<std::vector<VertexId>>>& initial_states);
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

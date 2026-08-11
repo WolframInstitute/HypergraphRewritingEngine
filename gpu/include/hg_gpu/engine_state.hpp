@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/device_arena.hpp"
@@ -19,7 +20,8 @@
 #include <string>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // EngineConfig is declared in evolve.hpp so host-only translation units
 // (the bench harness, the differential test driver) can include it without
@@ -720,4 +722,5 @@ public:
     }
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

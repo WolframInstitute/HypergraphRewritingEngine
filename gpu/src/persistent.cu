@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 // Device-resident scheduling: workers that pull work from a queue rather than being launched
 // once per phase per step. See gpu/include/hg_gpu/persistent.hpp and
 // docs/GPU_PERSISTENT_DESIGN.md.
@@ -20,7 +21,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 namespace {
 
 // The single work role the persistent schedulers count. Shared by the seed kernel below and
@@ -1020,4 +1022,5 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     return stats;
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

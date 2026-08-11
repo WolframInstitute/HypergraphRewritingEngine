@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // Quotient causal reconstruction, device side: the depth-indexed producer-set DP over
 // canonical transitions -- the device twin of Hypergraph::register_quotient_transition and
@@ -44,7 +45,8 @@
 
 #include <cuda/atomic>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // One deduplicated canonical transition. The orbit arrays live in the qc word arena at
 // arr_offset: consumed | produced | surv_from | surv_to, contiguously.
@@ -393,4 +395,5 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
             qc_process_transition(ds, qc, qc.transitions.at(rec), from, d);
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

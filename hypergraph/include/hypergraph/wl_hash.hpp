@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include "hgcommon/wl_core.hpp"
@@ -16,7 +17,8 @@
 #include "concurrent_map.hpp"
 #include "lock_free_list.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // WLHash: Weisfeiler-Lehman style hashing for hypergraph isomorphism
@@ -530,4 +532,5 @@ private:
     }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

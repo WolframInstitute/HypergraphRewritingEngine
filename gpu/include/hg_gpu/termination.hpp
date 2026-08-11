@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -10,7 +11,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Termination detector for the streaming-persistent-kernel model.
 //
@@ -150,4 +152,5 @@ private:
     uint32_t  num_roles_   = 0;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

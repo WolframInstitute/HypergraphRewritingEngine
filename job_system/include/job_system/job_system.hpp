@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <job_system/job.hpp>
 #include <job_system/work_stealing_deque.hpp>
@@ -16,7 +17,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace job_system {
+namespace HG_NAMESPACE {
+namespace jobs {
 
 // Error types that can occur during job execution
 enum class ErrorType {
@@ -579,5 +581,5 @@ public:
     void clear_compatibility_rules() {}
 };
 
-} // namespace job_system
-
+}  // namespace jobs
+}  // namespace HG_NAMESPACE

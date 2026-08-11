@@ -1,11 +1,13 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/lock_free_list.hpp"
 #include "hg_gpu/types.hpp"
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Vertex → list-of-edge-ids inverted index. For each VertexId in
 // [0, max_vertices), maintains a LockFreeList of EdgeIds that contain that
@@ -50,4 +52,5 @@ private:
     LockFreeList<EdgeId> list_;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

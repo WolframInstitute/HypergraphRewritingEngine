@@ -1,11 +1,13 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-namespace job_system {
+namespace HG_NAMESPACE {
+namespace jobs {
 
 // Chase-Lev lock-free work-stealing deque (bounded). T must be a pointer type;
 // nullptr is the "no item" sentinel.
@@ -110,5 +112,5 @@ public:
     }
 };
 
-} // namespace job_system
-
+}  // namespace jobs
+}  // namespace HG_NAMESPACE

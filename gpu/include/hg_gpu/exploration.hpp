@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // Which newly created states get expanded.
 //
 // Asked in one place. A second copy of this predicate would not crash; it would silently
@@ -12,7 +13,8 @@
 
 #include <cstdint>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Canonical hash -> the first state id seen with that hash. First writer wins, and its id is
 // the one that gets expanded.
@@ -60,4 +62,5 @@ __device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_
     return true;
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

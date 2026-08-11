@@ -1,9 +1,11 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdio>
 #include <atomic>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 namespace debug {
 
 // Callback function type for debug output routing
@@ -25,8 +27,8 @@ inline void clear_debug_callback() {
 }
 
 } // namespace debug
-} // namespace hypergraph
-
+}  // namespace engine
+}  // namespace HG_NAMESPACE
 // Debug logging macro - routes to callback if set, otherwise printf
 //
 // The formatter and the three headers it needs are compiled only when debug output is on. With it
@@ -41,7 +43,8 @@ inline void clear_debug_callback() {
 #include <sstream>
 #include <thread>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 namespace debug {
 
 // Internal: format and output debug message
@@ -69,8 +72,8 @@ inline void debug_output(const char* fmt, ...) {
 }
 
 } // namespace debug
-} // namespace hypergraph
-
+}  // namespace engine
+}  // namespace HG_NAMESPACE
     #define DEBUG_LOG(fmt, ...) ::hypergraph::debug::debug_output(fmt, ##__VA_ARGS__)
 #else
     #define DEBUG_LOG(fmt, ...) ((void)0)

@@ -1,10 +1,12 @@
+#include "hgcommon/namespace.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
 
 #include <algorithm>
 #include <vector>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 namespace {
 
@@ -285,4 +287,5 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
     return h;
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
@@ -9,7 +10,8 @@
 #include "types.hpp"
 #include "signature.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Constants
@@ -487,4 +489,5 @@ struct PartialMatch {
     }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

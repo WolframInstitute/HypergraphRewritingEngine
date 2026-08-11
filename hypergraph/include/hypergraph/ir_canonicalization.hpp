@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <vector>
 #include <cstdint>
@@ -7,7 +8,8 @@
 #include "canonical_types.hpp"
 #include "scratch_alloc.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // The host face of the McKay-style individualization-refinement canonicalizer for directed
 // hypergraphs: it adapts this project's edge lists to hgcommon/ir_core.hpp, which holds the
@@ -97,4 +99,5 @@ public:
         const std::vector<std::vector<VertexId>>& edges2) const;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

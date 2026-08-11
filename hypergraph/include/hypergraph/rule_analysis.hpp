@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 // What can be decided about a rule set BEFORE running it.
 //
@@ -21,7 +22,8 @@
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/types.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // Facts about ONE rule, each computable from its two patterns.
 struct RuleFacts {
@@ -226,4 +228,5 @@ inline RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
     return s;
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

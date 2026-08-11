@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -11,7 +12,8 @@
 #include <string>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // Bounded lock-free MPMC ring buffer for device-resident work queues.
 //
@@ -164,4 +166,5 @@ public:
     uint32_t  mask_     = 0;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

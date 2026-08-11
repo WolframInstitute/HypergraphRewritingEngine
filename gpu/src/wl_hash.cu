@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/wl_hash.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hgcommon/wl_core.hpp"
@@ -7,7 +8,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace {
 
@@ -171,4 +173,5 @@ void compute_state_content_hashes_range(const EngineState& engine,
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_content_hash_range sync");
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

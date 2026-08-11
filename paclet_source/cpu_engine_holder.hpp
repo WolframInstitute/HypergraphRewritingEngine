@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // The CPU side of a session: a Hypergraph and the engine driving it, owned together.
 //
@@ -27,7 +28,8 @@
 #include <cstddef>
 #include <thread>
 
-namespace hgffi {
+namespace HG_NAMESPACE {
+namespace ffi {
 
 class CpuEngineHolder : public EngineHolder {
 public:
@@ -52,4 +54,5 @@ private:
     hypergraph::ParallelEvolutionEngine engine_;
 };
 
-}  // namespace hgffi
+}  // namespace ffi
+}  // namespace HG_NAMESPACE

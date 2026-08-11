@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -35,7 +36,8 @@
 #include <events/viz_event_sink.hpp>
 #endif
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Match Core (immutable, shared)
@@ -1411,4 +1413,5 @@ private:
     SVec<uint16_t> get_shuffled_rule_indices() const;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

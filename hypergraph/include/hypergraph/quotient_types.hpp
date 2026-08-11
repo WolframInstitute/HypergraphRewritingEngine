@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // What a state, an edge and an event ARE once isomorphic states are identified.
 //
@@ -18,7 +19,8 @@
 #include "hgcommon/quotient_replay_core.hpp"   // qr_content_hash -- the event content identity
 #include "hgcommon/event_core.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 using hgcommon::VertexId;
 using hgcommon::EdgeId;
@@ -185,4 +187,5 @@ struct SlotMatch {
     const uint32_t* produced_ptr() const { return produced_slots; }
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

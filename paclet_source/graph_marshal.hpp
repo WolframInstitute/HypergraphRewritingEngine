@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // Shared GraphData marshaller for HGEvolve's *Graph properties.
 //
@@ -41,7 +42,8 @@
 #include <utility>
 #include <vector>
 
-namespace hgmarshal {
+namespace HG_NAMESPACE {
+namespace marshal {
 
 struct GraphOptions {
     bool edge_deduplication = true;   // one causal edge per (producer, consumer) pair
@@ -303,4 +305,5 @@ wxf::WXFValue build_graph_data(const Source& src,
     return wxf::WXFValue(all_graph_data);
 }
 
-}  // namespace hgmarshal
+}  // namespace marshal
+}  // namespace HG_NAMESPACE

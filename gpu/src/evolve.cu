@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/exploration.hpp"
@@ -19,7 +20,8 @@
 #include <string>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace {
 
@@ -962,4 +964,5 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
     return EvolveResult{};
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

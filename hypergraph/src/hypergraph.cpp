@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
 #include "hypergraph/hypergraph.hpp"
@@ -9,7 +10,8 @@
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Edge Management
@@ -213,7 +215,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // state's canonical_hash (get_or_compute_canonical_hash, get_canonical_state_for_event)
     // while this store runs. Both sides go through atomic_ref: the store carries the
     // computed hash, and the acquire loads pick it up.
-    hg::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
+    hgcommon::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
         .store(canonical_hash, std::memory_order_release);
 
     // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
@@ -240,7 +242,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // Cache the canonical ID in the state for fast lookup. Released here and acquired by
     // get_canonical_state(); the store itself is what carries the edge, since a bare fence
     // pairs with another fence only through an intervening atomic on the same object.
-    hg::atomic_ref<StateId>(states_[new_sid].canonical_id)
+    hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
         .store(existing_or_new, std::memory_order_release);
 
     if (verified_duplicate) {
@@ -252,7 +254,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
 
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
     if (canonical_id == INVALID_ID) return false;
-    hg::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
+    hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
     uint32_t cur = known.load(std::memory_order_acquire);
     while (depth < cur) {
         if (known.compare_exchange_weak(cur, depth,
@@ -266,7 +268,7 @@ bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
 
 bool Hypergraph::try_claim_expanded(StateId canonical_id) {
     if (canonical_id == INVALID_ID) return false;
-    hg::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
+    hgcommon::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
     uint32_t expected = 0;
     return flag.compare_exchange_strong(expected, 1,
                                         std::memory_order_acq_rel,
@@ -275,7 +277,7 @@ bool Hypergraph::try_claim_expanded(StateId canonical_id) {
 
 uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
     if (canonical_id == INVALID_ID) return INVALID_ID;
-    hg::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));
+    hgcommon::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));
     return known.load(std::memory_order_acquire);
 }
 
@@ -362,7 +364,7 @@ StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
         // Get the isomorphism-invariant hash for this state. Written concurrently by
         // create_or_get_canonical_state and get_or_compute_canonical_hash, so acquire it.
         const State& state = get_state(raw_state);
-        uint64_t hash = hg::atomic_ref<uint64_t>(const_cast<uint64_t&>(state.canonical_hash))
+        uint64_t hash = hgcommon::atomic_ref<uint64_t>(const_cast<uint64_t&>(state.canonical_hash))
             .load(std::memory_order_acquire);
 
         // If hash is 0, the state's hash wasn't computed - fall back to raw state
@@ -406,7 +408,7 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     // is not a formal data race. On 64-bit targets the underlying load/store
     // are already single instructions, so this compiles to the same code plus
     // the appropriate fences.
-    hg::atomic_ref<uint64_t> atomic_hash(state.canonical_hash);
+    hgcommon::atomic_ref<uint64_t> atomic_hash(state.canonical_hash);
     uint64_t cached = atomic_hash.load(std::memory_order_acquire);
     if (cached != 0) {
         return cached;
@@ -1422,4 +1424,5 @@ EdgeCorrespondence Hypergraph::find_edge_correspondence_dispatch(
     return EdgeCorrespondence{};
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -19,7 +20,8 @@
 #include "lock_free_list.hpp"
 #include "concurrent_map.hpp"
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Pattern matching on the host
@@ -514,4 +516,5 @@ void find_delta_matches(
     }
 }
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

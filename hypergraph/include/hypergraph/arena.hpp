@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -7,7 +8,8 @@
 #include <new>
 #include <type_traits>
 
-namespace hypergraph {
+namespace HG_NAMESPACE {
+namespace engine {
 
 // =============================================================================
 // Arena<T>: Typed single-threaded arena allocator
@@ -958,4 +960,5 @@ private:
     size_t capacity_;
 };
 
-}  // namespace hypergraph
+}  // namespace engine
+}  // namespace HG_NAMESPACE

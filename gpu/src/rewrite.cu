@@ -1,3 +1,4 @@
+#include "hgcommon/namespace.hpp"
 #include "hg_gpu/edge_signature.hpp"
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hg_gpu/rewrite.hpp"
@@ -9,7 +10,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 namespace {
 
@@ -628,4 +630,5 @@ void run_rewrite_kernel_with_nosync(EngineState&             engine,
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_rewrite sync");
 }
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

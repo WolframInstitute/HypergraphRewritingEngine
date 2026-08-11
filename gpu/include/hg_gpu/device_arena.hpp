@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 // A bump allocator the DEVICE owns, for scratch whose size is only known once the work is in
 // hand.
 //
@@ -29,7 +30,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 class DeviceArena {
 public:
@@ -85,4 +87,5 @@ private:
     uint64_t  capacity_ = 0;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

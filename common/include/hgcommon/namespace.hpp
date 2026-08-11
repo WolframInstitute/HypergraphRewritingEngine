@@ -30,6 +30,22 @@
 // something to bind to no matter which header a translation unit reaches first.
 namespace HG_NAMESPACE {
 namespace common {}
+namespace engine {}
+namespace gpu {}
+namespace ffi {}
+namespace marshal {}
+namespace jobs {}
+namespace deque {}
+namespace wxf {}
 }  // namespace HG_NAMESPACE
 
-namespace hgcommon = HG_NAMESPACE::common;
+// The subsystem's own short name, kept so existing call sites resolve. `wxf` maps to itself:
+// the sub-namespace is already the name callers use, and only its ENCLOSING scope moved.
+namespace hgcommon   = HG_NAMESPACE::common;
+namespace hypergraph = HG_NAMESPACE::engine;
+namespace hg_gpu     = HG_NAMESPACE::gpu;
+namespace hgffi      = HG_NAMESPACE::ffi;
+namespace hgmarshal  = HG_NAMESPACE::marshal;
+namespace job_system = HG_NAMESPACE::jobs;
+namespace lockfree   = HG_NAMESPACE::deque;
+namespace wxf        = HG_NAMESPACE::wxf;

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -6,7 +7,8 @@
 #include <type_traits>
 #include <vector>
 
-namespace lockfree {
+namespace HG_NAMESPACE {
+namespace deque {
 
 // Bounded multi-producer/multi-consumer double-ended queue, lock-free.
 //
@@ -197,5 +199,5 @@ public:
     std::size_t capacity() const { return capacity_; }
 };
 
-} // namespace lockfree
-
+}  // namespace deque
+}  // namespace HG_NAMESPACE

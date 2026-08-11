@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 //
 // Expansion capture, device side: the per-class list of matches in FRAME SLOTS -- the device
 // twin of Hypergraph::qc_capture_expansion and for_each_expansion_match
@@ -37,7 +38,8 @@
 
 #include <cuda/atomic>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 // One captured match of a canonical class, in that class's frame slots. The slot arrays live in
 // the expansion word arena at arr_offset: consumed | produced | surv_from | surv_to,
@@ -969,4 +971,5 @@ private:
     bool                      on_ = false;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE

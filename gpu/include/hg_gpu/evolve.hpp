@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/overflow.hpp"   // ErrorKind / OverflowWarning
 #include "hg_gpu/types.hpp"
@@ -12,7 +13,8 @@
 #include <utility>
 #include <vector>
 
-namespace hg_gpu {
+namespace HG_NAMESPACE {
+namespace gpu {
 
 struct RewriteRule {
     std::vector<std::vector<uint8_t>> lhs;
@@ -445,4 +447,5 @@ private:
     bool                    has_engine_ = false;
 };
 
-}  // namespace hg_gpu
+}  // namespace gpu
+}  // namespace HG_NAMESPACE
