@@ -48,6 +48,11 @@ struct ParsedJob {
     size_t max_successor_states_per_parent = 0;
     size_t max_states_per_step = 0;
     double exploration_probability = 1.0;
+    // Independent per-transition thinning. Keyed on the transition's isomorphism-invariant
+    // identity and the seed, so the surviving subgraph is the same at any worker count and on
+    // either device. Distinct from exploration_probability, which thins STATES: only this one
+    // carries the spine guarantee that keeps a sparse sample reaching full depth.
+    double transition_rate = 1.0;
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
     bool quotient_initial_states = false;             // Collapse isomorphic initial states
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full

@@ -55,6 +55,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"MaxSuccessorStatesPerParent"` | `0` | cap the successor states generated from each parent (0 = unlimited) |
 | `"MaxStatesPerStep"` | `0` | cap the states retained per evolution step (0 = unlimited) |
 | `"ExplorationProbability"` | `1.` | probability of exploring each branch; below 1 prunes stochastically |
+| `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate (CPU only) |
 | `"UniformRandom"` | `False` | select matches by uniform random reservoir sampling instead of exhaustively |
 | `"MatchesPerStep"` | `0` | matches applied per step in uniform-random mode (0 = all) |
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
@@ -290,6 +291,20 @@ Below 1, each branch is explored with the given probability, pruning the multiwa
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
 HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "ExplorationProbability" -> 0.5]
 ```
+
+### "TransitionRate"
+
+Below 1, each transition is kept with the given probability. The draw is taken from the transition's own isomorphism-invariant identity together with `"RandomSeed"`, never from thread state, so the same seed selects the same subgraph at any thread count and on either device.
+
+It also carries a depth guarantee that `"ExplorationProbability"` does not. A fixed rate is a knife edge: below one over the branching factor, a thinned evolution dies out before reaching the requested depth. A state whose every draw failed keeps its lowest-keyed transition, so the sample still reaches full depth.
+
+```wl
+rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
+HGEvolve[rules, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure",
+  "TransitionRate" -> 0.125, "RandomSeed" -> 7]
+```
+
+`"TransitionRate"` applies on the CPU. Under `"TargetDevice" -> "GPU"` it is reported in `"Warnings"` and the evolution runs unsampled, rather than silently returning a different answer per device.
 
 ### "UniformRandom"
 
