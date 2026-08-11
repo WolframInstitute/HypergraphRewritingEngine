@@ -19,6 +19,7 @@ Options[HGEvolve] = {
   "MaxStatesPerStep" -> 0,
   "ExplorationProbability" -> 1.0,
   "TransitionRate" -> 1.0,  (* Keep each transition with this probability, drawn independently from the transition's own isomorphism-invariant identity and RandomSeed. Reproducible at any thread count and on either device, and it carries the spine guarantee: a state whose every draw failed still keeps its minimum-key transition, so a sparse sample reaches full depth instead of going extinct. ExplorationProbability thins STATES and has no spine. CPU only; the GPU warns and runs unsampled. *)
+  "RuleWeights" -> {},  (* Per-rule multipliers on "TransitionRate", in rule order. {} weights every rule equally. A short list is a partial override: rules past its end take 1. Composes with the rate rather than replacing it, so "TransitionRate" -> 1 with weights {1, 0} still samples \[LongDash] rule 2 is dropped and rule 1 is untouched. CPU only; the GPU warns and weights every rule equally. *)
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
   "QuotientInitialStates" -> False,  (* True: isomorphic initial states collapse to one canonical root (needs ExploreFromCanonicalStatesOnly). False (default): each provided initial state is a distinct entry point, matching MultiwaySystem. *)
   "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
@@ -972,6 +973,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
     "ExplorationProbability" -> OptionValue["ExplorationProbability"],
     "TransitionRate" -> OptionValue["TransitionRate"],
+    "RuleWeights" -> N[OptionValue["RuleWeights"]],
     (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
        engine spells as 0; anything else fixes the sample. Without this the option reached the
        initial-condition generators only, and a sampled evolution was irreproducible however it

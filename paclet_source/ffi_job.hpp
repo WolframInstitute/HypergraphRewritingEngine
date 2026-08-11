@@ -53,6 +53,9 @@ struct ParsedJob {
     // either device. Distinct from exploration_probability, which thins STATES: only this one
     // carries the spine guarantee that keeps a sparse sample reaching full depth.
     double transition_rate = 1.0;
+    // Per-rule multipliers on transition_rate, in rule order. Empty means every rule samples
+    // at the same rate; a short list is a partial override and the rest take 1.
+    std::vector<double> rule_weights;
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
     bool quotient_initial_states = false;             // Collapse isomorphic initial states
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full

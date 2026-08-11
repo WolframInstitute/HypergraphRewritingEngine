@@ -549,8 +549,9 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // as the pull side: the match stays available further down, where it is a different
         // transition with its own draw. Only the (this child, this match) transition is at
         // stake here.
-        if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child_info.child_state, forwarded), 0))
+        if (sampling_active() &&
+            !transition_survives(canonical_transition_key(child_info.child_state, forwarded), 0,
+                                 forwarded.rule_index()))
             return;
 
         // Spawn REWRITE task for this forwarded match
@@ -677,8 +678,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         //
         // Without this the sampled subgraph depends on which submission mode is in use, since
         // forwarded matches would enter the batch unthinned while discovered ones are thinned.
-        if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded), 1)) return;
+        if (sampling_active() &&
+            !transition_survives(canonical_transition_key(child, forwarded), 1,
+                                 forwarded.rule_index())) return;
 
         batch.push_back(forwarded);
     });
@@ -846,8 +848,9 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
         // stops a state's match population from ever closing. Storing and propagating above
         // are deliberately upstream of it: the match stays available to this child's own
         // children, where it is a different transition and gets its own draw.
-        if (transition_rate_ < 1.0 &&
-            !transition_survives(canonical_transition_key(child, forwarded), 2)) return;
+        if (sampling_active() &&
+            !transition_survives(canonical_transition_key(child, forwarded), 2,
+                                 forwarded.rule_index())) return;
 
         // EAGER: Immediately spawn REWRITE task
         submit_rewrite_task(forwarded, step);
@@ -1167,7 +1170,7 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
 }
 
 bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_t canonical_key,
-                                                         int site) {
+                                                         int site, uint16_t rule) {
     // Own-found draws only. Track the running minimum own key -- complete exactly at the
     // state's drain, because its own matching is what the drain joins on -- and mark whether
     // any own draw passed. Forwarded draws go through transition_survives directly and touch
@@ -1184,7 +1187,7 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     while (ranked < seen &&
            !join->own_min_key.compare_exchange_weak(seen, ranked,
                                                     std::memory_order_relaxed)) {}
-    if (transition_survives(canonical_key, site)) {
+    if (transition_survives(canonical_key, site, rule)) {
         join->own_spawned.store(1, std::memory_order_release);
         return true;
     }
@@ -1215,9 +1218,13 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
 }
 
 
-bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site) const {
-    if (transition_rate_ >= 1.0) return true;
-    if (transition_rate_ <= 0.0) return false;
+bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int site,
+                                                  uint16_t rule) const {
+    // The rate is THIS RULE's, so a weighted rule set thins each rule at its own probability
+    // while every draw stays keyed on the transition's isomorphism-invariant identity.
+    const double rate = rate_for_rule(rule);
+    if (rate >= 1.0) return true;
+    if (rate <= 0.0) return false;
     draws_taken_.fetch_add(1, std::memory_order_relaxed);
     if (site >= 0 && site < 5) draws_by_site_[site].fetch_add(1, std::memory_order_relaxed);
 
@@ -1233,7 +1240,7 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int s
 
     // Compare in [0,1) via the top 53 bits, so the threshold means the same thing at any q.
     const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
-    const bool survives = u < transition_rate_;
+    const bool survives = u < rate;
     if (survives) draws_survived_.fetch_add(1, std::memory_order_relaxed);
     return survives;
 }
@@ -1387,7 +1394,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
-    if (transition_rate_ > 0.0 && transition_rate_ < 1.0) spine_at_drain(state, step, join);
+    if (sampling_active()) spine_at_drain(state, step, join);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
 }
 
@@ -1853,8 +1860,9 @@ void ParallelEvolutionEngine::execute_match_task(
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
         // transition (S -> S') does not drop the match, and the same match at a different
         // source state is a DIFFERENT transition that gets its own independent draw.
-        if (transition_rate_ < 1.0 &&
-            !transition_survives_spined(state, canonical_transition_key(state, match), 3)) return;
+        if (sampling_active() &&
+            !transition_survives_spined(state, canonical_transition_key(state, match), 3,
+                                        match.rule_index())) return;
 
         if (batched_matching_) {
             batch.push_back(match);
@@ -2288,8 +2296,9 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
     // -- it is "not yours to rewrite", which is the same instruction to the caller.
-    if (transition_rate_ < 1.0 &&
-        !transition_survives_spined(data.state, canonical_transition_key(data.state, match), 4)) return false;
+    if (sampling_active() &&
+        !transition_survives_spined(data.state, canonical_transition_key(data.state, match), 4,
+                                    match.rule_index())) return false;
 
     out = match;
     return true;

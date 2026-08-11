@@ -466,3 +466,56 @@ TEST(SamplingReproducibility, DepthSignalIsRefusedUnderQuotientExploration) {
     EXPECT_EQ(fires.load(), 0)
         << "the depth signal fired under quotient, where its arrival invariant does not hold";
 }
+
+// ---------------------------------------------------------------------------------------
+// RuleWeights: per-rule multipliers on TransitionRate.
+//
+// The two knobs COMPOSE rather than one overriding the other, so the rate a rule's transitions
+// are drawn at is transition_rate x weight[rule]. That composition is the whole reason the
+// draw sites had to stop testing `transition_rate_ < 1.0` directly: a caller who leaves the
+// rate at 1 and weights one rule to zero is sampling, and that test said they were not.
+namespace {
+
+// Two rules that both apply to the seed, so weighting one is observable in the state set.
+size_t run_weighted(const std::vector<double>& weights, uint64_t seed, size_t steps) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 1);
+    e.set_random_seed(seed);
+    e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
+    e.add_rule(make_rule(1).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).rhs({2, 3}).build());
+    e.set_rule_weights(weights);
+    const std::vector<std::vector<std::vector<VertexId>>> init = {{{0, 1}, {1, 2}}};
+    e.evolve(init, steps);
+    return hg.num_canonical_states();
+}
+
+}  // namespace
+
+TEST(RuleWeights, AZeroWeightRemovesThatRuleAndTheOtherStillRuns) {
+    // Weighting rule 1 to zero must leave rule 0's transitions untouched, which is what
+    // distinguishes a per-rule weight from simply lowering the global rate.
+    const size_t both  = run_weighted({}, 4242, 3);
+    const size_t only0 = run_weighted({1.0, 0.0}, 4242, 3);
+    const size_t only1 = run_weighted({0.0, 1.0}, 4242, 3);
+
+    EXPECT_GT(both, 1u) << "the unweighted run explored nothing, so the comparison is vacuous";
+    EXPECT_GT(only0, 1u) << "rule 0 was dropped even though its weight is 1";
+    EXPECT_GT(only1, 1u) << "rule 1 was dropped even though its weight is 1";
+    EXPECT_LT(only0, both) << "dropping rule 1 did not remove anything, so the weight did "
+                              "nothing";
+    EXPECT_LT(only1, both) << "dropping rule 0 did not remove anything, so the weight did "
+                              "nothing";
+}
+
+TEST(RuleWeights, WeightsAreReproducibleForAFixedSeed) {
+    EXPECT_EQ(run_weighted({1.0, 0.25}, 777, 4), run_weighted({1.0, 0.25}, 777, 4))
+        << "a weighted draw must be a pure function of the transition and the seed";
+}
+
+TEST(RuleWeights, AWeightOfOneEverywhereChangesNothing) {
+    // The knob must be inert at its default, or every unweighted run silently changes meaning.
+    EXPECT_EQ(run_weighted({}, 31337, 4), run_weighted({1.0, 1.0}, 31337, 4));
+    // And a SHORT vector is a partial override: rule 1 is unmentioned and takes weight 1.
+    EXPECT_EQ(run_weighted({}, 31337, 4), run_weighted({1.0}, 31337, 4));
+}

@@ -183,6 +183,8 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.exploration_probability = option_parser.read<double>();
                         } else if (option_key == "TransitionRate") {
                             req.transition_rate = option_parser.read<double>();
+                        } else if (option_key == "RuleWeights") {
+                            req.rule_weights = option_parser.read<std::vector<double>>();
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
                             req.branchial_step = static_cast<int>(option_parser.read<int64_t>());
@@ -388,6 +390,13 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // draw, so it has no spine either. Silently running unthinned would return a FULL
         // evolution where the caller asked for a sample, which reads as a system with that
         // many states rather than as an option that did not apply.
+        if (!req.rule_weights.empty()) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'RuleWeights' has no GPU implementation and was not applied; the returned "
+                 "evolution weights every rule equally. Use TargetDevice -> \"CPU\" to apply "
+                 "it."});
+        }
         if (req.transition_rate < 1.0) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
@@ -469,6 +478,9 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // Per-transition thinning, with the spine that keeps a sparse sample reaching full depth.
     // ExplorationProbability thins states and has no spine, so the two are not interchangeable.
     engine.set_transition_rate(req.transition_rate);
+    // Per-rule multipliers on that rate. Composes with it rather than replacing it, so a rate
+    // of 1 with one rule weighted to 0 still samples.
+    engine.set_rule_weights(req.rule_weights);
     // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
     // sampling draws reproducible, which is the whole content of the option.
     engine.set_random_seed(req.random_seed);

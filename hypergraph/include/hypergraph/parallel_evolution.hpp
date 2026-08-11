@@ -605,6 +605,15 @@ private:
     // survive. A fixed count per state does not: it collapses the offspring distribution to a
     // point mass, destroying the feature the sample exists to preserve.
     double transition_rate_{1.0};
+    // PER-RULE MULTIPLIERS on transition_rate_. Empty means every rule samples at the same
+    // rate, which is what a caller that sets nothing gets. A weight scales its rule's rate, so
+    // {1.0, 0.0} explores rule 0 fully and drops rule 1 entirely, and the two knobs compose
+    // rather than one overriding the other.
+    //
+    // Indexed by RuleIndex. A rule past the end takes weight 1.0 rather than being an error:
+    // the vector is a partial override, and a caller weighting the first of five rules should
+    // not have to spell out four ones.
+    std::vector<double> rule_weights_;
 
 
 
@@ -924,6 +933,26 @@ public:
     // prefix -- and the answer is a depth-dependent q, not a different mechanism.
     void set_transition_rate(double q) { transition_rate_ = q; }
     double transition_rate() const { return transition_rate_; }
+    void set_rule_weights(std::vector<double> w) { rule_weights_ = std::move(w); }
+    const std::vector<double>& rule_weights() const { return rule_weights_; }
+
+    // The rate THIS rule's transitions are drawn at. Clamped, because a weight is a caller's
+    // number and a rate outside [0,1] is not a probability.
+    double rate_for_rule(uint16_t rule) const {
+        double w = 1.0;
+        if (rule < rule_weights_.size()) w = rule_weights_[rule];
+        const double r = transition_rate_ * w;
+        return r < 0.0 ? 0.0 : (r > 1.0 ? 1.0 : r);
+    }
+
+    // Whether ANY draw can fail. The draw sites used to test transition_rate_ < 1.0 directly,
+    // which would skip sampling entirely for a caller who left the rate at 1 and weighted a
+    // single rule to zero.
+    bool sampling_active() const {
+        if (transition_rate_ < 1.0) return true;
+        for (double w : rule_weights_) if (w < 1.0) return true;
+        return false;
+    }
     // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
     // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving
     // ancestor class both left the union-recovery curve unchanged, because recovery is limited
@@ -1290,7 +1319,8 @@ private:
     // The sampling draw with the spine guarantee: a passing draw records that its source state
     // has a survivor; a failing draw on a state that has already drained with NO survivor is
     // forced through instead (the late spine). See MatchJoin.
-    bool transition_survives_spined(StateId source, uint64_t canonical_key, int site);
+    bool transition_survives_spined(StateId source, uint64_t canonical_key, int site,
+                                   uint16_t rule);
 
     // At a state's drain with sampling active and no survivor spawned: submit the stored match
     // with the minimum canonical transition key, so every reachable state keeps at least one
@@ -1300,7 +1330,7 @@ private:
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both
     // forwarding paths -- consults exactly this.
-    bool transition_survives(uint64_t transition_key, int site = -1) const;
+    bool transition_survives(uint64_t transition_key, int site, uint16_t rule) const;
 
 
     // Books one match task's completion however its function exits.

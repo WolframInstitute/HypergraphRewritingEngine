@@ -56,6 +56,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"MaxStatesPerStep"` | `0` | cap the states retained per evolution step (0 = unlimited) |
 | `"ExplorationProbability"` | `1.` | probability of exploring each branch; below 1 prunes stochastically |
 | `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate (CPU only) |
+| `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order (CPU only) |
 | `"UniformRandom"` | `False` | select matches by uniform random reservoir sampling instead of exhaustively |
 | `"MatchesPerStep"` | `0` | matches applied per step in uniform-random mode (0 = all) |
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
@@ -305,6 +306,20 @@ HGEvolve[rules, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure",
 ```
 
 `"TransitionRate"` applies on the CPU. Under `"TargetDevice" -> "GPU"` it is reported in `"Warnings"` and the evolution runs unsampled, rather than silently returning a different answer per device.
+
+### "RuleWeights"
+
+Per-rule multipliers on `"TransitionRate"`, given in rule order. The rate a rule's transitions are drawn at is the product of the two, so the knobs compose rather than one replacing the other: a rate of 1 with weights `{1, 0}` still samples, dropping the second rule entirely and leaving the first untouched.
+
+A short list is a partial override. Rules past its end take weight 1, so weighting the first of five rules does not require spelling out four ones. `{}` weights every rule equally, which is what a run that sets nothing gets.
+
+```wl
+rules = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
+HGEvolve[rules, {{1, 1}, {1, 1}}, 4, "StatesGraphStructure",
+  "RuleWeights" -> {1., 0.25}, "RandomSeed" -> 7]
+```
+
+`"RuleWeights"` applies on the CPU. Under `"TargetDevice" -> "GPU"` it is reported in `"Warnings"` and every rule is weighted equally.
 
 ### "UniformRandom"
 
