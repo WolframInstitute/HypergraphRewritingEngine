@@ -118,6 +118,19 @@ Keep it current: a release that skips a line here is not released.*
       `LibraryResources/Windows-x86-64/hg_evolve_gpu.exe` — the NATIVE MSVC+nvcc binary — on an
       RTX 4090. Both isolation paths are therefore exercised. Caveat: that binary is 2026-07-22, so
       the result certifies the config and the path, not current source.
+- [x] **A user can CONTINUE an evolution, not only re-run it.** `reference/verify_sessions.wls`
+      → **SESSIONS_VERIFIED, 0 failures, 16 checks**, run under wolframscript against the
+      shipped `hg_evolve` through the persistent socket worker.
+      The engine has served `Open`/`Step`/`Query`/`Close` since board #121 and nothing exposed
+      them: `paclet/Kernel/HypergraphRewriting.wl` carried exactly one `PackageExport`. The
+      verbs are now `HGSessionOpen` / `HGSessionStep` / `HGSessionQuery` / `HGSessionClose`.
+      The check that decides the claim is a comparison at EVERY prefix depth against an
+      independent one-shot `HGEvolve`: 1/2/4/10/34 states at depths 0–4, reached by stepping.
+      A session that restarted each Step would report depth-1 numbers forever and pass any
+      check that only asked whether it answered. The lifetime is checked too — a fresh session
+      is at depth 0 (an Open that explored would shift every later comparison by one), a second
+      Open is refused while the first still answers, and the slot frees on Close.
+      Runs in the `paclet-wl` workflow beside the golden corpus.
 - [x] CPU results correct across `None` / `Automatic` / `Full`. **2026-08-03**: `GoldenMatrix.*`
       + `Unified_CanonicalHash.*` + the event-identity gates, 12/12.
 - [x] GPU results match CPU `CanonicalizeStates -> Full` **with no device fallback**.

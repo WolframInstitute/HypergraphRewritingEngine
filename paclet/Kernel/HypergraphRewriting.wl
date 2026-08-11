@@ -4,6 +4,14 @@ BeginPackage["HypergraphRewriting`"]
 
 PackageExport["HGEvolve"]
 
+(* Sessions: an evolution a caller can CONTINUE. The engine has served these four verbs
+   since #121; these are what makes them reachable. See the Sessions section below. *)
+PackageExport["HGSessionObject"]
+PackageExport["HGSessionOpen"]
+PackageExport["HGSessionStep"]
+PackageExport["HGSessionQuery"]
+PackageExport["HGSessionClose"]
+
 
 (* Public symbols *)
 HGEvolve::usage = "HGEvolve[rules, initialEdges, steps, property] performs multiway rewriting evolution.
@@ -69,6 +77,43 @@ Options[HGEvolve] = {
   "PoissonMinDistance" -> 1.0,  (* Minimum separation for Poisson disk *)
   "RandomSeed" -> Automatic  (* Random seed for reproducibility *)
 };
+
+HGSessionObject::usage =
+  "HGSessionObject[data] is a live exploration held by an engine worker. Produced by " <>
+  "HGSessionOpen, advanced by HGSessionStep, read by HGSessionQuery, released by HGSessionClose.";
+
+HGSessionOpen::usage =
+  "HGSessionOpen[rules, initialEdges, property] opens a continuable evolution and returns an " <>
+  "HGSessionObject. The rules, the identity convention and the set of artifacts the run records " <>
+  "are fixed here; HGSessionStep carries the SAME exploration further rather than re-running it.";
+HGSessionStep::usage =
+  "HGSessionStep[session, n] carries the session's exploration n steps further from the frontier " <>
+  "it stopped at, and returns the property the session was opened for. HGSessionStep[session, n, " <>
+  "property] returns a different property of the same accumulated graph, provided the session " <>
+  "was opened recording what that property needs.";
+HGSessionQuery::usage =
+  "HGSessionQuery[session] re-reads the session's accumulated graph without exploring further. " <>
+  "HGSessionQuery[session, property] reads a different property of it.";
+HGSessionClose::usage =
+  "HGSessionClose[session] releases the engine holding the session. The handle is not reused, " <>
+  "so a later verb on a closed session reports that rather than answering from another one.";
+
+HGSessionOpen::noworker =
+  "No persistent engine worker is available for TargetDevice -> `1`, so no session can be " <>
+  "opened. A session's handle names a live process; the one-shot fallback HGEvolve uses would " <>
+  "mint a handle in a process that exits with the reply. HGEvolve itself still works.";
+HGSessionOpen::nohandle =
+  "The engine answered the Open but returned no session handle, so there is nothing to continue.";
+HGSessionOpen::live =
+  "A session is already live on this worker; close it before opening another. This build serves " <>
+  "one session at a time so that opening a second cannot silently discard the first.";
+HGSessionStep::badsession =
+  "`1` is not an HGSessionObject.";
+HGSessionStep::negsteps =
+  "HGSessionStep needs a non-negative number of steps, not `1`. Use HGSessionQuery to re-read " <>
+  "the session without exploring.";
+
+Options[HGSessionOpen] = Options[HGEvolve];
 
 Begin["`Private`"]
 
@@ -904,6 +949,185 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
   HGEvolve[rules, edges, steps, property, opts]
 ]
 
+(* The job's Options envelope: every option the engine parses, and how each is spelled on the
+   wire. HGEvolve and HGSessionOpen both build it HERE. Two copies would be two chances for a
+   session to send an option HGEvolve does not, or to spell one differently -- and the FFI
+   answers an option it cannot parse by SKIPPING it and continuing, so a disagreement would
+   surface as behaviour rather than as an error.
+
+   `ov` is a function from option name to value: HGEvolve reads through its own OptionsPattern
+   and HGSessionOpen through its, and the envelope does not care which. *)
+hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue},
+  (* Convert BranchialStep: All -> 0, positive for 1-based step, negative for from-end *)
+  (* EvolutionCausalBranchialGraph defaults to All, BranchialGraph defaults to -1 (final step) *)
+  (* Use first graph property for branchial step default, or empty string if none *)
+  branchialStepValue = Replace[ov["BranchialStep"], {
+    Automatic :> If[Length[graphProperties] > 0 && StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
+    All -> 0
+  }];
+
+  <|
+    "CanonicalizeStates" -> ov["CanonicalizeStates"],
+    "CanonicalizeEvents" -> ov["CanonicalizeEvents"],
+    "CausalTransitiveReduction" -> ov["CausalTransitiveReduction"],
+    "MaxSuccessorStatesPerParent" -> ov["MaxSuccessorStatesPerParent"],
+    "MaxStatesPerStep" -> ov["MaxStatesPerStep"],
+    "ExplorationProbability" -> ov["ExplorationProbability"],
+    "TransitionRate" -> ov["TransitionRate"],
+    "RuleWeights" -> N[ov["RuleWeights"]],
+    (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
+       engine spells as 0; anything else fixes the sample. Without this the option reached the
+       initial-condition generators only, and a sampled evolution was irreproducible however it
+       was set. *)
+    "RandomSeed" -> Replace[ov["RandomSeed"], Automatic -> 0],
+    "ExploreFromCanonicalStatesOnly" -> ov["ExploreFromCanonicalStatesOnly"],
+    "QuotientInitialStates" -> ov["QuotientInitialStates"],
+    "ShowProgress" -> ov["ShowProgress"],
+    "ShowGenesisEvents" -> ov["ShowGenesisEvents"],
+    "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
+    "EdgeDeduplication" -> ov["EdgeDeduplication"],
+    "IncludeCanonicalHashes" -> ov["IncludeCanonicalHashes"],
+    "RequestedData" -> requiredData,
+    "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
+    (* Uniform random evolution mode *)
+    "UniformRandom" -> ov["UniformRandom"],
+    "MatchesPerStep" -> ov["MatchesPerStep"]
+  |>
+]
+
+(* Serialize a job, run it, deserialize the reply, and surface the engine's warning trail.
+   Returns the reply association, or $Failed.
+
+   `sessionQ` selects the TRANSPORT, and it is not a preference. hgCallEngine falls back to a
+   one-shot RunProcess when the persistent worker is unavailable, which is right for an `Evolve`
+   -- the job is self-contained and the process may exit as soon as it answers. It is WRONG for
+   every session verb: an `Open` served that way mints a handle inside a process that exits with
+   the reply, so the caller holds a handle naming nothing and the next `Step` reports an unknown
+   session. So a session verb takes the worker or it takes nothing. *)
+hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, resultBytes, wxfData},
+  wxfBytes = BinarySerialize[inputData];
+  resultBytes = If[TrueQ[sessionQ],
+    Module[{r = hgWorkerTry[If[device === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"],
+                            wxfBytes]},
+      If[!ByteArrayQ[r], Message[HGSessionOpen::noworker, device]; Return[$Failed]];
+      r],
+    hgCallEngine[wxfBytes, device]];
+
+  If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
+  wxfData = BinaryDeserialize[resultBytes];
+  If[!AssociationQ[wxfData], Return[$Failed]];
+
+  (* Surface the engine's warning trail. Both backends serve it under "Warnings"
+     (Kind/Count/Context): GPU capacity overflows flag a PARTIAL result; engine
+     option conflicts and analysis refusals report why an output is absent or
+     reduced. Overflow kinds keep their dedicated message. *)
+  If[KeyExistsQ[wxfData, "Warnings"] && Length[wxfData["Warnings"]] > 0,
+    Module[{warns = wxfData["Warnings"], advisoryKinds, advisories, overflows},
+      (* Advisory kinds are minted by the CPU FFI (engine option conflicts, analysis
+         refusals); every other kind is a GPU capacity flag on a PARTIAL result. *)
+      advisoryKinds = {"Engine", "OptionSkipped"};
+      advisories = Select[warns, MemberQ[advisoryKinds, Lookup[#, "Kind", ""]] &];
+      overflows = Complement[warns, advisories];
+      If[Length[overflows] > 0,
+        Message[HGEvolve::overflow,
+          DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
+          Total[Lookup[overflows, "Count", 0]]]];
+      If[Length[advisories] > 0,
+        Message[HGEvolve::warn,
+          DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
+          StringRiffle[DeleteDuplicates[Lookup[advisories, "Context", ""]], " | "]]];
+    ]];
+  wxfData
+];
+
+(* ONE job, run and interpreted -- HGEvolve and every session verb share this.
+   The two phases of a call are BUILD an envelope and RUN it; only the first differs between
+   `Evolve` and a session's `Step`/`Query`, so only the first is written twice. A second copy of
+   the interpretation is how the verbs would come to disagree about what a reply means, which is
+   the same defect the engine spent this project removing from its canonicalizer and matcher.
+
+   `view` carries the interpretation settings the caller already resolved: RequestedData,
+   AspectRatio, IncludeStateContents, IncludeEventContents, CanonicalizeStates,
+   CanonicalizeEvents, ColorByRule, DebugFFI. They are values here rather than OptionValue[]
+   reads because a session's Step is not an HGEvolve call and has no OptionsPattern to read. *)
+hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Association] :=
+  Module[
+  {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
+   branchialStateEdges, branchialStateVertices, aspectRatio, includeStateContents,
+   includeEventContents, canonicalizeStates, canonicalizeEvents, colorByRule,
+   dimensionData, geodesicData, topologicalData, curvatureData, alignmentData, entropyData,
+   hilbertData, branchialData, multispaceData, dimPalette, dimColorBy, dimRange},
+
+  requiredData            = view["RequestedData"];
+  aspectRatio             = view["AspectRatio"];
+  includeStateContents    = view["IncludeStateContents"];
+  includeEventContents    = view["IncludeEventContents"];
+  canonicalizeStates      = view["CanonicalizeStates"];
+  canonicalizeEvents      = view["CanonicalizeEvents"];
+
+  wxfData = hgSendJob[inputData, device, TrueQ[view["SessionQ"]]];
+  If[!AssociationQ[wxfData], Return[$Failed]];
+
+  (* Extract data - validate that requested data was returned *)
+  (* Only use defaults for data we didn't request *)
+  states = If[MemberQ[requiredData, "States"],
+    If[KeyExistsQ[wxfData, "States"], wxfData["States"],
+      Message[HGEvolve::missingdata, "States"]; Return[$Failed]],
+    <||>
+  ];
+  events = If[MemberQ[requiredData, "Events"] || MemberQ[requiredData, "EventsMinimal"],
+    If[KeyExistsQ[wxfData, "Events"], wxfData["Events"],
+      Message[HGEvolve::missingdata, "Events"]; Return[$Failed]],
+    <||>
+  ];
+  causalEdges = If[MemberQ[requiredData, "CausalEdges"],
+    If[KeyExistsQ[wxfData, "CausalEdges"], wxfData["CausalEdges"],
+      Message[HGEvolve::missingdata, "CausalEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialEdges = If[MemberQ[requiredData, "BranchialEdges"],
+    If[KeyExistsQ[wxfData, "BranchialEdges"], wxfData["BranchialEdges"],
+      Message[HGEvolve::missingdata, "BranchialEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialStateEdges = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
+    If[KeyExistsQ[wxfData, "BranchialStateEdges"], wxfData["BranchialStateEdges"],
+      Message[HGEvolve::missingdata, "BranchialStateEdges"]; Return[$Failed]],
+    {}
+  ];
+  branchialStateVertices = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
+    If[KeyExistsQ[wxfData, "BranchialStateVertices"], wxfData["BranchialStateVertices"], {}],
+    {}
+  ];
+
+  (* Debug: print what was returned from FFI *)
+  If[TrueQ[view["DebugFFI"]],
+    Print["  FFI response keys: ", Keys[wxfData]];
+    Print["  FFI response size: ", ByteCount[wxfData], " bytes"];
+    Print["  States count: ", Length[states]];
+    Print["  Events count: ", Length[events]];
+    Print["  CausalEdges count: ", Length[causalEdges]];
+    Print["  BranchialEdges count: ", Length[branchialEdges]];
+  ];
+
+  (* The physics analyses live in the hypergraph_viz repo; these locals feed
+     getProperty's plain-rendering path as empty. *)
+  {dimensionData, geodesicData, topologicalData, curvatureData, alignmentData,
+   entropyData, hilbertData, branchialData, multispaceData} = Table[<||>, 9];
+
+  colorByRule = TrueQ[view["ColorByRule"]];
+  {dimPalette, dimColorBy, dimRange} = {"TemperatureMap", "Mean", {0, 3}};
+
+  (* Return requested properties *)
+  (* String input returns data directly; list input always returns association *)
+  If[Length[props] == 1 && !propertyWasList,
+    (* Single string property: return directly *)
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
+    (* List input: return association keyed by property names *)
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
+  ]
+]
+
 (* Main implementation *)
 HGEvolve[rules_List, initialEdges_List, steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
@@ -956,41 +1180,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     _, Message[HGEvolve::baddev, OptionValue["TargetDevice"]]
   ];
   aspectRatio = OptionValue["AspectRatio"];
-  (* Convert BranchialStep: All -> 0, positive for 1-based step, negative for from-end *)
-  (* EvolutionCausalBranchialGraph defaults to All, BranchialGraph defaults to -1 (final step) *)
-  (* Use first graph property for branchial step default, or empty string if none *)
-  branchialStepValue = Replace[OptionValue["BranchialStep"], {
-    Automatic :> If[Length[graphProperties] > 0 && StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
-    All -> 0
-  }];
-
-  options = <|
-    "CanonicalizeStates" -> OptionValue["CanonicalizeStates"],
-    "CanonicalizeEvents" -> OptionValue["CanonicalizeEvents"],
-    "CausalTransitiveReduction" -> OptionValue["CausalTransitiveReduction"],
-    "MaxSuccessorStatesPerParent" -> OptionValue["MaxSuccessorStatesPerParent"],
-    "MaxStatesPerStep" -> OptionValue["MaxStatesPerStep"],
-    "ExplorationProbability" -> OptionValue["ExplorationProbability"],
-    "TransitionRate" -> OptionValue["TransitionRate"],
-    "RuleWeights" -> N[OptionValue["RuleWeights"]],
-    (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
-       engine spells as 0; anything else fixes the sample. Without this the option reached the
-       initial-condition generators only, and a sampled evolution was irreproducible however it
-       was set. *)
-    "RandomSeed" -> Replace[OptionValue["RandomSeed"], Automatic -> 0],
-    "ExploreFromCanonicalStatesOnly" -> OptionValue["ExploreFromCanonicalStatesOnly"],
-    "QuotientInitialStates" -> OptionValue["QuotientInitialStates"],
-    "ShowProgress" -> OptionValue["ShowProgress"],
-    "ShowGenesisEvents" -> OptionValue["ShowGenesisEvents"],
-    "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
-    "EdgeDeduplication" -> OptionValue["EdgeDeduplication"],
-    "IncludeCanonicalHashes" -> OptionValue["IncludeCanonicalHashes"],
-    "RequestedData" -> requiredData,
-    "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
-    (* Uniform random evolution mode *)
-    "UniformRandom" -> OptionValue["UniformRandom"],
-    "MatchesPerStep" -> OptionValue["MatchesPerStep"]
-  |>;
+  options = hgJobOptions[OptionValue[#] &, requiredData, graphProperties];
 
   (* Normalize rules: convert symbolic vertices to integers if needed *)
   normalizedRules = normalizeRules[rules];
@@ -1009,95 +1199,161 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "Options" -> options
   |>;
 
-  (* Run the engine (standalone binary if present, else the in-process DLL) *)
-  wxfBytes = BinarySerialize[inputData];
-  resultBytes = hgCallEngine[wxfBytes, OptionValue["TargetDevice"]];
-
-  If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
-
-  wxfData = BinaryDeserialize[resultBytes];
-  If[!AssociationQ[wxfData], Return[$Failed]];
-
-  (* Surface the engine's warning trail. Both backends serve it under "Warnings"
-     (Kind/Count/Context): GPU capacity overflows flag a PARTIAL result; engine
-     option conflicts and analysis refusals report why an output is absent or
-     reduced. Overflow kinds keep their dedicated message. *)
-  If[KeyExistsQ[wxfData, "Warnings"] && Length[wxfData["Warnings"]] > 0,
-    Module[{warns = wxfData["Warnings"], advisoryKinds, advisories, overflows},
-      (* Advisory kinds are minted by the CPU FFI (engine option conflicts, analysis
-         refusals); every other kind is a GPU capacity flag on a PARTIAL result. *)
-      advisoryKinds = {"Engine", "OptionSkipped"};
-      advisories = Select[warns, MemberQ[advisoryKinds, Lookup[#, "Kind", ""]] &];
-      overflows = Complement[warns, advisories];
-      If[Length[overflows] > 0,
-        Message[HGEvolve::overflow,
-          DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
-          Total[Lookup[overflows, "Count", 0]]]];
-      If[Length[advisories] > 0,
-        Message[HGEvolve::warn,
-          DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
-          StringRiffle[DeleteDuplicates[Lookup[advisories, "Context", ""]], " | "]]];
-    ]];
-
-  (* Extract data - validate that requested data was returned *)
-  (* Only use defaults for data we didn't request *)
-  states = If[MemberQ[requiredData, "States"],
-    If[KeyExistsQ[wxfData, "States"], wxfData["States"],
-      Message[HGEvolve::missingdata, "States"]; Return[$Failed]],
-    <||>
-  ];
-  events = If[MemberQ[requiredData, "Events"] || MemberQ[requiredData, "EventsMinimal"],
-    If[KeyExistsQ[wxfData, "Events"], wxfData["Events"],
-      Message[HGEvolve::missingdata, "Events"]; Return[$Failed]],
-    <||>
-  ];
-  causalEdges = If[MemberQ[requiredData, "CausalEdges"],
-    If[KeyExistsQ[wxfData, "CausalEdges"], wxfData["CausalEdges"],
-      Message[HGEvolve::missingdata, "CausalEdges"]; Return[$Failed]],
-    {}
-  ];
-  branchialEdges = If[MemberQ[requiredData, "BranchialEdges"],
-    If[KeyExistsQ[wxfData, "BranchialEdges"], wxfData["BranchialEdges"],
-      Message[HGEvolve::missingdata, "BranchialEdges"]; Return[$Failed]],
-    {}
-  ];
-  branchialStateEdges = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
-    If[KeyExistsQ[wxfData, "BranchialStateEdges"], wxfData["BranchialStateEdges"],
-      Message[HGEvolve::missingdata, "BranchialStateEdges"]; Return[$Failed]],
-    {}
-  ];
-  branchialStateVertices = If[MemberQ[requiredData, "BranchialStateEdges"] || MemberQ[requiredData, "BranchialStateEdgesAllSiblings"],
-    If[KeyExistsQ[wxfData, "BranchialStateVertices"], wxfData["BranchialStateVertices"], {}],
-    {}
-  ];
-
-  (* Debug: print what was returned from FFI *)
-  If[OptionValue["DebugFFI"],
-    Print["  FFI response keys: ", Keys[wxfData]];
-    Print["  FFI response size: ", ByteCount[wxfData], " bytes"];
-    Print["  States count: ", Length[states]];
-    Print["  Events count: ", Length[events]];
-    Print["  CausalEdges count: ", Length[causalEdges]];
-    Print["  BranchialEdges count: ", Length[branchialEdges]];
-  ];
-
-  (* The physics analyses live in the hypergraph_viz repo; these locals feed
-     getProperty's plain-rendering path as empty. *)
-  {dimensionData, geodesicData, topologicalData, curvatureData, alignmentData,
-   entropyData, hilbertData, branchialData, multispaceData} = Table[<||>, 9];
-
-  colorByRule = TrueQ[OptionValue["ColorByRule"]];
-  {dimPalette, dimColorBy, dimRange} = {"TemperatureMap", "Mean", {0, 3}};
-
-  (* Return requested properties *)
-  (* String input returns data directly; list input always returns association *)
-  If[Length[props] == 1 && !propertyWasList,
-    (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
-    (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
-  ]
+  (* Run and interpret. Everything from here is shared with the session verbs (hgRunJob). *)
+  hgRunJob[inputData, OptionValue["TargetDevice"], props, propertyWasList, <|
+    "RequestedData"        -> requiredData,
+    "AspectRatio"          -> aspectRatio,
+    "IncludeStateContents" -> includeStateContents,
+    "IncludeEventContents" -> includeEventContents,
+    "CanonicalizeStates"   -> canonicalizeStates,
+    "CanonicalizeEvents"   -> canonicalizeEvents,
+    "ColorByRule"          -> OptionValue["ColorByRule"],
+    "DebugFFI"             -> OptionValue["DebugFFI"]|>]
 ]
+
+(* ============================================================================ *)
+(* Sessions: an evolution a caller can CONTINUE                                 *)
+(* ============================================================================ *)
+
+(* WHAT A SESSION IS. HGEvolve answers one question and discards the exploration that answered
+   it, so asking for three steps and then five re-runs the first three. A session keeps the
+   engine, its graph and the frontier the budget stopped at, so `Step` carries the SAME
+   exploration further and every state, event and relation already built keeps its identity.
+
+   The four verbs are served by the engine binary and have been since #121; what did not exist
+   until now was any way for a user to reach them, which is what this section is.
+
+     s = HGSessionOpen[rules, init, property]      an exploration, opened at depth 0
+     HGSessionStep[s, n]                           carry it n steps further; returns the property
+     HGSessionQuery[s]                             re-read it without exploring
+     HGSessionClose[s]                             release the engine
+
+   WHAT IS FIXED AT OPEN, and why the verbs refuse to change it:
+     - THE RULES. A session's rule set was fixed when it opened; applying different ones would
+       answer about a system the session is not exploring. Step and Query carry no rules and the
+       engine rejects a job that does.
+     - THE IDENTITY CONVENTION (CanonicalizeStates, CanonicalizeEvents, ShowGenesisEvents).
+       These decide what a state and an event ARE. The engine reads them back from its own graph
+       rather than from a Step's envelope, so a Query cannot report exact canonical forms as
+       tree-mode ones in fields that all still parse.
+     - WHAT THE RUN RECORDS. An artifact a session was not opened for cannot be produced later:
+       the evolution that would have built it has already run. Open with the property you intend
+       to ask for. Asking for another returns an empty relation and the engine says so on the
+       warning trail rather than serving the emptiness silently.
+
+   ONE SESSION AT A TIME per worker (D7). A second HGSessionOpen while one is live is an error,
+   not an eviction: evicting would discard a caller's exploration without being asked.
+
+   THE HANDLE NAMES A PROCESS, which is why the session verbs do not use hgCallEngine's one-shot
+   fallback. See hgSendJob. *)
+
+
+HGSessionOpen[rules_List, initialEdges_List,
+              property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
+              opts : OptionsPattern[]] := Module[
+  {props, propertyWasListLocal, requiredData, graphProperties, view, options, device,
+   normalizedRules, rulesAssoc, initialStatesData, inputData, reply, handle},
+
+  propertyWasListLocal = ListQ[property];
+  props = DeleteDuplicates[Flatten[{property}]];
+  requiredData = computeRequiredData[props, OptionValue["IncludeStateContents"],
+                                     OptionValue["IncludeEventContents"],
+                                     OptionValue["CanonicalizeStates"]];
+  If[requiredData === $Failed, Return[$Failed]];
+  graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
+  device = OptionValue["TargetDevice"];
+
+  (* The session's own record of how to interpret every later reply. A Step is not an HGEvolve
+     call and has no OptionsPattern to read, so these are resolved once, here, and carried by the
+     object -- which is also what makes a Step's answer use the convention the session was opened
+     under rather than whatever the Step's own call happened to say. *)
+  view = <|
+    "RequestedData"        -> requiredData,
+    "AspectRatio"          -> OptionValue["AspectRatio"],
+    "IncludeStateContents" -> OptionValue["IncludeStateContents"],
+    "IncludeEventContents" -> OptionValue["IncludeEventContents"],
+    "CanonicalizeStates"   -> OptionValue["CanonicalizeStates"],
+    "CanonicalizeEvents"   -> OptionValue["CanonicalizeEvents"],
+    "ColorByRule"          -> OptionValue["ColorByRule"],
+    "DebugFFI"             -> OptionValue["DebugFFI"],
+    "SessionQ"             -> True|>;
+
+  options = hgJobOptions[OptionValue[HGSessionOpen, {opts}, #] &, requiredData,
+                         graphProperties];
+
+  normalizedRules = normalizeRules[rules];
+  rulesAssoc = Association[
+    Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
+  initialStatesData = If[Depth[initialEdges] == 3, {initialEdges}, initialEdges];
+
+  inputData = <|"InitialStates" -> initialStatesData, "Rules" -> rulesAssoc,
+                "Steps" -> 0, "Options" -> options, "Op" -> "Open"|>;
+
+  reply = hgSendJob[inputData, device, True];
+  If[!AssociationQ[reply], Return[$Failed]];
+  handle = Lookup[reply, "Session", Missing[]];
+  If[!IntegerQ[handle] || handle === 0, Message[HGSessionOpen::nohandle]; Return[$Failed]];
+
+  HGSessionObject[<|"Handle" -> handle, "Device" -> device, "View" -> view,
+                    "Properties" -> props, "PropertyWasList" -> propertyWasListLocal,
+                    "GraphProperties" -> graphProperties, "Options" -> options|>]
+];
+
+(* Step and Query differ in ONE field. Writing them as two bodies would be two chances to
+   disagree about what a held verb's envelope contains. *)
+hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_] := Module[
+  {props, wasList, requiredData, graphProperties, view, options, inputData},
+
+  props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
+  wasList = If[property === Automatic, d["PropertyWasList"], ListQ[property]];
+  requiredData = computeRequiredData[props, d["View"]["IncludeStateContents"],
+                                     d["View"]["IncludeEventContents"],
+                                     d["View"]["CanonicalizeStates"]];
+  If[requiredData === $Failed, Return[$Failed]];
+  graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
+
+  (* The session's options, with only what this call may vary. A held verb carries NO rules: the
+     engine rejects a job that does, because applying them would answer about a different system. *)
+  options = d["Options"];
+  options["Op"] = op;
+  options["RequestedData"] = requiredData;
+  options["GraphProperties"] = graphProperties;
+
+  view = d["View"];
+  view["RequestedData"] = requiredData;
+
+  inputData = <|"Steps" -> steps, "Options" -> options, "Op" -> op,
+                "Session" -> d["Handle"]|>;
+
+  hgRunJob[inputData, d["Device"], props, wasList, view]
+];
+
+HGSessionStep[s_HGSessionObject, steps_Integer, property_ : Automatic] :=
+  If[steps < 0,
+    Message[HGSessionStep::negsteps, steps]; $Failed,
+    hgSessionVerb[s, "Step", steps, property]];
+HGSessionStep[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
+
+HGSessionQuery[s_HGSessionObject, property_ : Automatic] :=
+  hgSessionVerb[s, "Query", 0, property];
+HGSessionQuery[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
+
+HGSessionClose[HGSessionObject[d_Association]] := Module[{reply},
+  reply = hgSendJob[<|"Op" -> "Close", "Session" -> d["Handle"],
+                      "Options" -> <|"Op" -> "Close"|>|>, d["Device"], True];
+  If[AssociationQ[reply], Null, $Failed]
+];
+HGSessionClose[other_] := (Message[HGSessionStep::badsession, other]; $Failed);
+
+(* A session shows what it is and what it holds, never its internals: a handle a user can read
+   invites constructing one, and a constructed handle addresses whatever session that number
+   happens to name. *)
+HGSessionObject /: MakeBoxes[obj : HGSessionObject[d_Association], fmt_] :=
+  BoxForm`ArrangeSummaryBox[HGSessionObject, obj, None,
+    {BoxForm`SummaryItem[{"device: ", d["Device"]}],
+     BoxForm`SummaryItem[{"records: ", Row[d["Properties"], ", "]}]},
+    {BoxForm`SummaryItem[{"canonicalization: ", d["View"]["CanonicalizeStates"]}]},
+    fmt];
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)

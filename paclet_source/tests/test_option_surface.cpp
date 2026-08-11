@@ -60,8 +60,10 @@ TEST(OptionSurface, EveryOptionTheWrapperSendsIsParsedByTheFfi) {
     ASSERT_FALSE(wl.empty()) << "paclet/Kernel/HypergraphRewriting.wl not found";
     ASSERT_FALSE(ffi.empty()) << "paclet_source/hypergraph_ffi.cpp not found";
 
+    // hgJobOptions is the ONE place the job's Options envelope is built -- HGEvolve and
+    // HGSessionOpen both call it, so reading it here covers every entry point rather than one.
     const std::set<std::string> sent =
-        names_in_region(wl, "  options = <|", "  |>;", std::regex("\"([A-Za-z]+)\"\\s*->"));
+        names_in_region(wl, "hgJobOptions[ov_,", "\n]\n", std::regex("\"([A-Za-z]+)\"\\s*->"));
     std::set<std::string> parsed;
     {
         const std::regex re("option_key == \"([A-Za-z]+)\"");

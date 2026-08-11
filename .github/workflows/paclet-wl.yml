@@ -57,3 +57,11 @@ jobs:
 
       - name: Golden corpus (HGEvolve vs golden_corpus.wl)
         run: wolframscript -file reference/verify_paclet.wls
+
+      # Sessions are a LIFETIME -- open, refuse a second open, step, close, reopen -- and a
+      # lifetime cannot be asserted from one call, so it gets its own script. The comparison
+      # that matters is against an independent one-shot HGEvolve at every prefix depth: a
+      # session that restarted would report depth-1 numbers forever and pass any check that
+      # only asked whether it answered.
+      - name: Sessions continue rather than restart (HGSession* verbs)
+        run: wolframscript -file reference/verify_sessions.wls

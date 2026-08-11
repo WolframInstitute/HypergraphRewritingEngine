@@ -375,3 +375,23 @@ Run-local state ids differ between runs, but `"IncludeCanonicalHashes"` attaches
 rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
 HGEvolve[rules, {{1, 2}, {1, 3}}, 2, "States", "CanonicalizeStates" -> Full, "IncludeCanonicalHashes" -> True] // Length
 ```
+
+### Continuing an evolution instead of re-running it
+
+`HGEvolve` answers one question and discards the exploration that answered it, so asking for three steps and then five re-runs the first three. A **session** keeps the engine, its graph and the frontier the budget stopped at, so each step carries the *same* exploration further and every state, event and relation already built keeps its identity:
+
+```wl
+rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
+s = HGSessionOpen[rules, {{1, 2}}, {"NumStates", "NumEvents"}];
+{HGSessionQuery[s], HGSessionStep[s, 1], HGSessionStep[s, 1], HGSessionStep[s, 1]}
+```
+
+which gives `{<|NumStates -> 1, NumEvents -> 0|>, <|2, 1|>, <|4, 3|>, <|10, 9|>}` — the same numbers as `HGEvolve[rules, {{1, 2}}, k, ...]` for `k = 0, 1, 2, 3`, reached by continuing rather than restarting. `HGSessionQuery[s]` re-reads the accumulated graph without exploring further. `HGSessionClose[s]` releases the engine.
+
+Three things are fixed when the session opens, and the later verbs refuse to change them:
+
+- **The rules.** A session's rule set was fixed at `HGSessionOpen`; applying different ones would answer about a system the session is not exploring.
+- **The identity convention** (`"CanonicalizeStates"`, `"CanonicalizeEvents"`, `"ShowGenesisEvents"`). These decide what a state and an event *are*. The engine reads them back from its own graph rather than from a step's request, so a query cannot report exact canonical forms as tree-mode ones.
+- **What the run records.** An artifact the session was not opened for cannot be produced afterwards — the evolution that would have built it has already run. Open with the property you intend to ask for; asking for another returns an empty relation and the engine says so rather than serving the emptiness silently.
+
+A session's handle names a live engine process, so one session at a time is served per worker: a second `HGSessionOpen` while one is live is an error rather than an eviction, because evicting would discard an exploration without being asked.
