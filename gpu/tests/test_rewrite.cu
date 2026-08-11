@@ -834,3 +834,88 @@ TEST(Rewrite, AutomorphicStateEventIdentityIsTheSameAtEveryBlockCount) {
                     "between 3 and 17 blocks\n", a.size(), a.size() - common, a.size());
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// #121: a device SESSION continues an evolution instead of restarting it.
+//
+// Two cheaper designs were measured first and both failed, in opposite directions, against the
+// 7 states / 6 events one run to depth 3 produces:
+//
+//   identity maps rebuilt per call   10 states, 9 events -- nothing recognised, so the second
+//                                    call re-derived everything it already had as new.
+//   identity maps owned by caller     5 states, 4 events -- everything recognised, so nothing
+//                                    was re-expanded and depth 3 was never reached.
+//
+// One bit was answering two questions: the dedup map says "seen", and the worker reads that same
+// answer as "already expanded". A session separates them, carrying the maps AND a frontier of
+// the states whose expansion the BUDGET refused -- the device twin of defer_match_task.
+TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}};
+    auto input_for = [&](uint32_t steps) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = steps;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+        return in;
+    };
+
+    uint32_t ref_states = 0, ref_events = 0;
+    {
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(3));
+        hg_gpu::EngineState eng(cfg);
+        hg_gpu::upload_initial_state(eng, init);
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(32ull << 20);
+        const auto st = hg_gpu::run_persistent_evolve(
+            eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
+            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
+        ref_states = st.states_after;
+        ref_events = st.canonical_events;
+    }
+
+    uint32_t ext_states = 0, ext_events = 0, frontier_after_first = 0;
+    {
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(input_for(3));
+        hg_gpu::EngineState eng(cfg);
+        hg_gpu::upload_initial_state(eng, init);
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(32ull << 20);
+
+        hg_gpu::SessionState sess(cfg.max_states, cfg.max_events);
+        hg_gpu::SessionView v = sess.view();
+
+        hg_gpu::run_persistent_evolve(
+            eng, rules, /*roots=*/{0u}, /*max_steps=*/2u, matches, arena, /*dedup=*/true,
+            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/0u);
+
+        // The budget stopped somewhere, so it must have recorded where.
+        frontier_after_first = sess.frontier_size();
+
+        const auto st2 = hg_gpu::run_persistent_evolve(
+            eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
+            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/2u);
+        ext_states = st2.states_after;
+        ext_events = st2.canonical_events;
+    }
+
+    EXPECT_GT(frontier_after_first, 0u)
+        << "the first call stopped at a budget and recorded no boundary, so there is nothing "
+           "to continue from";
+    EXPECT_EQ(ext_states, ref_states)
+        << "a session did not reach the same state set as one run of the same budget";
+    EXPECT_EQ(ext_events, ref_events)
+        << "a session did not reach the same event set as one run of the same budget";
+}

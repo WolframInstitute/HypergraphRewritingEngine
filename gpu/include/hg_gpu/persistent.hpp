@@ -120,6 +120,85 @@ inline uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
     return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
 }
 
+// A CONTINUABLE evolution's state, owned by the caller across calls.
+//
+// WHY THIS EXISTS RATHER THAN "just call it again". The state and event POOLS already live in
+// EngineState and survive a call, so a second call looks like it should extend. Two designs that
+// relied on that were measured and both failed, in opposite directions (rule 2-edge -> 3-edge,
+// depth 2 then 3, against 7 states / 6 events for one run at depth 3):
+//
+//   maps rebuilt per call     10 states, 9 events -- nothing was recognised, so the second call
+//                             re-derived every state it already had as new.
+//   maps owned by the caller   5 states, 4 events -- everything was recognised, so nothing was
+//                             re-expanded and the new depth was never reached.
+//
+// The cause is that ONE bit answers two questions: the dedup map says "seen", and the worker
+// reads that same answer as "already expanded". Sharing it across calls loses recognition or
+// loses expansion. So a session carries both the maps AND a FRONTIER: the states whose expansion
+// was refused by the STEP BUDGET rather than by dedup. That is the same separation the host makes
+// with defer_match_task/evolve_more, and the device twin of it.
+struct SessionView {
+    DedupMap::DeviceView states;
+    DedupMap::DeviceView events;
+    // Boundary states, appended when the budget refuses expansion. `count` may exceed `cap`
+    // under a race; readers take min(count, cap), which is the same discipline the counted root
+    // seeder uses.
+    StateId*  frontier      = nullptr;
+    uint32_t* frontier_count = nullptr;
+    uint32_t  frontier_cap  = 0;
+    uint32_t  enabled       = 0;
+};
+
+// Host owner of the above. Allocated once for the session, never shrunk, so a Step costs no
+// device allocation.
+class SessionState {
+public:
+    SessionState(uint32_t max_states, uint32_t max_events)
+        : states_(max_states * 2u), events_(max_events * 2u), cap_(max_states) {
+        states_.clear();
+        events_.clear();
+        HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
+        HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
+        clear_frontier();
+    }
+    ~SessionState() {
+        if (frontier_) cudaFree(frontier_);
+        if (count_)    cudaFree(count_);
+    }
+    SessionState(const SessionState&)            = delete;
+    SessionState& operator=(const SessionState&) = delete;
+
+    // Between calls the frontier is CONSUMED, not accumulated: the states it held are being
+    // expanded now, and whatever the new budget refuses takes their place.
+    void clear_frontier() {
+        HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)), "session frontier count clear");
+    }
+    uint32_t frontier_size() const {
+        uint32_t n = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&n, count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "session frontier count read");
+        return n < cap_ ? n : cap_;
+    }
+
+    SessionView view() {
+        SessionView v;
+        v.states         = states_.view();
+        v.events         = events_.view();
+        v.frontier       = frontier_;
+        v.frontier_count = count_;
+        v.frontier_cap   = cap_;
+        v.enabled        = 1;
+        return v;
+    }
+
+private:
+    DedupMap  states_;
+    DedupMap  events_;
+    StateId*  frontier_ = nullptr;
+    uint32_t* count_    = nullptr;
+    uint32_t  cap_      = 0;
+};
+
 struct PersistentEvolveStats {
     uint32_t matches_found = 0;
     uint32_t states_after  = 0;
@@ -179,6 +258,17 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // drive one body of state. Disabled (enabled == 0)
                                             // when null.
                                             const QcView* qc = nullptr,
-                                            const QeView* qe = nullptr);
+                                            const QeView* qe = nullptr,
+                                            // Null for a one-shot run, which is unchanged.
+                                            // Non-null makes the run CONTINUABLE: identity is
+                                            // remembered across calls and the budget's boundary
+                                            // states are recorded so the next call can expand
+                                            // them.
+                                            SessionView* session = nullptr,
+                                            // 0 seeds from `roots` at depth 0. Non-zero seeds
+                                            // from the session's FRONTIER at that depth, which
+                                            // is what continues an evolution rather than
+                                            // restarting it.
+                                            uint32_t start_step = 0);
 
 }  // namespace hg_gpu

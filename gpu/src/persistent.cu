@@ -63,6 +63,25 @@ __global__ void k_seed_match_queue_counted(
     queue.try_push(item);   // capacity >= kept_cap * num_rules, so this cannot fail here
 }
 
+// Seed from a SESSION FRONTIER: state ids recorded when the previous call's budget refused to
+// expand them. Unlike the root seeder there is no hashing and no dedup consultation -- these
+// states are already known and already deduplicated, and consulting dedup here is exactly what
+// makes an extend reach nothing (measured: 5 states where one run gives 7).
+__global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView queue,
+                                const StateId* ids, const uint32_t* count, uint32_t cap,
+                                uint32_t num_rules, uint32_t step,
+                                typename TerminationDetector::DeviceView term) {
+    const uint32_t live = min(*count, cap);
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= live * num_rules) return;
+    MatchWorkItem item;
+    item.state_id = ids[tid / num_rules];
+    item.rule_id  = tid - (tid / num_rules) * num_rules;
+    item.step     = step;
+    term.mark_pushed(kRoleMatch);
+    queue.try_push(item);
+}
+
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
 // must stay the twin: the seeding and the loop deduplicating different equivalences is not a
 // performance difference, it is a different evolution.
@@ -390,7 +409,8 @@ __global__ void k_persistent_evolve(
         typename TerminationDetector::DeviceView term,
         QcView qc,
         QeView qe,
-        unsigned long long* phase_cycles) {
+        unsigned long long* phase_cycles,
+        SessionView sess) {
 
     // Ranks are the reconstruction's frame alignment as well as Automatic's signature.
     const bool need_ranks = event_keys_need_ranks(event_keys) || qe.enabled != 0;
@@ -552,10 +572,30 @@ __global__ void k_persistent_evolve(
                                                  child_event, rec.rule_id, step);
                         }
 
-                        expand_child = child_step < max_steps &&
-                                       state_survives_dedup(ds, child_sid, h, dedup_map, dedup,
-                                                            explore_threshold_u32,
-                                                            explore_seed, child_step);
+                        if (child_step < max_steps) {
+                            expand_child = state_survives_dedup(ds, child_sid, h, dedup_map,
+                                                                dedup, explore_threshold_u32,
+                                                                explore_seed, child_step);
+                        } else if (sess.enabled) {
+                            // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
+                            // a duplicate needs no frontier entry, someone else's copy carries
+                            // the expansion -- and record the survivor so the next call can
+                            // expand it. Without this the boundary is not merely unexpanded, it
+                            // is unrecoverable: nothing else records which states the budget
+                            // stopped at.
+                            if (state_survives_dedup(ds, child_sid, h, dedup_map, dedup,
+                                                     explore_threshold_u32, explore_seed,
+                                                     child_step)) {
+                                cuda::atomic_ref<uint32_t, cuda::thread_scope_device>
+                                    fc(*sess.frontier_count);
+                                const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
+                                if (at < sess.frontier_cap) sess.frontier[at] = child_sid;
+                                else ds.errors.record(ErrorKind::kFrontierCapFull);
+                            }
+                            expand_child = false;
+                        } else {
+                            expand_child = false;
+                        }
                     }
                 }
                 acc_canon += clock64() - t1;
@@ -815,7 +855,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             uint32_t blocks,
                                             bool quotient_roots,
                                             const QcView* qc_in,
-                                            const QeView* qe_in) {
+                                            const QeView* qe_in,
+                                            SessionView* session,
+                                            uint32_t start_step) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
 
@@ -852,8 +894,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
     // entry per state is the worst case, and the map must not fill, because a full map would
     // silently start admitting duplicates.
-    DedupMap canonical(engine.config().max_states * 2u);
-    canonical.clear();
+    // A SESSION OWNS ITS IDENTITY. Rebuilt per call otherwise, which is what a one-shot run
+    // wants and what makes a second call re-derive everything as new.
+    SessionView sess_v{};
+    if (session) sess_v = *session;
+    DedupMap owned_canonical(session ? 1u : engine.config().max_states * 2u);
+    DedupMap& canonical_owner = owned_canonical;
+    if (!session) canonical_owner.clear();
 
     // Signature -> first event with it. Sized off the event budget rather than the state one:
     // an evolution has as many applications as it has matches, which is not bounded by its
@@ -864,8 +911,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // a cost charged to every run for a mode most do not select. The stamp sites are all behind
     // `event_keys != EVENT_SIG_NONE`, so the small map is never touched.
     const bool want_event_ids = (event_keys != EVENT_SIG_NONE);
-    DedupMap event_ids(want_event_ids ? engine.config().max_events * 2u : 8u);
-    event_ids.clear();
+    DedupMap owned_event_ids(session ? 1u : (want_event_ids ? engine.config().max_events * 2u : 8u));
+    if (!session) owned_event_ids.clear();
     if (want_event_ids) engine.ensure_event_identity();
 
     // Every allocation happens HERE, before the first kernel goes out: cudaMalloc may
@@ -896,16 +943,31 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // kernel consumes them. Stream order carries every dependency, so the host synchronizes
     // exactly once, after the last kernel, and reads nothing back before that.
     arena.reset();
+    // CONTINUING rather than starting: the frontier already holds hashed, deduplicated states,
+    // so it is seeded straight into the queue at the depth the previous budget stopped at. The
+    // root path would re-hash them and, worse, consult dedup -- which they already satisfy, so
+    // nothing would expand.
+    if (start_step > 0 && session) {
+        const uint32_t block = 128;
+        const uint32_t items = sess_v.frontier_cap * num_rules;
+        const uint32_t seed_grid = (items + block - 1) / block;
+        if (seed_grid) {
+            k_seed_frontier<<<seed_grid, block>>>(
+                match_q.view(), sess_v.frontier, sess_v.frontier_count, sess_v.frontier_cap,
+                num_rules, start_step, term.view());
+        }
+    } else
     {
         const uint32_t block = 64;
         const uint32_t n = static_cast<uint32_t>(roots.size());
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
-            engine.device(), d_states, n, canonical.view(), state_mode,
+            engine.device(), d_states, n,
+            session ? sess_v.states : canonical_owner.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
             event_keys_need_ranks(event_keys) || qe.enabled != 0,
             arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
     }
-    {
+    if (!(start_step > 0 && session)) {
         const uint32_t block = 128;
         const uint32_t items = static_cast<uint32_t>(roots.size()) * num_rules;
         const uint32_t seed_grid = (items + block - 1) / block;
@@ -919,9 +981,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const uint32_t grid = grid_req < 2 ? 2 : grid_req;
     k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
-        d_cursor, d_rewrites_done, canonical.view(), dedup,
+        d_cursor, d_rewrites_done,
+        session ? sess_v.states : canonical_owner.view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        event_ids.view(), arena.view(), term.view(), qc, qe, d_phase_cycles);
+        session ? sess_v.events : owned_event_ids.view(),
+        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
 
     stats.matches_found    = scratch_matches.size_host();
