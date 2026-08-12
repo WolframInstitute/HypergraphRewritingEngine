@@ -35,6 +35,25 @@ MIN_TOKENS = 60        # below this a body is too small for a match to mean anyt
 MAX_SHINGLE_DEFS = 24  # a shingle in more than this many bodies is boilerplate
 MIN_SHARED = 4         # candidate pairs must share at least this many shingles
 MIN_JACCARD = 0.45
+MAX_MISALIGNED = 0.02  # above this share of misaligned sites the comparison is not run
+
+
+def site_names_match(text, line, qualified_name):
+    """Does the definition the map records at `line` still start there?
+
+    The map's line is 1-based and points at the definition's first line; a signature that has
+    since gained or lost a leading line moves it by one or two, so a small window is read rather
+    than a single line. The unqualified name is what is looked for -- the qualified one appears
+    in the map, not necessarily in the source.
+    """
+    short = qualified_name.split("::")[-1].strip()
+    if not short:
+        return False
+    lines = text.split("\n")
+    if line - 1 >= len(lines):
+        return False
+    lo = max(0, line - 2)
+    return short in "\n".join(lines[lo:line + 1])
 
 TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*|[^\s\w]")
 COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
@@ -227,8 +246,21 @@ def main():
     # all at the macro's line -- TEST(X, Y) gives a class, its constructor, destructor,
     # TestBody and test_info_ at one line -- and reading the body from that line gives all
     # five the same tokens. Keyed by site, they are one body, which is what they are.
+    # THE MAP IS A SNAPSHOT AND THE TREE IS NOT. Line numbers move with every edit, and this
+    # pass reads the CURRENT file at a RECORDED line -- so against a stale map it tokenises
+    # whatever happens to sit there now and compares bodies that are not the ones it names. The
+    # numbers it printed then were not about this tree, and its misses were invisible: a
+    # 0.59-Jaccard twin pair in parallel_evolution.cpp was absent from the report while the
+    # threshold was 0.45, because the recorded lines pointed 40 lines above the definitions.
+    #
+    # So every site is checked before it is used: the name the map records must appear at the
+    # line the map records. A site that fails is MISALIGNED and takes no part; if enough of them
+    # fail, the section reports that instead of a similarity list, because a list assembled from
+    # a mostly-misaligned map reads as a finding about the code and is a finding about the map.
     file_text = {}
     sig = {}                                # (path, line) -> (name, path, line, shingles, ntok)
+    misaligned = 0
+    considered = 0
     for path, line, kind, name, _refs in defs:
         if (path, line) in sig:
             continue
@@ -241,6 +273,10 @@ def main():
         text = file_text[path]
         if text is None:
             continue
+        considered += 1
+        if not site_names_match(text, line, name):
+            misaligned += 1
+            continue
         got = body_tokens(text, line)
         if not got or len(got[0]) < MIN_TOKENS:
             continue
@@ -248,6 +284,16 @@ def main():
         sh = shingles(toks)
         if sh:
             sig[(path, line)] = (name, path, line, sh, len(toks), end)
+
+    stale_fraction = (misaligned / considered) if considered else 0.0
+    map_is_stale = stale_fraction > MAX_MISALIGNED
+    if map_is_stale:
+        # The report still gets written -- returning here would leave the PREVIOUS report on
+        # disk, which reads as current and is the same silent-staleness defect one level up.
+        sig = {}
+        print("[audit] SOURCE_MAP.md is stale: %d of %d sites misaligned (%.0f%%); the "
+              "near-identical comparison is not run" % (misaligned, considered,
+                                                        100 * stale_fraction), file=sys.stderr)
 
     index = defaultdict(list)
     for key, (_n, _p, _l, sh, _t, _e) in sig.items():
@@ -280,26 +326,39 @@ def main():
     shipped = [c for c in clones if not is_consumer(c[1][0]) and not is_consumer(c[2][0])]
     shipped.sort(reverse=True)
 
-    W(f"\n### Near-identical bodies, both sides shipped — {len(shipped)} pairs at "
-      f"Jaccard >= {MIN_JACCARD}\n")
-    W(f"{len(sig)} definition SITES of at least {MIN_TOKENS} tokens compared by "
-      f"{SHINGLE_K}-gram shingles over a comment- and string-stripped token stream. This is "
-      "the section that does not care what the two copies are CALLED, which is what makes it "
-      "the one that catches a port: `IRCanonicalizer::compute_canonical_hash` and "
-      "`ir_canonical_hash` share no name and every name-based check was blind to them.\n")
-    W("It finds bodies that are TEXTUALLY near-identical -- what a copy-paste port produces "
-      "-- and misses a reimplementation sharing the algorithm and no phrasing. A pair here "
-      "is a list entry to READ: overload forwarding and a template's two instantiations look "
-      "the same from here as a second implementation does.\n")
-    for j, a, b in shipped[:80]:
-        na, pa, la, _, ta, _ea = sig[a]
-        nb, pb, lb, _, tb, _eb = sig[b]
-        cross_area = "" if area(pa) == area(pb) else "  **[cross-area]**"
-        W(f"- **{j:.2f}** — `{na}` @ `{pa}:{la}` ({ta} tok) vs `{nb}` @ `{pb}:{lb}` "
-          f"({tb} tok){cross_area}")
-    if len(shipped) > 80:
-        W(f"\n({len(shipped) - 80} further shipped pairs not listed.)")
-    W(f"\n{len(clones) - len(shipped)} further pairs have at least one side in tests/ or "
+    if map_is_stale:
+        W("\n### Near-identical bodies — NOT RUN\n")
+        W(f"`SOURCE_MAP.md` is stale against the tree: **{misaligned} of {considered}** recorded "
+          f"definition sites ({stale_fraction:.0%}) do not carry the name the map records for "
+          f"them. This comparison reads the CURRENT file at a RECORDED line, so against a stale "
+          f"map it compares bodies that are not the ones it names -- which is how a 0.59-Jaccard "
+          f"twin pair in `parallel_evolution.cpp` was absent from this list while the threshold "
+          f"was {MIN_JACCARD}. Regenerate with `tools/dev/source_map.py` and re-run. No "
+          f"similarity number is printed, because one computed from a stale map is a statement "
+          f"about the map.\n")
+    else:
+        W(f"\n### Near-identical bodies, both sides shipped — {len(shipped)} pairs at "
+          f"Jaccard >= {MIN_JACCARD}\n")
+        W(f"{len(sig)} definition SITES of at least {MIN_TOKENS} tokens compared by "
+          f"{SHINGLE_K}-gram shingles over a comment- and string-stripped token stream. This is "
+          "the section that does not care what the two copies are CALLED, which is what makes it "
+          "the one that catches a port: `IRCanonicalizer::compute_canonical_hash` and "
+          "`ir_canonical_hash` share no name and every name-based check was blind to them.\n")
+        W("It finds bodies that are TEXTUALLY near-identical -- what a copy-paste port produces "
+          "-- and misses a reimplementation sharing the algorithm and no phrasing. A pair here "
+          "is a list entry to READ: overload forwarding and a template's two instantiations look "
+          "the same from here as a second implementation does.\n")
+        for j, a, b in shipped[:80]:
+            na, pa, la, _, ta, _ea = sig[a]
+            nb, pb, lb, _, tb, _eb = sig[b]
+            cross_area = "" if area(pa) == area(pb) else "  **[cross-area]**"
+            W(f"- **{j:.2f}** — `{na}` @ `{pa}:{la}` ({ta} tok) vs `{nb}` @ `{pb}:{lb}` "
+              f"({tb} tok){cross_area}")
+        if len(shipped) > 80:
+            W(f"\n({len(shipped) - 80} further shipped pairs not listed.)")
+
+    if not map_is_stale:
+        W(f"\n{len(clones) - len(shipped)} further pairs have at least one side in tests/ or "
       "tools/ and are not listed: a test that repeats its neighbour's shape is a test.\n")
 
     # ---- 2. unreferenced definitions ---------------------------------------------
@@ -386,7 +445,7 @@ def main():
     open(dest, "w").write("\n".join(out) + "\n")
     print(f"{len(dupes)} duplicated names ({len(cross)} spanning areas, {len(same)} same-area shipped), "
           f"{len(pairs)} unqualified-name pairs across areas, "
-          f"{len(shipped)} near-identical shipped bodies, "
+          f"{'near-identical bodies NOT RUN (stale map)' if map_is_stale else str(len(shipped)) + ' near-identical shipped bodies'}, "
           f"{len(ship)} unreferenced in shipped code, "
           f"{len(only_consumer)} shipped-but-test-only -> {dest}")
 
