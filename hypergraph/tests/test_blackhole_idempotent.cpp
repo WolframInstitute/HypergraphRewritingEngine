@@ -13,7 +13,6 @@
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 
-namespace v2 = hypergraph;
 
 // =============================================================================
 // Black Hole Simulation - Idempotent Rule Tests
@@ -33,25 +32,25 @@ protected:
     };
 
     // Generate a random connected hypergraph with the given number of 2-edges
-    std::vector<std::vector<v2::VertexId>> generate_random_graph(
+    std::vector<std::vector<hg::engine::VertexId>> generate_random_graph(
         size_t num_edges,
         uint32_t seed
     ) {
         std::mt19937 rng(seed);
-        std::vector<std::vector<v2::VertexId>> edges;
+        std::vector<std::vector<hg::engine::VertexId>> edges;
 
         // Start with a chain to ensure connectivity
         for (size_t i = 0; i < num_edges; ++i) {
-            v2::VertexId v1 = static_cast<v2::VertexId>(i);
-            v2::VertexId v2 = static_cast<v2::VertexId>(i + 1);
+            hg::engine::VertexId v1 = static_cast<hg::engine::VertexId>(i);
+            hg::engine::VertexId v2 = static_cast<hg::engine::VertexId>(i + 1);
             edges.push_back({v1, v2});
         }
 
         // Add some random cross-links to make it more interesting
-        std::uniform_int_distribution<v2::VertexId> vertex_dist(0, num_edges);
+        std::uniform_int_distribution<hg::engine::VertexId> vertex_dist(0, num_edges);
         for (size_t i = 0; i < num_edges / 4; ++i) {
-            v2::VertexId v1 = vertex_dist(rng);
-            v2::VertexId v2 = vertex_dist(rng);
+            hg::engine::VertexId v1 = vertex_dist(rng);
+            hg::engine::VertexId v2 = vertex_dist(rng);
             if (v1 != v2) {
                 // Replace a random edge with a cross-link
                 size_t idx = rng() % edges.size();
@@ -63,15 +62,15 @@ protected:
     }
 
     RunResult run_evolution(
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         size_t steps,
-        v2::EventSignatureKeys event_keys
+        hg::engine::EventSignatureKeys event_keys
     ) {
-        auto hg = std::make_unique<v2::Hypergraph>();
+        auto hg = std::make_unique<hg::engine::Hypergraph>();
         hg->set_event_signature_keys(event_keys);
 
-        v2::ParallelEvolutionEngine engine(hg.get(), 0);  // Use all threads
+        hg::engine::ParallelEvolutionEngine engine(hg.get(), 0);  // Use all threads
         for (const auto& rule : rules) {
             engine.add_rule(rule);
         }
@@ -91,10 +90,10 @@ protected:
         };
     }
 
-    const char* event_keys_name(v2::EventSignatureKeys k) {
-        if (k == v2::EVENT_SIG_NONE) return "None";
-        if (k == v2::EVENT_SIG_FULL) return "Full";
-        if (k == v2::EVENT_SIG_AUTOMATIC) return "Automatic";
+    const char* event_keys_name(hg::engine::EventSignatureKeys k) {
+        if (k == hg::engine::EVENT_SIG_NONE) return "None";
+        if (k == hg::engine::EVENT_SIG_FULL) return "Full";
+        if (k == hg::engine::EVENT_SIG_AUTOMATIC) return "Automatic";
         return "?";
     }
 };
@@ -104,7 +103,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
     // Pattern: {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}
     // LHS: chain x-y-z-w-v (vertices 0,1,2,3,4)
     // RHS: introduces fresh vertex u (vertex 5)
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})  // {x, y}
         .lhs({1, 2})  // {y, z}
         .lhs({2, 3})  // {z, w}
@@ -116,9 +115,9 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::EventSignatureKeys> modes = {
-        v2::EVENT_SIG_FULL,
-        v2::EVENT_SIG_AUTOMATIC
+    std::vector<hg::engine::EventSignatureKeys> modes = {
+        hg::engine::EVENT_SIG_FULL,
+        hg::engine::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 1;
@@ -176,7 +175,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_4to4_VaryingSize) {
 TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
     // 3 edges -> 3 edges with fresh vertex
     // Pattern: {{x,y},{y,z},{z,w}} -> {{y,u},{u,w},{x,u}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})  // {x, y}
         .lhs({1, 2})  // {y, z}
         .lhs({2, 3})  // {z, w}
@@ -186,9 +185,9 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::EventSignatureKeys> modes = {
-        v2::EVENT_SIG_FULL,
-        v2::EVENT_SIG_AUTOMATIC
+    std::vector<hg::engine::EventSignatureKeys> modes = {
+        hg::engine::EVENT_SIG_FULL,
+        hg::engine::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 1;
@@ -246,7 +245,7 @@ TEST_F(BlackHoleIdempotentTest, BlackHoleRule_3to3_VaryingSize) {
 // Detailed timing comparison for a specific size
 TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
     // Black hole rule with fresh vertex
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})  // {x, y}
         .lhs({1, 2})  // {y, z}
         .lhs({2, 3})  // {z, w}
@@ -277,8 +276,8 @@ TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
               << "\n";
     std::cout << std::string(74, '-') << "\n";
 
-    for (auto mode : {v2::EVENT_SIG_FULL,
-                      v2::EVENT_SIG_AUTOMATIC}) {
+    for (auto mode : {hg::engine::EVENT_SIG_FULL,
+                      hg::engine::EVENT_SIG_AUTOMATIC}) {
         double total = 0, min_t = 1e9, max_t = 0;
         RunResult last;
 
@@ -305,7 +304,7 @@ TEST_F(BlackHoleIdempotentTest, DetailedTiming_100Edges) {
 TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
     // Black hole rule: 4 edges -> 4 edges with fresh vertex
     // Pattern: {{x,y},{y,z},{z,w},{w,v}} -> {{y,u},{u,v},{w,x},{x,u}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})  // {x, y}
         .lhs({1, 2})  // {y, z}
         .lhs({2, 3})  // {z, w}
@@ -317,9 +316,9 @@ TEST_F(BlackHoleIdempotentTest, WL_Only_2Steps) {
         .build();
 
     std::vector<size_t> edge_counts = {25, 50, 100};
-    std::vector<v2::EventSignatureKeys> modes = {
-        v2::EVENT_SIG_FULL,
-        v2::EVENT_SIG_AUTOMATIC
+    std::vector<hg::engine::EventSignatureKeys> modes = {
+        hg::engine::EVENT_SIG_FULL,
+        hg::engine::EVENT_SIG_AUTOMATIC
     };
 
     const size_t steps = 2;

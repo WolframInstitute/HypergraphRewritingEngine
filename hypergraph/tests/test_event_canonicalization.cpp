@@ -13,7 +13,6 @@
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/types.hpp"
 
-namespace v2 = hypergraph;
 
 // =============================================================================
 // Event Canonicalization Counts
@@ -40,16 +39,16 @@ protected:
     };
 
     EvolutionResult run_once(
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         size_t steps,
-        v2::EventSignatureKeys mode
+        hg::engine::EventSignatureKeys mode
     ) {
         auto start = std::chrono::high_resolution_clock::now();
 
-        auto hg = std::make_unique<v2::Hypergraph>();
+        auto hg = std::make_unique<hg::engine::Hypergraph>();
         hg->set_event_signature_keys(mode);
-        v2::ParallelEvolutionEngine engine(hg.get(), 1);
+        hg::engine::ParallelEvolutionEngine engine(hg.get(), 1);
 
         for (const auto& rule : rules) {
             engine.add_rule(rule);
@@ -68,17 +67,17 @@ protected:
         };
     }
 
-    static const char* mode_name(v2::EventSignatureKeys mode) {
-        if (mode == v2::EVENT_SIG_NONE) return "None";
-        if (mode == v2::EVENT_SIG_FULL) return "ByState";
-        if (mode == v2::EVENT_SIG_AUTOMATIC) return "ByStateAndEdges";
+    static const char* mode_name(hg::engine::EventSignatureKeys mode) {
+        if (mode == hg::engine::EVENT_SIG_NONE) return "None";
+        if (mode == hg::engine::EVENT_SIG_FULL) return "ByState";
+        if (mode == hg::engine::EVENT_SIG_AUTOMATIC) return "ByStateAndEdges";
         return "Unknown";
     }
 
     void compare_all_modes(
         const std::string& test_name,
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         size_t steps
     ) {
         std::cout << "\n" << test_name << " (step " << steps << "):\n";
@@ -90,9 +89,9 @@ protected:
                   << std::setw(12) << "Time (ms)" << "\n";
         std::cout << std::string(66, '-') << "\n";
 
-        for (auto mode : {v2::EVENT_SIG_NONE,
-                          v2::EVENT_SIG_FULL,
-                          v2::EVENT_SIG_AUTOMATIC}) {
+        for (auto mode : {hg::engine::EVENT_SIG_NONE,
+                          hg::engine::EVENT_SIG_FULL,
+                          hg::engine::EVENT_SIG_AUTOMATIC}) {
 
             EvolutionResult first = run_once(rules, initial, steps, mode);
             EvolutionResult second = run_once(rules, initial, steps, mode);
@@ -113,7 +112,7 @@ protected:
 };
 
 TEST_F(EventCanonicalizationTest, SimpleRule_Step5) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
@@ -123,7 +122,7 @@ TEST_F(EventCanonicalizationTest, SimpleRule_Step5) {
 }
 
 TEST_F(EventCanonicalizationTest, TwoEdgeRule_Triangle_Step3) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -135,7 +134,7 @@ TEST_F(EventCanonicalizationTest, TwoEdgeRule_Triangle_Step3) {
 }
 
 TEST_F(EventCanonicalizationTest, HyperedgeRule_Step4) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
         .rhs({0, 1, 2})
         .rhs({1, 2, 3})
@@ -145,7 +144,7 @@ TEST_F(EventCanonicalizationTest, HyperedgeRule_Step4) {
 }
 
 TEST_F(EventCanonicalizationTest, TwoEdgeRuleWithSelfLoops_Step3) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({2, 0})
@@ -157,7 +156,7 @@ TEST_F(EventCanonicalizationTest, TwoEdgeRuleWithSelfLoops_Step3) {
 
 TEST_F(EventCanonicalizationTest, LargerGraph_Step4) {
     // Rule that grows the graph more significantly
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 2})
         .rhs({2, 1})
@@ -165,7 +164,7 @@ TEST_F(EventCanonicalizationTest, LargerGraph_Step4) {
         .build();
 
     // Start with a small cycle
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
 
     compare_all_modes("LargerGraph", {rule}, initial, 4);
 }
@@ -174,7 +173,7 @@ TEST_F(EventCanonicalizationTest, LargerGraph_Step4) {
 // Single step to measure hashing overhead on large states
 TEST_F(EventCanonicalizationTest, LargeInitial_TwoEdgeRule) {
     // Classic Wolfram rule: {x,y},{y,z} -> {x,y},{y,w},{w,z}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -183,8 +182,8 @@ TEST_F(EventCanonicalizationTest, LargeInitial_TwoEdgeRule) {
         .build();
 
     // Large initial state: chain of 20 edges (many matches)
-    std::vector<std::vector<v2::VertexId>> initial;
-    for (v2::VertexId i = 0; i < 20; ++i) {
+    std::vector<std::vector<hg::engine::VertexId>> initial;
+    for (hg::engine::VertexId i = 0; i < 20; ++i) {
         initial.push_back({i, i + 1});
     }
 
@@ -195,7 +194,7 @@ TEST_F(EventCanonicalizationTest, LargeInitial_TwoEdgeRule) {
 // Large initial state with 3-edge rule (consumes 3, produces 4)
 TEST_F(EventCanonicalizationTest, LargeInitial_ThreeEdgeRule) {
     // 3-edge rule: {x,y},{y,z},{z,w} -> {x,y},{y,z},{z,w},{w,v}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .lhs({2, 3})
@@ -206,8 +205,8 @@ TEST_F(EventCanonicalizationTest, LargeInitial_ThreeEdgeRule) {
         .build();
 
     // Large initial state: chain of 25 edges
-    std::vector<std::vector<v2::VertexId>> initial;
-    for (v2::VertexId i = 0; i < 25; ++i) {
+    std::vector<std::vector<hg::engine::VertexId>> initial;
+    for (hg::engine::VertexId i = 0; i < 25; ++i) {
         initial.push_back({i, i + 1});
     }
 
@@ -219,7 +218,7 @@ TEST_F(EventCanonicalizationTest, LargeInitial_ThreeEdgeRule) {
 // This is where incremental SHOULD shine - local rewrites don't affect distant vertices
 TEST_F(EventCanonicalizationTest, LargeSparse_TwoEdgeRule) {
     // Simple growth rule
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -229,8 +228,8 @@ TEST_F(EventCanonicalizationTest, LargeSparse_TwoEdgeRule) {
 
     // Large sparse initial state: 30 disconnected edge pairs
     // Each pair is {v, v+1}, {v+1, v+2} - matches the rule
-    std::vector<std::vector<v2::VertexId>> initial;
-    v2::VertexId v = 0;
+    std::vector<std::vector<hg::engine::VertexId>> initial;
+    hg::engine::VertexId v = 0;
 
     for (int i = 0; i < 30; ++i) {
         initial.push_back({v, v + 1});

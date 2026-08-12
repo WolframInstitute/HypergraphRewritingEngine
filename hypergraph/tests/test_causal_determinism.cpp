@@ -25,7 +25,6 @@
 // hid. See docs/VERIFICATION_PLAN.md.
 // =============================================================================
 
-namespace hgraph = hypergraph;   // hg is the engine's atomic_compat namespace
 
 namespace {
 
@@ -37,12 +36,12 @@ struct Fingerprint {
     long branchial_pairs = 0;
 };
 
-Fingerprint fingerprint(hgraph::Hypergraph& g) {
-    auto canon = [&](hgraph::StateId s) -> uint64_t {
-        return s == hgraph::INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
+Fingerprint fingerprint(hg::engine::Hypergraph& g) {
+    auto canon = [&](hg::engine::StateId s) -> uint64_t {
+        return s == hg::engine::INVALID_ID ? 0 : g.get_or_compute_canonical_hash(s);
     };
-    auto esig = [&](hgraph::EventId e) -> uint64_t {
-        const hgraph::Event& x = g.get_event(e);
+    auto esig = [&](hg::engine::EventId e) -> uint64_t {
+        const hg::engine::Event& x = g.get_event(e);
         return fnv(fnv(fnv(1469598103934665603ULL, canon(x.input_state)),
                        canon(x.output_state)), x.rule_index);
     };
@@ -50,7 +49,7 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     Fingerprint fp;
     std::vector<uint64_t> sh;
     for (uint32_t s = 0; s < g.num_states(); ++s)
-        if (g.get_state(s).id != hgraph::INVALID_ID) sh.push_back(canon(s));
+        if (g.get_state(s).id != hg::engine::INVALID_ID) sh.push_back(canon(s));
     std::sort(sh.begin(), sh.end());
     fp.states = 1469598103934665603ULL; for (uint64_t v : sh) fp.states = fnv(fp.states, v);
     fp.num_states = static_cast<long>(sh.size());
@@ -74,7 +73,7 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
             [&](uint64_t p, uint64_t c) { ce.push_back(fnv(fnv(0, p), c)); });
     } else {
         for (const auto& c : g.causal_graph().get_causal_edges()) {
-            if (c.producer == hgraph::INVALID_ID || c.consumer == hgraph::INVALID_ID) continue;
+            if (c.producer == hg::engine::INVALID_ID || c.consumer == hg::engine::INVALID_ID) continue;
             ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
         }
     }
@@ -121,12 +120,12 @@ Fingerprint fingerprint(hgraph::Hypergraph& g) {
     return fp;
 }
 
-Fingerprint run(const std::vector<hgraph::RewriteRule>& rules,
-                const std::vector<std::vector<hgraph::VertexId>>& init,
+Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
+                const std::vector<std::vector<hg::engine::VertexId>>& init,
                 bool quotient, int threads, uint64_t seed, int steps) {
-    hgraph::Hypergraph g;
-    g.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
-    hgraph::ParallelEvolutionEngine e(&g, threads);
+    hg::engine::Hypergraph g;
+    g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+    hg::engine::ParallelEvolutionEngine e(&g, threads);
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(quotient);
     e.set_random_seed(seed);
@@ -137,24 +136,24 @@ Fingerprint run(const std::vector<hgraph::RewriteRule>& rules,
 
 struct Workload {
     const char* name;
-    std::vector<hgraph::RewriteRule> rules;
-    std::vector<std::vector<hgraph::VertexId>> init;
+    std::vector<hg::engine::RewriteRule> rules;
+    std::vector<std::vector<hg::engine::VertexId>> init;
     int steps;
 };
 
 std::vector<Workload> workloads() {
     std::vector<Workload> w;
     w.push_back({"WPP",
-        {hgraph::make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
+        {hg::engine::make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
         {{0,1},{0,2}}, 6});
     w.push_back({"mixed1",
-        {hgraph::make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
-         hgraph::make_rule(1).lhs({0,1}).rhs({1,0}).build(),
-         hgraph::make_rule(2).lhs({0,1}).lhs({1,2}).rhs({0,2}).build()},
+        {hg::engine::make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
+         hg::engine::make_rule(1).lhs({0,1}).rhs({1,0}).build(),
+         hg::engine::make_rule(2).lhs({0,1}).lhs({1,2}).rhs({0,2}).build()},
         {{0,1}}, 6});
     w.push_back({"mixed2",
-        {hgraph::make_rule(0).lhs({0,1}).rhs({1,0}).build(),
-         hgraph::make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
+        {hg::engine::make_rule(0).lhs({0,1}).rhs({1,0}).build(),
+         hg::engine::make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
         {{0,1}}, 6});
     return w;
 }
@@ -302,13 +301,13 @@ TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
     // 4000 catches a regression with high probability in ~2 s. The fan case races far less and
     // is kept short -- it is here because it was one of the two configurations observed to
     // fail, not because it carries the detection.
-    struct Case { const char* name; int iters; std::vector<hgraph::RewriteRule> rules;
-                  std::vector<std::vector<hgraph::VertexId>> init; };
+    struct Case { const char* name; int iters; std::vector<hg::engine::RewriteRule> rules;
+                  std::vector<std::vector<hg::engine::VertexId>> init; };
     // dup+dedup: {{x,y}} -> {{x,y}},{{x,y}} together with {{x,y}},{{x,y}} -> {{x,y}}.
     auto dup_dedup = [] {
-        return std::vector<hgraph::RewriteRule>{
-            hgraph::make_rule(0).lhs({0,1}).rhs({0,1}).rhs({0,1}).build(),
-            hgraph::make_rule(1).lhs({0,1}).lhs({0,1}).rhs({0,1}).build()};
+        return std::vector<hg::engine::RewriteRule>{
+            hg::engine::make_rule(0).lhs({0,1}).rhs({0,1}).rhs({0,1}).build(),
+            hg::engine::make_rule(1).lhs({0,1}).lhs({0,1}).rhs({0,1}).build()};
     };
     const std::vector<Case> cases = {
         {"dup+dedup/selfloop", 4000, dup_dedup(), {{0,0}}},
@@ -318,9 +317,9 @@ TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
     for (const auto& c : cases) {
         size_t expected = 0;
         {   // full capture, single-threaded: the reference the reconstruction must match
-            hgraph::Hypergraph hg;
-            hg.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
-            hgraph::ParallelEvolutionEngine e(&hg, 1);
+            hg::engine::Hypergraph hg;
+            hg.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+            hg::engine::ParallelEvolutionEngine e(&hg, 1);
             e.set_transitive_reduction(false);
             e.set_explore_from_canonical_states_only(false);
             for (const auto& r : c.rules) e.add_rule(r);
@@ -330,9 +329,9 @@ TEST(CausalDeterminism, QuotientBranchialCountedExactlyOnce) {
         ASSERT_GT(expected, 0u) << c.name << ": no branchial edges to compare";
 
         for (int iter = 0; iter < c.iters; ++iter) {
-            hgraph::Hypergraph hg;
-            hg.set_state_canonicalization_mode(hgraph::StateCanonicalizationMode::Full);
-            hgraph::ParallelEvolutionEngine e(&hg, 8);
+            hg::engine::Hypergraph hg;
+            hg.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+            hg::engine::ParallelEvolutionEngine e(&hg, 8);
             e.set_transitive_reduction(false);
             e.set_explore_from_canonical_states_only(true);
             hg.set_quotient_reconstruction(true);

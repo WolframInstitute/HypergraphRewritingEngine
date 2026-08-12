@@ -5,29 +5,22 @@ a wiped machine, and a lost conversation. Everything else about v1.0 — rationa
 arguments, per-defect history — lives in the untracked working notes and is NOT needed to
 continue.
 
-## Namespace convention — DECIDED (Richard, 2026-08-06)
+## Namespace convention — LANDED
 
-One root, `hg::`, with everything inside it. No exceptions for the standalone libraries: they
-ship in this archive, so their names are this project's namespace pollution.
+One root, `hg::`, everything inside it, overridable at configure time with `-DHG_NAMESPACE=foo`
+so a consumer with a collision renames the whole tree without patching it. The mapping:
 
-    hg::engine     was hypergraph        28 files
-    hg::common     was hgcommon          13
-    hg::gpu        was hg_gpu            34
-    hg::marshal    was hgmarshal          1
-    hg::ffi        was hgffi              3
-    hg::jobs       was job_system         4
-    hg::wxf        was wxf                2
-    hg::deque      was lockfree           1   (directory says lockfree_deque; namespace said lockfree)
+    hg::engine     28 files      hg::marshal     1       hg::wxf     2
+    hg::common     13            hg::ffi         3       hg::deque   1
+    hg::gpu        34            hg::jobs        4
 
-The root is **overridable at configure time** -- `-DHG_NAMESPACE=foo` -- so a consumer with a
-collision can rename the whole tree without patching it.
-
-BLOCKER, and it is why `hg` reads as taken: `atomic_compat.hpp:16` already declares `namespace hg`
-for one thing, `hg::atomic_ref`. That is what forced
-`hypergraph/tests/test_causal_determinism.cpp:28` to write `namespace hgraph = hypergraph;  // hg is
-the engine's atomic_compat namespace`, and three other tests to invent `namespace v2 = hypergraph`.
-Four files, three short names for one thing, because the good name was held by a portability shim.
-`hg::atomic_ref` moves to `hg::common::atomic_ref` first; then the root is free.
+`common/include/hgcommon/namespace.hpp` defines the root and keeps `namespace hypergraph =
+hg::engine` for consumers written against the old name. `hg::atomic_ref` moved to
+`hg::common::atomic_ref`, which is what freed the root: while a portability shim held bare
+`namespace hg`, five files had invented `namespace v2 = hypergraph` and `namespace hgraph =
+hypergraph` to work around it -- three short names for one namespace, two of them justified by a
+comment naming a shim that no longer holds it. All five are gone; the tree greps clean for both
+aliases and spells the namespace one way.
 
 ## State of the five named blockers, with the evidence for each
 

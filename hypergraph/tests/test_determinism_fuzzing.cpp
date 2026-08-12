@@ -12,7 +12,6 @@
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 
-namespace v2 = hypergraph;
 
 // =============================================================================
 // Unified Determinism Fuzzing Tests
@@ -68,15 +67,15 @@ protected:
     };
 
     TestResult run_single_evolution(
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         size_t steps,
         size_t num_threads = 0  // 0 = use hardware_concurrency
     ) {
-        auto hg = std::make_unique<v2::Hypergraph>();
+        auto hg = std::make_unique<hg::engine::Hypergraph>();
 
         // Test with multiple threads (or default to hardware_concurrency)
-        v2::ParallelEvolutionEngine engine(hg.get(), num_threads);
+        hg::engine::ParallelEvolutionEngine engine(hg.get(), num_threads);
         engine.set_match_forwarding(true);
         //engine.set_validate_match_forwarding(true);
 
@@ -106,8 +105,8 @@ protected:
 
     DeterminismResults fuzz_test_rules(
         const std::string& test_name,
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         size_t steps,
         int num_runs = 50
     ) {
@@ -173,8 +172,8 @@ protected:
 
     void validate_against_expected(
         const std::string& test_name,
-        const std::vector<v2::RewriteRule>& rules,
-        const std::vector<std::vector<v2::VertexId>>& initial,
+        const std::vector<hg::engine::RewriteRule>& rules,
+        const std::vector<std::vector<hg::engine::VertexId>>& initial,
         const std::vector<std::pair<size_t, TestResult>>& expected
     ) {
         std::cout << "\n=== Validating Expected Results for " << test_name << " ===\n";
@@ -205,25 +204,25 @@ protected:
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Fuzz) {
     // Rule: {{x,y}} -> {{x,y},{y,z}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}};
 
     fuzz_test_rules("SimpleRule", {rule}, initial, 4, 50);  // 50 runs
 }
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Steps) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}};
 
     // Test at different step counts
     for (size_t steps = 1; steps <= 5; ++steps) {
@@ -241,7 +240,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Steps) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -250,13 +249,13 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Fuzz) {
         .build();
 
     // Triangle initial state
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
 
     fuzz_test_rules("TwoEdgeRule_Triangle", {rule}, initial, 3, 50);
 }
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Chain) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -265,7 +264,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Chain) {
         .build();
 
     // Chain initial state
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     fuzz_test_rules("TwoEdgeRule_Chain", {rule}, initial, 4, 50);
 }
@@ -276,14 +275,14 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Chain) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase3_HyperedgeRule_Fuzz) {
     // Rule: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
         .rhs({0, 1})
         .rhs({0, 2})
         .rhs({0, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1, 2}};
 
     fuzz_test_rules("HyperedgeRule", {rule}, initial, 4, 50);
 }
@@ -294,7 +293,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase3_HyperedgeRule_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase4_MultiRule_Fuzz) {
     // Rule 1: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
-    v2::RewriteRule rule1 = v2::make_rule(0)
+    hg::engine::RewriteRule rule1 = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
         .rhs({0, 1})
         .rhs({0, 2})
@@ -302,13 +301,13 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase4_MultiRule_Fuzz) {
         .build();
 
     // Rule 2: {{x,y}} -> {{x,y},{x,z}}
-    v2::RewriteRule rule2 = v2::make_rule(1)
+    hg::engine::RewriteRule rule2 = hg::engine::make_rule(1)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({0, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1, 2}};
 
     fuzz_test_rules("MultiRule", {rule1, rule2}, initial, 4, 50);
 }
@@ -319,7 +318,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase4_MultiRule_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
     // Rule 1: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
-    v2::RewriteRule rule1 = v2::make_rule(0)
+    hg::engine::RewriteRule rule1 = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
         .rhs({0, 1})
         .rhs({0, 2})
@@ -327,7 +326,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
         .build();
 
     // Rule 2: {{x,y},{x,z}} -> {{x,y},{x,z},{y,w}}
-    v2::RewriteRule rule2 = v2::make_rule(1)
+    hg::engine::RewriteRule rule2 = hg::engine::make_rule(1)
         .lhs({0, 1})
         .lhs({0, 2})
         .rhs({0, 1})
@@ -335,7 +334,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
         .rhs({1, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1, 2}};
 
     fuzz_test_rules("ComplexTwoRuleSystem", {rule1, rule2}, initial, 3, 50);
 }
@@ -346,7 +345,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -354,7 +353,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_Fuzz) {
         .rhs({1, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     fuzz_test_rules("TwoEdgeRuleVariant", {rule}, initial, 4, 50);
 }
@@ -365,7 +364,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase7_SelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -374,7 +373,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase7_SelfLoops_Fuzz) {
         .build();
 
     // Self-loop initial state
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 0}, {0, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 0}, {0, 0}};
 
     fuzz_test_rules("SelfLoops", {rule}, initial, 3, 50);
 }
@@ -385,7 +384,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase7_SelfLoops_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{w,x},{x,w},{y,z},{w,z}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({3, 0})
@@ -394,7 +393,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_Fuzz) {
         .rhs({3, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     fuzz_test_rules("ComplexTwoEdgeRule", {rule}, initial, 3, 50);
 }
@@ -405,7 +404,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{w,x},{x,w},{y,z},{w,z}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({3, 0})
@@ -414,7 +413,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuz
         .rhs({3, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 0}, {0, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 0}, {0, 0}};
 
     fuzz_test_rules("ComplexTwoEdgeRuleSelfLoops", {rule}, initial, 2, 50);
 }
@@ -425,7 +424,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuz
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 2})
@@ -433,7 +432,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_Fuzz) {
         .rhs({2, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     fuzz_test_rules("AnotherTwoEdgeRule", {rule}, initial, 4, 50);
 }
@@ -444,7 +443,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_Fuzz) {
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 2})
@@ -452,7 +451,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fu
         .rhs({2, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 0}, {0, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 0}, {0, 0}};
 
     fuzz_test_rules("AnotherTwoEdgeRuleSelfLoops", {rule}, initial, 3, 50);
 }
@@ -463,7 +462,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fu
 
 TEST_F(Unified_DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_Fuzz) {
     // Rule: {{x,y,z},{w,x}} -> {{x,w,u},{z,y},{z,w}}
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
         .lhs({3, 0})
         .rhs({0, 3, 4})
@@ -471,7 +470,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_Fuzz) {
         .rhs({2, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 0, 0}, {0, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 0, 0}, {0, 0}};
 
     fuzz_test_rules("ComplexThreeEdgeRule", {rule}, initial, 4, 50);
 }
@@ -481,13 +480,13 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_Fuzz) {
 // =============================================================================
 
 TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}};
 
     // Run multiple times and check semantic determinism
     // Note: forwarded/invalidated counts may vary based on timing (push vs pull),
@@ -501,8 +500,8 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
     std::set<size_t> unique_invalidated;
 
     for (int i = 0; i < 20; ++i) {
-        auto hg = std::make_unique<v2::Hypergraph>();
-        v2::ParallelEvolutionEngine engine(hg.get(), 4);
+        auto hg = std::make_unique<hg::engine::Hypergraph>();
+        hg::engine::ParallelEvolutionEngine engine(hg.get(), 4);
         engine.add_rule(rule);
         engine.evolve(initial, 3);
 
@@ -543,19 +542,19 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
 // =============================================================================
 
 TEST_F(Unified_DeterminismFuzzingTest, Extended_SimpleRule_5Steps) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}};
 
     fuzz_test_rules("SimpleRule_5Steps", {rule}, initial, 5, 30);
 }
 
 TEST_F(Unified_DeterminismFuzzingTest, Extended_TwoEdgeRule_4Steps) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
         .rhs({0, 1})
@@ -563,7 +562,7 @@ TEST_F(Unified_DeterminismFuzzingTest, Extended_TwoEdgeRule_4Steps) {
         .rhs({1, 3})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
 
     fuzz_test_rules("TwoEdgeRule_4Steps", {rule}, initial, 4, 30);
 }
@@ -573,13 +572,13 @@ TEST_F(Unified_DeterminismFuzzingTest, Extended_TwoEdgeRule_4Steps) {
 // =============================================================================
 
 TEST_F(Unified_DeterminismFuzzingTest, StressTest_100Runs) {
-    v2::RewriteRule rule = v2::make_rule(0)
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
         .rhs({1, 2})
         .build();
 
-    std::vector<std::vector<v2::VertexId>> initial = {{0, 1}};
+    std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}};
 
     fuzz_test_rules("StressTest_100Runs", {rule}, initial, 3, 100);
 }
