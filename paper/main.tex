@@ -531,13 +531,7 @@ We evaluate our implementation against the Wolfram Language reference across cor
 \centering
 \caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, raw states, events, causal edges, branchial edges, arena bytes, heap allocations, and heap bytes, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t1-exactness}
-\begin{tabular}{lccccccccc}
-\toprule
-Workload & Canon.\ states & Raw states & Events & Causal & Branchial & Arena B & Heap allocs & Heap B & Exactness \\
-\midrule
-\multicolumn{10}{c}{\todo{populate from cost\_matrix over the 24-workload corpus}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t1_exactness}
 \end{table}
 
 \begin{table}[h]
@@ -630,13 +624,7 @@ Depth & Match kernel (ms) & End-to-end CPU (ms) & End-to-end GPU (ms) \\
 \centering
 \caption{\textbf{T8 --- Strong scaling.} Measured speedup over a single thread at increasing thread counts, on a fixed workload. Paired with the determinism gate: the expanded state set and the (input, output, rule) transition multiset are identical across all thread counts and seeds.}
 \label{tab:t8-scaling}
-\begin{tabular}{lccc}
-\toprule
-Threads & Time (s) & Speedup & Deterministic \\
-\midrule
-\multicolumn{4}{c}{\todo{populate the measured strong-scaling curve}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t8_scaling}
 \end{table}
 
 \subsection{Ablation (Table T9)}
