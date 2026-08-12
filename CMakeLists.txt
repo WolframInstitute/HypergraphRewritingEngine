@@ -171,6 +171,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                         $<$<COMPILE_LANGUAGE:CXX>:-Werror=shadow>)
 endif()
 
+# POPCNT, on the x86-64 hosts that have had it since 2008 (SSE4.2 / x86-64-v2). The baseline
+# x86-64 ISA does not include the instruction, so __builtin_popcountll compiles to a libgcc CALL
+# -- __popcountdi2 shows up in the engine's own profile, and the bitsets that call it are on the
+# hot path. Scoped to CXX for the same reason as above: an unscoped flag reaches nvcc and
+# invalidates every .cu object.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-mpopcnt>)
+endif()
+
 add_subdirectory(lockfree_deque)
 add_subdirectory(job_system)
 
