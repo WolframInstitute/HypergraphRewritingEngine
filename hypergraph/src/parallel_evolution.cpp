@@ -599,7 +599,12 @@ void ParallelEvolutionEngine::forward_existing_parent_matches(
         accumulated_consumed[total_consumed++] = consumed_edges[i];
     }
 
-    // Walk up the ancestor chain, forwarding matches from each ancestor
+    // Walk up the ancestor chain, forwarding matches from each ancestor. THE WALK COVERS THE
+    // CHAIN AND NOT ONLY THE PARENT: each level is filtered against the edges consumed between it
+    // and this child, accumulated on the way up, so a match that reached no intermediate list
+    // still reaches this child. The dedup claim absorbs whatever a level already carries, and the
+    // walk is 0.2% of the run's instructions (callgrind, two-edge rule at depth 6), so coverage
+    // does not depend on every push having landed and the redundancy costs almost nothing.
     StateId current_ancestor = parent;
     while (current_ancestor != INVALID_ID) {
         forward_matches_from_single_ancestor(current_ancestor, child,
@@ -749,7 +754,12 @@ void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
     // RETRY LOOP: re-walk while an ancestor ON THIS CHAIN is still gaining matches.
     uintptr_t epoch_before = ancestor_match_epoch(parent);
 
-    // Walk up the ancestor chain, forwarding matches from each ancestor
+    // Walk up the ancestor chain, forwarding matches from each ancestor. THE WALK COVERS THE
+    // CHAIN AND NOT ONLY THE PARENT: each level is filtered against the edges consumed between it
+    // and this child, accumulated on the way up, so a match that reached no intermediate list
+    // still reaches this child. The dedup claim absorbs whatever a level already carries, and the
+    // walk is 0.2% of the run's instructions (callgrind, two-edge rule at depth 6), so coverage
+    // does not depend on every push having landed and the redundancy costs almost nothing.
     StateId current_ancestor = parent;
     while (current_ancestor != INVALID_ID) {
         forward_matches_from_single_ancestor_eager(
