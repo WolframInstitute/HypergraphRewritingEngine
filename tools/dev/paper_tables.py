@@ -162,6 +162,35 @@ def t7(build, gpu_build, steps_list, iters):
     return len(rows)
 
 
+def t6(build, maxd):
+    """Quotient exploration against full capture, and what exactness costs on top.
+
+    One workload (wolfram-2to4) at increasing depth. The events and causal columns are the
+    point: quotient alone reports fewer, quotient plus reconstruction reports the full-capture
+    numbers exactly, at the quotient's cost.
+    """
+    out = run([os.path.join(build, "quotient_reconstruction_cost_probe"), str(maxd)], timeout=3600)
+    rows = []
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+) \|\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+) \|"
+                     r"\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+) \|"
+                     r"\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\w+)", line)
+        if m:
+            rows.append(m.groups())
+    if not rows:
+        raise SystemExit("quotient probe produced no parseable rows:\n%s" % out[-2000:])
+    b = [provenance("tools/quotient_reconstruction_cost_probe.cpp"),
+         r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
+         r"Depth & Events (full) & Causal (full) & ms (full) & Events (quot.) & ms (quot.) & "
+         r"Events (quot.+recon) & ms (quot.+recon) & Exact \\", r"\midrule"]
+    for (d, _fst, fev, fca, fms, _qst, qev, _qca, qms, _rst, rev, _rca, rms, exact) in rows:
+        b.append("%s & %s & %s & %s & %s & %s & %s & %s & \\textsc{%s} \\\\" % (
+            d, fev, fca, fms, qev, qms, rev, rms, exact))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t6_quotient.tex", "\n".join(b) + "\n")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -169,6 +198,7 @@ def main():
     ap.add_argument("--gpu", action="store_true")
     ap.add_argument("--steps", type=int, default=6)
     ap.add_argument("--iters", type=int, default=15)
+    ap.add_argument("--quotient-depth", type=int, default=7)
     a = ap.parse_args()
 
     n = t1(a.build_dir)
@@ -176,6 +206,8 @@ def main():
     n = scaling(a.build_dir, "bench_cpu_evolve", "t8_scaling.tex", a.steps, a.iters,
                 "tools/bench_cpu_evolve.cpp")
     print("T8: %d thread counts" % n)
+    n = t6(a.build_dir, a.quotient_depth)
+    print("T6: %d depths" % n)
     if a.gpu:
         n = t7(a.build_dir, a.gpu_build_dir, [5, 6, 7], a.iters)
         print("T7: %d depths" % n)

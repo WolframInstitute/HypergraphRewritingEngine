@@ -594,13 +594,7 @@ Rule / depth & Wolfram (s) & C++ 1-thread (s) & C++ $N$-thread (s) & Speedup \\
 \centering
 \caption{\textbf{T6 --- Quotient vs.\ full expansion.} Raw states expanded and wall-time for quotient exploration (expand each canonical state once at its shortest reachable depth) vs.\ full expansion, at increasing depth on the Wolfram rule, with the same canonical closure. Reports the widening advantage with depth and confirms no perf regression versus the prior mode.}
 \label{tab:t6-quotient}
-\begin{tabular}{lcccc}
-\toprule
-Depth & Raw states (full) & Raw states (quotient) & Time (full) & Time (quotient) \\
-\midrule
-\multicolumn{5}{c}{\todo{populate; report the quotient speedup at each depth}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t6_quotient}
 \end{table}
 
 \subsection{GPU (Table T7)}
