@@ -1,5 +1,24 @@
 # Release acceptance checklist
 
+**Every gate below was re-run at HEAD on 2026-08-12** unless a line says otherwise:
+all_tests **273/273**, hg_gpu_tests **99/99**, gpu_differential_tests **36/36** (RTX 4090),
+golden corpus **12/12** with CPU == GPU == `{5,33,32,43}`, `verify_sessions.wls`
+**SESSIONS_VERIFIED 0/23**, `verify_doc_examples.wls` 38 blocks with only the two known
+first-call-message blocks failing (board #109), `codemap_check` / `doc_symbols_check` /
+`include_cost --check` **0 findings**.
+
+**THE ONE REMAINING ACTION IS THE ARTIFACT REBUILD**, and it is deliberately last:
+
+```
+HG_REQUIRE_GPU=1 ./build_all_platforms.sh
+python3 tools/dev/artifact_stamp_check.py --require-clean     # must be 0 findings
+HG_REQUIRE_ORACLE=1 ./build_linux/all_tests                   # must consult the oracle
+```
+
+Rebuilding before the tree is final only produces artifacts the stamp checker will correctly
+call stale, which is why it is not done earlier rather than forgotten.
+
+
 **State at 2026-08-04: 20 verified, 0 partly, 0 outstanding.** The Windows GPU stack is
 FUNCTIONALLY VERIFIED, not merely built: `HGEvolve[..., TargetDevice -> "GPU"]` matches the CPU
 golden corpus 12/12 running the native MSVC+nvcc `hg_evolve_gpu.exe` on an RTX 4090. Every line that can be checked on
