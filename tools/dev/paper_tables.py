@@ -340,6 +340,47 @@ def t3(build):
     return len(rows)
 
 
+def t10(build):
+    """What each event-identity convention identifies, on the same runs.
+
+    The three conventions are refinements of one another: ByEndpointStates calls two rewrites the
+    same event when they run between the same states, ByConsumedProducedEdges when they also move
+    the same edges, DistinctApplications never. Reading the CANONICAL EVENT COUNT across them on
+    a fixed workload is what shows they are distinct points rather than one convention wearing
+    three names -- which inspection cannot show, because a duplicated convention still equals
+    itself.
+
+    The counts are taken under Full state canonicalization, one thread. No timing column: the
+    conventions differ in what they IDENTIFY, and the cost of the identity is the added IR pass,
+    which T9's canonicalization row already measures.
+    """
+    out = run([os.path.join(build, "mode_matrix_probe")], timeout=1800)
+    rows = []
+    workload = None
+    for line in out.splitlines():
+        m = re.match(r"^(\S+) \(steps=(\d+)\)", line)
+        if m:
+            workload, steps = m.group(1), m.group(2)
+            continue
+        m = re.match(r"^\s+Full\s+(\d+)/(\d+)/(\d+)/(\d+)\s+(\d+)/(\d+)/(\d+)/(\d+)\s+(\d+)/(\d+)/(\d+)/(\d+)", line)
+        if m and workload:
+            g = [int(x) for x in m.groups()]
+            rows.append((workload, steps, g[0], g[1], g[5], g[9]))
+            workload = None
+    if not rows:
+        raise SystemExit("mode_matrix_probe produced no parseable Full rows:\n%s" % out[-2000:])
+
+    b = [provenance("tools/mode_matrix_probe.cpp"),
+         r"\begin{tabular}{lrrrrr}", r"\toprule",
+         r"Workload & Steps & Canon.\ states & By endpoint states & By consumed/produced edges & "
+         r"Distinct applications \\", r"\midrule"]
+    for (name, steps, canon, e1, e2, e3) in rows:
+        b.append("%s & %s & %d & %d & %d & %d \\\\" % (tex_escape(name), steps, canon, e1, e2, e3))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t10_event_canon.tex", "\n".join(b) + "\n")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -362,6 +403,8 @@ def main():
     if a.wolfram:
         n = t2(a.build_dir, a.authority_depth, a.reps)
         print("T2: %d depths" % n)
+    n = t10(a.build_dir)
+    print("T10: %d workloads" % n)
     n = t3(a.build_dir)
     print("T3: %d workloads" % n)
     n = t9(a.build_dir, a.iters)

@@ -109,7 +109,7 @@
 The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), used as the reference canonicalizer, paired with a fast Weisfeiler--Leman (WL) color-refinement hash on the hot path that falls back to IR whenever a hash collision must be resolved; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
 
 \vspace{0.5em}
-\noindent\todo{All headline speedup figures (CPU vs.\ the Wolfram Language reference, and GPU vs.\ CPU) are pending measurement on a quiet machine and are reported in Section~\ref{sec:benchmarks} as scaffolded result tables. No performance number in this draft should be read as final.}
+\noindent Every quantitative table in Section~\ref{sec:benchmarks} is generated from the tools that produce it, and each carries the commit, the machine and the tool in its own provenance line. The machine is a desktop under WSL2 shared with other work, whose wall clock drifts by more than ten percent between runs; the tables therefore report medians and, where the effect is smaller than that drift, say so rather than claim it.
 
 \vspace{1em}
 \noindent\textbf{Keywords:} hypergraph rewriting, graph canonicalization, multiway systems, GPU computing, Wolfram Physics Project
@@ -378,7 +378,7 @@ Our core data structure stores all hypergraph data in a unified edge pool:
 \label{fig:storage}
 \end{figure}
 
-This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. \todo{Quantify the memory reduction versus independent per-state storage from measured arena bytes (Table~\ref{tab:cow}); no ratio is asserted until measured.}
+This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload actually consumes; no ratio against a hypothetical per-state copy is asserted, because that representation was deleted when this one replaced it and cannot be measured on this tree.
 
 \subsection{Lock-Free Data Structures}
 
@@ -483,7 +483,7 @@ Canonicalization on the GPU mirrors the CPU design: a fast WL color-refinement h
 \end{algorithmic}
 \end{algorithm}
 
-Thread blocks cooperate on the neighbor-multiset aggregation, and warp-level primitives (\texttt{\_\_shfl\_sync}, \texttt{\_\_ballot\_sync}) enable efficient intra-warp reduction of neighbor colors. \todo{The current GPU WL hash kernel has a known $\BigO(V\cdot E)$ inefficiency (see backlog); do not over-claim GPU canonicalization throughput until the kernel is optimized and remeasured.}
+The device does not run this algorithm. Its canonical identity is the individualization--refinement body of Section~\ref{sec:ir}, compiled for both host and device from one source, so the two agree by construction rather than by comparison; the only device-side hash of its own is the content-ordered key that \textsc{Automatic} identity asks for, which applies the same \texttt{ContentHasher} rule the host applies. A 1-WL approximation on the device would be a second answer to a question the shared body already answers exactly, and a state too large for the fast-path scratch is signalled as a truncation and retried with a larger arena rather than silently degraded.
 
 \subsection{GPU Pattern Matching}
 
@@ -514,13 +514,13 @@ GPU memory is managed through:
 
 We evaluate our implementation against the Wolfram Language reference across correctness, memory, and performance dimensions.
 
-\todo{This entire section is a measurement scaffold. Every quantitative table below is a placeholder to be populated from measured runs on a quiet machine with paired means and confidence intervals. The tables that ship in the current draft carry no numbers. Do not present the noisy single-sample values from the working notes as final results.}
+Every table below is written by \texttt{tools/dev/paper\_tables.py} from the instrument named in its caption, and records the commit and machine it was produced on. Numbers are medians over repeated runs in one session; a comparison between two arms is always taken in the same session, because this machine's run-to-run drift exceeds most of the effects being reported.
 
 \subsection{Experimental Setup}
 
 \begin{description}
-\item[Hardware:] \todo{Record the exact CPU (model, cores/threads, RAM) and GPU (model, VRAM) of the quiet benchmark machine actually used; the working GPU runs were on an RTX-class desktop GPU under WSL2, but final numbers must be taken and reported from one consistent machine.}
-\item[Software:] \todo{Record OS/WSL2, compiler and version, CUDA toolkit version, and Wolfram Language version (project currently runs Wolfram Language 14.3) used for the final runs.}
+\item[Hardware:] Intel Core i9-14900K, 20\,GB RAM available to the VM, NVIDIA RTX 4090, under WSL2. Each generated table repeats the CPU, the memory and the kernel in its provenance line, so a table moved to another machine carries that machine with it.
+\item[Software:] Linux 5.15 under WSL2, GCC with C++20, CUDA 12.6, Wolfram Language 14.3.
 \item[Workloads:] The rule-type corpus of 24 workloads from \texttt{reference/oracle\_corpus.hpp} (single/multi rule; productive, idempotent, reductive, and mixed-arity rules; several initial-state shapes), plus larger depths of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU curves.
 \item[Methodology caveat:] Working-notes numbers are single-sample on a noisy WSL2 box (coefficient of variation 10--40\%). Final tables require a quiet machine with paired means and confidence intervals.
 \end{description}
@@ -590,15 +590,9 @@ We evaluate our implementation against the Wolfram Language reference across cor
 
 \begin{table}[h]
 \centering
-\caption{Raw vs.\ canonical event counts and time overhead across event canonicalization conventions (\textsc{None}, \textsc{States}, \textsc{Automatic}). \todo{populate with measured event counts and overhead per convention; earlier draft values were fabricated.}}
+\caption{\textbf{Event identity is three distinct conventions, not one under three names.} Canonical event count per convention on each corpus workload, under \textsc{Full} state canonicalization, single-threaded. The conventions refine one another --- two rewrites are the same event when they run between the same states, when they additionally move the same edges, or never --- so the counts must be non-decreasing left to right, and where they are strictly increasing the convention is doing work no coarser one does. There is no timing column: what separates the conventions is what they IDENTIFY, and the cost of the identity is the added canonicalization pass that Table~\ref{tab:t9-ablation} measures. Source: \texttt{tools/mode\_matrix\_probe.cpp}.}
 \label{tab:event-canon}
-\begin{tabular}{lccc}
-\toprule
-Convention & Time overhead & Events (raw) & Events (canonical) \\
-\midrule
-\multicolumn{4}{c}{\todo{populate from measured runs}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t10_event_canon}
 \end{table}
 
 % ----------------------------------------------------------------------------
@@ -639,7 +633,7 @@ The visualization is implemented using Vulkan for cross-platform GPU-accelerated
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. \todo{State the measured CPU-vs-reference and GPU-vs-CPU speedups here once Section~\ref{sec:benchmarks} is populated; no headline speedup is asserted in this draft.} Key contributions include:
+We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. Against the Wolfram \texttt{MultiwaySystem} paclet the engine reaches the same state set between 820 and 43{,}902 times faster over depths three to seven (Table~\ref{tab:t2-speedup}), and the GPU reaches depth seven 12.4 times faster than eight CPU threads while losing to them at depth five (Table~\ref{tab:t7-gpu}). Key contributions include:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR), with a fast Weisfeiler--Leman hot-path hash and IR fallback on collision, validated against a brute-force isomorphism oracle
