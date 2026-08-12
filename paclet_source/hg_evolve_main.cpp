@@ -230,6 +230,21 @@ int run_serve_socket(const HostBridge& host, const char* portfile) {
 
 }  // namespace
 
+// The command line this binary actually accepts. Printed for --help and alongside the error for
+// an unrecognised argument, so a caller who guessed wrong is told what the choices are rather
+// than left to infer them from a WXF parse failure.
+static const char* const kUsage =
+    "usage: hg_evolve [--serve | --serve-socket [PORTFILE]] [--version] [--help]\n"
+    "\n"
+    "  (no arguments)          one-shot: read one WXF job from stdin, write the WXF result to\n"
+    "                          stdout. Progress on stderr.\n"
+    "  --serve                 worker: process a stream of length-prefixed WXF jobs on stdin,\n"
+    "                          each framed [8-byte little-endian length][payload], until EOF.\n"
+    "  --serve-socket [FILE]   worker over a loopback TCP socket; with FILE, write the\n"
+    "                          OS-assigned port number there once it is listening.\n"
+    "  --version               print the build stamp (commit and variant) and exit.\n"
+    "  --help, -h              print this and exit.\n";
+
 int main(int argc, char** argv) {
 #if defined(_WIN32)
     // stdin/stdout carry raw WXF bytes; keep them out of text (CRLF) mode.
@@ -248,11 +263,24 @@ int main(int argc, char** argv) {
             std::fputc('\n', stdout);
             return 0;
         }
+        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+            std::fputs(kUsage, stdout);
+            return 0;
+        }
         if (std::strcmp(argv[i], "--serve") == 0) serve = true;
         else if (std::strcmp(argv[i], "--serve-socket") == 0) {
             serve_socket = true;
             // Optional next arg: a path to write the OS-assigned port into.
             if (i + 1 < argc && argv[i + 1][0] != '-') socket_portfile = argv[++i];
+        } else {
+            // AN ARGUMENT THIS BINARY DOES NOT KNOW IS AN ERROR, NOT A NO-OP. Every mode here
+            // reads WXF from stdin, so an unrecognised argument that falls through produces
+            // "Parse error: Unexpected end of WXF data" from an empty stdin -- a message about
+            // the transport, for a mistake in the command line. A mistyped `--serve` would
+            // silently run one-shot instead of serving.
+            std::fprintf(stderr, "HGEvolve fatal: unknown argument '%s'\n\n", argv[i]);
+            std::fputs(kUsage, stderr);
+            return 2;
         }
     }
 
