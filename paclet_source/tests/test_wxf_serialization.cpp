@@ -864,13 +864,13 @@ TEST(WxfSerializationPin, RandomSeedMakesASampledEvolutionReproducible) {
 //
 // SKIPPED, NOT FAILED, when the binary is absent: a machine without CUDA cannot build it, and
 // a skip that says why is honest where a failure would be noise.
+#ifndef _WIN32
 namespace {
 
 std::string gpu_binary_path() {
     return std::string(HG_SOURCE_DIR) + "/paclet/LibraryResources/Linux-x86-64/hg_evolve_gpu";
 }
 
-#ifndef _WIN32
 
 // One --serve worker, driven for the life of the fixture. Frames are 8-byte little-endian
 // lengths followed by the WXF payload, matching run_serve exactly; a ZERO-length reply is how
