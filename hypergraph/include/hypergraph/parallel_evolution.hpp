@@ -1266,39 +1266,40 @@ private:
     // validation (validate_match_forwarding_), meaning it arrived after the check.
     void note_late_arrival(uint64_t match_hash);
 
-    // Helper: Forward existing parent matches to a newly created child
+    // FORWARD A PARENT'S MATCHES TO A NEWLY CREATED CHILD.
+    //
+    // ONE RULE, ONE BODY, and `batch` is what the two submission modes differ by. A non-null
+    // batch means the caller collects the survivors and dispatches them itself (the default);
+    // null means each survivor is submitted as its own rewrite as it is found. Everything else
+    // -- the ancestor walk, the consumed-edge filter, the dedup claim, claim-winner ownership
+    // and the sampling draw -- is identical between the modes, and was written twice before,
+    // which is how the two ended up taking their sampling draws at different sites and filtering
+    // the consumed set two different ways.
+    //
+    // The draw SITE still differs, because a draw is keyed by where it is taken and the two
+    // modes must not collide; it is derived from `batch` rather than passed, so the two cannot
+    // drift apart again.
     void forward_existing_parent_matches(
         StateId parent, StateId child,
         const EdgeId* consumed_edges, uint8_t num_consumed,
         uint32_t step,
-        SVec<MatchRecord>& batch
+        SVec<MatchRecord>* batch
+    );
+
+    // The ancestor chain, walked once: each level filtered against the edges consumed between it
+    // and this child, accumulated on the way up.
+    void forward_from_ancestor_chain(
+        StateId parent, StateId child,
+        const EdgeId* consumed_edges, uint8_t num_consumed,
+        uint32_t step,
+        SVec<MatchRecord>* batch
     );
 
     void forward_matches_from_single_ancestor(
         StateId ancestor, StateId child,
         const EdgeId* accumulated_consumed, uint8_t total_consumed,
         uint32_t step,
-        SVec<MatchRecord>& batch
-    );
-
-    void forward_matches_from_single_ancestor_impl(
-        StateId ancestor, StateId child,
-        const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step,
-        SVec<MatchRecord>& batch
-    );
-
-    // EAGER MODE: Forward existing parent matches with retry loop
-    void forward_existing_parent_matches_eager(
-        StateId parent, StateId child,
-        const EdgeId* consumed_edges, uint8_t num_consumed,
-        uint32_t step
-    );
-
-    void forward_matches_from_single_ancestor_eager(
-        StateId ancestor, StateId child,
-        const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step
+        SVec<MatchRecord>* batch
     );
 
     // Task Submission

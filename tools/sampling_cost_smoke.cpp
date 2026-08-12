@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     else if (arm == "fwdon")  e.set_match_forwarding(true);
     else if (arm == "fwdoff") e.set_match_forwarding(false);
     // The rate with forwarding disabled. Forwarded matches reach a state through
-    // push_match_to_children / forward_matches_from_single_ancestor_eager, and a sampler that
+    // push_match_to_children / forward_matches_from_single_ancestor, and a sampler that
     // did not reach those dispatches would bound the run here and not with forwarding on --
     // which is how the per-state reservoir this arm replaced was caught.
     else if (arm == "ratenofwd") {

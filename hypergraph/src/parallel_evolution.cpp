@@ -584,44 +584,73 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
     if (!any_child) empty.fetch_add(1, std::memory_order_relaxed);
 }
 
-void ParallelEvolutionEngine::forward_existing_parent_matches(
+void ParallelEvolutionEngine::forward_from_ancestor_chain(
     StateId parent,
     StateId child,
     const EdgeId* consumed_edges,
     uint8_t num_consumed,
     uint32_t step,
-    SVec<MatchRecord>& batch
+    SVec<MatchRecord>* batch
 ) {
-    // Accumulate all consumed edges along the path from child to ancestors
+    // The edges consumed between each ancestor and this child, accumulated on the way up.
     EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];
+    constexpr uint8_t kMaxConsumed =
+        static_cast<uint8_t>(sizeof(accumulated_consumed) / sizeof(EdgeId));
     uint8_t total_consumed = 0;
-    for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+    for (uint8_t i = 0; i < num_consumed && total_consumed < kMaxConsumed; ++i) {
         accumulated_consumed[total_consumed++] = consumed_edges[i];
     }
 
-    // Walk up the ancestor chain, forwarding matches from each ancestor. THE WALK COVERS THE
-    // CHAIN AND NOT ONLY THE PARENT: each level is filtered against the edges consumed between it
-    // and this child, accumulated on the way up, so a match that reached no intermediate list
-    // still reaches this child. The dedup claim absorbs whatever a level already carries, and the
-    // walk is 0.2% of the run's instructions (callgrind, two-edge rule at depth 6), so coverage
-    // does not depend on every push having landed and the redundancy costs almost nothing.
+    // THE WALK COVERS THE CHAIN AND NOT ONLY THE PARENT: a match that reached no intermediate
+    // list still reaches this child. The dedup claim absorbs whatever a level already carries,
+    // and the walk is 0.2% of the run's instructions (callgrind, two-edge rule at depth 6), so
+    // coverage does not depend on every push having landed.
     StateId current_ancestor = parent;
     while (current_ancestor != INVALID_ID) {
         forward_matches_from_single_ancestor(current_ancestor, child,
-                                              accumulated_consumed, total_consumed, step, batch);
+                                             accumulated_consumed, total_consumed, step, batch);
 
-        // Move to the next ancestor and accumulate its consumed edges
         auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
         if (!parent_result.has_value()) break;
 
         ParentInfo* pi = *parent_result;
         if (!pi || !pi->has_parent()) break;
 
-        // Add this ancestor's consumed edges to the accumulated set
-        for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
+        for (uint8_t i = 0; i < pi->num_consumed && total_consumed < kMaxConsumed; ++i) {
             accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
         }
         current_ancestor = pi->parent_state;
+    }
+}
+
+void ParallelEvolutionEngine::forward_existing_parent_matches(
+    StateId parent,
+    StateId child,
+    const EdgeId* consumed_edges,
+    uint8_t num_consumed,
+    uint32_t step,
+    SVec<MatchRecord>* batch
+) {
+    // RE-WALK WHILE AN ANCESTOR ON THIS CHAIN IS STILL GAINING MATCHES. Only the immediate
+    // submission mode needs it: a batching caller dispatches after its own state's matching has
+    // completed, so what it would re-walk for is still arriving on ITS clock, whereas an
+    // immediate caller has already dispatched and would never come back for it.
+    //
+    // The epoch is read BEFORE the first walk, so a match that arrives DURING that walk is
+    // caught by the comparison after it. Reading it afterwards would miss exactly the window the
+    // retry exists for.
+    const bool retry_until_settled = (batch == nullptr);
+    uintptr_t epoch_before = retry_until_settled ? ancestor_match_epoch(parent) : 0;
+
+    forward_from_ancestor_chain(parent, child, consumed_edges, num_consumed, step, batch);
+    if (!retry_until_settled) return;
+
+    for (;;) {
+        const uintptr_t epoch_after = ancestor_match_epoch(parent);
+        if (epoch_after == epoch_before) break;
+        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
+        epoch_before = epoch_after;
+        forward_from_ancestor_chain(parent, child, consumed_edges, num_consumed, step, batch);
     }
 }
 
@@ -631,26 +660,21 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
     const EdgeId* accumulated_consumed,
     uint8_t total_consumed,
     uint32_t step,
-    SVec<MatchRecord>& batch
-) {
-    forward_matches_from_single_ancestor_impl(
-        ancestor, child, accumulated_consumed, total_consumed, step, batch);
-}
-
-void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
-    StateId ancestor,
-    StateId child,
-    const EdgeId* accumulated_consumed,
-    uint8_t total_consumed,
-    uint32_t step,
-    SVec<MatchRecord>& batch
+    SVec<MatchRecord>* batch
 ) {
     auto result = state_matches_.lookup_waiting(id_key(ancestor));
     if (!result.has_value()) return;  // Ancestor has no matches yet
 
+    // The draw site, derived from the submission mode rather than passed: a sampling draw is
+    // keyed by where it is taken, so the two modes must not share a site, and deriving it here
+    // is what stops them drifting apart.
+    const uint8_t draw_site = batch ? 1 : 2;
+
     LockFreeList<MatchRecord>* ancestor_matches = *result;
     ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
-        // Skip if match overlaps with ANY consumed edge along the path
+        // Does this match use an edge the path consumed? A linear scan over a bounded array
+        // rather than a set: total_consumed is at most MAX_PATTERN_EDGES * 8 and a match holds
+        // at most MAX_PATTERN_EDGES edges, so the scan is bounded work with no allocation.
         bool overlaps = false;
         for (uint8_t i = 0; i < ancestor_match.num_edges() && !overlaps; ++i) {
             for (uint8_t j = 0; j < total_consumed; ++j) {
@@ -670,7 +694,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         MatchRecord forwarded = ancestor_match;
         forwarded.source_state = child;
 
-        // Deduplicate
+        // Deduplicate. seen_match_hashes_ protects against both push and pull duplicates.
         uint64_t h = forwarded.hash();
         const bool inserted = claim_match(h, forwarded, [&] {
             return hg_->arena().template create<MatchRecord>(forwarded);
@@ -678,7 +702,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         if (!inserted) {
             DEBUG_LOG("FWD_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
                       ancestor, child, ancestor_match.rule_index(), h);
-            return;  // Already seen
+            return;  // Already seen, possibly via push
         }
 
         // Check if this was a "missing" match that arrived late via forward_existing
@@ -687,33 +711,34 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor_impl(
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
         stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
 
-        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu",
-                  ancestor, child, ancestor_match.rule_index(), h);
+        DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
+                  ancestor, child, ancestor_match.rule_index(), h, step);
 
-        // CLAIM-WINNER OWNS THE MATCH AT THIS NODE (same invariant as the eager
-        // pull): store the copy and propagate to this child's own children, exactly
-        // as the push side does when it wins. A pull that claims the hash without
-        // this leaves already-registered grandchildren uncovered (the racing push
-        // sees the hash taken and skips its store+recursion). The rewrite itself is
-        // submitted by the caller's batch phase.
+        // CLAIM-WINNER OWNS THE MATCH AT THIS NODE: store the copy and propagate to this child's
+        // own children, exactly as the push side does when it wins the claim. Without this, a
+        // pull that wins the (match, child) claim races the ancestor's push out of its
+        // store+recursion (the push sees the hash taken and returns), so a GRANDCHILD whose pull
+        // already completed is covered by nobody and the transition is permanently lost.
+        // Symmetric ownership makes the coverage inductive: every claim winner re-establishes
+        // the invariant one level down.
         store_match_for_state(child, forwarded, true);
         push_match_to_children(child, forwarded, step);
 
-        // Thin this transition, on the SAME terms as the eager pull and as a discovered match.
-        // A forwarded match takes its own draw because it is its own transition; storing and
-        // propagating above are deliberately upstream of it, so the match stays available to this
-        // child's own children where it is a different transition and draws again.
+        // Thin this transition, on the same terms as a discovered match. A forwarded match takes
+        // its own draw because it is its own transition; storing and propagating above are
+        // deliberately upstream of it, so the match stays available to this child's own children
+        // where it is a different transition and draws again.
         //
-        // Without this the sampled subgraph depends on which submission mode is in use, since
-        // forwarded matches would enter the batch unthinned while discovered ones are thinned.
+        // Without this the sampled subgraph would depend on which submission mode is in use,
+        // since forwarded matches would arrive unthinned while discovered ones are thinned.
         if (sampling_active() &&
-            !transition_survives(canonical_transition_key(child, forwarded), 1,
+            !transition_survives(canonical_transition_key(child, forwarded), draw_site,
                                  forwarded.rule_index())) return;
 
-        batch.push_back(forwarded);
+        if (batch) batch->push_back(forwarded);
+        else       submit_rewrite_task(forwarded, step);
     });
 }
-
 
 // Fold the match-list head of every ancestor on `parent`'s chain into one token. Two reads
 // returning the same value mean no ancestor ON THIS CHAIN gained a match between them.
@@ -735,159 +760,6 @@ uintptr_t ParallelEvolutionEngine::ancestor_match_epoch(StateId parent) const {
         cur = (*p)->parent_state;
     }
     return token;
-}
-
-void ParallelEvolutionEngine::forward_existing_parent_matches_eager(
-    StateId parent,
-    StateId child,
-    const EdgeId* consumed_edges,
-    uint8_t num_consumed,
-    uint32_t step
-) {
-    // Accumulate all consumed edges along the path from child to ancestors
-    EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];
-    uint8_t total_consumed = 0;
-    for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
-        accumulated_consumed[total_consumed++] = consumed_edges[i];
-    }
-
-    // RETRY LOOP: re-walk while an ancestor ON THIS CHAIN is still gaining matches.
-    uintptr_t epoch_before = ancestor_match_epoch(parent);
-
-    // Walk up the ancestor chain, forwarding matches from each ancestor. THE WALK COVERS THE
-    // CHAIN AND NOT ONLY THE PARENT: each level is filtered against the edges consumed between it
-    // and this child, accumulated on the way up, so a match that reached no intermediate list
-    // still reaches this child. The dedup claim absorbs whatever a level already carries, and the
-    // walk is 0.2% of the run's instructions (callgrind, two-edge rule at depth 6), so coverage
-    // does not depend on every push having landed and the redundancy costs almost nothing.
-    StateId current_ancestor = parent;
-    while (current_ancestor != INVALID_ID) {
-        forward_matches_from_single_ancestor_eager(
-            current_ancestor, child,
-            accumulated_consumed, total_consumed, step);
-
-        // Move to next ancestor and accumulate consumed edges
-        auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
-        if (!parent_result.has_value()) break;
-
-        ParentInfo* pi = *parent_result;
-        if (!pi || !pi->has_parent()) break;
-
-        for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
-            accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
-        }
-        current_ancestor = pi->parent_state;
-    }
-
-    // Check if epoch changed - if so, retry to catch any new matches
-    uintptr_t epoch_after = ancestor_match_epoch(parent);
-    while (epoch_after != epoch_before) {
-        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
-        epoch_before = epoch_after;
-
-        // Reset consumed edges and re-walk
-        total_consumed = 0;
-        for (uint8_t i = 0; i < num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
-            accumulated_consumed[total_consumed++] = consumed_edges[i];
-        }
-
-        current_ancestor = parent;
-        while (current_ancestor != INVALID_ID) {
-            forward_matches_from_single_ancestor_eager(
-                current_ancestor, child,
-                accumulated_consumed, total_consumed, step);
-
-            auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
-            if (!parent_result.has_value()) break;
-
-            ParentInfo* pi = *parent_result;
-            if (!pi || !pi->has_parent()) break;
-
-            for (uint8_t i = 0; i < pi->num_consumed && total_consumed < sizeof(accumulated_consumed)/sizeof(EdgeId); ++i) {
-                accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
-            }
-            current_ancestor = pi->parent_state;
-        }
-
-        epoch_after = ancestor_match_epoch(parent);
-    }
-}
-
-void ParallelEvolutionEngine::forward_matches_from_single_ancestor_eager(
-    StateId ancestor,
-    StateId child,
-    const EdgeId* accumulated_consumed,
-    uint8_t total_consumed,
-    uint32_t step
-) {
-    auto result = state_matches_.lookup_waiting(id_key(ancestor));
-    if (!result.has_value()) return;
-
-    // Build consumed set once for O(1) amortized overlap checks
-    SUSet<EdgeId> consumed_set(accumulated_consumed, accumulated_consumed + total_consumed);
-
-    LockFreeList<MatchRecord>* ancestor_matches = *result;
-    ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
-        // Skip if match overlaps with ANY consumed edge - O(n) vs O(n*m)
-        bool overlaps = false;
-        for (uint8_t i = 0; i < ancestor_match.num_edges() && !overlaps; ++i) {
-            if (consumed_set.count(ancestor_match.matched_edges()[i])) {
-                overlaps = true;
-            }
-        }
-
-        if (overlaps) {
-            stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-
-        // Forward by reference: share the immutable core, set this child as source.
-        MatchRecord forwarded = ancestor_match;
-        forwarded.source_state = child;
-
-        // Deduplicate - seen_match_hashes_ protects against both push and pull duplicates
-        uint64_t h = forwarded.hash();
-        const bool inserted = claim_match(h, forwarded, [&] {
-            return hg_->arena().template create<MatchRecord>(forwarded);
-        });
-        if (!inserted) {
-            DEBUG_LOG("FWD_EAGER_DUP ancestor=%u -> child=%u rule=%u hash=%lu",
-                      ancestor, child, ancestor_match.rule_index(), h);
-            return;  // Already seen (possibly via push)
-        }
-
-        // Check if this was a "missing" match that arrived late
-        note_late_arrival(h);
-
-        total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
-
-        DEBUG_LOG("FWD_EAGER ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
-                  ancestor, child, ancestor_match.rule_index(), h, step);
-
-        // CLAIM-WINNER OWNS THE MATCH AT THIS NODE: store the copy and propagate to
-        // this child's own children, exactly as the push side does when it wins the
-        // claim. Without this, a pull that wins the (match, child) claim races the
-        // ancestor's push out of its store+recursion (the push sees the hash taken
-        // and returns), so a GRANDCHILD whose pull already completed is covered by
-        // nobody and the transition is permanently lost. Symmetric ownership makes
-        // the coverage inductive: every claim winner re-establishes the invariant
-        // one level down.
-        store_match_for_state(child, forwarded, true);
-        push_match_to_children(child, forwarded, step);
-
-        // Thin this transition. A forwarded match takes the SAME draw as a discovered one --
-        // that is the property a per-state count could not have, because forwarding is what
-        // stops a state's match population from ever closing. Storing and propagating above
-        // are deliberately upstream of it: the match stays available to this child's own
-        // children, where it is a different transition and gets its own draw.
-        if (sampling_active() &&
-            !transition_survives(canonical_transition_key(child, forwarded), 2,
-                                 forwarded.rule_index())) return;
-
-        // EAGER: Immediately spawn REWRITE task
-        submit_rewrite_task(forwarded, step);
-    });
 }
 
 // =============================================================================
@@ -2032,15 +1904,12 @@ void ParallelEvolutionEngine::execute_match_task(
         // DELTA MATCHING MODE (child state)
         stats_.delta_pattern_matches.fetch_add(1, std::memory_order_relaxed);
 
-        if (batched_matching_) {
-            forward_existing_parent_matches(
-                ctx.parent_state, state,
-                ctx.consumed_edges, ctx.num_consumed, step, batch);
-        } else {
-            forward_existing_parent_matches_eager(
-                ctx.parent_state, state,
-                ctx.consumed_edges, ctx.num_consumed, step);
-        }
+        // A batching caller collects the survivors and dispatches them with its own; an
+        // immediate one submits each as it is found, which is the only difference between the
+        // two and is what the null batch says.
+        forward_existing_parent_matches(
+            ctx.parent_state, state, ctx.consumed_edges, ctx.num_consumed, step,
+            batched_matching_ ? &batch : nullptr);
 
         delta_start = batch.size();
 
