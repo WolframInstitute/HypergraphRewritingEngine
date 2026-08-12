@@ -6,11 +6,17 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+// The process gate below drives a worker through a pair of FIFOs, which needs fork, mkfifo and
+// waitpid. None of them exists on Windows, and the gate is compiled out there rather than
+// emulated: what it checks -- that the SHIPPED binary serves the four verbs over the wire -- is
+// a property of the binary, and the Windows leg has no such binary to point at.
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -864,6 +870,8 @@ std::string gpu_binary_path() {
     return std::string(HG_SOURCE_DIR) + "/paclet/LibraryResources/Linux-x86-64/hg_evolve_gpu";
 }
 
+#ifndef _WIN32
+
 // One --serve worker, driven for the life of the fixture. Frames are 8-byte little-endian
 // lengths followed by the WXF payload, matching run_serve exactly; a ZERO-length reply is how
 // the worker reports that a job threw, which is distinct from a reply that happens to be empty.
@@ -1038,3 +1046,5 @@ TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
 
     worker_stop(w);
 }
+
+#endif  // _WIN32

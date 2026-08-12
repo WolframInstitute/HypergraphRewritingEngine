@@ -5,6 +5,13 @@
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
 #include <cstring>
+// AbortedException derives from std::exception, and three constructors below move their
+// members. Neither is optional and neither was declared: on libstdc++ both arrive through
+// some other header first and the omission is invisible; on libc++ they do not, so any
+// translation unit that includes this header BEFORE the one that happened to supply them
+// fails to compile. A new .cpp is exactly such a unit.
+#include <exception>
+#include <utility>
 
 #include "bitset.hpp"
 #include "hgcommon/core.hpp"
