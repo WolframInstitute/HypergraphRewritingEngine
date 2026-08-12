@@ -140,7 +140,9 @@ if selected "Windows-x86-64"; then
         # exe from the platform directory -- it leaves it there to be archived -- so on a
         # release the difference between SKIPPED and FAILED is the difference between shipping
         # a stale binary and knowing you cannot ship.
-        if ./build_windows_gpu.sh; then
+        # `clean` propagates: the caller asking for a fresh configure means the GPU leg's cache
+        # is as suspect as every other target's.
+        if ./build_windows_gpu.sh $([[ "$CLEAN" == "1" ]] && echo clean); then
             BUILT+=("Windows-x86-64/hg_evolve_gpu.exe")
         elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
             echo -e "${RED}Windows-x86-64/hg_evolve_gpu.exe: build failed and HG_REQUIRE_GPU=1${NC}"

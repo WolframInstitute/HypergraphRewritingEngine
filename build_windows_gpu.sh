@@ -18,8 +18,18 @@
 # toolset (any edition), an NVIDIA CUDA Toolkit, and CMake.
 #
 #   ./build_windows_gpu.sh                   # broad arch set (Turing..Hopper), shippable
+#   ./build_windows_gpu.sh clean             # discard the build dir first (toolset change)
 #   HG_GPU_ARCHS=89 ./build_windows_gpu.sh   # single arch (faster; e.g. just Ada/RTX 40xx)
 set -euo pipefail
+
+CLEAN=0
+for arg in "$@"; do
+    case "$arg" in
+        --clean|clean) CLEAN=1 ;;
+        "")            ;;
+        *)             echo "error: unknown argument '$arg' (expected 'clean')"; exit 2 ;;
+    esac
+done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
@@ -59,9 +69,26 @@ CUDA_DIR_WIN="$(wslpath -w "$CUDA_DIR_WSL")"
 echo "==> toolchain: $GEN, CUDA $CUDA_VER (toolset via Toolkit path), archs [$ARCHS]"
 
 SRC="$(wslpath -w "$ROOT")"
-# Fresh build dir: a cache from a different toolset/generator makes CMake abort with a
-# "generator/toolset does not match" error.
-rm -rf "$BUILD_WSL"
+# WIPE ONLY WHEN THE CACHE IS ACTUALLY INCOMPATIBLE. A cache from a different generator makes
+# CMake abort with "generator does not match", which is what this guards; a cache from the SAME
+# generator is reusable, and reusing it is the difference between a re-link and a multi-hour
+# native CUDA rebuild. That matters because the release re-stamps every artifact at the final
+# commit, and a leg that can only ever build from scratch cannot be re-stamped affordably.
+# `clean` forces the wipe, for a toolset change CMake cannot detect on its own.
+# `if` rather than `[[ ... ]] && ...`: under `set -e` an AND-list whose left side is false is the
+# whole statement and its non-zero status ends the script, so the no-cache case would exit here.
+cached_gen=""
+if [[ -f "$BUILD_WSL/CMakeCache.txt" ]]; then
+    cached_gen="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_WSL/CMakeCache.txt")"
+fi
+if [[ "$CLEAN" == "1" || "$cached_gen" != "$GEN" ]]; then
+    if [[ -n "$cached_gen" ]]; then
+        echo "==> wiping build dir: cached generator '$cached_gen' != '$GEN'"
+    fi
+    rm -rf "$BUILD_WSL"
+else
+    echo "==> reusing build dir (generator matches); pass 'clean' to force a fresh configure"
+fi
 mkdir -p "$BUILD_WSL"
 
 echo "==> configuring (native MSVC + nvcc)"
