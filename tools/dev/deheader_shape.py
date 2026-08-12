@@ -12,6 +12,23 @@ path).
 Reads the report `source_map.py` already writes rather than re-parsing the tree: one
 libclang pass costs about four minutes, and a second body asking the same question of the
 same sources would be a second implementation of the rule.
+
+THE DONE-LINE, AND WHERE IT STANDS (measured 2026-08-12, 404 movable bodies / 2100 lines).
+De-headering is finished when every movable body large enough to matter is either already in
+a translation unit or is on a hot path, because moving a hot body trades its inlining for
+nothing. Reading the distribution this run prints:
+
+  - median movable body: 3 lines. 291 of 404 are five lines or fewer -- accessors, whose
+    move is a large diff for no measurable gain.
+  - bodies over 40 lines: FOUR. `signature.hpp:enumerate_compatible_signatures` and
+    `detail::enumerate_partitions_recursive` are reached per pattern edge per state through
+    `SignatureIndex::for_each_candidate`, and `MatchRecord::hash` runs once per discovered
+    match and again per (match, descendant) pair. All three stay. The fourth,
+    `rule_analysis.hpp:lhs_is_acyclic`, runs once per rule.
+
+So the criterion is met at the floor: what is left in headers is there because moving it
+would cost more than it saves. Re-run this after any header growth -- a NEW body over 40
+lines that is not hot is the signal that the floor moved.
 """
 import os
 import re
