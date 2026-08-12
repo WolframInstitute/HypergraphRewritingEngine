@@ -607,15 +607,9 @@ Depth & Raw states (full) & Raw states (quotient) & Time (full) & Time (quotient
 
 \begin{table}[h]
 \centering
-\caption{\textbf{T7 --- GPU acceleration.} Match-kernel time and end-to-end evolution time, GPU vs.\ CPU, at increasing depth on the Wolfram rule, including the lazy-index variant. Branchial edges via a per-(state,edge) index. Source: \texttt{tools/bench\_gpu\_evolve}. \todo{populate on the final GPU; the GPU WL hash kernel's known inefficiency (Section~\ref{sec:gpu}) must be resolved or disclosed before publishing throughput.}}
+\caption{\textbf{T7 --- GPU acceleration.} Match-kernel time and end-to-end evolution time, GPU vs.\ CPU, at increasing depth on the Wolfram rule, including the lazy-index variant. Branchial edges via a per-(state,edge) index. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}, run in one session on the machine recorded in the table's provenance line. Both sides run the same rule, initial condition, canonicalization mode and exploration strategy, and report medians. The device loses at depth 5, where the work does not cover the launch, and wins from depth 6 on.}
 \label{tab:t7-gpu}
-\begin{tabular}{lccc}
-\toprule
-Depth & Match kernel (ms) & End-to-end CPU (ms) & End-to-end GPU (ms) \\
-\midrule
-\multicolumn{4}{c}{\todo{populate from bench\_gpu\_evolve}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t7_gpu}
 \end{table}
 
 \subsection{Thread Scaling (Table T8)}

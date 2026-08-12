@@ -123,6 +123,45 @@ def scaling(build, tool, name, steps, iters, caption_tool):
     return len(rows)
 
 
+def t7(build, gpu_build, steps_list, iters):
+    """GPU against CPU on ONE workload, at increasing depth.
+
+    bench_cpu_evolve and bench_gpu_evolve run the same WPP rule, the same two-edge initial
+    condition, Full canonicalization and quotient exploration, so the medians are comparable.
+    Both are medians of the same iteration count taken in the same session, because wall clock
+    on this class of machine drifts more between sessions than the effects being reported.
+    """
+    rows = []
+    for st in steps_list:
+        gout = run([os.path.join(gpu_build, "bench_gpu_evolve"), str(st), str(iters)], timeout=3600)
+        m = re.search(r"steps=(\d+) states=(\d+) events=(\d+) \| evolve\(\)_median_ms=([\d.]+) \| "
+                      r"PersistentEvolver_median_ms=([\d.]+)", gout)
+        if not m:
+            raise SystemExit("bench_gpu_evolve produced no parseable row:\n%s" % gout[-2000:])
+        _, states, events, gpu_call, gpu_persist = m.groups()
+
+        cout = run([os.path.join(build, "bench_cpu_evolve"), str(st), str(iters)], timeout=3600)
+        cpu = {}
+        for line in cout.splitlines():
+            c = re.search(r"threads=(\d+)\s+steps=\d+\s+canonical=\d+\s+raw=(\d+)\s+median_ms=([\d.]+)", line)
+            if c:
+                cpu[int(c.group(1))] = float(c.group(3))
+        if 1 not in cpu or 8 not in cpu:
+            raise SystemExit("bench_cpu_evolve gave no 1- and 8-thread rows:\n%s" % cout[-2000:])
+        rows.append((st, states, events, cpu[1], cpu[8], float(gpu_persist), float(gpu_call)))
+
+    b = [provenance("tools/bench_cpu_evolve.cpp + tools/bench_gpu_evolve.cpp"),
+         r"\begin{tabular}{rrrrrrrr}", r"\toprule",
+         r"Steps & Raw states & Events & CPU 1t ms & CPU 8t ms & GPU ms & vs.\ CPU 1t & vs.\ CPU 8t \\",
+         r"\midrule"]
+    for (st, states, events, c1, c8, gpu, _call) in rows:
+        b.append("%d & %s & %s & %.1f & %.1f & %.1f & %.2f & %.2f \\\\" % (
+            st, states, events, c1, c8, gpu, c1 / gpu, c8 / gpu))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t7_gpu.tex", "\n".join(b) + "\n")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -138,9 +177,8 @@ def main():
                 "tools/bench_cpu_evolve.cpp")
     print("T8: %d thread counts" % n)
     if a.gpu:
-        n = scaling(a.gpu_build_dir, "bench_gpu_evolve", "t7_gpu.tex", a.steps, a.iters,
-                    "tools/bench_gpu_evolve.cpp")
-        print("T7: %d rows" % n)
+        n = t7(a.build_dir, a.gpu_build_dir, [5, 6, 7], a.iters)
+        print("T7: %d depths" % n)
     return 0
 
 
