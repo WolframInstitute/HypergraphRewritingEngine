@@ -94,8 +94,18 @@ Keep it current: a release that skips a line here is not released.*
       from a superseded converter path. The build run above did not touch it; nothing current
       writes that directory, and it cannot ship. Earlier notes here that treated it as this
       gate's input were wrong.)*
-- [ ] **Every shipped artifact is stamped with HEAD.**
-      `python3 tools/dev/artifact_stamp_check.py --require-clean` → 0 findings.
+- [x] **Every shipped artifact is stamped with HEAD.**
+      `python3 tools/dev/artifact_stamp_check.py --require-clean` → **0 findings over 14 artifacts
+      at 2026-08-12**, after all fourteen were rebuilt at the release commit: the six platform
+      libraries and six `hg_evolve` binaries by `./build_all_platforms.sh` (6 built, 0 failed),
+      `Linux-x86-64/hg_evolve_gpu` from `build_gpu`, and `Windows-x86-64/hg_evolve_gpu.exe` by
+      `./build_windows_gpu.sh` (98 MB, native MSVC + CUDA 12.6, archs 75/80/86/89/90).
+      Meeting this line at all required a build fix. `build_windows_gpu.sh` opened with an
+      unconditional `rm -rf` of its build directory, so the one artifact that takes hours to
+      produce could only ever be built from scratch -- and re-stamping at the final commit means
+      rebuilding after it. The wipe now fires only when the cached CMake generator differs from
+      the one about to be used, or on an explicit `clean`, which makes the re-stamp a recompile
+      of the three translation units carrying `HG_BUILD_COMMIT` plus a link.
       This is the line that replaces reading file dates. A release ships binaries for six
       platforms plus two CUDA executables and the assembling host can EXECUTE at most one of
       them, so `--version` cannot answer "is this current?" for the rest; each artifact instead
@@ -172,7 +182,12 @@ Keep it current: a release that skips a line here is not released.*
       not a blocker — but it is the first thing a user sees.*
 
 ## Test gates
-- [x] CPU suite green. **275/275 at 2026-08-12**, run from `build_linux`.
+- [x] CPU suite green. **275/275 at 2026-08-12**, run from `build_linux`, on the release commit.
+      `ctest` alongside it is **44/45**, and the one failure is not a defect:
+      `JobSystemPerformanceTest.ThreadScalingBenchmark` asserts a wall-clock speedup, it passes on
+      its own in 0.27 s, and it failed only while a native CUDA build saturated the machine. That
+      test already `GTEST_SKIP`s under `CI` for exactly this reason -- performance assertions are
+      not meaningful on a contended host.
       *Run it from `build_linux`, not the repository root:* `PacletTest` loads the paclet from
       `../paclet`, which a Windows `wolframscript` resolves through the UNC mapping of the
       inherited working directory. From the root it resolves one level too high; the test now says
@@ -208,7 +223,13 @@ Keep it current: a release that skips a line here is not released.*
       gpu=30063`), and per-mode `NumStates` is `CanonicalStateCount.ModesVsCpu`, which reproduces
       the CPU's `num_canonical_states()` by the same per-mode rule rather than reverse-engineering
       it (`test_gpu_vs_cpu_differential.cpp:1174-1209`).
-- [x] `gpu_differential_tests` and `hg_gpu_tests` green. **36/36 and 98/98 at 2026-08-03.**
+- [x] `gpu_differential_tests` and `hg_gpu_tests` green. **36/36 and 93/93 at 2026-08-12**, on
+      the release commit. The unit count is 93 rather than the 98 recorded earlier because #146
+      deleted the dead 1-WL device path and the five tests that only exercised it. The
+      differential suite was run in five parts (its five fixed suites, then the 28-case corpus in
+      four `GTEST_TOTAL_SHARDS` shards) because another tenant held the GPU at 100% utilisation
+      and 13.4 GB, which stretches the whole-suite wall time past a single invocation's budget;
+      the shards partition the same 36 tests and every one passed.
 - [x] Determinism gate green **with TR on and quotient on**. **2026-08-03**: `CausalDeterminism.*`
       4/4, and `quotient_determinism_rate_probe` 0/1100 sweeps cumulative at `--load 6`
       (threads {1,2,8} × seeds {fixed, random} × WPP+mixed1+mixed2).
