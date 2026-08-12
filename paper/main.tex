@@ -1,0 +1,800 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================================
+% PACKAGES
+% ============================================================================
+
+% Core formatting
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+
+% Mathematics
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Graphics and figures
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{shapes,arrows,positioning,calc,patterns,decorations.pathreplacing}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Code listings
+\usepackage{listings}
+\lstset{
+    basicstyle=\small\ttfamily,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    breaklines=true,
+    frame=single,
+    captionpos=b
+}
+
+% Colors
+\usepackage{xcolor}
+\definecolor{wolfram}{RGB}{221,51,51}
+\definecolor{cpublue}{RGB}{51,102,204}
+\definecolor{gpugreen}{RGB}{51,153,51}
+
+% Hyperlinks
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+% Bibliography
+\usepackage[numbers,sort&compress]{natbib}
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+% Custom commands
+\newcommand{\BigO}{\mathcal{O}}
+\newcommand{\hypergraph}{\mathcal{H}}
+\newcommand{\state}{\mathcal{S}}
+\newcommand{\event}{\mathcal{E}}
+\newcommand{\rewriterule}{\mathcal{R}}
+\newcommand{\match}{\mathcal{M}}
+\newcommand{\hash}{\textsc{Hash}}
+\newcommand{\canon}{\textsc{Canon}}
+
+% Visible placeholder marker for numbers/claims pending measurement.
+\newcommand{\todo}[1]{\textbf{\textcolor{red}{[TODO: #1]}}}
+
+% ============================================================================
+% DOCUMENT
+% ============================================================================
+
+\begin{document}
+
+% ----------------------------------------------------------------------------
+% TITLE
+% ----------------------------------------------------------------------------
+
+\title{\textbf{Rewriting the Universe\\[0.3em]
+\large High-Performance Hypergraph Evolution for the Wolfram Physics Project}}
+
+\author{
+    Richard Assar\\
+    \textit{Wolfram Institute}\\
+    \texttt{rassar@wolframinstitute.org}
+}
+
+\date{\today}
+
+\maketitle
+
+% ----------------------------------------------------------------------------
+% ABSTRACT
+% ----------------------------------------------------------------------------
+
+\begin{abstract}
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), used as the reference canonicalizer, paired with a fast Weisfeiler--Leman (WL) color-refinement hash on the hot path that falls back to IR whenever a hash collision must be resolved; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
+
+\vspace{0.5em}
+\noindent\todo{All headline speedup figures (CPU vs.\ the Wolfram Language reference, and GPU vs.\ CPU) are pending measurement on a quiet machine and are reported in Section~\ref{sec:benchmarks} as scaffolded result tables. No performance number in this draft should be read as final.}
+
+\vspace{1em}
+\noindent\textbf{Keywords:} hypergraph rewriting, graph canonicalization, multiway systems, GPU computing, Wolfram Physics Project
+\end{abstract}
+
+% ----------------------------------------------------------------------------
+% INTRODUCTION
+% ----------------------------------------------------------------------------
+
+\section{Introduction}
+\label{sec:introduction}
+
+The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This computational approach to physics generates rich mathematical structures---causal graphs capturing relativistic causality, branchial graphs encoding quantum-like superposition, and multiway evolution graphs representing the space of all possible histories.
+
+While conceptually elegant, exhaustive multiway evolution presents significant computational challenges. The number of possible states grows exponentially with evolution steps, and each step requires expensive operations: pattern matching against potentially large hypergraphs, state canonicalization to detect isomorphic duplicates, and event tracking to construct causal and branchial structures. The reference implementation in Wolfram Language, while mathematically complete, becomes impractical for evolutions beyond a few hundred states.
+
+This paper presents a high-performance implementation addressing these challenges through:
+
+\begin{enumerate}
+    \item \textbf{Exact canonicalization with a fast hot-path hash:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the exact reference canonicalizer, and a Weisfeiler--Leman color-refinement hash~\cite{weisfeiler1968reduction} as the fast hot-path signature. WL may collide on isomorphism-hard instances; whenever it does, the engine falls back to IR to confirm or separate states, so deduplication remains exact.
+
+    \item \textbf{Lock-free concurrency:} Our data structures---concurrent hash maps, segmented arrays, lock-free lists---enable parallel evolution without contention bottlenecks.
+
+    \item \textbf{GPU acceleration:} A GPU evolution backend offloads pattern matching and canonicalization for suitable workloads.
+
+    \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always WL-hash with IR confirmation.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:background} reviews hypergraph rewriting and the Wolfram Physics framework. Section~\ref{sec:canonicalization} presents our canonicalization algorithms. Section~\ref{sec:pattern-matching} describes the pattern matching system. Section~\ref{sec:architecture} details the system architecture. Section~\ref{sec:gpu} covers GPU acceleration. Section~\ref{sec:benchmarks} presents experimental results. Section~\ref{sec:conclusion} concludes with future directions.
+
+% ----------------------------------------------------------------------------
+% BACKGROUND
+% ----------------------------------------------------------------------------
+
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{Hypergraph Rewriting Systems}
+
+A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. Unlike standard graphs where edges connect exactly two vertices, hyperedges may connect any number of vertices with arbitrary arity.
+
+\begin{definition}[Rewriting Rule]
+A rewriting rule $\rewriterule = (L, R)$ consists of a left-hand side pattern $L$ and right-hand side replacement $R$, both hypergraphs. A \emph{match} of $L$ in $\hypergraph$ is an injective mapping $\phi: V_L \to V_\hypergraph$ such that the image of each hyperedge in $L$ appears in $\hypergraph$.
+\end{definition}
+
+Applying rule $\rewriterule$ at match $\phi$ produces a new hypergraph $\hypergraph'$ by:
+\begin{enumerate}
+    \item Removing all hyperedges in $\phi(L)$ from $\hypergraph$
+    \item Adding hyperedges from $R$, extending $\phi$ to map new vertices in $R$ to fresh vertices
+\end{enumerate}
+
+\subsection{Multiway Evolution}
+
+\emph{Multiway evolution} explores all possible rule applications simultaneously, generating a directed acyclic graph of states connected by events.
+
+\begin{definition}[Evolution Graph]
+Given initial state $\state_0$ and rule set $\{\rewriterule_i\}$, the evolution graph $G = (\state, \event)$ contains:
+\begin{itemize}
+    \item States $\state$: all hypergraphs reachable from $\state_0$
+    \item Events $\event$: transitions $(s, s', r, \phi)$ where state $s$ rewrites to $s'$ via rule $r$ at match $\phi$
+\end{itemize}
+\end{definition}
+
+The \emph{causal graph} captures dependencies between events based on shared hyperedges. The \emph{branchial graph} connects states reachable at the same evolution step, encoding branching structure analogous to quantum superposition~\cite{wolfram2020project}.
+
+\subsection{The Graph Isomorphism Problem}
+
+State deduplication requires detecting when two hypergraphs are isomorphic---structurally identical up to vertex relabeling. Graph isomorphism is known to be in NP but not known to be NP-complete or in P, occupying a unique complexity-theoretic position~\cite{babai2016quasipolynomial}.
+
+For practical systems, we employ \emph{graph hashing}: computing a canonical signature $h(\hypergraph)$ such that isomorphic graphs have identical hashes. While perfect hashing (injective for non-isomorphic graphs) requires solving isomorphism exactly, approximate hashes suffice when combined with explicit isomorphism testing for collisions.
+
+\subsection{Related Work}
+
+\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so we use it only as a fast hot-path hash backed by an IR fallback. Uniqueness trees~\cite{gorard2016uniqueness} were proposed as a polynomial approach to graph isomorphism; we do not use them---the approach does not give a sound canonical form for our workloads, and IR provides the exactness guarantee we require.
+
+\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. Our megakernel approach differs by targeting the specific workload of iterative multiway evolution.
+
+\textbf{Term rewriting:} High-performance term rewriting systems~\cite{van2019fastest} optimize similar pattern matching operations but typically assume tree-structured terms rather than graph-structured hypergraphs.
+
+% ----------------------------------------------------------------------------
+% CANONICALIZATION
+% ----------------------------------------------------------------------------
+
+\section{Graph Canonicalization}
+\label{sec:canonicalization}
+
+Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). We split this into two roles: an exact reference canonicalizer, individualization--refinement (IR), and a fast approximate hash, Weisfeiler--Leman (WL), used on the hot path with an IR fallback. There is no third, ``polynomial'' canonicalizer.
+
+\subsection{Individualization--Refinement (Exact Reference)}
+\label{sec:ir}
+
+The exact canonical form is computed by McKay-style individualization--refinement~\cite{mckay2014practical}, the same family of algorithms underlying nauty and Traces. IR produces a canonical labeling---and, as a byproduct, a set of automorphism generators and vertex/edge orbits---such that two hypergraphs receive identical canonical forms if and only if they are isomorphic.
+
+\begin{definition}[Canonical Form]
+A canonicalization $\canon$ maps each hypergraph to a labeled representative such that $\canon(\hypergraph_1) = \canon(\hypergraph_2)$ iff $\hypergraph_1 \cong \hypergraph_2$.
+\end{definition}
+
+IR proceeds by iterated color refinement to a stable coloring; when refinement leaves a non-singleton cell, it \emph{individualizes} one vertex (assigns it a distinguishing color) and recurses, exploring a search tree of refinements. Automorphisms discovered along the way prune the tree so that symmetric branches are not re-explored, and the lexicographically extremal leaf defines the canonical labeling.
+
+\begin{remark}[Complexity]
+Like nauty, IR is exponential in the worst case but fast on typical instances. It gives no polynomial-time guarantee, and we claim none. IR is expensive precisely on highly symmetric (high-automorphism) states, which is why it is not run on every state---see the hot-path hash below.
+\end{remark}
+
+The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact offline reconstruction of causal and branchial multiplicities.
+
+\subsection{Weisfeiler--Leman Hot-Path Hash}
+
+Running IR on every candidate state is wasteful: most successor states are trivially distinguished by a much cheaper signature. On the hot path we therefore compute a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}, and only invoke IR when WL cannot settle a comparison. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, but certain non-isomorphic states (e.g.\ regular graphs with identical local structure) may collide. Collisions are safe because they are resolved exactly by IR before two states are declared equal.
+
+\begin{algorithm}
+\caption{Weisfeiler-Lehman Hash}
+\label{alg:wl}
+\begin{algorithmic}[1]
+\Procedure{WLHash}{$\hypergraph$}
+    \State Initialize $c_v^{(0)} \gets \deg(v)$ for all $v$
+    \State $i \gets 0$
+    \Repeat
+        \State $i \gets i + 1$
+        \State \textbf{for} each $v \in V$ \textbf{do}
+        \State \quad $c_v^{(i)} \gets \hash(c_v^{(i-1)}, \text{multiset}\{c_u^{(i-1)} : u \in N(v)\})$
+    \Until{$\{c_v^{(i)}\} = \{c_v^{(i-1)}\}$} \Comment{partition stable}
+    \State \Return $\hash(\text{sorted}(\{c_v^{(i)} : v \in V\}))$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\begin{proposition}[WL Complexity]
+1-WL requires $\BigO(|V|^2 \cdot |E|)$ time per iteration, with at most $|V|$ iterations.
+\end{proposition}
+
+WL is fast but provably fails to distinguish certain non-isomorphic graphs (e.g.\ regular graphs with identical local structure). We treat this not as a competing canonicalizer but as a filter: WL prunes the vast majority of comparisons cheaply, and IR (Section~\ref{sec:ir}) supplies the exact verdict whenever WL is inconclusive.
+
+\subsection{State Canonicalization Modes}
+
+Rather than exposing a choice between competing hashing algorithms, the engine exposes a single \emph{state canonicalization mode} that controls how aggressively isomorphic states are merged:
+
+\begin{lstlisting}[language=C++,caption=State canonicalization mode]
+enum class StateCanonicalizationMode {
+    None,       // keep all states distinct; no dedup
+    Automatic,  // fast WL content hash; may false-merge
+    Full        // exact: WL hash + IR confirmation on collision
+};
+\end{lstlisting}
+
+\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by the fast WL content hash alone; it is cheap but may false-merge WL-indistinguishable non-isomorphic states, so it is offered only where that approximation is acceptable. \textsc{Full} is the exact default path used for all correctness-critical results: it hashes with WL and confirms every candidate merge with IR, so two states are identified if and only if they are genuinely isomorphic. Uniqueness trees are not part of any mode.
+
+\begin{remark}[Incremental hashing]
+Child states differ from their parents by only the consumed and produced edges, so an incremental hash keyed on that delta is attractive. The engine already threads the per-event edge delta to the canonicalizer, but incremental WL hashing is not yet wired into the default path; it is ongoing work rather than a shipped optimization, and no incremental-hashing speedup is claimed here.
+\end{remark}
+
+% ----------------------------------------------------------------------------
+% PATTERN MATCHING
+% ----------------------------------------------------------------------------
+
+\section{Pattern Matching}
+\label{sec:pattern-matching}
+
+Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---dominates evolution runtime. We employ multi-level indexing to minimize candidate enumeration.
+
+\subsection{Edge Signature Indexing}
+
+\begin{definition}[Edge Signature]
+The \emph{signature} of hyperedge $e = (v_1, \ldots, v_k)$ is the pattern $\sigma(e) = (s_1, \ldots, s_k)$ where $s_i = s_j$ iff $v_i = v_j$.
+\end{definition}
+
+For example, edge $(3, 3, 7)$ has signature $(0, 0, 1)$, capturing the repetition pattern without specific vertex labels. Our signature index maps signatures to edge lists:
+
+\begin{equation}
+    \text{SigIndex}: \sigma \mapsto \{e \in E : \sigma(e) = \sigma\}
+\end{equation}
+
+Pattern edges can match data edges only with compatible signatures. For pattern signature $\sigma_p$ with $d$ distinct variables, the number of compatible data signatures is the Bell number $B_d$~\cite{rota1964number}.
+
+\begin{table}[h]
+\centering
+\caption{Bell numbers for signature compatibility}
+\label{tab:bell}
+\begin{tabular}{ccccccccc}
+\toprule
+$d$ & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
+\midrule
+$B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Vertex Index}
+
+For bound pattern variables, we maintain an inverted index:
+\begin{equation}
+    \text{VertexIndex}: v \mapsto \{(e, i) : e_i = v\}
+\end{equation}
+
+This enables efficient candidate generation when pattern variables are already assigned from prior edge matches.
+
+\subsection{Matching Algorithm}
+
+Pattern matching proceeds through a task-based system:
+
+\begin{algorithm}
+\caption{Task-Based Pattern Matching}
+\label{alg:matching}
+\begin{algorithmic}[1]
+\Procedure{FindMatches}{$L$, $\hypergraph$}
+    \State Order pattern edges $e_1, \ldots, e_k$ by selectivity
+    \State Enqueue $\textsc{ScanTask}(e_1, \emptyset)$
+    \While{task queue non-empty}
+        \State $\tau \gets \textsc{Dequeue}()$
+        \If{$\tau$ is $\textsc{ScanTask}(e_i, \phi)$}
+            \State \textbf{for} each $e \in \text{SigIndex}[\sigma(e_i)]$ \textbf{do}
+            \State \quad \textbf{if} $\textsc{Compatible}(e, e_i, \phi)$ \textbf{then}
+            \State \quad\quad Enqueue $\textsc{ExpandTask}(e_{i+1}, \phi')$
+        \ElsIf{$\tau$ is $\textsc{ExpandTask}(e_i, \phi)$ with $i > k$}
+            \State \textbf{yield} complete match $\phi$
+        \EndIf
+    \EndWhile
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Match Forwarding}
+
+A key optimization: when state $s'$ is derived from $s$, matches valid in $s$ often remain valid in $s'$ (unless they involved removed edges). We forward parent matches to children:
+
+\begin{proposition}[Match Forwarding]
+Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applying rule $r$ at match $\match'$. Then $\match$ remains valid in $s'$ iff $\text{edges}(\match) \cap \text{edges}(\match') = \emptyset$.
+\end{proposition}
+
+This optimization reduces redundant pattern matching significantly in deep evolution trees.
+
+% ----------------------------------------------------------------------------
+% ARCHITECTURE
+% ----------------------------------------------------------------------------
+
+\section{System Architecture}
+\label{sec:architecture}
+
+\subsection{Unified Hypergraph Storage}
+
+Our core data structure stores all hypergraph data in a unified edge pool:
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    box/.style={rectangle, draw, minimum width=2cm, minimum height=0.6cm},
+    label/.style={font=\small}
+]
+% Edge Pool
+\node[box, minimum width=6cm] (pool) at (0,0) {Edge Pool (SegmentedArray)};
+\node[label, above=0.1cm of pool] {$e_0, e_1, e_2, \ldots, e_n$};
+
+% States
+\node[box] (s1) at (-2.5,-1.5) {State $s_1$};
+\node[box] (s2) at (0,-1.5) {State $s_2$};
+\node[box] (s3) at (2.5,-1.5) {State $s_3$};
+
+% Arrows
+\draw[->] (s1) -- node[left, label] {bitset} (pool.south west);
+\draw[->] (s2) -- node[left, label] {bitset} (pool.south);
+\draw[->] (s3) -- node[right, label] {bitset} (pool.south east);
+
+% Legend
+\node[label, below=0.3cm of s2] {States are views (SparseBitset) over shared edges};
+\end{tikzpicture}
+\caption{Unified edge storage with state views}
+\label{fig:storage}
+\end{figure}
+
+This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. \todo{Quantify the memory reduction versus independent per-state storage from measured arena bytes (Table~\ref{tab:cow}); no ratio is asserted until measured.}
+
+\subsection{Lock-Free Data Structures}
+
+Concurrent evolution requires thread-safe data structures without lock contention:
+
+\begin{description}
+\item[ConcurrentMap$\langle$K, V$\rangle$:] Hash table using atomic compare-and-swap for insertion. Wait-free lookup with lock-free insertion.
+
+\item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
+
+\item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
+\end{description}
+
+\subsection{Memory Model}
+
+We employ careful memory ordering to ensure correctness:
+
+\begin{lstlisting}[language=C++,caption=Memory synchronization example]
+// Producer: creating new state
+edges_.append(new_edge);          // seq_cst store
+state.edge_set.insert(edge_id);
+std::atomic_thread_fence(std::memory_order_release);
+states_.append(state);            // release store
+
+// Consumer: accessing state
+StateId id = canonical_map_.lookup(hash);  // acquire load
+std::atomic_thread_fence(std::memory_order_acquire);
+State& s = states_[id];           // safe to read edge set
+\end{lstlisting}
+
+\subsection{Event Canonicalization}
+
+Events can be canonicalized at multiple granularities:
+
+\begin{description}
+\item[ByState:] Events with identical (input, output) state pairs are deduplicated. $\BigO(1)$ signature computation.
+
+\item[ByStateAndEdges:] Events include consumed/produced edge positions, canonicalized via the state's vertex ordering. $\BigO(E)$ signature computation.
+
+\item[None:] All events preserved. Required for complete causal graph reconstruction.
+\end{description}
+
+The choice affects both correctness (for certain analyses) and performance. ByStateAndEdges mode requires computing edge correspondences between isomorphic states, using the canonical state's vertex hash ordering.
+
+% ----------------------------------------------------------------------------
+% GPU
+% ----------------------------------------------------------------------------
+
+\section{GPU Acceleration}
+\label{sec:gpu}
+
+\subsection{Megakernel Architecture}
+
+Traditional GPU algorithms launch separate kernels for each operation, incurring synchronization overhead. Our \emph{megakernel} approach runs a single persistent kernel throughout evolution:
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    kernel/.style={rectangle, draw, fill=gpugreen!20, minimum width=3cm, minimum height=1cm},
+    queue/.style={rectangle, draw, fill=blue!10, minimum width=2cm, minimum height=0.5cm},
+    arrow/.style={->, thick}
+]
+% Megakernel
+\node[kernel, minimum width=8cm, minimum height=2.5cm] (mega) at (0,0) {};
+\node[above] at (mega.north) {\textbf{Megakernel}};
+
+% Work queues
+\node[queue] (match) at (-2,0.5) {Match Queue};
+\node[queue] (rewrite) at (-2,-0.5) {Rewrite Queue};
+\node[queue] (state) at (2,0) {State Queue};
+
+% Processing
+\draw[arrow] (match) -- node[above, font=\small] {pattern match} (state);
+\draw[arrow] (state) -- node[below, font=\small] {generate tasks} (rewrite);
+\draw[arrow] (rewrite) -- (match);
+
+% Epoch barrier
+\node[draw, dashed, minimum width=7.5cm] at (0,-1.3) {Epoch Synchronization};
+
+\end{tikzpicture}
+\caption{Megakernel architecture with work queues}
+\label{fig:megakernel}
+\end{figure}
+
+\subsection{GPU Canonicalization}
+
+Canonicalization on the GPU mirrors the CPU design: a fast WL color-refinement hash on the hot path, with exact IR reserved for collision resolution. WL refinement is vertex-parallel and maps naturally to GPU execution:
+
+\begin{algorithm}
+\caption{GPU WL Color Refinement (per thread block)}
+\label{alg:gpu-wl}
+\begin{algorithmic}[1]
+\Procedure{GPUWLHash}{$\hypergraph$}
+    \State Initialize $c_v \gets \deg(v)$ for all $v$ in parallel
+    \Repeat
+        \State \textbf{parallel for} each $v \in V$ \textbf{do}
+        \State \quad $c_v' \gets \hash(c_v, \text{multiset}\{c_u : u \in N(v)\})$
+        \State Swap $c \gets c'$
+    \Until{coloring stable}
+    \State \Return $\hash(\text{sorted}(\{c_v\}))$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+Thread blocks cooperate on the neighbor-multiset aggregation, and warp-level primitives (\texttt{\_\_shfl\_sync}, \texttt{\_\_ballot\_sync}) enable efficient intra-warp reduction of neighbor colors. \todo{The current GPU WL hash kernel has a known $\BigO(V\cdot E)$ inefficiency (see backlog); do not over-claim GPU canonicalization throughput until the kernel is optimized and remeasured.}
+
+\subsection{GPU Pattern Matching}
+
+Signature-based candidate generation parallelizes across warps:
+
+\begin{itemize}
+    \item Each warp processes one pattern edge
+    \item Threads within warp enumerate compatible signatures (up to $B_d$ per edge)
+    \item Atomic queue updates coordinate task creation
+    \item Lock-free state insertion handles deduplication
+\end{itemize}
+
+\subsection{Memory Management}
+
+GPU memory is managed through:
+\begin{itemize}
+    \item Pre-allocated edge/state pools with atomic counters
+    \item Unified memory for large hypergraphs (automatic CPU-GPU migration)
+    \item Shared memory for thread block-local data structures
+\end{itemize}
+
+% ----------------------------------------------------------------------------
+% BENCHMARKS
+% ----------------------------------------------------------------------------
+
+\section{Experimental Evaluation}
+\label{sec:benchmarks}
+
+We evaluate our implementation against the Wolfram Language reference across correctness, memory, and performance dimensions.
+
+\todo{This entire section is a measurement scaffold. Every quantitative table below is a placeholder to be populated from measured runs on a quiet machine with paired means and confidence intervals. The tables that ship in the current draft carry no numbers. Do not present the noisy single-sample values from the working notes as final results.}
+
+\subsection{Experimental Setup}
+
+\begin{description}
+\item[Hardware:] \todo{Record the exact CPU (model, cores/threads, RAM) and GPU (model, VRAM) of the quiet benchmark machine actually used; the working GPU runs were on an RTX-class desktop GPU under WSL2, but final numbers must be taken and reported from one consistent machine.}
+\item[Software:] \todo{Record OS/WSL2, compiler and version, CUDA toolkit version, and Wolfram Language version (project currently runs Wolfram Language 14.3) used for the final runs.}
+\item[Workloads:] The rule-type corpus of 24 workloads from \texttt{reference/oracle\_corpus.hpp} (single/multi rule; productive, idempotent, reductive, and mixed-arity rules; several initial-state shapes), plus larger depths of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU curves.
+\item[Methodology caveat:] Working-notes numbers are single-sample on a noisy WSL2 box (coefficient of variation 10--40\%). Final tables require a quiet machine with paired means and confidence intervals.
+\end{description}
+
+\subsection{Correctness and Memory (Table T1, T3, T4, T5)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, raw states, events, causal edges, branchial edges, arena bytes, heap allocations, and heap bytes, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
+\label{tab:t1-exactness}
+\begin{tabular}{lccccccccc}
+\toprule
+Workload & Canon.\ states & Raw states & Events & Causal & Branchial & Arena B & Heap allocs & Heap B & Exactness \\
+\midrule
+\multicolumn{10}{c}{\todo{populate from cost\_matrix over the 24-workload corpus}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T3 --- De-heap result.} Global \texttt{operator new} allocation count and heap bytes, before vs.\ after the per-worker-cursor arena, per workload. Reports whether \texttt{malloc} is off the concurrent path. Source: \texttt{tools/cost\_matrix.cpp} heap counter.}
+\label{tab:t3-deheap}
+\begin{tabular}{lcccc}
+\toprule
+Workload & Heap allocs (before) & Heap allocs (after) & Heap bytes (before) & Heap bytes (after) \\
+\midrule
+\multicolumn{5}{c}{\todo{populate; report the corpus-total allocation reduction}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T4 --- Causal-closure reduction.} Total arena bytes for the causal base-layer closure, before vs.\ after the key-only closure rework, exact and deterministic at 1/4/8/16 threads. Reports percentage arena reduction.}
+\label{tab:t4-closure}
+\begin{tabular}{lcccc}
+\toprule
+Workload & Arena B (before) & Arena B (after) & Reduction (\%) & Deterministic (threads) \\
+\midrule
+\multicolumn{5}{c}{\todo{populate; report the total-arena reduction on binary-growth}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T5 --- Copy-on-write states.} Per-child chunk-copy count and/or arena bytes, memcpy-all-chunks vs.\ copy-only-touched-chunks representation. Reports the reduction in chunk copies per child.}
+\label{tab:cow}
+\begin{tabular}{lccc}
+\toprule
+Workload & Chunk copies (full copy) & Chunk copies (COW) & Arena B (COW) \\
+\midrule
+\multicolumn{4}{c}{\todo{populate; report chunk-copy reduction per child}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Wall-Time Speedup (Table T2)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T2 --- Wall-time speedup vs.\ the Wolfram reference.} Per-rule wall-time of the C++ engine (1 thread and $N$ threads) versus the Wolfram \texttt{MultiwaySystem} paclet / brute-force reference, across increasing depth. Reports speedup with machine, thread count, and variance disclosed. \todo{Requires a wall-time sweep harness (to be added); no speedup ratio is asserted until measured.}}
+\label{tab:t2-speedup}
+\begin{tabular}{lcccc}
+\toprule
+Rule / depth & Wolfram (s) & C++ 1-thread (s) & C++ $N$-thread (s) & Speedup \\
+\midrule
+\multicolumn{5}{c}{\todo{populate from the wall-time harness}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Quotient Exploration (Table T6)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T6 --- Quotient vs.\ full expansion.} Raw states expanded and wall-time for quotient exploration (expand each canonical state once at its shortest reachable depth) vs.\ full expansion, at increasing depth on the Wolfram rule, with the same canonical closure. Reports the widening advantage with depth and confirms no perf regression versus the prior mode.}
+\label{tab:t6-quotient}
+\begin{tabular}{lcccc}
+\toprule
+Depth & Raw states (full) & Raw states (quotient) & Time (full) & Time (quotient) \\
+\midrule
+\multicolumn{5}{c}{\todo{populate; report the quotient speedup at each depth}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{GPU (Table T7)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T7 --- GPU acceleration.} Match-kernel time and end-to-end evolution time, GPU vs.\ CPU, at increasing depth on the Wolfram rule, including the lazy-index variant. Branchial edges via a per-(state,edge) index. Source: \texttt{tools/bench\_gpu\_evolve}. \todo{populate on the final GPU; the GPU WL hash kernel's known inefficiency (Section~\ref{sec:gpu}) must be resolved or disclosed before publishing throughput.}}
+\label{tab:t7-gpu}
+\begin{tabular}{lccc}
+\toprule
+Depth & Match kernel (ms) & End-to-end CPU (ms) & End-to-end GPU (ms) \\
+\midrule
+\multicolumn{4}{c}{\todo{populate from bench\_gpu\_evolve}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thread Scaling (Table T8)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T8 --- Strong scaling.} Measured speedup over a single thread at increasing thread counts, on a fixed workload. Paired with the determinism gate: the expanded state set and the (input, output, rule) transition multiset are identical across all thread counts and seeds.}
+\label{tab:t8-scaling}
+\begin{tabular}{lccc}
+\toprule
+Threads & Time (s) & Speedup & Deterministic \\
+\midrule
+\multicolumn{4}{c}{\todo{populate the measured strong-scaling curve}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation (Table T9)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T9 --- Per-contribution ablation.} Each optimization toggled off vs.\ on: copy-on-write, incremental hashing, de-heap, reachability-oracle vs.\ closure, quotient exploration, and GPU lockstep vs.\ persistent. Isolates the contribution of each. \todo{Requires the CMake \texttt{\#define} ablation builds (old paths compiled out of the default binary, exercised by CI); this scaffolding is planned, not yet built, and is a prerequisite for this table.}}
+\label{tab:t9-ablation}
+\begin{tabular}{lccc}
+\toprule
+Optimization & Metric & Off & On \\
+\midrule
+\multicolumn{4}{c}{\todo{populate once the ablation build scaffolding lands}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Event Canonicalization Overhead}
+
+\begin{table}[h]
+\centering
+\caption{Raw vs.\ canonical event counts and time overhead across event canonicalization conventions (\textsc{None}, \textsc{States}, \textsc{Automatic}). \todo{populate with measured event counts and overhead per convention; earlier draft values were fabricated.}}
+\label{tab:event-canon}
+\begin{tabular}{lccc}
+\toprule
+Convention & Time overhead & Events (raw) & Events (canonical) \\
+\midrule
+\multicolumn{4}{c}{\todo{populate from measured runs}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ----------------------------------------------------------------------------
+% VISUALISATION
+% ----------------------------------------------------------------------------
+
+\section{Interactive Visualization}
+\label{sec:visualization}
+
+We provide an interactive 3D visualization system for exploring evolution graphs (Figure~\ref{fig:viz}).
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}
+[Interactive visualization screenshot placeholder]\\[0.5cm]
+\small Force-directed layout of evolution graph with\\
+state coloring by generation and edge highlighting
+\vspace{2cm}}}
+\caption{Interactive evolution graph visualization}
+\label{fig:viz}
+\end{figure}
+
+Features include:
+\begin{itemize}
+    \item Force-directed and hierarchical layout algorithms
+    \item Real-time evolution stepping with animation
+    \item State/event selection with hypergraph detail views
+    \item Causal and branchial graph overlays
+    \item Export to common formats (SVG, PNG, GLTF)
+\end{itemize}
+
+The visualization is implemented using Vulkan for cross-platform GPU-accelerated rendering, with ImGui for the user interface.
+
+% ----------------------------------------------------------------------------
+% CONCLUSION
+% ----------------------------------------------------------------------------
+
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. \todo{State the measured CPU-vs-reference and GPU-vs-CPU speedups here once Section~\ref{sec:benchmarks} is populated; no headline speedup is asserted in this draft.} Key contributions include:
+
+\begin{enumerate}
+    \item Exact canonicalization via individualization--refinement (IR), with a fast Weisfeiler--Leman hot-path hash and IR fallback on collision, validated against a brute-force isomorphism oracle
+    \item Lock-free concurrent data structures enabling efficient multi-threaded evolution
+    \item A GPU evolution backend for pattern matching and canonicalization
+    \item Independent, exact state and event equivalencing axes with configurable granularity
+\end{enumerate}
+
+\subsection{Future Directions}
+
+Several avenues remain for further optimization:
+
+\textbf{Incremental pattern matching:} Currently, pattern matching restarts for each state. Maintaining match validity across evolution could provide a substantial additional speedup for deep evolutions.
+
+\textbf{Distributed computation:} The current design targets single-node execution. Extending to distributed memory systems would enable exploration of vastly larger state spaces.
+
+\textbf{Rule learning:} Automatic discovery of rules producing desired structures (e.g., emergent dimensionality, causal invariants) remains an open challenge amenable to learned heuristics.
+
+\textbf{Formal verification:} Proving correctness of the lock-free algorithms under relaxed memory models would strengthen confidence in the implementation.
+
+\subsection{Availability}
+
+The implementation is available as:
+\begin{itemize}
+    \item Source code: \url{https://github.com/PLACEHOLDER/efficient-rewriting}
+    \item Wolfram Language paclet: \url{https://resources.wolframcloud.com/PacletRepository/resources/PLACEHOLDER}
+\end{itemize}
+
+% ----------------------------------------------------------------------------
+% ACKNOWLEDGMENTS
+% ----------------------------------------------------------------------------
+
+\section*{Acknowledgments}
+
+The author thanks Stephen Wolfram for foundational work on the Wolfram Physics Project. This work was supported by the Wolfram Institute.
+
+% ----------------------------------------------------------------------------
+% BIBLIOGRAPHY
+% ----------------------------------------------------------------------------
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+% ----------------------------------------------------------------------------
+% APPENDIX
+% ----------------------------------------------------------------------------
+
+\appendix
+
+\section{Complexity Analysis Details}
+\label{app:complexity}
+
+\subsection{Canonicalization Complexity}
+
+For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, the two canonicalization roles have very different cost profiles.
+
+\textbf{Weisfeiler--Leman hot-path hash.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
+
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. This worst-case cost is exactly why IR is invoked only to resolve WL collisions rather than on every state.
+
+\subsection{Pattern Matching Complexity}
+
+For pattern with $|L|$ edges and state with $|S|$ edges:
+
+\begin{itemize}
+    \item Signature index lookup: $\BigO(1)$ per pattern edge
+    \item Candidate enumeration: $\BigO(|S|/B_d)$ expected where $B_d$ is the Bell number
+    \item Match verification: $\BigO(|L|)$ per candidate
+    \item Total: $\BigO(|L| \cdot |S| / B_d \cdot |L|) = \BigO(|L|^2 \cdot |S| / B_d)$
+\end{itemize}
+
+\section{Data Structure Specifications}
+\label{app:data-structures}
+
+\begin{table}[h]
+\centering
+\caption{Lock-free data structure complexity}
+\begin{tabular}{lcccc}
+\toprule
+Structure & Insert & Lookup & Delete & Memory \\
+\midrule
+ConcurrentMap & $\BigO(1)$ amort. & $\BigO(1)$ & $\BigO(1)$ & $\BigO(n)$ \\
+SegmentedArray & $\BigO(1)$ & $\BigO(1)$ & N/A & $\BigO(n)$ \\
+LockFreeList & $\BigO(1)$ & $\BigO(n)$ & N/A & $\BigO(n)$ \\
+SparseBitset & $\BigO(\log n)$ & $\BigO(\log n)$ & $\BigO(\log n)$ & $\BigO(n/64)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
