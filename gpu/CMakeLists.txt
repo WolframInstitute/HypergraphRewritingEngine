@@ -13,7 +13,7 @@ add_library(hg_gpu STATIC
     src/event_identity.cu
     src/persistent.cu
     src/rewrite.cu
-    src/wl_hash.cu
+    src/content_hash.cu
 )
 
 set_property(TARGET hg_gpu PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
@@ -66,7 +66,6 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         tests/test_engine_state.cu
         tests/test_match.cu
         tests/test_rewrite.cu
-        tests/test_wl_hash.cu
         tests/test_ir_canon.cu
         tests/test_exploration_probability.cu
     )

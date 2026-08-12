@@ -12,7 +12,7 @@
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
-#include "hg_gpu/wl_hash.hpp"
+#include "hg_gpu/content_hash.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
