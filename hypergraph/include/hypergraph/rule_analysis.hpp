@@ -48,6 +48,35 @@ struct RuleFacts {
     bool edge_cover_tight = true;
 };
 
+// Does the LHS hold together through shared variables?
+//
+// The matcher's join order is connected by construction where it can be (compute_match_order
+// appends the edge sharing the most variables with the bound prefix). When no edge shares any,
+// the step it takes is a CARTESIAN PRODUCT over the state's edges: correct, and quadratic in
+// the state size per additional component. The rule set decides that, so it is worth saying so
+// once rather than discovering it as a run that does not come back.
+//
+// Reachability over the pairwise predicate the rule already carries, from edge 0.
+inline bool lhs_is_connected(const RewriteRule& r) {
+    const uint8_t n = r.num_lhs_edges;
+    if (n <= 1) return true;
+    bool seen[MAX_PATTERN_EDGES] = {false};
+    uint8_t stack[MAX_PATTERN_EDGES];
+    uint8_t top = 0, count = 1;
+    seen[0] = true;
+    stack[top++] = 0;
+    while (top) {
+        const uint8_t e = stack[--top];
+        for (uint8_t o = 0; o < n; ++o) {
+            if (seen[o] || !r.lhs_edges_connected(e, o)) continue;
+            seen[o] = true;
+            ++count;
+            stack[top++] = o;
+        }
+    }
+    return count == n;
+}
+
 // IS THE LHS AN ACYCLIC CONJUNCTIVE QUERY? (GYO reduction, Graham-Yu-Ozsoyoglu.)
 //
 // The LHS is a conjunctive query over the state's edge relation: each pattern edge is an atom and
@@ -207,6 +236,12 @@ struct RuleSetFacts {
     bool non_growing = false;
     // No rule introduces a vertex, so the vertex set is bounded by the initial condition.
     bool bounded_vertices = false;
+    // A rule whose LHS has three or more edges AND a cycle: no binary join plan is
+    // worst-case-optimal on it (the triangle over N binary edges has at most N^1.5 matches by
+    // AGM, while binding two atoms first reaches N^2), and the matcher runs a binary plan.
+    bool has_cyclic_multiedge_lhs = false;
+    // A rule whose LHS falls into two or more components joined by nothing.
+    bool has_disconnected_lhs = false;
     // Some rule's LHS joins two or more edges, so re-matching a child is a join rather than an
     // index scan. That is the property match forwarding has to beat: forwarding replaces the
     // re-match with a walk of the ancestor's records plus the coordination that keeps the walk
@@ -231,6 +266,8 @@ inline RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
         if (r.num_rhs_edges > r.num_lhs_edges) s.non_growing = false;
         if (r.num_new_vars > 0) s.bounded_vertices = false;
         if (r.num_lhs_edges >= 2) s.forwarding_pays = true;
+        if (r.num_lhs_edges >= 3 && !lhs_is_acyclic(r)) s.has_cyclic_multiedge_lhs = true;
+        if (!lhs_is_connected(r)) s.has_disconnected_lhs = true;
     }
     return s;
 }

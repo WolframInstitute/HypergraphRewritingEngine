@@ -1624,6 +1624,23 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
         enable_match_forwarding_ = facts.forwarding_pays;
     }
 
+    // TWO RULE SHAPES WHOSE COST IS THE RULE'S, NOT THE ENGINE'S. Both run correctly and neither
+    // is refused: the caller asked for this rule set and gets its answer. What they get as well
+    // is the reason the run is slow, since neither shape is visible from the outside -- a
+    // disconnected LHS looks like an ordinary rule and behaves like a nested loop over the state.
+    if (facts.has_disconnected_lhs) {
+        warnings_.push_back(
+            "a rule's left-hand side has two or more components sharing no variable, so matching "
+            "it takes a cartesian product over the state's edges -- quadratic in the state size "
+            "per extra component. Joining the components with a shared variable removes it.");
+    }
+    if (facts.has_cyclic_multiedge_lhs) {
+        warnings_.push_back(
+            "a rule's left-hand side is cyclic over three or more edges. The matcher runs a "
+            "binary join plan, and no such plan meets the AGM bound on a cyclic query: the "
+            "triangle over N edges has at most N^1.5 matches while the plan reaches N^2.");
+    }
+
     hg_->set_quotient_causal(qc);
     hg_->set_quotient_reconstruction(qc);
     // The reconstruction emits causal edges between CANONICAL event ids, which are assigned

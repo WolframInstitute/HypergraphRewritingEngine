@@ -415,6 +415,41 @@ TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
 // branching is a defect in the analysis and would license dropping real structure. A case
 // predicted to branch and observed not to is the over-approximation working as designed, and is
 // reported rather than failed.
+// The two shapes whose matching cost is the rule's own: a disconnected LHS (a cartesian product
+// per extra component) and a cyclic LHS over three or more edges (no binary join plan meets the
+// AGM bound). The engine reports each as a warning at run configuration.
+//
+// Both directions are asserted, because a predicate that answers "yes" to everything is sound
+// and useless: the corpus's disconnected-lhs workload must warn, and the connected ones must not.
+TEST(OracleCorpus, RuleShapeWarningsFireOnTheShapeAndNotOnTheRest) {
+    auto warnings_for = [](const std::vector<RewriteRule>& rules,
+                           const std::vector<std::vector<VertexId>>& init) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 1);
+        for (const auto& r : rules) e.add_rule(r);
+        e.evolve(init, 1);
+        return e.warnings();
+    };
+    auto mentions = [](const std::vector<std::string>& ws, const char* needle) {
+        for (const auto& w : ws) if (w.find(needle) != std::string::npos) return true;
+        return false;
+    };
+
+    size_t warned = 0;
+    for (const auto& c : oracle::corpus()) {
+        const RuleSetFacts f = analyze_rules(c.rules);
+        const auto ws = warnings_for(c.rules, c.init);
+        EXPECT_EQ(mentions(ws, "sharing no variable"), f.has_disconnected_lhs)
+            << c.name << ": the cartesian-product warning and the analysis disagree";
+        EXPECT_EQ(mentions(ws, "cyclic over three or more edges"), f.has_cyclic_multiedge_lhs)
+            << c.name << ": the cyclic-LHS warning and the analysis disagree";
+        if (f.has_disconnected_lhs || f.has_cyclic_multiedge_lhs) ++warned;
+    }
+    EXPECT_GT(warned, 0u)
+        << "no corpus workload has either shape, so the warnings are untested by this corpus";
+}
+
 TEST(OracleCorpus, StaticAnalysisNeverPredictsAwayRealBranching) {
     size_t proved_none = 0, not_ruled_out = 0, over_approximated = 0;
 
