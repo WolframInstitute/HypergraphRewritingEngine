@@ -161,6 +161,52 @@ def gpu_saturation(gpu_build, steps, iters, sm_count):
     return rows
 
 
+def rule_shape_scaling(build, shapes, iters):
+    """Does the scaling hold across rule SHAPES, or only on the one the headline uses?
+
+    A rule set decides how much parallel work exists: a single-edge LHS re-matches by scanning an
+    index and every state's expansion is small, while a two-edge LHS joins and produces a wider
+    frontier. Reporting the shape that scales best is a choice of input, so both are swept at
+    every thread count and the table carries EFFICIENCY, which is where the difference shows.
+
+    Uses tools/sampling_cost_smoke, which already takes (arm, rule, edges, steps, threads, k,
+    canon) -- no new instrument for a question an existing one answers.
+    """
+    rows = {}
+    for (rule, edges, steps) in shapes:
+        for threads in (1, 2, 4, 8, 16, 24, 32):
+            best = None
+            for _ in range(max(2, iters // 4)):
+                out = run([os.path.join(build, "sampling_cost_smoke"), "off", rule, str(edges),
+                           str(steps), str(threads), "4", "full"], timeout=3600)
+                m = re.search(r"done ([\d.]+) ms\s+states=(\d+).*events=(\d+)", out)
+                if not m:
+                    raise SystemExit("sampling_cost_smoke gave no row:\n%s" % out[-1000:])
+                ms = float(m.group(1))
+                if best is None or ms < best[0]:
+                    best = (ms, m.group(2), m.group(3))
+            rows.setdefault(rule, []).append((threads, best[0], best[1], best[2]))
+            print("  %-7s %2dt: %8.1f ms" % (rule, threads, best[0]))
+
+    b = [pt.provenance("tools/sampling_cost_smoke.cpp"),
+         r"\begin{tabular}{r" + "rr" * len(rows) + "}", r"\toprule",
+         "Threads & " + " & ".join(r"\multicolumn{2}{c}{%s LHS}" % ("one-edge" if r == "growth"
+                                                                   else "two-edge")
+                                   for r in rows) + r" \\",
+         " & " + " & ".join("ms & eff." for _ in rows) + r" \\", r"\midrule"]
+    order = list(rows)
+    for i in range(len(rows[order[0]])):
+        cells = []
+        for r in order:
+            t, ms, _st, _ev = rows[r][i]
+            base = rows[r][0][1]
+            cells.append("%.1f & %.2f" % (ms, (base / ms) / t))
+        b.append("%d & %s \\\\" % (rows[order[0]][i][0], " & ".join(cells)))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    pt.write("t12_rule_shapes.tex", "\n".join(b) + "\n")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -169,11 +215,16 @@ def main():
     ap.add_argument("--iters", type=int, default=9)
     ap.add_argument("--sm-count", type=int, default=128)   # RTX 4090
     ap.add_argument("--gpu", action="store_true")
+    ap.add_argument("--shapes", action="store_true",
+                    help="add the rule-shape sweep (T12)")
     a = ap.parse_args()
 
     steps_list = [int(s) for s in a.steps.split(",") if s.strip()]
     print("CPU strong scaling, depths %s" % steps_list)
     cpu_scaling(a.build_dir, steps_list, a.iters)
+    if a.shapes:
+        print("Rule-shape scaling")
+        rule_shape_scaling(a.build_dir, [("growth", 1, 8), ("pair", 4, 6)], a.iters)
     if a.gpu:
         print("GPU saturation, depth %d" % steps_list[-1])
         gpu_saturation(a.gpu_build_dir, steps_list[-1], a.iters, a.sm_count)

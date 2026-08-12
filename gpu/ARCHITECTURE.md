@@ -146,7 +146,8 @@ Mechanism:
 
 The implemented kernels are `k_match_batch` / `k_match_one_state` (match.cu),
 `k_rewrite` (rewrite.cu, which also does event/causal/branchial registration
-inline), the WL / IR canonical hash kernels (wl_hash.cu, ir_canon.cu),
+inline), the IR canonical hash kernels (ir_canon.cu) and the content hash
+(content_hash.cu, which `CanonicalizationMode::Automatic` identifies states by),
 `k_dedup_and_append` (evolve.cu) and `k_init_indices` (initial_upload.cu, also
 the bulk rebuild for lazy index maintenance). The decomposition below is how
 those roles would split under persistent-kernel streaming.
@@ -302,9 +303,11 @@ What is device-specific is only the orchestration:
   isomorphic states but it does MERGE non-isomorphic ones. `tools/ir_vs_wl` demonstrates it
   constructively on the prism against K3,3 (six vertices) and the rook's 4x4 graph against
   Shrikhande. Nothing bounds how often an evolution reaches such a state.
-- **`wl_hash_state_device` is not a fallback.** It serves `CanonicalizationMode::Automatic`,
+- **`content_hash_state_device` is not a fallback.** It serves `CanonicalizationMode::Automatic`,
   where non-isomorphism-invariant content-ordered identity is the requested semantics, and it is
-  never used under `Full`.
+  never used under `Full`. It applies `hgcommon::ContentHasher`, the same rule the host applies.
+  There is no 1-WL body on the device at all: the exact identity is the shared IR body, and a
+  state too large for the fast-path scratch is signalled as a truncation and retried.
 
 `compute_state_ir_hashes_range` is a grid-stride LAUNCH SHAPE over that same single-state body,
 for callers with a batch: it measures the range so the arena covers a thread's largest claim,

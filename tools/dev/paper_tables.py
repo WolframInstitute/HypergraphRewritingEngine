@@ -207,11 +207,22 @@ def wolframscript():
 def t2(build, maxd, reps):
     """The engine against the authority, on one workload, at increasing depth.
 
-    Wolfram/Multicomputation's MultiwaySystem is the oracle the engine is validated against, so
-    it is also the reference a wall time means something against. The state count is carried in
-    the table because a timing comparison between two different state spaces is not one; the
-    event and causal counts are NOT compared here, because the two sides' event-identity
-    conventions are their own question and are gated separately.
+    THE COMPARISON BASIS IS THE WHOLE PROBLEM HERE, and getting it wrong inflated an earlier
+    version of this table by two orders of magnitude. Wolfram/Multicomputation's MultiwaySystem
+    exposes NO property that returns the state set as data -- every one of them is graph-valued
+    (StatesGraph, CausalGraph, EvolutionGraph, ...) -- so its time necessarily includes building
+    Wolfram Graph objects and no subtraction from outside can remove that. Timing OUR side at the
+    C++ API, which does no marshalling and builds no graph, and dividing, compares two different
+    quantities.
+
+    So the table reports two rows per depth and takes its ratio from the LIKE-FOR-LIKE pair:
+
+      authority   MultiwaySystem, timed the only way its API allows.
+      engine      this engine reached the way a user reaches it -- through the paclet, over the
+                  wire to the worker process, building the same kind of Wolfram structures.
+
+    The engine's C++ core time is carried in its own column, clearly labelled, because it answers
+    a different question (what the engine costs) and must never be divided into the authority's.
     """
     ws, windows = wolframscript()
     if not ws:
@@ -220,165 +231,42 @@ def t2(build, maxd, reps):
     script = os.path.join(ROOT, "reference", "bench_authority.wls")
     if windows:
         script = subprocess.run(["wslpath", "-w", script], capture_output=True, text=True).stdout.strip()
-    out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=3600)
-    auth = {}
+    out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=7200)
+    auth, hgev = {}, {}
     for line in out.splitlines():
         m = re.search(r"AUTH d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
         if m:
-            auth[int(m.group(1))] = (int(m.group(2)), float(m.group(4)))
-    if "AUTH_DONE" not in out:
-        print("T2: the kernel did not finish; using the %d depths it printed" % len(auth))
-    if not auth:
-        raise SystemExit("bench_authority.wls printed no rows:\n%s" % out[-2000:])
+            auth[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), float(m.group(4)))
+        m = re.search(r"HGEV d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
+        if m:
+            hgev[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), float(m.group(4)))
+    if not auth or not hgev:
+        raise SystemExit("bench_authority.wls printed no comparable rows:\n%s" % out[-2000:])
 
     eng = run([os.path.join(build, "quotient_reconstruction_cost_probe"), str(max(auth))],
               timeout=3600)
-    engine = {}
+    core = {}
     for line in eng.splitlines():
         m = re.match(r"\s*(\d+) \|\s*(\d+)\s+\d+\s+\d+\s+([\d.]+) \|", line)
         if m:
-            engine[int(m.group(1))] = (int(m.group(2)), float(m.group(3)))
+            core[int(m.group(1))] = float(m.group(3))
 
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
-         r"\begin{tabular}{rrrrrl}", r"\toprule",
-         r"Depth & States & Authority ms & Engine ms & Speedup & States agree \\", r"\midrule"]
+         r"\begin{tabular}{rrrrrrl}", r"\toprule",
+         r"Depth & States & Authority ms & Engine ms (paclet) & Like-for-like & "
+         r"Engine ms (C++ core) & Counts agree \\", r"\midrule"]
     for d in sorted(auth):
-        a_states, a_ms = auth[d]
-        if d not in engine:
+        if d not in hgev:
             continue
-        e_states, e_ms = engine[d]
-        agree = "yes" if a_states == e_states else "NO (%d vs %d)" % (a_states, e_states)
-        b.append("%d & %d & %.1f & %.1f & %.0f$\\times$ & %s \\\\" % (
-            d, a_states, a_ms, e_ms, a_ms / e_ms, agree))
+        a_states, a_causal, a_ms = auth[d]
+        h_states, h_causal, h_ms = hgev[d]
+        agree = "yes" if (a_states, a_causal) == (h_states, h_causal) else "NO"
+        c = core.get(d)
+        b.append("%d & %d & %.1f & %.1f & %.0f$\\times$ & %s & %s \\\\" % (
+            d, a_states, a_ms, h_ms, a_ms / h_ms, ("%.1f" % c) if c else "--", agree))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
     return len(auth)
-
-
-def t9(build, iters):
-    """Per-contribution ablation, from the switches the shipped binary still has.
-
-    There are no compiled-out ablation builds to run: when a replacement lands here the
-    replaced path is deleted in the same commit, so an "off" arm exists only where the choice
-    is still a live switch. Those are match forwarding (which the rule set decides) and the
-    state-canonicalization mode. Each row is a median over the same iteration count, and the
-    state and event counts are printed so a row that changed the ANSWER is visible rather than
-    read as a speedup.
-    """
-    def smoke(arm, rule, edges, steps, canon):
-        best = None
-        for _ in range(max(3, iters // 3)):
-            out = run([os.path.join(build, "sampling_cost_smoke"), arm, rule, str(edges),
-                       str(steps), "4", "4", canon], timeout=1800)
-            m = re.search(r"done ([\d.]+) ms\s+states=(\d+).*events=(\d+)", out)
-            if not m:
-                raise SystemExit("sampling_cost_smoke gave no row:\n%s" % out[-1000:])
-            ms, st, ev = float(m.group(1)), m.group(2), m.group(3)
-            if best is None or ms < best[0]:
-                best = (ms, st, ev)
-        return best
-
-    rows = []
-    a = smoke("off", "growth", 1, 8, "full")       # forwarding decided: off on a one-edge LHS
-    b = smoke("fwdon", "growth", 1, 8, "full")     # forced on
-    rows.append(("Match forwarding, one-edge LHS", "on", b, "decided off", a))
-    a = smoke("off", "pair", 4, 6, "full")         # forwarding decided: on for a two-edge LHS
-    b = smoke("fwdoff", "pair", 4, 6, "full")      # forced off
-    rows.append(("Match forwarding, two-edge LHS", "off", b, "decided on", a))
-    a = smoke("off", "pair", 4, 6, "automatic")
-    b = smoke("off", "pair", 4, 6, "full")
-    rows.append(("State canonicalization", "Full (exact)", b, "Automatic (hash)", a))
-
-    b_ = [provenance("tools/sampling_cost_smoke.cpp"),
-          r"\begin{tabular}{lllrlrl}", r"\toprule",
-          r"Contribution & Arm A & A ms & Arm B & B ms & Ratio & Same answer \\", r"\midrule"]
-    for (name, an, av, bn, bv) in rows:
-        same = "yes" if (av[1], av[2]) == (bv[1], bv[2]) else "NO"
-        b_.append("%s & %s & %.1f & %s & %.1f & %.2f & %s \\\\" % (
-            name, an, av[0], bn, bv[0], av[0] / bv[0], same))
-    b_ += [r"\bottomrule", r"\end{tabular}"]
-    write("t9_ablation.tex", "\n".join(b_) + "\n")
-    return len(rows)
-
-
-def t3(build):
-    """Is the global allocator on the concurrent path?
-
-    The de-heap, the causal-closure rework and the copy-on-write states were scaffolded in the
-    paper as three before/after tables. Their "before" columns are not reproducible as a
-    comparison: each replaced path was deleted in the commit that replaced it (there is no build
-    flag that restores it), the work spans dozens of commits on one branch, and the instrument
-    that measures arena bytes today did not exist at the far end -- so a before/after pair would
-    be two different instruments reporting one column.
-
-    What IS checkable, and is the claim those three items were for: allocation count does not
-    grow with the work. cost_matrix counts every global operator new during the measured
-    evolution, so the table below puts that count next to the size of the run it served.
-    """
-    out = run([os.path.join(build, "cost_matrix")])
-    rows = []
-    for line in out.splitlines():
-        m = re.match(r"^(\S+)\s+(\S+)\s+(EXACT|INEXACT|\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+"
-                     r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
-        if m:
-            g = m.groups()
-            rows.append((g[0], int(g[3]), int(g[4]), int(g[7]), int(g[9])))
-    if not rows:
-        raise SystemExit("cost_matrix produced no parseable rows")
-    rows.sort(key=lambda r: r[2])   # by events: the work, which is what allocation must not track
-
-    b = [provenance("tools/cost_matrix.cpp"),
-         r"\begin{tabular}{lrrrrr}", r"\toprule",
-         r"Workload & Canon.\ states & Events & Arena B & Heap allocs & Allocs per event \\",
-         r"\midrule"]
-    for (name, canon, ev, arena, allocs) in rows:
-        per = ("%.4f" % (float(allocs) / ev)) if ev else "--"
-        b.append("%s & %d & %d & %d & %d & %s \\\\" % (
-            tex_escape(name), canon, ev, arena, allocs, per))
-    b += [r"\bottomrule", r"\end{tabular}"]
-    write("t3_heap.tex", "\n".join(b) + "\n")
-    return len(rows)
-
-
-def t10(build):
-    """What each event-identity convention identifies, on the same runs.
-
-    The three conventions are refinements of one another: ByEndpointStates calls two rewrites the
-    same event when they run between the same states, ByConsumedProducedEdges when they also move
-    the same edges, DistinctApplications never. Reading the CANONICAL EVENT COUNT across them on
-    a fixed workload is what shows they are distinct points rather than one convention wearing
-    three names -- which inspection cannot show, because a duplicated convention still equals
-    itself.
-
-    The counts are taken under Full state canonicalization, one thread. No timing column: the
-    conventions differ in what they IDENTIFY, and the cost of the identity is the added IR pass,
-    which T9's canonicalization row already measures.
-    """
-    out = run([os.path.join(build, "mode_matrix_probe")], timeout=1800)
-    rows = []
-    workload = None
-    for line in out.splitlines():
-        m = re.match(r"^(\S+) \(steps=(\d+)\)", line)
-        if m:
-            workload, steps = m.group(1), m.group(2)
-            continue
-        m = re.match(r"^\s+Full\s+(\d+)/(\d+)/(\d+)/(\d+)\s+(\d+)/(\d+)/(\d+)/(\d+)\s+(\d+)/(\d+)/(\d+)/(\d+)", line)
-        if m and workload:
-            g = [int(x) for x in m.groups()]
-            rows.append((workload, steps, g[0], g[1], g[5], g[9]))
-            workload = None
-    if not rows:
-        raise SystemExit("mode_matrix_probe produced no parseable Full rows:\n%s" % out[-2000:])
-
-    b = [provenance("tools/mode_matrix_probe.cpp"),
-         r"\begin{tabular}{lrrrrr}", r"\toprule",
-         r"Workload & Steps & Canon.\ states & By endpoint states & By consumed/produced edges & "
-         r"Distinct applications \\", r"\midrule"]
-    for (name, steps, canon, e1, e2, e3) in rows:
-        b.append("%s & %s & %d & %d & %d & %d \\\\" % (tex_escape(name), steps, canon, e1, e2, e3))
-    b += [r"\bottomrule", r"\end{tabular}"]
-    write("t10_event_canon.tex", "\n".join(b) + "\n")
-    return len(rows)
 
 
 def main():
