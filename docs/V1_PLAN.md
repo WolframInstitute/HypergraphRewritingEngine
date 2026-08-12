@@ -737,6 +737,23 @@ magnitudes are not current.
   Bound stated with the result: this is exhaustive for those thread and operation counts, not a
   proof for unbounded threads.
 
+- **Q15 — is the hot path free of std containers and of malloc?** **YES, verified per function.**
+  Zero `std::vector`/`unordered_*`/`map`/`set`/`string` in every function the profile names:
+  `execute_expand_task`, `complete_match`, `dispatch_expansion`, `execute_rewrite_task`,
+  `push_match_to_children_impl`, `Hypergraph::create_edge`, `Rewriter::apply`,
+  `CausalGraph::get_or_create_edge_consumers`. Zero in the shared cores it calls --
+  `hgcommon/ir_core.hpp`, `hgcommon/join_core.hpp`, `pattern_matcher.hpp`, `index.hpp`,
+  `signature.hpp`. Malloc is `58`-`66` global `new` calls for an entire run and `227` on the
+  largest corpus case at 68,184 events: **0.0033 allocations per event**, each one a whole arena
+  block, because the hot path bump-allocates from the per-worker arena.
+  **`ir_canonicalization.cpp`'s 23 `std::vector`s are NOT on that path and must not be "fixed".**
+  `Hypergraph::compute_exact_canonical_hash` calls `hgcommon::ir_canonical_hash` directly with
+  arena scratch; `IRCanonicalizer` is the escalation entered only `if (!ok)`, when the bounded
+  scratch, depth or generator budget is exhausted, and it delegates to the SAME
+  `hgcommon::ir_canonical_hash` while widening depth {1, 8, MAX} x generators. One rule, one core,
+  two budgets -- not a second implementation. Its rank buffer is `thread_local`, so even the
+  escalation amortises to no allocation.
+
 - **Q11 — concurrent sessions?** **DECIDED: exactly one**, revisitable.
 - **Q12 — which Pareto operating points actually ship** as the advertised family? **OPEN.**
 
