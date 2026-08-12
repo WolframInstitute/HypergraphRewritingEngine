@@ -13,17 +13,47 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
 using namespace hypergraph;
 
+// The thread counts to sweep. THE POINT OF A SCALING RUN IS WHERE IT STOPS SCALING, so the
+// sweep has to reach the machine's width: stopping at 8 on a 32-thread host measures the easy
+// half and reports the ratio there as if it were the answer. Any count above the host's
+// hardware_concurrency is dropped rather than run, because oversubscription measures the
+// scheduler.
+static std::vector<int> thread_sweep(const char* spec) {
+    std::vector<int> out;
+    if (spec && *spec) {
+        const std::string s(spec);
+        size_t pos = 0;
+        while (pos < s.size()) {
+            const size_t comma = s.find(',', pos);
+            const int t = std::atoi(s.substr(pos, comma - pos).c_str());
+            if (t > 0) out.push_back(t);
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    } else {
+        const int hw = static_cast<int>(std::thread::hardware_concurrency());
+        for (int t : {1, 2, 4, 8, 16, 24, 32, 48, 64})
+            if (t <= (hw > 0 ? hw : 8)) out.push_back(t);
+        if (out.empty()) out.push_back(1);
+    }
+    return out;
+}
+
 int main(int argc, char** argv) {
     const int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     const int iters = argc > 2 ? std::atoi(argv[2]) : 20;
+    const std::vector<int> sweep = thread_sweep(argc > 3 ? argv[3] : nullptr);
 
-    for (int threads : {1, 4, 8}) {
+    double base_ms = 0.0;
+    for (int threads : sweep) {
         std::vector<double> ms;
         size_t states = 0, raw = 0;
         for (int i = 0; i < iters; ++i) {
@@ -41,10 +71,18 @@ int main(int argc, char** argv) {
             raw = g.num_states();
         }
         std::sort(ms.begin(), ms.end());
+        const double med = ms[ms.size() / 2];
+        if (base_ms == 0.0) base_ms = med;
         // raw is the like-for-like twin of the GPU bench's result.states.size(); canonical is
         // what HGEvolve reports as NumStates. Print both so neither gets compared to the other.
-        std::printf("threads=%d steps=%d canonical=%zu raw=%zu median_ms=%.3f min_ms=%.3f\n",
-                    threads, steps, states, raw, ms[ms.size() / 2], ms.front());
+        //
+        // Speedup and EFFICIENCY together: a speedup alone reads as success at any thread count,
+        // while speedup/threads says how much of each added core the run actually used, and it
+        // is the column that shows where scaling stops.
+        std::printf("threads=%d steps=%d canonical=%zu raw=%zu median_ms=%.3f min_ms=%.3f "
+                    "speedup=%.2f efficiency=%.2f\n",
+                    threads, steps, states, raw, med, ms.front(),
+                    base_ms / med, (base_ms / med) / threads);
     }
     return 0;
 }

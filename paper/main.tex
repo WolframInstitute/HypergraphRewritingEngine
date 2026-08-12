@@ -572,9 +572,18 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 
 \begin{table}[h]
 \centering
-\caption{\textbf{T8 --- Strong scaling.} Measured speedup over a single thread at increasing thread counts, on a fixed workload. Paired with the determinism gate: the expanded state set and the (input, output, rule) transition multiset are identical across all thread counts and seeds.}
+\caption{\textbf{T8 --- Strong scaling, and what it depends on.} Median wall time and EFFICIENCY (speedup divided by threads) at each thread count, for two problem sizes on the same rule. The sweep reaches the host's full width deliberately: a curve cut off at eight threads measures the easy half. Efficiency, not speedup, is the column that shows where parallelism stops paying --- it falls to 0.26 at 32 threads on the smaller problem and 0.36 on the larger, and both peak in wall time at 24, which is this host's physical core count; the 32-thread row is simultaneous multithreading and buys nothing. The two depths are the input axis: efficiency at every thread count is HIGHER on the larger problem (0.62 against 0.86 at eight threads), because the fixed serial cost amortises over more work. Paired with the determinism gate: the expanded state set and the (input, output, rule) transition multiset are identical at every thread count and seed. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
+\end{table}
+
+\subsection{Device Saturation (Table T11)}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{T11 --- Does the device saturate, and where.} The persistent kernel's grid is a run-time knob, so the question is answered behaviourally: wall time falls while adding blocks buys work and flattens when it does not. It flattens at eight blocks per streaming multiprocessor --- 2.23$\times$ over one per SM, and sixteen per SM is within noise of eight --- which is where the shipped default sits. The last column is the driver's peak SM-busy reading during the run, sampled at 20\,Hz; it is a bound and not an occupancy figure, because the counter says whether the SMs were busy and not how many warps were resident. The MEAN of that counter is deliberately not reported: it falls as the run gets faster, since the same busy kernel occupies a smaller share of the sampling window, so it tracks duration rather than residency. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_gpu\_evolve} mode 2.}
+\label{tab:t11-saturation}
+\input{tables/t11_gpu_saturation}
 \end{table}
 
 \subsection{Ablation (Table T9)}
@@ -633,7 +642,7 @@ The visualization is implemented using Vulkan for cross-platform GPU-accelerated
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. Against the Wolfram \texttt{MultiwaySystem} paclet the engine reaches the same state set between 820 and 43{,}902 times faster over depths three to seven (Table~\ref{tab:t2-speedup}), and the GPU reaches depth seven 12.4 times faster than eight CPU threads while losing to them at depth five (Table~\ref{tab:t7-gpu}). Key contributions include:
+We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. Against the Wolfram \texttt{MultiwaySystem} paclet the engine reaches the same state set faster by a margin that WIDENS with depth --- 820$\times$ at depth three to 43{,}902$\times$ at depth seven (Table~\ref{tab:t2-speedup}) --- which is the claim the ratio at any single depth cannot make. On the host the evolution scales to this machine's 24 physical cores at 12.8$\times$, with efficiency rising as the problem grows and falling once simultaneous multithreading is the only resource left (Table~\ref{tab:t8-scaling}); on the device it saturates at eight blocks per SM (Table~\ref{tab:t11-saturation}). The GPU passes eight CPU threads between depth five, where it loses, and depth seven, where it is 12.4$\times$ ahead (Table~\ref{tab:t7-gpu}). Key contributions include:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR), with a fast Weisfeiler--Leman hot-path hash and IR fallback on collision, validated against a brute-force isomorphism oracle
