@@ -196,13 +196,16 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 // `with_rules` is false for the verbs that address a HELD engine: a session's rule set was fixed
 // when it opened, so `Step` and `Query` carry none and sending them is an error rather than a
 // no-op. Keeping it a parameter is what lets that error be gated too.
+// `from`, when non-empty, is the frontier subset a steered Step names. Sent as the wire's
+// "From" key so the gate exercises the same envelope a caller builds, not a shortcut past it.
 std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
-                                         int64_t session = 0, bool with_rules = true) {
+                                         int64_t session = 0, bool with_rules = true,
+                                         const std::vector<int64_t>& from = {}) {
     wxf::Writer w;
     w.write_header();
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1));
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("InitialStates"));
@@ -232,6 +235,12 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Op"));
     w.write(op);
+
+    if (!from.empty()) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("From"));
+        w.write(from);
+    }
 
     if (session) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -1000,6 +1009,29 @@ TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
         << "Query was not answered from the held session";
     EXPECT_EQ(read_int_key(q, "NumStates"), ref_states)
         << "Query must report what the session holds and extend it by nothing";
+
+    // A STEERED STEP IS REFUSED ON THE DEVICE, and refusal is the only correct answer: the
+    // device session holds its frontier as device state ids with no host-visible identity, so a
+    // caller's selection cannot be resolved there. Running it unsteered would explore the
+    // branches the caller asked to leave alone and return a graph that is a correct answer to a
+    // DIFFERENT question -- indistinguishable, at the wire, from the right one.
+    //
+    // The check is that the worker ERRORS the job (an empty reply) rather than answering it.
+    // Asserting on the resulting state count instead would pass on a device that happened to
+    // converge, which is the case a steered run is least likely to be asked about.
+    const auto steered = worker_call(
+        w, build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{0}));
+    EXPECT_TRUE(steered.empty())
+        << "a Step naming a frontier subset was ANSWERED by the GPU worker; the device cannot "
+           "resolve the selection, so answering it means the branches the caller excluded were "
+           "explored anyway";
+
+    // The refusal must not take the session with it: the worker is alive and the session is
+    // still the one that was opened.
+    const auto after = worker_call(w, build_input_with_op(0, "Query", handle, /*with_rules=*/false));
+    EXPECT_FALSE(after.empty()) << "the refused Step killed the session it refused";
+    EXPECT_EQ(read_int_key(after, "NumStates"), ref_states)
+        << "the refused Step changed what the session holds";
 
     const auto c = worker_call(w, build_input_with_op(0, "Close", handle, /*with_rules=*/false));
     EXPECT_FALSE(c.empty()) << "Close errored";

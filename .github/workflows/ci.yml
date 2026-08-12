@@ -46,6 +46,12 @@ jobs:
       - name: The build-stamp checker still detects what it claims to
         run: python3 tools/dev/artifact_stamp_check_selftest.py
 
+      # The CUDA build-cost table must not name a translation unit that is gone: include_cost.py
+      # would quote a cost for a file that does not exist, and a wrong number is worse than the
+      # UNMEASURED an absent row already reports. Needs no build -- it reads the sources.
+      - name: The CUDA cost table names only translation units that exist
+        run: python3 tools/dev/include_cost.py --check
+
   linux-tests:
     runs-on: ubuntu-latest
     steps:

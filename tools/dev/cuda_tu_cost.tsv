@@ -1,0 +1,17 @@
+# MEASURED cost of compiling a CUDA translation unit at -j1 on this box.
+#   <path relative to the repository root>	<peak RSS, MB>	<wall time, minutes>
+#
+# ONLY MEASURED ROWS BELONG HERE. tools/dev/include_cost.py sums these to answer "what does
+# changing this header cost", and a guessed row is worse than no row: an absent TU is reported
+# as UNMEASURED and charged a visible default, while a guessed one is quoted as fact. The first
+# version of this file carried eight invented rows and `--check` caught two of them only because
+# they named .cu files that do not exist -- the other six would have shipped as measurements.
+#
+# persistent.cu is the one number this project has actually measured (board #123): about 12.5 GB
+# and half an hour. It is why CUDA builds here run one TU at a time under a ulimit rather than
+# -j2 -- each nvcc forks its own cicc/ptxas chain, so parallelism multiplies the peak instead of
+# bounding it.
+#
+# TO ADD A ROW: build that target alone with `/usr/bin/time -v` and read "Maximum resident set
+# size" and "Elapsed (wall clock) time". Do not interpolate from a neighbour.
+gpu/src/persistent.cu	12500	30.0
