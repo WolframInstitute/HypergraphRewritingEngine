@@ -53,9 +53,19 @@ Core engine:
   (`parallel_evolution.*`) drives the lock-free dataflow: match → rewrite → dedup as
   states are produced. `Hypergraph` (`hypergraph.*`) stores edges/states/events and
   owns canonical-state dedup. Matching is a worst-case-optimal join
-  (`pattern_matcher.hpp`, `index.hpp`, `signature.hpp`). Canonicalization is
-  Weisfeiler-Leman (`wl_hash.hpp`, fast, may collide) on the hot path with an exact
-  McKay individualization-refinement fallback (`ir_canonicalization.*`). Storage is
+  (`pattern_matcher.hpp`, `index.hpp`, `signature.hpp`). Canonicalization under the exact
+  mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
+  state, its hash serving as the dedup key directly; `compute_canonical_hash`
+  reaches the Weisfeiler-Leman hash (`wl_hash.hpp`, fast, may collide) only when
+  the mode is not `Full`, so WL never stands in front of IR. Bucketing by WL and
+  confirming with IR was implemented and measured 28% slower, and the reason is a
+  bound rather than an accident: distinct WL hashes are at most the canonical
+  classes, so a WL filter can skip at most `canonical/raw` of the IR calls while
+  paying a WL pass on every state -- 9.7% at depth 6 falling to 0.0% by depth 6 on
+  a two-edge LHS, because producing the same state along many histories is what
+  multiway evolution does. Where an option needs the automorphism data (quotient
+  exploration, event-canonicalization conventions), the orbits come from that same
+  IR pass, so nothing is canonicalized twice. Storage is
   arena-backed and lock-free (`arena.hpp`, `segmented_array.hpp`, `concurrent_map.hpp`,
   `bitset.hpp`, `lock_free_list.hpp`). Causal/branchial in `causal_graph.hpp`.
 - **`job_system/`** — work-stealing task scheduler the engine runs on.

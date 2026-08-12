@@ -222,7 +222,26 @@ The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refineme
 
 It is worth being precise about where this hash is and is not used, because the arrangement one would expect is not the one that ships. WL does NOT sit in front of IR on the exact path. Under the exact mode IR runs on every state and its hash is the deduplication key directly; the WL hash is never consulted, and the dispatch that decides this reaches WL only when the mode is not the exact one. WL serves the coarser identity modes, and the reported hash in those modes.
 
-The reason is measured rather than assumed. Bucketing by WL and confirming with IR only on collision is the obvious optimization, and it was implemented: it ran 28\% SLOWER. The states a filter is supposed to make cheap are the duplicates, and a duplicate is exactly the case where WL agreeing settles nothing and IR must still be run to confirm. The filter therefore adds a WL pass to the states that were already the expensive ones, and saves it only on states that IR distinguishes quickly anyway.
+The reason is measured, and it is bounded rather than incidental. Bucketing by WL and confirming with IR only on collision is the obvious optimization, and it was implemented: it ran 28\% SLOWER.
+
+The bound says why, and says it will not improve. WL is a coarser invariant than IR, so the number of distinct WL hashes a run produces is at most the number of canonical classes. A state whose WL hash has been seen before must be confirmed by IR --- WL agreement never establishes isomorphism --- so the IR calls a WL filter can avoid are at most the canonical classes, while the WL pass is paid on every produced state. The fraction saved is therefore at most (canonical states)/(raw states), and multiway evolution drives that ratio toward zero, because producing the same state along many histories is what the evolution DOES:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Rule & Depth & Raw states & Canonical & Ceiling on IR calls avoided \\
+\midrule
+one-edge LHS & 6 & 874 & 85 & 9.7\% \\
+one-edge LHS & 8 & 46{,}234 & 486 & 1.1\% \\
+two-edge LHS & 5 & 2{,}956 & 6 & 0.2\% \\
+two-edge LHS & 6 & 23{,}116 & 7 & 0.0\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The ceiling falls as the evolution deepens, which is the regime the engine exists for. A filter that costs one pass over every state to skip at most 1\% of the work it precedes is not a fast path.
+
+There is one case where IR is run for a reason other than identity, and there the question does not arise: the quotient exploration and the event-canonicalization conventions need the edge-orbit table, which the same IR pass already produces, so no second canonicalization is performed for them.
 
 \begin{algorithm}
 \caption{Weisfeiler-Lehman Hash}
