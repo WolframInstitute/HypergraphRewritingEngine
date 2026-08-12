@@ -43,9 +43,16 @@ endif()
 # stamp cannot outlive the commit it names. A commit ON the same branch does not touch HEAD's
 # contents, which is why sign-off compares the stamp to `git rev-parse HEAD` rather than assuming
 # a configured tree is up to date.
+# PASSED IN WINS. build_windows_gpu.sh resolves the commit on the Linux side and hands it over
+# with -D, because its configure runs under Windows cmake.exe against a \\wsl.localhost path where
+# git finds no repository. An unconditional `set()` here would define a NORMAL variable that
+# shadows that cache entry -- which is what left the one artifact the stamp exists for reading
+# `commit=unknown` after the -D was already being passed.
 find_package(Git QUIET)
-set(HG_BUILD_COMMIT "unknown")
-if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+if(NOT HG_BUILD_COMMIT)
+    set(HG_BUILD_COMMIT "unknown")
+endif()
+if(HG_BUILD_COMMIT STREQUAL "unknown" AND GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                     OUTPUT_VARIABLE HG_BUILD_COMMIT
