@@ -216,6 +216,27 @@ void ParallelEvolutionEngine::raise_worker_error() const {
         case job_system::ErrorType::None:
         case job_system::ErrorType::Aborted:
             return;
+        // A CONFIGURED LIMIT IS NOT A DEFECT, and the caller gets what fits. Reaching a
+        // container's ceiling means the workload is larger than the arena it was given, which is
+        // something a user does deliberately at the edge of a machine -- and the answer they want
+        // is the part that was built plus a statement of why it stopped, which is exactly what
+        // the GPU already returns (EvolveResult.warnings, partial result). Throwing here made the
+        // same event mean "here is your truncated graph" on the device and "your process is gone"
+        // on the host, because a throw out of a worker propagates through evolve() and terminates
+        // a caller that did not wrap it.
+        //
+        // The graph IS truncated, and saying so is the point: a caller that reads the count and
+        // not the warnings gets a smaller multiway system with no indication it is smaller, which
+        // is the one outcome worse than the throw.
+        case job_system::ErrorType::CapacityExhausted: {
+            const char* what = job_system_->get_error_message();
+            warnings_.push_back(
+                std::string("capacity limit reached: ") + (*what ? what : "a configured container "
+                "ceiling was hit") + ". The evolution is TRUNCATED at that point -- the states, "
+                "events and relations returned are valid and incomplete. Raise the limit or "
+                "reduce the workload to explore further.");
+            return;
+        }
         default: {
             const char* what = job_system_->get_error_message();
             throw std::runtime_error(

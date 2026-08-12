@@ -607,3 +607,49 @@ TEST(JobSystemSerial, AbortPollRunsBetweenJobs) {
     EXPECT_EQ(executed, 3);
     js.shutdown();
 }
+
+// A CONFIGURED LIMIT IS ITS OWN ERROR KIND, and the classification happens HERE because here is
+// where the type is still known.
+//
+// Every other kind this scheduler reports is a defect: an allocation that failed, an exception
+// nobody expected, a non-std throw. hgcommon::CapacityExhausted is not one -- it means the
+// workload outgrew a container the caller configured, the work done so far is valid, and the
+// owner of the run wants to serve it rather than terminate. The engine acts on that
+// (raise_worker_error records a warning instead of throwing), and it can only act on it if the
+// kind arrives distinguishable.
+//
+// CHECKED BY TYPE, NOT BY MESSAGE. The abort path next to this one compares what() to a literal,
+// which works today and breaks the day the wording changes. This asserts that a
+// CapacityExhausted is NOT classified as Exception -- the bucket it would fall into if the catch
+// clause were removed -- which is the failure a message-based check cannot distinguish from a
+// reworded message.
+TEST(JobSystemErrors, ACapacityLimitIsItsOwnKindAndNotAGenericException) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(2);
+    js.start();
+
+    js.submit(make_job<TestJobType>([] {
+        throw hgcommon::CapacityExhausted("a configured container ceiling was reached");
+    }, TestJobType::PHYSICS));
+    js.wait_for_completion();
+
+    EXPECT_EQ(js.get_error_type(), ErrorType::CapacityExhausted)
+        << "a configured limit was classified as something else, so the engine cannot tell it "
+           "apart from a defect and will terminate the caller instead of serving what fits";
+    EXPECT_NE(js.get_error_type(), ErrorType::Exception)
+        << "it fell into the generic bucket, which is where it lands if the typed catch is gone";
+    EXPECT_STREQ(js.get_error_message(), "a configured container ceiling was reached");
+    js.shutdown();
+}
+
+// The kinds that ARE defects stay defects: adding a bucket must not widen it.
+TEST(JobSystemErrors, AnOrdinaryExceptionIsStillAGenericException) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(2);
+    js.start();
+    js.submit(make_job<TestJobType>([] { throw std::runtime_error("an actual defect"); },
+                                    TestJobType::PHYSICS));
+    js.wait_for_completion();
+    EXPECT_EQ(js.get_error_type(), ErrorType::Exception);
+    js.shutdown();
+}

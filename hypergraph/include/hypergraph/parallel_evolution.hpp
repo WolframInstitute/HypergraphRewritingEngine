@@ -700,7 +700,10 @@ private:
     bool explore_from_canonical_states_only_{false};
     // Run-level notices (an option combination adjusted, an optimisation disabled). Never a
     // substitute for a result: the run still produces exactly what was requested.
-    std::vector<std::string> warnings_;
+    // Mutable because raise_worker_error() is const and RECORDS rather than throws for a
+    // capacity limit: the run is over, nothing else observes this, and the alternative is making
+    // the whole error path non-const to append one string.
+    mutable std::vector<std::string> warnings_;
     bool quotient_initial_states_{false};
 
     // Per-parent successor count tracking (for max_successor_states_per_parent)

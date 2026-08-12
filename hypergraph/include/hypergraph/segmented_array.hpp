@@ -1,6 +1,8 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 
+#include "hgcommon/capacity.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -280,7 +282,10 @@ private:
         // reads cannot outrun it, because count_ only reaches idx+1 once idx's write
         // succeeded.
         if (seg_idx >= MAX_SEGMENTS) {
-            throw std::length_error(
+            // A CONFIGURED LIMIT, not a defect: hgcommon::CapacityExhausted is what the job
+            // system classifies on and what lets the engine serve the truncated graph with a
+            // warning instead of terminating the caller. See hgcommon/capacity.hpp.
+            throw hgcommon::CapacityExhausted(
                 "SegmentedArray: capacity exhausted (MAX_SEGMENTS segments). Raise "
                 "MAX_SEGMENTS or the segment size.");
         }

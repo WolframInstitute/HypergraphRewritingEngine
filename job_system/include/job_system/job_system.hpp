@@ -6,6 +6,7 @@
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
 #include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
+#include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -25,6 +26,12 @@ enum class ErrorType {
     None = 0,
     OutOfMemory,   // std::bad_alloc caught
     Aborted,       // AbortedException caught (user requested abort)
+    // A CONFIGURED LIMIT was reached (hgcommon::CapacityExhausted). Distinct from every other
+    // kind because it is not a defect: the work done so far is valid and the caller wants it.
+    // Whoever owns the run decides what to do -- the engine serves the truncated graph with a
+    // warning -- but the classification has to happen HERE, at the catch, while the type is
+    // still known.
+    CapacityExhausted,
     Exception,     // std::exception caught
     Unhandled      // Non-std::exception type caught
 };
@@ -230,6 +237,10 @@ private:
         if (data) data->jobs_executing.fetch_add(1);
         try {
             job->execute();
+        } catch (const hgcommon::CapacityExhausted& e) {
+            record_error_message(e.what());
+            error_type_.store(ErrorType::CapacityExhausted, std::memory_order_release);
+            stop_all_workers();
         } catch (const std::bad_alloc& e) {
             record_error_message(e.what());
             error_type_.store(ErrorType::OutOfMemory, std::memory_order_release);
