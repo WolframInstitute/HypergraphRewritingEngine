@@ -301,6 +301,45 @@ def t9(build, iters):
     return len(rows)
 
 
+def t3(build):
+    """Is the global allocator on the concurrent path?
+
+    The de-heap, the causal-closure rework and the copy-on-write states were scaffolded in the
+    paper as three before/after tables. Their "before" columns are not reproducible as a
+    comparison: each replaced path was deleted in the commit that replaced it (there is no build
+    flag that restores it), the work spans dozens of commits on one branch, and the instrument
+    that measures arena bytes today did not exist at the far end -- so a before/after pair would
+    be two different instruments reporting one column.
+
+    What IS checkable, and is the claim those three items were for: allocation count does not
+    grow with the work. cost_matrix counts every global operator new during the measured
+    evolution, so the table below puts that count next to the size of the run it served.
+    """
+    out = run([os.path.join(build, "cost_matrix")])
+    rows = []
+    for line in out.splitlines():
+        m = re.match(r"^(\S+)\s+(\S+)\s+(EXACT|INEXACT|\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+"
+                     r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
+        if m:
+            g = m.groups()
+            rows.append((g[0], int(g[3]), int(g[4]), int(g[7]), int(g[9])))
+    if not rows:
+        raise SystemExit("cost_matrix produced no parseable rows")
+    rows.sort(key=lambda r: r[2])   # by events: the work, which is what allocation must not track
+
+    b = [provenance("tools/cost_matrix.cpp"),
+         r"\begin{tabular}{lrrrrr}", r"\toprule",
+         r"Workload & Canon.\ states & Events & Arena B & Heap allocs & Allocs per event \\",
+         r"\midrule"]
+    for (name, canon, ev, arena, allocs) in rows:
+        per = ("%.4f" % (float(allocs) / ev)) if ev else "--"
+        b.append("%s & %d & %d & %d & %d & %s \\\\" % (
+            tex_escape(name), canon, ev, arena, allocs, per))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t3_heap.tex", "\n".join(b) + "\n")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -323,6 +362,8 @@ def main():
     if a.wolfram:
         n = t2(a.build_dir, a.authority_depth, a.reps)
         print("T2: %d depths" % n)
+    n = t3(a.build_dir)
+    print("T3: %d workloads" % n)
     n = t9(a.build_dir, a.iters)
     print("T9: %d contributions" % n)
     n = t6(a.build_dir, a.quotient_depth)

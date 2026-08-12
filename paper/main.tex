@@ -536,41 +536,9 @@ We evaluate our implementation against the Wolfram Language reference across cor
 
 \begin{table}[h]
 \centering
-\caption{\textbf{T3 --- De-heap result.} Global \texttt{operator new} allocation count and heap bytes, before vs.\ after the per-worker-cursor arena, per workload. Reports whether \texttt{malloc} is off the concurrent path. Source: \texttt{tools/cost\_matrix.cpp} heap counter.}
+\caption{\textbf{T3 --- The global allocator is off the concurrent path.} One row per corpus workload, ordered by the work done. \texttt{cost\_matrix} counts every global \texttt{operator new} during the measured evolution, so the last column is what the de-heap, the causal-closure rework and the copy-on-write states were all for: allocation must not grow with the work. It falls from 0.45 allocations per event on the smallest runs to 0.0026 on runs three orders of magnitude larger --- the remaining allocations are the fixed set-up a run performs once, and the per-event cost goes to the arena instead. These three contributions were scaffolded as before/after tables; their ``before'' columns are not reproducible as a comparison, because each replaced path was deleted in the commit that replaced it, the work spans dozens of commits, and the instrument that measures arena bytes today did not exist at the far end. A pair of numbers from two different instruments is not a before and an after. Source: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t3-deheap}
-\begin{tabular}{lcccc}
-\toprule
-Workload & Heap allocs (before) & Heap allocs (after) & Heap bytes (before) & Heap bytes (after) \\
-\midrule
-\multicolumn{5}{c}{\todo{populate; report the corpus-total allocation reduction}} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{\textbf{T4 --- Causal-closure reduction.} Total arena bytes for the causal base-layer closure, before vs.\ after the key-only closure rework, exact and deterministic at 1/4/8/16 threads. Reports percentage arena reduction.}
-\label{tab:t4-closure}
-\begin{tabular}{lcccc}
-\toprule
-Workload & Arena B (before) & Arena B (after) & Reduction (\%) & Deterministic (threads) \\
-\midrule
-\multicolumn{5}{c}{\todo{populate; report the total-arena reduction on binary-growth}} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{\textbf{T5 --- Copy-on-write states.} Per-child chunk-copy count and/or arena bytes, memcpy-all-chunks vs.\ copy-only-touched-chunks representation. Reports the reduction in chunk copies per child.}
-\label{tab:cow}
-\begin{tabular}{lccc}
-\toprule
-Workload & Chunk copies (full copy) & Chunk copies (COW) & Arena B (COW) \\
-\midrule
-\multicolumn{4}{c}{\todo{populate; report chunk-copy reduction per child}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t3_heap}
 \end{table}
 
 \subsection{Wall-Time Speedup (Table T2)}
