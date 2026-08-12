@@ -16,7 +16,15 @@ The three questions this answers are the ones a ratio cannot:
                    driver reports a 1 Hz average, so it bounds the answer rather than settling
                    it, and this file says so rather than printing it as an occupancy figure.
 
-Run:  python3 tools/dev/scaling_sweep.py [--gpu] [--steps 5,6,7] [--iters 9]
+Each section is independent and is selected by name, because they do not cost the same: the
+rule-shape sweep is a minute and the CPU curve is an hour, so binding them together would mean
+paying for the second to re-run the first.
+
+  WHERE IT GOES   a falling efficiency curve does not name its cause. user vs system time,
+                   resident set and page faults, read from getrusage on the same runs, separate
+                   "the workers are contending" from "the run is paying for memory per worker".
+
+Run:  python3 tools/dev/scaling_sweep.py --sections shapes[,cpu,memory,gpu] [--steps 5,6,7]
 """
 
 import argparse
@@ -169,24 +177,43 @@ def rule_shape_scaling(build, shapes, iters):
     frontier. Reporting the shape that scales best is a choice of input, so both are swept at
     every thread count and the table carries EFFICIENCY, which is where the difference shows.
 
+    SIZED SO THE ANSWER IS NOT FIXED COST. A sweep whose serial point is tens of milliseconds
+    cannot distinguish "the parallelism stopped paying" from "thread setup and the final drain
+    are now the whole run". The depths here put the serial point in the seconds-to-minutes range,
+    and the same shape of curve was confirmed at a size 100x smaller, so the ceiling this reports
+    is a property of the engine at both sizes rather than of one problem.
+
     Uses tools/sampling_cost_smoke, which already takes (arm, rule, edges, steps, threads, k,
     canon) -- no new instrument for a question an existing one answers.
     """
     rows = {}
     for (rule, edges, steps) in shapes:
         for threads in (1, 2, 4, 8, 16, 24, 32):
+            # MIN over repeats, not mean. Contention on a shared box can only make a run
+            # SLOWER, so the minimum is the estimate that interference cannot inflate; a mean
+            # would report this machine's other tenants as this engine's scaling.
+            #
+            # REPEATS ARE SPENT WHERE THEY BUY SOMETHING. Scheduling noise here is on the order
+            # of milliseconds, so it is a large share of a 70 ms point and none of a 90 s one.
+            # A point that already ran for longer than LONG_RUN_S is therefore taken once, which
+            # is what makes a serial point of minutes affordable in the same sweep.
+            LONG_RUN_S = 10.0
             best = None
-            for _ in range(max(2, iters // 4)):
+            for _ in range(max(3, iters // 2)):
                 out = run([os.path.join(build, "sampling_cost_smoke"), "off", rule, str(edges),
-                           str(steps), str(threads), "4", "full"], timeout=3600)
+                           str(steps), str(threads), "4", "full"], timeout=7200)
                 m = re.search(r"done ([\d.]+) ms\s+states=(\d+).*events=(\d+)", out)
                 if not m:
                     raise SystemExit("sampling_cost_smoke gave no row:\n%s" % out[-1000:])
                 ms = float(m.group(1))
                 if best is None or ms < best[0]:
                     best = (ms, m.group(2), m.group(3))
+                if ms > LONG_RUN_S * 1000.0:
+                    break
             rows.setdefault(rule, []).append((threads, best[0], best[1], best[2]))
-            print("  %-7s %2dt: %8.1f ms" % (rule, threads, best[0]))
+            base = rows[rule][0][1]
+            print("  %-7s %2dt: %9.1f ms  %5.2fx  eff %.2f" % (
+                rule, threads, best[0], base / best[0], (base / best[0]) / threads))
 
     b = [pt.provenance("tools/sampling_cost_smoke.cpp"),
          r"\begin{tabular}{r" + "rr" * len(rows) + "}", r"\toprule",
@@ -207,6 +234,61 @@ def rule_shape_scaling(build, shapes, iters):
     return rows
 
 
+def thread_memory_cost(build, shape, iters):
+    """WHERE the efficiency goes when it stops paying, split into user and kernel time.
+
+    A falling efficiency curve does not say what is consuming the threads, and the two candidate
+    answers demand opposite fixes: if the workers are contending, they burn USER time doing
+    redundant work; if the run is paying for memory it did not need, they burn SYSTEM time
+    faulting pages in. Those are distinguishable with no new instrument -- getrusage already
+    reports both, plus the fault count and the peak resident set -- so this reports all four
+    against thread count and lets the numbers choose.
+
+    Read the columns together: user time roughly flat while system time and minor faults climb
+    with the resident set means the ceiling is the cost of memory the run acquires per worker,
+    not threads fighting over a data structure.
+    """
+    rows = []
+    rule, edges, steps = shape
+    for threads in (1, 8, 16, 24, 32):
+        best = None
+        for _ in range(max(2, iters // 4)):
+            p = subprocess.run(
+                ["/usr/bin/time", "-v", os.path.join(build, "sampling_cost_smoke"), "off", rule,
+                 str(edges), str(steps), str(threads), "4", "full"],
+                cwd=ROOT, capture_output=True, text=True, timeout=7200)
+            if p.returncode != 0:
+                raise SystemExit("sampling_cost_smoke failed:\n%s" % p.stderr[-2000:])
+            g = lambda pat: float(re.search(pat, p.stderr).group(1))
+            # getrusage's elapsed field is h:mm:ss.ss OR m:ss.ss depending on duration, so the
+            # fields are folded from the right rather than matched against one of the two shapes.
+            # The label itself contains colons ("(h:mm:ss or m:ss)"), so the greedy .* is what
+            # anchors this to the LAST colon on the line rather than one inside the label.
+            m = re.search(r"Elapsed \(wall clock\) time.*:\s*([\d:.]+)", p.stderr)
+            wall = 0.0
+            for part in m.group(1).split(":"):
+                wall = wall * 60.0 + float(part)
+            row = (threads, wall, g(r"User time \(seconds\): ([\d.]+)"),
+                   g(r"System time \(seconds\): ([\d.]+)"),
+                   g(r"Maximum resident set size \(kbytes\): (\d+)") / 1024.0,
+                   g(r"Minor \(reclaiming a frame\) page faults: (\d+)"))
+            if best is None or row[1] < best[1]:
+                best = row
+        rows.append(best)
+        print("  %2dt: wall %6.2f s  user %6.2f s  sys %6.2f s  RSS %7.0f MB  minor-faults %9.0f"
+              % best)
+
+    b = [pt.provenance("tools/sampling_cost_smoke.cpp under /usr/bin/time -v (getrusage)"),
+         r"\begin{tabular}{rrrrrr}", r"\toprule",
+         r"Threads & Wall s & User s & System s & Peak RSS MB & Minor faults \\", r"\midrule"]
+    for (t, wall, u, s, rss, mf) in rows:
+        b.append("%d & %.2f & %.2f & %.2f & %.0f & %s \\\\"
+                 % (t, wall, u, s, rss, "{:,}".format(int(mf)).replace(",", "\\,")))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    pt.write("t13_thread_memory.tex", "\n".join(b) + "\n")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -214,18 +296,30 @@ def main():
     ap.add_argument("--steps", default="5,6,7")
     ap.add_argument("--iters", type=int, default=9)
     ap.add_argument("--sm-count", type=int, default=128)   # RTX 4090
-    ap.add_argument("--gpu", action="store_true")
-    ap.add_argument("--shapes", action="store_true",
-                    help="add the rule-shape sweep (T12)")
+    ap.add_argument("--shape-depths", default="growth:1:9,pair:4:7",
+                    help="rule:edges:steps triples for the rule-shape sweep")
+    ap.add_argument("--sections", default="cpu",
+                    help="comma-separated subset of: cpu, shapes, memory, gpu")
     a = ap.parse_args()
 
+    sections = [x.strip() for x in a.sections.split(",") if x.strip()]
+    unknown = [x for x in sections if x not in ("cpu", "shapes", "memory", "gpu")]
+    if unknown:
+        raise SystemExit("unknown section(s): %s" % ", ".join(unknown))
+
+    a.shape_depths = [(r, int(e), int(d))
+                      for r, e, d in (x.split(":") for x in a.shape_depths.split(","))]
     steps_list = [int(s) for s in a.steps.split(",") if s.strip()]
-    print("CPU strong scaling, depths %s" % steps_list)
-    cpu_scaling(a.build_dir, steps_list, a.iters)
-    if a.shapes:
+    if "cpu" in sections:
+        print("CPU strong scaling, depths %s" % steps_list)
+        cpu_scaling(a.build_dir, steps_list, a.iters)
+    if "shapes" in sections:
         print("Rule-shape scaling")
-        rule_shape_scaling(a.build_dir, [("growth", 1, 8), ("pair", 4, 6)], a.iters)
-    if a.gpu:
+        rule_shape_scaling(a.build_dir, a.shape_depths, a.iters)
+    if "memory" in sections:
+        print("Where the efficiency goes: user vs kernel time, resident set, page faults")
+        thread_memory_cost(a.build_dir, a.shape_depths[0], a.iters)
+    if "gpu" in sections:
         print("GPU saturation, depth %d" % steps_list[-1])
         gpu_saturation(a.gpu_build_dir, steps_list[-1], a.iters, a.sm_count)
     return 0
