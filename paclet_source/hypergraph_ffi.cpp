@@ -303,6 +303,26 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             } else if (option_key == "UniformRandom") {
                                 // With MatchesPerStep, a per-step cap by arrival order
                                 req.uniform_random = value;
+                            } else {
+                                // AN OPTION THIS BUILD DOES NOT KNOW IS NAMED, NOT DROPPED.
+                                // Every branch above matches a specific key, so reaching here
+                                // means the key matched none of them and its value happened to
+                                // parse as a symbol -- which is what a misspelling looks like.
+                                // Silently continuing is how a documented-but-nonexistent option
+                                // produced no diagnostic at all: the caller sees a successful
+                                // evolution computed without the option they asked for.
+                                //
+                                // A WARNING, NOT AN ERROR. A malformed value is already reported
+                                // this way, and a WL caller may pass a forward-compatible option
+                                // set an older engine does not know; refusing the whole evolution
+                                // over one unrecognised key would break those callers for no
+                                // correctness gain. The warning trail reaches the user through
+                                // HGEvolve::warn, so the mistake is visible either way.
+                                req.ffi_warnings.push_back(
+                                    {"OptionSkipped", 1,
+                                     "option '" + option_key + "' is not recognised by this "
+                                     "engine build and was ignored; check its spelling against "
+                                     "the documented option list"});
                             }
                         }
                     } catch (const std::exception& e) {

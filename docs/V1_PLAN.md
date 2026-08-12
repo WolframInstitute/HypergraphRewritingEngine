@@ -75,8 +75,8 @@ gate a release must pass, and it carries requirements this file does not:
 
 | from the checklist | state |
 |---|---|
-| **Native Windows MSVC+nvcc whole-stack config** — the checklist calls this a **v1.0 blocker** in as many words: until it lands, `TargetDevice -> "GPU"` SILENTLY FALLS BACK TO CPU on Windows | not started, and not tracked anywhere else. This is a silent-degradation blocker of exactly the kind P3 exists to eliminate |
-| All 6 platform libraries and 6 `hg_evolve` binaries (Linux/Windows/macOS × x86-64/ARM64); `hg_evolve_gpu` on both CUDA platforms; the `.paclet` archive; `DocumentationBuild` (which evaluates every example cell, so it is also the docs-can't-rot gate); the static-link contract | none verifiable on this machine — they need the release matrix |
+| **Native Windows MSVC+nvcc whole-stack config** — until it lands, `TargetDevice -> "GPU"` SILENTLY FALLS BACK TO CPU on Windows | **LANDED.** `build_windows_gpu.sh` drives a native Windows build from WSL through the Windows `cmake.exe`, the Visual Studio 17 2022 generator and the CUDA Toolkit's own integration props (`-T cuda=<toolkit path>`, so no admin copy into VS is needed), producing `Windows-x86-64/hg_evolve_gpu.exe` — 98 MB, statically linked (`/MT` + static cudart), architectures 75/80/86/89/90. `build_all_platforms.sh` reports **7 built, 0 skipped, 0 failed**, and `HG_REQUIRE_GPU=1` makes an absent toolchain a FAILURE rather than a skip so a stale exe cannot ship quietly |
+| All 6 platform libraries and 6 `hg_evolve` binaries (Linux/Windows/macOS × x86-64/ARM64); `hg_evolve_gpu` on both CUDA platforms; the `.paclet` archive; `DocumentationBuild` (which evaluates every example cell, so it is also the docs-can't-rot gate); the static-link contract | **BUILT AND VERIFIED HERE.** This machine cross-compiles all six platforms (native gcc, `aarch64-linux-gnu`, mingw-w64, clang/lld, OSXCross) plus both CUDA executables. Execution is not the check and never could be — an ARM64 macOS dylib is a file, not a program, on this host — so provenance is read out of each artifact instead: every one carries `HGBUILDSTAMP/1 commit=<sha> variant=<name>` in its .rodata and `tools/dev/artifact_stamp_check.py --require-clean` requires all 14 to name HEAD with a clean tree |
 
 Neither file should be read alone. This one orders the WORK; the checklist gates the RELEASE.
 
@@ -675,8 +675,15 @@ magnitudes are not current.
   completeness provably covering the pull walk under the race. **OPEN.**
 - **Q4 — is the relaxation look-back bounded?** If a late short path can only relax depth by ≤ B,
   the quiescence signal is a clean depth window at `frontier − B`. **OPEN, measurable.**
-- **Q5 — WL prefilter under quotient.** The +28% verdict was measured on a duplicate-heavy
-  workload; a singleton WL bucket needs no IR at all. **OPEN (old verdict is the prior to beat).**
+- **Q5 — WL prefilter under quotient.** **DECIDED, and the +28% figure is no longer the argument.**
+  The saving is bounded: WL is coarser than IR, so distinct WL hashes number at most the canonical
+  classes C, and a repeated hash is consistent with both isomorphism and collision, so IR decides
+  it. At least R − C invocations remain out of R raw states, capping the saving at C/R while every
+  raw state pays a WL pass. The singleton-bucket case IS that C/R term, and it is small exactly
+  where the work is: measured per case by `tools/cost_matrix`, C/R is 0.0% on `cycle4-automorphic`
+  at 68,184 events, 0.3% on `star4-automorphic`, 4.1% on `binary-growth` at 873, and 100% only on
+  `self-loop`, which stops after one event. Within every rule that keeps rewriting it FALLS with
+  depth.
 - **Q6 — incremental IR / WL.** Two separable claims: warm-start cannot be exact (fundamental);
   no parent→child locality under work-stealing (contingent — child-batching would create it).
   **OPEN (research).**
@@ -684,8 +691,13 @@ magnitudes are not current.
   review before any novelty claim. **OPEN.**
 - **Q8 — reservoir sampling: is depth-scoped completion enough**, or is a barrier-free
   approximate scheme preferable? **OPEN.**
-- **Q9 — should unknown options hard-error?** Today they are silently skipped, which is how a
-  documented-but-nonexistent option produced no diagnostic. **OPEN — recommend hard-error.**
+- **Q9 — should unknown options hard-error?** **DECIDED: they are NAMED, not dropped, and not
+  fatal.** An unrecognised option key now goes on the warning trail (`OptionSkipped`, reaching the
+  user through `HGEvolve::warn`) naming the option and suggesting a spelling check, which is the
+  diagnostic whose absence caused this question. Hard-erroring was rejected: a WL caller may pass a
+  forward-compatible option set an older engine does not know, and refusing the whole evolution over
+  one unrecognised key breaks those callers for no correctness gain. A malformed VALUE was already
+  reported this way, so the two failure modes now behave alike.
 - **Q11 — concurrent sessions?** **DECIDED: exactly one**, revisitable.
 - **Q12 — which Pareto operating points actually ship** as the advertised family? **OPEN.**
 
