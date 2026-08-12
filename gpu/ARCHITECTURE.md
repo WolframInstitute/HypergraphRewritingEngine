@@ -205,7 +205,7 @@ For each match: copy the parent state's edge bitset, clear consumed bits, atomic
 
 **Current:** `compute_state_ir_hashes_range` produces canonical hashes for a contiguous range of states (the "just produced by the current step's rewrite" range). A separate `k_dedup_and_append` kernel runs afterwards to populate the next frontier, first-writer-wins on `canonical_state_map`. Both kernels are one-shot batched launches per step; persistent streaming is M7.
 
-Canonical hash strategy is always IR (the configured-strategy surface is gone — see §7). If IR's fast-path shared-memory scratch can't fit the state, the kernel silently falls back to `wl_hash_state_device` (1-WL) — iso-invariant, so correctness-safe for dedup, just with soft false-positive risk on symmetric graphs.
+Canonical hash strategy is always IR (the configured-strategy surface is gone — see §7). A state too large for IR's fast-path shared-memory scratch is signalled as a truncation and retried with a larger arena, so a `Full` run gets the exact identity on every state; §7 states the same invariant from the other side, that the 1-WL body is not a fallback.
 
 Events are created for *every* rewrite, regardless of whether the resulting state was a duplicate — currently done inline in the rewrite kernel rather than a separate queue-driven `EventRegisterKernel` step.
 

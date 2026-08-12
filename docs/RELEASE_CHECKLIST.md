@@ -1,7 +1,7 @@
 # Release acceptance checklist
 
 **Every gate below was re-run at HEAD on 2026-08-12** unless a line says otherwise:
-all_tests **273/273**, hg_gpu_tests **99/99**, gpu_differential_tests **36/36** (RTX 4090),
+all_tests **275/275**, hg_gpu_tests **99/99**, gpu_differential_tests **36/36** (RTX 4090),
 golden corpus **12/12** with CPU == GPU == `{5,33,32,43}`, `verify_sessions.wls`
 **SESSIONS_VERIFIED 0/23**, `verify_doc_examples.wls` 38 blocks with only the two known
 first-call-message blocks failing (board #109), `codemap_check` / `doc_symbols_check` /
@@ -172,7 +172,7 @@ Keep it current: a release that skips a line here is not released.*
       not a blocker — but it is the first thing a user sees.*
 
 ## Test gates
-- [x] CPU suite green. **246/246 at 2026-08-05**, run from `build_linux`.
+- [x] CPU suite green. **275/275 at 2026-08-12**, run from `build_linux`.
       *Run it from `build_linux`, not the repository root:* `PacletTest` loads the paclet from
       `../paclet`, which a Windows `wolframscript` resolves through the UNC mapping of the
       inherited working directory. From the root it resolves one level too high; the test now says

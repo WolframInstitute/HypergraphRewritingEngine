@@ -64,6 +64,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`park.hpp`** -- futex-style parking (`WaitOnAddress` on Windows, futex on Linux) for the job system's idle waits
 - **`portable_intrinsics.hpp`** -- GCC/Clang and MSVC spellings of the intrinsics the engine uses.
   - `popcount`/`popcount64`/`ctz`/`ctz64`
+- **`capacity.hpp`** -- `CapacityExhausted`, the error kind for a CONFIGURED limit rather than a programmer mistake. It lives here because the thrower (the engine's containers) and the catcher (the job system) are separate libraries, and the job system must not depend on the engine to name what it caught; classifying on the TYPE is what a rename of the message cannot break.
 
 ## `hypergraph/include/hypergraph/` -- core CPU engine (headers)
 
