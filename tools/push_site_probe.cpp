@@ -45,12 +45,22 @@
 // So batched stores about twice as many forwarded match records as eager while producing
 // IDENTICAL output. The mechanism is visible in the same table: batched makes 7200 forwarding-
 // site calls against eager's 3066, because by the time a match is pushed more of the parent's
-// children exist to push it to. Those extra records are redundant with what each child's PULL
-// would have found on its own -- the waste is TWO MECHANISMS COVERING AN OVERLAPPING WINDOW,
-// not allocations lost to a race.
+// children exist to push it to.
 //
-// A fix therefore has to make push and pull partition the window instead of overlapping it,
-// and the number it must move is the allocation count, not the wasted count.
+// AN OVERLAPPING PUSH/PULL WINDOW IS NOT THE EXPLANATION. Testing it needs a per-node insertion
+// position: the match list is prepend-only, so a node's position in the chain IS its insertion
+// order, a reader holding a head covers exactly the positions at or below that head's, and a
+// child that publishes the position it pulled up to lets a later push skip any record already
+// covered. That was built end to end -- position derived from the predecessor the winning CAS
+// observed, a per-child watermark published after each pull, and the position carried through
+// both discovery sites and both pull re-propagations. Measured on the same configuration:
+//
+//   batched   8487 -> 8455 stable copies (0.4%), with 0 to 1 copies losing a claim throughout
+//
+// A partition can only remove records that two mechanisms both cover, and the claim-loss rate
+// says there are none: every allocation wins, so each is the unique cover for a distinct
+// (state, match) pair. The extra records are coverage batched genuinely performs and eager does
+// not, and the arena gap is not recoverable by scheduling push against pull.
 //
 // This measures; it does not change behaviour. Removing or reordering anything is a separate step
 // gated on these numbers, on cost_matrix over the same 17 cases, and on test_match_completeness
