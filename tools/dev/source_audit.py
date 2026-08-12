@@ -45,15 +45,41 @@ def site_names_match(text, line, qualified_name):
     since gained or lost a leading line moves it by one or two, so a small window is read rather
     than a single line. The unqualified name is what is looked for -- the qualified one appears
     in the map, not necessarily in the source.
+
+    A MACRO-GENERATED DEFINITION NEVER SPELLS ITS OWN NAME. `BENCHMARK(foo, ...)` expands to
+    definitions called `benchmark_foo` and `reg_foo`, and libclang rightly reports both at the
+    macro's line, where neither string occurs. Requiring the literal name marked every such site
+    stale -- 41% of the map on this tree, which is dense in BENCHMARK/TEST_F -- and a map scored
+    stale suppresses the near-identical body comparison entirely. So a site also counts as aligned
+    when the window holds a macro invocation one of whose arguments is a substring of the name:
+    that is the token-pasting relationship, and it is checkable rather than assumed.
+
+    Two further spellings differ between map and source and neither is drift. A template's constructor
+    is recorded as `Pool<T>` where the source writes `Pool(`, so template arguments are stripped
+    before matching. And a macro's argument is matched against the QUALIFIED name, because
+    `TEST_F(Suite, Case)` generates `Suite_Case_Test::TestBody` -- the short name is `TestBody`,
+    which relates to nothing in the line, while the qualified one carries `Suite`.
     """
-    short = qualified_name.split("::")[-1].strip()
+    short = re.sub(r"<.*>", "", qualified_name.split("::")[-1]).strip()
     if not short:
         return False
     lines = text.split("\n")
     if line - 1 >= len(lines):
         return False
     lo = max(0, line - 2)
-    return short in "\n".join(lines[lo:line + 1])
+    window = "\n".join(lines[lo:line + 1])
+    if short in window:
+        return True
+    for macro_args in MACRO_CALL_RE.findall(window):
+        for arg in macro_args.split(","):
+            arg = arg.strip()
+            if arg and re.fullmatch(r"[A-Za-z_]\w*", arg) and arg in qualified_name:
+                return True
+    return False
+
+# An ALL-CAPS identifier applied like a function: the shape of a definition-generating
+# macro (BENCHMARK, TEST, TEST_F). The capture is its argument list.
+MACRO_CALL_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\s*\(([^)]*)\)")
 
 TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*|[^\s\w]")
 COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)

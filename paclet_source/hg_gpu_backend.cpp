@@ -17,20 +17,6 @@
 
 namespace {
 
-// A reply carrying only the handle, for a verb that returns no evolution. Same shape as the
-// CPU FFI's session_ack, because a caller cannot tell which device answered it and must not
-// have to.
-std::vector<uint8_t> session_ack_wxf(uint64_t handle) {
-    wxf::Writer w;
-    w.write_header();
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Session"));
-    w.write(static_cast<int64_t>(handle));
-    return w.release_data();
-}
-
 // Build a hg_gpu::EvolveInput from the parsed job. Rule vertices double as
 // pattern-variable indices; each initial state's vertices are remapped to
 // 0..n-1 (matching the FFI, so isomorphic roots share a representation).
@@ -190,7 +176,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     if (is_close) {
         held.state.reset();
         held = HeldSession{};
-        return session_ack_wxf(0);
+        return hgmarshal::session_ack(0);
     }
 
     hg_gpu::EvolveResult result;

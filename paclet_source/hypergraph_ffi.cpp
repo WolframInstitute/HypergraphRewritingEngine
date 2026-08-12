@@ -129,18 +129,6 @@ static hgffi::SessionSlot& worker_session() {
     return slot;
 }
 
-// A reply that carries only a status, for verbs that return no evolution.
-static std::vector<uint8_t> session_ack(uint64_t handle) {
-    wxf::Writer w;
-    w.write_header();
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Session"));
-    w.write(static_cast<int64_t>(handle));
-    return w.release_data();
-}
-
 // The envelope, parsed. Split out of run_rewriting_core because it is the one phase whose
 // dependency runs one way -- it writes ParsedJob and reads nothing a later phase produces.
 // Everything after it in that function reads the same fields, which is why the op boundary
@@ -717,7 +705,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             return run_gpu_job(req, host);
 #else
             worker_session().close(req.session_handle);
-            return session_ack(hgffi::SessionSlot::kNoSession);
+            return hgmarshal::session_ack(hgffi::SessionSlot::kNoSession);
 #endif
         }
 

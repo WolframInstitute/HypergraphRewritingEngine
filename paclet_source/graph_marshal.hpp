@@ -58,6 +58,22 @@
 namespace HG_NAMESPACE {
 namespace marshal {
 
+// The reply for a verb that returns a session handle and no evolution.
+//
+// ONE BODY, BOTH DEVICES, for the same reason build_graph_data() is one body: a caller cannot
+// tell which device answered and must not be able to. Two copies of this were byte-identical
+// and separately named, so nothing compared them and either could have drifted alone.
+inline std::vector<uint8_t> session_ack(uint64_t handle) {
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Session"));
+    w.write(static_cast<int64_t>(handle));
+    return w.release_data();
+}
+
 // Edge-kind tags for the delivery cursor's keys. They distinguish edges that share endpoints
 // but not meaning -- a causal edge and a branchial edge between the same two events are two
 // edges, and a record that conflated them would drop the second from every later delta.
