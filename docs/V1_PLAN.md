@@ -698,6 +698,29 @@ magnitudes are not current.
   forward-compatible option set an older engine does not know, and refusing the whole evolution over
   one unrecognised key breaks those callers for no correctness gain. A malformed VALUE was already
   reported this way, so the two failure modes now behave alike.
+- **Q13 — the CPU hot path, profiled, and two levers that do not pay.** Callgrind at a size where
+  startup is negligible (two-edge LHS, depth 5, one thread, 162.9M Ir): `execute_expand_task`
+  22.98%, `ir_refine` 16.97%, `CausalGraph::get_or_create_edge_consumers` 5.38% and `_producers`
+  5.35%, `ir_canonical_hash` 4.90% plus its comparator lambda 3.01%, `create_edge` 2.53%,
+  `Rewriter::apply` 2.37%. IR is about 27% in total; the causal edge maps about 11%. At depth 4
+  the picture is misleading -- `__memset_avx2` reads 3.89% and dynamic symbol resolution 5.9%, but
+  the memset is the `JobSystem` and `Hypergraph` CONSTRUCTORS (10 calls) and both fade to nothing
+  at depth 5. **Profile at a size where setup is noise, or optimise the constructor by mistake.**
+  Two levers were implemented and MEASURED, and neither ships:
+  **(a) Huge pages for arena blocks.** `smaps_rollup` shows 4.6 GB resident with 0.0 MB
+  AnonHugePages while `transparent_hugepage/enabled` is `[always]`, and `DEFAULT_BLOCK_SIZE` was
+  1 MB against a 2 MB page -- so no block could qualify. Shaped the block to 2 MB, aligned to 2 MB
+  through `::operator new(n, align_val_t{2MB})` with a matching aligned delete. Result: still 0.0 MB
+  huge-backed, minor faults 2,306,349 against 2,305,145, RSS 8199 MB against 8082 MB. This kernel
+  does not back the aligned anonymous range with a huge page. **REFUTED, reverted.**
+  **(b) Hoisting the join's per-candidate copy.** The innermost loop moves 492 bytes per surviving
+  candidate (`VariableBinding extended` 132, `ExpandTaskData new_data` 228, then the binding
+  assignment 132) to change four fields. Rebuilt it as one scratch set up per call and rewritten
+  per candidate -- 132 bytes. Instructions went 162,914,231 to 164,925,587, **+1.23% WORSE**, and
+  `execute_expand_task` itself 37.4M to 39.9M. The compiler was already scalarising the two locals;
+  moving them into a lambda-captured struct forces every write to memory and defeats that.
+  **REFUTED, reverted. The source-level copy is not the machine-level copy.**
+
 - **Q11 — concurrent sessions?** **DECIDED: exactly one**, revisitable.
 - **Q12 — which Pareto operating points actually ship** as the advertised family? **OPEN.**
 
