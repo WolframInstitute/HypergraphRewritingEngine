@@ -884,8 +884,12 @@ HG_HD inline IrResult ir_canonical_hash(
             ir_heapsort_idx(cell, cl, AscCmp{});
             cell_n_of(d) = cl;
             next_of(d) = 0;
+            // Clear the flags this node can consult, which are exactly the target cell's
+            // vertices: every read and every write below indexes cov by a member of `cell`.
+            // Clearing all n instead costs the whole vertex set per search node, and the cell
+            // is what refinement has already narrowed the choice down to.
             uint32_t* cov = covered(d);
-            for (uint32_t k = 0; k < n; ++k) cov[k] = 0;
+            for (uint32_t k = 0; k < cl; ++k) cov[cell[k]] = 0;
         } else {
             returning = false;
             // The branch just explored is done; mark every target-cell vertex automorphic to
