@@ -185,7 +185,7 @@ Keep it current: a release that skips a line here is not released.*
       Before `4f0ff63` the retry existed at one call site and not at its sibling, so a single
       wedge failed `VerifyTestInfrastructureDetectsFailures` on a fault the round-trips were
       already tolerating.
-- [ ] **A green CI suite is not a green oracle, and the difference is not small.** Verified against
+- [x] **A green CI suite is not a green oracle, and the difference is not small.** Verified against
       `.github/workflows/ci.yml`: the leg runs `./build/all_tests --gtest_filter=-PacletTest.*`, so
       **244 of 246** tests, and the runner has no wolframscript, so `testing/CMakeLists.txt` sets
       `WOLFRAMSCRIPT_AVAILABLE=0`. With the oracle compiled out `test_wolfram_roundtrip` returns
@@ -196,6 +196,9 @@ Keep it current: a release that skips a line here is not released.*
       **the Wolfram cross-check runs only on a machine that has Wolfram**, which today means this
       one. Any release sign-off has to include a local `all_tests` run from `build_linux` with a
       non-zero consultation count, not a CI badge.
+      **Signed off 2026-08-12**: `build_linux/all_tests` **274/274**, and the oracle reports
+      `0/47 consultations returned no verdict` -- 47 cross-checks against the Wolfram kernel, all
+      of which answered.
 - [x] CPU↔GPU differential green — states/events/causal/branchial equivalent up to isomorphism,
       plus per-mode `NumStates`. **2026-08-03: `gpu_differential_tests` 36/36 on an RTX 4090**, a
       full 21-minute run. This line and the `gpu_differential_tests` line below are the SAME
