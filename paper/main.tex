@@ -577,15 +577,9 @@ Workload & Chunk copies (full copy) & Chunk copies (COW) & Arena B (COW) \\
 
 \begin{table}[h]
 \centering
-\caption{\textbf{T2 --- Wall-time speedup vs.\ the Wolfram reference.} Per-rule wall-time of the C++ engine (1 thread and $N$ threads) versus the Wolfram \texttt{MultiwaySystem} paclet / brute-force reference, across increasing depth. Reports speedup with machine, thread count, and variance disclosed. \todo{Requires a wall-time sweep harness (to be added); no speedup ratio is asserted until measured.}}
+\caption{\textbf{T2 --- Wall-time speedup vs.\ the Wolfram reference.} Per-rule wall-time of the C++ engine (1 thread and $N$ threads) versus the Wolfram \texttt{MultiwaySystem} paclet / brute-force reference, across increasing depth. Reports speedup with machine, thread count, and variance disclosed. Source: \texttt{reference/bench\_authority.wls} against \texttt{tools/quotient\_reconstruction\_cost\_probe}, on the rule $\{\{1,2\},\{2,3\}\} \to \{\{1,2\},\{2,4\},\{4,3\}\}$ from the initial condition $\{\{1,2\},\{2,3\}\}$. The state count is carried in the table because a timing comparison between two different state spaces is not one; it agrees at every depth. The event and causal counts are not compared here -- the two sides' event-identity conventions are a separate question, gated separately. The depth-2 row includes the kernel's one-time paclet load.}
 \label{tab:t2-speedup}
-\begin{tabular}{lcccc}
-\toprule
-Rule / depth & Wolfram (s) & C++ 1-thread (s) & C++ $N$-thread (s) & Speedup \\
-\midrule
-\multicolumn{5}{c}{\todo{populate from the wall-time harness}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t2_speedup}
 \end{table}
 
 \subsection{Quotient Exploration (Table T6)}

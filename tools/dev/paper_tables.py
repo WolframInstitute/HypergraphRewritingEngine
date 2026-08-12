@@ -191,6 +191,70 @@ def t6(build, maxd):
     return len(rows)
 
 
+def wolframscript():
+    """The kernel driver, native if present, else the Windows install this box runs under WSL."""
+    from shutil import which
+    exe = os.environ.get("HG_WOLFRAMSCRIPT") or which("wolframscript")
+    if exe:
+        return [exe], False
+    import glob
+    cands = sorted(glob.glob("/mnt/c/Program Files/Wolfram*/*/*/wolframscript.exe"))
+    if cands:
+        return [cands[-1]], True
+    return None, False
+
+
+def t2(build, maxd, reps):
+    """The engine against the authority, on one workload, at increasing depth.
+
+    Wolfram/Multicomputation's MultiwaySystem is the oracle the engine is validated against, so
+    it is also the reference a wall time means something against. The state count is carried in
+    the table because a timing comparison between two different state spaces is not one; the
+    event and causal counts are NOT compared here, because the two sides' event-identity
+    conventions are their own question and are gated separately.
+    """
+    ws, windows = wolframscript()
+    if not ws:
+        print("T2 skipped: no wolframscript on this machine")
+        return 0
+    script = os.path.join(ROOT, "reference", "bench_authority.wls")
+    if windows:
+        script = subprocess.run(["wslpath", "-w", script], capture_output=True, text=True).stdout.strip()
+    out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=3600)
+    auth = {}
+    for line in out.splitlines():
+        m = re.search(r"AUTH d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
+        if m:
+            auth[int(m.group(1))] = (int(m.group(2)), float(m.group(4)))
+    if "AUTH_DONE" not in out:
+        print("T2: the kernel did not finish; using the %d depths it printed" % len(auth))
+    if not auth:
+        raise SystemExit("bench_authority.wls printed no rows:\n%s" % out[-2000:])
+
+    eng = run([os.path.join(build, "quotient_reconstruction_cost_probe"), str(max(auth))],
+              timeout=3600)
+    engine = {}
+    for line in eng.splitlines():
+        m = re.match(r"\s*(\d+) \|\s*(\d+)\s+\d+\s+\d+\s+([\d.]+) \|", line)
+        if m:
+            engine[int(m.group(1))] = (int(m.group(2)), float(m.group(3)))
+
+    b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
+         r"\begin{tabular}{rrrrrl}", r"\toprule",
+         r"Depth & States & Authority ms & Engine ms & Speedup & States agree \\", r"\midrule"]
+    for d in sorted(auth):
+        a_states, a_ms = auth[d]
+        if d not in engine:
+            continue
+        e_states, e_ms = engine[d]
+        agree = "yes" if a_states == e_states else "NO (%d vs %d)" % (a_states, e_states)
+        b.append("%d & %d & %.1f & %.1f & %.0f$\\times$ & %s \\\\" % (
+            d, a_states, a_ms, e_ms, a_ms / e_ms, agree))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t2_speedup.tex", "\n".join(b) + "\n")
+    return len(auth)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -199,6 +263,10 @@ def main():
     ap.add_argument("--steps", type=int, default=6)
     ap.add_argument("--iters", type=int, default=15)
     ap.add_argument("--quotient-depth", type=int, default=7)
+    ap.add_argument("--authority-depth", type=int, default=5)
+    ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--wolfram", action="store_true",
+                    help="add T2, which needs a Wolfram kernel")
     a = ap.parse_args()
 
     n = t1(a.build_dir)
@@ -206,6 +274,9 @@ def main():
     n = scaling(a.build_dir, "bench_cpu_evolve", "t8_scaling.tex", a.steps, a.iters,
                 "tools/bench_cpu_evolve.cpp")
     print("T8: %d thread counts" % n)
+    if a.wolfram:
+        n = t2(a.build_dir, a.authority_depth, a.reps)
+        print("T2: %d depths" % n)
     n = t6(a.build_dir, a.quotient_depth)
     print("T6: %d depths" % n)
     if a.gpu:
