@@ -85,31 +85,26 @@ struct MatchRecord {
     //
     // The raw state IDs are non-deterministic across runs, but that's OK - deduplication
     // only needs to work WITHIN a single run to avoid processing the same match twice.
+    // ONE FNV, hgcommon's. The basis and the prime and the combine step all had a second copy
+    // here, and the local constant SHADOWED hgcommon::FNV_PRIME while holding the same value --
+    // which is how a duplicated rule looks right up until one of the two is edited. fnv_hash(h,
+    // v) is exactly `h ^= v; h *= FNV_PRIME`, so every mix below is the same arithmetic on the
+    // same constants and the hash VALUE is unchanged; MatchRecord::hash is the match-dedup key,
+    // so a changed value would silently re-partition the dedup map.
     uint64_t hash() const {
         const MatchCore& c = *core;
-        // FNV-1a style hash for better distribution and collision resistance
-        uint64_t h = 14695981039346656037ULL;  // FNV offset basis
-        constexpr uint64_t FNV_PRIME = 1099511628211ULL;
+        uint64_t h = hgcommon::FNV_OFFSET;
 
-        // Mix in rule_index
-        h ^= c.rule_index;
-        h *= FNV_PRIME;
+        h = hgcommon::fnv_hash(h, c.rule_index);
 
-        // Mix in source_state (raw state ID for collision-free deduplication)
-        h ^= source_state;
-        h *= FNV_PRIME;
-        h ^= (source_state >> 16);  // Extra mixing for better distribution
-        h *= FNV_PRIME;
+        // source_state twice, the second time shifted: the raw ids are dense and low, so the
+        // extra mix spreads what would otherwise be a near-linear run of keys.
+        h = hgcommon::fnv_hash(h, source_state);
+        h = hgcommon::fnv_hash(h, source_state >> 16);
 
-        // Mix in matched edges
-        for (uint8_t i = 0; i < c.num_edges; ++i) {
-            h ^= c.matched_edges[i];
-            h *= FNV_PRIME;
-        }
+        for (uint8_t i = 0; i < c.num_edges; ++i) h = hgcommon::fnv_hash(h, c.matched_edges[i]);
 
-        // Mix in bound_mask
-        h ^= c.binding.bound_mask;
-        h *= FNV_PRIME;
+        h = hgcommon::fnv_hash(h, c.binding.bound_mask);
 
         // Mix in bound variables, walking the SET BITS of the mask rather than all MAX_VARS
         // positions. Identical result -- the loop body was already guarded by is_bound, which is
@@ -120,8 +115,8 @@ struct MatchRecord {
         while (mask) {
             const uint32_t i = hgcommon::ctz(mask);
             mask &= mask - 1;
-            h ^= (static_cast<uint64_t>(i) << 32) | c.binding.get(static_cast<uint8_t>(i));
-            h *= FNV_PRIME;
+            h = hgcommon::fnv_hash(
+                h, (static_cast<uint64_t>(i) << 32) | c.binding.get(static_cast<uint8_t>(i)));
         }
 
         return h;
