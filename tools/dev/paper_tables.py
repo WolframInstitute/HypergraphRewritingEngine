@@ -255,6 +255,52 @@ def t2(build, maxd, reps):
     return len(auth)
 
 
+def t9(build, iters):
+    """Per-contribution ablation, from the switches the shipped binary still has.
+
+    There are no compiled-out ablation builds to run: when a replacement lands here the
+    replaced path is deleted in the same commit, so an "off" arm exists only where the choice
+    is still a live switch. Those are match forwarding (which the rule set decides) and the
+    state-canonicalization mode. Each row is a median over the same iteration count, and the
+    state and event counts are printed so a row that changed the ANSWER is visible rather than
+    read as a speedup.
+    """
+    def smoke(arm, rule, edges, steps, canon):
+        best = None
+        for _ in range(max(3, iters // 3)):
+            out = run([os.path.join(build, "sampling_cost_smoke"), arm, rule, str(edges),
+                       str(steps), "4", "4", canon], timeout=1800)
+            m = re.search(r"done ([\d.]+) ms\s+states=(\d+).*events=(\d+)", out)
+            if not m:
+                raise SystemExit("sampling_cost_smoke gave no row:\n%s" % out[-1000:])
+            ms, st, ev = float(m.group(1)), m.group(2), m.group(3)
+            if best is None or ms < best[0]:
+                best = (ms, st, ev)
+        return best
+
+    rows = []
+    a = smoke("off", "growth", 1, 8, "full")       # forwarding decided: off on a one-edge LHS
+    b = smoke("fwdon", "growth", 1, 8, "full")     # forced on
+    rows.append(("Match forwarding, one-edge LHS", "on", b, "decided off", a))
+    a = smoke("off", "pair", 4, 6, "full")         # forwarding decided: on for a two-edge LHS
+    b = smoke("fwdoff", "pair", 4, 6, "full")      # forced off
+    rows.append(("Match forwarding, two-edge LHS", "off", b, "decided on", a))
+    a = smoke("off", "pair", 4, 6, "automatic")
+    b = smoke("off", "pair", 4, 6, "full")
+    rows.append(("State canonicalization", "Full (exact)", b, "Automatic (hash)", a))
+
+    b_ = [provenance("tools/sampling_cost_smoke.cpp"),
+          r"\begin{tabular}{lllrlrl}", r"\toprule",
+          r"Contribution & Arm A & A ms & Arm B & B ms & Ratio & Same answer \\", r"\midrule"]
+    for (name, an, av, bn, bv) in rows:
+        same = "yes" if (av[1], av[2]) == (bv[1], bv[2]) else "NO"
+        b_.append("%s & %s & %.1f & %s & %.1f & %.2f & %s \\\\" % (
+            name, an, av[0], bn, bv[0], av[0] / bv[0], same))
+    b_ += [r"\bottomrule", r"\end{tabular}"]
+    write("t9_ablation.tex", "\n".join(b_) + "\n")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default="build_linux")
@@ -277,6 +323,8 @@ def main():
     if a.wolfram:
         n = t2(a.build_dir, a.authority_depth, a.reps)
         print("T2: %d depths" % n)
+    n = t9(a.build_dir, a.iters)
+    print("T9: %d contributions" % n)
     n = t6(a.build_dir, a.quotient_depth)
     print("T6: %d depths" % n)
     if a.gpu:

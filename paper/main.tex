@@ -613,15 +613,9 @@ Workload & Chunk copies (full copy) & Chunk copies (COW) & Arena B (COW) \\
 
 \begin{table}[h]
 \centering
-\caption{\textbf{T9 --- Per-contribution ablation.} Each optimization toggled off vs.\ on: copy-on-write, incremental hashing, de-heap, reachability-oracle vs.\ closure, quotient exploration, and GPU lockstep vs.\ persistent. Isolates the contribution of each. \todo{Requires the CMake \texttt{\#define} ablation builds (old paths compiled out of the default binary, exercised by CI); this scaffolding is planned, not yet built, and is a prerequisite for this table.}}
+\caption{\textbf{T9 --- Per-contribution ablation, from the switches the shipped binary has.} There are no compiled-out ablation builds to run: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice is still a live switch. Those are match forwarding, which the rule set decides (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode. Quotient exploration has its own table (T6). Each arm is a best-of-N wall time on the same workload, and the state and event counts are compared so a row that changed the ANSWER shows as such instead of reading as a speedup. Source: \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t9-ablation}
-\begin{tabular}{lccc}
-\toprule
-Optimization & Metric & Off & On \\
-\midrule
-\multicolumn{4}{c}{\todo{populate once the ablation build scaffolding lands}} \\
-\bottomrule
-\end{tabular}
+\input{tables/t9_ablation}
 \end{table}
 
 \subsection{Event Canonicalization Overhead}
