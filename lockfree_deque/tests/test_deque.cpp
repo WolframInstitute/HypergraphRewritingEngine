@@ -196,10 +196,10 @@ TEST(LockFreeDequeMultiThreaded, ProducerConsumer) {
         const int max_retries = 1000000;
         
         while (consumed < num_items && retries < max_retries) {
-            if (auto value = deque.try_pop_front()) {
+            if (auto from_front = deque.try_pop_front()) {
                 consumed++;
                 retries = 0;
-            } else if (auto value = deque.try_pop_back()) {
+            } else if (auto from_back = deque.try_pop_back()) {
                 consumed++;
                 retries = 0;
             } else {
