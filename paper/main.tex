@@ -106,7 +106,7 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash IS the deduplication key --- there is no cheaper hash in front of it, because a tiered arrangement was implemented, measured at 28\% slower than running IR outright, and removed; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash IS the deduplication key; we show that interposing a cheaper Weisfeiler--Leman filter cannot help, because the fraction of IR calls it can elide is bounded by the ratio of canonical classes to raw states, a quantity multiway evolution drives to zero; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
 
 \vspace{0.5em}
 \noindent Every quantitative table in Section~\ref{sec:benchmarks} is generated from the tools that produce it, and each carries the commit, the machine and the tool in its own provenance line. The machine is a desktop under WSL2 shared with other work, whose wall clock drifts by more than ten percent between runs; the tables therefore report medians and, where the effect is smaller than that drift, say so rather than claim it.
@@ -129,7 +129,7 @@ While conceptually elegant, exhaustive multiway evolution presents significant c
 This paper presents a high-performance implementation addressing these challenges through:
 
 \begin{enumerate}
-    \item \textbf{Exact canonicalization, with the cheaper hash kept out of the exact path:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Bucketing by WL first and confirming with IR on collision is the obvious optimization and does not work here --- it was implemented and measured 28\% SLOWER, because the duplicates it is meant to make cheap are exactly the states that still need IR to confirm.
+    \item \textbf{Exact canonicalization, with the cheaper hash kept out of the exact path:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Proposition~\ref{prop:wlceiling} shows why it is not placed in front of IR: the saving available to such a filter is bounded above by the ratio of canonical classes to raw states, which falls toward zero as an evolution deepens.
 
     \item \textbf{Lock-free concurrency:} Our data structures---concurrent hash maps, segmented arrays, lock-free lists---enable parallel evolution without contention bottlenecks.
 
@@ -215,23 +215,26 @@ Like nauty, IR is exponential in the worst case but fast on typical instances. I
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact offline reconstruction of causal and branchial multiplicities.
 
-\subsection{The Weisfeiler--Leman Signature, and Where It Is Not Used}
+\subsection{The Weisfeiler--Leman Signature}
 \label{sec:wl}
 
-The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, but certain non-isomorphic states --- regular graphs with identical local structure, for instance --- collide.
+The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, while certain non-isomorphic states --- regular graphs with identical local structure, for instance --- collide. It is the identity used by the modes that ask for a coarser notion of sameness. It is not used by the exact mode, and the reason is a bound rather than a preference.
 
-It is worth being precise about where this hash is and is not used, because the arrangement one would expect is not the one that ships. WL does NOT sit in front of IR on the exact path. Under the exact mode IR runs on every state and its hash is the deduplication key directly; the WL hash is never consulted, and the dispatch that decides this reaches WL only when the mode is not the exact one. WL serves the coarser identity modes, and the reported hash in those modes.
+\begin{proposition}[Ceiling on a WL pre-filter]
+\label{prop:wlceiling}
+Let a run produce $R$ raw states falling into $C$ isomorphism classes. Consider deduplication that computes the WL hash of each raw state, and invokes IR only when that hash has been seen before. Then the number of IR invocations is at least $R - C$, so the fraction of IR calls avoided is at most $C/R$, and one WL pass is paid on all $R$ states.
+\end{proposition}
 
-The reason is measured, and it is bounded rather than incidental. Bucketing by WL and confirming with IR only on collision is the obvious optimization, and it was implemented: it ran 28\% SLOWER.
+\begin{proof}
+WL is isomorphism-invariant, so states in the same class share a WL hash and the number of distinct WL hashes is at most $C$. A state whose WL hash is already present cannot be resolved by WL: equal hashes are consistent both with isomorphism and with a WL collision, so IR is invoked. At most one state per distinct WL hash finds its hash absent, hence at most $C$ states skip IR and at least $R - C$ invoke it.
+\end{proof}
 
-The bound says why, and says it will not improve. WL is a coarser invariant than IR, so the number of distinct WL hashes a run produces is at most the number of canonical classes. A state whose WL hash has been seen before must be confirmed by IR --- WL agreement never establishes isomorphism --- so the IR calls a WL filter can avoid are at most the canonical classes, while the WL pass is paid on every produced state. The fraction saved is therefore at most (canonical states)/(raw states).
-
-That ceiling is a property of the rule and the depth, not a constant, so it is measured across the whole rule-type corpus rather than on one rule. It is reported per case by \texttt{tools/cost\_matrix} beside the event count, because the two must be read together:
+The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth. Measured across the rule-type corpus, reported per case beside the event count, since the two must be read together:
 
 \begin{center}
 \begin{tabular}{llrrr}
 \toprule
-Case & Rule type & Events & Ceiling & Ceiling at lower depth \\
+Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\
 \midrule
 \texttt{cycle4-automorphic}  & automorphism      & 68{,}184 & 0.0\%  & 0.5\%  \\
 \texttt{star4-automorphic}   & automorphism      & 68{,}184 & 0.3\%  & 3.1\%  \\
@@ -245,9 +248,9 @@ Case & Rule type & Events & Ceiling & Ceiling at lower depth \\
 \end{tabular}
 \end{center}
 
-\noindent Two things are visible and both matter. Within any rule that keeps rewriting, the ceiling FALLS as depth grows --- \texttt{binary-growth} from 29.4\% to 4.1\%, the automorphic cases to 0.3\% and 0.0\% --- because reaching the same state along many histories is what multiway evolution does, and every such arrival is a bucket hit that IR must settle. And the cases that hold a high ceiling are the ones that stop: \texttt{self-loop} sits at 100\% with two raw states and a single event, where the filter would save a large fraction of nothing. There is no rule in the corpus where a WL filter saves a large fraction of substantial work, and the trend within every productive rule runs the wrong way for it.
+\noindent Within every rule that continues to rewrite, $C/R$ falls with depth: producing the same state along many distinct histories is precisely what multiway evolution does, and each such arrival is a repeated WL hash that IR must settle. The cases retaining a high ratio are those that reach a fixed point almost immediately --- \texttt{self-loop} sits at $100\%$ with two raw states and one event. A filter is therefore available only where there is no work to save.
 
-There is one case where IR is run for a reason other than identity, and there the question does not arise: the quotient exploration and the event-canonicalization conventions need the edge-orbit table, which the same IR pass already produces, so no second canonicalization is performed for them.
+Where an option requires the automorphism data --- the quotient exploration and the event-canonicalization conventions --- the edge orbits are produced by the same IR pass, so no second canonicalization is performed.
 
 \begin{algorithm}
 \caption{Weisfeiler-Lehman Hash}
@@ -749,7 +752,7 @@ For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, 
 
 \textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
-\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. That worst-case cost is real and it is paid: under the exact mode IR runs on every state, and profiling attributes about half of the engine's instructions to it. The alternative --- bucket by a cheap hash and call IR only on collisions --- was built and measured 28\% slower, because a bucket collision on this workload is usually a genuine duplicate and still needs IR to confirm it, so the cheap pass is added work rather than avoided work.
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. That worst-case cost is real and it is paid: under the exact mode IR runs on every state, and profiling attributes about half of the engine's instructions to it. Bucketing by a cheap hash and calling IR only on collisions does not relieve it, for the reason given in Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so the cheap pass is bounded to eliding at most $C/R$ of the calls it precedes.
 
 \subsection{Pattern Matching Complexity}
 
