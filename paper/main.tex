@@ -135,7 +135,7 @@ This paper presents a high-performance implementation addressing these challenge
 
     \item \textbf{GPU acceleration:} A GPU evolution backend offloads pattern matching and canonicalization for suitable workloads.
 
-    \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always WL-hash with IR confirmation.
+    \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always IR, computed on every state.
 \end{enumerate}
 
 The remainder of this paper is organized as follows. Section~\ref{sec:background} reviews hypergraph rewriting and the Wolfram Physics framework. Section~\ref{sec:canonicalization} presents our canonicalization algorithms. Section~\ref{sec:pattern-matching} describes the pattern matching system. Section~\ref{sec:architecture} details the system architecture. Section~\ref{sec:gpu} covers GPU acceleration. Section~\ref{sec:benchmarks} presents experimental results. Section~\ref{sec:conclusion} concludes with future directions.
@@ -183,7 +183,7 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \subsection{Related Work}
 
-\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so we use it only as a fast hot-path hash backed by an IR fallback. Uniqueness trees~\cite{gorard2016uniqueness} were proposed as a polynomial approach to graph isomorphism; we do not use them---the approach does not give a sound canonical form for our workloads, and IR provides the exactness guarantee we require.
+\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR. Uniqueness trees~\cite{gorard2016uniqueness} were proposed as a polynomial approach to graph isomorphism; we do not use them---the approach does not give a sound canonical form for our workloads, and IR provides the exactness guarantee we require.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. Our megakernel approach differs by targeting the specific workload of iterative multiway evolution.
 
@@ -196,7 +196,7 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 \section{Graph Canonicalization}
 \label{sec:canonicalization}
 
-Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). We split this into two roles: an exact reference canonicalizer, individualization--refinement (IR), and a fast approximate hash, Weisfeiler--Leman (WL), used on the hot path with an IR fallback. There is no third, ``polynomial'' canonicalizer.
+Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode meets that requirement with individualization--refinement (IR) alone: it is computed for every state and its hash IS the deduplication key, with no cheaper hash standing in front of it. Weisfeiler--Leman (WL) is a separate, coarser signature serving the modes that deliberately ask for a coarser identity. There is no third, ``polynomial'' canonicalizer.
 
 \subsection{Individualization--Refinement (Exact Reference)}
 \label{sec:ir}
@@ -210,14 +210,19 @@ A canonicalization $\canon$ maps each hypergraph to a labeled representative suc
 IR proceeds by iterated color refinement to a stable coloring; when refinement leaves a non-singleton cell, it \emph{individualizes} one vertex (assigns it a distinguishing color) and recurses, exploring a search tree of refinements. Automorphisms discovered along the way prune the tree so that symmetric branches are not re-explored, and the lexicographically extremal leaf defines the canonical labeling.
 
 \begin{remark}[Complexity]
-Like nauty, IR is exponential in the worst case but fast on typical instances. It gives no polynomial-time guarantee, and we claim none. IR is expensive precisely on highly symmetric (high-automorphism) states, which is why it is not run on every state---see the hot-path hash below.
+Like nauty, IR is exponential in the worst case but fast on typical instances. It gives no polynomial-time guarantee, and we claim none. IR is expensive precisely on highly symmetric (high-automorphism) states, which bounds the exact mode's cost on such inputs; it is nonetheless what the exact mode runs, on every state, for the reason measured in Section~\ref{sec:wl}.
 \end{remark}
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact offline reconstruction of causal and branchial multiplicities.
 
-\subsection{Weisfeiler--Leman Hot-Path Hash}
+\subsection{The Weisfeiler--Leman Signature, and Where It Is Not Used}
+\label{sec:wl}
 
-Running IR on every candidate state is wasteful: most successor states are trivially distinguished by a much cheaper signature. On the hot path we therefore compute a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}, and only invoke IR when WL cannot settle a comparison. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, but certain non-isomorphic states (e.g.\ regular graphs with identical local structure) may collide. Collisions are safe because they are resolved exactly by IR before two states are declared equal.
+The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, but certain non-isomorphic states --- regular graphs with identical local structure, for instance --- collide.
+
+It is worth being precise about where this hash is and is not used, because the arrangement one would expect is not the one that ships. WL does NOT sit in front of IR on the exact path. Under the exact mode IR runs on every state and its hash is the deduplication key directly; the WL hash is never consulted, and the dispatch that decides this reaches WL only when the mode is not the exact one. WL serves the coarser identity modes, and the reported hash in those modes.
+
+The reason is measured rather than assumed. Bucketing by WL and confirming with IR only on collision is the obvious optimization, and it was implemented: it ran 28\% SLOWER. The states a filter is supposed to make cheap are the duplicates, and a duplicate is exactly the case where WL agreeing settles nothing and IR must still be run to confirm. The filter therefore adds a WL pass to the states that were already the expensive ones, and saves it only on states that IR distinguishes quickly anyway.
 
 \begin{algorithm}
 \caption{Weisfeiler-Lehman Hash}
@@ -240,7 +245,7 @@ Running IR on every candidate state is wasteful: most successor states are trivi
 1-WL requires $\BigO(|V|^2 \cdot |E|)$ time per iteration, with at most $|V|$ iterations.
 \end{proposition}
 
-WL is fast but provably fails to distinguish certain non-isomorphic graphs (e.g.\ regular graphs with identical local structure). We treat this not as a competing canonicalizer but as a filter: WL prunes the vast majority of comparisons cheaply, and IR (Section~\ref{sec:ir}) supplies the exact verdict whenever WL is inconclusive.
+This bound is why WL is attractive in principle and why it remains available for the coarser modes. It is not a competing canonicalizer: where exactness is required, IR (Section~\ref{sec:ir}) is the only identity used.
 
 \subsection{State Canonicalization Modes}
 
@@ -663,7 +668,7 @@ The visualization is implemented using Vulkan for cross-platform GPU-accelerated
 We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. Against the Wolfram \texttt{MultiwaySystem} implementation --- same rule, same initial condition, identical state and causal-edge counts at every depth --- the native engine is 5{,}507$\times$ faster at depth four, 12{,}589$\times$ at depth five, 27{,}108$\times$ at depth six and 45{,}713$\times$ at depth seven (Table~\ref{tab:t2-speedup}), a margin that widens with depth. On the host the evolution scales to this machine's 24 physical cores at 12.8$\times$, with efficiency rising as the problem grows (Table~\ref{tab:t8-scaling}); its useful width is eight to sixteen workers depending on the rule's shape (Table~\ref{tab:t12-shapes}), and past that point the limit is measured to be memory acquisition rather than contention --- user time is near-flat across a 32$\times$ increase in workers while system time and page faults grow with the per-worker resident set (Table~\ref{tab:t13-memory}); on the device it saturates at eight blocks per SM (Table~\ref{tab:t11-saturation}). The GPU passes eight CPU threads between depth five, where it loses, and depth seven, where it is 12.4$\times$ ahead (Table~\ref{tab:t7-gpu}). Key contributions include:
 
 \begin{enumerate}
-    \item Exact canonicalization via individualization--refinement (IR), with a fast Weisfeiler--Leman hot-path hash and IR fallback on collision, validated against a brute-force isomorphism oracle
+    \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
     \item Lock-free concurrent data structures enabling efficient multi-threaded evolution
     \item A GPU evolution backend for pattern matching and canonicalization
     \item Independent, exact state and event equivalencing axes with configurable granularity
@@ -717,7 +722,7 @@ The author thanks Stephen Wolfram for foundational work on the Wolfram Physics P
 
 For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, the two canonicalization roles have very different cost profiles.
 
-\textbf{Weisfeiler--Leman hot-path hash.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
+\textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
 \textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. That worst-case cost is real and it is paid: under the exact mode IR runs on every state, and profiling attributes about half of the engine's instructions to it. The alternative --- bucket by a cheap hash and call IR only on collisions --- was built and measured 28\% slower, because a bucket collision on this workload is usually a genuine duplicate and still needs IR to confirm it, so the cheap pass is added work rather than avoided work.
 
