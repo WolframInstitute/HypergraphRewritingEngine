@@ -29,6 +29,21 @@ nothing. Reading the distribution this run prints:
 So the criterion is met at the floor: what is left in headers is there because moving it
 would cost more than it saves. Re-run this after any header growth -- a NEW body over 40
 lines that is not hot is the signal that the floor moved.
+
+AND THE FLOOR IS MEASURED FROM BOTH SIDES, so the accessor question is settled rather than
+argued. The cold bodies moved (rule_analysis.hpp 275 -> 163, pattern.hpp 492 -> 435,
+signature.hpp 300 -> 241). Then the remaining 61 one-to-three-line member bodies of
+hypergraph.hpp were moved as an experiment and MEASURED:
+
+  runtime      16,996,459 -> 17,032,941 instructions, +0.21% (callgrind, two-edge rule,
+               depth 4, one thread -- an instrument this box's CPU contention cannot touch)
+  compile      0.85-0.89 s before, 0.85-0.89 s after, on a translation unit that includes
+               only this header: NO measurable change
+
+Moving them costs runtime and buys nothing, because the header's cost is its include CLOSURE
+and not its bodies -- the same result the closure work established from the other direction
+(types.hpp 757 -> 154 ms by dropping <sstream>, <random>, <stdexcept> and <algorithm>). The
+experiment was reverted. Do not repeat it: the numbers above are what it produces.
 """
 import os
 import re
