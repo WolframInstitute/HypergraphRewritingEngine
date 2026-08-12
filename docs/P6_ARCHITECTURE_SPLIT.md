@@ -1,6 +1,25 @@
 # P6.1 — Splitting rewrite semantics from hardware orchestration
 
-**Status: proposed. No code moves until this is approved.**
+**Status: DISCHARGED. The done-line in §4 is met; nothing here is waiting on approval.**
+
+What §3 calls "the one rule still written twice" was extracted in S3/#41: the causal DP to
+`hgcommon/quotient_causal_core.hpp` (`98d185d`, `2ad5b29`) and the per-instance replay to
+`hgcommon/quotient_replay_core.hpp` (`39b8d5a` host, `b300af0` device). `Hypergraph::QcCtx`
+and `QrCtx` and `hg_gpu::DeviceQcCtx` and `DeviceQrCtx` supply storage and nothing else;
+both engines' own bodies are deleted.
+
+§4 expected ONE `quotient_core.hpp`. The reconstruction is TWO rules -- the causal DP and
+the replay -- and they were extracted separately because they are separately callable, not
+because the shape was wrong. That is the only place the outcome departs from the proposal.
+
+Both drifts §3 records are closed, and the first is now structurally impossible: the
+reachability walk is one body, `hgcommon::qc_reach`, and the visited-set dedup lives inside
+it, so "the device forgot to dedup" is no longer a state the tree can be in. The device
+stack constant was re-measured to 8704 bytes per depth with the recursion bounded; the
+asymmetry §3 notes -- the host recursing two orders of magnitude further on an 8 MB thread
+stack -- is a separate observation about limits, not a second body.
+
+The measurements below are kept as they were written, against `00e21ee`.
 
 This is the design document P6.1 asks for. It is written against measurements taken at
 `00e21ee`, each of which is a command a reader can re-run, and it revises the item's own
