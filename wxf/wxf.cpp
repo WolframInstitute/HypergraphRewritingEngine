@@ -163,8 +163,16 @@ std::string Parser::read_string() {
     if (len > 0) std::memcpy(result.data(), &data_[read_position_], len);
     read_position_ += len;
 
-    // Note: WXF supports full UTF-8, skipping validation for now
-    // TODO: Implement proper UTF-8 validation if needed
+    // THE PAYLOAD IS OPAQUE BYTES AND IS NOT VALIDATED AS UTF-8, DELIBERATELY.
+    //
+    // WXF declares strings UTF-8, but nothing here decodes them: the length is bounded by
+    // ensure_bytes above, so a malformed sequence cannot read past the buffer, and every
+    // consumer compares these bytes (an option name, a rule name) rather than interpreting
+    // code points. Validation would therefore reject inputs the engine handles correctly and
+    // buy no safety property that the bounds check does not already give.
+    //
+    // The bytes are returned as they arrived and written back the same way, so a caller that
+    // does care about encoding sees exactly what it sent.
 
     return result;
 }
