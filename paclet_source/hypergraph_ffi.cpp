@@ -458,6 +458,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.show_genesis_events,
             req.session_op,
             req.session_handle,
+            req.session_from,
         };
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");

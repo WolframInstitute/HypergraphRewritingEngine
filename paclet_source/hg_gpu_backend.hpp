@@ -63,6 +63,13 @@ struct GpuJob {
     // than silently answering about a different evolution.
     std::string session_op;
     uint64_t    session_handle = 0;
+
+    // Which frontier states a `Step` expands, if the caller named a subset. Carried so the
+    // device can REFUSE a steered continuation rather than run it unsteered -- the device
+    // session holds its frontier as device state ids with no host-visible identity, so the
+    // selection cannot be resolved there, and running it anyway would explore the branches the
+    // caller asked to leave alone and answer a different question in the right shape.
+    std::vector<int64_t> session_from;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same
