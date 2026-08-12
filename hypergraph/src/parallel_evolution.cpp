@@ -1210,11 +1210,65 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     while (ranked < seen &&
            !join->own_min_key.compare_exchange_weak(seen, ranked,
                                                     std::memory_order_relaxed)) {}
+    // A k-of-M cap needs M, and M is complete only at this state's drain. So the answer here is
+    // NO for every own-found match and cap_at_drain submits the winners. Capping by arrival
+    // instead is what max_states_per_step_ already does, and it clips the offspring distribution
+    // to a point mass.
+    if (defers_to_drain()) return false;
+
     if (transition_survives(canonical_key, site, rule)) {
         join->own_spawned.store(1, std::memory_order_release);
         return true;
     }
     return false;
+}
+
+// k of a state's own matches per RULE, chosen by spine_rank once its matching is complete.
+//
+// OWN-FOUND ONLY, the same scope the spine takes and for the same reason: a forwarded match
+// races the drain, so a cap that counted them would keep a different set at a different worker
+// count. Those are submitted at their arrival sites as before.
+//
+// The selection is a full pass per rule rather than a sort: a state's match count is small, the
+// arena has no room for a scratch vector here, and k is typically 1-2 -- so k passes each taking
+// the smallest rank above the previous winner costs less than materialising the list.
+void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
+    const size_t k = matches_per_state_rule_;
+    if (k == 0) return;
+    auto stored = state_matches_.lookup(id_key(state));
+    if (!stored.has_value()) return;
+
+    // Which rules this state actually has matches for. MAX_RULES is small and fixed, so a bitset
+    // beats collecting the set.
+    uint64_t rules_seen = 0;
+    (*stored)->for_each([&](const MatchRecord& m) {
+        if (m.rule_index() < 64) rules_seen |= (1ULL << m.rule_index());
+    });
+
+    size_t submitted = 0;
+    while (rules_seen) {
+        const uint16_t rule = static_cast<uint16_t>(hgcommon::ctz64(rules_seen));
+        rules_seen &= rules_seen - 1;
+
+        uint64_t floor_rank = 0;
+        bool have_floor = false;
+        for (size_t i = 0; i < k; ++i) {
+            uint64_t best_rank = ~0ULL;
+            MatchRecord best{};
+            bool found = false;
+            (*stored)->for_each([&](const MatchRecord& m) {
+                if (m.rule_index() != rule) return;
+                const uint64_t r = spine_rank(canonical_transition_key(state, m));
+                if (have_floor && r <= floor_rank) return;   // already taken
+                if (r < best_rank) { best_rank = r; best = m; found = true; }
+            });
+            if (!found) break;                                // fewer than k for this rule
+            floor_rank = best_rank; have_floor = true;
+            submit_rewrite_task(best, step);
+            ++submitted;
+        }
+    }
+    if (submitted) stats_.spine_forced.fetch_add(submitted, std::memory_order_relaxed);
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
@@ -1445,7 +1499,11 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     states_drained_.fetch_add(1, std::memory_order_relaxed);
-    if (sampling_active()) spine_at_drain(state, step, join);
+    // The cap REPLACES the spine when it is set: both decide which of a state's own transitions
+    // survive, and the cap already keeps at least one per rule, which is what the spine exists to
+    // guarantee. Running both would submit the spine's pick a second time.
+    if (defers_to_drain()) cap_at_drain(state, step);
+    else if (sampling_active()) spine_at_drain(state, step, join);
     if (on_state_matches_complete_) on_state_matches_complete_(state, step);
 }
 

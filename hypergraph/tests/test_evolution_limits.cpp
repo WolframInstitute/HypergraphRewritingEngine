@@ -187,3 +187,48 @@ TEST(UnifiedEvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
         EXPECT_EQ(hg.num_events(), 0u) << "threads=" << threads;
     }
 }
+
+// MatchesPerStateRule keeps k of a state's own matches PER RULE, chosen at the drain.
+//
+// The cap must be by RANK, not arrival: arrival order depends on the schedule, so a cap by
+// arrival keeps a different set at a different worker count. That is what these three assert --
+// the count is bounded, the SET is identical across worker counts, and a rule with fewer than k
+// matches is not padded.
+TEST(UnifiedEvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
+    auto run = [](size_t k, unsigned threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.add_rule(create_growth_rule());
+        engine.set_random_seed(12345);
+        if (k) engine.set_matches_per_state_rule(k);
+        engine.evolve({{0, 1}}, 4);
+        // CANONICAL identity, not raw ids. Raw state ids are assigned in CREATION order, so two
+        // runs of the same evolution at different worker counts label the same states
+        // differently -- comparing them would report every run as irreproducible, including an
+        // uncapped one.
+        std::multiset<std::pair<uint64_t, uint64_t>> edges;
+        for (uint32_t e = 0; e < hg.num_raw_events(); ++e) {
+            if (hg.is_genesis_event(e)) continue;
+            edges.insert({hg.get_state(hg.get_event(e).input_state).canonical_hash,
+                          hg.get_state(hg.get_event(e).output_state).canonical_hash});
+        }
+        return std::make_pair(hg.num_canonical_states(), edges);
+    };
+
+    const auto uncapped = run(0, 4);
+    const auto capped1  = run(1, 4);
+    EXPECT_LT(capped1.first, uncapped.first)
+        << "a cap of one match per (state, rule) explored as much as no cap at all";
+    EXPECT_GT(capped1.first, 1u) << "the cap explored nothing; it is a cap, not an off switch";
+
+    // THE REPRODUCIBILITY CHECK, which is the one a cap-by-arrival fails: the same seed at a
+    // different worker count must keep the SAME transitions, not merely the same number.
+    const auto capped1_8 = run(1, 8);
+    EXPECT_EQ(capped1.second, capped1_8.second)
+        << "the kept transition set changed with the worker count, so the choice was made by "
+           "arrival order and not by the transition's own rank";
+
+    const auto capped2 = run(2, 4);
+    EXPECT_GE(capped2.first, capped1.first) << "k=2 kept less than k=1";
+}

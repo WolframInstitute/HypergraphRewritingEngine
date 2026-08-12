@@ -682,6 +682,10 @@ private:
     double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
     size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
     size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+    // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
+    // state's drain by spine_rank, not by arrival: arrival order depends on the schedule, and a
+    // cap by arrival is what max_states_per_step_ already is.
+    size_t matches_per_state_rule_{0};
     uint64_t random_seed_{0};                      // Sampling RNG seed (0 = random_device each run)
     // Bumped at the start of every dataflow evolve() so each run re-seeds its
     // per-thread sampling RNGs from random_seed_, making repeated same-seed runs
@@ -964,9 +968,13 @@ public:
     // single rule to zero.
     bool sampling_active() const {
         if (transition_rate_ < 1.0) return true;
+        if (matches_per_state_rule_ != 0) return true;
         for (double w : rule_weights_) if (w < 1.0) return true;
         return false;
     }
+    // True while a state's own transitions must wait for its drain, because choosing k of M
+    // needs all M and M is complete only there.
+    bool defers_to_drain() const { return matches_per_state_rule_ != 0; }
     // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
     // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving
     // ancestor class both left the union-recovery curve unchanged, because recovery is limited
@@ -1044,6 +1052,9 @@ public:
     double exploration_probability() const { return exploration_probability_; }
     size_t max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
     size_t max_states_per_step() const { return max_states_per_step_; }
+    // k of the state's own matches per rule, chosen by rank at the drain. 0 keeps all.
+    void set_matches_per_state_rule(size_t k) { matches_per_state_rule_ = k; }
+    size_t matches_per_state_rule() const { return matches_per_state_rule_; }
 
     size_t validation_mismatches() const { return validation_mismatches_.load(); }
     size_t validations_performed() const { return validations_performed_.load(); }
@@ -1346,6 +1357,8 @@ private:
     // with the minimum canonical transition key, so every reachable state keeps at least one
     // outgoing transition at any rate.
     void spine_at_drain(StateId state, uint32_t step, MatchJoin* join);
+    // Choose k of the state's own matches per rule, by rank, once its matching is complete.
+    void cap_at_drain(StateId state, uint32_t step);
 
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both

@@ -162,7 +162,14 @@ inline std::string executeWolframScriptCapture(const std::string& code) {
         std::ofstream f(tmp);
         f << code << std::endl;
     }
-    std::string cmd = "\"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
+    // BOUNDED. wolframscript here is a Windows executable reached through the WSL interop
+    // socket, and that socket wedges: a single hung child took one suite run from 3.5 minutes to
+    // 40, because popen waits forever and nothing above it can interrupt. `timeout` bounds the
+    // child, and a killed child returns no output -- which every caller already treats as "no
+    // verdict" and retries, the same path a launch failure takes.
+    const char* env_to = std::getenv("HG_WOLFRAM_TIMEOUT");
+    const std::string secs = (env_to && *env_to) ? env_to : "90";
+    std::string cmd = "timeout " + secs + " \"" + wolfram_path + "\" -file \"$(wslpath -w '" + tmp
                     + "' 2>/dev/null || echo '" + tmp + "')\" 2>&1";
     std::string output;
     // MSVC spells the POSIX pipe pair _popen/_pclose.

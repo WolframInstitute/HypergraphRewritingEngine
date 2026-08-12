@@ -43,6 +43,7 @@ Options[HGEvolve] = {
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", stop keeping new states once that many exist for the step. A cap by ARRIVAL ORDER, which depends on the schedule, not a uniform draw. "TransitionRate" is the uniform, reproducible sampler. *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
+  "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed -- unlike "MatchesPerStep", which caps by ARRIVAL ORDER and therefore keeps a schedule-dependent set. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps children per parent regardless of rule. CPU only. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph
      properties, whose edge payloads carry RuleIndex; Structure variants ship
@@ -1034,7 +1035,8 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
     (* Uniform random evolution mode *)
     "UniformRandom" -> ov["UniformRandom"],
-    "MatchesPerStep" -> ov["MatchesPerStep"]
+    "MatchesPerStep" -> ov["MatchesPerStep"],
+    "MatchesPerStateRule" -> ov["MatchesPerStateRule"]
   |>
 ]
 

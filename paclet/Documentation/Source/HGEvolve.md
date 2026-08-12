@@ -430,3 +430,16 @@ HGSessionClose[s]
 Measured on this evolution at depth 7 (5,914 states), `tools/dev/session_step_cost.wls`: the engine leg falls from 381 ms to 269 ms and the reply from 516,535 to 443,660 bytes. That is a 29% cut to the engine call and 8% to the step, because the rest of a step is the Wolfram Graph construction — 1,640 ms of the 2,021 ms total — which a delta cannot reduce, since the graph being built is the whole accumulated one either way.
 
 Ask for a full delivery at any time to resynchronise; doing so resets what the session believes you hold, so the next delta is measured from it. Delta delivery is not served on the quotient reconstruction route (`"ExploreFromCanonicalStatesOnly" -> True` with causal output), where the causal relation is reduced on read and an edge already sent can leave the reduction — a delta has no way to withdraw one, so those replies carry the whole graph and say so.
+
+### Keeping a bounded number of transitions per rule
+
+`"MatchesPerStateRule" -> k` keeps at most `k` of each state's own transitions **per rule**, and the choice is made when that state's matching is complete rather than as matches arrive:
+
+```wl
+rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
+HGEvolve[rules, {{1, 2}}, 4, "NumStates", "MatchesPerStateRule" -> 1]
+```
+
+The distinction from the other caps is what it is for. `"MaxSuccessorStatesPerParent"` bounds children per parent regardless of which rule produced them. `"MatchesPerStep"` bounds by **arrival order**, which depends on the schedule, so two runs of the same evolution can keep different states. `"MatchesPerStateRule"` ranks a state's transitions by their own isomorphism-invariant identity and the `"RandomSeed"`, so the kept set is the same at any thread count — choosing `k` of `M` needs all `M`, and all `M` exist only once that state's matching has finished.
+
+Applies to a state's **own** matches. A match forwarded into a state from an ancestor arrives asynchronously and is not counted against the cap, for the same reason: its arrival races the point where the count would be taken. CPU only.

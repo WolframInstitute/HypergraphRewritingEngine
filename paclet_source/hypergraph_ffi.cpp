@@ -188,6 +188,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "MatchesPerStep") {
                             req.matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "MatchesPerStateRule") {
+                            req.matches_per_state_rule =
+                                static_cast<size_t>(option_parser.read<int64_t>());
                         } else if (option_key == "RandomSeed") {
                             req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
@@ -507,6 +510,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     engine.set_random_seed(req.random_seed);
     engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
     engine.set_max_states_per_step(req.max_states_per_step);
+    engine.set_matches_per_state_rule(req.matches_per_state_rule);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
     engine.set_quotient_initial_states(req.quotient_initial_states);

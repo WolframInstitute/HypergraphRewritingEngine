@@ -66,6 +66,11 @@ struct ParsedJob {
     // draw: transition_rate is that. Kept because callers depend on the option name.
     bool uniform_random = false;
     size_t matches_per_step = 0;  // The cap above (0 = all)
+    // Keep k of a state's own matches per RULE, chosen at that state's drain by the transition's
+    // own rank. 0 keeps all. Distinct from max_successor_states_per_parent, which caps CHILDREN
+    // per parent regardless of which rule produced them, and from matches_per_step, which caps
+    // by arrival order.
+    size_t matches_per_state_rule = 0;
 
     // Data selection flags - which components to include in output
     // By default all are included for backward compatibility
