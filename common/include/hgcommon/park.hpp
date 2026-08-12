@@ -53,10 +53,39 @@
 #  define HG_PARK_OS_SYNC 1
 #endif
 
+// THE FALLBACK IS CHOSEN BY THE FEATURE MACRO, NOT BY A VERSION NUMBER. std::atomic<T>::wait is
+// C++20, and a toolchain can have the header and refuse the call: libc++ annotates it
+// `availability(macosx, strict, introduced=11.0)` and, when its own checks decide the target
+// cannot reach it, leaves __cpp_lib_atomic_wait UNDEFINED while the declaration stays visible.
+// Testing the deployment target instead is how the macOS legs failed while configured at exactly
+// the version libc++ names -- os_sync_wait_on_address needs SDK 14.4+, atomic wait was refused,
+// and NEITHER of the two primitives was reachable.
+//
+// So: the library says whether the feature is usable, and this asks it.
+#if !defined(HG_PARK_FUTEX) && !defined(HG_PARK_WAIT_ON_ADDRESS) && !defined(HG_PARK_OS_SYNC)
+#  if defined(__cpp_lib_atomic_wait)
+#    define HG_PARK_STD_ATOMIC_WAIT 1
+#  else
+#    define HG_PARK_CONDVAR 1
+#    include <condition_variable>
+#    include <mutex>
+#  endif
+#endif
+
 namespace HG_NAMESPACE {
 namespace common {
 
-enum class ParkBackend { Futex, WaitOnAddress, OsSync, StdAtomicWait };
+#if defined(HG_PARK_CONDVAR)
+namespace detail {
+// One mutex and condition variable shared by every parked address. Function-local so it has no
+// static-initialisation order to depend on, and process-lifetime so a wake never touches a
+// destroyed object.
+struct ParkCondVar { std::mutex m; std::condition_variable cv; };
+inline ParkCondVar& park_condvar() { static ParkCondVar g; return g; }
+}  // namespace detail
+#endif
+
+enum class ParkBackend { Futex, WaitOnAddress, OsSync, StdAtomicWait, CondVar };
 
 // Which primitive this build uses. StdAtomicWait is the only one that may block on a lock.
 constexpr ParkBackend park_backend() {
@@ -66,14 +95,18 @@ constexpr ParkBackend park_backend() {
     return ParkBackend::WaitOnAddress;
 #elif defined(HG_PARK_OS_SYNC)
     return ParkBackend::OsSync;
-#else
+#elif defined(HG_PARK_STD_ATOMIC_WAIT)
     return ParkBackend::StdAtomicWait;
+#else
+    return ParkBackend::CondVar;
 #endif
 }
 
-// True when blocking is known not to take a lock.
+// True when blocking is known not to take a lock. Both fallbacks may: std::atomic::wait is
+// permitted to be implemented with one, and CondVar is one by construction.
 constexpr bool park_is_lock_free() {
-    return park_backend() != ParkBackend::StdAtomicWait;
+    return park_backend() != ParkBackend::StdAtomicWait &&
+           park_backend() != ParkBackend::CondVar;
 }
 
 
@@ -91,8 +124,20 @@ inline void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) 
     ::os_sync_wait_on_address(const_cast<void*>(static_cast<const void*>(&addr)),
                               static_cast<uint64_t>(expected), sizeof(uint32_t),
                               OS_SYNC_WAIT_ON_ADDRESS_NONE);
-#else
+#elif defined(HG_PARK_STD_ATOMIC_WAIT)
     addr.wait(expected, std::memory_order_acquire);
+#else
+    // THE PORTABLE FLOOR, and it takes a lock -- park_is_lock_free() reports that rather than
+    // hiding it. One shared mutex and condition variable for every address: this backend is
+    // reached only where the platform offers no address-wait at all, the waiter is an IDLE
+    // worker with nothing to do, and a wake is O(waiters) rather than O(1). Correct everywhere,
+    // and slower where it is the only thing that compiles.
+    //
+    // The predicate is re-read under the lock, so the store-then-wake a waker performs cannot
+    // land between this thread's check and its wait.
+    auto& g = detail::park_condvar();
+    std::unique_lock<std::mutex> lk(g.m);
+    if (addr.load(std::memory_order_acquire) == expected) g.cv.wait(lk);
 #endif
 }
 
@@ -105,10 +150,15 @@ inline void unpark_one(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_OS_SYNC)
     ::os_sync_wake_by_address_any(const_cast<void*>(static_cast<const void*>(&addr)),
                                   sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
-#else
+#elif defined(HG_PARK_STD_ATOMIC_WAIT)
     // wait() is const-qualified but notify_one()/notify_all() are not; the wake mutates no
     // atomic value, and this API takes const& to mirror the futex path, so cast it away.
     const_cast<std::atomic<uint32_t>&>(addr).notify_one();
+#else
+    (void)addr;   // one shared variable: a waiter on any address may be the one woken
+    auto& g = detail::park_condvar();
+    std::lock_guard<std::mutex> lk(g.m);
+    g.cv.notify_all();   // notify_ONE could wake a waiter on a different address and lose this
 #endif
 }
 
@@ -121,8 +171,13 @@ inline void unpark_all(const std::atomic<uint32_t>& addr) {
 #elif defined(HG_PARK_OS_SYNC)
     ::os_sync_wake_by_address_all(const_cast<void*>(static_cast<const void*>(&addr)),
                                   sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
-#else
+#elif defined(HG_PARK_STD_ATOMIC_WAIT)
     const_cast<std::atomic<uint32_t>&>(addr).notify_all();
+#else
+    (void)addr;
+    auto& g = detail::park_condvar();
+    std::lock_guard<std::mutex> lk(g.m);
+    g.cv.notify_all();
 #endif
 }
 
