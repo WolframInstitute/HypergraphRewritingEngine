@@ -721,6 +721,22 @@ magnitudes are not current.
   moving them into a lambda-captured struct forces every write to memory and defeats that.
   **REFUTED, reverted. The source-level copy is not the machine-level copy.**
 
+- **Q14 — are the async paths proven, and are the proofs FAST?** **YES, and they run in minutes.**
+  Every GenMC harness compiles against the engine's own headers, so it breaks when the header
+  breaks rather than modelling a copy. Exhaustive under RC11 at the stated bound:
+  `concurrent_map_agreement` 32 executions, `concurrent_map_resize` 400,
+  `concurrent_map_double_growth_2t` 130,897, `concurrent_map_repeated_offer` 3,755,
+  `claim_match_rendezvous` 2,500, `deque_no_double_extraction` 6,
+  `job_system_no_lost_wakeup` 5 -- all clean. The 3-thread `concurrent_map_double_growth` is
+  ESTIMATE-ONLY by design: 2.8e9 executions, 3.17e6 s to enumerate, so it is sampled (clean) and
+  its reduced 2-thread sibling carries the exhaustive result. That is the sizing rule
+  `verification/genmc/run.sh` documents, applied.
+  **Nothing needs installing:** genmc is at `~/genmc/build/bin/genmc` (run.sh's default) and
+  `tla2tools.jar` at `~/tla/tla2tools.jar` with Java present. `genmc` is not on PATH and does not
+  need to be -- `command -v genmc` is the WRONG check and reports a false absence.
+  Bound stated with the result: this is exhaustive for those thread and operation counts, not a
+  proof for unbounded threads.
+
 - **Q11 — concurrent sessions?** **DECIDED: exactly one**, revisitable.
 - **Q12 — which Pareto operating points actually ship** as the advertised family? **OPEN.**
 
