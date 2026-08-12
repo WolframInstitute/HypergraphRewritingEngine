@@ -45,42 +45,8 @@ struct EdgeSignature {
     // Compute signature from pattern variable indices
     // Pattern edge stores variable indices directly, so we compute signature
     // from the variable repetition pattern
-    static EdgeSignature from_pattern(const uint8_t* vars, uint8_t arity) {
-        EdgeSignature sig;
-        sig.arity = arity;
-        std::memset(sig.pattern, 0, MAX_ARITY);
-
-        if (arity == 0) return sig;
-
-        // Map first occurrence of each variable to incrementing label
-        uint8_t next_label = 0;
-        uint8_t seen_vars[MAX_ARITY];
-        uint8_t var_labels[MAX_ARITY];
-
-        for (uint8_t i = 0; i < arity; ++i) {
-            uint8_t var = vars[i];
-
-            // Check if variable already seen
-            uint8_t label = next_label;
-            for (uint8_t j = 0; j < next_label; ++j) {
-                if (seen_vars[j] == var) {
-                    label = var_labels[j];
-                    break;
-                }
-            }
-
-            // If new variable, assign new label
-            if (label == next_label) {
-                seen_vars[next_label] = var;
-                var_labels[next_label] = next_label;
-                next_label++;
-            }
-
-            sig.pattern[i] = label;
-        }
-
-        return sig;
-    }
+    // Body in signature.cpp: runs once per rule at registration, never per state.
+    static EdgeSignature from_pattern(const uint8_t* vars, uint8_t arity);
 
     // Compute hash for signature (for use in ConcurrentMap)
     uint64_t hash() const { return hgcommon::signature_hash(arity, pattern); }
@@ -260,29 +226,8 @@ struct CompatibleSignatureCache {
     CompatibleSignatureCache() = default;
 
     // Build cache from pattern signature
-    static CompatibleSignatureCache from_pattern(const EdgeSignature& pattern_sig) {
-        CompatibleSignatureCache cache;
-        cache.source_pattern_sig = pattern_sig;
-
-        enumerate_compatible_signatures(
-            pattern_sig,
-            [](const EdgeSignature& sig, void* user_data) {
-                auto* c = static_cast<CompatibleSignatureCache*>(user_data);
-                if (c->count < MAX_CACHED_SIGS) {
-                    c->signatures[c->count++] = sig;
-                } else {
-                    // More compatible signatures than the cache can hold (e.g. a
-                    // high-arity all-distinct pattern edge). Flag it so the consumer
-                    // enumerates the full set live instead of silently dropping the
-                    // tail — dropping it would MISS real matches.
-                    c->overflowed = true;
-                }
-            },
-            &cache
-        );
-
-        return cache;
-    }
+    // Body in signature.cpp: runs once per rule at registration, never per state.
+    static CompatibleSignatureCache from_pattern(const EdgeSignature& pattern_sig);
 
     // Iterate over cached signatures
     template<typename Visitor>

@@ -7,6 +7,9 @@ add_library(hypergraph
     src/causal_graph.cpp
     src/parallel_evolution.cpp
     src/hypergraph.cpp
+    src/rule_analysis.cpp
+    src/pattern.cpp
+    src/signature.cpp
 )
 
 # Include directories
