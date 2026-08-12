@@ -61,9 +61,13 @@ Core engine:
   confirming with IR was implemented and measured 28% slower, and the reason is a
   bound rather than an accident: distinct WL hashes are at most the canonical
   classes, so a WL filter can skip at most `canonical/raw` of the IR calls while
-  paying a WL pass on every state -- 9.7% at depth 6 falling to 0.0% by depth 6 on
-  a two-edge LHS, because producing the same state along many histories is what
-  multiway evolution does. Where an option needs the automorphism data (quotient
+  paying a WL pass on every state -- measured per case by `tools/cost_matrix`
+  across the whole rule-type corpus. Within every rule that keeps rewriting the
+  ceiling FALLS with depth (`binary-growth` 29.4% -> 4.1%, `star4-automorphic`
+  3.1% -> 0.3%, `cycle4-automorphic` 0.5% -> 0.0% at 68,184 events), because
+  reaching the same state along many histories is what multiway evolution does;
+  the cases holding a high ceiling are the ones that stop rewriting (`self-loop`
+  is 100% at two raw states and one event). Where an option needs the automorphism data (quotient
   exploration, event-canonicalization conventions), the orbits come from that same
   IR pass, so nothing is canonicalized twice. Storage is
   arena-backed and lock-free (`arena.hpp`, `segmented_array.hpp`, `concurrent_map.hpp`,

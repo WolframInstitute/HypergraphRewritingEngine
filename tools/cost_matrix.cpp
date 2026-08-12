@@ -151,13 +151,14 @@ int main(int argc, char** argv) {
     // arenaB is what the causal and branchial graphs cost a caller who asked for neither.
     std::printf("engine: %s\n",
                 g_mode == ParallelEvolutionEngine::ExecutionMode::Serial ? "serial" : "threaded");
-    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %10s %10s %9s %10s %9s\n",
-                "case", "type", "oracle", "canon", "events",
-                "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB", "canon/st");
+    std::printf("%-18s %-20s %6s %7s %7s %7s %7s %7s %10s %10s %9s %10s %9s %7s\n",
+                "case", "type", "oracle", "raw", "canon", "events",
+                "causal", "branch", "arenaB", "heapB", "heapAllocs", "noRelB", "canon/st",
+                "wlceil");
     // The last column is the SAME evolution recording neither relation, so the difference
     // against arenaB is what the causal and branchial graphs cost a caller who asked for
     // neither.
-    std::printf("%s\n", std::string(130, '-').c_str());
+    std::printf("%s\n", std::string(146, '-').c_str());
 
     bool all_exact = true;
     bool any_unverified = false;   // a row the oracle could not check
@@ -189,16 +190,29 @@ int main(int argc, char** argv) {
         total_all += m.arena_bytes;
         total_states_only += s.arena_bytes;
 
-        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %10zu %10llu %9llu %10zu %9.2f\n",
+        // wlceil is the CEILING on the IR calls a Weisfeiler-Leman pre-filter could avoid, as a
+        // percentage. WL is coarser than IR, so distinct WL hashes are at most the canonical
+        // classes; every state landing in a bucket already seen still needs IR, because WL
+        // agreement never establishes isomorphism. So the filter can skip at most
+        // canonical/raw of the calls while paying a WL pass on every raw state. Printed per
+        // case because it is a property of the RULE and the depth, not a constant.
+        if (m.events == 0) {
+            std::printf("  %-16s NO EVENTS at depth %d: this row measures nothing about "
+                        "rewriting\n", c.name, steps);
+        }
+        std::printf("%-18s %-20s %6s %7zu %7zu %7zu %7zu %7zu %10zu %10llu %9llu %10zu %9.2f "
+                    "%6.1f%%\n",
                     c.name, c.type, verdict,
-                    m.canonical_states, m.events,
+                    m.raw_states, m.canonical_states, m.events,
                     m.causal_edges, m.branchial_edges, m.arena_bytes,
                     (unsigned long long)m.heap_bytes, (unsigned long long)m.heap_allocs,
                     s.arena_bytes,
-                    m.raw_states ? double(m.canon_computations) / double(m.raw_states) : 0.0);
+                    m.raw_states ? double(m.canon_computations) / double(m.raw_states) : 0.0,
+                    m.raw_states ? 100.0 * double(m.canonical_states) / double(m.raw_states)
+                                 : 0.0);
     }
 
-    std::printf("%s\n", std::string(130, '-').c_str());
+    std::printf("%s\n", std::string(146, '-').c_str());
     std::printf("arena bytes, all artifacts / neither relation: %zu / %zu  (%.1f%% of the arena "
                 "is the causal and branchial graphs)\n", total_all, total_states_only,
                 total_all ? 100.0 * double(total_all - total_states_only) / double(total_all) : 0.0);

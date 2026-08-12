@@ -224,22 +224,28 @@ It is worth being precise about where this hash is and is not used, because the 
 
 The reason is measured, and it is bounded rather than incidental. Bucketing by WL and confirming with IR only on collision is the obvious optimization, and it was implemented: it ran 28\% SLOWER.
 
-The bound says why, and says it will not improve. WL is a coarser invariant than IR, so the number of distinct WL hashes a run produces is at most the number of canonical classes. A state whose WL hash has been seen before must be confirmed by IR --- WL agreement never establishes isomorphism --- so the IR calls a WL filter can avoid are at most the canonical classes, while the WL pass is paid on every produced state. The fraction saved is therefore at most (canonical states)/(raw states), and multiway evolution drives that ratio toward zero, because producing the same state along many histories is what the evolution DOES:
+The bound says why, and says it will not improve. WL is a coarser invariant than IR, so the number of distinct WL hashes a run produces is at most the number of canonical classes. A state whose WL hash has been seen before must be confirmed by IR --- WL agreement never establishes isomorphism --- so the IR calls a WL filter can avoid are at most the canonical classes, while the WL pass is paid on every produced state. The fraction saved is therefore at most (canonical states)/(raw states).
+
+That ceiling is a property of the rule and the depth, not a constant, so it is measured across the whole rule-type corpus rather than on one rule. It is reported per case by \texttt{tools/cost\_matrix} beside the event count, because the two must be read together:
 
 \begin{center}
-\begin{tabular}{lrrrr}
+\begin{tabular}{llrrr}
 \toprule
-Rule & Depth & Raw states & Canonical & Ceiling on IR calls avoided \\
+Case & Rule type & Events & Ceiling & Ceiling at lower depth \\
 \midrule
-one-edge LHS & 6 & 874 & 85 & 9.7\% \\
-one-edge LHS & 8 & 46{,}234 & 486 & 1.1\% \\
-two-edge LHS & 5 & 2{,}956 & 6 & 0.2\% \\
-two-edge LHS & 6 & 23{,}116 & 7 & 0.0\% \\
+\texttt{cycle4-automorphic}  & automorphism      & 68{,}184 & 0.0\%  & 0.5\%  \\
+\texttt{star4-automorphic}   & automorphism      & 68{,}184 & 0.3\%  & 3.1\%  \\
+\texttt{disconnected-lhs}    & disconnected      & 126      & 0.8\%  & 3.2\%  \\
+\texttt{binary-growth}       & productive/arity2 & 873      & 4.1\%  & 29.4\% \\
+\texttt{multi-rule}          & multi-rule        & 237      & 15.1\% & 15.1\% \\
+\texttt{triangle}            & mixed-connected   & 124      & 28.8\% & 28.8\% \\
+\texttt{arity3-growth}       & arity3            & 153      & 42.2\% & 67.6\% \\
+\texttt{self-loop}           & self-loop         & 1        & 100\%  & 100\%  \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent The ceiling falls as the evolution deepens, which is the regime the engine exists for. A filter that costs one pass over every state to skip at most 1\% of the work it precedes is not a fast path.
+\noindent Two things are visible and both matter. Within any rule that keeps rewriting, the ceiling FALLS as depth grows --- \texttt{binary-growth} from 29.4\% to 4.1\%, the automorphic cases to 0.3\% and 0.0\% --- because reaching the same state along many histories is what multiway evolution does, and every such arrival is a bucket hit that IR must settle. And the cases that hold a high ceiling are the ones that stop: \texttt{self-loop} sits at 100\% with two raw states and a single event, where the filter would save a large fraction of nothing. There is no rule in the corpus where a WL filter saves a large fraction of substantial work, and the trend within every productive rule runs the wrong way for it.
 
 There is one case where IR is run for a reason other than identity, and there the question does not arise: the quotient exploration and the event-canonicalization conventions need the edge-orbit table, which the same IR pass already produces, so no second canonicalization is performed for them.
 
