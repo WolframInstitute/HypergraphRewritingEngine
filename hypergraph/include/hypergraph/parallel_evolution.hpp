@@ -549,6 +549,8 @@ private:
 
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
+    // Set by set_match_forwarding: the caller has decided, so a run does not re-decide.
+    bool match_forwarding_explicit_{false};
 
     // Batched matching: the parent finishes matching, THEN its children are created. Eager
     // creates each child as its match is found, so the parent is still matching when the child
@@ -866,7 +868,19 @@ public:
     size_t max_steps() const { return max_steps_; }
     void set_max_states(size_t max) { max_states_ = max; }
     void set_max_events(size_t max) { max_events_ = max; }
-    void set_match_forwarding(bool enable) { enable_match_forwarding_ = enable; }
+    // FORWARDING PAYS ONLY WHEN RE-MATCHING IS A JOIN. A child re-matched from scratch runs the
+    // matcher once per rule; forwarding replaces that with a walk of the ancestor's records plus
+    // the coordination that keeps the walk complete. Against identical event counts (#49):
+    // narrow/growth +22%, narrow/pair +4%, wide/growth +45%, and wide/pair PAYS 19%. The property
+    // that separates them is static -- an LHS of one edge re-matches by scanning an index, which
+    // is cheaper than the coordination, while an LHS of two or more re-matches by joining.
+    //
+    // So the decision is the rule set's, taken once at the start of a run. A caller that sets it
+    // explicitly owns it from that point: the setter is the override, not a hint.
+    void set_match_forwarding(bool enable) {
+        enable_match_forwarding_ = enable;
+        match_forwarding_explicit_ = true;
+    }
     void set_batched_matching(bool enable) { batched_matching_ = enable; }
     void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
 
@@ -975,6 +989,12 @@ public:
     // True while a state's own transitions must wait for its drain, because choosing k of M
     // needs all M and M is complete only there.
     bool defers_to_drain() const { return matches_per_state_rule_ != 0; }
+
+    // A state's own matches are RECORDED for two consumers, and only one of them is forwarding.
+    // The drain cap chooses k of them by rank after the state's matching completes, so it reads
+    // the same list; without this the cap silently keeps nothing whenever forwarding is off, and
+    // a cap that keeps nothing is an off switch wearing a limit's name.
+    bool records_own_matches() const { return enable_match_forwarding_ || defers_to_drain(); }
     // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
     // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving
     // ancestor class both left the union-recovery curve unchanged, because recovery is limited

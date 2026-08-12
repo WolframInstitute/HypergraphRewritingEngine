@@ -1609,10 +1609,19 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     //
     // The caller's request is not overridden, because nothing is taken from it: what it asked for
     // is the empty relation and the empty relation is what it gets. Only the work goes.
-    if (!analyze_rules(rules_).may_branch) {
+    const RuleSetFacts facts = analyze_rules(rules_);
+    if (!facts.may_branch) {
         RecordSet rs = hg_->record_set();
         rs.branchial = false;
         hg_->set_record_set(rs);
+    }
+
+    // Forwarding is worth its coordination only when a child's re-match is a join, which the rule
+    // set decides (rule_analysis.hpp, forwarding_pays). A caller that set it explicitly keeps it:
+    // the probes that measure forwarding on against forwarding off need both arms on the same
+    // rules, and a fixed answer here would make one arm unreachable.
+    if (!match_forwarding_explicit_) {
+        enable_match_forwarding_ = facts.forwarding_pays;
     }
 
     hg_->set_quotient_causal(qc);
@@ -1961,9 +1970,10 @@ void ParallelEvolutionEngine::execute_match_task(
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
 
-        if (enable_match_forwarding_ && !batched_matching_) {
+        if (records_own_matches() && !batched_matching_) {
             store_match_for_state(state, match, true);
-            push_match_to_children(state, match, step, PushSite::Discovery);
+            if (enable_match_forwarding_)
+                push_match_to_children(state, match, step, PushSite::Discovery);
         }
 
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
@@ -2125,7 +2135,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
     // Phase 2: Store all matches, then spawn all REWRITEs (BATCHED MODE ONLY)
     if (batched_matching_) {
-        if (enable_match_forwarding_) {
+        if (records_own_matches()) {
             for (size_t i = delta_start; i < batch.size(); ++i) {
                 store_match_for_state(state, batch[i]);
             }
@@ -2397,10 +2407,10 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
-    // Store match for collection/forwarding
-    if (enable_match_forwarding_) {
+    if (records_own_matches()) {
         store_match_for_state(data.state, match, true);
-        push_match_to_children(data.state, match, data.step, PushSite::Discovery);
+        if (enable_match_forwarding_)
+            push_match_to_children(data.state, match, data.step, PushSite::Discovery);
     }
 
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"

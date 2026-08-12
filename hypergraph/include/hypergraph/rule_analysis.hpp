@@ -207,6 +207,12 @@ struct RuleSetFacts {
     bool non_growing = false;
     // No rule introduces a vertex, so the vertex set is bounded by the initial condition.
     bool bounded_vertices = false;
+    // Some rule's LHS joins two or more edges, so re-matching a child is a join rather than an
+    // index scan. That is the property match forwarding has to beat: forwarding replaces the
+    // re-match with a walk of the ancestor's records plus the coordination that keeps the walk
+    // complete, and against identical event counts it costs +22% / +45% on single-edge rule sets
+    // while paying 19% on a multi-edge one.
+    bool forwarding_pays = false;
 };
 
 // Only the SET facts, and only from what they need.
@@ -224,6 +230,7 @@ inline RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
     for (const auto& r : rules) {
         if (r.num_rhs_edges > r.num_lhs_edges) s.non_growing = false;
         if (r.num_new_vars > 0) s.bounded_vertices = false;
+        if (r.num_lhs_edges >= 2) s.forwarding_pays = true;
     }
     return s;
 }
