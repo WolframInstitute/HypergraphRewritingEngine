@@ -8,3 +8,6 @@ commit,subject,workload,mode,instructions,d1_misses,lld_misses,dram_bytes
 16e2594,bench: session cost rows (dirty-marked sweeps during #77/#31 attribution),wolfram-5step,full,54990397,1454807,82915,5306560
 16e2594,bench: session cost rows (dirty-marked sweeps during #77/#31 attribution),wolfram-5step,auto,65295822,1488739,83034,5314176
 16e2594,bench: session cost rows (dirty-marked sweeps during #77/#31 attribution),wolfram-5step,none,64111696,1489791,83033,5314112
+1001fe1+dirty,tools: what a header change costs  measured transitively -- and it refutes the note that asked for it,wolfram-5step,full,58619830,1472060,82880,5304320
+1001fe1+dirty,tools: what a header change costs  measured transitively -- and it refutes the note that asked for it,wolfram-5step,auto,68834234,1502914,82988,5311232
+1001fe1+dirty,tools: what a header change costs  measured transitively -- and it refutes the note that asked for it,wolfram-5step,none,67633256,1504036,82987,5311168

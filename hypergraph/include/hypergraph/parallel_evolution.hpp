@@ -771,7 +771,16 @@ private:
     // Counting STATES that arrived would not do: match forwarding submits a rewrite task that
     // is booked against no state, and that rewrite creates a state and submits its match task,
     // so an arrival can appear at a depth with no live state accounting for it.
-    struct DepthJoin {
+    // ONE CACHE LINE PER DEPTH. `live` is the engine's hottest counter -- every task increments
+    // it when submitted and decrements it when done -- and FOUR depths fit in a 64-byte line at
+    // its natural 16-byte size. Depths run CONCURRENTLY by construction (a task at depth d only
+    // submits above d, which is what lets a depth settle without a barrier), so those four
+    // counters are written by different threads at the same time and the line ping-pongs between
+    // cores for no reason: nothing reads a neighbour's field.
+    //
+    // The whole array is sized once per run at max_steps + 2, so the padding costs 768 bytes on
+    // a ten-step run against 192. There is no size at which this trade reverses.
+    struct alignas(64) DepthJoin {
         std::atomic<size_t>  live{0};       // tasks submitted at this depth, minus those done
         std::atomic<uint8_t> complete{0};
     };

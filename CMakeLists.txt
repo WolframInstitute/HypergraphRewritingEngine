@@ -145,17 +145,23 @@ endif()
 # signature key inside, in the parse that decides event identity. Neither changed behaviour;
 # both cost a reader the work of proving that.
 #
-# The whole tree is clean as of this flag being added -- 7 engine translation units, the FFI, and
-# every test source -- so it costs nothing to keep it that way, and a sweep run once protects
-# only the day it was run. GNU/Clang only: MSVC spells its shadow diagnostics differently and the
-# Windows leg has no equivalent to enable here.
+# AN ERROR, NOT A WARNING. Both of those compiled and passed their tests, and a warning in a
+# build that prints thousands of lines is a diagnostic nobody is required to read. The class is
+# closed only if it cannot build. The whole host tree compiles clean under it -- engine, FFI,
+# paclet and every test source -- so keeping it that way costs nothing, while a sweep run once
+# protects only the day it was run.
+#
+# GNU/Clang only: MSVC spells its shadow diagnostics differently and the Windows leg has no
+# equivalent to enable here.
+#
 # CXX ONLY, via the generator expression: add_compile_options applies to EVERY language, so an
-# unscoped -Wshadow lands on the nvcc command line, changes it, and invalidates every .cu object
-# -- including persistent.cu, which needs about 12.5 GB to compile (#123) and cannot be rebuilt
-# on a shared box. Scoped this way the CUDA compile lines are unchanged and nothing device-side
-# rebuilds.
+# unscoped flag lands on the nvcc command line, changes it, and invalidates every .cu object --
+# including persistent.cu, which needs about 12.5 GB to compile (#123) and cannot be rebuilt on a
+# shared box. Scoped this way the CUDA compile lines are unchanged and nothing device-side
+# rebuilds, while every .cpp the device targets carry is still covered.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wshadow>)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Werror=shadow>)
 endif()
 
 add_subdirectory(lockfree_deque)

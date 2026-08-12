@@ -922,7 +922,9 @@ std::vector<Workload> build_corpus_both_schedulers() {
 // because an exclusion list is how a known failure becomes invisible.
 INSTANTIATE_TEST_SUITE_P(InitialCorpus, DifferentialEvolution,
     ::testing::ValuesIn(build_corpus_both_schedulers()),
-    [](const ::testing::TestParamInfo<Workload>& info) { return info.param.name; });
+    // `p`, not `info`: INSTANTIATE_TEST_SUITE_P expands to a body that already binds `info`, so
+    // the obvious name shadows it and -Wshadow says so on every expansion of this macro.
+    [](const ::testing::TestParamInfo<Workload>& p) { return p.param.name; });
 
 // The event-identity axis, compared the way a caller sees it.
 //
