@@ -181,12 +181,22 @@ macos_native() {  # native slices on a macOS host
 }
 macos_cross() {   # OSXCross from a non-macOS host
     export OSXCROSS_ROOT PATH="$OSXCROSS_ROOT/target/bin:$PATH"
+    # THE DEPLOYMENT TARGET IS PASSED EVERY TIME, not left to the toolchain's default. The
+    # toolchain sets 11.0 only `if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)`, so a build directory
+    # configured once at 10.15 keeps 10.15 forever -- and at 10.15 the engine does not compile:
+    # os_sync_wait_on_address needs SDK 14.4+ and std::atomic::wait needs a macOS 11 runtime, so
+    # BOTH of park.hpp's primitives are unavailable and neither the error nor the cache says why.
+    # A release run that silently builds against a floor nobody chose is the hazard; passing it
+    # on the command line makes the toolchain's answer win on every configure.
+    local osx_min="${HG_MACOS_DEPLOYMENT_TARGET:-11.0}"
     selected "MacOSX-x86-64" && build_target "MacOSX-x86-64" build_macos \
         "$LR/MacOSX-x86-64/libHypergraphRewriting.dylib" \
-        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=x86_64
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$osx_min"
     selected "MacOSX-ARM64" && build_target "MacOSX-ARM64" build_macos_arm64 \
         "$LR/MacOSX-ARM64/libHypergraphRewriting.dylib" \
-        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=arm64
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$osx_min"
 }
 if selected "MacOSX-x86-64" || selected "MacOSX-ARM64"; then
     if [[ "$HOST_OS" == "Darwin" ]]; then

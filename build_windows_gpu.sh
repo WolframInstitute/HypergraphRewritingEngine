@@ -29,6 +29,13 @@ BUILD_WSL='/mnt/c/Temp/hg_gpu_build'      # same dir, WSL view (Windows-local di
 DEST="paclet/LibraryResources/Windows-x86-64"
 
 # --- locate the Windows toolchain under /mnt/c ---
+# THE COMMIT IS PASSED IN, not discovered. This configure runs under Windows cmake.exe against a
+# \\wsl.localhost path, where the CMakeLists' own `git rev-parse` finds no usable repository and
+# the stamp comes out `commit=unknown` -- which artifact_stamp_check correctly reports as unknown
+# provenance, so the one binary this script exists to produce was the one artifact that could not
+# say what it was built from. Resolved on the Linux side, where git works, and handed over.
+HG_BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+
 WINCMAKE="$(ls '/mnt/c/Program Files/CMake/bin/cmake.exe' 2>/dev/null | head -1 || true)"
 [[ -n "$WINCMAKE" ]] || { echo "error: Windows cmake.exe not found (install CMake on Windows)"; exit 1; }
 
@@ -71,6 +78,7 @@ run_wincmake() { ( cd /mnt/c/Temp && "$WINCMAKE" "$@" ); }
 
 run_wincmake -S "$SRC" -B "$BUILD_WIN" -G "$GEN" -A x64 -T "cuda=$CUDA_DIR_WIN" \
     -DBUILD_GPU=ON -DHG_GPU_ARCHS="$ARCHS" -DCMAKE_CUDA_ARCHITECTURES="$ARCHS" \
+    -DHG_BUILD_COMMIT="$HG_BUILD_COMMIT" \
     -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
     -DBUILD_VISUALIZATION=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF
 
