@@ -110,6 +110,10 @@ HGSessionOpen::noworker =
   "mint a handle in a process that exits with the reply. HGEvolve itself still works.";
 HGSessionOpen::nohandle =
   "The engine answered the Open but returned no session handle, so there is nothing to continue.";
+HGSessionOpen::refused =
+  "The engine refused this session job. The usual cause is that a session is already live on " <>
+  "this worker -- one is served at a time, so close it before opening another -- or that a " <>
+  "held verb named a session this worker does not hold.";
 HGSessionOpen::live =
   "A session is already live on this worker; close it before opening another. This build serves " <>
   "one session at a time so that opening a second cannot silently discard the first.";
@@ -253,6 +257,8 @@ hgReadFrame[sock_] := Module[{ds = CreateDataStructure["DynamicArray"], got = 0,
   If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]
 ];
 
+$hgEngineRefused = "EngineRefusedJob";   (* distinct from $Failed: see hgWorkerTry *)
+
 hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
   If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
   If[Head[$hgWorkerSock[device]] =!= SocketObject
@@ -265,7 +271,12 @@ hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
   payload = hgReadFrame[$hgWorkerSock[device]];
   Which[
     payload === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; $Failed,
-    Length[payload] == 0, $Failed,   (* engine flagged this job; worker still alive *)
+    (* THE ENGINE REFUSED THIS JOB, and the worker is alive. Distinguished from a dead transport
+       because the two call for opposite responses: a caller with a fallback should take it on a
+       dead worker and NOT on a refused job (the fallback would refuse it too), and a session
+       verb, which has no fallback, must report the engine's refusal rather than "no worker is
+       available" -- which is what a second Open on a live session used to say. *)
+    Length[payload] == 0, $hgEngineRefused,
     True, payload]
 ];
 
@@ -583,18 +594,44 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
     vertices
   ];
 
-  (* Edge styles by type *)
+  (* Edge styles by type.
+
+     ONE RULE PER EDGE IS THE DOMINANT COST OF BUILDING THE GRAPH, and it is the same defect
+     class as the per-vertex shape function below. MEASURED at 5,914 vertices / 5,913 edges:
+     Graph[] carrying a per-edge EdgeStyle list is 1096.6 ms; the identical styling expressed
+     as ONE pattern rule is 8.4 ms, against 1.2 ms for the bare graph. Every other part is
+     noise beside it -- the tooltips are 76 ms, the vertex styles 104, the edge list 4, and the
+     layout 2, because Graph[] does not lay out until something renders it.
+
+     THE STYLE DEPENDS ONLY ON THE EDGE'S TYPE, never on which edge it is. So when every edge in
+     the graph has ONE type -- which is every States, Causal and Branchial property, and their
+     Structure variants -- a single pattern rule applies the same style to exactly the same set,
+     and the equality is by construction rather than by inspection.
+
+     The Evolution* properties mix types in one graph and keep the per-edge list: separating
+     them by pattern would have to distinguish a StateEvent from a Branchial edge by the SHAPE
+     of its endpoints, which is a second encoding of the type and would be wrong the first time
+     a vertex tag changed. *)
   edgeStyleTable = graphDataEdgeStyles[];
-  edgeStyles = Map[
-    With[{e = #},
-      Switch[e["Type"],
-        "StateEvent", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["StateEvent"],
-        "Branchial", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["Branchial"],
-        _, DirectedEdge[e["From"], e["To"], _] -> edgeStyleTable[e["Type"]]
-      ]
-    ] &,
-    graphData["Edges"]
-  ];
+  (* Mapped explicitly rather than Lookup[list, key, default]: that form degenerates to a
+     SCALAR when handed anything but a list of associations, and DeleteDuplicates on a scalar
+     errors instead of answering -- which is what it did on the Evolution properties. *)
+  edgeStyles = Module[{types = DeleteDuplicates[
+                          Map[Lookup[#, "Type", "Directed"] &, graphData["Edges"]]]},
+    If[Length[types] == 1,
+      With[{ty = First[types]},
+        If[MemberQ[{"StateEvent", "Branchial"}, ty],
+          {UndirectedEdge[_, _, _] -> edgeStyleTable[ty]},
+          {DirectedEdge[_, _, _] -> edgeStyleTable[ty]}]],
+      Map[
+        With[{e = #},
+          Switch[e["Type"],
+            "StateEvent", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["StateEvent"],
+            "Branchial", UndirectedEdge[e["From"], e["To"], _] -> edgeStyleTable["Branchial"],
+            _, DirectedEdge[e["From"], e["To"], _] -> edgeStyleTable[e["Type"]]
+          ]
+        ] &,
+        graphData["Edges"]]]];
 
   (* Rulial-space coloring: each transition edge takes the color of the rule that
      fired it (edge payloads carry RuleIndex), with a swatch legend over the rules
@@ -1059,8 +1096,22 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
   t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
   resultBytes = If[TrueQ[sessionQ],
-    Module[{r = hgWorkerTry[If[device === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"],
-                            wxfBytes]},
+    Module[{dev = If[device === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"], r},
+      r = hgWorkerTry[dev, wxfBytes];
+      (* $hgWorkerBroken is LATCHED, and it is latched for the FALLBACK path's benefit: there a
+         dead worker only means "stop paying to retry", because a one-shot RunProcess answers
+         the same job correctly. A session has no fallback, so the same latch turns one
+         transport hiccup during an unrelated evolve into "this kernel can never open a session
+         again". So a session verb clears it and tries once more; if the worker still cannot
+         start, THAT is the failure worth reporting. *)
+      (* A refused job is the ENGINE speaking, not the transport: report it as such and do not
+         restart a healthy worker underneath it. *)
+      If[r === $hgEngineRefused, Message[HGSessionOpen::refused]; Return[$Failed]];
+      If[!ByteArrayQ[r] && TrueQ[$hgWorkerBroken[dev]],
+        $hgWorkerBroken = KeyDrop[$hgWorkerBroken, dev];
+        hgWorkerKill[dev];
+        r = hgWorkerTry[dev, wxfBytes]];
+      If[r === $hgEngineRefused, Message[HGSessionOpen::refused]; Return[$Failed]];
       If[!ByteArrayQ[r], Message[HGSessionOpen::noworker, device]; Return[$Failed]];
       r],
     hgCallEngine[wxfBytes, device]];

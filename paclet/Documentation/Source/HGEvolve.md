@@ -384,6 +384,7 @@ HGEvolve[rules, {{1, 2}, {1, 3}}, 2, "States", "CanonicalizeStates" -> Full, "In
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
 s = HGSessionOpen[rules, {{1, 2}}, {"NumStates", "NumEvents"}];
 {HGSessionQuery[s], HGSessionStep[s, 1], HGSessionStep[s, 1], HGSessionStep[s, 1]}
+HGSessionClose[s]
 ```
 
 which gives `{<|NumStates -> 1, NumEvents -> 0|>, <|2, 1|>, <|4, 3|>, <|10, 9|>}` — the same numbers as `HGEvolve[rules, {{1, 2}}, k, ...]` for `k = 0, 1, 2, 3`, reached by continuing rather than restarting. `HGSessionQuery[s]` re-reads the accumulated graph without exploring further. `HGSessionClose[s]` releases the engine.
@@ -406,6 +407,7 @@ s = HGSessionOpen[rules, {{1, 2}}, "NumStates"];
 HGSessionStep[s, 2];
 f = HGSessionFrontier[s];
 HGSessionStep[s, 1, Automatic, "From" -> {First[f]}]
+HGSessionClose[s]
 ```
 
 which reaches 7 states where an unsteered step of the same depth reaches 10.
@@ -422,6 +424,7 @@ A step re-serialises the whole accumulated graph. `"Delivery" -> "Delta"` sends 
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
 s = HGSessionOpen[rules, {{1, 2}}, "StatesGraphStructure"];
 Table[HGSessionStep[s, 1, Automatic, "Delivery" -> "Delta"], {6}];
+HGSessionClose[s]
 ```
 
 Measured on this evolution at depth 7 (5,914 states), `tools/dev/session_step_cost.wls`: the engine leg falls from 381 ms to 269 ms and the reply from 516,535 to 443,660 bytes. That is a 29% cut to the engine call and 8% to the step, because the rest of a step is the Wolfram Graph construction — 1,640 ms of the 2,021 ms total — which a delta cannot reduce, since the graph being built is the whole accumulated one either way.
