@@ -272,6 +272,37 @@ Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\
 \end{tabular}
 \end{center}
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.92\textwidth, height=5.4cm,
+    ybar, bar width=6pt,
+    ylabel={$C/R$ (\%)}, ymin=0, ymax=105,
+    symbolic x coords={cycle4,star4,disconn,binary,multi,triangle,arity3,self-loop},
+    xtick=data, x tick label style={font=\scriptsize, rotate=20, anchor=east},
+    grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.02,0.97)}, anchor=north west, draw=none, fill=none},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[fill=gray!55, draw=black] coordinates
+  {(cycle4,0.5)(star4,3.1)(disconn,3.2)(binary,29.4)(multi,15.1)(triangle,28.8)(arity3,67.6)(self-loop,100)};
+\addlegendentry{lower depth}
+\addplot[fill=white, draw=black] coordinates
+  {(cycle4,0.0)(star4,0.3)(disconn,0.8)(binary,4.1)(multi,15.1)(triangle,28.8)(arity3,42.2)(self-loop,100)};
+\addlegendentry{higher depth}
+\end{axis}
+\end{tikzpicture}
+\caption{$C/R$, the ceiling of Proposition~\ref{prop:wlceiling} on the fraction of IR invocations a
+Weisfeiler--Leman pre-filter could elide, for each corpus case at two depths. The bar pairs are two
+depth samples per rule and not a continuum, so the figure shows direction rather than a rate. Every
+case that continues to rewrite decreases; the cases that do not decrease
+(\texttt{multi-rule}, \texttt{triangle}, \texttt{self-loop}) are those whose measured depths
+produced the same class-to-raw ratio, \texttt{self-loop} because it reaches a fixed point after one
+event. Values as in the table above.}
+\label{fig:crratio}
+\end{figure}
+
 \noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
 
 Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
