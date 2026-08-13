@@ -62,11 +62,33 @@ def tex_escape(s):
     return s.replace("_", r"\_").replace("&", r"\&").replace("%", r"\%")
 
 
+# A TABLE THAT DOES NOT FIT THE TEXT BLOCK IS SHRUNK, AND ONLY THEN.
+#
+# These tables are generated from measurements, so their width is decided by the data: a run
+# that produces longer case names or larger numbers silently pushes the tabular past the margin,
+# and LaTeX reports that as an "Overfull \hbox" warning it is very easy to not read. Five of
+# these tables were overflowing, the worst by 248pt -- about 8.7cm of table hanging off the page.
+#
+# \resizebox with the \ifdim guard scales ONLY when the natural width exceeds the line, and
+# leaves a table that already fits completely untouched, so nothing that currently typesets
+# correctly changes shape. Wrapping at the single point every table is written means a future
+# measurement cannot reintroduce the problem in one table and not another.
+def _fit(inner):
+    """Wrap a tabular so it shrinks to the line width only when it would otherwise overflow."""
+    return ("\\resizebox{\\ifdim\\width>\\linewidth\\linewidth\\else\\width\\fi}{!}{%\n"
+            + inner + "\n}\n")
+
+
 def write(name, body):
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, name)
+    # The provenance comment lines stay OUTSIDE the box: they are comments, and a \resizebox
+    # argument must be typesettable material.
+    head = [ln for ln in body.splitlines() if ln.startswith("%")]
+    rest = [ln for ln in body.splitlines() if not ln.startswith("%")]
+    boxed = "\n".join(head) + "\n" + _fit("\n".join(rest).strip())
     with open(path, "w") as f:
-        f.write(body)
+        f.write(boxed)
     print("wrote %s" % os.path.relpath(path, ROOT))
 
 
