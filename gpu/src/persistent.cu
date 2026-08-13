@@ -291,8 +291,8 @@ __global__ void k_persistent_match_rewrite(
         // Detector. Only thread 0 observes; the rest of the block idles, which costs one block
         // of occupancy and buys a termination test that cannot race with its own workers.
         if (threadIdx.x != 0) return;
-        uint64_t pushed[TerminationDetector::kMaxRoles];
-        uint64_t completed[TerminationDetector::kMaxRoles];
+        uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
+        uint64_t p2[TerminationDetector::kMaxRoles], c2[TerminationDetector::kMaxRoles];
         for (uint32_t round = 0; ; ++round) {
             if (round >= kMaxDetectorRounds) {
                 ds.errors.record(ErrorKind::kPersistentStall);
@@ -303,16 +303,24 @@ __global__ void k_persistent_match_rewrite(
             // matching produced already consumed. Checking only the match role would exit with
             // rewrites outstanding; checking only the cursor would exit before matching had
             // produced anything at all.
-            const bool matches_done = term.snapshot_quiescent(pushed, completed);
-            const uint32_t produced = readable_records(found);
-            const uint32_t consumed = *consume_cursor;
-            if (matches_done && consumed >= produced) {
+            const bool q1 = term.snapshot_quiescent(p1, c1);
+            const uint32_t prod1 = readable_records(found);
+            const uint32_t done1 = *consume_cursor;
+            if (q1 && done1 >= prod1) {
                 // Quiescent once is not enough: an in-flight match may have just completed
-                // without its matches yet being visible. Look again after a backoff, and only
-                // signal when it held across both observations.
+                // without its matches yet being visible. Look again after a backoff, and
+                // require every observed quantity to be UNCHANGED across the window -- each
+                // is monotone, so a worker that started and finished inside it must have
+                // moved one. Re-testing the conditions alone would accept two distinct
+                // quiescent moments with activity between them.
                 __nanosleep(4000);
-                if (term.snapshot_quiescent(pushed, completed) &&
-                    *consume_cursor >= readable_records(found)) {
+                const bool q2 = term.snapshot_quiescent(p2, c2);
+                const uint32_t prod2 = readable_records(found);
+                const uint32_t done2 = *consume_cursor;
+                bool unchanged = (prod1 == prod2) && (done1 == done2);
+                for (uint32_t r = 0; r < term.num_roles && unchanged; ++r)
+                    unchanged = (p1[r] == p2[r]) && (c1[r] == c2[r]);
+                if (q2 && done2 >= prod2 && unchanged) {
                     term.signal_exit();
                     return;
                 }
