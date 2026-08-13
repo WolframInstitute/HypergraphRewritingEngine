@@ -431,6 +431,31 @@ Pattern matching proceeds through a task-based system:
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{Position Against the Worst-Case-Optimal Bound}
+\label{sec:agm}
+
+Treating a left-hand side as a conjunctive query, the AGM bound~\cite{atserias2013size} gives the
+maximum number of results a query can have on a database of a given size, and a join is
+worst-case optimal if its running time matches that bound up to logarithmic
+factors~\cite{ngo2018worst}. Our join is edge-at-a-time: it binds one pattern hyperedge per
+expansion, in the connectivity order of Section~\ref{sec:matching-algorithm}.
+
+For left-hand sides of one or two hyperedges, an edge-at-a-time join meets the bound, and every
+rule in the corpus of Section~\ref{sec:benchmarks} is of that form. It does not meet the bound in
+general. On a cyclic left-hand side of three hyperedges the AGM bound is $N^{1.5}$ for a state of
+$N$ edges, while an edge-at-a-time join performs $\Omega(N^2)$ work: two of the three edges can be
+bound before the third constrains anything, and the intermediate result is already quadratic. No
+choice of join order removes this, since the difficulty is the granularity of binding rather than
+its sequence. Closing it requires enumerating variable-at-a-time in the manner of a worst-case
+optimal join, which in turn requires indices supporting ordered seek on a bound variable rather
+than the incidence lists described above.
+
+We therefore state the position rather than claim the property: the join is worst-case optimal on
+the rule shapes measured here, and is not worst-case optimal in general. The static analysis of
+Section~\ref{sec:rule-analysis} computes, per rule, whether its left-hand side is acyclic and what
+its integral edge cover is, so a rule set for which this gap matters is identifiable before it is
+run.
+
 \subsection{Match Forwarding}
 
 When state $s'$ is derived from $s$, a match valid in $s$ remains valid in $s'$ unless it used an edge the rewrite removed. The engine forwards such matches from parent to child rather than rediscovering them:
@@ -719,6 +744,14 @@ another is suppressed entirely, and the two controls compose rather than one ove
 A seed makes a sampled run reproducible; sampling decisions are keyed on canonical identity, so the
 same seed yields the same sample at any thread count, consistent with
 Section~\ref{sec:determinism}.
+
+\paragraph{Choosing the rate.}
+A fixed retention probability applied at every depth is not a neutral choice, because the expected
+number of surviving children per state compounds with depth. On the workloads measured, retention
+of $1/8$ and $1/4$ extinguish the frontier within the first step, while $1/2$ leaves the population
+growing; the useful range between extinction and no thinning is narrow and depends on the rule's
+branching. The rate is therefore permitted to vary with depth, so that a sample can be thinned
+without the frontier dying before it reaches the depth of interest.
 
 \paragraph{Sampling and synchronisation.}
 Sampling interacts with parallelism in a way that is easy to miss. A sample cannot be acted on
