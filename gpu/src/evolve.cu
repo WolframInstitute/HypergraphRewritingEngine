@@ -592,8 +592,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
 // Log the EngineConfig that worked (after grow-and-retry) so the user can
 // pre-size on subsequent calls. Only the fields that were grown beyond
 // their initial value are printed — keeps the message focused. Format is
-// stable so callers can grep it; M9 (auto-tune cache) will eventually
-// persist this same set of values to disk.
+// stable so callers can grep it.
 static void log_winning_config(const EngineConfig& initial,
                                const EngineConfig& winning) {
 #define LOG_FIELD(field) \

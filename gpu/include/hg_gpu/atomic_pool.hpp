@@ -16,9 +16,9 @@ namespace gpu {
 // Host-managed pre-allocated device array plus a device atomic counter for
 // claiming indices. Append-only during a kernel run; reset between runs.
 //
-// claim() returns kInvalid when the pool is exhausted; callers are expected to
-// have sized the pool via the auto-tuner so this only fires under genuine
-// overflow that should abort the evolution.
+// claim() returns kInvalid when the pool is exhausted. The host sizes the pool from
+// EngineConfig before launch, so this fires when the workload outgrew that estimate;
+// the device records the overflow and the host retries at a larger size.
 //
 // The counter is bumped BEFORE exhaustion is reported, so under overflow it keeps rising past
 // capacity and is NOT a count of valid entries. Ask size() for that; reading the counter raw is

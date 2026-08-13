@@ -223,8 +223,8 @@ struct EvolveResult {
     }
 };
 
-// Sizing knobs. The auto-tuner (M9) will pick these per device + workload;
-// for now, sensible defaults that handle the M1.7 differential corpus.
+// Sizing knobs, chosen by config_from_input from the workload and adjusted by the
+// host's grow-and-retry when a run overflows. Defaults handle the differential corpus.
 // All POD so this header stays host-includable without CUDA dependencies.
 struct EngineConfig {
     uint32_t max_edges            = 1u << 16;   // 65K edge slots
@@ -350,8 +350,8 @@ struct SessionView;
 // Build a sensible EngineConfig for a given workload. Used by the
 // one-shot evolve() and exposed publicly so callers building their own
 // Engine can size it consistently. Conservative: oversizes to handle
-// pre-dedup state-blow-up for the worst step. Auto-tuner (M9) will
-// replace this heuristic with cached per-device best-fit values.
+// pre-dedup state-blow-up for the worst step. A workload that outgrows the
+// estimate is answered by grow-and-retry, which logs the config that worked.
 EngineConfig config_from_input(const EvolveInput& input);
 
 // Conservative estimate of the device memory an engine built from `cfg` will

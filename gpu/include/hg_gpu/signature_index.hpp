@@ -15,8 +15,8 @@ namespace gpu {
 // target signature hash — this keeps the index compact at the cost of a
 // tiny per-candidate check for bucket collisions.
 //
-// Bucket count is a power of two so the modulus is a mask. Sized by the
-// auto-tuner; a good default is ≥ 2× expected distinct signatures. Under
+// Bucket count is a power of two so the modulus is a mask. Sized from EngineConfig;
+// a good value is ≥ 2× the expected distinct signatures. Under
 // reasonable distribution, false bucket collisions are rare and the filter
 // is cheap.
 class SignatureIndex {

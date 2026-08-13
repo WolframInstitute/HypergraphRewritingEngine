@@ -23,7 +23,8 @@ namespace gpu {
 //           later inserters with the same key see the published key on retry
 //           and return the existing value.
 //
-// Capacity is fixed at construction; auto-tuner sizes it. No resize.
+// Capacity is fixed at construction and there is no resize: the host sizes it from
+// EngineConfig, and a run that exhausts it is retried by the host at a larger size.
 //
 // Template parameters K and V should be trivially copyable. EMPTY and LOCKED
 // must be values that valid keys never take (e.g. hash 0 and hash ~0 are
