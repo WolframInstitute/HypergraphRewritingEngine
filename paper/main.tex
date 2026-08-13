@@ -194,6 +194,8 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organisation of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 
+\textbf{Dynamic graph algorithms:} The causal graph's transitive reduction is maintained as edges arrive rather than recomputed, which places it in the dynamic graph-algorithms setting; the fully dynamic version of transitive reduction admits amortised $\BigO(m)$ update~\cite{goranci2025dynamic}. Our setting admits only insertions, and those in topological order, so it is a restriction of that problem rather than an instance of it (Section~\ref{sec:tr}).
+
 \textbf{Term rewriting:} The theory of term rewriting~\cite{baader1998term} treats confluence and termination for tree-structured terms, and high-performance implementations~\cite{van2019fastest} optimise similar pattern-matching operations. Hypergraph rewriting differs in that the objects are graph-structured, so matching is subgraph matching rather than tree matching, and states must be compared up to isomorphism rather than syntactic equality.
 
 % ----------------------------------------------------------------------------
@@ -561,6 +563,15 @@ The causal graph accumulates an edge for each dependency between events, includi
 by longer paths. The transitive reduction removes an edge $p \to c$ whenever a directed path
 $p \rightsquigarrow c$ of length greater than one already exists; on an acyclic graph this
 reduction is unique.
+
+Maintaining a transitive reduction under edge insertion is an instance of the dynamic
+transitive-reduction problem. The fully dynamic case, admitting arbitrary insertions and
+deletions, has been studied and permits amortised $\BigO(m)$ update~\cite{goranci2025dynamic}. The
+setting here is strictly easier in two respects: causal edges are only ever inserted, never
+deleted, and they arrive in an order consistent with a topological order of the causal DAG, since
+an event's producers are complete before the event exists. We therefore make no claim of novelty
+for the procedure below, and no claim of optimality; it is the specialisation the easier setting
+permits, and a fully dynamic reduction would be required if deletions were admitted.
 
 It is computed online rather than as a pass over the completed graph: each new causal edge is
 reduced against the edges already retained. A consumer's incoming edges are processed in
