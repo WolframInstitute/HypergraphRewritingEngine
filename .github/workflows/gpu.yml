@@ -9,8 +9,9 @@ name: GPU
 # you attach a self-hosted runner on a CUDA machine (opt-in) or a paid GPU runner.
 
 on:
-  workflow_dispatch:        # manual until validated on a real Actions run, then add push/pr
+  workflow_dispatch:
   pull_request:
+  push:                     # the build-only leg is free and catches CUDA build-rot on master
 
 jobs:
   gpu-compile:                        # free: build-only, no GPU
