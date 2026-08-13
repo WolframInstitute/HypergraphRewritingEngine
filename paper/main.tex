@@ -639,7 +639,11 @@ recorded value is an upper bound and is used only as one.
 Every predicate is sound in one direction only, and each is stated with its direction. The
 branching test over-approximates: a negative result means branching is structurally impossible,
 while a positive result means only that it has not been ruled out. An adaptation may act on the
-negative and must not act on the positive. Nothing here concerns termination, finiteness of the
+negative and must not act on the positive. The engine does exactly that with the
+branchial relation: if no two matches can share a consumed edge then no state has a branchial pair
+under any initial condition, so the relation is provably empty and is not built. The request is not
+overridden by this---what the caller asked for is the empty relation and the empty relation is what
+it receives; only the work of discovering it is removed. Nothing here concerns termination, finiteness of the
 reachable set, or global confluence, all of which are undecidable for a rewriting system of this
 power.
 
