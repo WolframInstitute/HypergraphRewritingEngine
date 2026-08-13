@@ -954,6 +954,20 @@ derived structures, and closed. The unexplored frontier is retained between step
 session continues the existing exploration instead of recomputing it from the initial state, and a
 caller may inspect intermediate results before deciding how much further to evolve.
 
+The frontier is a separate structure from the identity map, and it has to be: one bit cannot answer
+both questions a continuation asks. The deduplication map records that a state has been seen, and a
+worker reads that same answer as meaning the state has been expanded. Carrying only the map across
+calls therefore fails in one of two directions depending on who owns it, and both were measured on
+the same workload---a two-edge to three-edge rule advanced to depth two and then to depth three,
+against seven states and six events for a single run to depth three. Rebuilding the maps per call
+gave ten states and nine events: nothing was recognised, so the second call re-derived as new every
+state it already had. Giving the caller ownership of the maps gave five states and four events:
+everything was recognised, so nothing was re-expanded and the new depth was never reached. A
+session therefore carries both the maps and a frontier---the states whose expansion was refused by
+the step budget rather than by deduplication---which is the distinction the two failures are
+between. The device implements the same separation as the host, since a continuation that behaved
+differently on the two targets would not be the same session.
+
 \subsection{Event Canonicalization}
 \label{sec:event-canon}
 
