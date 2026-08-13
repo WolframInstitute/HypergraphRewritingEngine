@@ -97,7 +97,7 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     if (g.quotient_reconstruction()) {
         g.for_each_reconstructed_causal_as(
             /*reduced=*/true,
-            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint32_t ev) { return g.reconstructed_raw_triple(ev); },
             [&](uint64_t p, uint64_t c) { ce.push_back(fnv(fnv(0, p), c)); });
     } else {
         auto canon = [&](StateId s) -> uint64_t {
@@ -117,7 +117,7 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     std::vector<uint64_t> be;
     if (g.quotient_reconstruction()) {
         g.for_each_reconstructed_branchial_as(
-            [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
+            [&](uint32_t ev) { return g.reconstructed_raw_triple(ev); },
             [&](uint64_t a, uint64_t b) {
                 be.push_back(a < b ? fnv(fnv(0, a), b) : fnv(fnv(0, b), a));
             });
