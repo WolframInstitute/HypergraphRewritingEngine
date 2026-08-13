@@ -632,7 +632,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
 // hash is isomorphism-invariant but COARSER than IR, so outside Full mode more states share a
 // representative, the edge correspondence resolves to a coarser one, and the event identity
 // derived from it coarsens with it -- measured on the binary-growth corpus case as 8 events
-// under Full against 6 under Automatic, with the finer state identity producing FEWER events.
+// under Full against 6 under Automatic, so the count moved with the state mode.
 //
 // So when event canonicalization is on, the reported hash is the exact invariant in every
 // state mode. It is only paid for when it is asked for; with event canonicalization off this
