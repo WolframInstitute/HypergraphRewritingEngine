@@ -41,8 +41,9 @@ enum class ErrorType {
 // Each worker owns a Chase-Lev deque: it pushes/pops its own bottom (so nested jobs
 // submitted from a running job stay node-local and lock-free), and idle workers steal
 // the top of others' deques. External submissions (from non-worker threads) and local
-// overflow go to a shared lock-free injector. Idle workers park on a condition variable
-// (the only lock, off the hot path); all queue operations are lock-free. The design is
+// overflow go to a shared lock-free injector. Idle workers park on a 32-bit sequence
+// counter through std::atomic::wait, so the system holds no mutex and no condition
+// variable anywhere; all queue operations are lock-free. The design is
 // architecture-neutral (single-word atomics, no double-width CAS, no arch-specific code).
 template<typename JobType>
 class JobSystem {
@@ -90,15 +91,16 @@ private:
     std::atomic<uint32_t> quiescence_seq_{0};
     static_assert(sizeof(uint32_t) == 4, "the park backends compare a 32-bit word");
 
-    // Idle workers block on this counter rather than on a condition variable. It is
-    // incremented by every enqueue and by anything that should end a park (an error, a
-    // shutdown), so a parked worker is woken by ANY new work, wherever it landed.
+    // Idle workers block on this counter. It is incremented by every enqueue and by anything
+    // that should end a park (an error, a shutdown), so a parked worker is woken by ANY new
+    // work, wherever it landed.
     //
-    // That last part is why a sequence counter and not a predicate: the old park slept on a
-    // condition that asked whether the shared injector was non-empty, which is blind to a job
-    // pushed onto a worker's own deque -- work a parked thread could have stolen. A 200us
-    // timeout covered the gap by re-checking. A counter has no gap to cover, so the wait needs
-    // no timeout and does no polling.
+    // That last part is why the wait is on a sequence counter and not on a predicate over the
+    // queues. A predicate can only name places it knows to look, and a job pushed onto a
+    // worker's own deque -- which a parked thread could have stolen -- is not the injector
+    // being non-empty. Any predicate narrower than "something happened" leaves a gap that only
+    // a timed re-check can cover. A counter is that predicate exactly, so the wait needs no
+    // timeout and does no polling.
     //
     // std::atomic::wait blocks only while the value still equals the one the caller sampled,
     // so a submit racing with a park cannot be lost: the counter has already moved and the
@@ -184,8 +186,8 @@ private:
     // Exhaustive version, used only immediately before parking. find_work picks victims at
     // RANDOM with a bounded number of attempts, so it can come back empty while a deque still
     // holds work -- fine when the caller loops, but not as the basis for going to sleep. The
-    // old park hid this behind a 200us timeout that woke and retried; with the timeout gone,
-    // a worker must establish that there is genuinely nothing before it waits.
+    // park has no timeout to wake it for a retry, so a worker must establish that there is
+    // genuinely nothing anywhere before it waits.
     JobRaw find_work_exhaustive(WorkerData* data) {
         if (JobRaw j = data->deque.pop()) return j;
         for (auto& w : workers_) {
