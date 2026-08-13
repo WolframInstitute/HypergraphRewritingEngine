@@ -576,7 +576,8 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 
 \item[Work-stealing deque:] A bounded Chase--Lev deque~\cite{chase2005dynamic}. Each worker owns
 one, pushing and popping at its own end without a contended atomic in the common case, and stealing
-from the opposite end of another worker's deque when idle. Following HGMatch~\cite{yang2023hgmatch},
+from the opposite end of another worker's deque when idle. Its memory orderings follow
+L\^e et al.~\cite{le2013workstealing}. Following HGMatch~\cite{yang2023hgmatch},
 evolution is expressed as a dataflow over such a scheduler: a scan task seeds a join, expansion
 tasks extend it, and completed matches are handed to rewriting, with work stealing providing load
 balance across a frontier whose width is not known in advance.
@@ -1068,6 +1069,84 @@ Section~\ref{sec:capacity}.
 % ----------------------------------------------------------------------------
 % BENCHMARKS
 % ----------------------------------------------------------------------------
+
+\section{Verification of the Concurrent Surface}
+\label{sec:verification}
+
+The engine holds no lock, so every property that a lock would have enforced is instead a
+consequence of an ordering argument. Arguments of that kind are checked poorly by testing. The
+engine's own determinism gate ran 150 times without exhibiting a defect that was known to be
+present at the time, across 90 recorded runs plus 40 and then 20 more under load: a stress test
+samples interleavings, and sampling can only ever fail to reproduce. Two verification layers are
+therefore maintained alongside the test suite, and they are bounded in different directions.
+
+\paragraph{Bounded programs, all executions.}
+The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
+bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
+it is given---that thread count, that operation count, those inputs---it explores every
+interleaving and every reads-from choice the model permits, so a clean run is a statement about all
+executions within the bound rather than about the ones that happened to be scheduled.
+
+Each harness is a small program that includes the engine's own header and calls its own functions,
+rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
+from the code as soon as the code changes, and a re-implementation establishes a property of the
+re-implementation. A harness that includes the header stops compiling when the header changes
+shape, which couples it to the code it is about. Two harnesses cannot meet the constraint, because
+the protocols they check live inside functions the interpreter cannot take, and both say so in
+place: their transcriptions are copied verbatim and run over the real underlying structure.
+
+The properties checked are the ones whose failure would be silent. For the concurrent map: that
+get-or-create admits exactly one winner and returns that winner to every caller, so a
+\emph{was\_inserted} result means what its callers assume; that this survives a table resize
+running concurrently with the inserts that triggered it; that it survives two successive growths;
+and that the flag comes from the publishing exchange rather than from a value comparison, so
+repeated offers of the same value for the same key do not each report success. For the deque: that
+the owner popping the back and a thief popping the front never extract the same item, checked at
+the single configuration where the two ends address the same slot. For the match rendezvous: that
+a match is claimed exactly once and never dropped on a collision. For the scheduler: that a worker
+which parks is always woken, which is a liveness property and is checked as one---removing either
+of the two sequentially consistent fences in the submit/park protocol makes the checker report a
+non-terminating spin loop.
+
+\paragraph{Unbounded worker count, a transcribed model.}
+The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
+forwarding protocol, which is the property whose silent failure is most costly: a lost match
+removes the entire subtree below it while leaving the run internally consistent. Every in-flight
+protocol step is held in a bag from which any enabled step may fire, so the interleavings subsume
+every worker count rather than a bound on it; what is bounded instead is the state count. The
+trade is stated where the specification is: this layer is a transcription, so a change to the code
+does not change the model, and each specification header names the code it transcribes.
+
+The specification is checked in four configurations, differing in whether the claim winner owns
+both the store and the propagation and whether submission is batched
+(Table~\ref{tab:tla}). The shipped configuration is forwarding-complete at the model bound. The
+configuration without the ownership invariant and without batching violates the property, and its
+counterexample is the recorded shape of the defect the invariant was introduced for: on a chain
+$s_0 \to s_1 \to s_2$, a match discovered at the root after $s_2$'s pull has run, with $s_1$'s pull
+winning the claim and storing without propagating, and the root's push then finding the claim taken
+and skipping its recursion, leaving $s_2$ quiescent with a match that is valid for it and not
+stored. That the model reaches the failure it exists to exclude is the calibration of the model.
+The remaining configuration shows that batching alone masks the broken pull at this bound, which is
+why the ownership invariant is not treated as redundant with it.
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{Forwarding completeness under TLA+.} Four configurations of the same
+specification, exhaustive at the model bound of four states, three matches and three edges, with a
+mid-chain discovery enabling a grandchild. \emph{Ownership} is the claim winner owning both the
+store and the propagation; \emph{batched} is per-state submission after matching completes.}
+\label{tab:tla}
+\begin{tabular}{llcr}
+\toprule
+Ownership & Batched & Verdict & Distinct states \\
+\midrule
+yes & yes & complete       & 117{,}005 \\
+no  & yes & complete       & 85{,}777 \\
+yes & no  & complete       & 479{,}005 \\
+no  & no  & \textbf{violated} & trace depth 13 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Experimental Evaluation}
 \label{sec:benchmarks}
