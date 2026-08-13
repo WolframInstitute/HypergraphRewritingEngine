@@ -807,6 +807,37 @@ growing; the useful range between extinction and no thinning is narrow and depen
 branching. The rate is therefore permitted to vary with depth, so that a sample can be thinned
 without the frontier dying before it reaches the depth of interest.
 
+\paragraph{Coverage is limited by reachability, not by survival.}
+A per-transition coin does not recover the exhaustive system as seeds are accumulated, and the
+reason is structural rather than a matter of the rate. A transition can only be sampled if its
+source state was created, and its source state was created only if some earlier coin fired, so
+what a run misses is not a scattering of individual transitions but every subtree below a
+transition that was dropped. Two attempts to improve coverage by adding independent randomness---an
+extra coin per arrival depth, and an extra coin per arriving ancestor class---left the
+union-over-seeds recovery curve unchanged when measured, which is the signature of a limit on
+reachability rather than on per-transition survival.
+
+The control that does move that curve keeps a connected skeleton. A cap of $k$ transitions per
+(state, rule) pair retains at most $k$ of a state's own transitions for each rule, selecting them
+by a deterministic pseudorandom rank of the canonical transition key mixed with the run's seed.
+Every state that is reached therefore keeps at least one outgoing transition, so the sample is a
+spanning substructure rather than a thinned scattering, and a different seed keeps a different
+skeleton---so the union over seeds grows in reachability, which is the quantity that was limiting.
+
+The selection is made when the state's matching completes rather than as matches arrive, because
+choosing $k$ of $M$ requires all $M$, and $M$ is known only at that point. Selecting by arrival
+order would instead make the retained set depend on the schedule. For the same reason the cap
+ranges over a state's own matches only and not over matches forwarded to it from an ancestor: a
+forwarded match races the completion, so a cap that counted them would retain a different set at a
+different worker count. Forwarded matches are instead thinned individually, on the same terms as
+discovered ones, at the point they arrive---without which the sampled subgraph would depend on
+whether forwarding was enabled.
+
+Finally, the per-state and per-transition retention controls are one knob under full capture and
+two only under quotient exploration. Under full capture raw states stand in bijection with the
+events that create them, so one coin per new state and one coin per transition are the same coin;
+under quotient exploration a canonical state has many incoming transitions and the two separate.
+
 \paragraph{Sampling and synchronisation.}
 Sampling interacts with parallelism in a way that is easy to miss. A sample cannot be acted on
 before its population is complete: a rewrite cannot be undone, so a match that has been applied
