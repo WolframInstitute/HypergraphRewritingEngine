@@ -585,6 +585,19 @@ balance across a frontier whose width is not known in advance.
 \item[Job pool:] Tasks are drawn from a per-thread slab rather than allocated, so submitting a task
 performs no call to the global allocator. This is what makes the allocation figures of
 Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
+Allocation and same-thread release touch only the owning thread's private free list, with no
+atomic and no contention. Work stealing means a task allocated on one thread is often released on
+another, so a foreign release is pushed onto the owner's separate foreign list by
+compare-and-swap, and the owner reclaims the whole accumulated batch with one exchange when its
+private list empties. That shape is free of the ABA problem by construction rather than by a tag:
+producers only ever prepend, and the single consumer takes the entire list at once, so there is no
+node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
+its owning pool, which is what lets a release on any thread route home; an object too large for a
+slot falls back to the general allocator, so correctness does not depend on the slot size being
+estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
+slots when a thread exits---an array rather than a stack of free pools, because a pool that is
+claimed, used and released again is exactly the reuse a stack's head compare-and-swap cannot
+distinguish, while an array slot has no pointer to compare.
 \end{description}
 
 \paragraph{The shared injector, and what bounds its ABA defence.}
