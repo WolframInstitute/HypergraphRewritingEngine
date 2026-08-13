@@ -639,6 +639,50 @@ observable defined above is stated over canonical identities and is invariant. T
 checked by a determinism gate that compares the expanded state set and the (input, output, rule)
 transition multiset across thread counts and seeds.
 
+\subsection{Depth as a Shortest Path, and Termination}
+\label{sec:depth}
+
+A run is bounded by a number of steps, and the bound is applied to the \emph{shortest} path length
+from an initial state to a canonical state rather than to the length of the path along which the
+state first happened to be reached. The distinction has no content sequentially, where the search
+reaches states in order of increasing depth. It has content under concurrency: a state can be
+reached first along a long path and only later along a short one, so a budget applied to arrival
+depth would admit or exclude states according to which path won a race, and the set of states
+expanded would vary with the thread count.
+
+The engine therefore \emph{relaxes}. When a state is reached along a path shorter than its
+recorded depth, the recorded depth is lowered and the reduction is propagated into the state's
+children, which may in turn be lowered, and so on. The cascade terminates because depth strictly
+decreases on each accepted relaxation and is bounded below by zero. Matching is not repeated by
+it: the claim that admits a canonical state to expansion is a separate value from its depth, so a
+state whose depth falls is matched at most once regardless of how many times it is relaxed.
+
+Relaxation and child registration race, and the race is settled by ordering rather than by
+exclusion. Registering a child publishes it into its parent's child list and then reads the
+parent's depth; relaxing a parent lowers the parent's depth and then scans the parent's child
+list. Sequentially consistent fences on both sides exclude the one outcome that would strand a
+child at a stale depth---the scan missing the child \emph{and} the read missing the lowered
+depth---so a child always learns its parent's true current minimum, whichever side of the race it
+is on. A state that lies past the budget is retained as a frontier state for a continuation to
+resume from rather than discarded, and its expansion claim is deliberately left untaken, because a
+shorter path found later in the same run must still be able to relax it into budget, and a state
+that has already been claimed never would.
+
+Budget consumption is claimed by compare-and-swap rather than by an unconditional increment
+followed by a rollback on overshoot. The two differ in what other threads observe: a rollback
+publishes a count above the limit for as long as it takes to undo, and the readers that prune
+work against the budget read exactly that count, so $N$ concurrent claimants would make each
+other's in-budget work appear out of budget and which work was pruned would depend on the
+interleaving. A compare-and-swap claim never publishes a count above the limit, so the budget
+prunes the same work under every schedule.
+
+Termination is detected without a barrier. A depth is settled when it holds no live work and the
+depth below it has already settled; settling one depth cascades to the depth above, which may have
+been waiting only on it. The argument that these two conditions suffice is that a task at depth
+$d$ submits work only at depths greater than $d$, so once $d-1$ is settled nothing can place work
+at $d$ again. No thread waits on any other, and the check is a test of two values rather than a
+rendezvous.
+
 \subsection{Quotient Exploration}
 \label{sec:quotient}
 
