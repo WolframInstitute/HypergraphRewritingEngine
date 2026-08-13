@@ -926,6 +926,18 @@ The engine therefore resolves event representatives through the exact invariant 
 % GPU
 % ----------------------------------------------------------------------------
 
+\paragraph{Configuration dependencies are reported, not absorbed.}
+The canonical-class event identity and quotient exploration are both defined over canonical states
+and their edge orbits, and those orbit tables are produced only by the exact state-canonicalization
+mode. A run that asks for the first while selecting a weaker state mode is therefore asking for
+something the configuration does not supply. The engine neither raises the state mode behind the
+caller's back nor proceeds as though the request had been met: it builds the causal graph by the
+raw-edge rendezvous, which is well defined without orbits, and returns a warning naming the
+dependency and the setting that satisfies it. The general form of the rule is that a request the
+configuration cannot support produces a stated substitution rather than a silent one, on the
+grounds that a result quietly computed under a different definition than the one requested is
+indistinguishable from the requested one at the call site.
+
 \section{GPU Acceleration}
 \label{sec:gpu}
 
