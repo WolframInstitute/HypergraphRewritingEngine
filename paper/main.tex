@@ -812,6 +812,10 @@ Events can be canonicalized at multiple granularities:
 
 The choice affects both correctness (for certain analyses) and performance. ByStateAndEdges mode requires computing edge correspondences between isomorphic states, using the canonical state's vertex hash ordering.
 
+\paragraph{Event identity does not inherit the state-identity mode.} Event identity is defined over isomorphism classes of states, and the specification makes it independent of which state-identity mode a run selects. Resolving it through whichever hash the state mode happens to use would break that independence. The Weisfeiler--Leman hash is isomorphism-invariant but strictly coarser than the exact form, so outside the exact state mode more states share a representative, the edge correspondence between an event's endpoints resolves to a coarser one, and the event identity derived from it coarsens with it. The consequence is measurable rather than theoretical: on the binary-growth corpus case the same run reports eight events under the exact state mode and six under the approximate one, a difference produced entirely by the state mode leaking into a quantity that is not supposed to depend on it.
+
+The engine therefore resolves event representatives through the exact invariant in \emph{every} state mode whenever event canonicalization is enabled, independently of the hash the state mode uses for state identity. The two are separate values: one decides state identity, the other resolves event representatives. The exact hash is computed only when event canonicalization asks for it, so a run with event canonicalization disabled pays nothing for this and behaves exactly as its state mode dictates. When it is enabled, the same individualization--refinement pass yields both the exact hash the event path resolves through and the per-edge ranks that identify consumed and produced edges, so the guarantee costs one pass per state rather than two per event.
+
 % ----------------------------------------------------------------------------
 % GPU
 % ----------------------------------------------------------------------------
