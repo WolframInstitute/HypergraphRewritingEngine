@@ -1146,8 +1146,21 @@ absence of reported errors.
 Device memory is reserved before the kernel launches, since a resident kernel cannot call the host
 allocator. Edge and state pools are pre-allocated with atomic counters, and scratch whose size is
 known only once a state's dimensions are seen---the canonicalizer's working arrays, principally---is
-carved from a device-owned bump arena. Warp-level cooperation uses the cooperative-groups
-primitives rather than hand-written shuffles. Where a pre-sized region proves too small for a
+carved from a device-owned bump arena.
+
+The arena's size is determined by the grid rather than by the workload. A persistent kernel's
+blocks do not retire and get replaced---they live for the whole evolution---so the grid is the
+worker count, and each resident worker holds its own arena slot at a time. Arena demand therefore
+scales with the grid, and sizing it from the state budget alone starves it as soon as the grid
+grows. The arena is one shared bump pool rather than a partition per worker, because a worker keeps
+one slot and grows it to the largest state it personally canonicalizes: what has to be provided is
+the average share across workers, not a per-worker maximum. The default grid is eight blocks per
+streaming multiprocessor. There is no free operation: a worker finishes with its scratch before
+taking its next item, so a slot is reused and re-claimed only when a larger one is needed, which
+with doubling wastes at most one slot per block, bounded by that block's peak. The whole arena is
+reset at the end of the run.
+
+Where a pre-sized region proves too small for a
 state, the overflow is reported through a device-side error channel and the work is retried with a
 larger reservation, which is the mechanism behind the capacity behaviour of
 Section~\ref{sec:capacity}.
