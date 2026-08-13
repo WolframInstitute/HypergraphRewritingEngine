@@ -480,6 +480,33 @@ Forwarded matches are accumulated per parent and delivered to the child together
 % ARCHITECTURE
 % ----------------------------------------------------------------------------
 
+\subsection{Delta Matching}
+\label{sec:delta}
+
+Forwarding supplies a child with the matches it inherits unchanged from its parent. Its complement
+is forced: a match present in the child but not in the parent must use at least one produced edge,
+because a match built entirely from edges that survived the rewrite was already a match in the
+parent. The child's own scan is therefore restricted to matches anchored on a produced edge, which
+is a small set---one rewrite produces the right-hand side's edges, independently of how large the
+state is.
+
+The two mechanisms partition the child's matches rather than overlapping: every match either
+touches a produced edge or does not, forwarding covers the second class and the delta scan the
+first. What does overlap is the delta scan with itself. A match touching $k$ produced edges is
+discovered $k$ times, once with each of them as the anchor, so the results are deduplicated on
+content rather than on the anchor that found them; duplicates here are routine rather than
+exceptional, which is why the deduplicating lookup precedes the allocation of a match record
+rather than following it.
+
+Because the partition is an argument rather than a measurement, the engine carries a validation
+mode that checks it. With the mode enabled, every state's matches are additionally computed by an
+unrestricted scan and compared against the union of what forwarding and the delta scan supplied,
+and a missing match is attributed to the obligation that owed it: to forwarding if it uses only
+surviving edges, to the delta scan if it touches a produced edge. The two have different causes
+and different repairs, so the attribution is recorded separately rather than as a single mismatch
+count. The validator also counts its own executions, since a mismatch count of zero is evidence
+only when the number of comparisons performed is not.
+
 \section{System Architecture}
 \label{sec:architecture}
 
