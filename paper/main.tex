@@ -634,6 +634,16 @@ by the thread that supplies the work. No mutex or condition variable is used on 
 platforms: the engine's object files reference none, and the only such construction in the tree is
 a fallback compiled solely for a platform providing none of the three primitives.
 
+\paragraph{One code path for a machine with no threads.}
+The scheduler also runs with no worker threads at all. In that mode none are spawned: submission
+routes every job to the injector and the wait call drains it inline, in first-in-first-out order,
+on the thread that called it. Jobs submitted by a running job land behind it and execute in
+submission order, so a run in this mode is deterministic by construction rather than by the
+argument of Section~\ref{sec:determinism}. This is the single-threaded execution mode, and it is
+also the WebAssembly target, where spawning threads is not available. Nothing above the scheduler
+distinguishes the two: the engine is compiled once and the work the workers would have done
+happens on the thread that waits.
+
 \subsection{Allocation}
 \label{sec:allocation}
 
