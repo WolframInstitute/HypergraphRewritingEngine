@@ -59,7 +59,6 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         tests/test_ring_buffer.cu
         tests/test_lock_free_list.cu
         tests/test_termination.cu
-        tests/test_warp_ops.cu
         tests/test_edge_signature.cu
         tests/test_quotient_expansion.cu
         tests/test_indices.cu

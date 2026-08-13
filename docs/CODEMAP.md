@@ -157,7 +157,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`device_arena.hpp`** -- `DeviceArena` (bump allocator the device claims from; scratch whose size is only known once the work is in hand)
 - **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
 - **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
-- **`warp_ops.hpp`** -- `VWarp<N>` (cooperative-groups tile ops: ballot/reduce/scan/compact/sorted-intersect)
 - **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord` (carries its `step` and a `published` flag); device `match_state_rule`/`publish_match`/`await_match`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
 - **`rewrite.hpp`** -- device `apply_one_match` (returns the state it created); host `run_rewrite_kernel[_with][_nosync]`
 - **`exploration.hpp`** -- `DedupMap` + device `state_survives_dedup` (which new states get expanded; one predicate for both schedulers)
@@ -236,7 +235,6 @@ Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown
 
 - **`testing/`** -- `main.cpp` (gtest entry), `test_helpers.hpp`, `CMakeLists.txt` (fetches GoogleTest, builds `all_tests` + subset targets `core_tests`/`evolution_tests`/`causal_tests`/`stress_tests`/`integration_tests`).
 - **`hypergraph/tests/*.cpp`** -- CPU suites: `test_concurrent_map`, `test_quotient_completeness`, `test_causal_tr_exactness`, `test_ir_canonicalization`, `test_pattern_matching`, `test_parallel_evolution`, `test_multiple_initial_states`, `test_evolution_limits`, `test_sampling_reproducibility`, `test_causal_branchial`, `test_event_canonicalization`, `test_determinism_fuzzing`, `test_blackhole_idempotent`, `test_grid_performance`, `test_repeated_invocation`, `test_reference_oracle`.
-- **`gpu/tests/*.cu`** -- GPU units (`test_atomic_pool`, `test_lock_free_list`, `test_ring_buffer`, `test_hash_table`, `test_indices`, `test_edge_signature`, `test_warp_ops`, `test_engine_state`, `test_match`, `test_rewrite`, `test_ir_canon`, `test_termination`, `test_exploration_probability`, `test_smoke`) + harnesses `bench_cpu_vs_gpu.cpp`, `test_gpu_vs_cpu_differential.cpp`.
 
 ## `benchmarks/` + `benchmarking/`
 
