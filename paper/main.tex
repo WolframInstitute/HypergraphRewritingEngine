@@ -419,7 +419,7 @@ Pattern matching proceeds through a task-based system:
 \label{alg:matching}
 \begin{algorithmic}[1]
 \Procedure{FindMatches}{$L$, $\hypergraph$}
-    \State Order pattern edges $e_1, \ldots, e_k$ by selectivity
+    \State $e_1, \ldots, e_k \gets \textsc{MatchOrder}(L)$ \Comment{connected: no step is a product}
     \State Enqueue $\textsc{ScanTask}(e_1, \emptyset)$
     \While{task queue non-empty}
         \State $\tau \gets \textsc{Dequeue}()$
@@ -434,6 +434,16 @@ Pattern matching proceeds through a task-based system:
 \EndProcedure
 \end{algorithmic}
 \end{algorithm}
+
+The order $e_1, \ldots, e_k$ is fixed per rule when the rule is added, and it is required to be
+connected---every edge after the first shares a variable with one already bound---so no step of the
+join is a cartesian product. Two host paths execute that order: a synchronous depth-first join,
+which runs an entire search inside one task and spawns a job only for a completed match, and the
+task-spawning form above, which spawns a task per candidate and is what exposes the search itself
+to work stealing. They are not two joins. The recursion, the edge-injectivity check, the binding
+and unwind, and the rule choosing which pattern position is bound next are one shared body, which
+is also the body the device runs; the two paths differ in who executes the resulting steps and
+when.
 
 \subsection{Position Against the Worst-Case-Optimal Bound}
 \label{sec:agm}
