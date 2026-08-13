@@ -137,6 +137,10 @@ This paper presents a high-performance implementation addressing these challenge
     \item \textbf{GPU acceleration:} A GPU evolution backend offloads pattern matching and canonicalization for suitable workloads.
 
     \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always IR, computed on every state.
+
+    \item \textbf{Exploration strategies:} Quotient exploration (Section~\ref{sec:quotient}) expands one representative per isomorphism class while retaining the full event set; transition-level sampling with per-rule weights (Section~\ref{sec:sampling}) admits runs at depths where exhaustive expansion is not available; and the causal graph's transitive reduction (Section~\ref{sec:tr}) is maintained online rather than as a pass over the finished graph.
+
+    \item \textbf{A determinism contract:} The state set, event set and causal and branchial relations are a function of the inputs alone, independent of thread count and scheduling order (Section~\ref{sec:determinism}).
 \end{enumerate}
 
 The remainder of this paper is organized as follows. Section~\ref{sec:background} reviews hypergraph rewriting and the Wolfram Physics framework. Section~\ref{sec:canonicalization} presents our canonicalization algorithms. Section~\ref{sec:pattern-matching} describes the pattern matching system. Section~\ref{sec:architecture} details the system architecture. Section~\ref{sec:gpu} covers GPU acceleration. Section~\ref{sec:benchmarks} presents experimental results. Section~\ref{sec:conclusion} concludes with future directions.
@@ -430,6 +434,16 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 \item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
 \end{description}
 
+\subsection{Allocation}
+\label{sec:allocation}
+
+Evolution allocates from per-worker arenas rather than from the global allocator. Each worker
+holds a bump cursor into blocks it owns, so allocation on the matching and rewriting paths is a
+pointer increment with no synchronisation, and memory is reclaimed in bulk by resetting the arena
+rather than by freeing individual objects. Calls to the global allocator are consequently confined
+to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $58$ to $227$ such calls for an
+entire run, which on the largest workload measured is $0.0033$ calls per event.
+
 \subsection{Memory Model}
 
 We employ careful memory ordering to ensure correctness:
@@ -446,6 +460,81 @@ StateId id = canonical_map_.lookup(hash);  // acquire load
 std::atomic_thread_fence(std::memory_order_acquire);
 State& s = states_[id];           // safe to read edge set
 \end{lstlisting}
+
+\subsection{Determinism Contract}
+\label{sec:determinism}
+
+The engine's observable output---the state set, the event set, and the causal and branchial
+relations---is a deterministic function of the rules, the initial state, the step count and the
+options. It does not depend on the number of worker threads, on the order in which the scheduler
+happens to execute tasks, or on whether quotient exploration is enabled. Identifiers assigned to
+states and events are allocated in arrival order and therefore do vary between runs; every
+observable defined above is stated over canonical identities and is invariant. This property is
+checked by a determinism gate that compares the expanded state set and the (input, output, rule)
+transition multiset across thread counts and seeds.
+
+\subsection{Quotient Exploration}
+\label{sec:quotient}
+
+Under full expansion, every raw state that is produced is itself expanded, so a state reachable
+along $k$ distinct histories is matched against $k$ times. Because the canonical hash already
+identifies these as one state, that work is redundant for the purpose of discovering new states.
+
+Quotient exploration retains the events but not the repeated expansion: a state found equivalent
+to one already seen is still created, and its incoming event is still recorded, so the event set
+and the causal and branchial relations are unchanged; what is suppressed is the spawning of match
+tasks from that state. Exploration therefore proceeds from one representative of each isomorphism
+class, at the shallowest depth at which the class was reached. Table~\ref{tab:t6-quotient} reports
+raw states expanded and wall time for the two modes at increasing depth.
+
+The two modes agree on the canonical state set by construction. They also agree on the causal and
+branchial relations, which is less immediate: the relations are defined over raw events, and
+quotient exploration produces the same events while expanding fewer states. Reconstructing the
+per-instance relations from the quotient run requires the edge orbits, which are obtained from the
+IR pass that computed the canonical hash (Section~\ref{sec:ir}), so no additional canonicalization
+is performed.
+
+\subsection{Transitive Reduction of the Causal Graph}
+\label{sec:tr}
+
+The causal graph accumulates an edge for each dependency between events, including those implied
+by longer paths. The transitive reduction removes an edge $p \to c$ whenever a directed path
+$p \rightsquigarrow c$ of length greater than one already exists; on an acyclic graph this
+reduction is unique.
+
+It is computed online rather than as a pass over the completed graph: each new causal edge is
+reduced against the edges already retained. A consumer's incoming edges are processed in
+descending producer-event order, so that the reachability closure from nearer producers is
+established before farther producers are tested against it. The reduced graph is required to be a
+function of the causal DAG alone and not of the order in which edges were inserted, which is the
+same schedule-independence property as Section~\ref{sec:determinism} and is checked by the same
+gate. The reduction applies only to the causal graph; states, events and the branchial relation
+are never reduced.
+
+\subsection{Sampled Exploration}
+\label{sec:sampling}
+
+Exhaustive evolution is not always the object of interest, and the state count grows too quickly
+for it to be available at large depth. The engine therefore admits sampling, applied at the
+transition rather than at the state: each candidate transition is retained with a fixed
+probability, so the number of children a state contributes remains a random variable rather than
+being truncated to a fixed count. Truncating to a fixed count per state would collapse the
+offspring distribution to a point mass and remove the property the sample exists to estimate.
+
+Per-rule weights multiply that retention probability, so a rule may be explored fully while
+another is suppressed entirely, and the two controls compose rather than one overriding the other.
+A seed makes a sampled run reproducible; sampling decisions are keyed on canonical identity, so the
+same seed yields the same sample at any thread count, consistent with
+Section~\ref{sec:determinism}.
+
+\subsection{Sessions}
+\label{sec:sessions}
+
+Evolution is also exposed as a session rather than only as a single call. A session is opened on a
+rule set and initial condition, advanced by a requested number of steps, queried for any of the
+derived structures, and closed. The unexplored frontier is retained between steps, so advancing a
+session continues the existing exploration instead of recomputing it from the initial state, and a
+caller may inspect intermediate results before deciding how much further to evolve.
 
 \subsection{Event Canonicalization}
 \label{sec:event-canon}
@@ -676,6 +765,7 @@ We have presented an implementation of multiway hypergraph evolution built on ex
     \item Lock-free concurrent data structures enabling efficient multi-threaded evolution
     \item A GPU evolution backend for pattern matching and canonicalization
     \item Independent, exact state and event equivalencing axes with configurable granularity
+    \item Quotient exploration, transition-level sampling, and an online transitive reduction of the causal graph, each preserving the observable contract of Section~\ref{sec:determinism}
 \end{enumerate}
 
 \subsection{Future Directions}
@@ -692,7 +782,9 @@ Several avenues remain for further optimization:
 
 \subsection{Availability}
 
-The implementation is available as:
+The engine is used both directly as a library and as the evolution backend for downstream tools,
+including interactive visualisation of evolution, causal and branchial graphs. The implementation
+is available as:
 \begin{itemize}
     \item Source code: \url{https://github.com/PLACEHOLDER/efficient-rewriting}
     \item Wolfram Language paclet: \url{https://resources.wolframcloud.com/PacletRepository/resources/PLACEHOLDER}
