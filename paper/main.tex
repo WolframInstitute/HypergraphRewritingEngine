@@ -90,7 +90,7 @@
 % ----------------------------------------------------------------------------
 
 \title{\textbf{Rewriting the Universe}\\[0.4em]
-{\normalsize\normalfont An Exact, Lock-Free Engine for Multiway Hypergraph Evolution}}
+{\normalsize\normalfont High-Performance Hypergraph Evolution for the Wolfram Physics Project}}
 
 \author{
     Richard Assar\\
@@ -160,7 +160,7 @@ A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a se
 A rewriting rule $\rewriterule = (L, R)$ consists of a left-hand side pattern $L$ and right-hand side replacement $R$, both hypergraphs. A \emph{match} of $L$ in $\hypergraph$ is an injective mapping $\phi: V_L \to V_\hypergraph$ such that the image of each hyperedge in $L$ appears in $\hypergraph$.
 \end{definition}
 
-Applying rule $\rewriterule$ at match $\phi$ produces a new hypergraph $\hypergraph'$ by:
+This is the single-pushout form of rewriting: the rule is applied by deleting the matched image and gluing in the replacement, without the additional gluing conditions that the double-pushout construction imposes~\cite{ehrig2006fundamentals,rozenberg1997handbook,plump2009graph}. Applying rule $\rewriterule$ at match $\phi$ produces a new hypergraph $\hypergraph'$ by:
 \begin{enumerate}
     \item Removing all hyperedges in $\phi(L)$ from $\hypergraph$
     \item Adding hyperedges from $R$, extending $\phi$ to map new vertices in $R$ to fresh vertices
@@ -182,19 +182,19 @@ The \emph{causal graph} captures dependencies between events based on shared hyp
 
 \subsection{The Graph Isomorphism Problem}
 
-State deduplication requires detecting when two hypergraphs are isomorphic---structurally identical up to vertex relabeling. Graph isomorphism is known to be in NP but not known to be NP-complete or in P, occupying a unique complexity-theoretic position~\cite{babai2016quasipolynomial}.
+State deduplication requires detecting when two hypergraphs are isomorphic---structurally identical up to vertex relabeling. Graph isomorphism is in NP and is neither known to be NP-complete nor known to be in P~\cite{kobler2012graph}; the best known bound is quasipolynomial~\cite{babai2016quasipolynomial}.
 
 For practical systems, we employ \emph{graph hashing}: computing a canonical signature $h(\hypergraph)$ such that isomorphic graphs have identical hashes. While perfect hashing (injective for non-isomorphic graphs) requires solving isomorphism exactly, approximate hashes suffice when combined with explicit isomorphism testing for collisions.
 
 \subsection{Related Work}
 
-\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR. Uniqueness trees~\cite{gorard2016uniqueness} were proposed as a polynomial approach to graph isomorphism; we do not use them---the approach does not give a sound canonical form for our workloads, and IR provides the exactness guarantee we require.
+\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
 
 \textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. Our matcher adopts both. The join is organised as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organisation of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 
-\textbf{Term rewriting:} High-performance term rewriting systems~\cite{van2019fastest} optimize similar pattern matching operations but typically assume tree-structured terms rather than graph-structured hypergraphs.
+\textbf{Term rewriting:} The theory of term rewriting~\cite{baader1998term} treats confluence and termination for tree-structured terms, and high-performance implementations~\cite{van2019fastest} optimise similar pattern-matching operations. Hypergraph rewriting differs in that the objects are graph-structured, so matching is subgraph matching rather than tree matching, and states must be compared up to isomorphism rather than syntactic equality.
 
 % ----------------------------------------------------------------------------
 % CANONICALIZATION
@@ -389,6 +389,23 @@ Forwarding therefore avoids re-running the join for every match a child inherits
 \section{System Architecture}
 \label{sec:architecture}
 
+\subsection{One Implementation per Rule, Compiled for Both Targets}
+\label{sec:shared-core}
+
+The CPU engine and the CUDA port are separate schedulers over the same semantics, and any rule
+implemented twice will eventually be implemented differently. Every decision procedure the two
+share therefore exists once, as an annotated function compiled for host and device from a single
+source: the join that enumerates matches, the edge-signature rule, the rewrite semantics
+determining which vertices a produced edge carries, the event identity, the Weisfeiler--Leman
+hash, the individualization--refinement canonical hash, and the quotient-causal dynamic program
+and its per-instance replay. Ten such cores are shared in total.
+
+The consequence is that host and device agree by compilation rather than by testing, and a
+differential test between them can be reserved for the parts that genuinely differ---scheduling,
+memory placement and queueing---rather than re-checking a rule that exists once. Where the two did
+diverge historically it was because a rule had been written twice: a second matcher on the device
+reported a different event count than the host for the same input.
+
 \subsection{Unified Hypergraph Storage}
 
 Our core data structure stores all hypergraph data in a unified edge pool:
@@ -420,11 +437,11 @@ Our core data structure stores all hypergraph data in a unified edge pool:
 \label{fig:storage}
 \end{figure}
 
-This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload actually consumes; no ratio against a hypothetical per-state copy is asserted, because that representation was deleted when this one replaced it and cannot be measured on this tree.
+This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload actually consumes; no ratio against a hypothetical per-state copy is asserted, because that representation was deleted when this one replaced it and cannot be measured on this tree.
 
 \subsection{Lock-Free Data Structures}
 
-Concurrent evolution requires thread-safe data structures without lock contention:
+Concurrent evolution requires thread-safe data structures without lock contention. The constructions below follow standard non-blocking techniques~\cite{herlihy2012art}, in particular compare-and-swap insertion into an open-addressed table~\cite{michael2002high} and lock-free list linkage~\cite{harris2001pragmatic}:
 
 \begin{description}
 \item[ConcurrentMap$\langle$K, V$\rangle$:] Hash table using atomic compare-and-swap for insertion. Wait-free lookup with lock-free insertion.
@@ -432,7 +449,16 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 \item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
 
 \item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
+
+\item[ConcurrentIdSet:] Open-addressed, append-only set of 32-bit identifiers, used where membership rather than a mapping is required.
 \end{description}
+
+A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
+the platform's own primitive---\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
+\texttt{os\_sync\_wait\_on\_address} on macOS---so a blocked worker consumes no cycles and is woken
+by the thread that supplies the work. No mutex or condition variable is used on any of these
+platforms: the engine's object files reference none, and the only such construction in the tree is
+a fallback compiled solely for a platform providing none of the three primitives.
 
 \subsection{Allocation}
 \label{sec:allocation}
@@ -460,6 +486,40 @@ StateId id = canonical_map_.lookup(hash);  // acquire load
 std::atomic_thread_fence(std::memory_order_acquire);
 State& s = states_[id];           // safe to read edge set
 \end{lstlisting}
+
+\subsection{Static Rule Analysis}
+\label{sec:rule-analysis}
+
+Some properties of a rule set are decidable from the patterns alone, before any evolution runs,
+at the cost of a bounded scan over two finite patterns. The engine computes them when a rule is
+added and uses them to select strategy.
+
+Per rule it records the edge-count difference between the two sides, which predicts whether states
+grow and therefore how canonicalization cost will develop; the number of variables the right-hand
+side introduces, since a rule creating none operates within a bounded vertex set; and the
+left-hand side's arities. Treating the left-hand side as a conjunctive query, it computes whether
+that query is acyclic---which determines whether a join order exists that avoids intermediate
+blow-up---and an integral edge cover, which bounds the number of matches a state of $N$ edges can
+yield by $N^{\rho}$. That bound is tight exactly when the query is acyclic; where it is not, the
+recorded value is an upper bound and is used only as one.
+
+Every predicate is sound in one direction only, and each is stated with its direction. The
+branching test over-approximates: a negative result means branching is structurally impossible,
+while a positive result means only that it has not been ruled out. An adaptation may act on the
+negative and must not act on the positive. Nothing here concerns termination, finiteness of the
+reachable set, or global confluence, all of which are undecidable for a rewriting system of this
+power.
+
+\subsection{Behaviour at Configured Limits}
+\label{sec:capacity}
+
+The engine's containers are sized from configuration, and a workload may exceed them. Reaching a
+configured ceiling is treated as a distinct outcome from a programmer error: the run returns the
+portion of the evolution that fits, together with a warning naming the limit that was reached,
+rather than raising an exception and discarding the work. Both backends behave identically in this
+respect. Options that a build does not implement are reported the same way, so a caller who
+requests one receives the result computed without it and a statement to that effect, rather than
+silently receiving a different computation from the one requested.
 
 \subsection{Determinism Contract}
 \label{sec:determinism}
