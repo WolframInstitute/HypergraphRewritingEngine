@@ -618,12 +618,24 @@ tasks from that state. Exploration therefore proceeds from one representative of
 class, at the shallowest depth at which the class was reached. Table~\ref{tab:t6-quotient} reports
 raw states expanded and wall time for the two modes at increasing depth.
 
-The two modes agree on the canonical state set by construction. They also agree on the causal and
-branchial relations, which is less immediate: the relations are defined over raw events, and
-quotient exploration produces the same events while expanding fewer states. Reconstructing the
-per-instance relations from the quotient run requires the edge orbits, which are obtained from the
-IR pass that computed the canonical hash (Section~\ref{sec:ir}), so no additional canonicalization
-is performed.
+The two modes agree on the canonical state set by construction. That they also agree on the causal
+and branchial relations is less immediate, because those relations are defined over raw events and
+quotient exploration expands fewer states.
+
+The reconstruction is a forward tally. Under an exact identity the canonical states graph is
+cyclic, since a canonical state recurs at several path lengths; its unrolling by depth is acyclic,
+and the multiplicity of each (canonical state, depth) pair satisfies
+\[
+  \mathrm{mult}[s_0, 0] = 1, \qquad
+  \mathrm{mult}[c, k{+}1] \mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
+\]
+summed over the transitions into $c$, with the raw event count recovered as
+$\sum \mathrm{mult}$. Because every quantity propagates forward over the unrolled DAG, descendants
+are recovered by summation rather than by re-exploring, so the reconstruction requires no
+parallelism of its own and adds a single-threaded pass whose cost does not grow with the thread
+count. Mapping a multiplicity back to the individual instances requires distinguishing the edge
+roles within a class, which is what the edge orbits from the same IR pass provide
+(Section~\ref{sec:ir}); no additional canonicalization is performed.
 
 \subsection{Transitive Reduction of the Causal Graph}
 \label{sec:tr}
@@ -707,6 +719,31 @@ another is suppressed entirely, and the two controls compose rather than one ove
 A seed makes a sampled run reproducible; sampling decisions are keyed on canonical identity, so the
 same seed yields the same sample at any thread count, consistent with
 Section~\ref{sec:determinism}.
+
+\paragraph{Sampling and synchronisation.}
+Sampling interacts with parallelism in a way that is easy to miss. A sample cannot be acted on
+before its population is complete: a rewrite cannot be undone, so a match that has been applied
+cannot later be evicted by a match that arrives afterwards. Any reservoir must therefore be
+finalised before its members are rewritten, and finalising requires knowing that the stream of
+candidates has ended. A scheme that samples from all matches produced in an evolution step
+consequently needs every worker to finish that step before any rewriting begins---a global barrier,
+in an engine that otherwise has none.
+
+The question is therefore not whether to have a barrier but how local the completion condition can
+be made. The engine requires a sampling population to be one that \emph{completes locally}: its
+completion must not depend on knowing anything about work outside the object it is keyed on. A
+population keyed on a single (state, rule) pair satisfies this, because the engine can tell when
+that pair has no matches outstanding without consulting any other state; a population keyed on an
+evolution step does not.
+
+Restricting to locally-completing populations costs less than it appears, because the global
+population was not delivering a uniform sample either. Under the step-wide scheme each match job
+received a reservoir of the same capacity regardless of how many matches it saw, so a pair
+producing a thousand matches contributed no more samples than one producing twenty; the pooled
+sample was already weighted toward sparse strata before any shuffle, and shuffling a skewed pool
+does not remove the skew. Uniformity over the union of all matches was not a property that scheme
+had. Uniformity within a (state, rule) stratum was, and is the property its test checks. Keying the
+population on the state therefore preserves what was true and removes the barrier.
 
 \subsection{Sessions}
 \label{sec:sessions}
