@@ -190,6 +190,21 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
 
+\textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace} is the reference
+implementation associated with the Wolfram Physics Project, and is the closest system to this work.
+The two target different objects. SetReplace's multiway construction is a token--event graph over a
+single growing token pool: it records which rewrites occurred and what each consumed and produced,
+and does not canonicalize or deduplicate states during evolution, so two structurally identical
+states reached along different histories remain distinct vertices. The object this engine
+enumerates is the states graph under an exact isomorphism identity, which requires canonicalizing
+every state as it is produced (Section~\ref{sec:canonicalization}) and is what makes
+canonicalization, rather than matching, the dominant cost. The two are therefore complementary
+rather than competing: a token--event graph is cheaper and is the right object when history is
+what matters, and a deduplicated states graph is the right object when the reachable state space
+is. We compare against the Wolfram Language \texttt{MultiwaySystem} implementation in
+Section~\ref{sec:benchmarks} because it computes the same object we do; SetReplace does not, so a
+wall-time comparison against it would compare two different computations.
+
 \textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organises execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three. The join is organised as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organisation of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
@@ -760,7 +775,24 @@ GPU memory is managed through:
 \section{Experimental Evaluation}
 \label{sec:benchmarks}
 
-We evaluate our implementation against the Wolfram Language reference across correctness, memory, and performance dimensions.
+The evaluation answers five questions, and each table below is labelled with the one it addresses.
+
+\begin{description}
+\item[Q1 (correctness).] Is the state identity exact---does the engine identify two states if and
+only if they are isomorphic---on every workload in the corpus, checked against an independent
+oracle? (Table~\ref{tab:t1-exactness}.)
+\item[Q2 (cost against the reference).] How does evolution time compare with the Wolfram
+implementation computing the same object, and how does that ratio behave with depth?
+(Table~\ref{tab:t2-speedup}, Figure~\ref{fig:speedup}.)
+\item[Q3 (parallel scaling).] How far does evolution scale with worker count, does that limit
+depend on the rule, and what resource sets it? (Tables~\ref{tab:t8-scaling},
+\ref{tab:t12-shapes}, \ref{tab:t13-memory}; Figure~\ref{fig:scaling}.)
+\item[Q4 (device).] Where is the GPU faster than the CPU, and at what grid size does the device
+saturate? (Tables~\ref{tab:t7-gpu}, \ref{tab:t11-saturation}.)
+\item[Q5 (attribution).] Which contributions account for the performance, and does any of them
+change the computed answer rather than its speed? (Tables~\ref{tab:t9-ablation},
+\ref{tab:t6-quotient}, \ref{tab:event-canon}.)
+\end{description}
 
 Every table below is written by \texttt{tools/dev/paper\_tables.py} from the instrument named in its caption, and records the commit and machine it was produced on. Numbers are medians over repeated runs in one session; a comparison between two arms is always taken in the same session, because this machine's run-to-run drift exceeds most of the effects being reported.
 
@@ -935,6 +967,34 @@ by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
 \label{tab:event-canon}
 \input{tables/t10_event_canon}
 \end{table}
+
+\subsection{Limitations}
+\label{sec:limitations}
+
+\textbf{Measurement environment.} All numbers were taken on a single desktop under WSL2 shared with
+other work. Wall-clock measurements on this host vary by more than ten percent between runs, and
+the scaling measurements in particular were taken while the machine was not quiet. The counts,
+instruction-level measurements and \texttt{getrusage} figures are not affected by this; the wall
+times are, and should be reproduced on a quiet machine before being relied upon.
+
+\textbf{One comparison point.} The only implementation compared against is the Wolfram
+\texttt{MultiwaySystem}, because it is the only other implementation known to us that computes the
+deduplicated states graph under an isomorphism identity. SetReplace computes a different object
+(Section~\ref{sec:background}), so no wall-time comparison against it is reported. A single
+baseline is a weaker evaluation than one with several, and we do not claim otherwise.
+
+\textbf{Workload scope.} The corpus is 24 rule-type workloads plus deeper runs of one canonical
+rule. It was constructed to cover rule shapes---productive, reductive, idempotent, mixed arity,
+disconnected and high-automorphism---rather than to sample rules found in practice, and the
+observed behaviour of $C/R$ and of parallel efficiency is a property of those shapes.
+
+\textbf{Scope of the concurrency results.} The model-checked properties hold for the thread and
+operation counts given, which are small; they are not proofs for unbounded thread counts. The
+determinism gate likewise establishes agreement across the configurations it runs, not for all.
+
+\textbf{Worst-case cost.} Individualization--refinement is exponential in the worst case, and the
+exact mode applies it to every state. States with large automorphism groups are where that cost is
+realised, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter cannot avoid it.
 
 % ----------------------------------------------------------------------------
 % CONCLUSION
