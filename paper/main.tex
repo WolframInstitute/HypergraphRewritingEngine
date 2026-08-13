@@ -863,6 +863,43 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
 \input{tables/t6_quotient}
 \end{table}
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.8cm,
+    xlabel={Evolution depth}, ylabel={Evolution time (ms)},
+    ymode=log, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[mark=*, black] coordinates {(5,1.0)(6,15.8)(7,711.9)};
+\addlegendentry{CPU, 8 threads}
+\addplot[mark=square, black, dashed] coordinates {(5,8.5)(6,12.0)(7,57.7)};
+\addlegendentry{GPU}
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.8cm,
+    xlabel={Blocks per SM}, ylabel={Median time (ms)},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16}, xticklabels={1,2,4,8,16},
+    ymin=0, grid=major, grid style={gray!25},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[mark=*, black] coordinates {(1,137.44)(2,97.04)(4,65.71)(8,61.52)(16,61.82)};
+\end{axis}
+\end{tikzpicture}
+\caption{Left: evolution time against depth for the GPU and for eight CPU threads. The device is
+slower at depth five, where the work per launch does not amortise the launch cost, and faster from
+depth six. Right: median time against the resident kernel's grid size. Time ceases to improve
+beyond eight blocks per streaming multiprocessor, which is the shipped default. Both panels plot the values of
+Tables~\ref{tab:t7-gpu} and~\ref{tab:t11-saturation}, which carry the provenance of each
+measurement.}
+\label{fig:gpu}
+\end{figure}
+
 \subsection{GPU (Table T7)}
 
 \begin{table}[htbp]
