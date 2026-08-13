@@ -190,11 +190,11 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
 
-\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. Our matcher adopts both. The join is organised as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
+\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organises execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three. The join is organised as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organisation of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 
-\textbf{Dynamic graph algorithms:} The causal graph's transitive reduction is maintained as edges arrive rather than recomputed, which places it in the dynamic graph-algorithms setting; the fully dynamic version of transitive reduction admits amortised $\BigO(m)$ update~\cite{goranci2025dynamic}. Our setting admits only insertions, and those in topological order, so it is a restriction of that problem rather than an instance of it (Section~\ref{sec:tr}).
+\textbf{Dynamic graph algorithms:} The causal graph's transitive reduction is maintained as edges arrive rather than recomputed, which places it in the dynamic graph-algorithms setting; Goranci et al.~\cite{goranci2025dynamic} give fully dynamic algorithms for transitive reduction under insertions and deletions, in $\BigO(m + n\log n)$ amortised time. Our setting admits insertions only, arriving in topological order, so it is a restriction of that problem rather than an instance of it, and we claim no result against it (Section~\ref{sec:tr}).
 
 \textbf{Term rewriting:} The theory of term rewriting~\cite{baader1998term} treats confluence and termination for tree-structured terms, and high-performance implementations~\cite{van2019fastest} optimise similar pattern-matching operations. Hypergraph rewriting differs in that the objects are graph-structured, so matching is subgraph matching rather than tree matching, and states must be compared up to isomorphism rather than syntactic equality.
 
@@ -207,7 +207,7 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR) alone: it is computed for every state, and its hash serves directly as the deduplication key. Weisfeiler--Leman (WL) is a separate, coarser signature, used by the modes that request a coarser notion of state identity.
 
-\subsection{Individualization--Refinement (Exact Reference)}
+\subsection{Individualization--Refinement}
 \label{sec:ir}
 
 The exact canonical form is computed by McKay-style individualization--refinement~\cite{mckay2014practical}, the same family of algorithms underlying nauty and Traces. IR produces a canonical labeling---and, as a byproduct, a set of automorphism generators and vertex/edge orbits---such that two hypergraphs receive identical canonical forms if and only if they are isomorphic.
@@ -453,6 +453,13 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 \item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
 
 \item[ConcurrentIdSet:] Open-addressed, append-only set of 32-bit identifiers, used where membership rather than a mapping is required.
+
+\item[Work-stealing deque:] Each worker owns a deque, pushing and popping at its own end without
+atomic contention in the common case and stealing from the opposite end of another worker's deque
+when idle. Following HGMatch~\cite{yang2023hgmatch}, evolution is expressed as a dataflow over such
+a scheduler: a scan task seeds a join, expansion tasks extend it, and completed matches are handed
+to rewriting, with work stealing providing the load balance across a frontier whose width is not
+known in advance.
 \end{description}
 
 A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
@@ -565,22 +572,63 @@ $p \rightsquigarrow c$ of length greater than one already exists; on an acyclic 
 reduction is unique.
 
 Maintaining a transitive reduction under edge insertion is an instance of the dynamic
-transitive-reduction problem. The fully dynamic case, admitting arbitrary insertions and
-deletions, has been studied and permits amortised $\BigO(m)$ update~\cite{goranci2025dynamic}. The
+transitive-reduction problem. Goranci et al.~\cite{goranci2025dynamic} give the first fully dynamic algorithms for maintaining
+a transitive reduction of a general directed graph under both insertions and deletions, achieving
+$\BigO(m + n\log n)$ amortised update time, and $\BigO(m + n^{1.585})$ worst case using fast matrix
+multiplication. The
 setting here is strictly easier in two respects: causal edges are only ever inserted, never
 deleted, and they arrive in an order consistent with a topological order of the causal DAG, since
 an event's producers are complete before the event exists. We therefore make no claim of novelty
 for the procedure below, and no claim of optimality; it is the specialisation the easier setting
 permits, and a fully dynamic reduction would be required if deletions were admitted.
 
-It is computed online rather than as a pass over the completed graph: each new causal edge is
-reduced against the edges already retained. A consumer's incoming edges are processed in
-descending producer-event order, so that the reachability closure from nearer producers is
-established before farther producers are tested against it. The reduced graph is required to be a
-function of the causal DAG alone and not of the order in which edges were inserted, which is the
-same schedule-independence property as Section~\ref{sec:determinism} and is checked by the same
-gate. The reduction applies only to the causal graph; states, events and the branchial relation
-are never reduced.
+\paragraph{Why the reduction is maintained rather than computed.}
+Computing the reduction as a pass over the finished graph would require the graph to be finished,
+which conflicts with two properties the engine offers. A session (Section~\ref{sec:sessions}) may
+be queried between steps, so there is no point at which the causal graph is known to be complete;
+and the reduction is what most consumers of the causal graph actually want, so materialising the
+full relation first and reducing afterwards would allocate the transitive closure that the
+reduction exists to avoid. The reduction is therefore maintained as an invariant: after every
+insertion, the retained edge set is the transitive reduction of the causal DAG seen so far.
+
+\paragraph{Procedure.}
+Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
+Insertion asks whether $c$ is already reachable from $p$ through the retained edges. If it is, $e$
+is implied and is not retained; if it is not, $e$ is retained, and any retained edge $(p', c)$ whose
+producer $p'$ is now reachable from $p$ becomes implied and is dropped. Both directions are needed:
+the first prevents an implied edge entering, the second removes an edge that a later, shorter
+arrival has made implied.
+
+The order in which a consumer's incoming edges are examined determines how much work the
+reachability queries do. They are processed in descending producer-event order, so that the
+closure reachable from nearer producers is established before farther producers are tested against
+it, and a farther producer is then usually eliminated by a query that terminates early. Because
+events are numbered in creation order and an event's producers necessarily precede it, this
+ordering is available without sorting.
+
+\paragraph{What the arrival order buys.}
+Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
+edges are only inserted, never deleted, so no retained edge can become non-implied later, and an
+edge dropped as implied never has to be reconsidered. And edges arrive in an order consistent with
+a topological order of the causal DAG: an event exists only once its producers do, so when $(p,c)$
+arrives, every edge into $p$ has already been processed and the closure below $p$ is final. A fully
+dynamic algorithm must maintain reachability under deletions, which is what forces the
+$\BigO(m + n\log n)$ amortised bound of Goranci et al.; neither of the two properties above is
+available to it.
+
+\paragraph{Order independence.}
+The retained edge set is required to be a function of the causal DAG alone and not of the order in
+which edges were inserted. This is not automatic: a concurrent evolution inserts causal edges from
+several workers, and a reduction that depended on interleaving would produce different graphs on
+different runs of the same input. The requirement is the same schedule-independence property as
+Section~\ref{sec:determinism} and is checked by the same gate, which compares the reduced edge set
+across thread counts and seeds. It is also the property that failed historically: an earlier
+version resolved a race by having whichever worker won a claim publish the result, and under
+contention that lost transitions, which the gate detected as a reduced graph that varied between
+runs.
+
+The reduction applies only to the causal graph. States, events and the branchial relation are never
+reduced: branchial edges connect states at the same step and carry no transitivity to remove.
 
 \subsection{Sampled Exploration}
 \label{sec:sampling}
@@ -741,6 +789,30 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \input{tables/t3_heap}
 \end{table}
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.62\textwidth, height=5.2cm,
+    xlabel={Evolution depth}, ylabel={Time (ms)},
+    ymode=log, xtick={2,3,4,5,6,7}, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[mark=square*, black, dashed] coordinates {(2,2123.2)(3,158.3)(4,550.7)(5,3776.6)(6,43372.0)(7,708556.0)};
+\addlegendentry{Wolfram \texttt{MultiwaySystem}}
+\addplot[mark=*, black] coordinates {(2,0.2)(3,0.2)(4,0.1)(5,0.3)(6,1.6)(7,15.5)};
+\addlegendentry{this engine}
+\end{axis}
+\end{tikzpicture}
+\caption{Evolution time against depth for the two implementations, logarithmic in time, on the same
+rule and initial condition and producing identical state and causal-edge counts at every depth. The
+vertical separation is the speedup reported in Table~\ref{tab:t2-speedup}: $5{,}507\times$ at depth
+four rising to $45{,}713\times$ at depth seven. The depth-2 point includes one-time initialisation
+on the Wolfram side, and this engine's times at depths 3--5 are near the timer's resolution.}
+\label{fig:speedup}
+\end{figure}
+
 \subsection{Wall-Time Speedup (Table T2)}
 
 \begin{table}[htbp]
@@ -776,6 +848,48 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
 \end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.48\textwidth, height=5.0cm,
+    xlabel={Worker threads}, ylabel={Parallel efficiency},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    ymin=0, ymax=1.25, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.03,0.03)}, anchor=south west, draw=none, fill=none},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[mark=*, black] coordinates {(1,1.00)(2,1.02)(4,1.01)(8,0.78)(16,0.47)(24,0.26)(32,0.15)};
+\addlegendentry{one-edge LHS}
+\addplot[mark=square, black, dashed] coordinates {(1,1.00)(2,1.02)(4,1.10)(8,1.14)(16,0.82)(24,0.26)(32,0.23)};
+\addlegendentry{two-edge LHS}
+\addplot[gray, dotted, thick, forget plot] coordinates {(24,0)(24,1.25)};
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.48\textwidth, height=5.0cm,
+    xlabel={Worker threads}, ylabel={Time (s)},
+    xmode=log, log basis x=2, xtick={1,8,16,24,32}, xticklabels={1,8,16,24,32},
+    ymin=0, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\addplot[mark=*, black] coordinates {(1,4.94)(8,6.15)(16,7.48)(24,9.43)(32,10.28)};
+\addlegendentry{user}
+\addplot[mark=triangle*, black, dashed] coordinates {(1,0.27)(8,0.92)(16,2.27)(24,18.94)(32,55.53)};
+\addlegendentry{system}
+\end{axis}
+\end{tikzpicture}
+\caption{Left: parallel efficiency against worker count for two rule shapes; the dotted line marks
+this host's 24 physical cores. Right: user and system time for the same runs. User time increases
+by a factor of $2.1$ across a $32\times$ increase in workers, while system time increases by a
+factor of $206$; the efficiency decline in the left panel is accounted for by the right panel, not
+by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
+\label{fig:scaling}
+\end{figure}
 
 \subsection{Rule Shape and Where Efficiency Falls (Table T12)}
 

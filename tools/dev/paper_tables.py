@@ -113,7 +113,7 @@ def t1(build):
          r"Workload & Class & Canon.\ states & Events & Causal & Branchial & "
          r"Arena B & Heap B & Heap allocs & Exactness \\", r"\midrule"]
     for (case, cls, exact, canon, ev, ca, br, arena, heapb, heapa, _norel) in rows:
-        b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s & \\textsc{%s} \\\\" % (
+        b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
             tex_escape(case), tex_escape(cls), canon, ev, ca, br, arena, heapb, heapa,
             exact.lower()))
     b += [r"\bottomrule", r"\end{tabular}", "", "%% " + total]
@@ -206,7 +206,7 @@ def t6(build, maxd):
          r"Depth & Events (full) & Causal (full) & ms (full) & Events (quot.) & ms (quot.) & "
          r"Events (quot.+recon) & ms (quot.+recon) & Exact \\", r"\midrule"]
     for (d, _fst, fev, fca, fms, _qst, qev, _qca, qms, _rst, rev, _rca, rms, exact) in rows:
-        b.append("%s & %s & %s & %s & %s & %s & %s & %s & \\textsc{%s} \\\\" % (
+        b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
             d, fev, fca, fms, qev, qms, rev, rms, exact))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t6_quotient.tex", "\n".join(b) + "\n")
