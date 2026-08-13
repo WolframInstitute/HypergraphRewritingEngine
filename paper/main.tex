@@ -1096,14 +1096,36 @@ buffers in device memory. Workers are producers and consumers of the same queues
 produces states, which become match tasks---so a single-producer structure would not serve, and a
 bounded one is required because device memory is reserved in advance.
 
-A resident kernel whose workers pull from queues cannot end when a launch ends, so termination must
-be detected rather than assumed. A worker that finds every queue empty is not evidence that the
-evolution is finished: another worker may be part-way through a rewrite that will enqueue more
-work. The engine therefore tracks the number of workers currently holding work alongside the queue
-occupancy, and termination is declared only when both are zero and the step budget is exhausted.
-Detecting this incorrectly truncates the evolution silently, which is why the device result is
-compared against the host's on every corpus workload rather than only checked for absence of
-errors.
+Each slot carries a sequence number, and that number alone determines whose turn the slot is: it
+equals the position a producer is reserving when the slot is free, one more than that position
+when the slot holds an item for the consumer reserving it, and less than the position when the
+queue is full for a producer or empty for a consumer. Slot $i$ starts at $i$, a producer publishes
+with the position plus one, and a consumer releases with the position plus the capacity, so a slot
+advances by exactly one capacity per lap and the three tests remain exact across wraps. The
+ordering is carried by that handshake---a release store by the producer synchronising with the
+consumer's acquire load---so the head and tail cursors, which only allocate positions, are relaxed.
+
+Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
+difference matters precisely because the same workers both produce and consume: an unconditional
+bump has nothing to undo with, and a rollback or a give-the-slot-back store can land on a slot
+another thread has already taken, which either loses an item or hands one out twice. In a queue
+whose producers are its consumers, a lost item is not a dropped unit of work but a run that never
+finishes, because the termination detector waits for a completion that can no longer occur.
+
+A resident kernel whose workers pull from queues cannot end when a launch ends, so termination is
+detected rather than assumed. Each queue role maintains two monotonic counters, one for work
+pushed and one for work drained, incremented with release ordering so that any payload the work
+touched is visible to whoever observes the counter. A detector reads them with acquire ordering and
+looks for every pair to be equal. Equality alone is not sufficient: it occurs mid-evolution
+whenever every in-flight task happens to have just finished without yet emitting its follow-ups.
+Exit is therefore signalled only when equality holds across two consecutive observations separated
+by a backoff interval, so that nothing was pushed during the window between them. Workers test the
+exit flag at the top of their outer loop, and read it with acquire ordering so a worker that sees
+it also sees everything the detector saw before setting it.
+
+Detecting termination incorrectly truncates the evolution without an error, which is why the device
+result is compared against the host's on every corpus workload rather than only checked for the
+absence of reported errors.
 
 \subsection{Memory Management}
 
