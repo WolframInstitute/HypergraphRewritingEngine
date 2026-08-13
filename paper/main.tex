@@ -587,6 +587,33 @@ performs no call to the global allocator. This is what makes the allocation figu
 Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
 \end{description}
 
+\paragraph{The shared injector, and what bounds its ABA defence.}
+Work submitted from outside a worker, and work that overflows a worker's own deque, goes to one
+shared double-ended queue. Its state is a single 64-bit word packed as a 32-bit tag and two 16-bit
+indices, so one compare-exchange commits both ends at once and a pop at each end racing for the
+last item resolves by one of the two exchanges failing. The three fields share a word because a
+128-bit compare-exchange is not lock-free on the supported targets; the indices need 16 bits each
+for a capacity of 32{,}768 entries, which leaves 32 bits for the tag. Because both ends move in
+both directions, the index pair recurs, and the tag is what makes a compare-exchange commit only
+if nothing changed since the load.
+
+A 32-bit tag wraps, so the defence is conditional and the condition is worth stating rather than
+assuming. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
+indices must return to the values one popper read, all within that popper's own load-to-exchange
+window---a handful of instructions, so it requires the thread to be descheduled inside them. The
+throughput measurement that bounds this is direct: at eight threads the shared queue sustains
+$8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order of 500 seconds of
+continuous stall while every other thread runs flat out. The same measurement gives the cost of
+sharing one word: $1.33 \times 10^8$ operations per second at one thread against $8.16 \times
+10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not pay it; the
+injector is shared and does, which is why it holds only overflow and external submissions.
+
+Neither queue offers a blocking push or pop. For a worker this is not a preference but a
+requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
+would never drain again---and since expansion is combinatorial and submits from inside running
+jobs, saturating a local deque and the injector together is reachable rather than hypothetical. A
+full queue is answered by running the job on the calling thread, which always makes progress.
+
 A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
 the platform's own primitive---\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
 \texttt{os\_sync\_wait\_on\_address} on macOS---so a blocked worker consumes no cycles and is woken
