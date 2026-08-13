@@ -71,6 +71,22 @@ template<typename K, typename V, K EMPTY_KEY = K{0}, K LOCKED_KEY = K{~0ULL},
 class ConcurrentMap {
 public:
     static constexpr size_t DEFAULT_INITIAL_CAPACITY = 1024;
+
+    // What a map allocates before anyone puts anything in it.
+    //
+    // An engine holds seventeen of these, and a run uses the ones its configuration calls for --
+    // a run without quotient exploration never touches the quotient maps at all. Allocating
+    // DEFAULT_INITIAL_CAPACITY entries in the constructor zeroes every one of them regardless,
+    // and set_arena then allocates a SECOND full-size table to re-home the map onto the arena
+    // and throws the first away, so each re-homed map paid for 2048 zeroed entries before its
+    // first insert. Measured with callgrind on bench_cpu_evolve: __memset_avx2_unaligned_erms
+    // was 51.3% of all instructions executed, against 0.46% in ir_canonical_hash.
+    //
+    // A map therefore starts at one slot and grows on its first insert. The growth path is the
+    // ordinary one, so this adds no second mechanism -- and it jumps straight to
+    // DEFAULT_INITIAL_CAPACITY rather than doubling from one, so a map that is used reaches the
+    // same table in one step and a map that is not used never allocates it.
+    static constexpr size_t LAZY_INITIAL_CAPACITY = 1;
     static constexpr double LOAD_FACTOR_THRESHOLD = 0.75;
 
     // The value slot's THIRD state: a resize seals every unsettled slot of the table it
@@ -135,7 +151,7 @@ public:
 
     // arena != nullptr routes all table allocation through the arena (no malloc); the
     // tables are then reclaimed in bulk with the arena, not in this destructor.
-    explicit ConcurrentMap(size_t initial_capacity = DEFAULT_INITIAL_CAPACITY,
+    explicit ConcurrentMap(size_t initial_capacity = LAZY_INITIAL_CAPACITY,
                            ConcurrentHeterogeneousArena* arena = nullptr)
         : count_(0), arena_(arena) {
         table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
@@ -161,7 +177,7 @@ public:
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
         Table* old = table_.load(std::memory_order_relaxed);
-        size_t cap = old ? old->capacity : DEFAULT_INITIAL_CAPACITY;
+        size_t cap = old ? old->capacity : LAZY_INITIAL_CAPACITY;
         table_.store(Table::create(cap, nullptr, arena_), std::memory_order_release);
         // The pre-rehome table(s) were heap-backed; free them.
         while (old) {
@@ -628,7 +644,11 @@ private:
             return;
         }
 
-        size_t new_capacity = old_table->capacity * 2;
+        // From the one-slot table a map starts with, go straight to the working size rather
+        // than doubling ten times to reach it.
+        size_t new_capacity = old_table->capacity < DEFAULT_INITIAL_CAPACITY
+                                  ? DEFAULT_INITIAL_CAPACITY
+                                  : old_table->capacity * 2;
 
         Table* new_table = Table::create(new_capacity, old_table, arena_);
 
