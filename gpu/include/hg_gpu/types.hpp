@@ -55,16 +55,6 @@ constexpr uint32_t kMaxVars          = hgcommon::MAX_VARS;
 constexpr uint32_t kMaxConsumedBits  = 1024; // per-match consumed bitmap width
 constexpr uint32_t kMaxConsumedWords = kMaxConsumedBits / 32;
 
-// WL hash scratch bounds. A single state's canonicalization uses these as
-// upper bounds on the per-state vertex and edge count. A state exceeding them
-// reports capacity overflow rather than truncating.
-// Per-thread WL-hash scratch bounds. Each thread needs (edges + verts +
-// 2*verts_for_colors) worth of local memory; the neighbour array dominates
-// at ~edges*15 entries. Keep tight — these go into local memory (GDDR).
-constexpr uint32_t kMaxWlVertices = 64;
-constexpr uint32_t kMaxWlEdges    = 64;
-constexpr uint32_t kMaxWlRefineIters = 16;
-
 // Event-related device structs. An Event is created per successful rewrite
 // and carries the full (input, output, consumed, produced) record.
 struct DeviceEvent {
