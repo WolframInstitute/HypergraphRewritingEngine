@@ -49,6 +49,25 @@ target_compile_options(hg_gpu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--threads=0>
 )
 
+# Parallelise the device optimisation of a SINGLE translation unit.
+#
+# --threads above parallelises across architectures; it does nothing for a single-architecture
+# build, where the cost is one TU's device phases. persistent.cu is that TU: three kernels each
+# inlining the whole pipeline (match, rewrite, canonicalization, dedup, quotient), and measured
+# with nvcc --time on sm_89 alone it spends 207.6 s in cicc and 217.1 s in ptxas out of 427 s
+# total -- preprocessing is 0.35 s, so this is optimisation of the kernels, not header volume.
+#
+# --split-compile lets both phases optimise partitions of the module concurrently. 0 = use all
+# CPUs. Measured on the same TU and the same host: 427 s -> 37.9 s, with cicc 207.6 -> 18.7 and
+# ptxas 217.1 -> 17.6.
+#
+# Requires nvcc 11.6. Older toolchains keep the serial build rather than failing to configure.
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.6)
+    target_compile_options(hg_gpu PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--split-compile=0>
+    )
+endif()
+
 if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     add_executable(hg_gpu_tests
         tests/test_smoke.cu
