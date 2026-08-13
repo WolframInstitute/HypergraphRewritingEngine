@@ -1102,14 +1102,25 @@ totals across devices see that it occurred rather than infer a disagreement in t
 
 \subsection{GPU Pattern Matching}
 
-Signature-based candidate generation parallelizes across warps:
+The unit of matching work on the device is a (state, rule) pair, handled by one block whose threads
+stripe the candidates for the first pattern edge. Parallelism across states and rules is therefore
+the outer axis, with the inner axis inside a single join.
 
-\begin{itemize}
-    \item Each warp processes one pattern edge
-    \item Threads within warp enumerate compatible signatures (up to $B_d$ per edge)
-    \item Atomic queue updates coordinate task creation
-    \item Lock-free state insertion handles deduplication
-\end{itemize}
+The two indices of Section~\ref{sec:matching-algorithm} divide the work between them exactly as on
+the host. The signature index seeds the first pattern edge; every subsequent edge is driven by the
+vertex inverted index through a \emph{pivot variable}---a left-hand-side variable that is
+guaranteed to be bound by the time that edge runs, which the connectivity ordering of the pattern
+edges establishes. Looking the pivot's binding up in the inverted index yields a candidate list
+bounded by that vertex's degree, typically a few entries, in place of a signature bucket that holds
+thousands on a dense state. This is the division adapted from HGMatch~\cite{yang2023hgmatch}:
+signature index for the seed, inverted index for the extensions.
+
+One detail of the semantics is pushed to the host so that the device does not pay for it per match.
+Because distinct pattern variables may bind to the same vertex, a single pattern signature is
+compatible not with one data signature but with every coarsening of its partition. The list of
+compatible signature hashes for each pattern edge is therefore computed once on the host when the
+rule is added, and the kernel seeds from the index directly rather than enumerating coarsenings
+while matching.
 
 \subsection{Device Work Queues and Termination}
 \label{sec:gpu-queues}
