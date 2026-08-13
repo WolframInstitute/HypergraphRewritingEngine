@@ -464,7 +464,13 @@ When state $s'$ is derived from $s$, a match valid in $s$ remains valid in $s'$ 
 Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applying rule $r$ at match $\match'$. Then $\match$ remains valid in $s'$ iff $\text{edges}(\match) \cap \text{edges}(\match') = \emptyset$.
 \end{proposition}
 
-Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent. The engine forwards in batches, accumulating a parent's completed matches and delivering them to the child together; Section~\ref{sec:benchmarks} reports the ablation.
+Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent.
+
+Delivering it under concurrency requires two mechanisms rather than one. A match discovered in a state is \emph{pushed} to the children that state already has, which covers every child registered at the time of discovery. A state created later cannot receive a push that has already happened, so on creation it \emph{pulls}, walking the chain of ancestors and collecting each one's matches that its own rewrite did not invalidate. Neither half suffices alone: without the push, every state would repeat its ancestors' work on creation; without the pull, a match discovered before a child existed would never reach it.
+
+The two halves interact through an ordering requirement. The pull's ancestor walk treats a missing parent link as having reached a root and stops there. A child must therefore publish its parent link \emph{before} it becomes visible in its parent's child list: once it is visible it may receive a forwarded match, that match may create a grandchild on another worker, and that grandchild's pull walks upward through this child. Were the link published after visibility, such a walk could find it absent, stop early, and miss every match held only in higher ancestors---without any indication, because pulled matches are not re-stored in the descendant and pushes happen once at discovery, so nothing later repairs the omission. Publishing the link first makes an absent link mean \emph{root} for every walk that can reach the state.
+
+Forwarded matches are accumulated per parent and delivered to the child together rather than one at a time, and whether forwarding is applied at all is decided per rule set by the static analysis of Section~\ref{sec:rule-analysis}; Section~\ref{sec:benchmarks} reports the ablation.
 
 % ----------------------------------------------------------------------------
 % ARCHITECTURE
@@ -842,6 +848,35 @@ Traditional GPU algorithms launch separate kernels for each operation, incurring
 three queues without returning to the host; an epoch counter separates evolution steps.}
 \label{fig:megakernel}
 \end{figure}
+
+\subsection{The Constraint the Design Follows From}
+\label{sec:gpu-constraint}
+
+The resident kernel exists to remove a host round trip per evolution step. That aim is only met if
+nothing crosses the host--device boundary during evolution at all: rules and the initial state are
+uploaded and the queues seeded before the launch, results are read after it, and in between the
+device decides what work exists, which worker takes it, and when the evolution has finished. A
+round trip introduced for some other purpose costs what the per-step round trip cost, so the
+constraint has to be absolute to be worth anything.
+
+Two properties of the device path follow from it rather than being chosen independently.
+
+\emph{Capacity overflow cannot be resolved by retrying with a larger allocation.} Enlarging a pool
+means allocating on the host, which is a round trip. A device-resident loop must therefore record
+the overflow and return the work completed so far, which is the behaviour described in
+Section~\ref{sec:capacity}. On the device that behaviour is not one option among several; it is
+the only one available, and it is why capacities are sized from configuration before the launch.
+
+\emph{The canonicalizer's scratch cannot be sized by measuring the workload.} Sizing a scratch slot
+to the largest state in a batch requires knowing the batch, and a resident loop has no batch:
+states arrive continuously and the largest is not known until the run ends. One resolution is a
+slot pre-sized from a configured maximum with a coarser hash used above it, which would reintroduce
+the possibility of two states receiving the same key because one was too large to canonicalize
+exactly---a silent loss of the exactness property of Section~\ref{sec:canonicalization}, bounded by
+a configuration value rather than eliminated. The resolution taken instead is a device-side arena
+from which each state claims a slot sized from its own vertex, edge and occurrence counts. There is
+consequently no approximate fallback in the device's exact path: exhausting the arena is a capacity
+overflow, recorded and reported like any other, and never a quietly coarser identity.
 
 \subsection{GPU Canonicalization}
 
