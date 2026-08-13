@@ -27,6 +27,7 @@
 
 % Tables
 \usepackage{booktabs}
+\usepackage[section]{placeins}
 \usepackage{multirow}
 \usepackage{array}
 \usepackage{tabularx}
@@ -88,8 +89,8 @@
 % TITLE
 % ----------------------------------------------------------------------------
 
-\title{\textbf{Rewriting the Universe\\[0.3em]
-\large High-Performance Hypergraph Evolution for the Wolfram Physics Project}}
+\title{\textbf{Rewriting the Universe}\\[0.4em]
+{\normalsize\normalfont An Exact, Lock-Free Engine for Multiway Hypergraph Evolution}}
 
 \author{
     Richard Assar\\
@@ -106,10 +107,10 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash IS the deduplication key; we show that interposing a cheaper Weisfeiler--Leman filter cannot help, because the fraction of IR calls it can elide is bounded by the ratio of canonical classes to raw states, a quantity multiway evolution drives to zero; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
 
 \vspace{0.5em}
-\noindent Every quantitative table in Section~\ref{sec:benchmarks} is generated from the tools that produce it, and each carries the commit, the machine and the tool in its own provenance line. The machine is a desktop under WSL2 shared with other work, whose wall clock drifts by more than ten percent between runs; the tables therefore report medians and, where the effect is smaller than that drift, say so rather than claim it.
+\noindent Every quantitative table in Section~\ref{sec:benchmarks} is generated from the tools that produce it, and each carries the commit, the machine and the tool in its own provenance line. The machine is a desktop under WSL2 shared with other work, whose wall-clock measurements vary by more than ten percent between runs; the tables report medians, and state explicitly where a measured difference is smaller than that variation.
 
 \vspace{1em}
 \noindent\textbf{Keywords:} hypergraph rewriting, graph canonicalization, multiway systems, GPU computing, Wolfram Physics Project
@@ -122,14 +123,14 @@ The Wolfram Physics Project models fundamental physics through hypergraph rewrit
 \section{Introduction}
 \label{sec:introduction}
 
-The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This computational approach to physics generates rich mathematical structures---causal graphs capturing relativistic causality, branchial graphs encoding quantum-like superposition, and multiway evolution graphs representing the space of all possible histories.
+The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This approach generates three derived structures: causal graphs, recording dependencies between rewriting events; branchial graphs, connecting states reachable at the same evolution step; and multiway evolution graphs, representing the set of all reachable histories.
 
-While conceptually elegant, exhaustive multiway evolution presents significant computational challenges. The number of possible states grows exponentially with evolution steps, and each step requires expensive operations: pattern matching against potentially large hypergraphs, state canonicalization to detect isomorphic duplicates, and event tracking to construct causal and branchial structures. The reference implementation in Wolfram Language, while mathematically complete, becomes impractical for evolutions beyond a few hundred states.
+Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The reference implementation in Wolfram Language is mathematically complete but, as Section~\ref{sec:benchmarks} quantifies, its running time makes evolutions beyond a few hundred states impractical.
 
 This paper presents a high-performance implementation addressing these challenges through:
 
 \begin{enumerate}
-    \item \textbf{Exact canonicalization, with the cheaper hash kept out of the exact path:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Proposition~\ref{prop:wlceiling} shows why it is not placed in front of IR: the saving available to such a filter is bounded above by the ratio of canonical classes to raw states, which falls toward zero as an evolution deepens.
+    \item \textbf{Exact canonicalization:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Proposition~\ref{prop:wlceiling} shows why it is not placed in front of IR: the saving available to such a filter is bounded above by the ratio of canonical classes to raw states, which falls toward zero as an evolution deepens.
 
     \item \textbf{Lock-free concurrency:} Our data structures---concurrent hash maps, segmented arrays, lock-free lists---enable parallel evolution without contention bottlenecks.
 
@@ -185,7 +186,9 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR. Uniqueness trees~\cite{gorard2016uniqueness} were proposed as a polynomial approach to graph isomorphism; we do not use them---the approach does not give a sound canonical form for our workloads, and IR provides the exactness guarantee we require.
 
-\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. Our megakernel approach differs by targeting the specific workload of iterative multiway evolution.
+\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. Our matcher adopts both. The join is organised as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
+
+\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organisation of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 
 \textbf{Term rewriting:} High-performance term rewriting systems~\cite{van2019fastest} optimize similar pattern matching operations but typically assume tree-structured terms rather than graph-structured hypergraphs.
 
@@ -196,7 +199,7 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 \section{Graph Canonicalization}
 \label{sec:canonicalization}
 
-Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode meets that requirement with individualization--refinement (IR) alone: it is computed for every state and its hash IS the deduplication key, with no cheaper hash standing in front of it. Weisfeiler--Leman (WL) is a separate, coarser signature serving the modes that deliberately ask for a coarser identity. There is no third, ``polynomial'' canonicalizer.
+Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR) alone: it is computed for every state, and its hash serves directly as the deduplication key. Weisfeiler--Leman (WL) is a separate, coarser signature, used by the modes that request a coarser notion of state identity.
 
 \subsection{Individualization--Refinement (Exact Reference)}
 \label{sec:ir}
@@ -218,7 +221,7 @@ The automorphism generators and edge orbits produced by IR are reused elsewhere 
 \subsection{The Weisfeiler--Leman Signature}
 \label{sec:wl}
 
-The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, while certain non-isomorphic states --- regular graphs with identical local structure, for instance --- collide. It is the identity used by the modes that ask for a coarser notion of sameness. It is not used by the exact mode, and the reason is a bound rather than a preference.
+The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, while certain non-isomorphic states --- regular graphs with identical local structure, for instance --- collide. It is the identity used by the modes that request a coarser notion of state equality. It is not used by the exact mode, for the reason established in Proposition~\ref{prop:wlceiling}.
 
 \begin{proposition}[Ceiling on a WL pre-filter]
 \label{prop:wlceiling}
@@ -248,9 +251,9 @@ Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\
 \end{tabular}
 \end{center}
 
-\noindent Within every rule that continues to rewrite, $C/R$ falls with depth: producing the same state along many distinct histories is precisely what multiway evolution does, and each such arrival is a repeated WL hash that IR must settle. The cases retaining a high ratio are those that reach a fixed point almost immediately --- \texttt{self-loop} sits at $100\%$ with two raw states and one event. A filter is therefore available only where there is no work to save.
+\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
 
-Where an option requires the automorphism data --- the quotient exploration and the event-canonicalization conventions --- the edge orbits are produced by the same IR pass, so no second canonicalization is performed.
+Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
 
 \begin{algorithm}
 \caption{Weisfeiler-Lehman Hash}
@@ -273,7 +276,7 @@ Where an option requires the automorphism data --- the quotient exploration and 
 1-WL requires $\BigO(|V|^2 \cdot |E|)$ time per iteration, with at most $|V|$ iterations.
 \end{proposition}
 
-This bound is why WL is attractive in principle and why it remains available for the coarser modes. It is not a competing canonicalizer: where exactness is required, IR (Section~\ref{sec:ir}) is the only identity used.
+This polynomial bound is why WL remains available for the coarser modes. It is not an alternative canonicalizer: where exactness is required, IR (Section~\ref{sec:ir}) is the only identity used.
 
 \subsection{State Canonicalization Modes}
 
@@ -287,7 +290,7 @@ enum class StateCanonicalizationMode {
 };
 \end{lstlisting}
 
-\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as they stand: it is cheap, it is NOT an isomorphism invariant, and that is the point of the mode --- it identifies states with identical content, which is the convention the reference implementation uses. \textsc{Full} is the exact path used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are genuinely isomorphic, and no second hash stands in front of it. Uniqueness trees are not part of any mode.
+\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies states with identical edge content, which is the convention used by the reference implementation. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
 
 \begin{remark}[Incremental hashing]
 Child states differ from their parents by only the consumed and produced edges, so an incremental hash keyed on that delta is attractive. The engine already threads the per-event edge delta to the canonicalizer, but incremental WL hashing is not yet wired into the default path; it is ongoing work rather than a shipped optimization, and no incremental-hashing speedup is claimed here.
@@ -300,11 +303,12 @@ Child states differ from their parents by only the consumed and produced edges, 
 \section{Pattern Matching}
 \label{sec:pattern-matching}
 
-Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---dominates evolution runtime. We employ multi-level indexing to minimize candidate enumeration.
+Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile in Section~\ref{sec:benchmarks} attributes $23\%$ of executed instructions to the join's expansion step alone. We use multi-level indexing to restrict candidate enumeration.
 
 \subsection{Edge Signature Indexing}
 
 \begin{definition}[Edge Signature]
+\label{def:signature}
 The \emph{signature} of hyperedge $e = (v_1, \ldots, v_k)$ is the pattern $\sigma(e) = (s_1, \ldots, s_k)$ where $s_i = s_j$ iff $v_i = v_j$.
 \end{definition}
 
@@ -316,7 +320,7 @@ For example, edge $(3, 3, 7)$ has signature $(0, 0, 1)$, capturing the repetitio
 
 Pattern edges can match data edges only with compatible signatures. For pattern signature $\sigma_p$ with $d$ distinct variables, the number of compatible data signatures is the Bell number $B_d$~\cite{rota1964number}.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{Bell numbers for signature compatibility}
 \label{tab:bell}
@@ -339,6 +343,7 @@ For bound pattern variables, we maintain an inverted index:
 This enables efficient candidate generation when pattern variables are already assigned from prior edge matches.
 
 \subsection{Matching Algorithm}
+\label{sec:matching-algorithm}
 
 Pattern matching proceeds through a task-based system:
 
@@ -365,13 +370,13 @@ Pattern matching proceeds through a task-based system:
 
 \subsection{Match Forwarding}
 
-A key optimization: when state $s'$ is derived from $s$, matches valid in $s$ often remain valid in $s'$ (unless they involved removed edges). We forward parent matches to children:
+When state $s'$ is derived from $s$, a match valid in $s$ remains valid in $s'$ unless it used an edge the rewrite removed. The engine forwards such matches from parent to child rather than rediscovering them:
 
 \begin{proposition}[Match Forwarding]
 Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applying rule $r$ at match $\match'$. Then $\match$ remains valid in $s'$ iff $\text{edges}(\match) \cap \text{edges}(\match') = \emptyset$.
 \end{proposition}
 
-This optimization reduces redundant pattern matching significantly in deep evolution trees.
+Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent. The engine forwards in batches, accumulating a parent's completed matches and delivering them to the child together; Section~\ref{sec:benchmarks} reports the ablation.
 
 % ----------------------------------------------------------------------------
 % ARCHITECTURE
@@ -384,7 +389,7 @@ This optimization reduces redundant pattern matching significantly in deep evolu
 
 Our core data structure stores all hypergraph data in a unified edge pool:
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[
     box/.style={rectangle, draw, minimum width=2cm, minimum height=0.6cm},
@@ -443,6 +448,7 @@ State& s = states_[id];           // safe to read edge set
 \end{lstlisting}
 
 \subsection{Event Canonicalization}
+\label{sec:event-canon}
 
 Events can be canonicalized at multiple granularities:
 
@@ -467,38 +473,39 @@ The choice affects both correctness (for certain analyses) and performance. BySt
 
 Traditional GPU algorithms launch separate kernels for each operation, incurring synchronization overhead. Our \emph{megakernel} approach runs a single persistent kernel throughout evolution:
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[
-    kernel/.style={rectangle, draw, fill=gpugreen!20, minimum width=3cm, minimum height=1cm},
-    queue/.style={rectangle, draw, fill=blue!10, minimum width=2cm, minimum height=0.5cm},
-    arrow/.style={->, thick}
+    node distance=0pt,
+    stage/.style={rectangle, draw, minimum width=2.4cm, minimum height=0.8cm,
+                  align=center, font=\small},
+    shell/.style={rectangle, draw, thick, minimum width=10.2cm, minimum height=3.3cm},
+    flow/.style={->, >=latex}
 ]
-% Megakernel
-\node[kernel, minimum width=8cm, minimum height=2.5cm] (mega) at (0,0) {};
-\node[above] at (mega.north) {\textbf{Megakernel}};
+\node[shell] (mega) at (0,0) {};
+\node[font=\small\bfseries, anchor=north] at ([yshift=-0.18cm]mega.north) {Resident kernel};
 
-% Work queues
-\node[queue] (match) at (-2,0.5) {Match Queue};
-\node[queue] (rewrite) at (-2,-0.5) {Rewrite Queue};
-\node[queue] (state) at (2,0) {State Queue};
+\node[stage] (match)   at (-3.4,-0.35) {Match\\queue};
+\node[stage] (rewrite) at ( 0.0,-0.35) {Rewrite\\queue};
+\node[stage] (state)   at ( 3.4,-0.35) {State\\queue};
 
-% Processing
-\draw[arrow] (match) -- node[above, font=\small] {pattern match} (state);
-\draw[arrow] (state) -- node[below, font=\small] {generate tasks} (rewrite);
-\draw[arrow] (rewrite) -- (match);
+\draw[flow] (match)   -- node[above, font=\scriptsize] {matches}  (rewrite);
+\draw[flow] (rewrite) -- node[above, font=\scriptsize] {children} (state);
 
-% Epoch barrier
-\node[draw, dashed, minimum width=7.5cm] at (0,-1.3) {Epoch Synchronization};
+% Feedback edge routed below the row so it crosses no label.
+\draw[flow] (state.south) -- ++(0,-0.55) -- node[below, font=\scriptsize, pos=0.5]
+      {expanded states re-enter as match tasks} ++(-6.8,0) -- (match.south);
 
+\node[font=\scriptsize, anchor=south] at ([yshift=0.12cm]mega.south) {epoch counter (no host round trip)};
 \end{tikzpicture}
-\caption{Megakernel architecture with work queues}
+\caption{Queue structure of the resident device kernel. Work circulates between the
+three queues without returning to the host; an epoch counter separates evolution steps.}
 \label{fig:megakernel}
 \end{figure}
 
 \subsection{GPU Canonicalization}
 
-Canonicalization on the GPU mirrors the CPU design by SHARING IT: the individualization--refinement body is one source compiled for host and device, so the two agree by construction rather than by comparison, and the device computes the same exact hash on every state under the exact mode. The color-refinement step below is the inner loop that IR itself refines with, and it is vertex-parallel, which is what maps to the device:
+The device does not reimplement canonicalization. The individualization--refinement body is a single source compiled for both host and device, so host and device compute the same canonical hash for a given state by construction, and the device applies it to every state under the exact mode. The color-refinement step shown below is IR's inner loop; it is vertex-parallel, and that is the property exploited on the device:
 
 \begin{algorithm}
 \caption{GPU WL Color Refinement (per thread block)}
@@ -516,7 +523,7 @@ Canonicalization on the GPU mirrors the CPU design by SHARING IT: the individual
 \end{algorithmic}
 \end{algorithm}
 
-The device does not run this algorithm. Its canonical identity is the individualization--refinement body of Section~\ref{sec:ir}, compiled for both host and device from one source, so the two agree by construction rather than by comparison; the only device-side hash of its own is the content-ordered key that \textsc{Automatic} identity asks for, which applies the same \texttt{ContentHasher} rule the host applies. A 1-WL approximation on the device would be a second answer to a question the shared body already answers exactly, and a state too large for the fast-path scratch is signalled as a truncation and retried with a larger arena rather than silently degraded.
+Algorithm~\ref{alg:gpu-wl} is not used as a state identity on the device. The device's canonical identity is the shared IR body of Section~\ref{sec:ir}; the only additional device-side hash is the content-ordered key required by \textsc{Automatic} identity, which applies the same rule as the host. A state whose canonicalization exceeds the pre-sized device scratch is reported as a truncation and retried with a larger arena; it is not silently replaced by a coarser identity.
 
 \subsection{GPU Pattern Matching}
 
@@ -560,131 +567,100 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 
 \subsection{Correctness and Memory (Table T1, T3, T4, T5)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, raw states, events, causal edges, branchial edges, arena bytes, heap allocations, and heap bytes, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t1-exactness}
 \input{tables/t1_exactness}
 \end{table}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T3 --- The global allocator is off the concurrent path.} One row per corpus workload, ordered by the work done. \texttt{cost\_matrix} counts every global \texttt{operator new} during the measured evolution, so the last column is what the de-heap, the causal-closure rework and the copy-on-write states were all for: allocation must not grow with the work. It falls from 0.45 allocations per event on the smallest runs to 0.0026 on runs three orders of magnitude larger --- the remaining allocations are the fixed set-up a run performs once, and the per-event cost goes to the arena instead. These three contributions were scaffolded as before/after tables; their ``before'' columns are not reproducible as a comparison, because each replaced path was deleted in the commit that replaced it, the work spans dozens of commits, and the instrument that measures arena bytes today did not exist at the far end. A pair of numbers from two different instruments is not a before and an after. Source: \texttt{tools/cost\_matrix.cpp}.}
+\caption{\textbf{T3 --- Global allocator use during evolution.} One row per corpus workload, ordered by work performed. \texttt{cost\_matrix} counts every call to global \texttt{operator new} during the measured evolution. Allocations per event fall from $0.45$ on the smallest runs to $0.0026$ on runs three orders of magnitude larger: the remaining allocations are fixed set-up performed once per run, and per-event allocation is served from the arena. No before/after comparison is given for the contributions that produced this figure. Each replaced path was deleted in the commit that replaced it, the work spans dozens of commits, and the instrument that measures arena bytes did not exist at the start of that sequence; two numbers from two different instruments would not constitute a comparison. Source: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t3-deheap}
 \input{tables/t3_heap}
 \end{table}
 
 \subsection{Wall-Time Speedup (Table T2)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T2 --- The native engine against the Wolfram implementation.} Two implementations of the same computation, each timed at its own natural interface: the native engine at its C++ API, and Wolfram/Multicomputation's \texttt{MultiwaySystem} through the only interface it has. That interface is graph-valued in every property it exposes (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}, \ldots; the full list is enumerated by \texttt{reference/authority\_properties.wls}), so its time necessarily includes building Wolfram \texttt{Graph} objects --- that is a property OF the Wolfram implementation, not of this measurement, and there is no way to ask it for less. The state and causal-edge counts agree exactly at every depth, which is what makes these the same computation. The last column is this project's own Wolfram-layer cost and is NOT part of the comparison: it is shown because it says what the paclet path costs a user, about 400$\times$ the engine's evolution at depth seven, and it is the reason no benchmark in this paper is taken through it. Two reading notes: the depth-2 row carries one-time kernel and paclet setup on the Wolfram side, and the native times at depths 3--5 are at the edge of the timer's resolution, so the depth-6 and depth-7 rows are the ones that carry weight. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe} and \texttt{reference/bench\_authority.wls}.}
+\caption{\textbf{T2 --- Comparison against the Wolfram \texttt{MultiwaySystem} implementation.} Both implementations compute the same evolution and are timed at their respective interfaces: the native engine at its C++ API, and \texttt{MultiwaySystem} through its exposed properties. Every property that implementation exposes is graph-valued (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated by \texttt{reference/authority\_properties.wls}), so its measured time necessarily includes construction of Wolfram \texttt{Graph} objects, and no interface returning the state set alone is available. State and causal-edge counts agree exactly at every depth. The final column reports this project's own Wolfram-layer cost and is excluded from the comparison; it is approximately $400\times$ the engine's evolution time at depth seven, and is the reason no measurement in this paper is taken through that layer. The depth-2 row includes one-time kernel and paclet initialisation on the Wolfram side, and the native times at depths 3--5 are near the timer's resolution. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe} and \texttt{reference/bench\_authority.wls}.}
 \label{tab:t2-speedup}
 \input{tables/t2_speedup}
 \end{table}
 
 \subsection{Quotient Exploration (Table T6)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T6 --- Quotient vs.\ full expansion.} Raw states expanded and wall-time for quotient exploration (expand each canonical state once at its shortest reachable depth) vs.\ full expansion, at increasing depth on the Wolfram rule, with the same canonical closure. Reports the widening advantage with depth and confirms no perf regression versus the prior mode.}
+\caption{\textbf{T6 --- Quotient against full expansion.} Raw states expanded and wall time for quotient exploration---expanding each canonical state once, at its shortest reachable depth---against full expansion, at increasing depth on the Wolfram rule and with the same canonical closure. Both modes produce the same canonical state set; the columns report the difference in raw states expanded and in wall time. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe}.}
 \label{tab:t6-quotient}
 \input{tables/t6_quotient}
 \end{table}
 
 \subsection{GPU (Table T7)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T7 --- GPU acceleration.} Match-kernel time and end-to-end evolution time, GPU vs.\ CPU, at increasing depth on the Wolfram rule, including the lazy-index variant. Branchial edges via a per-(state,edge) index. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}, run in one session on the machine recorded in the table's provenance line. Both sides run the same rule, initial condition, canonicalization mode and exploration strategy, and report medians. The device loses at depth 5, where the work does not cover the launch, and wins from depth 6 on.}
+\caption{\textbf{T7 --- GPU against CPU.} Match-kernel time and end-to-end evolution time for GPU and CPU at increasing depth on the Wolfram rule, including the lazy-index variant; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. The GPU is slower than the CPU at depth five, where the work per launch does not amortise the launch cost, and faster from depth six onward. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t7-gpu}
 \input{tables/t7_gpu}
 \end{table}
 
 \subsection{Thread Scaling (Table T8)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T8 --- Strong scaling, and what it depends on.} Median wall time and EFFICIENCY (speedup divided by threads) at each thread count, for two problem sizes on the same rule. The sweep reaches the host's full width deliberately: a curve cut off at eight threads measures the easy half. Efficiency, not speedup, is the column that shows where parallelism stops paying --- it falls to 0.26 at 32 threads on the smaller problem and 0.36 on the larger, and both peak in wall time at 24, which is this host's physical core count. Table~\ref{tab:t13-memory} identifies what the lost efficiency is spent on, and it is not simultaneous multithreading. The two depths are the input axis: efficiency at every thread count is HIGHER on the larger problem (0.62 against 0.86 at eight threads), because the fixed serial cost amortises over more work. Paired with the determinism gate: the expanded state set and the (input, output, rule) transition multiset are identical at every thread count and seed. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
+\caption{\textbf{T8 --- Strong scaling at two problem sizes.} Median wall time and parallel efficiency (speedup divided by thread count) at each thread count, for two problem sizes on the same rule. The sweep extends to the host's full thread count; efficiency, rather than speedup, identifies where added threads cease to contribute. Efficiency falls to $0.26$ at 32 threads on the smaller problem and $0.36$ on the larger, and wall time is minimised at 24 threads, this host's physical core count. Table~\ref{tab:t13-memory} identifies the cause. Efficiency is higher at every thread count on the larger problem ($0.86$ against $0.62$ at eight threads), as the fixed serial cost is amortised over more work. The expanded state set and the (input, output, rule) transition multiset are identical at every thread count and seed. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
 \end{table}
 
 \subsection{Rule Shape and Where Efficiency Falls (Table T12)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T12 --- The scaling ceiling depends on the rule's shape.} A rule set decides how much parallel work exists, so a scaling curve measured on one rule is a statement about that rule. Two shapes are swept at every thread count: a one-edge left-hand side, which re-matches by scanning an index and expands each state narrowly, and a two-edge left-hand side, which joins and produces a wider frontier. Both are linear to four threads. Past that they part: the two-edge rule stays at or above unit efficiency to eight threads (1.14, superlinear, because a wider frontier deduplicates work that the serial order performs) and reaches its best wall time at sixteen, while the one-edge rule is already at 0.78 by eight. Both then LOSE speedup: at 24 threads --- every physical core, before any simultaneous multithreading --- efficiency is 0.26 on both shapes, and the two-edge rule's wall time is roughly double its sixteen-thread figure. The serial point is 5.7\,s and 92.6\,s respectively, so the fall is not thread setup amortising badly; the same shape of curve was confirmed on a problem 100$\times$ smaller. The engine's useful width on this host is therefore eight to sixteen workers depending on the rule, not the machine's core count. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
+\caption{\textbf{T12 --- Parallel efficiency by rule shape.} The rule set determines how much parallel work is available, so a scaling curve measured on a single rule characterises that rule. Two shapes are measured at each thread count: a one-edge left-hand side, which re-matches by scanning an index and expands each state narrowly, and a two-edge left-hand side, which performs a join and produces a wider frontier. Both scale linearly to four threads. The two-edge rule maintains efficiency at or above unity to eight threads ($1.14$; the superlinear value arises because a wider frontier deduplicates work that the serial order performs) and attains its minimum wall time at sixteen. The one-edge rule reaches $0.78$ at eight threads. At 24 threads---all physical cores, before any simultaneous multithreading---efficiency is $0.26$ for both shapes. Serial times are $5.7$\,s and $92.6$\,s respectively, so the decline is not attributable to thread setup; the same curve shape was obtained at a problem size $100\times$ smaller. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t12-shapes}
 \input{tables/t12_rule_shapes}
 \end{table}
 
 \subsection{What the Lost Efficiency Is Spent On (Table T13)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T13 --- The ceiling is memory acquisition, not lock contention.} A falling efficiency curve does not say what consumed the threads, and the two candidate answers demand opposite remedies, so both are read from \texttt{getrusage} on the same runs. Across a 32$\times$ increase in workers USER time rises only 2.1$\times$ (4.94\,s to 10.28\,s): the workers are not doing materially more work, which is what contention on a shared structure would show. SYSTEM time rises 206$\times$ (0.27\,s to 55.5\,s), tracking peak resident set (673\,MB to 8.1\,GB) and minor page faults (172\,464 to 2\,305\,145) --- each worker draws its own arena blocks, so the run acquires memory in proportion to its width and pays the kernel to fault every page of it in. Wall time bottoms at sixteen threads and rises thereafter because that kernel cost overtakes the parallel gain. This bounds the scaling claim to what was measured on this host: the limit reported in Tables~\ref{tab:t8-scaling} and~\ref{tab:t12-shapes} is a property of per-worker allocation, and a host with more memory bandwidth or huge pages configured would place it elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
+\caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $32\times$ increase in worker count, user time increases by a factor of $2.1$ ($4.94$\,s to $10.28$\,s), which is inconsistent with contention on a shared structure. System time increases by a factor of $206$ ($0.27$\,s to $55.5$\,s), tracking peak resident set ($673$\,MB to $8.1$\,GB) and minor page faults ($172{,}464$ to $2{,}305{,}145$): each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. Wall time is minimised at sixteen threads, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
 \label{tab:t13-memory}
 \input{tables/t13_thread_memory}
 \end{table}
 
 \subsection{Device Saturation (Table T11)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T11 --- Does the device saturate, and where.} The persistent kernel's grid is a run-time knob, so the question is answered behaviourally: wall time falls while adding blocks buys work and flattens when it does not. It flattens at eight blocks per streaming multiprocessor --- 2.23$\times$ over one per SM, and sixteen per SM is within noise of eight --- which is where the shipped default sits. The last column is the driver's peak SM-busy reading during the run, sampled at 20\,Hz; it is a bound and not an occupancy figure, because the counter says whether the SMs were busy and not how many warps were resident. The MEAN of that counter is deliberately not reported: it falls as the run gets faster, since the same busy kernel occupies a smaller share of the sampling window, so it tracks duration rather than residency. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_gpu\_evolve} mode 2.}
+\caption{\textbf{T11 --- Device saturation against grid size.} The resident kernel's grid size is a run-time parameter, so saturation is determined behaviourally: wall time decreases while additional blocks contribute work and flattens when they do not. It flattens at eight blocks per streaming multiprocessor---$2.23\times$ the time at one block per SM, with sixteen per SM within measurement variation of eight---which is the shipped default. The final column is the driver's peak SM-busy reading during the run, sampled at 20\,Hz. It is an upper bound on utilisation and not an occupancy figure, since the counter reports whether the SMs were busy rather than how many warps were resident. The mean of that counter is not reported: it decreases as the run becomes faster, because the same busy kernel occupies a smaller fraction of the sampling window, and therefore tracks duration rather than residency. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_gpu\_evolve} mode 2.}
 \label{tab:t11-saturation}
 \input{tables/t11_gpu_saturation}
 \end{table}
 
 \subsection{Ablation (Table T9)}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
-\caption{\textbf{T9 --- Per-contribution ablation, from the switches the shipped binary has.} There are no compiled-out ablation builds to run: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice is still a live switch. Those are match forwarding, which the rule set decides (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode. Quotient exploration has its own table (T6). Each arm is a best-of-N wall time on the same workload, and the state and event counts are compared so a row that changed the ANSWER shows as such instead of reading as a speedup. Source: \texttt{tools/sampling\_cost\_smoke}.}
+\caption{\textbf{T9 --- Per-contribution ablation over the run-time switches present in the shipped binary.} No compiled-out ablation builds exist: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice remains a run-time switch. Those are match forwarding, whose applicability depends on the rule set (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode; quotient exploration is reported separately in Table~\ref{tab:t6-quotient}. Each arm is a best-of-$N$ wall time on the same workload. State and event counts are compared across arms, so a switch that alters the computed result is identified as such rather than reported as a change in speed. Source: \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t9-ablation}
 \input{tables/t9_ablation}
 \end{table}
 
 \subsection{Event Canonicalization Overhead}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{\textbf{Event identity is three distinct conventions, not one under three names.} Canonical event count per convention on each corpus workload, under \textsc{Full} state canonicalization, single-threaded. The conventions refine one another --- two rewrites are the same event when they run between the same states, when they additionally move the same edges, or never --- so the counts must be non-decreasing left to right, and where they are strictly increasing the convention is doing work no coarser one does. There is no timing column: what separates the conventions is what they IDENTIFY, and the cost of the identity is the added canonicalization pass that Table~\ref{tab:t9-ablation} measures. Source: \texttt{tools/mode\_matrix\_probe.cpp}.}
 \label{tab:event-canon}
 \input{tables/t10_event_canon}
 \end{table}
-
-% ----------------------------------------------------------------------------
-% VISUALISATION
-% ----------------------------------------------------------------------------
-
-\section{Interactive Visualization}
-\label{sec:visualization}
-
-We provide an interactive 3D visualization system for exploring evolution graphs (Figure~\ref{fig:viz}).
-
-\begin{figure}[h]
-\centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}
-[Interactive visualization screenshot placeholder]\\[0.5cm]
-\small Force-directed layout of evolution graph with\\
-state coloring by generation and edge highlighting
-\vspace{2cm}}}
-\caption{Interactive evolution graph visualization}
-\label{fig:viz}
-\end{figure}
-
-Features include:
-\begin{itemize}
-    \item Force-directed and hierarchical layout algorithms
-    \item Real-time evolution stepping with animation
-    \item State/event selection with hypergraph detail views
-    \item Causal and branchial graph overlays
-    \item Export to common formats (SVG, PNG, GLTF)
-\end{itemize}
-
-The visualization is implemented using Vulkan for cross-platform GPU-accelerated rendering, with ImGui for the user interface.
 
 % ----------------------------------------------------------------------------
 % CONCLUSION
@@ -693,7 +669,7 @@ The visualization is implemented using Vulkan for cross-platform GPU-accelerated
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented a high-performance implementation of hypergraph evolution for the Wolfram Physics Project, built on exact canonicalization and lock-free concurrency. Against the Wolfram \texttt{MultiwaySystem} implementation --- same rule, same initial condition, identical state and causal-edge counts at every depth --- the native engine is 5{,}507$\times$ faster at depth four, 12{,}589$\times$ at depth five, 27{,}108$\times$ at depth six and 45{,}713$\times$ at depth seven (Table~\ref{tab:t2-speedup}), a margin that widens with depth. On the host the evolution scales to this machine's 24 physical cores at 12.8$\times$, with efficiency rising as the problem grows (Table~\ref{tab:t8-scaling}); its useful width is eight to sixteen workers depending on the rule's shape (Table~\ref{tab:t12-shapes}), and past that point the limit is measured to be memory acquisition rather than contention --- user time is near-flat across a 32$\times$ increase in workers while system time and page faults grow with the per-worker resident set (Table~\ref{tab:t13-memory}); on the device it saturates at eight blocks per SM (Table~\ref{tab:t11-saturation}). The GPU passes eight CPU threads between depth five, where it loses, and depth seven, where it is 12.4$\times$ ahead (Table~\ref{tab:t7-gpu}). Key contributions include:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the Wolfram \texttt{MultiwaySystem} implementation on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. On the host, evolution attains a speedup of $12.8\times$ on this machine's 24 physical cores, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
@@ -734,6 +710,8 @@ The author thanks Stephen Wolfram for foundational work on the Wolfram Physics P
 % BIBLIOGRAPHY
 % ----------------------------------------------------------------------------
 
+\FloatBarrier
+
 \bibliographystyle{unsrtnat}
 \bibliography{references}
 
@@ -752,7 +730,7 @@ For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, 
 
 \textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
-\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. That worst-case cost is real and it is paid: under the exact mode IR runs on every state, and profiling attributes about half of the engine's instructions to it. Bucketing by a cheap hash and calling IR only on collisions does not relieve it, for the reason given in Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so the cheap pass is bounded to eliding at most $C/R$ of the calls it precedes.
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes approximately half of the engine's executed instructions to it. Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
 
 \subsection{Pattern Matching Complexity}
 
@@ -768,7 +746,7 @@ For pattern with $|L|$ edges and state with $|S|$ edges:
 \section{Data Structure Specifications}
 \label{app:data-structures}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{Lock-free data structure complexity}
 \begin{tabular}{lcccc}
