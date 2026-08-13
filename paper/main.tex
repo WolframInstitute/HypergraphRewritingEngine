@@ -1071,25 +1071,34 @@ overflow, recorded and reported like any other, and never a quietly coarser iden
 
 \subsection{GPU Canonicalization}
 
-The device does not reimplement canonicalization. The individualization--refinement body is a single source compiled for both host and device, so host and device compute the same canonical hash for a given state by construction, and the device applies it to every state under the exact mode. The color-refinement step shown below is IR's inner loop; it is vertex-parallel, and that is the property exploited on the device:
+The device does not reimplement canonicalization. The individualization--refinement body is a
+single source compiled for both host and device, so host and device compute the same canonical
+hash for a given state by construction rather than by two implementations being kept in step. What
+is device-specific is the orchestration only: how a state is flattened out of the adjacency
+representation, and where the core's scratch comes from.
 
-\begin{algorithm}
-\caption{GPU WL Color Refinement (per thread block)}
-\label{alg:gpu-wl}
-\begin{algorithmic}[1]
-\Procedure{GPUWLHash}{$\hypergraph$}
-    \State Initialize $c_v \gets \deg(v)$ for all $v$ in parallel
-    \Repeat
-        \State \textbf{parallel for} each $v \in V$ \textbf{do}
-        \State \quad $c_v' \gets \hash(c_v, \text{multiset}\{c_u : u \in N(v)\})$
-        \State Swap $c \gets c'$
-    \Until{coloring stable}
-    \State \Return $\hash(\text{sorted}(\{c_v\}))$
-\EndProcedure
-\end{algorithmic}
-\end{algorithm}
+The parallelism is across states, not within one. A worker canonicalizes one state per call,
+running the shared body serially, which suits a workload whose states arrive continuously and
+number in the thousands rather than one whose individual instances are large. The scratch for that
+call is sized from the state's own edge and occurrence counts and claimed from the device arena of
+Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch to measure.
 
-Algorithm~\ref{alg:gpu-wl} is not used as a state identity on the device. The device's canonical identity is the shared IR body of Section~\ref{sec:ir}; the only additional device-side hash is the content-ordered key required by \textsc{Automatic} identity, which applies the same rule as the host. A state whose canonicalization exceeds the pre-sized device scratch is reported as a truncation and retried with a larger arena; it is not silently replaced by a coarser identity.
+There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
+key---because the arena is exhausted, or because the search wants more individualization depth than
+the device attempts---is reported as a capacity overflow and the run is retried with a larger
+reservation. It is never keyed by something coarser. This is not a tuning preference, because
+isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
+separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
+demonstrates constructively on the prism graph against $K_{3,3}$ at six vertices and on the
+rook's $4 \times 4$ graph against the Shrikhande graph. Nothing bounds how often an evolution
+reaches such a state, so no collision rate measured over some other corpus would license treating
+the merge as rare. The only additional device-side hash is the content-ordered key that the
+\textsc{Automatic} identity requires, which applies the same rule as the host.
+
+Where a device-side event signature must stand in a raw edge identifier because an edge's canonical
+rank was unavailable at the moment the event was stamped, the substitution is counted. Such a
+signature is not an isomorphism invariant, and the count is what lets a caller comparing event
+totals across devices see that it occurred rather than infer a disagreement in the evolution.
 
 \subsection{GPU Pattern Matching}
 
