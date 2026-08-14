@@ -1,7 +1,14 @@
 // GPU evolve timing: the deep/narrow regime (small initial state, many steps), where the work
 // per step is small enough that scheduling overhead, not compute, sets the time.
 //
-// Usage: bench_gpu_evolve [steps] [iters] [mode]   (default 6 20 0)
+// Usage: bench_gpu_evolve [steps] [iters] [mode] [workload]   (default 6 20 0 wpp)
+//
+// ONE WORKLOAD IS NOT A MEASUREMENT. Every shape below stresses the device differently: a rule
+// whose left side is a single edge floods the matcher, an automorphic initial state makes
+// individualization-refinement descend where it usually stops at depth one, a multi-rule set
+// multiplies the queue traffic per state, and a reductive rule shrinks states so the frontier
+// dies rather than grows. An optimisation measured on one of them is tuned to one of them.
+// `bench_gpu_evolve <steps> <iters> <mode> list` prints the names.
 //   mode 0  evolve() against PersistentEvolver
 //   mode 1  PersistentEvolver alone (clean steady state for profiling)
 //   mode 2  one row for the grid this process is running at
@@ -39,14 +46,58 @@ static hg_gpu::RewriteRule make_rule(std::vector<std::vector<uint8_t>> lhs,
     return r;
 }
 
+struct Workload {
+    const char* name;
+    std::vector<hg_gpu::RewriteRule> rules;
+    std::vector<std::vector<uint32_t>> init;
+};
+
+// Shapes drawn from the corpus tools/cost_matrix.cpp proves exactness on, so a timing here and
+// an exactness row there name the same thing.
+static std::vector<Workload> workloads() {
+    return {
+        // The deep/narrow default: two-edge left side, growing right side, two-edge initial.
+        {"wpp",        {make_rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})}, {{0,1},{0,2}}},
+        // Single-edge left side: every edge in the state is a candidate, so the matcher floods.
+        {"binary",     {make_rule({{0,1}}, {{0,2},{2,1}})},                    {{0,1}}},
+        // Wolfram 2->4, the shape most of the published models use.
+        {"wolfram24",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2},{2,0}})},  {{0,1},{1,2}}},
+        // Cyclic left side: three edges, no acyclic join order, worst case for the matcher.
+        {"triangle",   {make_rule({{0,1},{1,2},{2,0}}, {{0,1},{1,2},{2,3},{3,0}})},
+                       {{0,1},{1,2},{2,0}}},
+        // Mixed arity on both sides.
+        {"arity3",     {make_rule({{0,1,2}}, {{0,1,2},{2,3}})},                {{0,1,2}}},
+        // Two rules over the same state: queue traffic per state doubles and the two compete.
+        {"multirule",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}}),
+                        make_rule({{0,1}}, {{0,2},{2,1}})},                    {{0,1},{1,2}}},
+        // Automorphic initial state: the canonicalizer cannot stop at depth one, which is where
+        // the device spends 91% of its time even on the easy shapes.
+        {"cycle4",     {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}})},
+                       {{0,1},{1,2},{2,3},{3,0}}},
+        // Several roots, so the frontier starts wide instead of narrow.
+        {"multiroot",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}})},
+                       {{0,1},{1,2},{3,4},{4,5},{6,7},{7,8}}},
+    };
+}
+
 int main(int argc, char** argv) {
     int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     int iters = argc > 2 ? std::atoi(argv[2]) : 20;
     int mode  = argc > 3 ? std::atoi(argv[3]) : 0;
+    const char* want = argc > 4 ? argv[4] : "wpp";
+
+    const auto all = workloads();
+    if (std::strcmp(want, "list") == 0) {
+        for (const auto& w : all) std::printf("%s\n", w.name);
+        return 0;
+    }
+    const Workload* sel = nullptr;
+    for (const auto& w : all) if (std::strcmp(w.name, want) == 0) sel = &w;
+    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list)\n", want); return 2; }
 
     hg_gpu::EvolveInput in;
-    in.rules = { make_rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}) };
-    in.initial_state = {{0u, 1u}, {0u, 2u}};
+    in.rules = sel->rules;
+    in.initial_state = sel->init;
     in.num_steps = static_cast<uint32_t>(steps);
     in.canonicalization = hg_gpu::CanonicalizationMode::Full;
     in.explore_from_canonical_states_only = true;
