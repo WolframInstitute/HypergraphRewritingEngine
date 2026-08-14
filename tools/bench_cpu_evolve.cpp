@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <cstdio>
@@ -48,10 +49,53 @@ static std::vector<int> thread_sweep(const char* spec) {
     return out;
 }
 
+// The same shapes bench_gpu_evolve measures, so a CPU row and a GPU row name the same workload.
+// One workload is not a measurement: multi-rule and automorphic-initial shapes cost orders of
+// magnitude more per state than the deep/narrow default, and only a corpus shows it.
+struct Workload {
+    const char* name;
+    std::vector<RewriteRule> rules;
+    std::vector<std::vector<VertexId>> init;
+};
+
+static std::vector<Workload> workloads() {
+    return {
+        {"wpp",       {make_rule(0).lhs({0,1}).lhs({0,2})
+                          .rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
+                      {{0,1},{0,2}}},
+        {"binary",    {make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
+                      {{0,1}}},
+        {"wolfram24", {make_rule(0).lhs({0,1}).lhs({1,2})
+                          .rhs({0,1}).rhs({1,3}).rhs({3,2}).rhs({2,0}).build()},
+                      {{0,1},{1,2}}},
+        {"triangle",  {make_rule(0).lhs({0,1}).lhs({1,2}).lhs({2,0})
+                          .rhs({0,1}).rhs({1,2}).rhs({2,3}).rhs({3,0}).build()},
+                      {{0,1},{1,2},{2,0}}},
+        {"arity3",    {make_rule(0).lhs({0,1,2}).rhs({0,1,2}).rhs({2,3}).build()},
+                      {{0,1,2}}},
+        {"multirule", {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build(),
+                       make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
+                      {{0,1},{1,2}}},
+        {"cycle4",    {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build()},
+                      {{0,1},{1,2},{2,3},{3,0}}},
+        {"multiroot", {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build()},
+                      {{0,1},{1,2},{3,4},{4,5},{6,7},{7,8}}},
+    };
+}
+
 int main(int argc, char** argv) {
     const int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     const int iters = argc > 2 ? std::atoi(argv[2]) : 20;
     const std::vector<int> sweep = thread_sweep(argc > 3 ? argv[3] : nullptr);
+    const char* want = argc > 4 ? argv[4] : "wpp";
+    const auto all = workloads();
+    if (std::strcmp(want, "list") == 0) {
+        for (const auto& w : all) std::printf("%s\n", w.name);
+        return 0;
+    }
+    const Workload* sel = nullptr;
+    for (const auto& w : all) if (std::strcmp(w.name, want) == 0) sel = &w;
+    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list)\n", want); return 2; }
 
     double base_ms = 0.0;
     for (int threads : sweep) {
@@ -62,10 +106,9 @@ int main(int argc, char** argv) {
             g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             ParallelEvolutionEngine e(&g, threads);
             e.set_explore_from_canonical_states_only(true);
-            e.add_rule(make_rule(0).lhs({0,1}).lhs({0,2})
-                           .rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build());
+            for (const auto& r : sel->rules) e.add_rule(r);
             const auto t0 = std::chrono::steady_clock::now();
-            e.evolve({{0,1},{0,2}}, steps);
+            e.evolve(sel->init, steps);
             const auto t1 = std::chrono::steady_clock::now();
             ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
             states = g.num_canonical_states();
