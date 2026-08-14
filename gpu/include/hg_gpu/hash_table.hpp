@@ -42,6 +42,19 @@ namespace gpu {
 //   load a stale value. This is enforced by the release semantics on the
 //   keys store paired with the reader's acquire load of the key (which
 //   synchronizes-with the values write).
+// Gather the occupied slots of a key array into a dense prefix. One thread per slot; the order
+// of the result is unspecified, which every caller already assumes because slot order is a
+// function of the hash rather than of anything meaningful.
+template <typename K, K EMPTY, K LOCKED>
+__global__ void k_gather_keys(const K* __restrict__ keys, uint32_t capacity,
+                              K* __restrict__ out, uint32_t* __restrict__ count) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= capacity) return;
+    const K k = keys[i];
+    if (k == EMPTY || k == LOCKED) return;
+    out[atomicAdd(count, 1u)] = k;
+}
+
 template <typename K, typename V, K EMPTY = K{0}, K LOCKED = static_cast<K>(~K{0})>
 class ConcurrentMap {
 public:
@@ -218,16 +231,37 @@ public:
 
     uint32_t capacity() const { return capacity_; }
 
-    // Every key the map holds, in slot order. EMPTY and LOCKED are slot states rather than
-    // keys, so they are dropped -- a caller enumerating a set must not be handed them. Only
-    // meaningful once the kernels writing the map have completed.
+    // Every key the map holds. EMPTY and LOCKED are slot states rather than keys, so they are
+    // dropped -- a caller enumerating a set must not be handed them. Only meaningful once the
+    // kernels writing the map have completed.
+    //
+    // COMPACTED ON THE DEVICE, so the cost is the number of KEYS rather than the table's
+    // CAPACITY. Copying the slot array whole made a run's cost scale with how large its pools
+    // were configured rather than with the work it did: a depth-7 run whose pools were sized for
+    // depth 8 copied eight times the bytes and, worse, value-initialised a host vector of
+    // capacity elements for each of the three maps drained per call. A gather kernel writes the
+    // occupied slots into a dense buffer and the host reads that prefix.
     void copy_keys_to_host(std::vector<K>& out) const {
-        std::vector<K> slots(capacity_);
-        HG_CUDA_CHECK(cudaMemcpy(slots.data(), keys_, sizeof(K) * capacity_,
-                                 cudaMemcpyDeviceToHost), "ConcurrentMap key readback");
-        out.clear();
-        for (K k : slots)
-            if (k != EMPTY && k != LOCKED) out.push_back(k);
+        uint32_t* d_count = nullptr;
+        K* d_dense = nullptr;
+        HG_CUDA_CHECK(cudaMalloc(&d_count, sizeof(uint32_t)), "key gather count alloc");
+        HG_CUDA_CHECK(cudaMalloc(&d_dense, sizeof(K) * capacity_), "key gather dense alloc");
+        HG_CUDA_CHECK(cudaMemset(d_count, 0, sizeof(uint32_t)), "key gather count clear");
+
+        const uint32_t block = 256;
+        const uint32_t grid = (capacity_ + block - 1) / block;
+        k_gather_keys<K, EMPTY, LOCKED><<<grid, block>>>(keys_, capacity_, d_dense, d_count);
+        HG_CUDA_CHECK(cudaGetLastError(), "key gather launch");
+
+        uint32_t n = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&n, d_count, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "key gather count read");
+        out.resize(n);
+        if (n)
+            HG_CUDA_CHECK(cudaMemcpy(out.data(), d_dense, sizeof(K) * n,
+                                     cudaMemcpyDeviceToHost), "ConcurrentMap key readback");
+        cudaFree(d_dense);
+        cudaFree(d_count);
     }
 
     void clear() {
