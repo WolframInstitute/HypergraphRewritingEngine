@@ -809,12 +809,28 @@ and the multiplicity of each (canonical state, depth) pair satisfies
   \mathrm{mult}[c, k{+}1] \mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
 \]
 summed over the transitions into $c$, with the raw event count recovered as
-$\sum \mathrm{mult}$. Because every quantity propagates forward over the unrolled DAG, descendants
-are recovered by summation rather than by re-exploring, so the reconstruction requires no
-parallelism of its own and adds a single-threaded pass whose cost does not grow with the thread
-count. Mapping a multiplicity back to the individual instances requires distinguishing the edge
-roles within a class, which is what the edge orbits from the same IR pass provide
-(Section~\ref{sec:ir}); no additional canonicalization is performed.
+$\sum \mathrm{mult}$. Every quantity propagates forward over the unrolled DAG, so a \emph{count}
+is recovered by summation rather than by re-exploring, and that part is polynomial in the number
+of (canonical state, depth) pairs.
+
+Recovering the raw \emph{observables} is a different matter, and the distinction is the one that
+decides what quotient exploration costs. Mapping a multiplicity back to individual instances
+requires distinguishing the edge roles within a class, which the edge orbits from the same IR pass
+provide (Section~\ref{sec:ir}); no additional canonicalization is performed. But the instances
+are then materialised one by one, and there are as many of them as the full system holds. On a
+two-rule set whose canonical state count grows linearly with depth---three, four, five, six, seven,
+eight states at depths two through seven---the raw system reached 146,599 states by depth six,
+and the reconstruction's cost tracked that rather than the canonical count. Quotient exploration
+visited 49 raw states there against full capture's 146,599 and still ran only 65 times faster: a
+large constant factor, not the asymptotic saving the state counts suggest.
+
+The consequence for a caller is that quotient exploration and raw reconstruction are separate
+requests that the implementation currently couples: asking to visit one representative per
+isomorphism class also asks for the raw observables of the system that was not visited. A caller
+wanting canonical observables alone pays for neither materialisation nor the exponential it
+carries. The reconstruction is also not a single-threaded pass---every worker drives it, and its
+total cycle count grows with the thread count, which Section~\ref{sec:limitations} records among
+the measured limits.
 
 \subsection{Transitive Reduction of the Causal Graph}
 \label{sec:tr}
@@ -1530,6 +1546,25 @@ other work. Wall-clock measurements on this host vary by more than ten percent b
 the scaling measurements in particular were taken while the machine was not quiet. The counts,
 instruction-level measurements and \texttt{getrusage} figures are not affected by this; the wall
 times are, and should be reproduced on a quiet machine before being relied upon.
+
+\textbf{Quotient reconstruction scales with the system it avoids visiting.} Quotient exploration
+visits one representative per isomorphism class, and its state count can grow far more slowly than
+the raw system's. The reconstruction that recovers raw observables from those representatives does
+not share that saving: it materialises instances, and there are as many instances as the raw system
+holds. Measured on a two-rule set whose canonical state count grows linearly with depth, the
+reconstruction's cost grew about twentyfold per step---0.17, 0.22, 0.62, 7.36, 144.78 and 4981.05
+milliseconds at depths two through seven for three, four, five, six, seven and eight canonical
+states. Four fifths of that has since been removed by removing hash lookups from the paths
+concerned, but the growth rate is a property of the output, not of the implementation. A caller
+that wants only canonical observables should not be asked to pay it, and the interface does not yet
+let that be said.
+
+\textbf{The reconstruction does not scale with threads.} Every worker drives it, and the total
+cycles it consumes grow with the thread count---measured at 511 million cycles on one thread
+against 3.85 billion on thirty-two for the same workload, with the same amount of admitted work.
+The dedup marks prevent duplicate effects but not duplicate traversal, so added threads contend
+rather than divide the work. On that workload wall time improves to eight threads and degrades
+beyond it.
 
 \textbf{One comparison point.} The only implementation compared against is the Wolfram
 \texttt{MultiwaySystem}, because it is the only other implementation known to us that computes the
