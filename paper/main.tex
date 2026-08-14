@@ -578,6 +578,16 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 \begin{description}
 \item[ConcurrentMap$\langle$K, V$\rangle$:] Hash table using atomic compare-and-swap for insertion. Wait-free lookup with lock-free insertion.
 
+\item[ConcurrentKeySet$\langle$K$\rangle$:] A set, for membership rather than mapping. Presence and
+ownership are decided by one compare-exchange from the empty sentinel to the key, so none of the
+map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight,
+no rescan of the superseded-table chain to keep one key from being claimed twice. Growth carries
+each key into the new table and then seals the slot it came from with a second reserved key, so a
+key reachable through two tables is enumerated once, and a table whose slots are all sealed is
+skipped rather than probed---without which a retired table is scanned in full on every operation,
+because sealing removes the empty slot linear probing stops at. The quotient reconstruction's
+membership marks use it (Section~\ref{sec:quotient}).
+
 \item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
 
 \item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
@@ -1230,7 +1240,11 @@ and that the flag comes from the publishing exchange rather than from a value co
 repeated offers of the same value for the same key do not each report success. For the deque: that
 the owner popping the back and a thief popping the front never extract the same item, checked at
 the single configuration where the two ends address the same slot. For the match rendezvous: that
-a match is claimed exactly once and never dropped on a collision. For the scheduler: that a worker
+a match is claimed exactly once and never dropped on a collision. For the key set: that two
+threads inserting one key while a third insertion forces a growth beneath them produce exactly one
+reported insertion, and that enumeration emits each key once across that growth---two properties
+that failed independently in earlier designs of the same structure, which is why they are checked
+by separate harnesses rather than by one. For the scheduler: that a worker
 which parks is always woken, which is a liveness property and is checked as one---removing either
 of the two sequentially consistent fences in the submit/park protocol makes the checker report a
 non-terminating spin loop.

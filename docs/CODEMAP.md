@@ -91,6 +91,9 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - **Obstruction-free, not lock-free**, and cannot deadlock: a thread holding a claim only stores, never waits.
   - `reject_sentinel_key` throws on a key equal to EMPTY/LOCKED -- such a key is silently unstorable, which caused four separate correctness bugs.
   - `for_each`/`count_unique` walk the whole resize chain and emit each key once (a key can settle only in a superseded table, since `resize()` skips claimed slots).
+- **`concurrent_key_set.hpp`** -- lock-free key-only set (membership, no value word).
+  - `ConcurrentKeySet<K, EMPTY, MIGRATED>` (single-CAS `EMPTY->key` claim; growth installs the successor first, then carries each key forward and seals its old slot with `MIGRATED`; a `drained` table is skipped rather than probed, because sealing removes the terminator linear probing stops at)
+  - Carries the quotient reconstruction's membership marks (`qc_reached_`, `qc_applied_`, `qc_dsup_seen_`, `seen_transitions_`, `qc_branchial_pairs_`); model-checked by `verification/genmc/key_set_exactly_once` and `key_set_enumeration`
 - **`lock_free_list.hpp`** -- append-only lock-free linked list.
   - `LockFreeList<T>` (`for_each`/`for_each_while`), `SingleThreadedList<T>`
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.
