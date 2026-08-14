@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.14)
 # CMP0091 (CMake 3.15+) makes CMAKE_MSVC_RUNTIME_LIBRARY take effect, so a Windows/MSVC build
 # can select the static C runtime (/MT). Must be set before project(). Without NEW the property
+
+# Per-phase cycle counters on the host (hgcommon/phase_timing.hpp).
+#
+# OFF for anything shipped. The counters are one cache line per worker per phase and the timer
+# reads the cycle counter twice per phase entry, so a release build must not carry them -- with
+# this off the header defines PhaseTimer as an empty object and no storage exists at all.
+# Turn it on only to answer "where do this run's cycles go", which is a question the wall clock
+# and the instruction count both answer wrongly here.
+option(HG_PHASE_TIMING "Host per-phase cycle counters (measurement builds only)" OFF)
+if(HG_PHASE_TIMING)
+    add_compile_definitions(HG_PHASE_TIMING)
+    message(STATUS "Host phase timing ENABLED -- this build is for measurement, not for shipping")
+endif()
 # is silently ignored and the binary keeps a VCRUNTIME140 / MSVCP140 (VC++ redist) dependency.
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
@@ -289,6 +302,8 @@ endif()
 # retains only that interface (events/) and the blackhole analysis library the
 # paclet compiles directly.
 option(BUILD_VISUALIZATION "Emit visualization events for the external renderer" OFF)
+
+
 
 # Every host tool gets a build target, automatically.
 #

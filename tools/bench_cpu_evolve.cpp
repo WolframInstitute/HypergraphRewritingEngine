@@ -9,6 +9,7 @@
 //
 // Usage: bench_cpu_evolve [steps] [iters]   (default 6 20)
 
+#include "hgcommon/phase_timing.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 
 #include <algorithm>
@@ -83,6 +84,20 @@ int main(int argc, char** argv) {
                     "speedup=%.2f efficiency=%.2f\n",
                     threads, steps, states, raw, med, ms.front(),
                     base_ms / med, (base_ms / med) / threads);
+    }
+        if (hgcommon::phase_timing_compiled()) {
+        uint64_t total = 0;
+        for (uint32_t p = 0; p < static_cast<uint32_t>(hgcommon::Phase::Count); ++p)
+            total += hgcommon::phase_cycles(static_cast<hgcommon::Phase>(p));
+        if (total) {
+            std::printf("phase cycles (summed over workers, fractions of their sum):\n");
+            for (uint32_t p = 0; p < static_cast<uint32_t>(hgcommon::Phase::Count); ++p) {
+                const auto ph = static_cast<hgcommon::Phase>(p);
+                std::printf("  %-9s %6.2f%%  (%llu)\n", hgcommon::phase_name(ph),
+                            100.0 * double(hgcommon::phase_cycles(ph)) / double(total),
+                            (unsigned long long)hgcommon::phase_cycles(ph));
+            }
+        }
     }
     return 0;
 }

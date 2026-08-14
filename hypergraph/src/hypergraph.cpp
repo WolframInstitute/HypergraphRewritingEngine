@@ -1,3 +1,4 @@
+#include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
@@ -643,6 +644,7 @@ uint64_t Hypergraph::compute_reported_canonical_hash(const SparseBitset& edges) 
 }
 
 uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) const {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Exact canonical hash via individualization-refinement.
     // Flattened straight from the edge set into the per-worker scratch arena (no heap) and
@@ -736,6 +738,7 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     if (edges.empty()) {
         return EMPTY_STATE_CANONICAL_HASH;
@@ -825,6 +828,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
 }  // namespace
 
 uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Materialize the state's edges (id-sorted via SparseBitset iteration) into scratch,
     // run the exact IR canonicalization with edge orbits, then copy a compact table into
@@ -1222,6 +1226,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Quotient);
     qc_capture_expansion(e);
     const Event& ev = get_event(e);
     const EdgeOrbitTable* in_orb = state_orbits(ev.input_state);

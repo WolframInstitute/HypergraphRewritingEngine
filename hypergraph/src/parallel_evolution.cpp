@@ -1,3 +1,4 @@
+#include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
 
@@ -1594,6 +1595,8 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
+
     if (should_stop_.load(std::memory_order_relaxed)) return;
 
     // Check step limit - don't spawn REWRITEs past max_steps
@@ -2047,6 +2050,8 @@ void ParallelEvolutionEngine::execute_match_task(
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
+
     MatchTaskGuard join_guard(*this, data.state, data.step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
@@ -2171,6 +2176,8 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
+
     MatchTaskGuard join_guard(*this, data.state, data.step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;

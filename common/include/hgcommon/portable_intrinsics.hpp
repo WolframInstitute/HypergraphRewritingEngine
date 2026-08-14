@@ -22,6 +22,36 @@
 namespace HG_NAMESPACE {
 namespace common {
 
+// A monotonic cycle counter, for attributing time to phases INSIDE a run.
+//
+// Wall-clock timers are the wrong instrument here twice over: a phase runs for microseconds,
+// and every worker is inside one, so the quantity wanted is cycles spent per phase summed over
+// workers rather than elapsed time. This is the host twin of the device's clock64() phase
+// accounting, and it carries the same caveat -- the counter runs while a thread is stalled or
+// descheduled, so a bucket is ELAPSED cycles in that phase, not issued work, and the buckets
+// are meaningful as fractions of their sum rather than as absolute time.
+//
+// rdtsc is invariant on every x86-64 part this engine targets (constant_tsc), so it does not
+// vary with frequency scaling. On AArch64 the virtual counter serves the same purpose at a
+// lower, fixed frequency. Neither is serialised: an out-of-order core can move the read across
+// nearby instructions, which is acceptable for attributing microsecond phases and would not be
+// for timing individual instructions.
+inline uint64_t cycle_counter() {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    return __rdtsc();
+#elif defined(__x86_64__) || defined(__i386__)
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t v;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+#else
+    return 0;   // no counter: every bucket reads zero, which is visibly "not measured"
+#endif
+}
+
 HG_HD inline int popcount(uint32_t x) {
 #if defined(__CUDA_ARCH__)
     return __popc(x);
