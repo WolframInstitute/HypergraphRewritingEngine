@@ -472,6 +472,36 @@ def main():
     for size, path, line, name in sorted(movable, reverse=True)[:40]:
         out.append(f"- {size:4d} lines  `{path}:{line}`  **{name}**")
 
+    # HEADERS NO TRANSLATION UNIT INCLUDES.
+    #
+    # This map is built by parsing the entries of compile_commands.json, so it can only see a
+    # header that some compiled .cpp/.cu pulls in. A header that nothing includes is therefore
+    # INVISIBLE to it -- and that is exactly the file most worth reporting, because nothing
+    # compiles it, no test covers it, and the audit's "no project code references" section
+    # cannot list definitions it never saw.
+    #
+    # Found the bad way: hypergraph/include/hypergraph/concurrent_id_set.hpp had zero
+    # occurrences in this file while being described in the paper as a shipped data structure.
+    # Walking the tree and subtracting what the parse saw is what makes that case visible.
+    seen_files = set(by_file)
+    orphans = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith(".") and d not in ("build", "build_linux",
+                       "build_gpu", "build_windows", "build_wasm", "third_party", "external")]
+        for fn in filenames:
+            if not fn.endswith((".hpp", ".h", ".cuh")):
+                continue
+            r = rel(os.path.join(dirpath, fn))
+            if r not in seen_files and ours(os.path.join(dirpath, fn)):
+                orphans.append(r)
+    out.append(f"\n## Headers no translation unit includes — {len(orphans)}\n")
+    out.append("Nothing compiles these, so nothing tests them and no definition in them appears "
+               "anywhere above. Each is either dead and should be deleted, or is meant to be "
+               "used and is not.\n")
+    for r in sorted(orphans):
+        out.append(f"- `{r}`")
+
     for path in sorted(by_file):
         defs = sorted(by_file[path])
         out.append(f"\n## `{path}` — {len(defs)} definitions\n")

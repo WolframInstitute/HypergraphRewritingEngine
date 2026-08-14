@@ -582,8 +582,6 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 
 \item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
 
-\item[ConcurrentIdSet:] Open-addressed, append-only set of 32-bit identifiers, used where membership rather than a mapping is required.
-
 \item[Work-stealing deque:] A bounded Chase--Lev deque~\cite{chase2005dynamic}. Each worker owns
 one, pushing and popping at its own end without a contended atomic in the common case, and stealing
 from the opposite end of another worker's deque when idle. Its memory orderings follow

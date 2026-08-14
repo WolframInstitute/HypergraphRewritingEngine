@@ -91,8 +91,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - **Obstruction-free, not lock-free**, and cannot deadlock: a thread holding a claim only stores, never waits.
   - `reject_sentinel_key` throws on a key equal to EMPTY/LOCKED -- such a key is silently unstorable, which caused four separate correctness bugs.
   - `for_each`/`count_unique` walk the whole resize chain and emit each key once (a key can settle only in a superseded table, since `resize()` skips claimed slots).
-- **`concurrent_id_set.hpp`** -- lock-free key-only uint32 set (4 B/slot) for the causal Desc closure.
-  - `ConcurrentIdSet<EMPTY>` (single-CAS `EMPTY->key` publication — no LOCKED window, no spin; `insert`, `contains`, `for_each`; arena-backed, superseded-table `prev` chain)
 - **`lock_free_list.hpp`** -- append-only lock-free linked list.
   - `LockFreeList<T>` (`for_each`/`for_each_while`), `SingleThreadedList<T>`
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.
