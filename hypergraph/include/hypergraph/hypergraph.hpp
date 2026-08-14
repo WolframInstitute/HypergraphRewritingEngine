@@ -22,6 +22,7 @@
 #include "causal_graph.hpp"
 #include "wl_hash.hpp"
 #include "concurrent_map.hpp"
+#include "concurrent_key_set.hpp"
 
 // Shared types: CanonicalizationResult, CanonicalForm, VertexMapping
 #include "canonical_types.hpp"
@@ -122,7 +123,7 @@ class Hypergraph {
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
     // producer-set reconstruction propagates over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    ConcurrentMap<uint64_t, uint8_t> seen_transitions_;
+    ConcurrentKeySet<uint64_t> seen_transitions_;
 
     // Depth-indexed producer-set reconstruction (the online form of the validated DP).
     // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
@@ -130,8 +131,8 @@ class Hypergraph {
     // depth). Producers cascade forward monotonically as transitions and reachability are
     // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    ConcurrentMap<uint64_t, uint8_t> qc_dsup_seen_;
-    ConcurrentMap<uint64_t, uint8_t> qc_reached_;
+    ConcurrentKeySet<uint64_t> qc_dsup_seen_;
+    ConcurrentKeySet<uint64_t> qc_reached_;
     // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
     // depth irreversibly, and raising the depth budget has to revisit the points that stood
     // at the old terminal depth: each was marked reached, but every transition out of it was
@@ -191,10 +192,10 @@ class Hypergraph {
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
-    ConcurrentMap<uint64_t, uint8_t> qc_applied_;
+    ConcurrentKeySet<uint64_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
-    ConcurrentMap<uint64_t, uint8_t> qc_branchial_pairs_;
+    ConcurrentKeySet<uint64_t> qc_branchial_pairs_;
 
     // The matches already applied to one instance, indexed by dense instance id. Branchial
     // pairing scans THIS, not the expansion list, and that is what makes the pairing provable
@@ -298,14 +299,14 @@ class Hypergraph {
         // of reach and the cascade is bounded by max_steps alone.
         bool enter(uint32_t) const { return true; }
         bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
-            if (!hg.qc_reached_.insert_if_absent(rkey, true).second) return false;
+            if (!hg.qc_reached_.insert(rkey)) return false;
             // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made
             // terminal; nothing else reads the list.
             hg.qc_reached_list_.push(QcReachPoint{state_hash, depth}, hg.arena_);
             return true;
         }
         bool mark_producer_seen(uint64_t seen_key) {
-            return hg.qc_dsup_seen_.insert_if_absent(seen_key, true).second;
+            return hg.qc_dsup_seen_.insert(seen_key);
         }
         void push_producer(uint64_t key, uint32_t producer) {
             hg.qc_dsup_list(key)->push(producer, hg.arena_);
@@ -338,7 +339,7 @@ class Hypergraph {
         Hypergraph& hg;
 
         bool claim(uint64_t apply_key) {
-            return hg.qc_applied_.insert_if_absent(apply_key, true).second;
+            return hg.qc_applied_.insert(apply_key);
         }
         uint32_t mint_event() {
             return hg.qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
@@ -379,7 +380,7 @@ class Hypergraph {
             hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each(f);
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi) {
-            if (hg.qc_branchial_pairs_.insert_if_absent(qc_pair_key(lo, hi), true).second)
+            if (hg.qc_branchial_pairs_.insert(qc_pair_key(lo, hi)))
                 hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         }
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent) {
@@ -1191,7 +1192,7 @@ public:
     // must use the schedule-stable content triple instead. One walk, two identities.
     template <typename Id, typename F>
     void for_each_reconstructed_branchial_as(Id&& id, F&& f) const {
-        qc_branchial_pairs_.for_each([&](uint64_t k, bool) {
+        qc_branchial_pairs_.for_each([&](uint64_t k) {
             const IdPair p = id_pair_from_key(k);
             f(id(p.a), id(p.b));
         });

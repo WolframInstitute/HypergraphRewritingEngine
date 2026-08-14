@@ -1264,8 +1264,7 @@ void Hypergraph::register_quotient_transition(EventId e) {
         consumed.data(), static_cast<uint32_t>(consumed.size()),
         survivors.data(), static_cast<uint32_t>(survivors.size()));
 
-    auto seen = seen_transitions_.insert_if_absent(sig, true);
-    if (!seen.second) { worker_scratch().release(mk); return; }  // already captured
+    if (!seen_transitions_.insert(sig)) { worker_scratch().release(mk); return; }  // already captured
 
     // Copy the orbit arrays into the persistent arena, then publish the transition.
     auto copy = [&](const SVec<uint32_t>& src) -> const uint32_t* {
@@ -1310,7 +1309,7 @@ void Hypergraph::register_quotient_transition(EventId e) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d <= maxs; ++d)
-        if (qc_reached_.lookup(qc_rkey(from, static_cast<uint32_t>(d))).has_value())
+        if (qc_reached_.contains(qc_rkey(from, static_cast<uint32_t>(d))))
             qc_process_transition(*t, from, static_cast<uint32_t>(d));
 }
 
