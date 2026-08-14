@@ -243,7 +243,15 @@ class Hypergraph {
     // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
     // reduction decision is exact at insertion.
     ConcurrentKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
-    ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
+    // Kept predecessors of each reconstructed event, indexed DENSELY by event id.
+    //
+    // These ids come from qc_next_raw_event_, which mints them consecutively, so hashing them
+    // was pure overhead: qc_reachable walks this structure once per node of every backward
+    // search, and each step was a hash, a probe and a pointer chase. Callgrind on the workload
+    // where the reconstruction dominates (bench_cpu_evolve 6 1 1 multirule) attributed 33% of
+    // all instructions to the two ConcurrentMap<uint64_t, LockFreeList*> instances, and this is
+    // the one on the search path. A segmented array turns each step into an index.
+    SegmentedArray<LockFreeList<uint32_t>> qc_preds_;
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
     // it is what schedule-independence is fingerprinted on, and what a graph over reconstructed
@@ -1148,10 +1156,9 @@ public:
     template <typename Id, typename F>
     void for_each_reconstructed_causal_as(bool reduced, Id&& id, F&& f) const {
         if (reduced) {
-            qc_preds_.for_each([&](uint64_t k, LockFreeList<uint32_t>* lst) {
-                const uint32_t c = static_cast<uint32_t>(k - 1);
-                lst->for_each([&](uint32_t p) { f(id(p), id(c)); });
-            });
+            const uint32_t n = static_cast<uint32_t>(qc_preds_.size());
+            for (uint32_t c = 0; c < n; ++c)
+                qc_preds_[c].for_each([&](uint32_t p) { f(id(p), id(c)); });
         } else {
             qc_causal_pairs_.for_each([&](uint64_t k) {
                 const IdPair p = id_pair_from_key(k);

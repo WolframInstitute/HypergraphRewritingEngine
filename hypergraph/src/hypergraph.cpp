@@ -1009,10 +1009,9 @@ bool Hypergraph::qc_reachable(uint32_t producer, uint32_t consumer) const {
     while (!stack.empty()) {
         const uint32_t x = stack.back();
         stack.pop_back();
-        auto r = qc_preds_.lookup(static_cast<uint64_t>(x) + 1);
-        if (!r.has_value()) continue;
+        if (x >= qc_preds_.size()) continue;
         bool found = false;
-        (*r)->for_each([&](uint32_t q) {
+        qc_preds_[x].for_each([&](uint32_t q) {
             if (found) return;
             if (q == producer) { found = true; return; }
             if (q > producer && visited.insert(q).second) stack.push_back(q);
@@ -1035,16 +1034,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     // predecessor adjacency later decisions walk.
     if (qc_reachable(producer, consumer)) return;                      // redundant: not tagged
     qc_num_tr_pairs_.fetch_add(1, std::memory_order_relaxed);
-    LockFreeList<uint32_t>* lst;
-    const uint64_t k = static_cast<uint64_t>(consumer) + 1;
-    auto r = qc_preds_.lookup(k);
-    if (r.has_value()) lst = *r;
-    else {
-        auto* nl = arena_.template create<LockFreeList<uint32_t>>();
-        auto ins = qc_preds_.insert_if_absent(k, nl);
-        lst = ins.second ? nl : ins.first;
-    }
-    lst->push(producer, arena_);
+    qc_preds_.get_or_default(consumer, arena_).push(producer, arena_);
 }
 
 void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash,
