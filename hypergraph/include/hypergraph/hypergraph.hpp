@@ -231,7 +231,7 @@ class Hypergraph {
     // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
     // observable is the count of DISTINCT identities, so the mode's signature is computed here
     // and the distinct ones counted.
-    ConcurrentMap<uint64_t, uint8_t> qc_canon_event_seen_{4096};
+    ConcurrentKeySet<uint64_t> qc_canon_event_seen_{4096};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
@@ -242,7 +242,7 @@ class Hypergraph {
     // before creating the child instance whose later application mints the consumer's -- and
     // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
     // reduction decision is exact at insertion.
-    ConcurrentMap<uint64_t, uint8_t> qc_causal_pairs_;              // distinct (producer, consumer)
+    ConcurrentKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
     ConcurrentMap<uint64_t, LockFreeList<uint32_t>*> qc_preds_;  // kept (reduced) predecessors
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
@@ -359,7 +359,7 @@ class Hypergraph {
             // the relation under the identity the CALLER selected -- reporting the internal
             // triple instead makes every pair look like a disagreement with full capture.
             hg.qc_event_runsig_.emplace_at(ev, hg.arena_, csig);
-            if (hg.qc_canon_event_seen_.insert_if_absent(csig, true).second)
+            if (hg.qc_canon_event_seen_.insert(csig))
                 hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
         }
         bool want_causal() const    { return hg.record_set().causal; }
@@ -1054,7 +1054,7 @@ public:
     // two paths disagree about, where comparing counts only says that they do.
     template <typename F>
     void for_each_reconstructed_event_signature(F&& f) const {
-        qc_canon_event_seen_.for_each([&](uint64_t sig, bool) { f(sig); });
+        qc_canon_event_seen_.for_each([&](uint64_t sig) { f(sig); });
     }
 
     // The state whose labelling defines a canonical class -- the class FRAME. The reconstruction
@@ -1153,7 +1153,7 @@ public:
                 lst->for_each([&](uint32_t p) { f(id(p), id(c)); });
             });
         } else {
-            qc_causal_pairs_.for_each([&](uint64_t k, bool) {
+            qc_causal_pairs_.for_each([&](uint64_t k) {
                 const IdPair p = id_pair_from_key(k);
                 f(id(p.a), id(p.b));
             });

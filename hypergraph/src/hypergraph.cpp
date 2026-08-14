@@ -1027,7 +1027,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     qc_num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
 
     const uint64_t pk = qc_pair_key(producer, consumer);
-    if (!qc_causal_pairs_.insert_if_absent(pk, true).second) return;   // pair already recorded
+    if (!qc_causal_pairs_.insert(pk)) return;                          // pair already recorded
     qc_num_causal_pairs_.fetch_add(1, std::memory_order_relaxed);
 
     // One base, two views: tag whether this pair survives reduction. A pair bypassed by a
