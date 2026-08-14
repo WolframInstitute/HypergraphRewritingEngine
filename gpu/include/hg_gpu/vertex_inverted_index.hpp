@@ -46,7 +46,9 @@ public:
     uint32_t max_vertices() const { return list_.num_keys(); }
     uint32_t used()         const { return list_.pool_used_host(); }
 
-    void clear() { list_.clear(); }
+    // `used_vertices` bounds the head reset to the ids a run actually minted; see
+    // LockFreeList::clear. Vertex ids come from a monotone counter, so the prefix is exact.
+    void clear(uint32_t used_vertices = 0xFFFFFFFFu) { list_.clear(used_vertices); }
 
 private:
     LockFreeList<EdgeId> list_;

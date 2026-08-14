@@ -510,6 +510,14 @@ public:
         // At this point state_edge_ids_counter_ still holds the PREVIOUS run's final value, so it
         // names exactly the prefix that can be dirty. Slots above it were never written and still
         // carry the fill from construction, which zeroes the whole reservation once.
+        // The same argument for the head arrays of the lists whose key is a dense id. Each
+        // counter still holds the previous run's value here, so it names the prefix that can be
+        // dirty; heads above it were never written and still carry the fill from construction.
+        // Read them all before anything below resets them.
+        const uint32_t dirty_vertices = vertex_high_water_host();
+        const uint32_t dirty_edges_lf = edge_pool_.size_host();
+        const uint32_t dirty_events   = event_pool_.size_host();
+
         uint32_t dirty_edge_slots = cfg_.max_state_edge_total;
         if (state_edge_ids_counter_) {
             uint32_t n = 0;
@@ -560,16 +568,16 @@ public:
         vertex_pool_.reset();
         edge_pool_.reset();
         signature_index_.clear();
-        vertex_inverted_index_.clear();
+        vertex_inverted_index_.clear(dirty_vertices);
         event_pool_.reset();
         causal_edge_pool_.reset();
         branchial_edge_pool_.reset();
-        edge_consumers_.clear();
+        edge_consumers_.clear(dirty_edges_lf);
         branchial_index_.clear();
         causal_triple_dedup_.clear();
         causal_pair_dedup_.clear();
         branchial_pair_dedup_.clear();
-        preds_list_.clear();
+        preds_list_.clear(dirty_events);
         errors_.clear();
     }
 

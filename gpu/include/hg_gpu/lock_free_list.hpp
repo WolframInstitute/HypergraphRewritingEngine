@@ -123,9 +123,17 @@ public:
     }
 
     // Set every head to kEmptyHead (= INVALID_ID = 0xFFFFFFFF).
-    void clear() {
-        HG_CUDA_CHECK(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * num_keys_),
-              "LockFreeList clear heads");
+    //
+    // `used_keys` bounds the reset to the prefix a run can have touched, for the lists whose KEY
+    // IS A DENSE ID -- a vertex, an edge, an event -- allocated from a monotone counter. Those
+    // are sized from the workload estimate and cleared in full every call, so a run producing a
+    // handful of states paid for the estimate: the head arrays are what remains of the gigabytes
+    // of cudaMemset a depth-3 run was measured issuing. Lists keyed by a HASH BUCKET cannot use
+    // this -- their entries are scattered across the whole array -- and pass nothing.
+    void clear(uint32_t used_keys = 0xFFFFFFFFu) {
+        const uint32_t n = used_keys < num_keys_ ? used_keys : num_keys_;
+        if (n) HG_CUDA_CHECK(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * n),
+                             "LockFreeList clear heads");
         pool_.reset();
     }
 
