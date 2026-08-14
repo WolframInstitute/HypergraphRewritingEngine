@@ -45,7 +45,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
     // for producer and pruning to ids >= producer. Scratch lives in the calling
     // worker's arena (bulk-reclaimed per task).
     SVec<EventId> stack;
-    SUSet<EventId> visited;
+    ScratchIdSet visited;
     stack.push_back(consumer);
     visited.insert(consumer);
     while (!stack.empty()) {
@@ -58,7 +58,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
             if (found) return;
             if (q == producer) { found = true; return; }
             // q < producer can neither be producer nor have it as an ancestor; skip.
-            if ((!topo || q > producer) && visited.insert(q).second) stack.push_back(q);
+            if ((!topo || q > producer) && visited.insert(q)) stack.push_back(q);
         });
         if (found) return true;
     }

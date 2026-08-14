@@ -1003,7 +1003,7 @@ bool Hypergraph::qc_reachable(uint32_t producer, uint32_t consumer) const {
     // increase along every causal edge, so anything below `producer` is out of the cone.
     if (producer >= consumer) return false;
     SVec<uint32_t> stack;
-    SUSet<uint32_t> visited;
+    ScratchIdSet visited;
     stack.push_back(consumer);
     visited.insert(consumer);
     while (!stack.empty()) {
@@ -1014,7 +1014,7 @@ bool Hypergraph::qc_reachable(uint32_t producer, uint32_t consumer) const {
         qc_preds_[x].for_each([&](uint32_t q) {
             if (found) return;
             if (q == producer) { found = true; return; }
-            if (q > producer && visited.insert(q).second) stack.push_back(q);
+            if (q > producer && visited.insert(q)) stack.push_back(q);
         });
         if (found) return true;
     }
