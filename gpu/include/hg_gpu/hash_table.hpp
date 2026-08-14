@@ -265,12 +265,25 @@ public:
     }
 
     void clear() {
-        // EMPTY is K{0}; we memset the keys array. (For non-zero EMPTY this
-        // would need a fill kernel — not currently used in the codebase.)
+        // THE KEYS ARE THE STATE; THE VALUES ARE NOT.
+        //
+        // A slot is empty because its KEY says so, and every read of a value is guarded by a key
+        // comparison that has already matched: lookup returns a value only under `cur == key`,
+        // and insert stores into a slot it has just claimed by exchanging EMPTY for LOCKED. So a
+        // value is always written before it is read, and zeroing the value array leaves the map
+        // in exactly the state zeroing the keys already put it in.
+        //
+        // It is not free to do anyway. These maps are cleared once per evolve call and sized from
+        // the workload estimate rather than from use, so the clear is charged to a run that may
+        // touch a handful of slots: nsys on a depth-3 run producing thirteen states measured
+        // gigabytes of cudaMemset, and the dedup maps are what remains of it after the per-edge
+        // arrays were bounded.
+        //
+        // EMPTY is K{0}, so the keys go down with a memset. A non-zero sentinel would need a fill
+        // kernel, which is why the assertion stands rather than a comment saying to be careful.
         static_assert(EMPTY == K{0},
             "clear() relies on EMPTY == 0; provide a fill kernel for other sentinels");
-        HG_CUDA_CHECK(cudaMemset(keys_,   0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
-        HG_CUDA_CHECK(cudaMemset(values_, 0, sizeof(V) * capacity_), "ConcurrentMap clear values");
+        HG_CUDA_CHECK(cudaMemset(keys_, 0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
     }
 
 private:
