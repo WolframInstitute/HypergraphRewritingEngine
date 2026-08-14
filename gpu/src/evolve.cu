@@ -370,28 +370,32 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             session, start_step);
 
         state_count_host = engine.num_states_host();
+        // One transfer for every scalar below, instead of one per field. The counters share a
+        // single device allocation precisely so this is possible.
+        const auto qc_counts = qc_route ? qe_state_->counters_host()
+                                        : hg_gpu::QeState::Counters{};
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
-        out.expansion_instances = qc_route ? qe_state_->num_instances_host() : 0u;
-        out.reconstructed_raw_events = qc_route ? qe_state_->num_raw_events_host() : 0u;
+        out.expansion_instances = qc_counts.instances;
+        out.reconstructed_raw_events = qc_counts.raw_events;
         out.reconstruction_ran = qc_route;
         // Under EVENT_SIG_NONE no identity is computed and every application is its own event,
         // so the raw count IS the answer -- the same rule as the host's num_reconstructed_events.
         out.reconstructed_events =
             !qc_route ? 0u
             : (event_keys_for(in.event_canonicalization) == EVENT_SIG_NONE
-                   ? qe_state_->num_raw_events_host()
-                   : qe_state_->num_canon_events_host());
-        out.reconstructed_causal_pairs = qc_route ? qe_state_->num_causal_pairs_host() : 0u;
-        out.reconstructed_causal_edges = qc_route ? qe_state_->num_causal_edges_host() : 0u;
+                   ? qc_counts.raw_events
+                   : qc_counts.canon_events);
+        out.reconstructed_causal_pairs = qc_counts.causal_pairs;
+        out.reconstructed_causal_edges = qc_counts.causal_edges;
         out.reconstructed_causal_pairs_reduced =
-            qc_route ? qe_state_->num_reduced_pairs_host() : 0u;
-        out.reconstructed_branchial = qc_route ? qe_state_->num_branchial_host() : 0u;
+            qc_counts.reduced_pairs;
+        out.reconstructed_branchial = qc_counts.branchial;
         if (qc_route)
             qe_state_->reconstructed_pairs_host(out.reconstructed_causal_relation,
                                                 out.reconstructed_causal_relation_reduced,
                                                 out.reconstructed_branchial_relation);
-        out.frame_alignments = qc_route ? qe_state_->num_aligned_host() : 0u;
-        out.frame_align_failures = qc_route ? qe_state_->num_align_failures_host() : 0u;
+        out.frame_alignments = qc_counts.aligned;
+        out.frame_align_failures = qc_counts.align_failures;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
         if (dbg) {
             const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +

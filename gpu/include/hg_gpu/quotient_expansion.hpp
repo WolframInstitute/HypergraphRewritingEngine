@@ -759,17 +759,26 @@ public:
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
-        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QeState cursor alloc");
-        HG_CUDA_CHECK(cudaMalloc(&next_id_, sizeof(uint32_t)), "QeState next_id alloc");
-        HG_CUDA_CHECK(cudaMalloc(&inst_next_id_, sizeof(uint32_t)), "QeState inst id alloc");
-        HG_CUDA_CHECK(cudaMalloc(&next_raw_event_, sizeof(uint32_t)), "QeState raw ev alloc");
-        HG_CUDA_CHECK(cudaMalloc(&align_moved_, sizeof(uint32_t)), "QeState align moved alloc");
-        HG_CUDA_CHECK(cudaMalloc(&align_fail_, sizeof(uint32_t)), "QeState align fail alloc");
-        HG_CUDA_CHECK(cudaMalloc(&num_canon_, sizeof(uint32_t)), "QeState canon alloc");
-        HG_CUDA_CHECK(cudaMalloc(&num_causal_pairs_, sizeof(uint32_t)), "QeState c-pairs alloc");
-        HG_CUDA_CHECK(cudaMalloc(&num_causal_edges_, sizeof(uint32_t)), "QeState c-edges alloc");
-        HG_CUDA_CHECK(cudaMalloc(&num_branchial_, sizeof(uint32_t)), "QeState branchial alloc");
-        HG_CUDA_CHECK(cudaMalloc(&num_reduced_pairs_, sizeof(uint32_t)), "QeState reduced alloc");
+        // ELEVEN SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
+        //
+        // Each of these was its own cudaMalloc and each accessor its own synchronous cudaMemcpy
+        // of four bytes. A synchronous copy of a scalar costs about 24 microseconds on this host
+        // whatever its size, and the result path reads ten of them per evolve call. Laid out
+        // contiguously, counters_host() fetches the lot in one copy; the individual accessors
+        // remain for ad-hoc use and now index the block.
+        HG_CUDA_CHECK(cudaMalloc(&counters_, sizeof(uint32_t) * kNumCounters),
+              "QeState counters alloc");
+        cursor_            = counters_ + 0;
+        next_id_           = counters_ + 1;
+        inst_next_id_      = counters_ + 2;
+        next_raw_event_    = counters_ + 3;
+        align_moved_       = counters_ + 4;
+        align_fail_        = counters_ + 5;
+        num_canon_         = counters_ + 6;
+        num_causal_pairs_  = counters_ + 7;
+        num_causal_edges_  = counters_ + 8;
+        num_branchial_     = counters_ + 9;
+        num_reduced_pairs_ = counters_ + 10;
         event_sig_capacity_ = on ? max_events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
@@ -777,17 +786,7 @@ public:
     }
     ~QeState() {
         if (arr_)     cudaFree(arr_);
-        if (cursor_)  cudaFree(cursor_);
-        if (next_id_) cudaFree(next_id_);
-        if (inst_next_id_) cudaFree(inst_next_id_);
-        if (next_raw_event_) cudaFree(next_raw_event_);
-        if (align_moved_) cudaFree(align_moved_);
-        if (align_fail_) cudaFree(align_fail_);
-        if (num_canon_) cudaFree(num_canon_);
-        if (num_causal_pairs_) cudaFree(num_causal_pairs_);
-        if (num_causal_edges_) cudaFree(num_causal_edges_);
-        if (num_branchial_) cudaFree(num_branchial_);
-        if (num_reduced_pairs_) cudaFree(num_reduced_pairs_);
+        if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
     }
     QeState(const QeState&)            = delete;
@@ -830,6 +829,23 @@ public:
     // Records captured this run: one per match of each class's frame state. The number the
     // host's for_each_expansion_match yields when summed over classes, and the gate for the
     // capture being wired correctly.
+    // Every scalar the result path needs, in ONE transfer.
+    //
+    // The individual accessors below each cost a synchronous four-byte copy, about 24 us on this
+    // host regardless of size, and the result path calls ten of them per evolve call. Since the
+    // counters share one allocation they can be fetched together; the fields are named so a
+    // caller reads them the same way it read the accessors.
+    struct Counters {
+        uint32_t cursor, next_id, instances, raw_events, aligned, align_failures,
+                 canon_events, causal_pairs, causal_edges, branchial, reduced_pairs;
+    };
+    Counters counters_host() const {
+        uint32_t v[kNumCounters] = {};
+        HG_CUDA_CHECK(cudaMemcpy(v, counters_, sizeof(v), cudaMemcpyDeviceToHost),
+              "QeState counters read");
+        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]};
+    }
+
     uint32_t num_matches_host() { return matches_.size_host(); }
 
     // Raw events the replay minted: one per (instance, match) application. The host's
@@ -965,6 +981,10 @@ private:
     uint32_t                  event_sig_capacity_ = 0;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;
+    // The eleven scalars above and below live in ONE allocation; these pointers index into it,
+    // so counters_host() reads them all in a single transfer.
+    static constexpr uint32_t kNumCounters = 11;
+    uint32_t*                 counters_ = nullptr;
     uint32_t*                 cursor_ = nullptr;
     uint32_t*                 next_id_ = nullptr;
     uint32_t                  arr_cap_ = 0;
