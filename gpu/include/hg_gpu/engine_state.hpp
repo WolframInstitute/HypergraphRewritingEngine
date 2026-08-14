@@ -497,6 +497,27 @@ public:
     }
 
     void clear() {
+        // CLEAR WHAT THE LAST RUN DIRTIED, NOT WHAT THE CONFIG RESERVED.
+        //
+        // The per-edge-slot arrays are sized from the workload ESTIMATE -- config_from_input
+        // reserves max_state_edge_total slots -- while a run writes only as many as it produced.
+        // Clearing the reservation made every call pay for the estimate: nsys on a depth-3 run
+        // producing THIRTEEN states measured 9.8 GB of cudaMemset across 981 operations, the
+        // largest single one 538 MB, which is exactly 4 bytes x max_state_edge_total. That is
+        // the fixed floor a small run cannot get under, and it is why sizing the pools generously
+        // to avoid grow-and-retry made a depth-7 run slower rather than faster.
+        //
+        // At this point state_edge_ids_counter_ still holds the PREVIOUS run's final value, so it
+        // names exactly the prefix that can be dirty. Slots above it were never written and still
+        // carry the fill from construction, which zeroes the whole reservation once.
+        uint32_t dirty_edge_slots = cfg_.max_state_edge_total;
+        if (state_edge_ids_counter_) {
+            uint32_t n = 0;
+            if (cudaMemcpy(&n, state_edge_ids_counter_, sizeof(uint32_t),
+                           cudaMemcpyDeviceToHost) == cudaSuccess && n <= cfg_.max_state_edge_total)
+                dirty_edge_slots = n;
+        }
+
         HG_CUDA_CHECK(cudaMemset(state_edge_slices_, 0,
               sizeof(StateEdgeSlice) * cfg_.max_states),
               "EngineState clear state_edge_slices");
@@ -513,12 +534,12 @@ public:
             // UINT32_MAX, not 0: 0 is a valid rank (the canonically first edge), so a zeroed
             // array would read as "every edge ranks first" instead of "no ranks yet".
             HG_CUDA_CHECK(cudaMemset(state_edge_rank_, 0xFF,
-                  sizeof(uint32_t) * cfg_.max_state_edge_total),
+                  sizeof(uint32_t) * dirty_edge_slots),
                   "EngineState clear state_edge_rank");
         }
         if (state_edge_orbit_) {
             HG_CUDA_CHECK(cudaMemset(state_edge_orbit_, 0xFF,
-                  sizeof(uint32_t) * cfg_.max_state_edge_total),
+                  sizeof(uint32_t) * dirty_edge_slots),
                   "EngineState clear state_edge_orbit");
             HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
                   "EngineState clear state_num_orbits");
