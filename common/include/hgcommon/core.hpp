@@ -134,6 +134,24 @@ struct RecordSet {
     // graph -- every pair of output states of one input state, with no overlap test -- which
     // is a different question from the pair relation above and is answered without it.
     bool state_events = true;
+    // The RAW event set of the full unfolding, as against the quotient's own events.
+    //
+    // Under quotient exploration these are not the same quantity and the difference is the
+    // engine's largest single cost. The quotient visits one state per isomorphism class; the
+    // raw set is every state of the unfolding, and the reconstruction that recovers it
+    // materialises one instance per raw state. Measured on the multirule workload, single
+    // thread: seven canonical states at depth 6 against 146,599 raw ones, with the
+    // reconstruction accounting for 99.57% of all engine cycles and growing 14.6x per depth
+    // step while the canonical answer grows 1.17x.
+    //
+    // That cost buys the raw STRUCTURE -- distinct raw events and the causal edges between
+    // them -- and is irreducible, because the structure itself is that large. A caller that
+    // needs only the quotient's states and their transitions does not need it, and turning
+    // this off is what lets such a run skip the reconstruction entirely rather than pay an
+    // exponential for an answer it discards.
+    //
+    // Defaults on, so a caller that states nothing gets the raw counts it always got.
+    bool raw_events = true;
 };
 
 

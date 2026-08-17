@@ -1525,7 +1525,20 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     }
 
     hg_->set_quotient_causal(qc);
-    hg_->set_quotient_reconstruction(qc);
+
+    // The exploration strategy and the raw reconstruction are separate decisions, and only the
+    // second is expensive. Quotient causal exploration decides state identity and costs what the
+    // canonical answer costs; the reconstruction recovers the RAW unfolding underneath it and
+    // costs what the raw answer costs, which is exponential in depth while the canonical answer
+    // is not. Driving both from one flag charged every caller for the raw set whether or not it
+    // asked for one.
+    //
+    // The reconstruction is what produces the raw event set, the causal relation over raw events
+    // and the branchial pair relation, so it runs exactly when one of those is being recorded.
+    // With all three off the run still explores the quotient and still reports its states and
+    // their transitions -- what it stops doing is materialising one instance per raw state.
+    const RecordSet rec = hg_->record_set();
+    hg_->set_quotient_reconstruction(qc && (rec.causal || rec.branchial || rec.raw_events));
     // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
     // first-writer-wins and are not monotonic along causal edges. The online reduction's
     // pruning is only sound when they are, so it is told which regime it is in.
