@@ -446,6 +446,24 @@ __global__ void k_persistent_evolve(
                     printf(" role%u(pushed=%llu completed=%llu)", r,
                            (unsigned long long)p1[r], (unsigned long long)c1[r]);
                 printf("\n");
+                // Name the record itself. The pool index below prod whose published flag is
+                // clear IS the record a consumer is parked on, and its contents say which
+                // producer abandoned it.
+                {
+                    const uint32_t n = readable_records(found);
+                    uint32_t shown = 0;
+                    for (uint32_t i = 0; i < n && shown < 4; ++i) {
+                        const MatchRecord& r = found.at(i);
+                        cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> pf(r.published);
+                        if (pf.load(cuda::memory_order_acquire) == 0u) {
+                            printf("[hg_gpu STALL] unpublished idx=%u state=%u rule=%u step=%u "
+                                   "num_edges=%u\n", i, r.state_id, (uint32_t)r.rule_id,
+                                   r.step, (uint32_t)r.num_edges);
+                            ++shown;
+                        }
+                    }
+                    if (shown == 0) printf("[hg_gpu STALL] every record below prod IS published\n");
+                }
                 ds.errors.record(ErrorKind::kPersistentStall);
                 term.signal_exit();
                 return;
