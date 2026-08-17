@@ -105,6 +105,7 @@ class Hypergraph {
     std::atomic<bool> record_causal_{true};
     std::atomic<bool> record_branchial_{true};
     std::atomic<bool> record_state_events_{true};
+    std::atomic<bool> record_raw_events_{true};
 
     // Per-state canonical edge-orbit tables, computed once at state canonicalization in
     // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
@@ -1257,11 +1258,13 @@ public:
         record_causal_.store(r.causal, std::memory_order_relaxed);
         record_branchial_.store(r.branchial, std::memory_order_relaxed);
         record_state_events_.store(r.state_events, std::memory_order_relaxed);
+        record_raw_events_.store(r.raw_events, std::memory_order_relaxed);
     }
     RecordSet record_set() const {
         return RecordSet{record_causal_.load(std::memory_order_relaxed),
                          record_branchial_.load(std::memory_order_relaxed),
-                         record_state_events_.load(std::memory_order_relaxed)};
+                         record_state_events_.load(std::memory_order_relaxed),
+                         record_raw_events_.load(std::memory_order_relaxed)};
     }
 
     // Create a genesis event for an initial state.
