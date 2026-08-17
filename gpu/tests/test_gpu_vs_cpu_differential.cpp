@@ -1336,6 +1336,57 @@ TEST(CanonicalStateCount, ModesVsCpu) {
 // result and leave every other artifact exactly as it was -- compared as SETS, since two runs
 // can agree on how many pairs there are and disagree about which. Both routes are covered: the
 // full-capture rendezvous in rewrite.cu and the reconstruction's replay in qe_apply.
+// Not recording the raw unfolding must remove WORK and nothing else.
+//
+// The device's expansion subsystem does two jobs: it CAPTURES each class's frame and its matches
+// in frame slots, which is what Automatic event identity is signed from, and it REPLAYS that
+// capture against instances to recover the raw event set. Only the replay is exponential in
+// depth, and only the replay is gated by the record set. Capture must therefore be identical
+// whether or not the caller asked for raw events -- so the canonical states a run reports, and
+// their canonical hashes, must not move.
+//
+// This is the configuration the gate exists for and the one the default record set never
+// exercises: every other test here runs with raw_events on.
+TEST(RecordSet, NotRecordingRawEventsLeavesTheCanonicalAnswerUnchanged) {
+    // An automorphic initial state, where the class frame does real work and a mistake in the
+    // capture/replay split would show up as a different canonical answer rather than as a count.
+    Workload w;
+    w.name = "record/raw-events-off";
+    w.rules = {rule({{0, 1}, {1, 2}}, {{0, 1}, {1, 3}, {3, 2}})};
+    w.initial_state = {{0u,1u},{1u,2u},{2u,3u},{3u,0u}};
+    w.num_steps = 3;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;   // the route that has a replay at all
+
+    auto run = [&](bool raw) {
+        hg_gpu::EvolveInput in = make_input(w);
+        in.record.causal = in.record.branchial = in.record.raw_events = raw;
+        return hg_gpu::evolve(in);
+    };
+
+    const auto with_raw = run(true);
+    const auto no_raw   = run(false);
+
+    // Canonical states by CONTENT. Device state ids are arrival-ordered and differ between two
+    // runs of the same request, so an id-keyed comparison would call every run a change.
+    auto state_hashes = [](const hg_gpu::EvolveResult& x) {
+        hypergraph::IRCanonicalizer ir;
+        std::multiset<uint64_t> h;
+        for (const auto& st : x.states) h.insert(ir.compute_canonical_hash(st.edges));
+        return h;
+    };
+
+    EXPECT_EQ(state_hashes(with_raw), state_hashes(no_raw))
+        << "gating the replay changed the canonical states, so it removed more than work";
+    EXPECT_EQ(with_raw.states.size(), no_raw.states.size());
+
+    // The replay is what the flag governs: it runs in one arm and not the other. If both report
+    // the same thing here the flag is not reaching the device and the test above proves nothing.
+    EXPECT_TRUE(with_raw.reconstruction_ran);
+    EXPECT_FALSE(no_raw.reconstruction_ran)
+        << "raw_events=false still ran the reconstruction: the gate is not wired";
+}
+
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
     struct Case { const char* name; bool quotient; };
     const Case cases[] = {{"full-capture", false}, {"reconstruction", true}};

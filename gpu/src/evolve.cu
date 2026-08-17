@@ -382,7 +382,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_counts.instances;
         out.reconstructed_raw_events = qc_counts.raw_events;
-        out.reconstruction_ran = qc_route;
+        // The REPLAY is what produces a reconstructed answer, so this reports the replay and
+        // not merely the route. A run that captured the class frames but never replayed them
+        // has no reconstructed raw events, and a caller that read this as "reconstruction ran"
+        // would treat empty relations as a result rather than as an artifact not requested.
+        out.reconstruction_ran = qc_route && qe_replay;
         // Under EVENT_SIG_NONE no identity is computed and every application is its own event,
         // so the raw count IS the answer -- the same rule as the host's num_reconstructed_events.
         out.reconstructed_events =
