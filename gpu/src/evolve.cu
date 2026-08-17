@@ -299,6 +299,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     }
     // The quotient-causal DP's device structures, one body of state whichever scheduler
     // drives it; token-sized when the route is off, engine-lifetime and cleared per run.
+    auto t_qcsetup_start = std::chrono::steady_clock::now();
     if (!qc_state_ || qc_state_->enabled() != qc_route)
         qc_state_ = std::make_unique<QcState>(qc_route, cfg.max_events);
     else
@@ -320,6 +321,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      state_.qe_max_recursion_depth(), qe_replay);
 
+    double t_qcsetup = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_qcsetup_start).count();
+
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
         std::random_device rd;
@@ -328,6 +332,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     }
 
     const bool dbg = std::getenv("HG_GPU_DBG_TIME") != nullptr;
+    // Carried out of the persistent branch so the summary below can attribute the whole call.
+    // Without these the branch between init and readback -- kernel, quotient setup and the
+    // reconstruction marshalling -- was a single untimed region holding about 30% of the call.
+    double t_persist_call = 0.0, t_recon = 0.0;
     double t_match = 0, t_rewrite = 0, t_hash = 0, t_dedup = 0;
 
     // Cache the running state_count on host so we only D2H once per step
@@ -364,6 +372,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         DeviceArena& arena = engine.ir_arena(
             persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
 
+        auto t_kern_start = std::chrono::steady_clock::now();
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
             /*dedup=*/in.explore_from_canonical_states_only,
@@ -374,6 +383,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             qc_route ? &qe_view : nullptr,
             session, start_step);
 
+        t_persist_call = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_kern_start).count();
+
+        auto t_recon_start = std::chrono::steady_clock::now();
         state_count_host = engine.num_states_host();
         // One transfer for every scalar below, instead of one per field. The counters share a
         // single device allocation precisely so this is possible.
@@ -406,6 +419,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
+        t_recon = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_recon_start).count();
         if (dbg) {
             const double tot = double(st.cycles_match) + double(st.cycles_rewrite) +
                                double(st.cycles_canon) + double(st.cycles_idle) +
@@ -494,10 +509,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     if (dbg) {
         std::fprintf(stderr,
-            "[evolve dbg] total=%.2f init=%.2f match=%.2f rewrite=%.2f "
-            "hash=%.2f dedup=%.2f readback{hashes=%.2f states=%.2f ev/c/b=%.2f} (ms)\n",
-            t_total, t_init, t_match, t_rewrite, t_hash, t_dedup,
-            t_readback_hashes, t_readback_states, t_readback_evcb);
+            "[evolve dbg] total=%.2f init=%.2f qcsetup=%.2f persist=%.2f recon=%.2f "
+            "match=%.2f rewrite=%.2f hash=%.2f dedup=%.2f "
+            "readback{hashes=%.2f states=%.2f ev/c/b=%.2f} unattributed=%.2f (ms)\n",
+            t_total, t_init, t_qcsetup, t_persist_call, t_recon,
+            t_match, t_rewrite, t_hash, t_dedup,
+            t_readback_hashes, t_readback_states, t_readback_evcb,
+            t_total - t_init - t_qcsetup - t_persist_call - t_recon - t_match - t_rewrite
+                    - t_hash - t_dedup - t_readback_hashes - t_readback_states
+                    - t_readback_evcb);
     }
 
     return out;
