@@ -18,6 +18,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -939,6 +940,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // wants and what makes a second call re-derive everything as new.
     SessionView sess_v{};
     if (session) sess_v = *session;
+    const bool dbgt = std::getenv("HG_GPU_DBG_TIME") != nullptr;
+    auto t_maps0 = std::chrono::steady_clock::now();
     DedupMap owned_canonical(session ? 1u : engine.config().max_states * 2u);
     DedupMap& canonical_owner = owned_canonical;
     if (!session) canonical_owner.clear();
@@ -955,6 +958,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     DedupMap owned_event_ids(session ? 1u : (want_event_ids ? engine.config().max_events * 2u : 8u));
     if (!session) owned_event_ids.clear();
     if (want_event_ids) engine.ensure_event_identity();
+
+    const double t_maps = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_maps0).count();
+    auto t_alloc0 = std::chrono::steady_clock::now();
 
     // Every allocation happens HERE, before the first kernel goes out: cudaMalloc may
     // synchronize the device, and the evolution's contract is memory traffic at the start and
@@ -983,6 +990,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // on the device, enqueues (root, rule) items and books them with the detector; the evolve
     // kernel consumes them. Stream order carries every dependency, so the host synchronizes
     // exactly once, after the last kernel, and reads nothing back before that.
+    const double t_alloc = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_alloc0).count();
+    auto t_seed0 = std::chrono::steady_clock::now();
+
     arena.reset();
     // CONTINUING rather than starting: the frontier already holds hashed, deduplicated states,
     // so it is seeded straight into the queue at the depth the previous budget stopped at. The
@@ -1028,6 +1039,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
     const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
     const uint32_t grid = grid_req < 2 ? 2 : grid_req;
+    const double t_seed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_seed0).count();
+    if (dbgt)
+        std::fprintf(stderr, "[persistent setup] dedup_maps=%.2f allocs=%.2f seed=%.2f (ms)\n",
+                     t_maps, t_alloc, t_seed);
+
     k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,
