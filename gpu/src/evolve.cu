@@ -312,8 +312,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         qe_state_ = std::make_unique<QeState>(qc_route, cfg.max_events);
     else
         qe_state_->clear();
+    // Capture always; REPLAY only when the caller records something the raw unfolding answers.
+    // The replay is the device twin of the host's instance cascade, and it is the term measured
+    // exponential in depth against an answer that is linear (b98a943c). Capture is untouched, so
+    // Automatic event identity -- signed from the class frame -- is unchanged either way.
+    const bool qe_replay = in.record.causal || in.record.branchial || in.record.raw_events;
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     state_.qe_max_recursion_depth());
+                                     state_.qe_max_recursion_depth(), qe_replay);
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {

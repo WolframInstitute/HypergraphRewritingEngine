@@ -236,6 +236,19 @@ struct QeView {
     // so; without it the next frame faults and the whole run returns nothing.
     uint32_t  max_recursion_depth = 0;
     uint32_t  enabled   = 0;
+    // Whether the captured expansion is REPLAYED against instances, as against merely captured.
+    //
+    // The two halves of this subsystem have different costs and different consumers. Capture --
+    // the per-class frame and its matches in frame slots -- is what Automatic event identity is
+    // signed from, and costs what the canonical answer costs. Replay materialises one instance
+    // per raw state of the full unfolding to recover the raw event set, and costs what the RAW
+    // answer costs, which is exponential in depth while the canonical answer is not.
+    //
+    // So a run that does not record raw events, causal or branchial captures but does not
+    // replay: identity is unchanged and the exponential is not paid. This mirrors the host,
+    // where qc_capture_expansion runs unconditionally and only the instance seeding and the
+    // match-side scan are gated (hypergraph.cpp:987, :1206).
+    uint32_t  replay    = 0;
 };
 
 // The rendezvous is mutually recursive: publishing an instance drives the matches, publishing a
@@ -489,6 +502,11 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     const uint32_t nslots = ds.state_edge_slices[root].count;
 
     qe_register_frame(qe, h, root, 0u);
+
+    // The frame above is registered whatever the caller records: event identity reads it. The
+    // instance below is the root of the replay, and without it no descendant instance exists,
+    // so this one guard removes the whole cascade.
+    if (!qe.replay) return;
 
     const uint32_t off = qe_alloc_words(ds, qe, nslots);
     if (off == UINT32_MAX) return;
@@ -909,7 +927,8 @@ public:
     // before any replay, and one more per application once the replay lands.
     uint32_t num_instances_host() { return instances_.size_host(); }
 
-    QeView view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth) {
+    QeView view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth,
+                bool replay) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -944,6 +963,7 @@ public:
         q.max_steps    = max_steps;
         q.max_recursion_depth = max_recursion_depth;
         q.enabled      = on_ ? 1u : 0u;
+        q.replay       = (on_ && replay) ? 1u : 0u;
         return q;
     }
 

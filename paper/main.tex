@@ -1520,6 +1520,23 @@ by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
 \input{tables/t11_gpu_saturation}
 \end{table}
 
+\subsection{Occupancy, Lane Efficiency, and the Bounds They Set}
+\label{sec:device-bounds}
+
+Table~\ref{tab:t11-saturation} establishes saturation behaviourally and states that its final column is not an occupancy figure. This section supplies the occupancy figure and the second bound that sits beside it, both read from the shipped binary rather than inferred from timings, so that the device results above are reported against the ceilings they were measured under.
+
+Two resources bind the resident kernel, and they multiply rather than compete.
+
+\textbf{Registers.} Reading the linked binary with \texttt{cuobjdump -res-usage}, \texttt{k\_persistent\_evolve} is allocated 255 registers per thread, which is the architectural maximum. The kernel is launched with 32 threads per block, so a block reserves $255 \times 32 = 8{,}160$ registers; a streaming multiprocessor on the sm\_89 part used here provides 65{,}536, admitting eight resident blocks, or 256 threads against a hardware maximum of 1{,}536. Occupancy is therefore $16.7\%$, and it is register-bound rather than bound by shared memory (48 bytes per block) or by block count. Per-translation-unit object files report no stack or local frame for any function under separate compilation (\texttt{-rdc=true}); only the linked binary carries the allocation, and reading the intermediate objects understates it to zero.
+
+\textbf{Lane efficiency.} The rewrite, canonicalization, deduplication and quotient stretch of the kernel---about 113 lines, and the phase the measurements below show to dominate---executes inside a single \texttt{if (threadIdx.x == 0)} guard. Thirty-one of the block's thirty-two lanes are idle for its duration, so the achieved SIMD width over that stretch is $1/32$, or $3.1\%$.
+
+Taken as a product, under $1\%$ of the device's arithmetic capability is reachable by the dominant phase. This is what the measured throughput reflects, and it is a structural property of the current work decomposition rather than a scheduling artifact or a stall: an independent instrument (below) reports zero time spent waiting on unpublished work.
+
+Per-phase attribution, taken from \texttt{clock64} deltas accumulated per block and summed at exit, locates the cost. On the two corpus workloads that generate enough work at depth six to attribute anything---\texttt{wolfram24} at 9{,}820 states and \texttt{wpp} at 3{,}867---canonicalization accounts for $76.7\%$ and $51.0\%$ of block cycles respectively, against $2.7\%$ for rewriting and $0.3\%$ for matching in both. The remaining corpus shapes produce between four and 104 states and are $97.4\%$ to $99.9\%$ idle; that is the absence of work rather than a property of the scheduler, and their idle fraction should not be read as a device inefficiency. Canonicalization is thus both the dominant phase and resident in the single-lane region, and the two bounds above identify the same site in the code by independent routes.
+
+We report these bounds rather than a closed gap. The decomposition that would raise lane efficiency---distributing canonicalization across the warp---and the compile-time separation that would relax the register ceiling are identified and unimplemented at the time of writing. Raising occupancy alone would multiply a $3.1\%$ lane efficiency by a larger factor and report a speedup while the device continued to run one lane in thirty-two, which is why the ordering matters and why the ceiling is stated here as measured rather than as addressed.
+
 \subsection{Ablation (Table T9)}
 
 \begin{table}[htbp]

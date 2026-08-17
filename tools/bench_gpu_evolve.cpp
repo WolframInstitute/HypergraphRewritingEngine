@@ -106,6 +106,13 @@ int main(int argc, char** argv) {
     const char* q = std::getenv("HG_BENCH_QUOTIENT");
     in.explore_from_canonical_states_only = !(q && q[0] == '0');
 
+    // The raw unfolding is recovered by a replay whose cost is the RAW answer's, not the
+    // canonical one's. HG_BENCH_RAW=0 records none of it, which is the configuration a caller
+    // wanting states and their transitions actually runs.
+    const char* rawenv = std::getenv("HG_BENCH_RAW");
+    if (rawenv && rawenv[0] == '0')
+        in.record.causal = in.record.branchial = in.record.raw_events = false;
+
     auto r0 = hg_gpu::evolve(in);   // warmup (CUDA context, allocations)
 
     auto median = [](std::vector<double> v) {
