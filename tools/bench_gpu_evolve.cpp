@@ -100,7 +100,11 @@ int main(int argc, char** argv) {
     in.initial_state = sel->init;
     in.num_steps = static_cast<uint32_t>(steps);
     in.canonicalization = hg_gpu::CanonicalizationMode::Full;
-    in.explore_from_canonical_states_only = true;
+    // Quotient exploration is what couples the device to the reconstruction whose cost grows
+    // exponentially while its output grows linearly, so the two must be separable at the bench to
+    // attribute any device cost to one or the other. HG_BENCH_QUOTIENT=0 explores raw.
+    const char* q = std::getenv("HG_BENCH_QUOTIENT");
+    in.explore_from_canonical_states_only = !(q && q[0] == '0');
 
     auto r0 = hg_gpu::evolve(in);   // warmup (CUDA context, allocations)
 
