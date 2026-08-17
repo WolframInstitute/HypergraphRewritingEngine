@@ -10,6 +10,7 @@
 
 #include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/persistent.hpp"
+#include <cstdio>
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
 #include "hg_gpu/content_hash.hpp"
@@ -433,6 +434,18 @@ __global__ void k_persistent_evolve(
             if (round >= kMaxDetectorRounds) {
                 // Quiescence never held. Signal exit anyway so the workers leave and the
                 // launch returns: a recorded defect with partial work beats holding the device.
+                //
+                // NAME THE COUNTER PAIR THAT FAILED TO CONVERGE. A stall is a defect, and the
+                // one question worth asking of it is which side is stuck: a role whose pushed
+                // exceeds its completed, or the match pool's readable count running ahead of the
+                // rewrites that drain it. Without this the only evidence is a wall-clock outlier,
+                // which is what made this bug survive several rounds of investigation.
+                printf("[hg_gpu STALL] rounds=%u prod=%u done=%u", round,
+                       readable_records(found), *rewrites_done);
+                for (uint32_t r = 0; r < term.num_roles; ++r)
+                    printf(" role%u(pushed=%llu completed=%llu)", r,
+                           (unsigned long long)p1[r], (unsigned long long)c1[r]);
+                printf("\n");
                 ds.errors.record(ErrorKind::kPersistentStall);
                 term.signal_exit();
                 return;
