@@ -1080,15 +1080,27 @@ public:
         return qc_num_causal_edges_.load(std::memory_order_relaxed);
     }
     // TR-off view: every distinct (producer, consumer). TR-on view: those tagged in-reduction.
+    // The un-reduced count is DERIVED from the set, for the reason given on
+    // num_reconstructed_branchial below. The REDUCED count is not, and cannot be: reduction is
+    // recorded by tagging, and the kept pairs live in qc_preds_ as a per-consumer adjacency
+    // rather than as a set of pairs, so there is no single container whose enumeration is that
+    // number. It stays a counter, and stays the one place here where a verdict tally is
+    // reported to a caller -- named so it is not mistaken for an oversight.
     size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const {
-        return (transitively_reduced ? qc_num_tr_pairs_ : qc_num_causal_pairs_)
-                   .load(std::memory_order_relaxed);
+        if (transitively_reduced) return qc_num_tr_pairs_.load(std::memory_order_relaxed);
+        return qc_causal_pairs_.count_enumerated();
     }
     size_t applied_scans() const { return qc_applied_scans_.load(std::memory_order_relaxed); }
     size_t applied_visits() const { return qc_applied_visits_.load(std::memory_order_relaxed); }
 
+    // DERIVED FROM THE SET, not from the counter that fed it. qc_num_branchial_ is incremented
+    // when insert() reports a win; this returns what for_each will actually emit. The two are
+    // the same number only while every winning claim stays reachable, and that invariant broke
+    // once -- migrate_into dropped keys the caller had already been told it won (f694c062),
+    // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
+    // the class of divergence rather than re-synchronising one more site.
     size_t num_reconstructed_branchial() const {
-        return qc_num_branchial_.load(std::memory_order_relaxed);
+        return qc_branchial_pairs_.count_enumerated();
     }
     size_t num_frame_alignment_disagreements() const {
         return qc_frame_disagree_.load(std::memory_order_relaxed);

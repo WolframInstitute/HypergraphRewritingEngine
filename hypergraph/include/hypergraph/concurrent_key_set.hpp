@@ -151,7 +151,21 @@ public:
         return false;
     }
 
+    // The claim counter. Drives the growth decision and nothing else, because it is a VERDICT
+    // tally: it counts inserts that reported a win, not keys the container can hand back. Those
+    // two quantities diverged once already -- migrate_into dropped a key while count_ still
+    // counted its claim (f694c062) -- so anything reporting a SET SIZE to a caller uses
+    // count_enumerated() below, which walks what for_each would emit.
     size_t size() const { return count_.load(std::memory_order_relaxed); }
+
+    // The number of keys `for_each` will emit. O(capacity) over the chain, so it is for
+    // per-run observables rather than hot paths -- and it cannot disagree with enumeration,
+    // because it IS enumeration.
+    size_t count_enumerated() const {
+        size_t n = 0;
+        for_each([&](K) { ++n; });
+        return n;
+    }
 
     // Every key exactly once: a migrated slot names itself, so there is nothing to deduplicate.
     template<typename F>
