@@ -998,28 +998,6 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
     }
 }
 
-bool Hypergraph::qc_reachable(uint32_t producer, uint32_t consumer) const {
-    // Backward walk from `consumer` over the KEPT predecessors, looking for `producer`. Ids
-    // increase along every causal edge, so anything below `producer` is out of the cone.
-    if (producer >= consumer) return false;
-    SVec<uint32_t> stack;
-    ScratchIdSet visited;
-    stack.push_back(consumer);
-    visited.insert(consumer);
-    while (!stack.empty()) {
-        const uint32_t x = stack.back();
-        stack.pop_back();
-        if (x >= qc_preds_.size()) continue;
-        bool found = false;
-        qc_preds_[x].for_each([&](uint32_t q) {
-            if (found) return;
-            if (q == producer) { found = true; return; }
-            if (q > producer && visited.insert(q)) stack.push_back(q);
-        });
-        if (found) return true;
-    }
-    return false;
-}
 
 void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
@@ -1029,12 +1007,6 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
     if (!qc_causal_pairs_.insert(pk)) return;                          // pair already recorded
     qc_num_causal_pairs_.fetch_add(1, std::memory_order_relaxed);
 
-    // One base, two views: tag whether this pair survives reduction. A pair bypassed by a
-    // longer path is not in the reduction; otherwise it is kept and becomes part of the
-    // predecessor adjacency later decisions walk.
-    if (qc_reachable(producer, consumer)) return;                      // redundant: not tagged
-    qc_num_tr_pairs_.fetch_add(1, std::memory_order_relaxed);
-    qc_preds_.get_or_default(consumer, arena_).push(producer, arena_);
 }
 
 void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash,

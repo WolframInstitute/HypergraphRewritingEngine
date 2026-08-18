@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
         load.emplace_back([&stop] { volatile uint64_t x = 1; while (!stop) x = x * 6364136223846793005ULL + 1; });
 
     std::printf("quotient causal determinism, %d iterations of the full sweep"
-                " (threads {1,2,8} x seeds {fixed, random}), load=%d\n",
+                " (threads {1,2,8,16,32} x seeds {fixed, random}), load=%d\n",
                 iterations, load_threads);
 
     size_t total = 0, failed = 0;
@@ -203,6 +203,15 @@ int main(int argc, char** argv) {
                         " branchial=%zu (full_capture_causal=%zu)\n", w.name,
                         b.canonical_states, b.instances, b.events, b.causal_pairs,
                         b.branchial_pairs, b.full_capture_pairs);
+            // IS THE SUSPECTED MECHANISM EVEN ACTIVE? The attribution race is the frame claim:
+            // a class's frame is taken first-writer-wins and every other member aligns onto it
+            // up to an automorphism. If these are all zero the alignment freedom is never
+            // exercised on this workload and the cause is elsewhere, which is a different
+            // search. Reported always, not only on a disagreement, because a zero here is the
+            // informative reading.
+            std::printf("  %-8s alignment: frame_disagreements=%zu failures=%zu"
+                        " bad_correspondences=%zu\n", w.name,
+                        b.frame_disagree, b.align_fail, b.align_badcorr);
             if (b.causal_pairs == 0 || b.branchial_pairs == 0 || b.canonical_states == 0)
                 std::printf("  %-8s A FINGERPRINTED RELATION IS EMPTY -- it agrees with itself"
                             " forever and constrains nothing\n", w.name);
@@ -212,7 +221,7 @@ int main(int argc, char** argv) {
             std::set<uint64_t> fps, bfps, sfps;
             std::vector<Sample> samples;
             for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})
-                for (int th : {1, 2, 8}) {
+                for (int th : {1, 2, 8, 16, 32}) {
                     Sample s = run_once(w, th, seed);
                     fps.insert(s.causal_fp);
                     bfps.insert(s.branchial_fp);

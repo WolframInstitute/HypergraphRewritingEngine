@@ -1,3 +1,4 @@
+#include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 // causal_graph.cpp - Implementation of CausalGraph class
 
@@ -71,39 +72,12 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
 // is the whole reason it exists: the incremental rule needs an arrival discipline the quotient
 // reconstruction cannot provide.
 std::set<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
-    std::unordered_map<EventId, std::vector<EventId>> succ;
-    std::set<std::pair<EventId, EventId>> all;
-    causal_edges_.for_each([&](const CausalEdge& e) {
-        if (all.insert({e.producer, e.consumer}).second) succ[e.producer].push_back(e.consumer);
-    });
-
     std::set<std::pair<EventId, EventId>> kept;
-    std::unordered_set<EventId> seen;
-    std::vector<EventId> stack;
-    for (const auto& pc : all) {
-        // Reachable from p WITHOUT taking the direct edge (p,c): if c turns up, (p,c) is
-        // implied by a longer path and leaves the reduction.
-        bool redundant = false;
-        seen.clear();
-        stack.clear();
-        auto it = succ.find(pc.first);
-        if (it != succ.end()) {
-            for (EventId w : it->second) {
-                if (w == pc.second) continue;             // the direct edge itself
-                if (seen.insert(w).second) stack.push_back(w);
-            }
-        }
-        while (!stack.empty() && !redundant) {
-            const EventId x = stack.back();
-            stack.pop_back();
-            if (x == pc.second) { redundant = true; break; }
-            auto jt = succ.find(x);
-            if (jt == succ.end()) continue;
-            for (EventId w : jt->second)
-                if (seen.insert(w).second) stack.push_back(w);
-        }
-        if (!redundant) kept.insert(pc);
-    }
+    hgcommon::tr_reduce(
+        [&](auto&& add) {
+            causal_edges_.for_each([&](const CausalEdge& e) { add(e.producer, e.consumer); });
+        },
+        [&](uint32_t p, uint32_t c) { kept.insert({p, c}); });
     return kept;
 }
 

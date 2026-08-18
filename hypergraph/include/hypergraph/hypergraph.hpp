@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <cstdint>
@@ -236,23 +237,15 @@ class Hypergraph {
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
-    // Reconstructed causal relation over raw event ids. ONE base with TWO views: every pair is
-    // recorded, and each carries whether it survives transitive reduction, so TR-on is a filter
-    // rather than a mode and either view is available in any order without recomputation.
-    // Reconstructed ids are topological by construction -- qc_apply mints a producer's id
-    // before creating the child instance whose later application mints the consumer's -- and
-    // when a consumer is applied its whole ancestor sub-DAG is already emitted, so the
-    // reduction decision is exact at insertion.
-    ConcurrentKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
-    // Kept predecessors of each reconstructed event, indexed DENSELY by event id.
+    // Reconstructed causal relation over raw event ids: THE base, and the only thing stored.
+    // Both views come from it -- TR-off enumerates it, TR-on reduces it under hgcommon::tr_reduce
+    // -- so neither view depends on the order the pairs arrived in.
     //
-    // These ids come from qc_next_raw_event_, which mints them consecutively, so hashing them
-    // was pure overhead: qc_reachable walks this structure once per node of every backward
-    // search, and each step was a hash, a probe and a pointer chase. Callgrind on the workload
-    // where the reconstruction dominates (bench_cpu_evolve 6 1 1 multirule) attributed 33% of
-    // all instructions to the two ConcurrentMap<uint64_t, LockFreeList*> instances, and this is
-    // the one on the search path. A segmented array turns each step into an index.
-    SegmentedArray<LockFreeList<uint32_t>> qc_preds_;
+    // The set is what makes that true. A pair (p,c) is in the reduction exactly when no longer
+    // path bypasses it, which is a property of the finished relation; deciding it as each pair
+    // lands answers against the pairs seen so far and gets a different answer depending on
+    // whether the bypassing path arrived first.
+    ConcurrentKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
     // it is what schedule-independence is fingerprinted on, and what a graph over reconstructed
@@ -268,13 +261,11 @@ class Hypergraph {
     SegmentedArray<uint64_t> qc_event_runsig_;
     std::atomic<size_t> qc_num_causal_edges_{0};   // per consumed edge (the T1 multiset)
     std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
-    std::atomic<size_t> qc_num_tr_pairs_{0};       // distinct pairs surviving reduction
     // Scans of an instance's applied list, and elements visited across them. visits/scans is
     // the mean fan-out m; pairs are bounded by sum m(m-1)/2 while the SCAN costs sum m^2.
     mutable std::atomic<size_t> qc_applied_scans_{0};
     mutable std::atomic<size_t> qc_applied_visits_{0};
     std::atomic<size_t> qc_num_branchial_{0};      // sibling matches of one instance, overlapping
-    bool qc_reachable(uint32_t producer, uint32_t consumer) const;
     void qc_record_causal(uint32_t producer, uint32_t consumer);
 
     // An ordered pair of event ids as one map key, for the causal and branchial pair sets.
@@ -1079,15 +1070,19 @@ public:
     size_t num_reconstructed_causal_edges() const {
         return qc_num_causal_edges_.load(std::memory_order_relaxed);
     }
-    // TR-off view: every distinct (producer, consumer). TR-on view: those tagged in-reduction.
-    // The un-reduced count is DERIVED from the set, for the reason given on
-    // num_reconstructed_branchial below. The REDUCED count is not, and cannot be: reduction is
-    // recorded by tagging, and the kept pairs live in qc_preds_ as a per-consumer adjacency
-    // rather than as a set of pairs, so there is no single container whose enumeration is that
-    // number. It stays a counter, and stays the one place here where a verdict tally is
-    // reported to a caller -- named so it is not mistaken for an oversight.
+    // TR-off view: every distinct (producer, consumer). TR-on view: those surviving reduction.
+    // BOTH are DERIVED from the stored set, for the reason given on num_reconstructed_branchial
+    // below -- a count and an enumeration that are maintained separately are the same number
+    // only until one of them is wrong, and here the reduced count is what a caller compares
+    // against what for_each_reconstructed_causal_as emits.
     size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const {
-        if (transitively_reduced) return qc_num_tr_pairs_.load(std::memory_order_relaxed);
+        if (transitively_reduced) {
+            size_t n = 0;
+            for_each_reconstructed_causal_as(
+                /*reduced=*/true, [](uint32_t e) { return e; },
+                [&](uint64_t, uint64_t) { ++n; });
+            return n;
+        }
         return qc_causal_pairs_.count_enumerated();
     }
     size_t applied_scans() const { return qc_applied_scans_.load(std::memory_order_relaxed); }
@@ -1208,9 +1203,21 @@ public:
     template <typename Id, typename F>
     void for_each_reconstructed_causal_as(bool reduced, Id&& id, F&& f) const {
         if (reduced) {
-            const uint32_t n = static_cast<uint32_t>(qc_preds_.size());
-            for (uint32_t c = 0; c < n; ++c)
-                qc_preds_[c].for_each([&](uint32_t p) { f(id(p), id(c)); });
+            // Reduced FROM THE STORED SET, under the one shared rule. The reduction of a DAG is
+            // unique, so this is a function of the relation and not of the schedule that built
+            // it -- which a tag decided as each pair arrived is not, because the pairs that
+            // bypass (p,c) may land after it and nothing retracts the tag.
+            hgcommon::tr_reduce(
+                [&](auto&& add) {
+                    qc_causal_pairs_.for_each([&](uint64_t k) {
+                        const IdPair q = id_pair_from_key(k);
+                        add(q.a, q.b);
+                    });
+                },
+                [&](uint32_t p, uint32_t c) { f(id(p), id(c)); },
+                // qc_apply mints a producer's id before creating the child instance whose later
+                // application mints the consumer's, so ids increase along every edge here.
+                /*ids_topological=*/true);
         } else {
             qc_causal_pairs_.for_each([&](uint64_t k) {
                 const IdPair p = id_pair_from_key(k);
