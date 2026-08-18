@@ -718,6 +718,24 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
+
+    // THE DEVICE STACK IS PART OF THE BUDGET AND WAS MISSING FROM IT.
+    //
+    // EngineState's constructor raises cudaLimitStackSize before it allocates any pool, and the
+    // driver reserves that per-thread size across every resident thread -- so it is real device
+    // memory, sized from reconstruction_max_depth, and this estimate did not count a byte of it.
+    // The consequence was not academic: scaling the state estimate with depth twice produced
+    // "engine at the grown size no longer fits in device memory ... set device stack size: out of
+    // memory" on an 80-step run, because the budget said the pools fitted while the reservation
+    // they had to share with pushed the total over. Both attempts were reverted for it.
+    //
+    // Resident threads are bounded by the shipped grid (default_persistent_grid blocks of
+    // kMatchBlockThreads), which is what the reservation actually has to cover.
+    b += static_cast<uint64_t>(
+             EngineState::stack_bytes_for_depth(cfg.reconstruction_max_depth)) *
+         static_cast<uint64_t>(default_persistent_grid()) *
+         static_cast<uint64_t>(kMatchBlockThreads);
+
     return b + b / 6;   // ~17% headroom
 }
 
