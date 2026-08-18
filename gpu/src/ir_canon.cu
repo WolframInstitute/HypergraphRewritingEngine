@@ -229,6 +229,42 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     };
     hgcommon::IrResult r = run_at(1);
     if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
+
+    // THE HOST ESCALATES DEPTH WITHIN THE CALL; THE DEVICE MUST TOO.
+    //
+    // ir_canonicalization.cpp:75 tries {1, 8, IR_MAX_DEPTH_DEFAULT} per state. The device tried
+    // only {1, ds.ir_depth} and, past that, returned kDepthExceeded -- which is classed retryable,
+    // so the WRAPPER answered by doubling the config and RE-RUNNING THE ENTIRE EVOLUTION, up to
+    // seven attempts. One state needing a deeper search therefore re-does every other state's
+    // work, repeatedly.
+    //
+    // Observed directly on disc-l3a2g2r2: at depth 4 the run reports "overflow on IR search depth
+    // (retryable: grow config) -- retrying (attempt 2/7)" and completes; at depth 5 the same
+    // restart loop is what the run never gets out of, with each attempt larger than the last.
+    //
+    // The slot is the reason this was not simply a bigger constant: the arena slot was sized from
+    // shape.depth, so going deeper needs a bigger slot. Re-shape, re-claim, re-flatten, retry --
+    // paid only by the states that actually need it, which are rare.
+    if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth < hgcommon::IR_MAX_DEPTH_DEFAULT) {
+        IrSlotShape deep = shape;
+        deep.depth = hgcommon::IR_MAX_DEPTH_DEFAULT;
+        const uint64_t deep_need = deep.stride();
+        uint32_t* deep_slot = arena.claim(deep_need);
+        if (deep_slot) {
+            slot = deep_slot;
+            slot_words = deep_need;
+            shape = deep;
+            rank_buf = slot + shape.ea_words() + shape.eoff_words()
+                     + shape.cap_occs + shape.cap_verts;
+            flat_to_slot = rank_buf + shape.cap_edges;
+            orbit_buf = flat_to_slot + shape.cap_edges;
+            scratch = orbit_buf + shape.cap_edges;
+            if (flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
+                              verts_local, (ranks || orbits) ? flat_to_slot : nullptr)) {
+                r = run_at(shape.depth);
+            }
+        }
+    }
     if (r.status == hgcommon::IR_NEED_DEPTH) return ExactHashStatus::kDepthExceeded;
     // Orbits fused over a truncated generator table are too fine, and the quotient
     // reconstruction slots on them. Report rather than publish them.
