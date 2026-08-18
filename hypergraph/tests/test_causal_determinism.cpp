@@ -33,6 +33,7 @@ uint64_t fnv(uint64_t h, uint64_t x) { h ^= x; h *= 1099511628211ULL; return h; 
 struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
+    long branchial_stored = 0;
     long branchial_pairs = 0;
 };
 
@@ -115,6 +116,17 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     fp.branchial_pairs = g.quotient_reconstruction()
         ? static_cast<long>(g.num_reconstructed_branchial())
         : static_cast<long>(g.causal_graph().num_branchial_pairs_claimed());
+
+    // WHICH SIDE OF THE HANDOFF LOST IT. num_branchial_edges_ is incremented inside
+    // add_branchial_edge, so it counts edges STORED; be.size() counts edges ENUMERATED; and
+    // branchial_pairs counts distinct keys CLAIMED. Three counters over one quantity split the
+    // failure instead of merely reporting it:
+    //   stored == claimed, enumerated < stored  -> the edge exists and the walk misses it
+    //   stored <  claimed                       -> a winning claim produced no edge
+    // Without this the assertion says an edge is missing and cannot say where.
+    fp.branchial_stored = g.quotient_reconstruction()
+        ? fp.branchial_pairs
+        : static_cast<long>(g.causal_graph().num_branchial_edges());
 
     fp.num_events = static_cast<long>(g.observable_num_events());
     return fp;
@@ -209,6 +221,12 @@ Spread spread(const Workload& w, bool quotient) {
         for (int rep = 0; rep < 4; ++rep)
             for (int th : {1, 2, 8}) {
                 Fingerprint f = run(w.rules, w.init, quotient, th, seed, w.steps);
+                EXPECT_EQ(f.branchial_stored, f.branchial_pairs)
+                    << w.name << ": claim/store split at threads=" << th << " rep=" << rep
+                    << " -- " << f.branchial_pairs << " distinct keys claimed but "
+                    << f.branchial_stored << " edges stored. add_branchial_edge runs on every "
+                       "winning claim, so a shortfall here is a claim that won and produced no "
+                       "edge.";
                 EXPECT_EQ(f.num_branchial, f.branchial_pairs)
                     << w.name << ": branchial dedup admitted a duplicate at threads=" << th
                     << " seed=" << (seed ? "fixed" : "random") << " rep=" << rep
