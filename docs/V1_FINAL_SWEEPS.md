@@ -315,3 +315,61 @@ force-inlined with its failed variants measured in-place. BACKLOG names the leve
 match-forwarding edge->matches reverse index, O(|parent matches| x size) -> proportional to what
 changed. That is a matcher change, not a data-structure tweak, and it is the one place a large
 win plausibly remains.
+
+---
+
+## S7 — THE ENGINE IS LATENCY-BOUND, NOT INSTRUCTION-BOUND
+
+**This is the most important measurement in this file, because it redirects every future
+optimisation.** Established by a change that removed 37.5% of all instructions and bought
+nothing.
+
+### The change (reverted)
+
+`find_chunk`'s binary search is 23.5% of engine instructions. Measured first, rather than
+assumed: over 1,143,778,949 calls on wolfram24 depth 7, `num_entries_` is 3-4 on 52.7% and 5-8
+on 46.2%, and **never above 8** (wpp agrees: 47.1% / 52.0%). A binary search over eight elements
+against a linear scan over two cache lines is a textbook win. Replaced it.
+
+### Four instruments, and they disagree
+
+| axis | binary search | linear scan | delta |
+|---|---:|---:|---|
+| instructions, depth 7 | 90,449,530,905 | 56,504,315,137 | **-37.5%** |
+| wall clock, depth 7, interleaved x5 | 28,162 ms | 28,376 ms | **0%** |
+| LL misses, depth 6 | 1,363,361 | 1,363,459 | identical |
+| branch mispredicts, depth 6 | 18,040,879 | 18,052,949 | identical |
+
+Correctness held throughout: `all_tests` 276/276, `cost_matrix` ALL EXACT, and every other
+function in the profile bit-identical (`ConcurrentKeySet::insert` 3,040,357,848 both runs,
+`ir_refine` 2,188,398,189 both) — so the 33.9B drop was localised exactly where intended and no
+work was skipped elsewhere.
+
+### What it means
+
+The premise was that binary search's data-dependent branches mispredict. **They do not** —
+mispredicts are identical, and the linear version issues 22.7M FEWER branches for the same
+misses. Effective throughput falls from 3.2 to 2.0 G-instructions/sec as instructions drop:
+the removed instructions were **filling stall slots**, not consuming issue bandwidth.
+
+So: LL misses unchanged rules out DRAM bandwidth. Branch misses unchanged rules out
+mispredictions. Instructions down 37.5% with time flat rules out issue width. What is left is
+**dependency-chain latency** — L1/L2 access chains the CPU cannot overlap.
+
+### Consequence, and it is not small
+
+**Instruction-count optimisation on this engine is dead work.** Every remaining item that
+proposes to do less arithmetic — including the match-forwarding reverse index BACKLOG names,
+whose whole pitch is fewer membership tests — must be validated on WALL CLOCK, and should be
+expected to return nothing unless it also shortens a dependency chain or improves locality.
+
+This also explains, retrospectively, why the IR scratch fix (`ef73216d`) is worth only 1.09%
+engine despite removing a full memset per call, and why the one-entry memo (S6) cost 8.3% in
+instructions while nobody could have felt it.
+
+**What to target instead:** the chains themselves. `contains` is called 3.43 billion times and
+each is a pointer chase into a chunk array — the cost is the DEPENDENT LOAD, not the compare
+around it. Reducing the NUMBER of lookups (forwarding, incremental match maintenance) is still
+plausible; making each lookup cheaper is not.
+
+Patch kept at `scratchpad/linear_scan_refuted.hpp`.
