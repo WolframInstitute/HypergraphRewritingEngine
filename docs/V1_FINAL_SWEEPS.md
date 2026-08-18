@@ -376,9 +376,10 @@ Patch kept at `scratchpad/linear_scan_refuted.hpp`.
 
 ---
 
-## S8 — The real ceiling: 6.80x on 32 cores, so ~15% is serial or contended
+## S8 — CLOSED. The 6.80x ceiling was EXHAUSTED PARALLELISM, not contention. No serial fraction to hunt.
 
-**Status: MEASURED. This is where the remaining performance is.**
+**Status: CLOSED. The follow-up I proposed — hunting a 15% serial fraction — was chasing something
+that does not exist, and the measurement that settles it needed no code at all.**
 
 S7 established the engine is latency-bound, so the lever is OVERLAP rather than less work.
 Threads do overlap it — and then stop.
@@ -405,19 +406,31 @@ Removing `find_chunk`'s binary search deleted 23.5% of ALL engine instructions a
 **zero** wall clock (S7). Closing half the serial fraction would take 6.80x to roughly 12x and
 nearly halve wall time. The two are not comparable in value, and only one of them is available.
 
-### What to measure next, in order
+### Settled by running a bigger workload, which cost nothing
 
-1. **Where the 15% is.** The engine is lock-free, so this is CAS retry traffic, memory-ordering
-   stalls, false sharing, or a genuinely serial phase — not a lock. Candidates visible in the
-   profile already: `ConcurrentKeySet::insert` (3.03% single-threaded, and it is the structure
-   whose growth path `f694c062` just fixed), the shared arena's block-grab path, and the
-   frontier/queue rendezvous.
-2. **Whether the plateau is contention or exhausted parallelism.** These need opposite fixes. If
-   the frontier is narrow at depth 6 there is simply nothing for 24 threads to do, and the answer
-   is a bigger workload rather than a code change. Measure the frontier width per step against
-   the thread count before touching anything.
-3. Only then, a change — validated on WALL CLOCK at 16 and 32 threads, since S7 proved
-   instruction counts do not predict time on this engine.
+The question was contention versus exhausted parallelism, and those need opposite fixes. Depth 7
+is roughly thirty times the work of depth 6 (132,648 raw states against 9,820):
 
-**Do not** repeat S6/S7's mistake here: measure which of (1) and (2) it is BEFORE writing code.
-Both previous hot-path attempts were plausible, measured, and wrong.
+| threads | depth 6 | depth 7 |
+|---:|---:|---:|
+| 1 | 1.00x (279.6 ms) | 1.00x (29,977 ms) |
+| 16 | 6.20x | **9.77x** (3,067 ms) |
+| 32 | 6.80x | **14.59x** (2,055 ms) |
+
+**The ceiling more than doubles with more work, so it was never a serial fraction.** Amdahl does
+not apply to a run that has not got enough parallel work to distribute; the depth-6 plateau was
+the frontier running dry, not threads fighting.
+
+**There is no 15% to hunt, and the hunt I proposed one message ago would have found nothing.**
+Written down because it is the third time in this file that a plausible target dissolved on
+measurement (S6's memo, S7's linear scan, S8's serial fraction), and the pattern is the same
+each time: the fix was designed before the input was measured.
+
+### Where performance actually stands
+
+The engine is latency-bound single-threaded (S7) and overlaps that latency with threads,
+reaching **14.59x on 32 cores** at a workload large enough to fill them. 46% efficiency at 32
+threads on an irregular graph workload is reasonable and is not, on this evidence, a defect.
+
+Performance is not a v1.0.0 blocker. What remains open under S2b-ii and S3 are attribution
+questions — knowing where the time goes — not known losses.
