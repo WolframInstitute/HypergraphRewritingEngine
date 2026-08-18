@@ -196,3 +196,38 @@ needs is stated next to the property it bounds rather than in this script.
 Useful flags while developing one: `--disable-estimation` skips the state-space estimate;
 `--unroll=N` bounds loops; `--sc --bound=N --bound-type=context` bounds context switches (bounding
 requires `--sc`).
+
+
+## A property that is NOT model-checked here, and why
+
+**Claim: at quiescence, `SegmentedArray::size()` bounds only PUBLISHED elements.**
+
+This is the contract every enumeration in the engine rests on after 36cb9d08. Ids come from an
+atomic increment taken before the element exists -- which is what makes them cheap, and why they
+are deliberately not repeatable -- so the CLAIM counters behind `num_states()`, `num_edges()` and
+`num_raw_events()` run ahead of publication, and an id claimed but never emplaced leaves them
+permanently above what the array holds. Readers must use `num_published_*` instead. The defect was
+real, reached the paclet's marshaller, and presented as an intermittent whole-suite failure about
+one run in three when another process loaded the box.
+
+**A harness for it was written and does not run.** GenMC v0.17.0 aborts on it with
+`INTERNAL FAILURE: Internal check failed: size != 0` in `SAddrAllocator::allocate`, before
+exploring any execution. This is not a property violation and not a harness bug in the usual sense:
+the checker fails to model the structure at all. Established by ground-truthing rather than
+assumed -- `run.sh key_set_exactly_once --mode=estimate` exits 0 on the same toolchain in the same
+session, so the installation is sound and the failure is specific to `SegmentedArray`. Five
+variants were tried: arena over static storage, arena over the modelled heap, one element per
+segment, the array as a stack local, and the array in static storage. All abort identically. The
+likeliest cause is the 4,096-entry `std::atomic<T*> segments_[MAX_SEGMENTS]` table, which the
+checker must model in full.
+
+**What stands in its place.** The fix itself, gated by `all_tests` 275/275 and `cost_matrix` 17/17
+ALL EXACT across two consecutive whole-suite runs with the box deliberately loaded by another
+tenant -- the condition under which the defect used to reproduce. That is sampling, and this file
+argues at length that sampling can only fail to reproduce. The gap is stated rather than papered:
+this property has a passing gate and no proof.
+
+**To close it**, either the checker gains the ability to model an atomic array of that size, or
+`MAX_SEGMENTS` becomes a template parameter so a harness can instantiate a two-segment array. The
+second is a change to shipping code for the benefit of verification, which is a trade worth making
+deliberately rather than incidentally.
