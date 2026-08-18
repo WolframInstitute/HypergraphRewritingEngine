@@ -608,7 +608,52 @@ __device__ inline bool qe_reachable(DeviceState ds, QeView qe, uint32_t producer
     // backwards.
     uint32_t seen[kQeReachStack];
     uint32_t n = 0, cursor = 0;
+
+    // MEMBERSHIP FILTER OVER `seen`. The scan below is the walk's inner loop and it runs once
+    // per predecessor examined, so on a dense causal relation it dominates everything else:
+    // measured on disc-l3a2g2r2 depth 3, 971,040 kept pairs over ~4,515 reconstructed events is
+    // ~215 producers per consumer, and at kQeReachStack nodes that is ~41,000 comparisons per
+    // node against the host's ~215 -- the host carries a hash visited set (ScratchIdSet) where
+    // this carried a linear scan, and that difference is why the device did not finish a walk
+    // the host completes in 289 ms.
+    //
+    // A Bloom filter rather than a hash table because this function sits inside the replay's
+    // recursion cycle (qe_apply -> descend -> qe_drive_instance -> qe_apply), where
+    // EngineState::qe_max_recursion_depth is calibrated against a measured 5,461 bytes per
+    // level: a 256-entry open-addressed table would add 1 KB to every level and make the depth
+    // guard fire after the frame that faults. This adds 128 bytes and no indirection. At
+    // kQeReachStack entries in 1024 bits with three probes the false-positive rate is ~8%, so
+    // ~12 scans in 13 are skipped.
+    //
+    // NO FALSE NEGATIVES, which is what makes it sound: a clear bit proves the id was never
+    // inserted, so the scan is skipped only when it would have found nothing. A false positive
+    // costs one scan that returns empty -- the previous cost, not a wrong answer.
+    constexpr uint32_t kBloomWords = 16;                  // 1024 bits
+    uint64_t bloom[kBloomWords];
+    for (uint32_t i = 0; i < kBloomWords; ++i) bloom[i] = 0ull;
+    auto bloom_bit = [](uint32_t v, uint32_t k) -> uint32_t {
+        uint64_t h = static_cast<uint64_t>(v) + 0x9e3779b97f4a7c15ull * (k + 1u);
+        h ^= h >> 30; h *= 0xbf58476d1ce4e5b9ull;
+        h ^= h >> 27; h *= 0x94d049bb133111ebull;
+        h ^= h >> 31;
+        return static_cast<uint32_t>(h & (kBloomWords * 64u - 1u));
+    };
+    auto bloom_add = [&](uint32_t v) {
+        for (uint32_t k = 0; k < 3; ++k) {
+            const uint32_t b = bloom_bit(v, k);
+            bloom[b >> 6] |= (1ull << (b & 63u));
+        }
+    };
+    auto bloom_may_contain = [&](uint32_t v) -> bool {
+        for (uint32_t k = 0; k < 3; ++k) {
+            const uint32_t b = bloom_bit(v, k);
+            if (!(bloom[b >> 6] & (1ull << (b & 63u)))) return false;
+        }
+        return true;
+    };
+
     seen[n++] = consumer;
+    bloom_add(consumer);
     while (cursor < n) {
         const uint32_t x = seen[cursor++];
         bool found = false, full = false;
@@ -617,8 +662,11 @@ __device__ inline bool qe_reachable(DeviceState ds, QeView qe, uint32_t producer
             if (found || r.consumer != x) return;
             if (r.producer == producer) { found = true; return; }
             if (r.producer <= producer) return;            // outside the cone
-            for (uint32_t i = 0; i < n; ++i) if (seen[i] == r.producer) return;   // already reached
-            if (n < kQeReachStack) seen[n++] = r.producer;
+            if (bloom_may_contain(r.producer)) {
+                for (uint32_t i = 0; i < n; ++i)
+                    if (seen[i] == r.producer) return;     // already reached
+            }
+            if (n < kQeReachStack) { seen[n++] = r.producer; bloom_add(r.producer); }
             else                   full = true;
         });
         if (found) return true;
