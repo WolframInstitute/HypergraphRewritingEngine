@@ -1,7 +1,18 @@
 # Release acceptance checklist
 
-**Every gate below was re-run at HEAD on 2026-08-12** unless a line says otherwise:
-all_tests **275/275**, hg_gpu_tests **99/99**, gpu_differential_tests **36/36** (RTX 4090),
+**Every gate below was re-run at HEAD on 2026-08-18** unless a line says otherwise:
+all_tests **276/276**, hg_gpu_tests **88/88**, gpu_differential_tests **37/37** (RTX 4090),
+
+> **The three counts moved since the 2026-08-12 snapshot, and all three are accounted for.**
+> `all_tests` 275 -> 276 and `gpu_differential_tests` 36 -> 37 are single tests ADDED
+> (`BoundedCoreHashIsInvariantUnderPresentation` `eeed0b38`;
+> `RecordSet.NotRecordingRawEventsLeavesTheCanonicalAnswerUnchanged`). `hg_gpu_tests` 99 -> 88 is
+> tests DELETED with their subjects, under the rule that a replaced thing dies in the same
+> commit — `12f7abcc` (VWarp and its only test, which existed to test each other) and `59b3cd8d`
+> (PartialMatch and its DFS, when the device matcher moved to the shared join). Verified not to
+> be silent skipping: `gpu/tests/*.cu` contains **88** `TEST`/`TEST_F` macros and **0**
+> `DISABLED_` prefixes, and the runner reports 88. Source and run agree.
+
 golden corpus **12/12** with CPU == GPU == `{5,33,32,43}`, `verify_sessions.wls`
 **SESSIONS_VERIFIED 0/23**, `verify_doc_examples.wls` 38 blocks with only the two known
 first-call-message blocks failing (board #109), `codemap_check` / `doc_symbols_check` /
