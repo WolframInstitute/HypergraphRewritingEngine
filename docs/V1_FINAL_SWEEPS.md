@@ -252,3 +252,66 @@ compaction that may fail freely because nothing depends on it; `count_unique()` 
 GenMC harness stating the completeness property for each (two now exist —
 `lock_free_list_completeness` `33244e82`, `arena_worker_index_exclusive` `11c8cd2b`); all gates
 green across 20 consecutive suite runs.
+
+---
+
+## S6 — Hot-path hunt: what the engine profile says, and one refutation
+
+**Status: ONE WIN LANDED, ONE HYPOTHESIS REFUTED, ONE TARGET IDENTIFIED AND UNTRIED.**
+
+Callgrind on `bench_cpu_evolve 7 1 1 wolfram24`, RelWithDebInfo for line attribution, 90.4B
+instructions.
+
+| site | share |
+|---|---:|
+| `bitset.hpp` `contains()` inlined into `execute_expand_task` | **63.35%** |
+| `lock_free_list.hpp` inlined into same | 5.05% |
+| `ConcurrentKeySet::insert` | 3.03% |
+| `ir_refine` | 2.31% |
+| malloc family, total | ~0.9% |
+
+**Landed:** IR scratch re-zeroing (`ef73216d`), **1.09% engine** / 15% on the IR-saturated probe.
+The headline was corrected in `d8b354bc` — the 15% is the probe's.
+
+### Where the 63% actually is
+
+Not the bit test. Line attribution inside `contains` -> `find_chunk`:
+
+    12,611,066,200 (13.96%)   size_t mid = lo + (hi - lo) / 2;
+     8,593,090,998 ( 9.52%)   while (lo < hi) {
+        38,409,351 ( 0.04%)   return (words[word_idx] >> bit_idx) & 1;
+
+**23.5% of the engine is the binary search that FINDS the chunk**, against 0.04% for the bit
+test it exists to reach. `contains` is called 3.43 billion times.
+
+### REFUTED: a one-entry chunk memo
+
+A chunk spans 512 consecutive edge ids and the matcher walks edges in id order, so consecutive
+`contains()` calls should hit the same chunk. Implemented as a `mutable size_t memo_` validated
+by the `chunk_id` compare (no invalidation needed: entries are sorted with unique ids, so an
+index passing that compare names the right entry however the array has moved).
+
+**Measured: 90,449,530,905 -> 97,957,399,573 instructions, +8.30% WORSE.**
+
+Hit rate says why, and it is the premise not the code: **13,497,293 hits against 1,130,281,656
+misses — 1.18%.** Consecutive lookups almost never share a chunk. Reverted; patch kept at
+`scratchpad/memo_refuted.patch`.
+
+**Do not retry a locality cache here.** The access pattern is not local, and that is now measured
+rather than assumed.
+
+### Also found: two dead filter paths
+
+Instrumenting the candidate call sites to find the hot one showed `SignatureIndex::
+for_each_edge_with_signature` (index.hpp:79), `InvertedVertexIndex::for_each_edge` (index.hpp:248)
+and `pattern_matcher.hpp:509` all execute **zero times** on wolfram24, wpp and multirule. Matching
+goes through the shared join core. Whether those paths are live on any workload, or are dead code,
+belongs to S4.
+
+### The untried target
+
+3.43 billion calls is an access-pattern question, not a slow predicate — `contains` is already
+force-inlined with its failed variants measured in-place. BACKLOG names the lever: a
+match-forwarding edge->matches reverse index, O(|parent matches| x size) -> proportional to what
+changed. That is a matcher change, not a data-structure tweak, and it is the one place a large
+win plausibly remains.
