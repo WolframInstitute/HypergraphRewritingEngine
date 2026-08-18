@@ -71,9 +71,14 @@ public:
     //
     // Construct-before-publish: the slot index is claimed from a private counter
     // (claim_), then emplace_at constructs the element, publishes the segment
-    // pointer, and only then advances the reader-visible count_. Because the segment
-    // is published before count_ passes the slot, operator[]/for_each can never
-    // dereference a null segment.
+    // pointer, and only then advances the reader-visible count_. That ordering alone
+    // covers the emplace which OWNS the slot; it does not cover a lower slot in a
+    // different segment, whose emplace may still be in flight while this one advances
+    // count_ past it. Segments are therefore created in order (see
+    // get_or_create_segment), which gives: if a segment exists, so do all below it.
+    // The thread advancing count_ has created its own segment, so every index it
+    // publishes resolves to a live segment and operator[]/for_each cannot dereference
+    // a null one.
     //
     // CONTRACT: count_ is a high-water mark, advanced independently by each emplace,
     // so under CONCURRENT emplace a reader iterating [0, size()) may observe a lower
@@ -293,6 +298,30 @@ private:
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
         if (segment) {
             return segment;
+        }
+
+        // A SEGMENT IS NEVER CREATED BEFORE ITS PREDECESSORS.
+        //
+        // count_ is a per-emplace high-water mark, so the thread that fills a slot in segment k
+        // can advance count_ past a LOWER index whose own emplace, in segment j < k, has not
+        // reached its allocation yet. A reader then sees the index as published, indexes into a
+        // null segment, and at_published throws -- which is what it is for, but the read was
+        // legitimate and the array was wrong. Measured as an intermittent failure of the
+        // determinism and continuation tests at roughly one run in three.
+        //
+        // Creating the predecessors first establishes: if segment k exists, every segment below
+        // it exists. The thread that advances count_ to idx+1 has created segment(idx), so every
+        // lower index now resolves to a live segment. What a reader may still see is the
+        // DOCUMENTED case -- an element whose constructor has not run, reading as
+        // default-constructed -- and not an absent segment.
+        //
+        // The walk is on the creation path only: an existing segment returned above never
+        // reaches here, and each segment is created once, so this costs one pass over already
+        // published pointers per new segment and nothing in steady state.
+        for (size_t j = 0; j < seg_idx; ++j) {
+            if (!segments_[j].load(std::memory_order_acquire)) {
+                get_or_create_segment(j, arena);
+            }
         }
 
         // Need to allocate new segment
