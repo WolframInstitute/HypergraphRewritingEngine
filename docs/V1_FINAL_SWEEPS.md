@@ -373,3 +373,51 @@ around it. Reducing the NUMBER of lookups (forwarding, incremental match mainten
 plausible; making each lookup cheaper is not.
 
 Patch kept at `scratchpad/linear_scan_refuted.hpp`.
+
+---
+
+## S8 — The real ceiling: 6.80x on 32 cores, so ~15% is serial or contended
+
+**Status: MEASURED. This is where the remaining performance is.**
+
+S7 established the engine is latency-bound, so the lever is OVERLAP rather than less work.
+Threads do overlap it — and then stop.
+
+wolfram24, depth 6, median of 3, 32-core box:
+
+| threads | ms | speedup | efficiency |
+|---:|---:|---:|---:|
+| 1 | 279.6 | 1.00x | 100% |
+| 2 | 162.1 | 1.79x | 89% |
+| 4 | 91.0 | 3.19x | 80% |
+| 8 | 58.6 | 4.95x | 62% |
+| 16 | 45.1 | 6.20x | 39% |
+| 24 | 41.1 | **6.80x** | 28% |
+| 32 | 41.1 | **6.80x** | 21% |
+
+**Flat from 24 to 32 threads — 41.1 ms both.** The engine saturates at 6.80x on 32 cores.
+
+By Amdahl a 6.80x asymptote puts the serial-or-contended fraction at **1/6.80 = 14.7%**.
+
+### Why this is the target and instruction work is not
+
+Removing `find_chunk`'s binary search deleted 23.5% of ALL engine instructions and returned
+**zero** wall clock (S7). Closing half the serial fraction would take 6.80x to roughly 12x and
+nearly halve wall time. The two are not comparable in value, and only one of them is available.
+
+### What to measure next, in order
+
+1. **Where the 15% is.** The engine is lock-free, so this is CAS retry traffic, memory-ordering
+   stalls, false sharing, or a genuinely serial phase — not a lock. Candidates visible in the
+   profile already: `ConcurrentKeySet::insert` (3.03% single-threaded, and it is the structure
+   whose growth path `f694c062` just fixed), the shared arena's block-grab path, and the
+   frontier/queue rendezvous.
+2. **Whether the plateau is contention or exhausted parallelism.** These need opposite fixes. If
+   the frontier is narrow at depth 6 there is simply nothing for 24 threads to do, and the answer
+   is a bigger workload rather than a code change. Measure the frontier width per step against
+   the thread count before touching anything.
+3. Only then, a change — validated on WALL CLOCK at 16 and 32 threads, since S7 proved
+   instruction counts do not predict time on this engine.
+
+**Do not** repeat S6/S7's mistake here: measure which of (1) and (2) it is BEFORE writing code.
+Both previous hot-path attempts were plausible, measured, and wrong.
