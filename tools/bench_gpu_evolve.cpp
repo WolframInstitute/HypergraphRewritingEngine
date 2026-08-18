@@ -238,9 +238,14 @@ int main(int argc, char** argv) {
     // The reconstruction's own size, so a device row can be compared with the host's on WORK
     // DONE and not only on time. If the two engines disagree here they are not computing the
     // same relation, and a time ratio between them would be meaningless.
-    std::printf("  recon: causal_edges=%u causal_pairs=%u reduced_pairs=%u branchial=%u\n",
+    // instances beside states is the WIDTH the replay could use against the width it does use.
+    // The descent runs inline in the discovering thread, so the work is spread over classes;
+    // the instances are what it could be spread over. The ratio sizes that difference.
+    std::printf("  recon: causal_edges=%u causal_pairs=%u reduced_pairs=%u branchial=%u "
+                "instances=%u states=%zu\n",
                 rw.reconstructed_causal_edges, rw.reconstructed_causal_pairs,
-                rw.reconstructed_causal_pairs_reduced, rw.reconstructed_branchial);
+                rw.reconstructed_causal_pairs_reduced, rw.reconstructed_branchial,
+                rw.expansion_instances, rw.states.size());
 
     if (mode == 0) {
         std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
