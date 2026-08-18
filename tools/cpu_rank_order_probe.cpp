@@ -48,7 +48,7 @@ std::map<uint64_t, std::vector<Shot>> run_once(const oracle::Case& c, bool quoti
     e.evolve(c.init, steps);
 
     std::map<uint64_t, std::vector<Shot>> out;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         const State& st = hg.get_state(sid);
         if (st.id == INVALID_ID) continue;
 

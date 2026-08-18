@@ -46,11 +46,11 @@ Sets run(double q, uint64_t seed, int steps) {
     e.evolve({{0,1},{1,2}}, steps);
 
     Sets s;
-    for (uint32_t sid = 0; sid < g.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < g.num_published_states(); ++sid) {
         if (g.get_state(sid).id == INVALID_ID) continue;
         s.states.insert(g.get_or_compute_canonical_hash(sid));
     }
-    for (uint32_t eid = 0; eid < g.num_raw_events(); ++eid) {
+    for (uint32_t eid = 0; eid < g.num_published_events(); ++eid) {
         const Event& ev = g.get_event(eid);
         if (ev.id == INVALID_ID) continue;
         const uint64_t in = ev.input_state == INVALID_ID

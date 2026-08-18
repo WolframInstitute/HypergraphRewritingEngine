@@ -15,6 +15,15 @@
 // device result. The Source concept:
 //
 //   uint32_t num_states() const;                 // scan bound for raw state ids
+//
+//   THE SCAN BOUNDS BELOW MUST BE PUBLICATION COUNTS, NOT CLAIM COUNTS. Ids are handed out by an
+//   atomic increment before the object exists -- that is what makes them cheap, and why they are
+//   not repeatable across runs -- so an id can be claimed and never emplaced, leaving a claim
+//   counter permanently above what exists. This marshaller scans [0, bound) and calls
+//   state_valid/is_valid_event, and on the host those dereference; handing it a claim counter
+//   makes it reach an index holding no element, which throws out of the marshaller and returns
+//   the caller an error instead of a graph. An adapter supplies the bound, so an adapter that
+//   supplies the wrong one breaks a path that looks correct here.
 //   bool     state_valid(uint32_t sid) const;
 //   int64_t  effective_state_id(uint32_t sid) const;   // canonical/content/raw per mode
 //   uint32_t state_step(uint32_t sid) const;

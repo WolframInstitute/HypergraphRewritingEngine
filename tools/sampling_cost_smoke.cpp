@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     // entirely the question of whether m does -- which is this histogram, not an argument.
     {
         std::vector<size_t> width;
-        for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+        for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
             const auto& st = hg.get_state(sid);
             if (st.id == INVALID_ID) continue;
             if (st.step >= width.size()) width.resize(st.step + 1, 0);

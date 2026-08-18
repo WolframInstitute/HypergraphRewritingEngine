@@ -52,7 +52,7 @@ Out run(double q, int threads, int steps) {
     // two different runs can then share a fingerprint -- measured, q=0.5 and q=1.0 collided
     // before this was a set. Order-free because a set iterates sorted.
     std::set<uint64_t> hashes;
-    for (uint32_t s = 0; s < g.num_states(); ++s) {
+    for (uint32_t s = 0; s < g.num_published_states(); ++s) {
         if (g.get_state(s).id == INVALID_ID) continue;
         o.per_depth[g.get_state(s).step]++;
         hashes.insert(g.get_or_compute_canonical_hash(s));

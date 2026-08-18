@@ -254,7 +254,7 @@ NormalizedResult run_cpu(const Workload& w) {
 
     // EventId → event_key (input_hash, output_hash, rule, step).
     std::unordered_map<uint32_t, uint64_t> event_key_by_id;
-    for (uint32_t eid = 0; eid < hg.num_events(); ++eid) {
+    for (uint32_t eid = 0; eid < hg.num_published_events(); ++eid) {
         const auto& ev = hg.get_event(eid);
         if (ev.id == hypergraph::INVALID_ID) continue;
         uint64_t ih = state_hash_by_id.count(ev.input_state)  ? state_hash_by_id[ev.input_state]  : 0ULL;
@@ -281,7 +281,7 @@ NormalizedResult run_cpu(const Workload& w) {
     out.raw_events = hg.num_raw_events();
     {
         std::set<uint32_t> outs;
-        for (uint32_t eid = 0; eid < hg.num_events(); ++eid) {
+        for (uint32_t eid = 0; eid < hg.num_published_events(); ++eid) {
             const auto& ev = hg.get_event(eid);
             if (ev.id != hypergraph::INVALID_ID) outs.insert(ev.output_state);
         }

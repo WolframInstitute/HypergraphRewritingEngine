@@ -75,7 +75,7 @@ Outcome run(int threads, int steps, uint64_t seed) {
     e.evolve(std::vector<std::vector<VertexId>>{{0,1}}, steps);
 
     Outcome o;
-    for (uint32_t s = 0; s < g.num_states(); ++s) {
+    for (uint32_t s = 0; s < g.num_published_states(); ++s) {
         if (g.get_state(s).id == INVALID_ID) continue;
         o.state_hashes.push_back(g.get_or_compute_canonical_hash(s));
     }

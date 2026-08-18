@@ -133,7 +133,7 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     // The canonical STATE set, the gate's first column. Isomorphism hashes, sorted, so it is
     // comparable across runs that number states differently.
     std::vector<uint64_t> st;
-    for (StateId s = 0; s < g.num_states(); ++s) st.push_back(g.get_or_compute_canonical_hash(s));
+    for (StateId s = 0; s < g.num_published_states(); ++s) st.push_back(g.get_or_compute_canonical_hash(s));
     std::sort(st.begin(), st.end());
     st.erase(std::unique(st.begin(), st.end()), st.end());
 

@@ -77,7 +77,7 @@ int main() {
     std::cout << "Evolution by step:\n";
     for (size_t step = 0; step <= nSteps; ++step) {
         size_t states_at_step = 0;
-        for (StateId sid = 0; sid < hg.num_states(); ++sid) {
+        for (StateId sid = 0; sid < hg.num_published_states(); ++sid) {
             const auto& state = hg.get_state(sid);
             if (state.id != INVALID_ID && state.step == step) {
                 states_at_step++;

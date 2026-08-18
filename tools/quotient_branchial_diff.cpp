@@ -89,7 +89,7 @@ Side full_capture(const Workload& w, int steps, EventSignatureKeys ekeys) {
     e.evolve(w.init, steps);
 
     Side s;
-    for (uint32_t i = 0; i < g.num_raw_events(); ++i) {
+    for (uint32_t i = 0; i < g.num_published_events(); ++i) {
         const Event& ev = g.get_event(i);
         if (ev.id != INVALID_ID) s.events.insert(ev.signature);
     }

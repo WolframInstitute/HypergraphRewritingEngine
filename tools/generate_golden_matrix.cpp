@@ -51,7 +51,7 @@ Measured run(const oracle::Case& c, StateCanonicalizationMode sm, EventSignature
     // member count, which differs between full capture and quotient while the state SET -- the
     // observable -- is identical; the twin check then fails on a multiplicity artifact.
     std::set<uint64_t> canon;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         if (hg.get_state(sid).id == INVALID_ID) continue;
         canon.insert(hg.get_or_compute_canonical_hash(sid));
     }

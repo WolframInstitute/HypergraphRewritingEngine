@@ -50,11 +50,11 @@ Fingerprints run_once(const oracle::Case& c, StateCanonicalizationMode sm,
     e.evolve(c.init, steps);
 
     Fingerprints f;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         if (hg.get_state(sid).id == INVALID_ID) continue;
         f.states = golden::fold_fingerprint(f.states, hg.get_or_compute_canonical_hash(sid));
     }
-    for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
+    for (uint32_t eid = 0; eid < hg.num_published_events(); ++eid) {
         const Event& ev = hg.get_event(eid);
         if (ev.id == INVALID_ID || !ev.is_canonical()) continue;
         f.events = golden::fold_fingerprint(f.events, ev.signature);

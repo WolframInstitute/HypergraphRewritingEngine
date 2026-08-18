@@ -35,7 +35,7 @@ static std::vector<Edges> collect_states(int steps) {
     engine.evolve(init, steps);
 
     std::vector<Edges> out;
-    for (StateId s = 0; s < hg.num_states(); ++s) {
+    for (StateId s = 0; s < hg.num_published_states(); ++s) {
         Edges e;
         hg.get_state(s).edges.for_each([&](EdgeId eid) {
             const Edge& ed = hg.get_edge(eid);
