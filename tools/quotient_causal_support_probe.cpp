@@ -92,8 +92,8 @@ static std::map<std::pair<uint64_t,uint64_t>,long long> oracle(const WL& w, size
         std::map<uint64_t,long long> nev, ninst;
         for (uint32_t s=0;s<hg.num_states();++s){ if(hg.get_state(s).id==INVALID_ID) continue;
             if (hg.get_state(s).step < (uint32_t)w.steps) ninst[sh[s]]++; }
-        for (uint32_t i=0;i<hg.num_events();++i){ const auto& e=hg.get_event(i); if(e.id==INVALID_ID) continue;
-            nev[sh[e.input_state]]++; }
+        for (uint32_t i=0;i<hg.num_events();++i){ const auto& ev=hg.get_event(i); if(ev.id==INVALID_ID) continue;
+            nev[sh[ev.input_state]]++; }
         full_W.clear();
         for (auto& kv : ninst) if (kv.second) full_W[kv.first] = (double)nev[kv.first]/(double)kv.second;
     }
@@ -239,11 +239,11 @@ static bool check(const WL& w){
     // ---- diff (support / set equality) ----
     size_t br_missing=0, br_extra=0;
     for (auto& kv : full_branchial) if(!predset_br.count(kv.first)) ++br_missing;
-    for (auto& e : predset_br) if(!full_branchial.count(e)) ++br_extra;
+    for (auto& k : predset_br) if(!full_branchial.count(k)) ++br_extra;
     bool br_ok = !br_missing && !br_extra;
     size_t missing=0, extra=0;
     for (auto& kv : exact) if(!predset.count(kv.first)) ++missing;   // exact keyset = full-capture support
-    for (auto& e : predset) if(!exact.count(e)) ++extra;
+    for (auto& k : predset) if(!exact.count(k)) ++extra;
     long double maxdev=0; long double predicted_events=0; (void)maxdev; (void)predicted_events;
     // `ev_ok` was a hard-coded true and `wrong` was never incremented, so two of the four
     // conjuncts of the verdict below could not fail. The event-count prediction this file is
