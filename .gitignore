@@ -35,6 +35,7 @@ evidence/
 # NOT excluded, deliberately: paper/STATUS.md, which records that it is "tracked here so it
 # cannot be lost again" after the 2026-07-03 reconciliation stranded the paper source. Excluding
 # it would repeat the incident it exists to prevent.
+docs/V1_DIRECTIVE.md
 docs/V1_PLAN.md
 docs/V1_REMAINING.md
 docs/V1_FINAL_SWEEPS.md
