@@ -32,6 +32,17 @@ namespace engine {
 //
 // EMPTY and MIGRATED are reserved and must never be inserted. The engine's keys are mixed hashes
 // and already avoid 0 and ~0, because ConcurrentMap reserved the same two.
+// Keys migrate_into could not carry because the destination's probe run was exhausted, which
+// concurrent claims into the new table can cause while a migration runs. NOT a loss: the caller
+// leaves such a key unsealed in the source table and does not drain it, so both for_each and
+// find_in_table still reach it. Counted because it is the cost side of that decision -- a
+// superseded table stays in the chain and is walked -- and because a number that climbs steeply
+// says the growth policy is under-sizing the destination. Process-wide, never reset.
+inline std::atomic<uint64_t>& migrate_deferrals() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
+
 template<typename K = uint64_t,
          K EMPTY_KEY    = K{0},
          K MIGRATED_KEY = static_cast<K>(~K{0})>
@@ -239,12 +250,26 @@ private:
         //
         // A claimant whose CAS landed here before the install still reports its verdict against
         // this table and is told kStale, because table_ has already moved; it re-drives at nt.
+        // A KEY THAT CANNOT BE CARRIED MUST STAY REACHABLE WHERE IT IS. migrate_into fails when
+        // the destination's probe run is exhausted, which concurrent claims into the new table
+        // can cause while this migration runs. Sealing the source anyway put the key in neither
+        // table -- and marking the table drained then made for_each skip it entirely, so the
+        // claim was counted and the key was gone. Measured on WPP at 8 threads: 20,558 pairs
+        // enumerated against 30,063 claimed.
+        //
+        // Leaving it unsealed keeps it in this table, where for_each and find_in_table both
+        // still reach it because the table is not drained. The cost is that a superseded table
+        // stays in the chain and is walked; the alternative was losing the key.
+        bool all_sealed = true;
         for (size_t i = 0; i < nt->prev->capacity; ++i) {
             std::atomic<K>& slot = nt->prev->keys[i];
             for (;;) {
                 K k = slot.load(std::memory_order_acquire);
                 if (k == MIGRATED_KEY) break;
-                if (k != EMPTY_KEY) migrate_into(nt, k);       // carry BEFORE sealing
+                if (k != EMPTY_KEY && !migrate_into(nt, k)) {   // carry BEFORE sealing
+                    all_sealed = false;
+                    break;                                      // leave it here, still reachable
+                }
                 if (slot.compare_exchange_strong(k, MIGRATED_KEY, std::memory_order_acq_rel,
                                                  std::memory_order_acquire))
                     break;
@@ -252,23 +277,29 @@ private:
         }
         // Published last: every key is now in nt and every slot here is sealed, so a reader that
         // observes this flag may skip the table without missing a key.
-        nt->prev->drained.store(true, std::memory_order_release);
+        if (all_sealed) nt->prev->drained.store(true, std::memory_order_release);
     }
 
     // Migration is not a claim: it carries a key that already won its claim elsewhere, so it
     // takes no count and needs no verdict.
-    static void migrate_into(Table* t, K key) {
+    static bool migrate_into(Table* t, K key) {
         const size_t idx = hash(key) & t->mask;
         for (size_t p = 0; p < t->capacity; ++p) {
             std::atomic<K>& slot = t->keys[(idx + p) & t->mask];
             K cur = slot.load(std::memory_order_acquire);
-            if (cur == key) return;
+            if (cur == key) return true;
             if (cur == EMPTY_KEY &&
                 slot.compare_exchange_strong(cur, key, std::memory_order_acq_rel,
                                              std::memory_order_acquire))
-                return;
-            if (cur == key) return;
+                return true;
+            if (cur == key) return true;
         }
+        // THE PROBE RUN IS EXHAUSTED AND THE KEY WAS NOT CARRIED. Reported so the caller can
+        // leave the source slot unsealed and the table undrained; returning void here is what
+        // put the key in neither table while count_ still counted its claim. Counted here so the loss is measurable instead of
+        // silent; see #167.
+        migrate_deferrals().fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
 
     std::atomic<Table*> table_{nullptr};

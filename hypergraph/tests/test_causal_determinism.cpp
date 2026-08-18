@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <vector>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -91,6 +92,29 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     //   before == after, walk short  -> the edges exist and are unreachable (structural)
     //   after  >  before             -> evolve() returned with pushes outstanding (quiescence)
     // Without this the shortfall is real either way and the cause is a guess.
+#ifdef HG_LIST_SEQ_DEBUG
+    // WHERE DOES THE CHAIN BREAK? Each node carries the order its CAS won, so a complete chain
+    // yields a contiguous run. Report how many stamps the walk reaches, the highest stamp
+    // pushed, and the largest single jump between consecutive reached stamps -- one big jump is
+    // a chain that lost a contiguous tail, many small ones is repeated single-node loss.
+    if (!g.quotient_reconstruction()) {
+        std::vector<uint64_t> seqs;
+        g.causal_graph().debug_branchial_seqs([&](uint64_t q) { seqs.push_back(q); });
+        const uint64_t pushed = g.causal_graph().debug_branchial_pushed();
+        uint64_t maxgap = 0, gaps = 0;
+        for (size_t i = 1; i < seqs.size(); ++i) {
+            const uint64_t d = seqs[i - 1] - seqs[i];   // newest-first, so this is >= 1
+            if (d > 1) { ++gaps; if (d - 1 > maxgap) maxgap = d - 1; }
+        }
+        std::fprintf(stderr,
+            "[chain] pushed=%llu reached=%zu missing=%llu gaps=%llu largest_gap=%llu top=%llu\n",
+            (unsigned long long)pushed, seqs.size(),
+            (unsigned long long)(pushed - seqs.size()), (unsigned long long)gaps,
+            (unsigned long long)maxgap,
+            seqs.empty() ? 0ull : (unsigned long long)seqs.front());
+    }
+#endif
+
     const long stored_before = g.quotient_reconstruction()
         ? 0L : static_cast<long>(g.causal_graph().num_branchial_edges());
 
