@@ -70,7 +70,8 @@ derivable from it unchanged and the verified against full capture.
 
 ## S2 — IR high-symmetry pathology (up to 1100x)
 
-**Status: OPEN.**
+**Status: CLOSED — the premise does not reproduce.** Worst measured is 32.33x, the search does
+not grow with symmetry at all, and at engine level IR is CHEAPER than WL as well as exact.
 
 **Why it is open.** `project_ir_vs_wl_verdict`: IR is exact and subsumes WL in correctness (WL
 collides on all 5 1-WL-hard pairs), but blows up on high-automorphism states — cycles measured up
@@ -80,12 +81,54 @@ partition copy plus fresh scratch per search node.
 Both automorphic corpus cases (`cycle4-automorphic`, `star4-automorphic`) sit at 68,185 raw
 states, which is where this bites.
 
-**Close it by:** profiling one pathological state to attribute the 1100x, then either landing an
-improvement with the ratio re-measured, or recording a refutation with numbers. Candidates named
-in BACKLOG: avoid the per-node partition copy; strengthen orbit pruning.
+### Measured (2026-08-18)
 
-**Gate:** the 1100x ratio re-measured after any change, on the same state; `all_tests` and
-`cost_matrix` 17/17 EXACT unchanged; if refuted, the numbers are recorded and the item closes.
+Two instruments, both of which existed already and neither of which was built. Registered in
+CMake as part of this item (and of S4).
+
+**`ir_core_phase_probe` — does the SEARCH grow with symmetry? No.** It calibrates itself first:
+C_6 has Aut = D6 of order 12 and an initial refinement of one cell, so the search must branch —
+reported `searched=1 leaves=2 nodes=2 depth=1 -> counters respond`, so the counters are live.
+Then the sweep, where a cycle is the worst case symmetry can present (every vertex in one cell,
+Aut of order 2n):
+
+    C_6  C_12  C_24  C_48  C_96  C_192  C_384   ->  leaves=2  nodes=2  depth=1, every one
+
+Flat. Sixty-four-fold size increase, identical search. On the corpus workload whose automorphism
+grows with the state: leaves p50=2, p90=3, p99=3, max=4, deepest individualization 1.
+**The search is bounded and does not respond to symmetry.** Whatever the 1100x was, it was not
+IR exploring more.
+
+**`ir_vs_wl` — what IS the per-call ratio?**
+
+| graph | edges | WL us | IR us | IR/WL |
+|---|---:|---:|---:|---:|
+| cycle | 100 | 6.800 | 95.140 | 13.99 |
+| cycle | 200 | 13.419 | 285.984 | **21.31** |
+| random | 200 | 27.323 | 883.249 | **32.33** |
+
+**Worst measured is 32.33x, not 1100x.** The cycle ratio does grow with size (5.86x at 10 edges
+to 21.31x at 200), so IR scales worse per call than WL — by twenty-fold, not by three orders.
+
+**And the per-call ratio is the wrong number for a route choice**, which `ir_vs_wl`'s own header
+says before printing it: over a full evolution non-Full/WL costs **68,004,245** instructions
+against Full/IR's **59,028,301** (callgrind), because the engine pays the allocation discipline
+around the call — 9.74% of the non-Full run is `memset` zeroing WL scratch. IR is CHEAPER in the
+engine.
+
+**Correctness runs the same way.** Of 7 1-WL-hard pairs, WL false-collides on 2 (prism vs K3,3,
+rook4x4 vs Shrikhande); IR distinguishes all 7.
+
+### Verdict
+
+There is no pathology to fix. IR is exact where WL is not, and cheaper where it counts. The
+recorded "1100x, weak orbit pruning" is not reproducible at the sizes the engine sees, and the
+BACKLOG line naming per-node partition copy as its cause describes a cost the search does not
+incur — it reaches two nodes.
+
+**Reopen only if** a state is exhibited whose `leaves`/`nodes` counters are large. The probe
+prints them per state and flags the heaviest 1%, so such a state would be visible rather than
+inferred.
 
 ---
 

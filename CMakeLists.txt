@@ -237,6 +237,22 @@ add_executable(thinning_mode_probe tools/thinning_mode_probe.cpp)
 target_include_directories(thinning_mode_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(thinning_mode_probe PRIVATE hypergraph)
 
+# S2's instrument. Measures the individualization-refinement search's SIZE (leaves, nodes,
+# depth) rather than its wall time, and calibrates itself on C_6 -- a 6-cycle's automorphism
+# group is dihedral of order 12 and its initial refinement is one cell, so the search must
+# branch. If that case reports no search the counters are dead and the rest is meaningless.
+add_executable(ir_core_phase_probe tools/ir_core_phase_probe.cpp)
+target_include_directories(ir_core_phase_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ir_core_phase_probe PRIVATE hypergraph)
+
+# S2's second instrument: IR against WL, per CALL. Its own header states the scope that makes
+# the ratio safe to read -- a per-call ratio does not license an engine-level route choice, and
+# the engine-level number runs the other way (Full/IR 59,028,301 instructions against
+# non-Full/WL's 68,004,245, because the engine pays the allocation discipline around WL).
+add_executable(ir_vs_wl tools/ir_vs_wl.cpp)
+target_include_directories(ir_vs_wl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ir_vs_wl PRIVATE hypergraph)
+
 add_executable(cost_matrix tools/cost_matrix.cpp)
 target_include_directories(cost_matrix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cost_matrix PRIVATE hypergraph)
