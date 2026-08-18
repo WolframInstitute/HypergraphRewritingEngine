@@ -735,7 +735,12 @@ __global__ void k_persistent_evolve(
                         // endpoint hashes and orbit tables exist at this point (the parent's
                         // from its own canon, the child's from the pass just above).
                         if (child_event != INVALID_ID) {
-                            if (qc.enabled) {
+                            // The DP runs only when its output is recorded. `enabled` still
+                            // follows the quotient route, so edge orbits are computed exactly as
+                            // before and the answer does not move; only the causal relation's own
+                            // work is skipped. Measured as the growing term of this block on
+                            // disc-l3a2g2r2: 43% then 66% then 81% while IR fell 53% to 17%.
+                            if (qc.enabled && qc.record_causal) {
                                 const uint64_t s2 = clock64();
                                 qc_register_transition(ds, qc, rec.state_id, child_sid,
                                                        child_event, rec.rule_id, step);

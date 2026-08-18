@@ -304,6 +304,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         qc_state_ = std::make_unique<QcState>(qc_route, cfg.max_events);
     else
         qc_state_->clear();
+    // The DP produces the causal relation over canonical events, so it runs when that relation is
+    // recorded -- the same predicate the replay uses. `enabled` stays on the route so orbits are
+    // still computed and the state set is unchanged; see QcView::record_causal.
+    qc_state_->set_record_causal(in.record.causal || in.record.branchial || in.record.raw_events);
     QcView qc_view = qc_state_->view(in.num_steps, state_.qe_max_recursion_depth());
 
     // The class-frame expansion capture rides the same route decision as the causal DP: both

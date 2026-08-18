@@ -85,6 +85,18 @@ struct QcView {
     DedupMap::DeviceView dsup_seen;
     DedupMap::DeviceView reached;
 
+    // Whether the causal RELATION this DP produces is being recorded, as against whether the
+    // quotient ROUTE is active. The two are different questions and conflating them cost the
+    // device an exponential the host had already shed.
+    //
+    // `enabled` governs the DP's STORAGE and, through it, whether edge ORBITS are computed --
+    // orbits are what raise IR_NEED_GENERATORS, so switching them off silently changes which
+    // states hash and therefore which states dedup merges (measured: 2,053,580 states against the
+    // host's 838,860). `record_causal` governs only whether qc_register_transition RUNS. A caller
+    // that records no causal relation skips the DP and keeps the orbits, so the answer is
+    // unchanged and the work is not done.
+    uint32_t record_causal = 1;
+
     uint32_t max_steps = 0;
     // How deep this DP may recurse before the per-thread stack runs out. qc_reach ->
     // qc_process_transition -> qc_add_producer -> qc_reach descends once per depth, exactly as
@@ -124,6 +136,11 @@ public:
 
     bool enabled() const { return on_; }
 
+    // Set by the caller from its RecordSet before the view is taken. Defaults true so a caller
+    // that says nothing gets exactly what it got before.
+    void set_record_causal(bool on) { record_causal_ = on; }
+    bool record_causal() const { return record_causal_; }
+
     // Between runs: every map, list and record pool starts empty. The orbit-array words need
     // no wipe -- records reference them by offset and the cursor restarts at zero.
     void clear() {
@@ -150,6 +167,7 @@ public:
         q.max_steps        = max_steps;
         q.max_recursion_depth = max_recursion_depth;
         q.enabled          = on_ ? 1u : 0u;
+        q.record_causal    = record_causal_ ? 1u : 0u;
         return q;
     }
 
@@ -165,6 +183,8 @@ private:
     uint32_t*                       cursor_ = nullptr;
     uint32_t                        arr_cap_ = 0;
     bool                            on_ = false;
+    // Defaults true so a caller that says nothing gets exactly what it got before.
+    bool                            record_causal_ = true;
 };
 
 // The DP's key spaces come from hgcommon, so the device indexes the ones the host does.
