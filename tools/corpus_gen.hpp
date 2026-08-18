@@ -41,6 +41,8 @@ enum class Shape : uint32_t {
     Cycle,        // cyclic: no acyclic join order exists, worst case for a binary join plan
     Star,         // one hub: high automorphism among the leaves, makes IR descend
     Disconnected, // two components sharing no variable: cartesian product in the matcher
+    Repeated,     // a variable repeated within one edge ({x,x}): the seed edge cannot be matched
+                  // by scanning distinct positions, and the matcher takes a separate branch for it
     Count
 };
 
@@ -50,6 +52,7 @@ inline const char* shape_name(Shape s) {
         case Shape::Cycle:        return "cycle";
         case Shape::Star:         return "star";
         case Shape::Disconnected: return "disc";
+        case Shape::Repeated:     return "rep";
         default:                  return "?";
     }
 }
@@ -92,6 +95,16 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
                 e.push_back(std::move(t));
             }
             break;
+        case Shape::Repeated:
+            // Positions 0 and 1 are the SAME variable, so every left edge constrains a vertex
+            // against itself. Arity 3 and above chains the trailing position onto the next edge;
+            // at arity 2 the edges are self-loops and share nothing, which is the shape.
+            for (uint32_t i = 0; i < n; ++i) {
+                std::vector<uint32_t> t{i, i};
+                for (uint32_t a = 2; a < ar; ++a) t.push_back(i + a - 1);
+                e.push_back(std::move(t));
+            }
+            break;
         default: break;
     }
     return e;
@@ -110,10 +123,27 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
 // creates several new match sites. That is what is reproduced here: every new edge touches an
 // existing bound vertex as well as a fresh one.
 inline std::vector<std::vector<uint32_t>> make_rhs(
-        const std::vector<std::vector<uint32_t>>& lhs, uint32_t grow, uint32_t ar) {
+        Shape s, const std::vector<std::vector<uint32_t>>& lhs, uint32_t grow, uint32_t ar) {
     std::vector<std::vector<uint32_t>> e = lhs;      // non-destructive: the left side survives
     if (lhs.empty()) return e;
     uint32_t fresh = 200;
+    if (s == Shape::Repeated) {
+        // A repeated-variable left side only matches a vertex that repeats, so growth has to
+        // create that shape or the workload is flat. Each step adds a link to a fresh vertex
+        // and the repeat on it, giving one new match site per application -- the branching
+        // condition the rest of this file exists to satisfy.
+        for (uint32_t g = 0; g < grow; ++g) {
+            const auto& anchor = lhs[g % lhs.size()];
+            const uint32_t v = fresh++;
+            std::vector<uint32_t> link{anchor[0], v};
+            for (uint32_t a = 2; a < ar; ++a) link.push_back(fresh++);
+            e.push_back(std::move(link));
+            std::vector<uint32_t> rep{v, v};
+            for (uint32_t a = 2; a < ar; ++a) rep.push_back(fresh++);
+            e.push_back(std::move(rep));
+        }
+        return e;
+    }
     for (uint32_t g = 0; g < grow; ++g) {
         std::vector<uint32_t> t;
         // Anchor on a DIFFERENT bound vertex per added edge, so growth spreads over the match
@@ -170,7 +200,7 @@ inline std::vector<Workload> corpus() {
                                            : static_cast<Shape>((sh + 1) %
                                                  static_cast<uint32_t>(Shape::Count));
                             rule.lhs = make_lhs(rs, nl, ar);
-                            rule.rhs = make_rhs(rule.lhs, grow, ar);
+                            rule.rhs = make_rhs(rs, rule.lhs, grow, ar);
                             compact_vars(rule);
                             if (!rule.lhs.empty()) w.rules.push_back(std::move(rule));
                         }
