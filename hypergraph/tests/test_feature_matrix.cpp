@@ -98,7 +98,7 @@ size_t brute_iso_multi(const std::vector<RewriteRule>& rules,
 
     std::set<std::string> distinct;
     *all_small = true;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         auto edges = oracle::state_edges(hg, sid);
         if (edges.empty()) continue;
         std::string c = oracle::brute_canonical(edges);

@@ -538,6 +538,10 @@ public:
         return counters_.next_edge.load(std::memory_order_relaxed);
     }
 
+    // PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim
+    // counter above is not that bound.
+    uint32_t num_published_edges() const { return edges_.size(); }
+
     // =========================================================================
     // Edge Accessors for the WL hash
     // =========================================================================
@@ -649,6 +653,19 @@ public:
     uint32_t num_states() const {
         return counters_.next_state.load(std::memory_order_relaxed);
     }
+
+    // How many states are PUBLISHED, as against how many ids have been CLAIMED.
+    //
+    // num_states() above is the claim counter, and it runs ahead: an id is taken by an atomic
+    // increment before the state is constructed, and an id whose state is never emplaced --
+    // claimed and then abandoned -- leaves the counter permanently above what exists. A reader
+    // that loops to num_states() and indexes therefore reaches slots that hold no element, and
+    // SegmentedArray's guard throws rather than hand back arena default bytes.
+    //
+    // This is the bound for enumerating states. It is exact once the workers are quiescent,
+    // which is the only time enumeration is meaningful anyway: mid-run the array is being
+    // written and no bound is stable.
+    uint32_t num_published_states() const { return states_.size(); }
 
     // Get the genesis state ID (creates it lazily if needed)
     // The genesis state is an empty state (no edges) that serves as the origin
@@ -873,6 +890,10 @@ public:
     uint32_t num_raw_events() const {
         return counters_.next_event.load(std::memory_order_acquire);
     }
+
+    // PUBLISHED events, the bound for enumeration. See num_published_states for why the claim
+    // counter above is not that bound.
+    uint32_t num_published_events() const { return events_.size(); }
 
     // Iterate over canonical events only (skips duplicates)
     // Callback signature: void(EventId eid, const Event& event)

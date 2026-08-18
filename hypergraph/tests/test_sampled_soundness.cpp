@@ -78,12 +78,12 @@ Sets run(const Workload& w, double q, int threads) {
     };
 
     Sets s;
-    for (uint32_t sid = 0; sid < g.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < g.num_published_states(); ++sid) {
         if (g.get_state(sid).id == INVALID_ID) continue;
         s.states.insert(g.get_or_compute_canonical_hash(sid));
         if (g.get_state(sid).step > s.max_depth) s.max_depth = g.get_state(sid).step;
     }
-    for (uint32_t eid = 0; eid < g.num_raw_events(); ++eid) {
+    for (uint32_t eid = 0; eid < g.num_published_events(); ++eid) {
         if (g.get_event(eid).id == INVALID_ID) continue;
         s.events.insert(esig(eid));
     }

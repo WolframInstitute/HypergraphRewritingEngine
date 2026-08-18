@@ -48,7 +48,7 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
 
     Fingerprint fp;
     std::vector<uint64_t> sh;
-    for (uint32_t s = 0; s < g.num_states(); ++s)
+    for (uint32_t s = 0; s < g.num_published_states(); ++s)
         if (g.get_state(s).id != hg::engine::INVALID_ID) sh.push_back(canon(s));
     std::sort(sh.begin(), sh.end());
     fp.states = 1469598103934665603ULL; for (uint64_t v : sh) fp.states = fnv(fp.states, v);

@@ -1146,7 +1146,7 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
 
         size_t host_matches = 0;
         std::set<uint64_t> seen;
-        for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+        for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
             const uint64_t h = hg.get_state(sid).canonical_hash;
             if (!seen.insert(h).second) continue;
             hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_matches; });

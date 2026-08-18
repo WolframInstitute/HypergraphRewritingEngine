@@ -124,7 +124,7 @@ TEST(OracleCorpus, RecordSetSkipsOnlyWhatItWasNotAskedFor) {
         f.causal_pairs = hg.observable_num_causal_pairs(
             hg.causal_graph().transitive_reduction_enabled());
         f.branchial = hg.observable_num_branchial();
-        for (uint32_t s = 0; s < hg.num_states(); ++s)
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
         auto esig = [&](EventId e) {
@@ -236,7 +236,7 @@ TEST(OracleCorpus, SerialExecutionMatchesTheThreadedEngine) {
         f.causal = hg.observable_num_causal_pairs(
             hg.causal_graph().transitive_reduction_enabled());
         f.branchial = hg.observable_num_branchial();
-        for (uint32_t s = 0; s < hg.num_states(); ++s)
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
         f.causal_pairs = served_causal_pairs(hg);
@@ -295,7 +295,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         f.causal_all = hg.observable_num_causal_pairs(false);
         f.applications = hg.quotient_reconstruction() ? hg.num_reconstructed_raw_events() : 0;
         f.branchial = hg.observable_num_branchial();
-        for (uint32_t s = 0; s < hg.num_states(); ++s)
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
             if (hg.get_state(s).id != INVALID_ID)
                 f.state_hashes.insert(hg.get_or_compute_canonical_hash(s));
         f.causal_pairs = served_causal_pairs(hg);

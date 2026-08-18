@@ -108,7 +108,7 @@ TEST(GoldenMatrix, EveryIdentityCellMatchesItsCachedExpectation) {
         uint64_t fingerprint = 0;
         {
             std::set<uint64_t> canon;
-            for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+            for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
                 if (hg.get_state(sid).id == INVALID_ID) continue;
                 canon.insert(hg.get_or_compute_canonical_hash(sid));
             }
@@ -176,7 +176,7 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
             Shot s{};
             {
                 std::set<uint64_t> canon;
-                for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+                for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
                     if (hg.get_state(sid).id == INVALID_ID) continue;
                     canon.insert(hg.get_or_compute_canonical_hash(sid));
                 }
@@ -195,7 +195,7 @@ TEST(GoldenMatrix, EveryIdentityCellIsIndependentOfWorkerCount) {
                         golden::fold_fingerprint(s.event_fingerprint, sig);
                 });
             } else {
-                for (uint32_t eid = 0; eid < hg.num_raw_events(); ++eid) {
+                for (uint32_t eid = 0; eid < hg.num_published_events(); ++eid) {
                     const Event& ev = hg.get_event(eid);
                     if (ev.id == INVALID_ID || !ev.is_canonical()) continue;
                     s.event_fingerprint =

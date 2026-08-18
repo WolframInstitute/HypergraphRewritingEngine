@@ -124,7 +124,7 @@ inline LatticeCounts brute_force_lattice(const std::vector<RewriteRule>& rules,
 
     LatticeCounts lc{0, 0, 0, true};
     std::set<std::string> content, iso;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         auto edges = state_edges(hg, sid);
         if (edges.empty()) continue;
         ++lc.raw;
@@ -153,7 +153,7 @@ inline size_t brute_force_iso_count(
 
     std::set<std::string> distinct;
     *all_small = true;
-    for (uint32_t sid = 0; sid < hg.num_states(); ++sid) {
+    for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
         auto edges = state_edges(hg, sid);
         if (edges.empty()) continue;
         std::string c = brute_canonical(edges);

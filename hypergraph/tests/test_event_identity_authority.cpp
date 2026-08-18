@@ -76,7 +76,7 @@ Obs run(const Case& c, bool quotient, bool positional, int threads) {
     if (g.quotient_reconstruction()) {
         g.for_each_reconstructed_raw_triple([&](uint64_t s) { out.signatures.insert(s); });
     } else {
-        for (uint32_t i = 0; i < g.num_raw_events(); ++i) {
+        for (uint32_t i = 0; i < g.num_published_events(); ++i) {
             const Event& ev = g.get_event(i);
             if (ev.id != INVALID_ID && ev.is_canonical()) out.signatures.insert(ev.signature);
         }

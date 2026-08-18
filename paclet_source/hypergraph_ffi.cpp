@@ -859,10 +859,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         bool content_index_built = false;
         auto content_index = [&]() -> const ContentIndex& {
             if (!content_index_built) {
+                // Sized by the CLAIM count because any live state id indexes this table, but
+                // ITERATED to the published count: an id can be claimed and never emplaced, and
+                // get_state on such an index throws rather than returning an invalid state.
                 const uint32_t n = hg.num_states();
+                const uint32_t n_pub = hg.num_published_states();
                 content_index_storage.hash_of.assign(n, 0);
-                content_index_storage.first_with.reserve(n);
-                for (uint32_t sid = 0; sid < n; ++sid) {
+                content_index_storage.first_with.reserve(n_pub);
+                for (uint32_t sid = 0; sid < n_pub; ++sid) {
                     if (hg.get_state(sid).id == hypergraph::INVALID_ID) continue;
                     const uint64_t h = hg.get_state_content_hash(sid);
                     content_index_storage.hash_of[sid] = h;
@@ -1003,7 +1007,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
         // This matches reference behavior where canonicalization is applied at display time
         if (req.include_states) {
-            const uint32_t num_states = hg.num_states();
+            const uint32_t num_states = hg.num_published_states();
             const ContentIndex& ci = content_index();
             const auto& content_hash_to_id = ci.first_with;
             const auto& state_content_hashes = ci.hash_of;
@@ -1132,7 +1136,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // Send ALL events (not just canonical) - WL uses CanonicalId for vertex merging
             // This preserves event multiplicity: multiple events with same canonical ID
             // map to one vertex, but their edges to different output states are preserved.
-            uint32_t num_raw_events = hg.num_raw_events();
+            uint32_t num_raw_events = hg.num_published_events();
 
             // First pass fixes the emitted event set so the association length is
             // known before streaming.
@@ -1206,7 +1210,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Reduced event data for graph structure variants that don't need full event details
         // Send ALL events - WL uses CanonicalId for vertex merging, RuleIndex for Event=Automatic grouping
         if (req.include_events_minimal && !req.include_events) {
-            uint32_t num_raw_events = hg.num_raw_events();
+            uint32_t num_raw_events = hg.num_published_events();
 
             std::vector<uint32_t> emit_eids;
             emit_eids.reserve(num_raw_events);
@@ -1619,7 +1623,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 bool needs_causal;
                 bool needs_branchial;
 
-                uint32_t num_states() const { return hg.num_states(); }
+                // THE SCAN BOUND IS WHAT IS PUBLISHED, NOT WHAT WAS CLAIMED. State ids come
+                // from an atomic increment taken before the state is constructed, so the claim
+                // counter runs ahead and an id claimed but never emplaced leaves it permanently
+                // above what exists. state_valid below dereferences, so a scan to the claim
+                // counter reaches an index that holds no element and throws out of the
+                // marshaller -- the caller receives an error instead of a graph.
+                uint32_t num_states() const { return hg.num_published_states(); }
                 bool state_valid(uint32_t sid) const { return hg.get_state(sid).id != hypergraph::INVALID_ID; }
                 int64_t effective_state_id(uint32_t sid) const { return eff_state(sid); }
                 uint32_t state_step(uint32_t sid) const { return hg.get_state(sid).step; }
@@ -1628,7 +1638,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // The scan bound, the validity test and the identity all follow from that, so
                 // the marshaller builds its graph over the reconstruction without knowing.
                 uint32_t num_raw_events() const {
-                    return recon.active ? recon.raw_count : hg.num_raw_events();
+                    // Published, not claimed, for the same reason as num_states above. The
+                    // reconstruction's own count is a materialised total and is already exact.
+                    return recon.active ? recon.raw_count : hg.num_published_events();
                 }
                 bool is_valid_event(uint32_t eid) const {
                     if (!recon.active) return valid_event(eid);
@@ -1837,7 +1849,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Represents each state's edge set (the bitvector) as a list of edge indices
         if (req.include_state_bitvectors) {
             wxf::WXFValueAssociation state_bitvectors;
-            uint32_t num_states = hg.num_states();
+            uint32_t num_states = hg.num_published_states();
             for (uint32_t sid = 0; sid < num_states; ++sid) {
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;

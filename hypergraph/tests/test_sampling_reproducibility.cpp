@@ -101,7 +101,7 @@ TEST(SamplingReproducibility, ExplorationProbabilityKeepsTheSameStatesAtEveryWor
             e.add_rule(make_growth_rule());
             e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}}, 5);
             std::multiset<uint64_t> hashes;
-            for (uint32_t s = 0; s < hg.num_states(); ++s) {
+            for (uint32_t s = 0; s < hg.num_published_states(); ++s) {
                 if (hg.get_state(s).id == INVALID_ID) continue;
                 hashes.insert(hg.get_or_compute_canonical_hash(s));
             }
@@ -252,7 +252,7 @@ TEST(SamplingReproducibility, SampledSubgraphIsTheSameAtEveryWorkerCount) {
         e.add_rule(rule);
         e.evolve(init, 4);
         std::multiset<uint64_t> hashes;
-        for (uint32_t s = 0; s < hg.num_states(); ++s) {
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s) {
             if (hg.get_state(s).id == INVALID_ID) continue;
             hashes.insert(hg.get_or_compute_canonical_hash(s));
         }
@@ -366,7 +366,7 @@ TEST(SamplingReproducibility, ExplorationProbabilityIsPerCanonicalState) {
             e.add_rule(rule);
             e.evolve(cyc, 2);
             bool has_step2 = false;
-            for (uint32_t s = 0; s < hg.num_states(); ++s) {
+            for (uint32_t s = 0; s < hg.num_published_states(); ++s) {
                 if (hg.get_state(s).id != INVALID_ID && hg.get_state(s).step == 2) {
                     has_step2 = true; break;
                 }

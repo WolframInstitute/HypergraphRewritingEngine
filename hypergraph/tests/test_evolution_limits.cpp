@@ -208,7 +208,7 @@ TEST(UnifiedEvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
         // differently -- comparing them would report every run as irreproducible, including an
         // uncapped one.
         std::multiset<std::pair<uint64_t, uint64_t>> edges;
-        for (uint32_t e = 0; e < hg.num_raw_events(); ++e) {
+        for (uint32_t e = 0; e < hg.num_published_events(); ++e) {
             if (hg.is_genesis_event(e)) continue;
             edges.insert({hg.get_state(hg.get_event(e).input_state).canonical_hash,
                           hg.get_state(hg.get_event(e).output_state).canonical_hash});
