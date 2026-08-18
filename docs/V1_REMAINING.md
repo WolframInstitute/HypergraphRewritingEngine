@@ -64,11 +64,29 @@ each of the four files names a host file in prose to say what it mirrors
 
 Both directions are clean and always were. The layering property holds without work.
 
-### C3 — Three matcher paths that execute zero times
-`SignatureIndex::for_each_edge_with_signature` (index.hpp:79), `InvertedVertexIndex::for_each_edge`
-(index.hpp:248) and `pattern_matcher.hpp:509` were instrumented and ran **zero times** on
-wolfram24, wpp and multirule — matching goes through the shared join core.
-**Closes when:** each is shown live on some workload, or deleted.
+### C3 — WITHDRAWN. The paths are live; the BENCH CORPUS has a coverage gap.
+Reported three matcher paths as executing zero times. They are reachable and one of them fires —
+the instrument was fine and the corpus was too narrow.
+
+Candidate generation has THREE branches (`pattern_matcher.hpp` ~205-235):
+1. no bound vars, no repeated variable in the seed edge -> scan `state_edges` directly, filter by
+   arity. Its comment records that this REPLACED drawing from the signature index, which walked
+   whole-evolution history filtered by a state bitset.
+2. no bound vars, **repeated variable in the seed edge** (`{{x,x}}`) -> `for_each_candidate_cached`
+3. bound vars -> `for_each_edge_containing_all`
+
+Measured with three counters in one build, so a zero can be told from a broken instrument:
+
+    all 8 bench workloads      cached=0  sig=0  containing_all=fires on the 6 with multi-edge LHS
+    oracle corpus, self-loop   cached=6  sig=6  <- fires exactly there and nowhere else
+
+**The real finding is the coverage gap:** none of the eight bench-corpus workloads has a repeated
+variable within a single LHS edge, so a whole matcher branch is unexercised by the corpus that
+`bench_cpu_evolve` and the GPU sweeps run. The ORACLE corpus does cover it (`self-loop`), which is
+why `all_tests` and `cost_matrix` stayed green.
+
+**Folded into S4/#158** as a corpus-coverage item rather than a deletion: `corpus_gen.hpp` should
+emit at least one repeated-variable seed rule.
 
 ### C4 — The release checklist's numbers are stale
 It records `hg_gpu_tests 99/99`; measured today is **88/88**. `all_tests` is 276 not 275, and
