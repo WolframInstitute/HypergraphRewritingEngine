@@ -217,9 +217,28 @@ the checker fails to model the structure at all. Established by ground-truthing 
 assumed -- `run.sh key_set_exactly_once --mode=estimate` exits 0 on the same toolchain in the same
 session, so the installation is sound and the failure is specific to `SegmentedArray`. Five
 variants were tried: arena over static storage, arena over the modelled heap, one element per
-segment, the array as a stack local, and the array in static storage. All abort identically. The
-likeliest cause is the 4,096-entry `std::atomic<T*> segments_[MAX_SEGMENTS]` table, which the
-checker must model in full.
+segment, the array as a stack local, and the array in static storage. All abort identically.
+
+**The cause is narrowed but NOT identified, and the first guess was wrong.** Bisected with
+throwaway probes, each `run.sh <name> --mode=estimate`:
+
+| probe | result |
+|-------|--------|
+| include `segmented_array.hpp`, instantiate nothing | exit 0 |
+| `std::atomic<int*> a[4096]` with a constructor loop storing nullptr | **exit 0** |
+| `std::atomic<int*> a[8]`, same shape | exit 0 |
+| `hgcommon::ctz64(1024)` | exit 0 |
+| construct `SegmentedArray<uint32_t>(1)`, no threads, no emplaces | **SEGFAULT (139)** |
+
+So the 4,096-entry atomic table is NOT the cause -- a standalone table of exactly that size and
+shape checks cleanly -- and neither is `ctz64`, which the constructor calls, nor including the
+header. Constructing the object is what crashes the checker, with no threads and no operations.
+An earlier version of this note named the table as the likely cause; that is refuted by the second
+row above and the guess should not be inherited by whoever picks this up.
+
+Worth noting for that person: the failure MODE differs between the full harness (an internal
+check, `size != 0` in `SAddrAllocator::allocate`) and bare construction (a segfault), which
+suggests more than one thing here is outside what the checker models.
 
 **What stands in its place.** The fix itself, gated by `all_tests` 275/275 and `cost_matrix` 17/17
 ALL EXACT across two consecutive whole-suite runs with the box deliberately loaded by another
