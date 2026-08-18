@@ -107,6 +107,21 @@ public:
         K*       keys;
         V*       values;
         uint32_t capacity;
+        // SET ONCE A PROBE RUN HAS EXHAUSTED THE TABLE, read before every insert.
+        //
+        // Without it a full table costs O(capacity) PER INSERT, because the probe walks every
+        // slot before it can report overflow. Affordable once, ruinous in bulk: the branchial
+        // relation on disc-l3a2g2r2 at depth three is 133,351,476 pairs against a default
+        // capacity of 524,288, so the device faced ~10^13 probe steps and never returned --
+        // where the policy everywhere else here is to return partial work with a warning.
+        // Latching turns the second and every later overflow into O(1), so the run completes
+        // and reports truncation instead of hanging.
+        //
+        // Racy by construction and harmless: a few threads may finish a full scan before the
+        // flag is visible, and a stale zero costs only the scan that would have happened
+        // anyway. Never cleared mid-kernel, so it cannot make a table with room reject an
+        // insert.
+        uint32_t* saturated;
 
         // Hash key → starting slot. Caller hashes its own key — the table
         // treats K as opaque. Default mixer is sufficient for already-hashed
@@ -176,6 +191,10 @@ public:
         // The outer loop only advances when the slot is firmly held by a
         // different key.
         __device__ InsertResult insert_if_absent(K key, V value) {
+            if (saturated) {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> sref(*saturated);
+                if (sref.load(cuda::memory_order_relaxed)) return InsertResult{V{}, false, true};
+            }
             key = normalize(key);
             uint32_t slot = initial_slot(key);
             for (uint32_t i = 0; i < capacity; ++i) {
@@ -219,6 +238,11 @@ public:
             }
             // Exhausted every slot without finding the key or a free one. NOT a hit: say so, so
             // the caller can record a capacity overflow instead of treating this as "seen".
+            // Latch it, so the next caller pays one load rather than another full scan.
+            if (saturated) {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> sref(*saturated);
+                sref.store(1u, cuda::memory_order_relaxed);
+            }
             return InsertResult{V{}, false, true};
         }
     };
@@ -226,23 +250,25 @@ public:
     explicit ConcurrentMap(uint32_t capacity) : capacity_(capacity) {
         HG_CUDA_CHECK(cudaMalloc(&keys_,   sizeof(K) * capacity_), "ConcurrentMap keys alloc");
         HG_CUDA_CHECK(cudaMalloc(&values_, sizeof(V) * capacity_), "ConcurrentMap values alloc");
+        HG_CUDA_CHECK(cudaMalloc(&saturated_, sizeof(uint32_t)), "ConcurrentMap saturated alloc");
         clear();
     }
 
     ~ConcurrentMap() {
-        if (keys_)   cudaFree(keys_);
-        if (values_) cudaFree(values_);
+        if (keys_)      cudaFree(keys_);
+        if (values_)    cudaFree(values_);
+        if (saturated_) cudaFree(saturated_);
     }
 
     ConcurrentMap(const ConcurrentMap&)            = delete;
     ConcurrentMap& operator=(const ConcurrentMap&) = delete;
 
     ConcurrentMap(ConcurrentMap&& o) noexcept
-        : keys_(o.keys_), values_(o.values_), capacity_(o.capacity_) {
-        o.keys_ = nullptr; o.values_ = nullptr; o.capacity_ = 0;
+        : keys_(o.keys_), values_(o.values_), capacity_(o.capacity_), saturated_(o.saturated_) {
+        o.keys_ = nullptr; o.values_ = nullptr; o.capacity_ = 0; o.saturated_ = nullptr;
     }
 
-    DeviceView view() const { return DeviceView{keys_, values_, capacity_}; }
+    DeviceView view() const { return DeviceView{keys_, values_, capacity_, saturated_}; }
 
     uint32_t capacity() const { return capacity_; }
 
@@ -299,13 +325,21 @@ public:
         static_assert(EMPTY == K{0},
             "clear() relies on EMPTY == 0; provide a fill kernel for other sentinels");
         HG_CUDA_CHECK(cudaMemset(keys_, 0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
+        // The table has room again, so the latch must go with the keys. Leaving it set would
+        // make a reused map reject every insert for the remainder of the run.
+        if (saturated_)
+            HG_CUDA_CHECK(cudaMemset(saturated_, 0, sizeof(uint32_t)),
+                          "ConcurrentMap clear saturated");
     }
 
 private:
 
-    K*       keys_     = nullptr;
-    V*       values_   = nullptr;
-    uint32_t capacity_ = 0;
+    K*        keys_      = nullptr;
+    V*        values_    = nullptr;
+    uint32_t  capacity_  = 0;
+    // Latched when a probe run exhausts the table; cleared with the keys, since a cleared table
+    // has room again and a stale flag would refuse every insert for the rest of the run.
+    uint32_t* saturated_ = nullptr;
 };
 
 }  // namespace gpu
