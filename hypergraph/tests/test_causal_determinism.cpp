@@ -254,7 +254,7 @@ Spread spread(const Workload& w, bool quotient) {
     Spread s;
     for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})   // fixed then random
         for (int rep = 0; rep < 4; ++rep)
-            for (int th : {1, 2, 8}) {
+            for (int th : {1, 2, 8, 16, 32}) {
                 Fingerprint f = run(w.rules, w.init, quotient, th, seed, w.steps);
                 EXPECT_EQ(f.stored_before_walk, f.branchial_stored)
                     << w.name << ": pushes were IN FLIGHT during the walk at threads=" << th
