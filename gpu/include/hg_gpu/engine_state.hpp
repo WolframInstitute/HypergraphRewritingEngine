@@ -280,8 +280,28 @@ public:
         // successful return does not mean the stack is the size that was asked for -- and the
         // failure mode either way is a stack overflow surfacing as an illegal memory access,
         // which reads like a pointer bug and is diagnosed as one.
-        const size_t want_stack = stack_bytes_for_depth(cfg.reconstruction_max_depth);
-        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, want_stack), "set device stack size");
+        // ASK FOR LESS RATHER THAN FAIL. The driver reserves this per-thread size across every
+        // thread the device can hold resident -- not across the launch grid -- so a deep run's
+        // request can exceed device memory outright, and cudaDeviceSetLimit then returns
+        // out-of-memory. Throwing there turns a run that could have proceeded shallower into no
+        // run at all, which is the opposite of this class's contract: past the depth it can
+        // support it RECORDS and carries on, and qe_max_recursion_depth_ below is already derived
+        // from what the driver ACTUALLY gave rather than from what was asked.
+        //
+        // Measured cause: an 80-step configuration asks for the 256 KB per-thread cap, and the
+        // memory budget (which counts this since abe5f732) then exceeds the cap by more than the
+        // pools can give back -- fit_config_to_cap scales pools only, and the stack is not a pool.
+        // Halving the request until it is accepted reaches the largest stack the device will
+        // actually grant.
+        size_t want_stack = stack_bytes_for_depth(cfg.reconstruction_max_depth);
+        cudaError_t st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
+        while (st_rc != cudaSuccess && want_stack > kDeviceStackFloorBytes) {
+            cudaGetLastError();                      // clear the sticky error before retrying
+            want_stack = want_stack / 2 > kDeviceStackFloorBytes ? want_stack / 2
+                                                                 : kDeviceStackFloorBytes;
+            st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
+        }
+        HG_CUDA_CHECK(st_rc, "set device stack size");
         size_t actual_stack = 0;
         HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
         // The depth the replay may reach is derived from what the driver ACTUALLY gave, not from
