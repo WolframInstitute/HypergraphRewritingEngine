@@ -265,7 +265,14 @@ private:
 // to the shared bump path (still correct, just contended); the ceiling sits well
 // above any realistic worker count.
 
-inline constexpr int MAX_ARENA_WORKERS = 256;
+// Overridable so a harness can bound it. The registry's acquire() scans every slot and each is
+// an atomic location, so a model checker asked to enumerate 256 of them is enumerating the scan
+// rather than the property. A harness defines HG_MAX_ARENA_WORKERS small and checks the SAME
+// code; the shipped value is unchanged.
+#ifndef HG_MAX_ARENA_WORKERS
+#define HG_MAX_ARENA_WORKERS 256
+#endif
+inline constexpr int MAX_ARENA_WORKERS = HG_MAX_ARENA_WORKERS;
 
 class ArenaWorkerRegistry {
 public:

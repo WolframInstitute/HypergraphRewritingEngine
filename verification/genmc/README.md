@@ -96,9 +96,22 @@ none of them is about how the code behaves.
 | `arena.hpp` — `ArenaWorkerRegistry` | not reached, so not emitted | The registry is an aggregate global of `MAX_ARENA_WORKERS` atomics; the same machinery *faults* on it rather than diagnosing it. An inline function's local static is emitted only when something reaches it. | A counter hands out each index once, so acquire/release recycling is not reproduced. Harnesses run a fixed, bounded thread set whose threads outlive their allocations, so no index is ever reused. |
 | `concurrent_map.hpp` — two precondition sites | `assert` instead of `throw std::logic_error` | A `throw` names the exception's typeinfo, an external constant with no definition in the module. **Reaching the throw is not required** — a never-executed throw segfaults the interpreter during memory initialisation. Measured: identical program, `throw` → SIGSEGV, `assert` → verifies. | The precondition is unchanged and still traps. A violated assertion is a safety property the checker *reports*; a throw is a crash it dies on. Strictly more checkable. |
 
-Both `arena.hpp` substitutions concern the worker-index allocator, which no harness in this
-directory makes a claim about. If a harness is ever written *for* that allocator, it cannot use
-these substitutions and needs a different approach.
+Both `arena.hpp` substitutions concern the worker-index allocator. `arena_worker_index()` is
+replaced by a monotonic counter that never releases and never reuses, so the registry -- an
+aggregate global of `MAX_ARENA_WORKERS` atomics -- never enters the module.
+
+`arena_worker_index_exclusive` is the harness written *for* that allocator, and as this section
+predicted it could not use the substitution. It takes the different approach instead: it does not
+call `arena_worker_index()` at all, constructs `ArenaWorkerRegistry` as a LOCAL so no aggregate
+global is materialised, and drives `acquire()` directly on the shipped type. `HG_MAX_ARENA_WORKERS`
+is overridable so the bound can be 2 -- `acquire()` scans every slot and each is an atomic
+location, so 256 of them enumerate the scan rather than the property.
+
+What is still NOT covered: index REUSE. The substitution's counter cannot release, and the harness
+above holds its indices rather than releasing them, because simultaneous holding is what breaks the
+private-cursor invariant -- a registry handing one index to two threads in sequence is correct. A
+harness for the release/re-acquire path would need to model thread exit, which the interpreter's
+handling of thread_local class types is what blocked in the first place.
 
 ## Results
 
@@ -108,6 +121,8 @@ these substitutions and needs a different approach.
 | `concurrent_map_resize` | The same agreement holds across a table replacement, both pre-existing keys survive the rehash, and no key acquires a second entry | 2 threads, capacity 2→4, 3 keys, one resize round | **No errors, 176 complete executions** — after the fix below |
 | `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
 | `job_system_no_lost_wakeup` | A submitter that skips the wake because nobody reads as idle never leaves a worker parked with the job still queued | 1 worker, 1 submitter, 1 job | **No errors, 5 complete executions** — after the fix below |
+| `lock_free_list_completeness` | `for_each` visits every pushed node exactly once -- the COMPLETENESS direction no other harness here states, all of which bound exclusivity | 2 pushers, 2 pushes each, distinct values, one walk after join; stub allocator exclusive by construction | **No errors, 184 complete executions** |
+| `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
 | `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
 
 ### What this found
@@ -177,6 +192,8 @@ assertion inverted, and the checker must report a safety violation:
 
 | Harness | Inverted assertion | Result |
 |---|---|---|
+| `lock_free_list_completeness` | push's CAS retry loop replaced with a non-retrying publish | `Error: Safety violation!`, exit 42 |
+| `arena_worker_index_exclusive` | `acquire()`'s compare-exchange replaced with check-then-act | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
