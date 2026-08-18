@@ -537,8 +537,22 @@ __global__ void k_persistent_evolve(
             // exists because ten hypotheses about a non-finishing workload were each eliminated by
             // a separate measurement, and none of them could be tested against the run itself.
             if (round > 0 && (round % 2000000u) == 0u) {
-                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u stagnant=%u\n",
-                       round, prod1, done1, stagnant);
+                // The phase counters too, read from device memory by the detector block -- the
+                // host is blocked in its sync and cannot see them, and the workers now flush
+                // every 1024 records precisely so a run that never finishes is still
+                // attributable. Fractions of their sum, the same reading as PersistentEvolveStats.
+                unsigned long long m = 0, rw = 0, cn = 0, id = 0, wt = 0;
+                if (phase_cycles) {
+                    m = phase_cycles[0]; rw = phase_cycles[1]; cn = phase_cycles[2];
+                    id = phase_cycles[3]; wt = phase_cycles[4];
+                }
+                const unsigned long long tot = m + rw + cn + id + wt;
+                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u stagnant=%u | "
+                       "match=%llu%% rewrite=%llu%% canon=%llu%% idle=%llu%% wait=%llu%%\n",
+                       round, prod1, done1, stagnant,
+                       tot ? 100ull * m  / tot : 0ull, tot ? 100ull * rw / tot : 0ull,
+                       tot ? 100ull * cn / tot : 0ull, tot ? 100ull * id / tot : 0ull,
+                       tot ? 100ull * wt / tot : 0ull);
             }
 
             {   // Progress check: any movement resets the stagnation budget. Role counters are
@@ -596,8 +610,18 @@ __global__ void k_persistent_evolve(
             atomicAdd(&phase_cycles[2], acc_canon);
             atomicAdd(&phase_cycles[3], acc_idle);
             atomicAdd(&phase_cycles[4], acc_wait);
+            acc_match = acc_rewrite = acc_canon = acc_idle = acc_wait = 0;
         }
     };
+
+    // FLUSH PERIODICALLY, NOT ONLY AT EXIT.
+    //
+    // These counters were published once, when a block left the loop, so a run that does not
+    // finish attributed nothing at all -- which is exactly the run whose attribution is wanted.
+    // A block that has consumed a few thousand records has already said what it needed to say;
+    // publishing then costs five atomics against a handful of records of work, and the
+    // accumulators reset so nothing is double counted.
+    uint32_t records_since_flush = 0;
 
     if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
     __syncthreads();
@@ -758,6 +782,10 @@ __global__ void k_persistent_evolve(
             if (threadIdx.x == 0) {
                 __threadfence();
                 atomicAdd(rewrites_done, 1u);
+                if (++records_since_flush >= 8u) {
+                    flush_cycles();
+                    records_since_flush = 0;
+                }
             }
             __syncthreads();
             continue;
