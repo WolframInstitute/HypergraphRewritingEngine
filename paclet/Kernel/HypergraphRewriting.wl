@@ -1429,7 +1429,10 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
   (* The session's options, with only what this call may vary. A held verb carries NO rules: the
      engine rejects a job that does, because applying them would answer about a different system. *)
   options = d["Options"];
-  options["Op"] = op;
+  (* `Op` belongs to the JOB ENVELOPE, not to the option map: the engine parses it beside
+     `Session` and `Steps` (hypergraph_ffi.cpp:357) and its option validator has never known the
+     name, so a copy here is rejected as unrecognised and warns on EVERY session verb. It made
+     three documentation examples report $Failed while returning correct numbers. *)
   options["RequestedData"] = requiredData;
   options["GraphProperties"] = graphProperties;
 
@@ -1468,8 +1471,7 @@ HGSessionQuery[s_HGSessionObject, property_ : Automatic, opts : OptionsPattern[]
    nothing deferred, which is what convergence looks like from here. *)
 HGSessionFrontier[HGSessionObject[d_Association]] := Module[{reply},
   reply = hgSendJob[<|"Steps" -> 0, "Op" -> "Query", "Session" -> d["Handle"],
-                      "Options" -> Join[d["Options"], <|"Op" -> "Query",
-                                                        "RequestedData" -> {"NumStates"},
+                      "Options" -> Join[d["Options"], <|"RequestedData" -> {"NumStates"},
                                                         "GraphProperties" -> {}|>]|>,
                     d["Device"], True];
   If[AssociationQ[reply], Lookup[reply, "Frontier", {}], $Failed]
