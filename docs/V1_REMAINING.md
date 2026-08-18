@@ -89,9 +89,32 @@ handle, and `verify_sessions.wls` covers the device path.
 
 ---
 
-## B. BLOCKING — one decision from Richard, then code
+## B. NOT BLOCKING — an enhancement, reclassified on evidence
 
-### B1 — S1: how the branchial relation is returned
+### B1 — S1: how the branchial relation is returned — NOT a v1.0.0 blocker
+
+Filed as blocking. It is not, and the test is whether the current behaviour is WRONG or merely
+LARGE:
+
+    device, disc-l3a2g2r2 depth 2 (fits):     branchial=162,996, no warning
+    host,   same workload and depth:          branchial=162,996
+    device, depth 3 (does not fit):           partial + capacity warning
+
+Exact where it fits, partial-and-says-so where it does not. That is the engine's stated capacity
+policy — an overflow returns the work it completed with a warning and never throws or lies — so
+the device is behaving correctly rather than failing. The host returns the full relation at every
+depth measured.
+
+So the 137x expansion (971,064 applied-list entries against 133,351,476 pairs) is an
+OPPORTUNITY, not a defect: a grouped return would let the device hold relations it currently
+truncates, and would save the host memory it currently spends. Both are improvements to a correct
+system.
+
+**Deferred to v1.x**, because it changes what a caller receives from `BranchialGraph` and that is
+a public-surface decision with no forcing defect behind it. The measurement that would inform it
+is recorded in `V1_FINAL_SWEEPS.md` S1, and #164 carries the device side.
+
+### B1-old — original framing, kept for the record
 Measured: the quotient scan is output-optimal (163.4M visits for 133.4M pairs, 81.6% survive), so
 there is no algorithmic waste. But the pair FORM is a **137x expansion** of the per-instance
 applied lists, which are already stored and already carry the consumed slots that decide overlap
