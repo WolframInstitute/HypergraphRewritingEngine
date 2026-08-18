@@ -213,6 +213,21 @@ int main(int argc, char** argv) {
         tb.push_back(std::chrono::duration<double, std::milli>(b - a).count());
     }
 
+    // A TRUNCATED RUN IS NOT A MEASUREMENT. A capacity overflow is a warning here by design:
+    // the kernels keep running on the partial budget and the result carries whatever was
+    // computed, so a bench that reads only states.size() reports a time for a workload the
+    // device never finished. The CPU bench hid exactly this on disc-l3a2g2r2 depth 5, where
+    // the edge ceiling pinned raw states at 838,861 and made the counts race-dependent.
+    // Printed for both timed results, since each has its own budget.
+    auto report_warnings = [](const char* which, const auto& res) {
+        for (const auto& w : res.warnings)
+            std::printf("  WARNING(%s): %s x%u%s%s\n", which,
+                        error_kind_name(w.kind), w.count,
+                        w.context.empty() ? "" : " -- ", w.context.c_str());
+    };
+    if (mode == 0) report_warnings("evolve", r0);
+    report_warnings("persistent", rw);
+
     if (mode == 0) {
         std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
                     "PersistentEvolver_median_ms=%.3f (states=%zu) | speedup=%.2fx\n",
