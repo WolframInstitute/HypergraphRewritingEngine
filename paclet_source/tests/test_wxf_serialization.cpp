@@ -276,18 +276,27 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
     ASSERT_FALSE(plain.empty());
     ASSERT_FALSE(explicit_evolve.empty());
 
-    // Which payloads a byte comparison can speak about at all. The engine runs on
-    // hardware_concurrency threads and RAW ids follow discovery order, so `States` and `Events`
-    // need not be byte-stable between two runs of the SAME job -- that is measured here rather
-    // than assumed, by running the identical job twice. Only payloads that survive that are
-    // compared against the Op-bearing run; asserting on the rest would be asserting on the
-    // scheduler.
-    for (const char* key : {"States", "Events", "NumStates", "NumEvents"}) {
-        const bool stable = value_bytes(plain, key) == value_bytes(plain_again, key);
-        if (!stable) continue;
+    // WHICH PAYLOADS A BYTE COMPARISON CAN SPEAK ABOUT AT ALL.
+    //
+    // Ids are deliberately not deterministic. The engine does not fix a frontier or an
+    // evaluation order -- it is not supposed to -- so `States` and `Events` carry ids assigned
+    // in discovery order and two runs of the same job need not agree on them byte for byte.
+    // What two runs owe each other is FORM equivalence: the same states graph up to
+    // isomorphism, the same evolution structure, the same automorphism content. Byte equality
+    // of an id-bearing payload is a stronger claim than the engine makes, and asserting it
+    // asserts on the scheduler.
+    //
+    // Sampling does not rescue it. An earlier version admitted a payload to the comparison when
+    // two runs of the same job happened to agree; under genuine non-determinism two runs can
+    // coincide and a third diverge, which is how this test failed in a whole-suite run while
+    // passing in isolation on a box whose other tenant was saturating a core.
+    //
+    // So the comparison is confined to the counts, which ARE form invariants: two isomorphic
+    // evolutions have the same number of states and events whatever ids they handed out.
+    for (const char* key : {"NumStates", "NumEvents"}) {
         EXPECT_EQ(value_bytes(plain, key), value_bytes(explicit_evolve, key))
-            << "naming Op -> Evolve changed the " << key << " payload, and that payload IS "
-            << "byte-stable across two runs of the same job, so the envelope is not inert";
+            << "naming Op -> Evolve changed the " << key << " payload; that is a count, which is "
+            << "invariant under the id assignment, so the envelope is not inert";
     }
     // At least the counts must be stable, or the comparison above skipped everything and the
     // test asserts nothing.
