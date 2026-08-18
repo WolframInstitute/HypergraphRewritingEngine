@@ -10,11 +10,38 @@ recorded in `V1_FINAL_SWEEPS.md`; what is left is decisions, code, and one rebui
 
 ## A. BLOCKING — code that must be written
 
-### A1 — #159: a failed `apply_one_match` leaks state and event slots
-Pre-existing. A rewrite that fails after claiming ids leaves them claimed. Reorder was attempted
-and reverted; the count divergence was never explained after three refuted mechanisms.
-**Closes when:** the leak is reproduced in a test, fixed, and the claim/publish counts agree
-across 20 suite runs.
+### A1 — #159: RECLASSIFIED. The leak is real, bounded to capacity exhaustion, and has no
+### observable effect otherwise.
+
+`apply_one_match` is DEVICE code (`gpu/src/rewrite.cu:247`), not host — the earlier framing sent
+me reading `rewriter.cpp`. It uses a **preflight reservation**: claim every capacity-bounded
+resource before any mutation, so a failure aborts without a half-initialised state. Its own
+comment records what that replaced — a "claim, then silently early-return mid-kernel" pattern
+that left the new state's bitset uninitialised and produced spurious OOBs downstream.
+
+The claims are sequential, so a later failure does leak the earlier ones, and `Pool::claim` is a
+bump allocator with no free. That is the defect as filed.
+
+**But every early return is gated on exhaustion.** Checked all of them: `cur >= ds.max_states`,
+`my_event == Pool<DeviceEvent>::kInvalid`, `first_eid == Pool<Edge>::kInvalid`,
+`first_vert_off == Pool<VertexId>::kInvalid`, `vid_base + num_new_vars > ...num_keys` — and each
+records a `*PoolFull` error. There is no non-exhaustion path out of the function.
+
+So slots leak only once a pool is already full, at which point the run is truncating and emitting
+a capacity warning regardless, and *which* states got in is already race-dependent (#161).
+
+**Measured, clean run with no capacity warning:** wolfram24 depth 5 — GPU 815 states / 814 events,
+host raw 815. Exact. Consistent with the depth-6 corpus sweep, where all eight workloads matched
+the host exactly on `causal_pairs` and `reduced_pairs`, and with `disc-l3a2g2r2` depth 3 agreeing
+on 1,662,528 / 971,040.
+
+**Verdict:** not a v1.0.0 blocker. A true atomic multi-pool reserve would add real complexity to
+the hottest device function to reclaim a handful of slots at the moment a run has already failed
+its capacity budget. The earlier "raw=838860 vs 838861" divergence that opened this is explained:
+it was measured at the edge ceiling, i.e. exactly at exhaustion.
+
+**Closes when:** this reclassification is accepted, or a non-exhaustion path out of
+`apply_one_match` is exhibited.
 
 ### A2 — #12b: GPU sessions (D9)
 `V1_PLAN.md:426` calls this the largest remaining item, and Richard put it IN v1.0. The CPU half
