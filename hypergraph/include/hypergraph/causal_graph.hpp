@@ -386,6 +386,19 @@ public:
         return seen_branchial_pairs_.count_unique();
     }
 
+    // The branchial relation AS CLIQUES. Every event in one (state, shared-edge) bucket is
+    // branchially related to every other, so the bucket IS the relation and the pair list is a
+    // materialisation of it: a bucket of k events expands to k(k-1)/2 pairs. Exposed to measure
+    // that ratio before deciding whether the pair list should exist at all.
+    template<typename F>
+    void for_each_branchial_clique(F&& visit) const {
+        state_edge_events_.for_each([&](uint64_t, LockFreeList<EventId>* bucket) {
+            size_t k = 0;
+            if (bucket) bucket->for_each([&](EventId) { ++k; });
+            visit(k);
+        });
+    }
+
     size_t num_branchial_edges() const {
         return num_branchial_edges_.load(std::memory_order_relaxed);
     }

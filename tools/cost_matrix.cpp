@@ -68,6 +68,7 @@ struct Measured {
     size_t events;
     size_t causal_edges;
     size_t branchial_edges;
+    size_t clique_members = 0, cliques = 0, clique_pairs = 0, clique_max = 0;
     size_t arena_bytes;
     uint64_t heap_allocs;   // global new calls during the evolution
     uint64_t heap_bytes;    // global new bytes during the evolution
@@ -105,6 +106,23 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
     m.events           = hg.num_events();
     m.causal_edges     = hg.causal_graph().num_causal_edges();
     m.branchial_edges  = hg.causal_graph().num_branchial_edges();
+    // CLIQUES AGAINST PAIRS. A (state, shared-edge) bucket of k events IS k(k-1)/2 branchial
+    // pairs, and the bucket is already stored. Summing both says what the pair list costs over
+    // the representation the engine has anyway.
+    {
+        size_t members = 0, cliques = 0, pairs = 0, kmax = 0;
+        hg.causal_graph().for_each_branchial_clique([&](size_t k) {
+            if (k == 0) return;
+            ++cliques; members += k; pairs += k * (k - 1) / 2;
+            if (k > kmax) kmax = k;
+        });
+        m.clique_members = members; m.cliques = cliques;
+        m.clique_pairs = pairs; m.clique_max = kmax;
+        if (std::getenv("HG_CLIQUE_STATS"))
+            std::fprintf(stderr,
+                "[clique] buckets=%zu members=%zu pairs_implied=%zu max_k=%zu pairs_stored=%zu\n",
+                cliques, members, pairs, kmax, m.branchial_edges);
+    }
     m.arena_bytes      = hg.arena().bytes_allocated();
     m.heap_allocs      = g_alloc_count.load(std::memory_order_relaxed) - a0;
     m.heap_bytes       = g_alloc_bytes.load(std::memory_order_relaxed) - b0;
@@ -136,6 +154,10 @@ int main(int argc, char** argv) {
             if (only != c.name) continue;
             const int steps = (steps_override > 0) ? steps_override : c.measure_steps;
             const Measured m = measure(c, steps, rs);
+            std::printf("  clique: buckets=%zu members=%zu pairs_implied=%zu max_k=%zu "
+                        "pairs_stored=%zu\n",
+                        m.cliques, m.clique_members, m.clique_pairs, m.clique_max,
+                        m.branchial_edges);
             std::printf("%s record=%s states=%zu events=%zu causal=%zu branchial=%zu arenaB=%zu\n",
                         c.name, record, m.canonical_states, m.events, m.causal_edges,
                         m.branchial_edges, m.arena_bytes);
