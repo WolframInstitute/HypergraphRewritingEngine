@@ -70,8 +70,9 @@ derivable from it unchanged and the verified against full capture.
 
 ## S2 — IR high-symmetry pathology (up to 1100x)
 
-**Status: CLOSED — the premise does not reproduce.** Worst measured is 32.33x, the search does
-not grow with symmetry at all, and at engine level IR is CHEAPER than WL as well as exact.
+**Status: STATED PATHOLOGY REFUTED; NARROWER QUESTION REOPENED.** The recorded cause is wrong —
+the search does not grow with symmetry — and WL is not a usable filter. But "no pathology" is not
+"IR is optimal", and the 21-32x per-call gap is unattributed. See S2b.
 
 **Why it is open.** `project_ir_vs_wl_verdict`: IR is exact and subsumes WL in correctness (WL
 collides on all 5 1-WL-hard pairs), but blows up on high-automorphism states — cycles measured up
@@ -129,6 +130,54 @@ incur — it reaches two nodes.
 **Reopen only if** a state is exhibited whose `leaves`/`nodes` counters are large. The probe
 prints them per state and flags the heaviest 1%, so such a state would be visible rather than
 inferred.
+
+---
+
+## S2b — WL is not a usable pre-filter, and it fails worst where IR costs most
+
+**Status: CLOSED. Measured ceiling, plus an implementation that was already tried and refuted.**
+
+`cost_matrix`'s `wlceil` column is the CEILING on IR calls a WL pre-filter could avoid. It is a
+ceiling because WL is coarser than IR: distinct WL hashes are at most the canonical classes, and
+any state landing in a bucket already seen STILL needs IR, because WL agreement never establishes
+isomorphism. So the filter can skip at most canonical/raw of the calls while paying a WL pass on
+every raw state.
+
+| workload | wlceil |
+|---|---:|
+| cycle4-automorphic | **0.0%** |
+| star4-automorphic | **0.3%** |
+| disconnected-lhs | 0.8% |
+| binary-growth | 4.1% |
+| multi-rule | 15.1% |
+| wolfram-2to4 | 35.4% |
+
+**The filter is useless exactly where IR is expensive.** The two automorphic cases carry 68,185
+raw states each and their ceilings are 0.0% and 0.3%. This is structural rather than unlucky:
+symmetry is what makes WL coarse AND what makes IR do work, so the two failures are the same
+property seen twice.
+
+Already tried, not merely reasoned about: the tiered scheme (WL bucket, IR on collision) was
+implemented, was correct, measured **+28% pessimization**, and was reverted. The ceiling above is
+why it had to be.
+
+---
+
+## S2b-ii — Where the 21-32x per-call gap actually is (REOPENED, not measured)
+
+**Status: OPEN. This is the part of S2 that survives.**
+
+The search reaches TWO nodes, so the per-call gap is not exploration and cannot be pruned away.
+It is in the refinement inner loop — the O(n*e) work each node does — which is a different target
+from anything BACKLOG names (its "full-partition copy + fresh scratch per search node" is a
+per-node cost on a two-node search).
+
+Nothing here is measured yet. Attributing that loop is what would say whether IR is near its own
+bound or has room.
+
+**Gate:** the per-call cost of `ir_canonical_hash` attributed inside the refinement (callgrind or
+per-phase counters), with a stated verdict on whether it is improvable; if improvable, the
+21-32x re-measured after the change with `all_tests` and `cost_matrix` 17/17 EXACT unchanged.
 
 ---
 
