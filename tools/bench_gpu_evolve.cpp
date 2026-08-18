@@ -138,6 +138,13 @@ int main(int argc, char** argv) {
     const char* rawenv = std::getenv("HG_BENCH_RAW");
     if (rawenv && rawenv[0] == '0')
         in.record.causal = in.record.branchial = in.record.raw_events = false;
+    // The three records have different costs and only one of them drives the per-instance
+    // replay, so an all-or-nothing switch cannot say which is being paid for. Each is
+    // separable here: HG_BENCH_CAUSAL / HG_BENCH_BRANCHIAL / HG_BENCH_RAWEVENTS, applied
+    // after the blanket switch so either spelling works.
+    if (const char* v = std::getenv("HG_BENCH_CAUSAL"))     in.record.causal     = v[0] != '0';
+    if (const char* v = std::getenv("HG_BENCH_BRANCHIAL"))  in.record.branchial  = v[0] != '0';
+    if (const char* v = std::getenv("HG_BENCH_RAWEVENTS"))  in.record.raw_events = v[0] != '0';
 
     auto r0 = hg_gpu::evolve(in);   // warmup (CUDA context, allocations)
 
