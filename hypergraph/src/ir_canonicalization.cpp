@@ -71,7 +71,17 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // reach the same form either way. For orbits it changes the answer.
     const bool want_orbits = (orbit != nullptr) || (klass != nullptr);
     const uint32_t gen_hi = want_orbits ? (1u << 16) : hgcommon::IR_HOST_GENERATORS;
-    std::vector<uint32_t> scratch;
+    // PER-THREAD AND REUSED, because a local one is re-zeroed on every call. The buffer only
+    // grows, and assign() below zeroes only when it does, so as a local this paid a full
+    // memset per call: callgrind on ir_vs_wl put __memset_avx2 at 15.03% of all instructions
+    // with 98.9% of it reached through this function, over 103,474 calls. Hoisting it changes
+    // no semantics -- the buffer is still zeroed whenever it grows -- and removes the repeat.
+    //
+    // The sibling caller of this same core (Hypergraph::compute_exact_canonical_hash) takes the
+    // per-worker arena instead and does not zero at all, on the stated grounds that the core
+    // writes every word it later reads. That is the stronger claim; this is the one that needs
+    // no claim.
+    static thread_local std::vector<uint32_t> scratch;
     for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= gen_hi; gens *= 4u) {
             const uint64_t words =
