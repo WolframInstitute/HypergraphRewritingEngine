@@ -235,6 +235,13 @@ int main(int argc, char** argv) {
     if (mode == 0) report_warnings("evolve", r0);
     report_warnings("persistent", rw);
 
+    // The reconstruction's own size, so a device row can be compared with the host's on WORK
+    // DONE and not only on time. If the two engines disagree here they are not computing the
+    // same relation, and a time ratio between them would be meaningless.
+    std::printf("  recon: causal_edges=%u causal_pairs=%u reduced_pairs=%u\n",
+                rw.reconstructed_causal_edges, rw.reconstructed_causal_pairs,
+                rw.reconstructed_causal_pairs_reduced);
+
     if (mode == 0) {
         std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
                     "PersistentEvolver_median_ms=%.3f (states=%zu) | speedup=%.2fx\n",
