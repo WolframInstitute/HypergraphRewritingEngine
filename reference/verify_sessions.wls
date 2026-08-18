@@ -129,6 +129,42 @@ If[Head[s3] === HGSessionObject,
               {HGEvolve::warn, HGEvolve::missingdata}]];
   HGSessionClose[s3]];
 
+(* ---------------------------------------------------------------------------------------------
+   THE DEVICE LEG. Everything above runs on the host; the device has its own session
+   implementation -- PersistentEvolver::run_session, wired at hg_gpu_backend.cpp:213 -- and until
+   now it was verified only in C++
+   (Rewrite.ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces). A C++ test proves
+   the engine continues; it does not prove the PACLET reaches that path, which is a different
+   claim and the one a user depends on.
+
+   THE SAME CLAIM AS ABOVE, on the device: a session stepped k times must equal one HGEvolve of
+   depth k. The device pins its engine and REFUSES rather than rebuilding on a config change or
+   after an overflow, because rebuilding would discard the accumulated states while returning
+   something shaped like a continuation -- so a device session that silently restarted would show
+   up here as depth-1 numbers repeating, exactly as the host case would.
+
+   SKIPPED, NOT FAILED, WITHOUT A DEVICE. A machine with no CUDA cannot verify this and must not
+   report that it did; a skip is printed so the absence is visible in the log rather than passing
+   silently. That is the opposite of the worker rule above, where a missing worker is a FAIL --
+   there, the machine COULD run one; here it may genuinely have no GPU. *)
+Module[{gpuOne, sg, ok},
+  ok = Quiet[Check[HGEvolve[rules, init, 1, prop, "TargetDevice" -> "GPU"]; True, False]];
+  If[!TrueQ[ok],
+    Print["SKIP  device session leg: no usable GPU on this machine"],
+    gpuOne = Table[HGEvolve[rules, init, k, prop, "TargetDevice" -> "GPU"], {k, 0, maxDepth}];
+    check["device one-shot ladder matches the host's (same answers, different device)",
+          gpuOne === oneShot];
+    sg = HGSessionOpen[rules, init, prop, "TargetDevice" -> "GPU"];
+    check["HGSessionOpen returns a session on the device", Head[sg] === HGSessionObject];
+    If[Head[sg] === HGSessionObject,
+      check["a fresh device session is at depth 0", HGSessionQuery[sg] === gpuOne[[1]]];
+      Do[Module[{r = HGSessionStep[sg, 1]},
+           check["device step " <> ToString[k] <> " == one evolve of " <> ToString[k] <>
+                 "  " <> ToString[r], r === gpuOne[[k + 1]]]],
+         {k, 1, maxDepth}];
+      check["device Query does not advance the session", HGSessionQuery[sg] === gpuOne[[-1]]];
+      HGSessionClose[sg]]]];
+
 Print["\nfailures: ", failures];
 Print[If[failures == 0, "SESSIONS_VERIFIED", "SESSIONS_FAILED"]];
 Exit[If[failures == 0, 0, 1]]

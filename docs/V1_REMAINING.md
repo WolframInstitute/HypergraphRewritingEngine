@@ -70,7 +70,12 @@ branches the caller asked to leave alone. It throws a message saying exactly tha
 `TargetDevice`, no device case. So the chain is verified in C++ and unverified end-to-end through
 the paclet.
 
-**Closes when:** `verify_sessions.wls` exercises the device path, or records why it does not.
+**CLOSED.** `verify_sessions.wls` now carries a device leg and passes end to end through the
+paclet: **SESSIONS_VERIFIED, 0 failures**. The GPU one-shot ladder matches the host's, a fresh
+device session is at depth 0, four device steps equal one `HGEvolve` of depth 4 (34 states, 33
+events), and Query does not advance it. It SKIPS rather than fails on a machine with no usable
+GPU — the opposite of the worker rule above, because a machine that cannot run a worker could,
+while one with no GPU genuinely cannot.
 
 ### A2-old — original framing, kept for the record
 `V1_PLAN.md:426` calls this the largest remaining item, and Richard put it IN v1.0. The CPU half
