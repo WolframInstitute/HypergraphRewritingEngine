@@ -171,9 +171,18 @@ int main(int argc, char** argv) {
             // artifacts. Without it the CPU would be reconstructing the raw unfolding while the
             // GPU was not, and the ratio between them would be measuring the record set rather
             // than the two devices.
-            if (const char* raw_env = std::getenv("HG_BENCH_RAW"); raw_env && raw_env[0] == '0') {
-                hgcommon::RecordSet rs;
-                rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
+            {
+                hgcommon::RecordSet rs = g.record_set();
+                if (const char* raw_env = std::getenv("HG_BENCH_RAW"); raw_env && raw_env[0] == '0')
+                    rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
+                // The three records have different costs and only one drives the per-instance
+                // replay, so an all-or-nothing switch cannot say which is being paid for. Same
+                // spelling as bench_gpu_evolve, so a host row and a device row select the same
+                // records -- comparing two engines under two different record sets measures the
+                // record sets.
+                if (const char* v = std::getenv("HG_BENCH_CAUSAL"))    rs.causal     = v[0] != '0';
+                if (const char* v = std::getenv("HG_BENCH_BRANCHIAL")) rs.branchial  = v[0] != '0';
+                if (const char* v = std::getenv("HG_BENCH_RAWEVENTS")) rs.raw_events = v[0] != '0';
                 g.set_record_set(rs);
             }
             ParallelEvolutionEngine e(&g, threads);
@@ -191,6 +200,11 @@ int main(int argc, char** argv) {
             // to do with the engine's concurrency. Every warning is printed, once per run.
             for (const std::string& w : e.warnings())
                 std::printf("  WARNING: %s\n", w.c_str());
+            // Twin of the device bench's line: the reconstruction's size, so the two engines can
+            // be compared on work done and not only on time.
+            std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu\n",
+                        g.num_reconstructed_causal_pairs(false),
+                        g.num_reconstructed_causal_pairs(true));
             states = g.num_canonical_states();
             raw = g.num_states();
             // Discriminates a dedup defect from a COUNTING defect. num_canonical_states is
