@@ -202,6 +202,15 @@ int main(int argc, char** argv) {
                 std::printf("  WARNING: %s\n", w.c_str());
             // Twin of the device bench's line: the reconstruction's size, so the two engines can
             // be compared on work done and not only on time.
+            // S1: the quotient branchial fan-out. visits/scans is the mean applications per
+            // instance (m). The scan costs sum m^2 while the relation is sum m(m-1)/2, so a
+            // large m says an inverted index by (instance, slot) -- what the direct path
+            // already uses -- would turn the scan linear in the co-consumers it actually finds.
+            {
+                const size_t sc = g.applied_scans(), vi = g.applied_visits();
+                std::printf("  fanout: scans=%zu visits=%zu mean_m=%.2f\n",
+                            sc, vi, sc ? double(vi) / double(sc) : 0.0);
+            }
             std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
                         g.num_reconstructed_causal_pairs(false),
                         g.num_reconstructed_causal_pairs(true),

@@ -8,7 +8,8 @@ this file IS the tracker; keep it current in the same commit as the work.
 
 ## S1 — Quotient-side branchial fan-out: is there a quadratic, and is it removable?
 
-**Status: IN PROGRESS.**
+**Status: MEASURED. Verdict: the algorithm is output-optimal; the REPRESENTATION is a 137x
+expansion. No implementation defect; a representation decision is owed.**
 
 **Why it is open.** `4587254a` refuted the clique hypothesis on the DIRECT path
 (`CausalGraph::record_branchial`): max clique over the whole oracle corpus is 5, and on the only
@@ -30,8 +31,40 @@ narrow like the direct path and the pair count tracks the bucket count, in which
 relation is simply that large and the honest answer is a representation question for the caller,
 not an optimisation.
 
-**Gate:** bucket-size distribution published for `disc-l3a2g2r2` d1–d3 and for the corpus; a
-stated verdict with numbers either way; if (a), an implementation with the pair count unchanged.
+### Measured (host, `disc-l3a2g2r2`, branchial only, 8 threads)
+
+Counters added to the host replay Ctx: one scan per application, one visit per element the scan
+touches. `visits/scans` is the mean applications per instance, m.
+
+| depth | scans (applications) | visits | mean m | branchial pairs |
+|------:|---------------------:|-------:|-------:|----------------:|
+| 1 | 24 | 300 | 12.5 | 276 |
+| 2 | 2,904 | 175,117 | 60.3 | 162,996 |
+| 3 | 971,064 | 163,391,222 | 168.3 | 133,351,476 |
+
+**The scan is output-optimal, so there is no algorithmic quadratic to remove.** 163,391,222
+visits produce 133,351,476 pairs: pairs are **81.6%** of visits, so the overlap test rejects
+under a fifth of what it looks at. Nearly every sibling pair of an instance genuinely IS
+branchially related. Emitting N pairs cannot cost less than N, so the scan is within 1.23x of
+its own output, and an inverted index keyed by (instance, slot) — the structure the DIRECT path
+uses — could recover at most that 19%. It is not a linearisation and should not be built as one.
+
+**But the output form is a 137x expansion of a structure the engine already has.** m = 168 at
+depth 3, against a maximum clique of 2–5 on the direct path, so the two paths are not comparable
+and the earlier refutation (`4587254a`) does not transfer. The per-instance applied list is
+**971,064 entries against 133,351,476 pairs — 137.3x** — and it already carries the consumed
+slots, which are exactly what decides overlap. So the applied lists ARE the branchial relation in
+compressed form, and the pair set is their expansion.
+
+### What is owed
+
+A representation decision, not an optimisation: whether a caller asking for branchial structure
+should receive 133M pairs or the ~1M-entry grouped form it is derived from. The engine computes
+the compressed form either way. This is the same question `#164` raised on the device, where
+holding the full relation needs ~2 GB of pair records.
+
+**Gate:** the decision recorded with these numbers; if grouped output ships, the pair count
+derivable from it unchanged and the verified against full capture.
 
 ---
 

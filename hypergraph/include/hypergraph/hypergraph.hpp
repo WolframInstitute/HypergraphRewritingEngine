@@ -269,6 +269,10 @@ class Hypergraph {
     std::atomic<size_t> qc_num_causal_edges_{0};   // per consumed edge (the T1 multiset)
     std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
     std::atomic<size_t> qc_num_tr_pairs_{0};       // distinct pairs surviving reduction
+    // Scans of an instance's applied list, and elements visited across them. visits/scans is
+    // the mean fan-out m; pairs are bounded by sum m(m-1)/2 while the SCAN costs sum m^2.
+    mutable std::atomic<size_t> qc_applied_scans_{0};
+    mutable std::atomic<size_t> qc_applied_visits_{0};
     std::atomic<size_t> qc_num_branchial_{0};      // sibling matches of one instance, overlapping
     bool qc_reachable(uint32_t producer, uint32_t consumer) const;
     void qc_record_causal(uint32_t producer, uint32_t consumer);
@@ -386,7 +390,18 @@ class Hypergraph {
         }
         template <class F>
         void for_each_applied(const QcInstance& inst, F&& f) {
-            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each(f);
+            // THE FAN-OUT, counted. This scan visits EVERY application of the instance and
+            // tests slot overlap inside, so its cost is m per application and m^2 per instance.
+            // The direct path (CausalGraph::record_branchial) does not: it keys an inverted
+            // index by (state, shared edge) and visits only actual co-consumers, and its own
+            // comment records that as "replacing the O(events^2) pairwise scan". These two
+            // counters are what say whether that difference costs anything here.
+            hg.qc_applied_scans_.fetch_add(1, std::memory_order_relaxed);
+            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each(
+                [&](const QcAppliedMatch& a) {
+                    hg.qc_applied_visits_.fetch_add(1, std::memory_order_relaxed);
+                    f(a);
+                });
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi) {
             if (hg.qc_branchial_pairs_.insert(qc_pair_key(lo, hi)))
@@ -1069,6 +1084,9 @@ public:
         return (transitively_reduced ? qc_num_tr_pairs_ : qc_num_causal_pairs_)
                    .load(std::memory_order_relaxed);
     }
+    size_t applied_scans() const { return qc_applied_scans_.load(std::memory_order_relaxed); }
+    size_t applied_visits() const { return qc_applied_visits_.load(std::memory_order_relaxed); }
+
     size_t num_reconstructed_branchial() const {
         return qc_num_branchial_.load(std::memory_order_relaxed);
     }
