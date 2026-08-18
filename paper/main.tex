@@ -1548,6 +1548,29 @@ The quotient decoupling of Section~\ref{sec:quotient} applies to the device on t
 
 Two routes to the canonicalization bound were measured and rejected, and we record them because the bound remains open and both failure modes are instructive. Tiered canonicalization---bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision---was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so duplicates pay twice. A content-equality short-circuit---reuse a canonical form when two raw states hold literally the same edge tuples, which requires no confirmation because it is a proof of isomorphism on its own---cannot fire: measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite mints fresh vertex identifiers and so no two states reaching one canonical form carry the same labels. The measurement is order-independent and therefore an upper bound on what any content key could catch. The two routes fail oppositely: the first fires often but confirms redundantly, the second would need no confirmation but never fires. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
 
+These figures hold across the corpus rather than on one shape. Profiling the resident kernel on all eight workloads at depth six---measured with the profiler rather than by wall clock, because the host was shared and wall time on this machine is bimodal under load---gives occupancy between $16.58\%$ and $16.66\%$ on every one, over workloads whose kernel durations differ by a factor of seven hundred:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\hline
+workload & kernel (ms) & warps active & SM thr. & DRAM thr. \\
+\hline
+\texttt{wpp}       &   2.97 & 16.66\% &  9.37\% & 7.51\% \\
+\texttt{wolfram24} &   5.81 & 16.66\% & 13.00\% & 9.49\% \\
+\texttt{multirule} &   1.23 & 16.66\% &  2.06\% & 0.06\% \\
+\texttt{cycle4}    &   1.72 & 16.66\% &  1.79\% & 0.05\% \\
+\texttt{multiroot} &   3.29 & 16.66\% &  2.00\% & 0.04\% \\
+\texttt{arity3}    &   3.55 & 16.66\% &  1.62\% & 0.01\% \\
+\texttt{triangle}  & 209.38 & 16.58\% &  2.04\% & 0.21\% \\
+\texttt{binary}    & 857.47 & 16.65\% &  1.80\% & 0.06\% \\
+\hline
+\end{tabular}
+\end{center}
+
+An occupancy that is constant across a corpus this varied is what a grid-determined limit looks like, and confirms from a third direction that it is not determined by register allocation.
+
+The two outliers are informative and we report them rather than omitting them. \texttt{binary} occupies the device for $857$\,ms to produce twenty-two states and \texttt{triangle} for $209$\,ms to produce four, against \texttt{wpp}'s $2.97$\,ms for $3{,}867$. These are the workloads whose per-phase counters read $99.5\%$ and $99.7\%$ idle: the kernel is not computing, its resident blocks are spinning until quiescence is established, and the kernel cannot retire until they do. Where an evolution generates real work that cost is amortised to nothing; where an evolution exhausts after four states it is the entire runtime. Termination detection is correct---a separate analysis confirmed it waits only on work that is genuinely running---but its cost is not proportional to the work, and for short interactive evolutions that is the dominant term rather than a negligible one. We record it as measured and unaddressed.
+
 We report these bounds rather than a closed gap. The decomposition that would raise lane efficiency---distributing canonicalization across the warp---and the compile-time separation that would relax the register ceiling are identified and unimplemented at the time of writing. Raising occupancy alone would multiply a $3.1\%$ lane efficiency by a larger factor and report a speedup while the device continued to run one lane in thirty-two, which is why the ordering matters and why the ceiling is stated here as measured rather than as addressed.
 
 \subsection{Ablation (Table T9)}
