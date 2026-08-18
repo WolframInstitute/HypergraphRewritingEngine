@@ -97,17 +97,29 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
     return e;
 }
 
-// Right-hand side: keep the left's first edge (so the rule is not purely destructive) and add
-// `grow` fresh edges hanging off a new vertex. `grow` is what makes the state set expand, and
-// setting it below the left's size makes the rule reductive instead.
+// Right-hand side: keep EVERY left edge, then add `grow` fresh edges that attach to vertices the
+// left side already binds.
+//
+// Both halves matter and an earlier version got both wrong. Keeping only the FIRST left edge made
+// any rule with two or three left edges net-destructive, so it could not grow: of 96 workloads
+// generated that way, 84 were flat and the twelve that grew reached twenty-eight states at depth
+// six. And attaching growth to fresh vertices only would extend the state without creating new
+// places for the left side to match, which grows the state linearly rather than branching. The
+// shape that branches -- `wpp`, the one workload in the hand-picked set that reaches thousands of
+// states -- rewrites two connected edges into four that share its vertices, so each application
+// creates several new match sites. That is what is reproduced here: every new edge touches an
+// existing bound vertex as well as a fresh one.
 inline std::vector<std::vector<uint32_t>> make_rhs(
         const std::vector<std::vector<uint32_t>>& lhs, uint32_t grow, uint32_t ar) {
-    std::vector<std::vector<uint32_t>> e;
-    if (!lhs.empty()) e.push_back(lhs.front());
+    std::vector<std::vector<uint32_t>> e = lhs;      // non-destructive: the left side survives
+    if (lhs.empty()) return e;
     uint32_t fresh = 200;
     for (uint32_t g = 0; g < grow; ++g) {
         std::vector<uint32_t> t;
-        t.push_back(lhs.empty() ? 0u : lhs.front().front());
+        // Anchor on a DIFFERENT bound vertex per added edge, so growth spreads over the match
+        // rather than piling onto one vertex.
+        const auto& anchor = lhs[g % lhs.size()];
+        t.push_back(anchor[g % anchor.size()]);
         for (uint32_t a = 1; a < ar; ++a) t.push_back(fresh++);
         e.push_back(std::move(t));
     }

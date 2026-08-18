@@ -118,6 +118,32 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // GROWTH CLASSIFICATION. A workload whose canonical state count does not increase with depth
+    // cannot distinguish two engines: it measures their per-call floor and nothing else. Running
+    // such a workload and reporting a CPU/GPU ratio from it is measuring the harness. This mode
+    // reports the state count at two depths for every generated workload so the corpus can be
+    // filtered to the ones that actually evolve, and prints the ratio that decides it.
+    if (std::strcmp(want, "corpusgrow") == 0) {
+        for (const auto& w : generated) {
+            size_t lo = 0, hi = 0;
+            for (int d : {3, 6}) {
+                Hypergraph g;
+                g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                hgcommon::RecordSet rs;
+                rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
+                g.set_record_set(rs);
+                ParallelEvolutionEngine e(&g, 8);
+                e.set_explore_from_canonical_states_only(true);
+                for (const auto& r : w.rules) e.add_rule(r);
+                e.evolve(w.init, d);
+                (d == 3 ? lo : hi) = g.num_canonical_states();
+            }
+            std::printf("%-18s d3=%-6zu d6=%-8zu %s\n", w.name, lo, hi,
+                        (hi > lo * 2 && hi >= 20) ? "GROWS" : "flat");
+        }
+        return 0;
+    }
+
     const Workload* sel = nullptr;
     for (const auto& w : all) if (std::strcmp(w.name, want) == 0) sel = &w;
     for (const auto& w : generated) if (std::strcmp(w.name, want) == 0) sel = &w;

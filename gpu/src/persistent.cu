@@ -295,8 +295,30 @@ __global__ void k_persistent_match_rewrite(
         if (threadIdx.x != 0) return;
         uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
         uint64_t p2[TerminationDetector::kMaxRoles], c2[TerminationDetector::kMaxRoles];
+
+        // THE BUDGET COUNTS LACK OF PROGRESS, NOT ELAPSED ROUNDS.
+        //
+        // A fixed round ceiling cannot tell a deadlock from a workload that simply takes longer
+        // than the ceiling, and it fired on the second. A rule with a disconnected left side
+        // produces a cartesian product of matches, every resident block ends up inside a long
+        // match, and the queue drains slowly. Measured on disc-l3a2g2r2 at depth 5: the device sat
+        // at 97% utilisation -- WORKING, not stuck -- and the detector gave up anyway after ten
+        // million rounds, signalled exit and returned a partial result, after which the wrapper
+        // grew the pools and re-ran. A workload the CPU finishes in 25 s did not finish in 200.
+        //
+        // The signature also differs from a real stall. Here role0 read pushed=2972 completed=295:
+        // a queue holding thousands of items nobody is popping because every consumer is busy. A
+        // genuine stall has pushed == completed, because nobody is working at all.
+        //
+        // The counters ARE the progress signal and were already read every round. A round in which
+        // any of them moves resets the budget; only rounds where nothing changes count against it.
+        // A deadlock still trips it -- nothing moves, by definition -- while arbitrarily slow
+        // forward progress never does.
+        uint32_t stagnant = 0;
+        uint32_t last_prod = 0xFFFFFFFFu, last_done = 0xFFFFFFFFu;
+        uint64_t last_pc = 0xFFFFFFFFFFFFFFFFull;
         for (uint32_t round = 0; ; ++round) {
-            if (round >= kMaxDetectorRounds) {
+            if (stagnant >= kMaxDetectorRounds) {
                 ds.errors.record(ErrorKind::kPersistentStall);
                 term.signal_exit();
                 return;
@@ -308,6 +330,17 @@ __global__ void k_persistent_match_rewrite(
             const bool q1 = term.snapshot_quiescent(p1, c1);
             const uint32_t prod1 = readable_records(found);
             const uint32_t done1 = *consume_cursor;
+            {   // Progress check: any movement resets the stagnation budget. Role counters are
+                // summed rather than compared elementwise -- any move changes the sum.
+                uint64_t pc = 0;
+                for (uint32_t r = 0; r < term.num_roles; ++r) pc += p1[r] + c1[r];
+                if (prod1 != last_prod || done1 != last_done || pc != last_pc) {
+                    last_prod = prod1; last_done = done1; last_pc = pc;
+                    stagnant = 0;
+                } else {
+                    ++stagnant;
+                }
+            }
             if (q1 && done1 >= prod1) {
                 // Quiescent once is not enough: an in-flight match may have just completed
                 // without its matches yet being visible. Look again after a backoff, and
@@ -431,8 +464,30 @@ __global__ void k_persistent_evolve(
         if (threadIdx.x != 0) return;
         uint64_t p1[TerminationDetector::kMaxRoles], c1[TerminationDetector::kMaxRoles];
         uint64_t p2[TerminationDetector::kMaxRoles], c2[TerminationDetector::kMaxRoles];
+
+        // THE BUDGET COUNTS LACK OF PROGRESS, NOT ELAPSED ROUNDS.
+        //
+        // A fixed round ceiling cannot tell a deadlock from a workload that simply takes longer
+        // than the ceiling, and it fired on the second. A rule with a disconnected left side
+        // produces a cartesian product of matches, every resident block ends up inside a long
+        // match, and the queue drains slowly. Measured on disc-l3a2g2r2 at depth 5: the device sat
+        // at 97% utilisation -- WORKING, not stuck -- and the detector gave up anyway after ten
+        // million rounds, signalled exit and returned a partial result, after which the wrapper
+        // grew the pools and re-ran. A workload the CPU finishes in 25 s did not finish in 200.
+        //
+        // The signature also differs from a real stall. Here role0 read pushed=2972 completed=295:
+        // a queue holding thousands of items nobody is popping because every consumer is busy. A
+        // genuine stall has pushed == completed, because nobody is working at all.
+        //
+        // The counters ARE the progress signal and were already read every round. A round in which
+        // any of them moves resets the budget; only rounds where nothing changes count against it.
+        // A deadlock still trips it -- nothing moves, by definition -- while arbitrarily slow
+        // forward progress never does.
+        uint32_t stagnant = 0;
+        uint32_t last_prod = 0xFFFFFFFFu, last_done = 0xFFFFFFFFu;
+        uint64_t last_pc = 0xFFFFFFFFFFFFFFFFull;
         for (uint32_t round = 0; ; ++round) {
-            if (round >= kMaxDetectorRounds) {
+            if (stagnant >= kMaxDetectorRounds) {
                 // Quiescence never held. Signal exit anyway so the workers leave and the
                 // launch returns: a recorded defect with partial work beats holding the device.
                 //
@@ -472,6 +527,17 @@ __global__ void k_persistent_evolve(
             const bool q1  = term.snapshot_quiescent(p1, c1);
             const uint32_t prod1 = readable_records(found);
             const uint32_t done1 = *rewrites_done;
+            {   // Progress check: any movement resets the stagnation budget. Role counters are
+                // summed rather than compared elementwise -- any move changes the sum.
+                uint64_t pc = 0;
+                for (uint32_t r = 0; r < term.num_roles; ++r) pc += p1[r] + c1[r];
+                if (prod1 != last_prod || done1 != last_done || pc != last_pc) {
+                    last_prod = prod1; last_done = done1; last_pc = pc;
+                    stagnant = 0;
+                } else {
+                    ++stagnant;
+                }
+            }
             if (q1 && done1 >= prod1) {
                 __nanosleep(4000);
                 const bool q2 = term.snapshot_quiescent(p2, c2);
