@@ -547,12 +547,23 @@ __global__ void k_persistent_evolve(
                     id = phase_cycles[3]; wt = phase_cycles[4];
                 }
                 const unsigned long long tot = m + rw + cn + id + wt;
-                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u stagnant=%u | "
-                       "match=%llu%% rewrite=%llu%% canon=%llu%% idle=%llu%% wait=%llu%%\n",
-                       round, prod1, done1, stagnant,
+                // The canon bucket's five parts, as fractions of the bucket. Without this the
+                // bucket reads as "canonicalization" while containing four other calls.
+                unsigned long long ir = 0, sg = 0, qc_ = 0, qe_ = 0, dd = 0;
+                if (phase_cycles) {
+                    ir = phase_cycles[11]; sg = phase_cycles[12]; qc_ = phase_cycles[13];
+                    qe_ = phase_cycles[14]; dd = phase_cycles[15];
+                }
+                const unsigned long long cb = ir + sg + qc_ + qe_ + dd;
+                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u | "
+                       "match=%llu%% rewrite=%llu%% canonblk=%llu%% idle=%llu%% || "
+                       "ir=%llu%% sig=%llu%% qc=%llu%% qe=%llu%% dedup=%llu%%\n",
+                       round, prod1, done1,
                        tot ? 100ull * m  / tot : 0ull, tot ? 100ull * rw / tot : 0ull,
                        tot ? 100ull * cn / tot : 0ull, tot ? 100ull * id / tot : 0ull,
-                       tot ? 100ull * wt / tot : 0ull);
+                       cb ? 100ull * ir  / cb : 0ull, cb ? 100ull * sg  / cb : 0ull,
+                       cb ? 100ull * qc_ / cb : 0ull, cb ? 100ull * qe_ / cb : 0ull,
+                       cb ? 100ull * dd  / cb : 0ull);
             }
 
             {   // Progress check: any movement resets the stagnation budget. Role counters are
@@ -659,10 +670,21 @@ __global__ void k_persistent_evolve(
                 // dedup KEY, so a state whose hash could not be computed is not enqueued
                 // under a coarser one -- 1-WL merges non-isomorphic states.
                 if (child_sid != INVALID_ID) {
+                    // SPLIT THE canon BUCKET INTO ITS PARTS.
+                    //
+                    // acc_canon spans this whole block, so it has been reporting
+                    // "canonicalization" for a region that also stamps event signatures, drives
+                    // the quotient causal DP, captures the class-frame expansion and consults
+                    // dedup. A 99% reading was taken to mean individualization-refinement and does
+                    // not: an isolated measurement puts device IR at 62.9x the host on one state,
+                    // not the thousands the whole-block figure implied. Slots 11-15 name the
+                    // parts so the next question is asked of the right one.
+                    uint64_t sub0 = clock64();
                     uint64_t h = 0;
                     const ExactHashStatus key_st =
                         state_key_device(ds, child_sid, state_mode, arena, ir_slot,
                                          ir_slot_words, h, need_ranks, qc.enabled != 0);
+                    if (phase_cycles) atomicAdd(&phase_cycles[11], clock64() - sub0);
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
@@ -699,10 +721,12 @@ __global__ void k_persistent_evolve(
                         // being identified (SPEC.md sec 4). Keying it off the mode's hash is
                         // the defect b82049f fixed on the host.
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
+                            const uint64_t s1 = clock64();
                             stamp_event_signature(ds, child_event, event_keys,
                                                   ds.state_exact_hash[rec.state_id], exact,
                                                   rec.state_id, child_sid, step + 1u,
                                                   rec.rule_id, event_map);
+                            if (phase_cycles) atomicAdd(&phase_cycles[12], clock64() - s1);
                         }
 
                         // Quotient causal: register this raw event's canonical transition and
@@ -711,18 +735,25 @@ __global__ void k_persistent_evolve(
                         // endpoint hashes and orbit tables exist at this point (the parent's
                         // from its own canon, the child's from the pass just above).
                         if (child_event != INVALID_ID) {
-                            if (qc.enabled)
+                            if (qc.enabled) {
+                                const uint64_t s2 = clock64();
                                 qc_register_transition(ds, qc, rec.state_id, child_sid,
                                                        child_event, rec.rule_id, step);
+                                if (phase_cycles) atomicAdd(&phase_cycles[13], clock64() - s2);
+                            }
                             // Same event, same endpoints: the class frame's match record.
+                            const uint64_t s3 = clock64();
                             qe_capture_expansion(ds, qe, rec.state_id, child_sid,
                                                  child_event, rec.rule_id, step);
+                            if (phase_cycles) atomicAdd(&phase_cycles[14], clock64() - s3);
                         }
 
                         if (child_step < max_steps) {
+                            const uint64_t s4 = clock64();
                             expand_child = state_survives_dedup(ds, child_sid, h, dedup_map,
                                                                 dedup, explore_threshold_u32,
                                                                 explore_seed, child_step);
+                            if (phase_cycles) atomicAdd(&phase_cycles[15], clock64() - s4);
                         } else if (sess.enabled) {
                             // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
                             // a duplicate needs no frontier entry, someone else's copy carries
@@ -1106,8 +1137,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     // 5 top-level phases + apply_one_match's 6 sub-stretches (see rewrite.hpp).
     unsigned long long* d_phase_cycles = nullptr;
-    HG_CUDA_CHECK(cudaMalloc(&d_phase_cycles, sizeof(unsigned long long) * 11), "phase cycles alloc");
-    HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 11), "phase cycles clear");
+    HG_CUDA_CHECK(cudaMalloc(&d_phase_cycles, sizeof(unsigned long long) * 16), "phase cycles alloc");
+    HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 16), "phase cycles clear");
 
     TerminationDetector term(/*num_roles=*/1);
     term.clear();
@@ -1190,7 +1221,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.arena_words_used = arena.used_words_host();
     stats.canonical_events = ctr.canonical_ev;
 
-    unsigned long long phase[11] = {};
+    unsigned long long phase[16] = {};
     HG_CUDA_CHECK(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),
           "phase cycles read");
     stats.cycles_match   = phase[0];
