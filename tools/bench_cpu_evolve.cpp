@@ -202,9 +202,10 @@ int main(int argc, char** argv) {
                 std::printf("  WARNING: %s\n", w.c_str());
             // Twin of the device bench's line: the reconstruction's size, so the two engines can
             // be compared on work done and not only on time.
-            std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu\n",
+            std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
                         g.num_reconstructed_causal_pairs(false),
-                        g.num_reconstructed_causal_pairs(true));
+                        g.num_reconstructed_causal_pairs(true),
+                        g.num_reconstructed_branchial());
             states = g.num_canonical_states();
             raw = g.num_states();
             // Discriminates a dedup defect from a COUNTING defect. num_canonical_states is
