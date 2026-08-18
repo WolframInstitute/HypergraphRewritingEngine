@@ -29,6 +29,63 @@ namespace engine {
 // Allocation: All memory allocated from provided arena.
 //
 
+#ifdef HG_BITSET_STATS
+// SparseBitset search-depth histogram. Answers one question: how many DEPENDENT loads does
+// contains() serialise? Chain length, not instruction count, is what a latency-bound path pays.
+// Registered as HG_BITSET_STATS in the top-level CMakeLists; never on in a shipping build.
+struct BitsetStats {
+    uint64_t calls = 0;          // contains() invocations
+    uint64_t iters = 0;          // binary-search iterations (each one a dependent load)
+    uint64_t entries = 0;        // sum of num_entries_ seen, for the mean chunk count
+    uint64_t dense = 0;          // calls whose entries_ were a contiguous chunk_id run
+    uint64_t hits = 0;           // calls that found the chunk
+};
+// Global accumulators. Each worker's thread_local folds itself in when the thread ends, so a
+// reader after the join sees every worker without any synchronisation on the hot path.
+struct BitsetStatsGlobal {
+    std::atomic<uint64_t> calls{0}, iters{0}, entries{0}, dense{0}, hits{0};
+};
+inline BitsetStatsGlobal& bitset_stats_global() {
+    static BitsetStatsGlobal g;
+    return g;
+}
+struct BitsetStatsTLS {
+    BitsetStats s;
+    ~BitsetStatsTLS() {
+        BitsetStatsGlobal& g = bitset_stats_global();
+        g.calls.fetch_add(s.calls, std::memory_order_relaxed);
+        g.iters.fetch_add(s.iters, std::memory_order_relaxed);
+        g.entries.fetch_add(s.entries, std::memory_order_relaxed);
+        g.dense.fetch_add(s.dense, std::memory_order_relaxed);
+        g.hits.fetch_add(s.hits, std::memory_order_relaxed);
+    }
+};
+inline BitsetStats& bitset_stats() {
+    static thread_local BitsetStatsTLS t;
+    return t.s;
+}
+// Folds the CALLING thread in as well, so a single-threaded run reports without waiting on
+// destruction order. Idempotent per call site only in the sense that it zeroes what it folds.
+inline void bitset_stats_report(const char* tag) {
+    BitsetStats& me = bitset_stats();
+    BitsetStatsGlobal& g = bitset_stats_global();
+    uint64_t calls   = g.calls.load(std::memory_order_relaxed)   + me.calls;
+    uint64_t iters   = g.iters.load(std::memory_order_relaxed)   + me.iters;
+    uint64_t entries = g.entries.load(std::memory_order_relaxed) + me.entries;
+    uint64_t dense   = g.dense.load(std::memory_order_relaxed)   + me.dense;
+    uint64_t hits    = g.hits.load(std::memory_order_relaxed)    + me.hits;
+    std::fprintf(stderr,
+        "[bitset:%s] contains_calls=%llu mean_entries=%.2f mean_search_depth=%.2f "
+        "dense_frac=%.4f hit_frac=%.4f\n",
+        tag,
+        (unsigned long long)calls,
+        calls ? double(entries) / double(calls) : 0.0,
+        calls ? double(iters) / double(calls) : 0.0,
+        calls ? double(dense) / double(calls) : 0.0,
+        calls ? double(hits) / double(calls) : 0.0);
+}
+#endif
+
 class SparseBitset {
 public:
     static constexpr size_t BITS_PER_CHUNK = 512;  // 64 bytes per chunk (cache line)
@@ -141,7 +198,7 @@ public:
             other.entries_ = nullptr;
             other.num_entries_ = 0;
             other.capacity_ = 0;
-            other.count_cached_.store(0, std::memory_order_relaxed);
+                other.count_cached_.store(0, std::memory_order_relaxed);
             other.count_valid_.store(true, std::memory_order_relaxed);
         }
         return *this;
@@ -167,7 +224,28 @@ public:
         uint32_t chunk_id = edge_id >> CHUNK_SHIFT;
         size_t bit_index = edge_id & CHUNK_MASK;
 
+
+#ifdef HG_BITSET_STATS
+        {
+            BitsetStats& st = bitset_stats();
+            ++st.calls;
+            st.entries += num_entries_;
+            size_t n = num_entries_;
+            size_t d = 0;
+            while ((size_t(1) << d) < n) ++d;
+            st.iters += d;
+            bool contiguous = true;
+            for (size_t i = 1; i < n; ++i) {
+                if (entries_[i].chunk_id != entries_[i - 1].chunk_id + 1) { contiguous = false; break; }
+            }
+            if (contiguous) ++st.dense;
+        }
+#endif
+
         const Chunk* chunk = find_chunk(chunk_id);
+#ifdef HG_BITSET_STATS
+        if (chunk) ++bitset_stats().hits;
+#endif
         return chunk && chunk->get(bit_index);
     }
 

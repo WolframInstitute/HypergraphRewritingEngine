@@ -14,6 +14,11 @@ if(HG_PHASE_TIMING)
     add_compile_definitions(HG_PHASE_TIMING)
     message(STATUS "Host phase timing ENABLED -- this build is for measurement, not for shipping")
 endif()
+
+option(HG_BITSET_STATS "SparseBitset search-depth histogram (measurement builds only)" OFF)
+if(HG_BITSET_STATS)
+    add_compile_definitions(HG_BITSET_STATS)
+endif()
 # is silently ignored and the binary keeps a VCRUNTIME140 / MSVCP140 (VC++ redist) dependency.
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)

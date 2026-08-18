@@ -12,6 +12,7 @@
 #include "corpus_gen.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/bitset.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -293,5 +294,8 @@ int main(int argc, char** argv) {
             }
         }
     }
+#ifdef HG_BITSET_STATS
+    hg::engine::bitset_stats_report(want);
+#endif
     return 0;
 }
