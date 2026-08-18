@@ -43,7 +43,36 @@ it was measured at the edge ceiling, i.e. exactly at exhaustion.
 **Closes when:** this reclassification is accepted, or a non-exhaustion path out of
 `apply_one_match` is exhibited.
 
-### A2 — #12b: GPU sessions (D9)
+### A2 — #12b: GPU sessions — BUILT, WIRED AND TESTED. Only WL-level coverage is missing.
+
+`V1_PLAN.md:426` calls this "the largest remaining item" and says what remains is the device
+extend-the-frontier entry point. That entry point exists:
+
+- `Engine::run(input, session, start_step)` and `PersistentEvolver::run_session(...)` returning
+  `{result, ok, error}` (`gpu/include/hg_gpu/evolve.hpp`, `gpu/src/evolve.cu:904`).
+- A session PINS the engine: `run()` may rebuild on a config change or after an overflow throw,
+  either of which would destroy accumulated states while returning something that looks like a
+  continuation, so a session run REFUSES rather than rebuilds and `ok=false` means the handle is
+  dead. That is the overflow-invalidates-the-handle requirement, and it is implemented.
+- Wired through the FFI: `paclet_source/hg_gpu_backend.cpp:213` calls `run_session` with
+  `held.steps_done` as `start_step`.
+- **Tested:** `Rewrite.ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces`
+  (`gpu/tests/test_rewrite.cu:850+`) asserts a split run reaches the same state AND event set as
+  one whole run. PASSES (1,022 ms).
+
+**Deliberately not implemented, with the reason in the code:** a STEERED continuation (Step with a
+frontier subset). The device session carries its frontier as device state ids with no
+host-visible identity, so a selection cannot be resolved, and running unsteered would explore the
+branches the caller asked to leave alone. It throws a message saying exactly that and pointing at
+`TargetDevice -> "CPU"`. That is a stated limitation, not a gap.
+
+**What is actually missing:** `reference/verify_sessions.wls` has no GPU coverage — no
+`TargetDevice`, no device case. So the chain is verified in C++ and unverified end-to-end through
+the paclet.
+
+**Closes when:** `verify_sessions.wls` exercises the device path, or records why it does not.
+
+### A2-old — original framing, kept for the record
 `V1_PLAN.md:426` calls this the largest remaining item, and Richard put it IN v1.0. The CPU half
 is shaped for it (`EngineHolder::extend` is virtual, `SessionSlot` names no device, the FFI uses
 a checked `dynamic_cast`). Missing: the device *extend-the-frontier* entry point. `PersistentEvolver`
