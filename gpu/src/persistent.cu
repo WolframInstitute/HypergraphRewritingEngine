@@ -1054,10 +1054,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
 
+    // states_after and canonical_events are both slots of the engine's counter block, so one
+    // transfer fetches them instead of two. The pool and arena counters belong to other objects
+    // and still cost a call each.
+    const auto ctr = engine.counters_snapshot_host();
     stats.matches_found    = scratch_matches.size_host();
-    stats.states_after     = engine.num_states_host();
+    stats.states_after     = ctr.states;
     stats.arena_words_used = arena.used_words_host();
-    stats.canonical_events = engine.canonical_event_count();
+    stats.canonical_events = ctr.canonical_ev;
 
     unsigned long long phase[11] = {};
     HG_CUDA_CHECK(cudaMemcpy(phase, d_phase_cycles, sizeof(phase), cudaMemcpyDeviceToHost),

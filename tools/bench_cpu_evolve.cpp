@@ -104,6 +104,15 @@ int main(int argc, char** argv) {
         for (int i = 0; i < iters; ++i) {
             Hypergraph g;
             g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            // Same knob as bench_gpu_evolve, so a CPU row and a GPU row record the same
+            // artifacts. Without it the CPU would be reconstructing the raw unfolding while the
+            // GPU was not, and the ratio between them would be measuring the record set rather
+            // than the two devices.
+            if (const char* raw_env = std::getenv("HG_BENCH_RAW"); raw_env && raw_env[0] == '0') {
+                hgcommon::RecordSet rs;
+                rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
+                g.set_record_set(rs);
+            }
             ParallelEvolutionEngine e(&g, threads);
             e.set_explore_from_canonical_states_only(true);
             for (const auto& r : sel->rules) e.add_rule(r);

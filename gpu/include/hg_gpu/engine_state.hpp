@@ -304,15 +304,27 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&state_edge_ids_,
               sizeof(EdgeId) * cfg_.max_state_edge_total),
               "EngineState state_edge_ids alloc");
-        HG_CUDA_CHECK(cudaMalloc(&state_edge_ids_counter_, sizeof(uint32_t)),
-              "EngineState state_edge_ids_counter alloc");
-        HG_CUDA_CHECK(cudaMalloc(&state_count_,       sizeof(uint32_t)), "EngineState state_count alloc");
+        // ONE ALLOCATION FOR EVERY SCALAR COUNTER THE HOST READS BACK.
+        //
+        // Each of these is four bytes, and read on its own each costs a `cudaMemcpy` API call.
+        // The transfer is instant; the CALL is not. Measured over one steady-state evolution of
+        // `multirule`: 42 cudaMemcpy calls totalling 1.884 ms against a 4.74 ms window -- 39.8%
+        // of the call -- at a median of 23.5 us each, 27 of them moving eight bytes or fewer.
+        // Reading four bytes six times costs six times 23.5 us; reading twenty-four bytes once
+        // costs 23.5 us. Contiguity is what makes the second possible, so these six live in one
+        // block and the individual pointers are offsets into it.
+        //
+        // Device code is unaffected: it still writes through the same typed pointers.
+        HG_CUDA_CHECK(cudaMalloc(&counter_block_, sizeof(uint32_t) * kCounterSlots),
+              "EngineState counter block alloc");
+        state_edge_ids_counter_ = counter_block_ + 0;
+        state_count_            = counter_block_ + 1;
         HG_CUDA_CHECK(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
               "EngineState state_canonical_hash alloc");
         HG_CUDA_CHECK(cudaMalloc(&state_exact_hash_, sizeof(uint64_t) * cfg_.max_states),
               "EngineState state_exact_hash alloc");
-        HG_CUDA_CHECK(cudaMalloc(&needs_indices_,     sizeof(uint32_t)), "EngineState needs_indices alloc");
-        HG_CUDA_CHECK(cudaMalloc(&vertex_high_water_, sizeof(uint32_t)), "EngineState vertex_high_water alloc");
+        needs_indices_          = counter_block_ + 2;
+        vertex_high_water_      = counter_block_ + 3;
         HG_CUDA_CHECK(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
               "EngineState edge_producer alloc");
         clear();
@@ -321,16 +333,14 @@ public:
     ~EngineState() {
         if (state_edge_slices_)      cudaFree(state_edge_slices_);
         if (state_edge_ids_)         cudaFree(state_edge_ids_);
-        if (state_edge_ids_counter_) cudaFree(state_edge_ids_counter_);
-        if (state_count_)            cudaFree(state_count_);
+        // The six scalar counters are slices of counter_block_, not separate allocations, so
+        // the block is freed once here and none of them is freed individually.
+        if (counter_block_)          cudaFree(counter_block_);
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
-        if (event_sig_fallbacks_)    cudaFree(event_sig_fallbacks_);
-        if (canonical_event_count_)  cudaFree(canonical_event_count_);
-        if (vertex_high_water_)      cudaFree(vertex_high_water_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
 
@@ -345,8 +355,7 @@ public:
         if (state_edge_rank_) return;
         HG_CUDA_CHECK(cudaMalloc(&state_edge_rank_, sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState state_edge_rank alloc");
-        HG_CUDA_CHECK(cudaMalloc(&event_sig_fallbacks_, sizeof(uint32_t)),
-              "EngineState event_sig_raw_fallbacks alloc");
+        event_sig_fallbacks_ = counter_block_ + 4;
         HG_CUDA_CHECK(cudaMemset(state_edge_rank_, 0xFF,
               sizeof(uint32_t) * cfg_.max_state_edge_total),
               "EngineState init state_edge_rank");
@@ -374,8 +383,7 @@ public:
     // computed and every application is its own event, so nothing counts.
     void ensure_event_identity() {
         if (canonical_event_count_) return;
-        HG_CUDA_CHECK(cudaMalloc(&canonical_event_count_, sizeof(uint32_t)),
-              "EngineState canonical_event_count alloc");
+        canonical_event_count_ = counter_block_ + 5;
         HG_CUDA_CHECK(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
               "EngineState init canonical_event_count");
     }
@@ -689,6 +697,34 @@ private:
     Pool<Edge>                         edge_pool_;
     StateEdgeSlice*                    state_edge_slices_      = nullptr;
     EdgeId*                            state_edge_ids_         = nullptr;
+    // The six host-read scalar counters, contiguous so one transfer fetches them all. The
+    // pointers below are offsets into this and are NOT separately freed.
+    static constexpr uint32_t          kCounterSlots = 6;
+    uint32_t*                          counter_block_          = nullptr;
+public:
+    // Every host-read scalar counter, in ONE transfer.
+    //
+    // Read individually these cost one cudaMemcpy API call each, and the call dominates: a
+    // four-byte transfer is instant while the call runs about 23.5 us. A caller that needs more
+    // than one of these should take a snapshot rather than several accessors.
+    struct CounterSnapshot {
+        uint32_t state_edge_ids = 0;   // slot 0
+        uint32_t states         = 0;   // slot 1
+        uint32_t needs_indices  = 0;   // slot 2
+        uint32_t vertex_high    = 0;   // slot 3
+        uint32_t sig_fallbacks  = 0;   // slot 4
+        uint32_t canonical_ev   = 0;   // slot 5
+    };
+    CounterSnapshot counters_snapshot_host() const {
+        uint32_t raw[kCounterSlots] = {};
+        HG_CUDA_CHECK(cudaMemcpy(raw, counter_block_, sizeof(raw), cudaMemcpyDeviceToHost),
+              "EngineState counter block d2h");
+        CounterSnapshot c;
+        c.state_edge_ids = raw[0]; c.states        = raw[1]; c.needs_indices = raw[2];
+        c.vertex_high    = raw[3]; c.sig_fallbacks = raw[4]; c.canonical_ev  = raw[5];
+        return c;
+    }
+private:
     uint32_t*                          state_edge_ids_counter_ = nullptr;
     uint32_t*                          state_count_            = nullptr;
     uint64_t*                          state_canonical_hash_   = nullptr;
