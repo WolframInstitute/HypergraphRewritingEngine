@@ -279,6 +279,19 @@ struct EngineConfig {
     // pair. Reachability is answered by backward search over it, so no closure is stored.
     uint32_t tr_preds_nodes = 1u << 20;
 
+    // How much bigger the QUOTIENT REPLAY's pools are than the event count they were sized from.
+    //
+    // Every QeState pool scaled off max_events, but the ones holding the reconstructed causal
+    // and branchial relations are filled by PAIRS, and pairs are not linear in events: measured
+    // on disc-l3a2g2r2 depth 3, ~4,515 reconstructed events carry 971,040 kept causal pairs,
+    // about 215 producers per consumer. A pool sized 4x the event count therefore saturated at
+    // exactly max_events*4 and the device returned 31% of the host's relation with a warning.
+    //
+    // Density is a property of the workload, so no fixed multiple is right. This is the knob
+    // grow-and-retry doubles on kQcNodes, which is what turns the truncation back into an exact
+    // result rather than a smaller one.
+    uint32_t qe_capacity_scale = 1u;
+
     // Average IR-arena words per concurrent slot holder (the arena is one shared bump pool, so
     // the average share is what matters, not a per-worker partition). The default is ~6x the
     // measured average demand on multiway state sizes; a big-state workload that outgrows the

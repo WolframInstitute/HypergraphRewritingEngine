@@ -1,4 +1,5 @@
 #include "hgcommon/namespace.hpp"
+#include <limits>
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/exploration.hpp"
@@ -313,10 +314,16 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // The class-frame expansion capture rides the same route decision as the causal DP: both
     // ARE the quotient reconstruction, and a run that reconstructs causality is exactly a run
     // whose event identity comes from the class frame rather than each raw state's labelling.
-    if (!qe_state_ || qe_state_->enabled() != qc_route)
-        qe_state_ = std::make_unique<QeState>(qc_route, cfg.max_events);
-    else
+    if (!qe_state_ || qe_state_->enabled() != qc_route) {
+        // Saturating, because the scale doubles on retry and max_events is already large: a
+        // wrapped product would silently SHRINK the pools on the attempt meant to grow them.
+        const uint64_t qe_events = std::min<uint64_t>(
+            static_cast<uint64_t>(cfg.max_events) * cfg.qe_capacity_scale,
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) / 16u);
+        qe_state_ = std::make_unique<QeState>(qc_route, static_cast<uint32_t>(qe_events));
+    } else {
         qe_state_->clear();
+    }
     // Capture always; REPLAY only when the caller records something the raw unfolding answers.
     // The replay is the device twin of the host's instance cascade, and it is the term measured
     // exponential in depth against an answer that is linear (b98a943c). Capture is untouched, so
@@ -578,6 +585,12 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kEdgeConsumerNodes:   dbl(cfg.edge_consumer_nodes);  return true;
         case ErrorKind::kBranchialIndexNodes: dbl(cfg.branchial_index_nodes); return true;
         case ErrorKind::kTrPredsNodes:        dbl(cfg.tr_preds_nodes);       return true;
+        // Every QeState pool reports this one kind -- the expansion arena, the match and
+        // instance pools, the by_from/by_key/preds lists and the pair maps -- so the answer is
+        // to scale them together rather than guess which one filled. Retryable, and it must be:
+        // a full pair map does not lose speed, it loses CAUSAL EDGES, and the run reports a
+        // relation smaller than the one the host computes.
+        case ErrorKind::kQcNodes:             dbl(cfg.qe_capacity_scale);    return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
@@ -662,6 +675,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(branchial_index_buckets);
     LOG_FIELD(branchial_index_nodes);
     LOG_FIELD(tr_preds_nodes);
+    LOG_FIELD(qe_capacity_scale);
 #undef LOG_FIELD
 }
 
@@ -714,6 +728,10 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.causal_pair_slots)   * 12;
     b += u64(cfg.branchial_pair_slots)* 12;
     b += u64(cfg.max_events)          * 4  + u64(cfg.tr_preds_nodes) * 8;  // preds_list
+    // QeState, whose pools all scale off max_events * qe_capacity_scale: the expansion arena
+    // (16 words per event), the pair maps and instance/match pools. Omitting it let the
+    // grow-and-retry memory cap approve a config the device could not hold.
+    b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * 128;
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
