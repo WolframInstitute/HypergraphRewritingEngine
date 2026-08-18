@@ -9,6 +9,7 @@
 //
 // Usage: bench_cpu_evolve [steps] [iters]   (default 6 20)
 
+#include "corpus_gen.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 
@@ -93,9 +94,34 @@ int main(int argc, char** argv) {
         for (const auto& w : all) std::printf("%s\n", w.name);
         return 0;
     }
+    // The generated corpus, shared with bench_gpu_evolve through corpus_gen.hpp so a CPU row and
+    // a GPU row name the same workload by construction.
+    std::vector<Workload> generated;
+    for (const auto& g : corpus::corpus()) {
+        Workload w;
+        w.name = g.name.c_str();
+        for (const auto& r : g.rules) {
+            auto b = make_rule(static_cast<uint16_t>(w.rules.size()));
+            for (const auto& e : r.lhs) b.lhs(std::vector<VertexId>(e.begin(), e.end()));
+            for (const auto& e : r.rhs) b.rhs(std::vector<VertexId>(e.begin(), e.end()));
+            w.rules.push_back(b.build());
+        }
+        for (const auto& e : g.init) w.init.push_back(std::vector<VertexId>(e.begin(), e.end()));
+        generated.push_back(std::move(w));
+    }
+    static std::vector<std::string> gen_names;
+    for (const auto& g : corpus::corpus()) gen_names.push_back(g.name);
+    for (size_t i = 0; i < generated.size(); ++i) generated[i].name = gen_names[i].c_str();
+
+    if (std::strcmp(want, "corpus") == 0) {
+        for (const auto& w : generated) std::printf("%s\n", w.name);
+        return 0;
+    }
+
     const Workload* sel = nullptr;
     for (const auto& w : all) if (std::strcmp(w.name, want) == 0) sel = &w;
-    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list)\n", want); return 2; }
+    for (const auto& w : generated) if (std::strcmp(w.name, want) == 0) sel = &w;
+    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list, corpus)\n", want); return 2; }
 
     double base_ms = 0.0;
     for (int threads : sweep) {

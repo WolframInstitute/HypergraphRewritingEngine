@@ -27,6 +27,8 @@
 // setenv'd inside one process would report the value it just set while every iteration ran at
 // the first grid, and that flat curve reads exactly like a real result.
 #include "hg_gpu/evolve.hpp"
+#include "corpus_gen.hpp"
+#include <string>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -91,9 +93,33 @@ int main(int argc, char** argv) {
         for (const auto& w : all) std::printf("%s\n", w.name);
         return 0;
     }
+    // The generated corpus, shared with bench_cpu_evolve through corpus_gen.hpp.
+    static std::vector<std::string> gen_names;
+    std::vector<Workload> generated;
+    for (const auto& g : corpus::corpus()) {
+        gen_names.push_back(g.name);
+        Workload w;
+        w.name = nullptr;   // filled below, once gen_names has stopped reallocating
+        for (const auto& r : g.rules) {
+            std::vector<std::vector<uint8_t>> lhs, rhs;
+            for (const auto& e : r.lhs) lhs.push_back(std::vector<uint8_t>(e.begin(), e.end()));
+            for (const auto& e : r.rhs) rhs.push_back(std::vector<uint8_t>(e.begin(), e.end()));
+            w.rules.push_back(make_rule(std::move(lhs), std::move(rhs)));
+        }
+        for (const auto& e : g.init) w.init.push_back(std::vector<uint32_t>(e.begin(), e.end()));
+        generated.push_back(std::move(w));
+    }
+    for (size_t i = 0; i < generated.size(); ++i) generated[i].name = gen_names[i].c_str();
+
+    if (std::strcmp(want, "corpus") == 0) {
+        for (const auto& w : generated) std::printf("%s\n", w.name);
+        return 0;
+    }
+
     const Workload* sel = nullptr;
     for (const auto& w : all) if (std::strcmp(w.name, want) == 0) sel = &w;
-    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list)\n", want); return 2; }
+    for (const auto& w : generated) if (std::strcmp(w.name, want) == 0) sel = &w;
+    if (!sel) { std::fprintf(stderr, "unknown workload '%s' (try: list, corpus)\n", want); return 2; }
 
     hg_gpu::EvolveInput in;
     in.rules = sel->rules;
