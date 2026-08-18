@@ -420,13 +420,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                    : qc_counts.canon_events);
         out.reconstructed_causal_pairs = qc_counts.causal_pairs;
         out.reconstructed_causal_edges = qc_counts.causal_edges;
-        out.reconstructed_causal_pairs_reduced =
-            qc_counts.reduced_pairs;
         out.reconstructed_branchial = qc_counts.branchial;
         if (qc_route)
             qe_state_->reconstructed_pairs_host(out.reconstructed_causal_relation,
                                                 out.reconstructed_causal_relation_reduced,
                                                 out.reconstructed_branchial_relation);
+        // DERIVED from the relation the caller receives, not counted beside it: the reduction
+        // is computed during that readback, so a separate tally could only ever disagree.
+        out.reconstructed_causal_pairs_reduced =
+            static_cast<uint32_t>(out.reconstructed_causal_relation_reduced.size());
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
