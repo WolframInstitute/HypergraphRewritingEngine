@@ -21,6 +21,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
+#include <hypergraph/ir_canonicalization.hpp>
 
 using namespace hypergraph;
 
@@ -133,7 +136,15 @@ int main(int argc, char** argv) {
                 rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
                 g.set_record_set(rs);
                 ParallelEvolutionEngine e(&g, 8);
-                e.set_explore_from_canonical_states_only(true);
+                // Default on: expanding one representative per isomorphism class is the whole
+            // point of canonical exploration. The knob exists because that restriction
+            // interacts with the depth budget -- a class first claimed at one depth and later
+            // reached at a shallower one must be re-expanded with the larger remaining budget
+            // -- and comparing the two settings is what shows whether that accounting is right.
+            {
+                const char* co = std::getenv("HG_BENCH_CANON_ONLY");
+                e.set_explore_from_canonical_states_only(!(co && co[0] == '0'));
+            }
                 for (const auto& r : w.rules) e.add_rule(r);
                 e.evolve(w.init, d);
                 (d == 3 ? lo : hi) = g.num_canonical_states();
@@ -172,8 +183,63 @@ int main(int argc, char** argv) {
             e.evolve(sel->init, steps);
             const auto t1 = std::chrono::steady_clock::now();
             ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            // A TRUNCATED RUN IS NOT A MEASUREMENT. Hitting a container ceiling makes the
+            // engine return valid partial work with a warning rather than throwing, so a bench
+            // that reads only the counts reports a number for a workload it never finished --
+            // and above the ceiling WHICH states got in is decided by the arrival race, so the
+            // counts vary between runs and between thread counts for a reason that has nothing
+            // to do with the engine's concurrency. Every warning is printed, once per run.
+            for (const std::string& w : e.warnings())
+                std::printf("  WARNING: %s\n", w.c_str());
             states = g.num_canonical_states();
             raw = g.num_states();
+            // Discriminates a dedup defect from a COUNTING defect. num_canonical_states is
+            // count_unique() over the map's resize chain; this is the same quantity taken
+            // independently, straight from the states' published canonical hashes. They must
+            // agree: a state's hash is what keyed it, so the number of distinct hashes IS the
+            // number of isomorphism classes found. A gap means the chain walk counts one key
+            // twice, not that the engine failed to merge two states.
+            if (const char* v = std::getenv("HG_BENCH_VERIFY_DEDUP"); v && v[0] == '1') {
+                std::unordered_set<uint64_t> distinct;
+                const size_t n = g.num_states();
+                for (size_t s2 = 0; s2 < n; ++s2)
+                    distinct.insert(g.get_state(static_cast<StateId>(s2)).canonical_hash);
+                // The independent oracle: re-canonicalize one representative per stored hash
+                // through the unbounded implementation, which shares no code with the bounded
+                // core's search. If it collapses hashes the engine kept apart, the classes are
+                // genuinely fewer than the engine found and the bounded key is at fault. If it
+                // agrees, the states really are pairwise non-isomorphic and the surplus was
+                // produced upstream of canonicalization.
+                std::unordered_map<uint64_t, StateId> rep;
+                for (size_t s2 = 0; s2 < n; ++s2)
+                    rep.emplace(g.get_state(static_cast<StateId>(s2)).canonical_hash,
+                                static_cast<StateId>(s2));
+                std::unordered_set<uint64_t> oracle;
+                IRCanonicalizer oracle_ir;
+                for (const auto& [h, sid] : rep) {
+                    std::vector<std::vector<VertexId>> ev;
+                    g.get_state(sid).edges.for_each([&](EdgeId eid) {
+                        const auto& ed = g.get_edge(eid);
+                        ev.emplace_back(ed.vertices, ed.vertices + ed.arity);
+                    });
+                    oracle.insert(oracle_ir.compute_canonical_hash(ev));
+                }
+                // Dump the class set so two runs can be compared as SETS, not just counts.
+                // Equal counts would not prove equal sets, and a subset relation is what
+                // distinguishes "one run missed classes" from "the runs explored different
+                // regions" -- different defects with different fixes.
+                if (const char* dp = std::getenv("HG_BENCH_DUMP_CLASSES")) {
+                    std::vector<uint64_t> sorted(oracle.begin(), oracle.end());
+                    std::sort(sorted.begin(), sorted.end());
+                    if (FILE* f = std::fopen(dp, "w")) {
+                        for (uint64_t h : sorted) std::fprintf(f, "%llu\n", (unsigned long long)h);
+                        std::fclose(f);
+                    }
+                }
+                std::printf("  verify: count_unique=%zu distinct_hashes=%zu raw=%zu "
+                            "oracle_classes=%zu\n",
+                            states, distinct.size(), n, oracle.size());
+            }
         }
         std::sort(ms.begin(), ms.end());
         const double med = ms[ms.size() / 2];
