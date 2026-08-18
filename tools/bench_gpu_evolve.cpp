@@ -156,7 +156,28 @@ int main(int argc, char** argv) {
     // (B) PersistentEvolver: allocations amortized across calls, with the same
     // grow-and-retry robustness as evolve().
     hg_gpu::PersistentEvolver evolver;
-    auto rw = evolver.run(in);   // warmup (first run sizes the engine)
+    auto rw = evolver.run(in);   // sizes the engine
+
+    // RAMP THE CLOCK BEFORE TIMING ANYTHING.
+    //
+    // The device idles at 210 MHz against a 3,150 MHz maximum and only ramps under sustained
+    // load, so a measurement that begins on a cold clock is taken at a fraction of the speed the
+    // same code reaches warm. Measured: a cold first run read 79.2 ms where warm runs of the
+    // identical command read 8.1, and six consecutive warm runs then held a +-4% spread with two
+    // other tenants busy on the CPU. The clock, not host contention, was the whole of that
+    // variance.
+    //
+    // One warm-up CALL does not fix it: a workload that completes in 3.4 ms leaves the device
+    // idle again before the timed loop starts. So the warm-up is bounded by TIME rather than by
+    // iterations, and every workload gets the same ramp regardless of how fast it is.
+    //
+    // Locking the clock with `nvidia-smi --lock-gpu-clocks` would be better and needs root, which
+    // is not available here; this reaches the same steady state by keeping the device busy.
+    {
+        const auto ramp_deadline = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(400);
+        while (std::chrono::steady_clock::now() < ramp_deadline) (void)evolver.run(in);
+    }
     std::vector<double> tb;
     for (int i = 0; i < iters; ++i) {
         auto a = std::chrono::steady_clock::now();
