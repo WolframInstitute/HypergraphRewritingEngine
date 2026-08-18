@@ -53,11 +53,16 @@ this is not dead weight but unknown state. Two were registered today and both im
 survived precisely because its instrument was unregistered.
 **Closes when:** every file under `tools/` is registered in CMake or deleted, and the tree builds.
 
-### C2 — S4: four device headers include the host tree
-`gpu/include/hg_gpu/{edge_signature,quotient_expansion,quotient_causal,hash_table}.hpp` include
-`hypergraph/`. The reverse direction is clean (0 files), so the layering property is otherwise
-true.
-**Closes when:** zero `gpu/ -> hypergraph/` includes.
+### C2 — WITHDRAWN. There is no layering violation.
+Reported on a grep for `hypergraph/` in `gpu/`, which matched PATH STRINGS INSIDE COMMENTS —
+each of the four files names a host file in prose to say what it mirrors
+(`edge_signature.hpp:14`, `quotient_expansion.hpp:6`, `quotient_causal.hpp:6`,
+`hash_table.hpp:18`). Checked against actual include directives:
+
+    grep -rn '^\s*#\s*include\s*[<"]hypergraph/' gpu/include gpu/src   -> none
+    grep -rn '^\s*#\s*include\s*[<"]hg_gpu/' hypergraph/include hypergraph/src -> none
+
+Both directions are clean and always were. The layering property holds without work.
 
 ### C3 — Three matcher paths that execute zero times
 `SignatureIndex::for_each_edge_with_signature` (index.hpp:79), `InvertedVertexIndex::for_each_edge`
