@@ -527,6 +527,20 @@ __global__ void k_persistent_evolve(
             const bool q1  = term.snapshot_quiescent(p1, c1);
             const uint32_t prod1 = readable_records(found);
             const uint32_t done1 = *rewrites_done;
+
+            // PERIODIC PROGRESS, so a long run is observable rather than opaque.
+            //
+            // A run that does not finish tells you nothing about WHY unless you can see whether it
+            // is grinding steadily or decaying. This prints the counters roughly every two million
+            // detector rounds -- about four seconds at the 2 us backoff -- and only when the run
+            // has already lasted that long, so an ordinary evolution prints nothing at all. It
+            // exists because ten hypotheses about a non-finishing workload were each eliminated by
+            // a separate measurement, and none of them could be tested against the run itself.
+            if (round > 0 && (round % 2000000u) == 0u) {
+                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u stagnant=%u\n",
+                       round, prod1, done1, stagnant);
+            }
+
             {   // Progress check: any movement resets the stagnation budget. Role counters are
                 // summed rather than compared elementwise -- any move changes the sum.
                 uint64_t pc = 0;
@@ -597,6 +611,7 @@ __global__ void k_persistent_evolve(
         if (claimed != INVALID_ID) {
             if (threadIdx.x == 0) {
                 idle_ns = 64;
+                idle_spins = 0;            // consecutive, not cumulative -- see the guard below
                 const unsigned long long t0 = clock64();
                 const MatchRecord& rec = found.at(claimed);
                 await_match(rec);
@@ -757,6 +772,7 @@ __global__ void k_persistent_evolve(
             if (threadIdx.x == 0) {
                 term.mark_completed(kRoleMatch);
                 idle_ns = 64;
+                idle_spins = 0;            // consecutive, not cumulative -- see the guard below
                 acc_match += clock64() - tA;
             }
             __syncthreads();
@@ -781,6 +797,23 @@ __global__ void k_persistent_evolve(
         // 1024 11.3).
         if (threadIdx.x == 0) {
             const unsigned long long tA = clock64();
+            // CONSECUTIVE IDLE ITERATIONS, NOT LIFETIME ONES.
+            //
+            // This counter exists to catch a worker that can neither find work nor be told to
+            // stop, which is a condition about an UNBROKEN run of idling. It was never reset, so
+            // it accumulated over the whole kernel: a block that idled briefly between items --
+            // the normal thing to do whenever the queue is momentarily empty -- added to it every
+            // time, and after twenty million such moments declared a stall and RETIRED, however
+            // productive it had been in between.
+            //
+            // On a short run nothing reaches the cap. On a long one the workers die off one at a
+            // time and throughput decays with them, which is why disc-l3a2g2r2 finishes at depth 4
+            // in 244 ms and had not finished at depth 5 after 540 s. The backoff sleeps up to
+            // 4 us, so twenty million idle moments is tens of seconds of cumulative idling --
+            // easily reached by a run lasting minutes, and unreachable by one lasting a quarter of
+            // a second.
+            //
+            // Reset wherever work is found, beside the backoff reset that was already there.
             if (++idle_spins >= kMaxWorkerIdleSpins) {
                 ds.errors.record(ErrorKind::kPersistentStall);
                 stalled = true;
