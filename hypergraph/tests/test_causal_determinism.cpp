@@ -34,6 +34,7 @@ struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
     long branchial_stored = 0;
+    long stored_before_walk = 0;
     long branchial_pairs = 0;
 };
 
@@ -84,6 +85,15 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
 
     // Branchial, on whichever side the run serves it -- the same split the causal component
     // above makes, and under the same schedule-stable endpoint identity.
+    // WAS THE WALK RACING PUSHES STILL IN FLIGHT? num_branchial_edges_ is incremented inside
+    // add_branchial_edge, so reading it either side of the walk separates the two explanations
+    // for enumerated < stored:
+    //   before == after, walk short  -> the edges exist and are unreachable (structural)
+    //   after  >  before             -> evolve() returned with pushes outstanding (quiescence)
+    // Without this the shortfall is real either way and the cause is a guess.
+    const long stored_before = g.quotient_reconstruction()
+        ? 0L : static_cast<long>(g.causal_graph().num_branchial_edges());
+
     std::vector<uint64_t> be;
     if (g.quotient_reconstruction()) {
         g.for_each_reconstructed_branchial_as(
@@ -127,6 +137,7 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     fp.branchial_stored = g.quotient_reconstruction()
         ? fp.branchial_pairs
         : static_cast<long>(g.causal_graph().num_branchial_edges());
+    fp.stored_before_walk = g.quotient_reconstruction() ? fp.branchial_pairs : stored_before;
 
     fp.num_events = static_cast<long>(g.observable_num_events());
     return fp;
@@ -221,6 +232,11 @@ Spread spread(const Workload& w, bool quotient) {
         for (int rep = 0; rep < 4; ++rep)
             for (int th : {1, 2, 8}) {
                 Fingerprint f = run(w.rules, w.init, quotient, th, seed, w.steps);
+                EXPECT_EQ(f.stored_before_walk, f.branchial_stored)
+                    << w.name << ": pushes were IN FLIGHT during the walk at threads=" << th
+                    << " rep=" << rep << " -- " << f.stored_before_walk << " edges stored before "
+                    << "the walk and " << f.branchial_stored << " after. evolve() returned while "
+                       "workers were still pushing, so any shortfall is quiescence, not the list.";
                 EXPECT_EQ(f.branchial_stored, f.branchial_pairs)
                     << w.name << ": claim/store split at threads=" << th << " rep=" << rep
                     << " -- " << f.branchial_pairs << " distinct keys claimed but "
