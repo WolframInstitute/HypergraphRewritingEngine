@@ -80,6 +80,12 @@ enum class ErrorKind : uint32_t {
     // the destructive choice: a state deduped away is a subtree never explored. It is kept and
     // reported, so the answer is over-complete with a warning rather than short without one.
     kUncomputedStateHash = 28,
+    // The canonical dedup map exhausted its probe run. Recorded rather than inferred: exhaustion
+    // is indistinguishable from a hit at the map's interface, so before this existed an overfull
+    // map silently reported new states as already-seen and dropped them from the answer. Same
+    // stance as kUncomputedStateHash above -- keep the state and report, so the answer is
+    // over-complete with a warning rather than short without one.
+    kCanonicalMapFull    = 29,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
@@ -94,6 +100,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kQcNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kQcNodes is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kUncomputedStateHash) <
               static_cast<uint32_t>(ErrorKind::kCount), "kUncomputedStateHash is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalMapFull) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kCanonicalMapFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
@@ -124,6 +132,7 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
+        case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
         default:                              return "unknown";
     }
 }

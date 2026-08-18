@@ -564,6 +564,10 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             // each match uses bounded RHS edges.
             dbl(cfg.max_states);
             return true;
+        // Retryable, and it must be: a full dedup map cannot decide whether a state has been
+        // seen, so the run keeps states it might have merged and reports an over-complete answer.
+        // Growing the map is what turns that warning back into an exact result.
+        case ErrorKind::kCanonicalMapFull:    dbl(cfg.canonical_map_slots);  return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
         case ErrorKind::kBranchialMapFull:    dbl(cfg.branchial_pair_slots); return true;

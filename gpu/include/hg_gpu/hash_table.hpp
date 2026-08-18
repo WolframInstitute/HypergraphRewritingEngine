@@ -66,6 +66,19 @@ public:
     struct InsertResult {
         V    value;        // existing-or-newly-inserted value
         bool inserted;     // true iff this thread won the slot
+        // TRUE IFF THE PROBE RUN WAS EXHAUSTED WITHOUT DECIDING.
+        //
+        // Without this a full table is indistinguishable from a hit: the exhaustion path returned
+        // {V{}, false}, which is byte-identical to finding an existing key whose value is 0. Every
+        // caller here reads `inserted`, so a full table silently answered "already present" --
+        // and the dedup map is what decides whether a state has been SEEN, so new states were
+        // dropped from the answer with nothing recorded.
+        //
+        // It cannot be inferred from the other two fields and it cannot be avoided by bounding the
+        // probe: with linear probing a key lives anywhere in its contiguous run, so giving up
+        // early would miss existing keys and insert duplicates instead -- a silent double-count in
+        // place of a silent drop. The caller has to be told, and callers that can record it do.
+        bool overflowed = false;
     };
 
     struct DeviceView {
@@ -204,7 +217,9 @@ public:
 
                 slot = (slot + 1) % capacity;
             }
-            return InsertResult{V{}, false};  // capacity exceeded
+            // Exhausted every slot without finding the key or a free one. NOT a hit: say so, so
+            // the caller can record a capacity overflow instead of treating this as "seen".
+            return InsertResult{V{}, false, true};
         }
     };
 

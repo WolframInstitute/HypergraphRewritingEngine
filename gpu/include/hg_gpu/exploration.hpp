@@ -44,6 +44,15 @@ __device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_
             return true;
         }
         auto r = map.insert_if_absent(hash, sid);
+        // A FULL MAP IS NOT A DUPLICATE. Exhaustion returns inserted=false like a genuine hit, so
+        // without this test an overfull dedup map drops every new state silently and the run
+        // reports a smaller state set as if it were the answer. Keeping the state instead errs
+        // toward a duplicate, which is visible and correctable, over a loss, which is neither --
+        // and the recorded error puts the run under the engine's partial-result contract.
+        if (r.overflowed) {
+            ds.errors.record(ErrorKind::kCanonicalMapFull);
+            return true;
+        }
         if (!r.inserted) return false;
     }
 
