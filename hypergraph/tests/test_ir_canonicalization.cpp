@@ -400,3 +400,90 @@ TEST_F(IRCanonicalizationTest, SharedCoreEdgeOrbitsMatchReference) {
             << "case " << ci << ": orbit partition differs";
     }
 }
+
+// =========================================================================================
+// Presentation invariance of the bounded core.
+//
+// The engine hands the core local vertex ids assigned in ENCOUNTER order over the state's
+// edges, and the edges themselves in EdgeId order. Both are properties of the SCHEDULE that
+// built the state, not of the state: EdgeIds come from an atomic increment, so two threads
+// reaching isomorphic states present them differently. create_or_get_canonical_state uses the
+// returned hash as the dedup key, so if the hash moves with the presentation, isomorphic
+// states fail to merge and the canonical count inflates.
+//
+// This is the invariant the dedup key rests on, stated as a test rather than as a comment.
+// =========================================================================================
+namespace {
+
+// Re-present a state the way a different schedule would have: permute the edge order and
+// relabel the vertices, both driven by one counter so the case is indexed rather than random.
+std::vector<std::vector<hypergraph::VertexId>> repermute(
+        const std::vector<std::vector<hypergraph::VertexId>>& edges, uint64_t seed) {
+    uint64_t s = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    auto next = [&]() { s ^= s << 13; s ^= s >> 7; s ^= s << 17; return s; };
+
+    std::vector<hypergraph::VertexId> verts;
+    for (const auto& e : edges) for (auto v : e) verts.push_back(v);
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+
+    // A relabeling onto a disjoint, shuffled id range: isomorphic by construction.
+    std::vector<hypergraph::VertexId> img(verts.size());
+    for (size_t i = 0; i < img.size(); ++i) img[i] = static_cast<hypergraph::VertexId>(1000 + i);
+    for (size_t i = img.size(); i-- > 1;) std::swap(img[i], img[next() % (i + 1)]);
+
+    std::map<hypergraph::VertexId, hypergraph::VertexId> relabel;
+    for (size_t i = 0; i < verts.size(); ++i) relabel[verts[i]] = img[i];
+
+    auto out = edges;
+    for (auto& e : out) for (auto& v : e) v = relabel[v];
+    for (size_t i = out.size(); i-- > 1;) std::swap(out[i], out[next() % (i + 1)]);
+    return out;
+}
+
+}  // namespace
+
+TEST_F(IRCanonicalizationTest, BoundedCoreHashIsInvariantUnderPresentation) {
+    // Shapes chosen for the properties that make the search branch: a star's leaves are
+    // interchangeable, a cycle admits a rotation group, and a disconnected state has an
+    // automorphism exchanging its components. These are where a presentation dependence
+    // would show, and they are the shapes the corpus generator emits.
+    std::vector<std::pair<const char*, std::vector<std::vector<VertexId>>>> cases;
+
+    std::vector<std::vector<VertexId>> star;
+    for (VertexId i = 1; i <= 12; ++i) star.push_back({0, i});
+    cases.emplace_back("star12", star);
+
+    std::vector<std::vector<VertexId>> cycle;
+    for (VertexId i = 0; i < 12; ++i) cycle.push_back({i, static_cast<VertexId>((i + 1) % 12)});
+    cases.emplace_back("cycle12", cycle);
+
+    // Two isomorphic components: the automorphism group contains the swap between them.
+    std::vector<std::vector<VertexId>> disc;
+    for (VertexId c = 0; c < 2; ++c)
+        for (VertexId i = 0; i < 6; ++i)
+            disc.push_back({static_cast<VertexId>(c * 100 + i),
+                            static_cast<VertexId>(c * 100 + (i + 1) % 6)});
+    cases.emplace_back("disc2x6", disc);
+
+    // A star of triangles: high automorphism AND mixed arity, the combination the corpus's
+    // growth rules produce after a few steps.
+    std::vector<std::vector<VertexId>> mixed;
+    for (VertexId i = 0; i < 5; ++i) {
+        mixed.push_back({0, static_cast<VertexId>(1 + i * 2), static_cast<VertexId>(2 + i * 2)});
+        mixed.push_back({static_cast<VertexId>(1 + i * 2), static_cast<VertexId>(2 + i * 2)});
+    }
+    cases.emplace_back("mixedarity", mixed);
+
+    for (const auto& [name, base] : cases) {
+        std::vector<uint32_t> orbit, klass;
+        const uint64_t h0 = shared_core_orbits(base, orbit, klass);
+        for (uint64_t seed = 1; seed <= 64; ++seed) {
+            auto perm = repermute(base, seed);
+            std::vector<uint32_t> o2, k2;
+            const uint64_t h = shared_core_orbits(perm, o2, k2);
+            ASSERT_EQ(h, h0) << name << ": bounded core hash moved under presentation "
+                             << seed << " -- isomorphic states will not dedup";
+        }
+    }
+}
