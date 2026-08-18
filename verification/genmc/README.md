@@ -250,3 +250,33 @@ this property has a passing gate and no proof.
 `MAX_SEGMENTS` becomes a template parameter so a harness can instantiate a two-segment array. The
 second is a change to shipping code for the benefit of verification, which is a trade worth making
 deliberately rather than incidentally.
+
+
+## Why there is no harness for the DEVICE termination protocol
+
+The persistent kernel's termination detection -- `mark_pushed` before a push, `mark_completed`
+after, `rewrites_done` bumped last, and the detector block's quiescence snapshot -- is a
+concurrent protocol of exactly the kind this directory exists to check. It has none, and cannot
+have one here.
+
+**Every method of `TerminationDetector::DeviceView` is `__device__`** (gpu/include/hg_gpu/
+termination.hpp: `mark_pushed`, `mark_completed`, `exit_requested`, `snapshot_quiescent`,
+`signal_exit`). GenMC is an LLVM tool that checks HOST C++ against RC11. It cannot compile a CUDA
+device function, so the rule this directory is built on -- a harness includes the engine's own
+header and calls its own functions, because a model drifts from the code and proves a property of
+the model -- cannot be followed for any device-side structure.
+
+Transcribing the protocol into host C++ would produce a harness that runs and proves nothing about
+the code that ships. That is the failure mode `README` warns about at the top of this file, and it
+is worse than an absent harness because it reads as coverage.
+
+**What the device protocol has instead:** the `wait` phase counter, which measures time spent
+spinning on a claimed-but-unpublished record, reads **0.0% on all eight corpus workloads**. That
+is evidence the protocol is not livelocking in practice, from an instrument independent of the
+argument. It is not a proof and is not offered as one.
+
+**What would change this:** a checker that models the CUDA memory model over device code, or a
+device protocol expressed in shared `HG_HD` code that both engines compile -- the same move that
+`hgcommon/` already makes for the matcher and the IR core. The second is a design change to the
+GPU termination path, not a verification task, and it should be weighed on its own merits rather
+than undertaken to satisfy a harness.
