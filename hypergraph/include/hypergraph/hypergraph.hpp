@@ -1115,6 +1115,29 @@ public:
     // nothing was reporting it.
     size_t applied_claims() const { return qc_applied_.size(); }
 
+    // THE SHAPE OF THE APPLIED LISTS: the sorted multiset of per-instance application counts,
+    // hashed. Two runs with the same TOTAL number of applications can still distribute them
+    // differently across instances, and the branchial relation is built per instance -- so the
+    // pair count would vary while the event count did not. That is exactly the shape the suite
+    // reports, and nothing measured it: the totals agreed on every run and the distribution was
+    // never looked at.
+    uint64_t applied_shape_fingerprint() const {
+        std::vector<uint32_t> lens;
+        const uint32_t n = qc_inst_applied_.size();
+        lens.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
+            if (!lst) continue;
+            uint32_t c = 0;
+            lst->for_each([&](const QcAppliedMatch&) { ++c; });
+            if (c) lens.push_back(c);
+        }
+        std::sort(lens.begin(), lens.end());
+        uint64_t h = 1469598103934665603ULL;
+        for (uint32_t v : lens) { h ^= v; h *= 1099511628211ULL; }
+        return h;
+    }
+
     // Matches the capture never recorded. The first is a race and a defect; the second is the
     // one-representative-per-class rule doing its job.
     size_t capture_dropped_no_orbits() const {

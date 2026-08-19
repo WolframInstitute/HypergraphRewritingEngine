@@ -77,6 +77,7 @@ struct Sample {
     size_t   claims;          // distinct (instance, match) keys in the replay's claim set
     size_t   cap_no_orbits;   // captures dropped because an endpoint's orbits were not visible
     size_t   cap_not_rep;     // captures skipped because another raw state represents the class
+    uint64_t shape_fp;        // sorted multiset of per-instance application counts
     size_t   frame_disagree, align_fail, align_badcorr;
     size_t   events, causal_pairs;
     // The relation the run does NOT serve on this route, carried alongside so the baseline line
@@ -184,6 +185,7 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     return { fp, bfp, sfp, be.size(), st.size(), g.num_reconstructed_instances(),
              g.num_reconstructed_branchial(), g.applied_scans(), g.applied_claims(),
              g.capture_dropped_no_orbits(), g.capture_skipped_not_representative(),
+             g.applied_shape_fingerprint(),
              g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
              g.num_bad_correspondences(), g.observable_num_events(), ce.size(),
              g.causal_graph().num_causal_event_pairs(), threads, seed };
@@ -261,6 +263,7 @@ int main(int argc, char** argv) {
             // set varies between runs then both relations vary with it, and a fingerprint
             // spread is the symptom rather than the fault. Nothing was watching this.
             std::set<size_t> inst_counts, event_counts, app_counts;
+            std::set<uint64_t> shapes;
             std::vector<Sample> samples;
             for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})
                 for (int th : {1, 2, 8, 16, 32}) {
@@ -281,6 +284,7 @@ int main(int argc, char** argv) {
                         std::printf("  %s DROPPED CAPTURE at threads=%d seed=%s: %zu match(es) "
                                     "lost because an endpoint's orbits were not visible yet\n",
                                     w.name, th, seed ? "fixed" : "random", s.cap_no_orbits);
+                    shapes.insert(s.shape_fp);
                     inst_counts.insert(s.instances);
                     app_counts.insert(s.applications);
                     event_counts.insert(s.events);
@@ -290,6 +294,12 @@ int main(int argc, char** argv) {
                     samples.push_back(s);
                 }
             ++total;
+            if (shapes.size() > 1) {
+                std::printf("  %s iteration %d: THE APPLIED LISTS ARE SHAPED DIFFERENTLY across "
+                            "%zu runs -- same applications, distributed over instances "
+                            "differently, which is what makes the pair count move while the "
+                            "event count does not\n", w.name, it, shapes.size());
+            }
             if (app_counts.size() > 1) {
                 std::printf("  %s iteration %d: APPLICATIONS VARY -- {", w.name, it);
                 for (size_t c : app_counts) std::printf(" %zu", c);
