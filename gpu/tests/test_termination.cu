@@ -32,6 +32,9 @@ TEST(TerminationDetector, FreshIsQuiescent) {
     uint8_t*  d_q = nullptr; cudaMalloc(&d_q, sizeof(uint8_t));
     uint64_t* d_p = nullptr; cudaMalloc(&d_p, sizeof(uint64_t) * TD::kMaxRoles);
     uint64_t* d_c = nullptr; cudaMalloc(&d_c, sizeof(uint64_t) * TD::kMaxRoles);
+    // The readback covers every role; the kernel writes only the roles it uses.
+    cudaMemset(d_p, 0, sizeof(uint64_t) * TD::kMaxRoles);
+    cudaMemset(d_c, 0, sizeof(uint64_t) * TD::kMaxRoles);
 
     k_check_quiescent<<<1,1>>>(td.view(), d_q, d_p, d_c);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -50,6 +53,9 @@ TEST(TerminationDetector, PushedWithoutCompletedNotQuiescent) {
     uint8_t*  d_q = nullptr; cudaMalloc(&d_q, sizeof(uint8_t));
     uint64_t* d_p = nullptr; cudaMalloc(&d_p, sizeof(uint64_t) * TD::kMaxRoles);
     uint64_t* d_c = nullptr; cudaMalloc(&d_c, sizeof(uint64_t) * TD::kMaxRoles);
+    // The readback covers every role; the kernel writes only the roles it uses.
+    cudaMemset(d_p, 0, sizeof(uint64_t) * TD::kMaxRoles);
+    cudaMemset(d_c, 0, sizeof(uint64_t) * TD::kMaxRoles);
 
     k_check_quiescent<<<1,1>>>(td.view(), d_q, d_p, d_c);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -77,6 +83,9 @@ TEST(TerminationDetector, BalancedIsQuiescent) {
     uint8_t*  d_q = nullptr; cudaMalloc(&d_q, sizeof(uint8_t));
     uint64_t* d_p = nullptr; cudaMalloc(&d_p, sizeof(uint64_t) * TD::kMaxRoles);
     uint64_t* d_c = nullptr; cudaMalloc(&d_c, sizeof(uint64_t) * TD::kMaxRoles);
+    // The readback covers every role; the kernel writes only the roles it uses.
+    cudaMemset(d_p, 0, sizeof(uint64_t) * TD::kMaxRoles);
+    cudaMemset(d_c, 0, sizeof(uint64_t) * TD::kMaxRoles);
     k_check_quiescent<<<1,1>>>(td.view(), d_q, d_p, d_c);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
