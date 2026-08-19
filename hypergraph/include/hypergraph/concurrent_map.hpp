@@ -151,9 +151,21 @@ public:
 
     // arena != nullptr routes all table allocation through the arena (no malloc); the
     // tables are then reclaimed in bulk with the arena, not in this destructor.
+    // `working_capacity` is the size the FIRST growth jumps to. It is a parameter so a model
+    // checker can bound the protocol: the seal pass exchanges two atomics per slot of the
+    // retiring table, so a growth out of a 1024-slot table is 2048 atomic operations for a
+    // checker to interleave, and the double-growth harnesses cannot be exhausted because of it
+    // -- measured, both --bound=1 and --bound=2 time out at 580s, and the two-worker shape
+    // produced no verdict in 55 minutes.
+    //
+    // The property those harnesses state -- install, seal, migrate, chain-scan, re-drive, and
+    // exactly one caller told it inserted -- does not depend on the table being 1024 wide. The
+    // capacity decides probe-run LENGTH, and with the one or two keys a harness uses the runs
+    // are trivial at either size. So the constant is a parameter and the default is unchanged.
     explicit ConcurrentMap(size_t initial_capacity = LAZY_INITIAL_CAPACITY,
-                           ConcurrentHeterogeneousArena* arena = nullptr)
-        : count_(0), arena_(arena) {
+                           ConcurrentHeterogeneousArena* arena = nullptr,
+                           size_t working_capacity = DEFAULT_INITIAL_CAPACITY)
+        : count_(0), arena_(arena), working_capacity_(working_capacity) {
         table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
     }
 
@@ -650,8 +662,8 @@ private:
 
         // From the one-slot table a map starts with, go straight to the working size rather
         // than doubling ten times to reach it.
-        size_t new_capacity = old_table->capacity < DEFAULT_INITIAL_CAPACITY
-                                  ? DEFAULT_INITIAL_CAPACITY
+        size_t new_capacity = old_table->capacity < working_capacity_
+                                  ? working_capacity_
                                   : old_table->capacity * 2;
 
         Table* new_table = Table::create(new_capacity, old_table, arena_);
@@ -704,6 +716,8 @@ private:
     std::atomic<size_t> count_;
     // When non-null, all tables are arena-allocated (no malloc) and bulk-reclaimed.
     ConcurrentHeterogeneousArena* arena_ = nullptr;
+    // The size the first growth jumps to; see the constructor.
+    size_t working_capacity_ = DEFAULT_INITIAL_CAPACITY;
 };
 
 }  // namespace engine

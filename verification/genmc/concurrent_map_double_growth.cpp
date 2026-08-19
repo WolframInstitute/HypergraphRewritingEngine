@@ -68,7 +68,7 @@ void* w3(void*) {
 }  // namespace
 
 int main() {
-    Map map(/*initial_capacity=*/2);
+    Map map(/*initial_capacity=*/2, /*arena=*/nullptr, /*working_capacity=*/4);
     g_map = &map;
     map.insert_if_absent(kPre, 30);
 

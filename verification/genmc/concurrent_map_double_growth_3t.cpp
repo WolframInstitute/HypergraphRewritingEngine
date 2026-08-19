@@ -28,8 +28,38 @@
 // minutes -- so neither the estimate nor this file's earlier wording is evidence of a completed
 // verification.
 //
-// GENMC-ARGS: --disable-estimation --sc --bound=2 --bound-type=context
-// GENMC-EXPECT: pass
+// A DEFECT LIVES HERE. At a FOUR-context bound this harness reports a safety violation on the
+// shipped code, and is clean at three. Bisected to `assert(g_ins[0] != g_ins[1])`: two callers
+// are told they inserted the same key. The value assertion holds, so both are handed the SAME
+// value while both believe they created it.
+//
+// WHAT IT COSTS THE ENGINE. Every get-or-create site reads
+//     lst = ins.second ? nl : ins.first;
+// so two winners means each caller keeps the container IT allocated. One key ends up with two
+// lists, the map retains one, and everything pushed into the orphan is invisible to every
+// reader that goes through the map. In the quotient replay that is an instance list: those
+// instances never meet the matches captured for their class, so those (instance, match)
+// applications never run -- fewer raw events, and every causal and branchial pair over them
+// changes, while the canonical STATE set is untouched. That is the shape of the intermittent
+// CausalDeterminism failures exactly: states agree across runs, event count and both relations
+// do not.
+//
+// NOT AN ARTEFACT OF THE REDUCTION. The violation persists at working_capacity 4 and 16 -- at
+// 16 the table holds 3 keys against a threshold of 12, so it is not a full table -- and it is
+// found under --sc, whose behaviours are a subset of RC11, so it is real on the shipped model.
+//
+// TWO FIXES ATTEMPTED AND BOTH REFUTED, by harnesses already here:
+//   verdict = (anchored value == our offer)  -- refuted by concurrent_map_repeated_offer, which
+//       states that was_inserted comes from the publishing EXCHANGE, not a value comparison:
+//       two callers offering the same value would both compare equal.
+//   verdict = anchored.second                -- under-reports and gives ZERO winners, because a
+//       migration or another anchor can place our value at the head first.
+// Both refutations say the same thing: the verdict logic is not the defect. TWO EXCHANGES CAN
+// WIN FOR ONE KEY, so the fault is in the mutual exclusion between a settle in a superseded
+// table and a settle at the head. That is where the fix has to go.
+//
+// GENMC-ARGS: --disable-estimation --sc --bound=4 --bound-type=context
+// GENMC-EXPECT: fail   (the defect above; restore to `pass` with the fix)
 
 #include <pthread.h>
 #include <cassert>
@@ -70,7 +100,7 @@ void* w_grow(void*) {
 }  // namespace
 
 int main() {
-    Map map(/*initial_capacity=*/2);
+    Map map(/*initial_capacity=*/2, /*arena=*/nullptr, /*working_capacity=*/16);
     g_map = &map;
     map.insert_if_absent(kPre, 30);
 
