@@ -122,6 +122,7 @@ handling of thread_local class types is what blocked in the first place.
 | `deque_no_double_extraction` | A `pop_front` and a `pop_back` racing for the deque's *last* item never both receive it, never invent one, and leave a size consistent with what left | 2 threads, capacity 4, 1 item, 1 pop attempt each | **No errors, 6 complete executions** |
 | `job_system_no_lost_wakeup` | A submitter that skips the wake because nobody reads as idle never leaves a worker parked with the job still queued | 1 worker, 1 submitter, 1 job | **No errors, 5 complete executions** — after the fix below |
 | `lock_free_list_completeness` | `for_each` visits every pushed node exactly once -- the COMPLETENESS direction no other harness here states, all of which bound exclusivity | 2 pushers, 2 pushes each, distinct values, one walk after join; stub allocator exclusive by construction | **No errors, 184 complete executions** |
+| `lock_free_list_pairs_meet_once` | two concurrent pushers MEET EXACTLY ONCE under `push` + `for_each_before` -- the pairing rule the quotient branchial relation is built on, which `lock_free_list_completeness` does not state because it walks from the head after the pushers have joined | 2 threads, 1 push each, each scanning the nodes older than its own and counting sightings of the other; their sum must be 1 | **No errors, 8 complete executions** |
 | `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
 | `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
 
@@ -193,6 +194,7 @@ assertion inverted, and the checker must report a safety violation:
 | Harness | Inverted assertion | Result |
 |---|---|---|
 | `lock_free_list_completeness` | push's CAS retry loop replaced with a non-retrying publish | `Error: Safety violation!`, exit 42 |
+| `lock_free_list_pairs_meet_once` | `for_each_before(mine, ...)` replaced with `for_each(...)`, the walk from the head | `Verification unsuccesful`, exit 42 |
 | `arena_worker_index_exclusive` | `acquire()`'s compare-exchange replaced with check-then-act | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |

@@ -621,22 +621,26 @@ struct DeviceQrCtx {
         // whether a bypassing path exists using only the pairs recorded so far, and on a device
         // that order is whatever the warps produced.
     }
-    __device__ bool publish_applied(const DeviceQcInstance& inst, const QeMatchView& m,
-                                    uint32_t ev) {
+    using AppliedRef = uint32_t;
+    __device__ static bool applied_ref_valid(AppliedRef r) { return r != INVALID_ID; }
+    __device__ AppliedRef publish_applied(const DeviceQcInstance& inst, const QeMatchView& m,
+                                          uint32_t ev) {
         const uint32_t bucket = qe_bucket(hgcommon::id_key(inst.id), qe.inst_applied.num_keys);
-        if (qe.inst_applied.push(bucket,
+        const uint32_t at = qe.inst_applied.push(bucket,
                 QeAppliedMatch{inst.id, m.id, ev, m.num_consumed,
-                               static_cast<uint32_t>(m.w - qe.arr_words)}) == INVALID_ID) {
+                               static_cast<uint32_t>(m.w - qe.arr_words)});
+        if (at == INVALID_ID) {
             ds.errors.record(ErrorKind::kQcNodes);
-            return false;
+            return INVALID_ID;
         }
         __threadfence();
-        return true;
+        return at;
     }
     template <class F>
-    __device__ void for_each_applied(const DeviceQcInstance& inst, F&& f) {
-        const uint32_t bucket = qe_bucket(hgcommon::id_key(inst.id), qe.inst_applied.num_keys);
-        qe.inst_applied.for_each(bucket, [&](const QeAppliedMatch& other) {
+    __device__ void for_each_applied_before(const DeviceQcInstance& inst, AppliedRef mine, F&& f) {
+        // The bucket is shared between instances, so walking below `mine` gives every
+        // application published earlier and the instance filter selects this one's.
+        qe.inst_applied.for_each_before(mine, [&](const QeAppliedMatch& other) {
             // The bucket is shared, so the record's own instance is what selects this
             // instance's applications out of it. Slots are positions in the class frame, so
             // comparing them across two instances would compare coordinates in the same frame
@@ -646,8 +650,11 @@ struct DeviceQrCtx {
         });
     }
     __device__ void record_branchial_pair(uint32_t lo, uint32_t hi) {
-        if (qe.branchial_pairs.insert_if_absent(hgcommon::id_key(lo, hi), 1u).inserted)
-            atomicAdd(qe.num_branchial, 1u);
+        // Counted on every emission, because the replay emits each pair exactly once: the pair
+        // belongs to the later of its two applications and only that one scans the other. The
+        // map is storage for the readback, not a dedup the count depends on.
+        atomicAdd(qe.num_branchial, 1u);
+        qe.branchial_pairs.insert_if_absent(hgcommon::id_key(lo, hi), 1u);
     }
     // __forceinline__ IS LOAD-BEARING. qr_apply calls this exactly once, at its tail, and the
     // call closes the recursion cycle whose per-level cost EngineState::kDeviceStackBytesPerDepth

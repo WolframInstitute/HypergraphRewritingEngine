@@ -96,8 +96,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - `for_each`/`count_unique` walk the whole resize chain and emit each key once (a key can settle only in a superseded table, since `resize()` skips claimed slots).
 - **`concurrent_key_set.hpp`** -- lock-free key-only set (membership, no value word).
   - `ConcurrentKeySet<K, EMPTY, MIGRATED>` (single-CAS `EMPTY->key` claim; growth installs the successor first, then carries each key forward and seals its old slot with `MIGRATED`; a `drained` table is skipped rather than probed, because sealing removes the terminator linear probing stops at)
-  - Carries the quotient reconstruction's membership marks (`qc_reached_`, `qc_applied_`, `qc_dsup_seen_`, `seen_transitions_`, `qc_branchial_pairs_`); model-checked by `verification/genmc/key_set_exactly_once` and `key_set_enumeration`
-- **`lock_free_list.hpp`** -- append-only lock-free linked list.
+  - Carries the quotient reconstruction's membership marks (`qc_reached_`, `qc_applied_`, `qc_dsup_seen_`, `seen_transitions_`); model-checked by `verification/genmc/key_set_exactly_once` and `key_set_enumeration`
+- **`lock_free_list.hpp`** -- append-only lock-free linked list. `push` returns the node it linked, and `for_each_before(node)` walks the nodes linked strictly earlier; `for_each_node` hands over nodes rather than values so a caller can position itself. Two pushers meet EXACTLY ONCE under this pair -- of any two nodes one is older, so only one scan sees the other -- which is how the quotient branchial relation is formed without a set of pairs to dedup against.
   - `LockFreeList<T>` (`for_each`/`for_each_while`), `SingleThreadedList<T>`
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.
   - `EdgeSignature`, `signature_compatible()`, `enumerate_compatible_signatures()`, `CompatibleSignatureCache`
@@ -154,7 +154,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`types.hpp`** -- GPU aliases + device storage structs: `DeviceEvent`, `DeviceCausalEdge`, `DeviceBranchialEdge`, `Edge`, `StateEdgeSlice`; enums `CanonicalizationMode`, `EventCanonicalizationMode`
 - **`errors.hpp`** -- device error channel: `DeviceErrors` (`DeviceView::record`), `PoolOverflow`
 - **`atomic_pool.hpp`** -- `Pool<T>` (pre-allocated device array + atomic bump counter; `DeviceView::claim`/`claim_n`/`at`)
-- **`lock_free_list.hpp`** -- `LockFreeList<T>` (per-key linked-stack over a node Pool; `DeviceView::push`/`for_each`)
+- **`lock_free_list.hpp`** -- `LockFreeList<T>` (per-key linked-stack over a node Pool; `DeviceView::push` returns the node index, `for_each`, `for_each_before` for the same exactly-once meeting rule the host list documents)
 - **`hash_table.hpp`** -- `ConcurrentMap<K,V,EMPTY,LOCKED>` (open-addressing linear probe; `DeviceView::lookup[_waiting]`/`insert_if_absent`)
 - **`ring_buffer.hpp`** -- `RingBuffer<T>` (bounded MPMC ring; per-slot sequence numbers + CAS reservation, so producers that are also consumers neither lose nor duplicate an item across wraps)
 - **`termination.hpp`** -- `TerminationDetector` (per-role quiescence for a persistent-kernel model)

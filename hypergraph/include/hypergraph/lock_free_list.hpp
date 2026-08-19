@@ -58,8 +58,12 @@ public:
     // 2. Release fence happens-before release CAS
     // 3. Release CAS synchronizes-with acquire load in for_each()
     // 4. Therefore: node data is visible to threads that see this node
+    // Returns the node it linked. A caller that must know WHERE it landed relative to the
+    // other pushes uses it with for_each_before: everything reachable from the returned node's
+    // prev chain was linked strictly earlier, which is a total order the pushers agree on
+    // without any further synchronisation.
     template<typename Arena>
-    void push(const T& value, Arena& arena) {
+    Node* push(const T& value, Arena& arena) {
         Node* new_node = arena.template create<Node>(value, nullptr);
 
         // CRITICAL: Release fence ensures node construction (including T's copy)
@@ -74,6 +78,39 @@ public:
             old_head, new_node,
             std::memory_order_release,
             std::memory_order_acquire));
+        return new_node;
+    }
+
+    // Every NODE, newest first, so a caller that must position itself relative to the others
+    // can pass what it visits back to for_each_before. Same traversal as for_each; it hands
+    // over the node rather than the value.
+    template<typename F>
+    void for_each_node(F&& f) const {
+        const Node* seen_up_to = nullptr;
+        while (true) {
+            const Node* current_head = head_.load(std::memory_order_acquire);
+            if (current_head == seen_up_to) break;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            for (const Node* node = current_head; node != seen_up_to; node = node->prev) f(node);
+            seen_up_to = current_head;
+        }
+    }
+
+    // Every node linked STRICTLY BEFORE `mine`, newest first.
+    //
+    // This is what lets two pushers meet exactly once. If each scans only the nodes older than
+    // its own, then of any two nodes A and B exactly one is older, so exactly one of the two
+    // scans sees the other -- no dedup structure, and no dependence on which thread ran first.
+    // Scanning from the HEAD instead makes both see each other whenever the two pushes and the
+    // two scans interleave, which is a pair reported twice.
+    //
+    // The prev chain below `mine` is immutable once `mine` is linked -- push only prepends --
+    // so this needs no re-read loop. The acquire fence pairs with the release fence in push().
+    template<typename F>
+    void for_each_before(const Node* mine, F&& f) const {
+        if (!mine) return;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        for (const Node* n = mine->prev; n; n = n->prev) f(n->value);
     }
 
     // Iterate over all elements (newest to oldest)

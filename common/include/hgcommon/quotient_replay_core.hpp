@@ -47,9 +47,13 @@
 //   bool     want_causal() const;  bool want_branchial() const;
 //   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none
 //   void     record_causal(uint32_t producer, uint32_t consumer);
-//   bool     publish_applied(const Instance&, const Match&, uint32_t ev);   false if it could
-//                                                                          not be published
-//   template <class F> void for_each_applied(const Instance&, F&& f);  f(const Applied&)
+//   AppliedRef publish_applied(const Instance&, const Match&, uint32_t ev);   a position in the
+//                              instance's applied list, or a value the Ctx reports as not
+//                              published through applied_ref_valid
+//   bool     applied_ref_valid(AppliedRef) const;
+//   template <class F> void for_each_applied_before(const Instance&, AppliedRef, F&& f);
+//                              f(const Applied&) over the applications published STRICTLY
+//                              EARLIER than the given position
 //   void     record_branchial_pair(uint32_t lo, uint32_t hi);
 //   void     descend(const Match&, uint32_t depth, uint32_t ev, const Instance& parent);
 //
@@ -151,10 +155,17 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // Branchial: siblings expanding the SAME instance whose consumed slots overlap. The order
     // that matters is APPLICATION order, not match-id order -- ids come from a global counter
     // while the list is appended concurrently, so a lower id can arrive after a higher one has
-    // scanned. Keying on the claim removes the assumption: the claim is what decides whether a
-    // sibling event exists at all.
-    if (m.num_consumed && c.want_branchial() && c.publish_applied(inst, m, ev)) {
-        c.for_each_applied(inst, [&](const typename Ctx::Applied& other) {
+    // scanned. Publication order is the order the two applications agree on.
+    //
+    // Each pair is reported by the LATER of the two applications, and only by it: the scan
+    // visits the applications published strictly before this one, so of any two exactly one
+    // sees the other. That is what makes the relation exact WITHOUT a set of pairs to dedup
+    // against -- and a set of pairs is the thing that does not fit, at 133,218,996 entries on
+    // disc-l3a2g2r2 depth 3 against the 970,584 applications they are derived from.
+    typename Ctx::AppliedRef mine{};
+    if (m.num_consumed && c.want_branchial() &&
+        c.applied_ref_valid(mine = c.publish_applied(inst, m, ev))) {
+        c.for_each_applied_before(inst, mine, [&](const typename Ctx::Applied& other) {
             if (other.event == ev) return;                 // this application
             bool overlaps = false;
             for (uint32_t i = 0; i < m.num_consumed && !overlaps; ++i)

@@ -89,6 +89,26 @@ public:
             return (idx == Pool<Node>::kInvalid) ? nullptr : &pool.at(idx);
         }
 
+        // Every node linked STRICTLY BEFORE `mine`, most-recent-first.
+        //
+        // This is what lets two pushers meet exactly once. If each visits only the nodes older
+        // than its own, then of any two exactly one is older, so exactly one of the two scans
+        // sees the other -- no dedup structure, and no dependence on which warp ran first.
+        // Walking from the HEAD instead makes both see each other whenever the pushes and the
+        // scans interleave, which is a pair reported twice.
+        //
+        // The next chain below `mine` is fixed once `mine` is linked, since push only prepends.
+        template <typename Fn>
+        __device__ void for_each_before(uint32_t mine, Fn fn) const {
+            if (mine == Pool<Node>::kInvalid) return;
+            uint32_t idx = pool.at(mine).next;
+            while (idx != Pool<Node>::kInvalid) {
+                const Node& n = pool.at(idx);
+                fn(n.value);
+                idx = n.next;
+            }
+        }
+
         // Functional iteration: invoke fn(value) for each node in list[key].
         // Order is most-recent-first (stack semantics). Safe concurrent with
         // pushes from other threads — visits exactly the nodes published

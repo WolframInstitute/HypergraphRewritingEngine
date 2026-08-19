@@ -197,7 +197,6 @@ class Hypergraph {
     ConcurrentKeySet<uint64_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
-    ConcurrentKeySet<uint64_t> qc_branchial_pairs_;
 
     // The matches already applied to one instance, indexed by dense instance id. Branchial
     // pairing scans THIS, not the expansion list, and that is what makes the pairing provable
@@ -374,29 +373,30 @@ class Hypergraph {
         void record_causal(uint32_t producer, uint32_t consumer) {
             hg.qc_record_causal(producer, consumer);
         }
-        bool publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev) {
+        using AppliedRef = const LockFreeList<QcAppliedMatch>::Node*;
+        static bool applied_ref_valid(AppliedRef r) { return r != nullptr; }
+        AppliedRef publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev) {
             auto& applied = hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_);
-            applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
-            return true;
+            return applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots},
+                                hg.arena_);
         }
         template <class F>
-        void for_each_applied(const QcInstance& inst, F&& f) {
-            // THE FAN-OUT, counted. This scan visits EVERY application of the instance and
-            // tests slot overlap inside, so its cost is m per application and m^2 per instance.
-            // The direct path (CausalGraph::record_branchial) does not: it keys an inverted
-            // index by (state, shared edge) and visits only actual co-consumers, and its own
-            // comment records that as "replacing the O(events^2) pairwise scan". These two
-            // counters are what say whether that difference costs anything here.
+        void for_each_applied_before(const QcInstance& inst, AppliedRef mine, F&& f) {
+            // THE FAN-OUT, counted. The scan visits the applications published before this one
+            // and tests slot overlap inside, so its cost is m per application and m^2/2 per
+            // instance. Measured on disc-l3a2g2r2 depth 3: 970,584 scans, 163,228,620 visits,
+            // 133,218,996 pairs -- 81.6% of visits emit, so the visits are not the waste and an
+            // inverted index by (instance, slot) would save 18% rather than a quadratic.
             hg.qc_applied_scans_.fetch_add(1, std::memory_order_relaxed);
-            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each(
-                [&](const QcAppliedMatch& a) {
+            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each_before(
+                mine, [&](const QcAppliedMatch& a) {
                     hg.qc_applied_visits_.fetch_add(1, std::memory_order_relaxed);
                     f(a);
                 });
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi) {
-            if (hg.qc_branchial_pairs_.insert(qc_pair_key(lo, hi)))
-                hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
+            (void)lo; (void)hi;
+            hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
         }
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent) {
             uint32_t* cp = hg.arena_.allocate_array<uint32_t>(m.to_slots ? m.to_slots : 1);
@@ -1095,7 +1095,7 @@ public:
     // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
     // the class of divergence rather than re-synchronising one more site.
     size_t num_reconstructed_branchial() const {
-        return qc_branchial_pairs_.count_enumerated();
+        return qc_num_branchial_.load(std::memory_order_relaxed);
     }
     size_t num_frame_alignment_disagreements() const {
         return qc_frame_disagree_.load(std::memory_order_relaxed);
@@ -1258,10 +1258,34 @@ public:
     // must use the schedule-stable content triple instead. One walk, two identities.
     template <typename Id, typename F>
     void for_each_reconstructed_branchial_as(Id&& id, F&& f) const {
-        qc_branchial_pairs_.for_each([&](uint64_t k) {
-            const IdPair p = id_pair_from_key(k);
-            f(id(p.a), id(p.b));
-        });
+        // DERIVED FROM THE APPLICATIONS, not from a stored list of pairs. The pairs are the
+        // per-instance applications that share a consumed slot, so the applications ARE the
+        // relation in the form it is generated -- 970,584 of them against the 133,218,996 pairs
+        // they imply on disc-l3a2g2r2 depth 3. Storing the expansion cost ~1.07 GB and is what
+        // the device's 2^22 branchial ceiling was up against.
+        //
+        // The SAME rule the replay applies: a pair belongs to the LATER of its two
+        // applications, so walking each node against the ones published before it yields every
+        // pair exactly once, with nothing to dedup against.
+        const uint32_t n = qc_inst_applied_.size();
+        for (uint32_t i = 0; i < n; ++i) {
+            const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
+            if (!lst) continue;
+            lst->for_each_node([&](const LockFreeList<QcAppliedMatch>::Node* mine) {
+                const QcAppliedMatch& a = mine->value;
+                lst->for_each_before(mine, [&](const QcAppliedMatch& b) {
+                    if (a.event == b.event) return;
+                    bool overlaps = false;
+                    for (uint32_t x = 0; x < a.num_consumed && !overlaps; ++x)
+                        for (uint32_t y = 0; y < b.num_consumed; ++y)
+                            if (a.consumed(x) == b.consumed(y)) { overlaps = true; break; }
+                    if (!overlaps) return;
+                    const uint32_t lo = a.event < b.event ? a.event : b.event;
+                    const uint32_t hi = a.event < b.event ? b.event : a.event;
+                    f(id(lo), id(hi));
+                });
+            });
+        }
     }
 
     // ==========================================================================
