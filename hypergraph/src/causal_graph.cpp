@@ -71,13 +71,13 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
 // reduction is unique, so this answer does not depend on the schedule that produced it -- which
 // is the whole reason it exists: the incremental rule needs an arrival discipline the quotient
 // reconstruction cannot provide.
-std::set<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
-    std::set<std::pair<EventId, EventId>> kept;
+std::vector<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
+    std::vector<std::pair<EventId, EventId>> kept;
     hgcommon::tr_reduce(
         [&](auto&& add) {
             causal_edges_.for_each([&](const CausalEdge& e) { add(e.producer, e.consumer); });
         },
-        [&](uint32_t p, uint32_t c) { kept.insert({p, c}); });
+        [&](uint32_t p, uint32_t c) { kept.emplace_back(p, c); });
     return kept;
 }
 

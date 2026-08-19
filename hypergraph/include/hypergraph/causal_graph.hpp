@@ -2,6 +2,7 @@
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <set>
 #include <utility>
 #include <cstdint>
@@ -227,8 +228,10 @@ public:
     }
 
     // The reduced pair set, computed from the stored relation. Unique for a given relation, so
-    // the answer does not depend on the schedule that produced it.
-    std::set<std::pair<EventId, EventId>> reduced_pairs() const;
+    // the answer does not depend on the schedule that produced it. SORTED, which is what
+    // tr_reduce emits: membership is then a binary search over contiguous memory rather than a
+    // tree walk with one node allocation per pair.
+    std::vector<std::pair<EventId, EventId>> reduced_pairs() const;
 
     // WHETHER EVENT IDS INCREASE ALONG EVERY CAUSAL EDGE. True for full capture, which mints
     // an event only after the events that produced its inputs; is_reachable uses it to skip
@@ -339,7 +342,8 @@ public:
         if (reduces_on_read()) {
             const auto keep = reduced_pairs();
             causal_edges_.for_each([&](const CausalEdge& edge) {
-                if (keep.count({edge.producer, edge.consumer})) visit(edge);
+                if (std::binary_search(keep.begin(), keep.end(),
+                                       std::make_pair(edge.producer, edge.consumer))) visit(edge);
             });
             return;
         }
