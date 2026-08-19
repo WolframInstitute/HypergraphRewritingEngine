@@ -100,20 +100,6 @@ EventSignatureKeys event_keys_for(EventCanonicalizationMode m) {
     }
 }
 
-namespace {  // re-open anon namespace for kernel + helper definitions
-
-// splitmix64 — deterministic, header-quality scalar hash. Used to derive
-// a per-(seed, step, sid) coin-flip value for stochastic exploration
-// pruning. Cheap (~1 ns) and avoids needing a curand state per thread.
-__device__ __forceinline__ uint64_t splitmix64(uint64_t x) {
-    x += 0x9E3779B97F4A7C15ull;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
-    return x ^ (x >> 31);
-}
-
-
-}  // namespace
 
 
 namespace {
@@ -272,7 +258,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         HG_CUDA_CHECK(cudaMemcpy(d_rules_, rules.data(), sizeof(DeviceRule) * num_rules,
                          cudaMemcpyHostToDevice), "d_rules copy");
     }
-    DeviceRule* d_rules = d_rules_;
 
     const EngineConfig& cfg = engine.config();
     Pool<MatchRecord>& matches = matches_;
@@ -353,9 +338,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // (instead of twice via num_states_host around the rewrite call).
     uint32_t state_count_host = engine.num_states_host();
 
-    // Tag warnings with a step-aware context, e.g. "match kernel step 3".
-    // Reused across all four phases per step.
-    char ctx_buf[64];
 
     // The whole evolution in ONE launch: the device decides what work exists, who takes it, and
     // when it is finished. Everything below the loop is unchanged -- the readback is post-hoc
