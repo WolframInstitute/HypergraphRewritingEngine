@@ -164,4 +164,44 @@ TEST(EngineState, IndicesPopulatedByUpload) {
     cudaFree(d_cnt); cudaFree(d_out);
 }
 
+// An event signature built from a raw edge id is not an isomorphism invariant, so a run that
+// produced one can report a different event total from a run that did not, with everything else
+// equal. The device counts those substitutions; this requires the count to reach the caller.
+//
+// The count is written directly rather than provoked by a workload: the shipping path calls
+// ensure_edge_ranks() whenever the event keys read edges, so a rank is normally present, and the
+// report exists for the case where one is not. Writing the counter is what makes the reporting
+// rule testable independently of finding an input that triggers it.
+TEST(EngineState, ASignatureBuiltFromARawEdgeIdIsReportedToTheCaller) {
+    hg_gpu::EngineConfig cfg;
+    cfg.max_edges            = 64;
+    cfg.max_state_edge_total = 256;
+    cfg.max_states           = 8;
+    cfg.max_vertex_slots     = 256;
+    cfg.max_vertices         = 64;
+    cfg.sig_index_buckets    = 16;
+    cfg.sig_index_pool       = 64;
+    cfg.inverted_pool        = 256;
+
+    hg_gpu::EngineState engine(cfg);
+
+    std::vector<hg_gpu::OverflowWarning> warnings;
+    engine.report_event_sig_fallbacks(warnings, "test");
+    EXPECT_TRUE(warnings.empty())
+        << "a run that substituted nothing reported a substitution";
+
+    // ensure_edge_ranks() is what binds the counter; before it, there is nothing to write to.
+    engine.ensure_edge_ranks();
+    const uint32_t substitutions = 7;
+    ASSERT_NE(engine.device().event_sig_raw_fallbacks, nullptr);
+    ASSERT_EQ(cudaMemcpy(engine.device().event_sig_raw_fallbacks, &substitutions,
+                         sizeof(uint32_t), cudaMemcpyHostToDevice), cudaSuccess);
+
+    engine.report_event_sig_fallbacks(warnings, "test");
+    ASSERT_EQ(warnings.size(), 1u) << "the substitution count did not reach the caller";
+    EXPECT_EQ(warnings[0].kind, hg_gpu::ErrorKind::kEventSigRawFallback);
+    EXPECT_EQ(warnings[0].count, substitutions)
+        << "the warning must carry how many signatures were affected, not merely that some were";
+}
+
 }  // namespace

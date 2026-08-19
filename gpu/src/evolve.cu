@@ -419,6 +419,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
+        engine.report_event_sig_fallbacks(out.warnings, "persistent evolve");
         t_recon = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_recon_start).count();
         if (dbg) {

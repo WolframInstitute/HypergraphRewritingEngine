@@ -512,6 +512,18 @@ public:
         errors_.collect_warnings_into(out, context);
     }
 
+    // The device counts event signatures it had to build from a raw edge id because the edge's
+    // canonical rank was UINT32_MAX when the event was stamped. It is not recorded through the
+    // error channel -- nothing failed and nothing was dropped -- so it is reported from here,
+    // beside the errors, rather than at each call site that would otherwise have to remember it.
+    // A signature built that way is not an isomorphism invariant, so the event total it produces
+    // is otherwise indistinguishable from a disagreement in the evolution.
+    void report_event_sig_fallbacks(std::vector<OverflowWarning>& out, const char* context) const {
+        if (const uint32_t n = event_sig_raw_fallbacks()) {
+            out.push_back(OverflowWarning{ErrorKind::kEventSigRawFallback, n, context});
+        }
+    }
+
     // Legacy fail-fast variant for unit tests. Production code should use
     // collect_warnings_into instead.
     void throw_on_errors(const char* context) const {

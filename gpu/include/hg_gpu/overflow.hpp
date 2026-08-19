@@ -86,6 +86,13 @@ enum class ErrorKind : uint32_t {
     // stance as kUncomputedStateHash above -- keep the state and report, so the answer is
     // over-complete with a warning rather than short without one.
     kCanonicalMapFull    = 29,
+    // An event signature stood a RAW edge identifier in place of a canonical edge rank, because
+    // the rank was unavailable when the event was stamped. Not a capacity failure and not
+    // retryable: the run completes and the answer is well defined, but a signature built from a
+    // raw id is not an isomorphism invariant, so two runs that agree on everything else can
+    // report different event counts. Reported for the same reason kIRGeneratorsExceeded is --
+    // the caller cannot otherwise distinguish it from a disagreement in the evolution.
+    kEventSigRawFallback = 30,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
@@ -102,6 +109,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kUncomputedStateHash) <
               static_cast<uint32_t>(ErrorKind::kCount), "kUncomputedStateHash is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalMapFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kCanonicalMapFull is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kEventSigRawFallback) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kEventSigRawFallback is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
@@ -133,6 +142,8 @@ inline const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
+        case ErrorKind::kEventSigRawFallback:
+            return "event signatures built from a raw edge id (not an isomorphism invariant)";
         default:                              return "unknown";
     }
 }
