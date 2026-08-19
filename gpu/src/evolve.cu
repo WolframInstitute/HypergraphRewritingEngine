@@ -630,7 +630,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
 // One-shot wrapper. Builds an Engine sized for `in`, runs it. If the
 // kernel reports any retryable overflow warnings, doubles the relevant
 // EngineConfig field(s) and re-runs from scratch — up to kMaxRetries
-// times (64× capacity growth ceiling). Each retry destructs and
+// times (256× capacity growth ceiling). Each retry destructs and
 // reconstructs the Engine (the pools have to be re-allocated at the new
 // sizes; preserving in-flight state across reallocs is more engineering
 // for negligible benefit on the cold-start path).
@@ -760,7 +760,14 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 }
 
 EvolveResult evolve(const EvolveInput& in) {
-    constexpr int kMaxRetries = 6;  // up to 64× capacity growth
+    // Eight, not six. The ladder doubles ONE knob per retry and qe_capacity_scale sizes pools
+    // that are filled per APPLICATION while their base counts EVENTS -- measured on
+    // disc-l3a2g2r2 depth 3, 970,584 applications against 4,512 events, 215 to 1. At a 64x
+    // ceiling qe_events reaches 288,768 and the applied pool 577,536, and the run reported
+    // needing at least 354,113 / 402,555 / 390,638 more slots across its attempts: short by one
+    // doubling, three times over. A ceiling that stops one step before the answer returns a
+    // partial relation for a workload that fits.
+    constexpr int kMaxRetries = 8;  // up to 256× capacity growth
     EngineConfig initial_cfg = config_from_input(in);
     EngineConfig cfg = initial_cfg;
     std::vector<OverflowWarning> trail;
@@ -953,7 +960,7 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 }
 
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
-    constexpr int kMaxRetries = 6;
+    constexpr int kMaxRetries = 8;   // see the note at the other ladder
     // Never shrink: start from the live engine's config if we have one, else size
     // to this input. The loop only rebuilds when the config actually changes, so a
     // run whose input fits the current engine reuses it and pays no allocation.
