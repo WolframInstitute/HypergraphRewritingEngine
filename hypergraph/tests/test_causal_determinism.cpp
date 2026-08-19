@@ -34,6 +34,7 @@ uint64_t fnv(uint64_t h, uint64_t x) { h ^= x; h *= 1099511628211ULL; return h; 
 struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
+    long claims = 0, drops = 0, align_fail = 0, badcorr = 0;
     long branchial_stored = 0;
     long stored_before_walk = 0;
     long branchial_pairs = 0;
@@ -164,6 +165,10 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     fp.stored_before_walk = g.quotient_reconstruction() ? fp.branchial_pairs : stored_before;
 
     fp.num_events = static_cast<long>(g.observable_num_events());
+    fp.claims     = static_cast<long>(g.applied_claims());
+    fp.drops      = static_cast<long>(g.capture_dropped_no_orbits());
+    fp.align_fail = static_cast<long>(g.num_alignment_failures());
+    fp.badcorr    = static_cast<long>(g.num_bad_correspondences());
     return fp;
 }
 
@@ -218,6 +223,14 @@ struct Variant {
     uint64_t fingerprint;
     std::string config;     // first configuration observed to produce it
     long ns, ne, nc, nb;
+    // WHERE THE APPLICATIONS WENT, carried so a firing names the mechanism instead of only the
+    // symptom. Under quotient every relation is built over (instance, match) applications:
+    //   claims - ne   applications that won their claim and were dropped by the width check
+    //   drops         captures lost because an endpoint's orbits were not visible yet
+    //   align/corr    captures lost aligning a raw state onto its class frame
+    // Each of these is a silent drop that changes every relation while leaving the STATE set
+    // alone -- the observed shape -- and each was invisible until it was counted.
+    long claims, drops, align_fail, badcorr;
 };
 struct Spread {
     std::set<uint64_t> states, causal, branchial;
@@ -241,7 +254,12 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
         const int c = it == n.end() ? 0 : it->second;
         out += "\n    " + std::to_string(c) + "/" + std::to_string(s.runs) + " runs  " + var.config +
                "  states=" + std::to_string(var.ns) + " events=" + std::to_string(var.ne) +
-               " causal=" + std::to_string(var.nc) + " branchial=" + std::to_string(var.nb);
+               " causal=" + std::to_string(var.nc) + " branchial=" + std::to_string(var.nb) +
+               "  [claims=" + std::to_string(var.claims) +
+               " width_dropped=" + std::to_string(var.claims - var.ne) +
+               " no_orbits=" + std::to_string(var.drops) +
+               " align_fail=" + std::to_string(var.align_fail) +
+               " badcorr=" + std::to_string(var.badcorr) + "]";
     }
     out += std::string("\n  counts ") + (s.ns.size() == 1 ? "AGREE" : "DIFFER") +
            " across variants -> fault is in " +
