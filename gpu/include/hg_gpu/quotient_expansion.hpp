@@ -751,6 +751,7 @@ public:
         if (arr_)     cudaFree(arr_);
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
+        if (event_runsig_) cudaFree(event_runsig_);
     }
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;
