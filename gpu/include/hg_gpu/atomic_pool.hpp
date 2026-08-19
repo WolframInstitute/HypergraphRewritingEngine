@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/types.hpp"
@@ -89,6 +90,18 @@ public:
         HG_CUDA_CHECK(cudaMemcpy(&v, counter_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
               "Pool size_host copy");
         return v;
+    }
+
+    // The VALID entries, copied to the host. Clamped to capacity for the same reason size()
+    // is: claim() bumps the counter unconditionally and reports exhaustion afterwards, so an
+    // overflowed run leaves the counter past the allocation.
+    void copy_to_host(std::vector<T>& out) const {
+        const uint32_t n = size_host();
+        const uint32_t valid = n < capacity_ ? n : capacity_;
+        out.resize(valid);
+        if (!valid) return;
+        HG_CUDA_CHECK(cudaMemcpy(out.data(), data_, sizeof(T) * valid, cudaMemcpyDeviceToHost),
+              "Pool copy_to_host");
     }
 
     void reset() {

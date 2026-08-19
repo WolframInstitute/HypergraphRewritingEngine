@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
@@ -158,6 +159,12 @@ public:
     }
 
     uint32_t num_keys()       const { return num_keys_; }
+    // Every node the pool holds, in claim order rather than list order. A host caller that
+    // wants the RELATION a list encodes does not need the chains: it needs the records, which
+    // it can group itself. Handing back nodes rather than a materialised relation is what keeps
+    // the device from having to store an expansion of what it already has.
+    void copy_nodes_to_host(std::vector<Node>& out) const { pool_.copy_to_host(out); }
+
     uint32_t pool_capacity()  const { return pool_.capacity(); }
     uint32_t pool_used_host() const { return pool_.size_host(); }
 

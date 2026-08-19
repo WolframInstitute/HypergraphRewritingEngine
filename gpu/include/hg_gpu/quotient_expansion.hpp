@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_map>
 #include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 //
@@ -180,10 +181,12 @@ struct QeView {
     uint32_t* num_causal_edges;
 
 
-    // The reconstructed branchial relation. `inst_applied` is bucketed by instance id: an
-    // application publishes itself there and then scans the bucket, so the later of any two
-    // sees the earlier. `branchial_pairs` claims the unordered pair, since both sides can see
-    // each other when their pushes and scans interleave.
+    // The reconstructed branchial relation lives in `inst_applied` and nowhere else. It is
+    // bucketed by instance id: an application publishes itself there and then scans the nodes
+    // linked BEFORE its own, so of any two exactly one sees the other and the pair is emitted
+    // once. The pairs themselves are never stored -- reconstructed_pairs_host regroups the
+    // applications when a caller asks for the relation.
+    //
     // Per raw event, the schedule-stable content triple hash(input class, output class, rule).
     // Indexed by raw event id, which is what the pair keys hold; the triple is what a
     // cross-engine comparison can be made on. The host's qc_event_sig_.
@@ -191,7 +194,6 @@ struct QeView {
     uint32_t  event_sig_capacity;
 
     typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
-    DedupMap::DeviceView branchial_pairs;
     uint32_t* num_branchial;
 
     // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
@@ -653,8 +655,8 @@ struct DeviceQrCtx {
         // Counted on every emission, because the replay emits each pair exactly once: the pair
         // belongs to the later of its two applications and only that one scans the other. The
         // map is storage for the readback, not a dedup the count depends on.
+        (void)lo; (void)hi;
         atomicAdd(qe.num_branchial, 1u);
-        qe.branchial_pairs.insert_if_absent(hgcommon::id_key(lo, hi), 1u);
     }
     // __forceinline__ IS LOAD-BEARING. qr_apply calls this exactly once, at its tail, and the
     // call closes the recursion cycle whose per-level cost EngineState::kDeviceStackBytesPerDepth
@@ -706,7 +708,6 @@ public:
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
           causal_pairs_(on ? max_events * 4u : 8u),
-          branchial_pairs_(on ? max_events * 4u : 8u),
           inst_applied_(on ? (1u << 16) : 1u, on ? max_events * 2u : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
@@ -759,7 +760,6 @@ public:
         applied_.clear();
         canon_seen_.clear();
         causal_pairs_.clear();
-        branchial_pairs_.clear();
         inst_applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
@@ -842,7 +842,51 @@ public:
             }
         };
         drain(causal_pairs_, causal);
-        drain(branchial_pairs_, branchial);
+
+        // BRANCHIAL, DERIVED FROM THE APPLICATIONS rather than stored as pairs. A branchial pair
+        // is two applications of ONE instance sharing a consumed slot, so the applications are
+        // the relation in the form the replay generates it, and the pair list is an expansion of
+        // them -- 970,584 against 133,218,996 on the host's disc-l3a2g2r2 depth 3. Storing that
+        // expansion on the device is what its 2^22 map ceiling was, and truncating it returned a
+        // partial relation with a warning rather than an answer.
+        //
+        // Order does not matter here, only the SET, so the host groups by instance and takes
+        // each unordered pair once. The device's own counter is incremented per emission under
+        // the strictly-earlier scan rule, so it and this enumeration are two routes to one
+        // number and disagreeing is a defect either can catch.
+        std::vector<LockFreeList<QeAppliedMatch>::Node> nodes;
+        inst_applied_.copy_nodes_to_host(nodes);
+        std::vector<uint32_t> slots(arr_cap_);
+        if (arr_cap_)
+            HG_CUDA_CHECK(cudaMemcpy(slots.data(), arr_, sizeof(uint32_t) * arr_cap_,
+                                     cudaMemcpyDeviceToHost), "QeState arr read");
+
+        std::unordered_map<uint32_t, std::vector<const QeAppliedMatch*>> by_instance;
+        for (const auto& nd : nodes) by_instance[nd.value.instance].push_back(&nd.value);
+        for (const auto& kv : by_instance) {
+            const auto& v = kv.second;
+            for (size_t i = 0; i < v.size(); ++i) {
+                for (size_t j = i + 1; j < v.size(); ++j) {
+                    const QeAppliedMatch& a = *v[i];
+                    const QeAppliedMatch& b = *v[j];
+                    if (a.event == b.event) continue;
+                    bool overlaps = false;
+                    for (uint32_t x = 0; x < a.num_consumed && !overlaps; ++x) {
+                        const uint32_t ax = a.consumed_offset + x;
+                        if (ax >= slots.size()) break;
+                        for (uint32_t y = 0; y < b.num_consumed; ++y) {
+                            const uint32_t by = b.consumed_offset + y;
+                            if (by >= slots.size()) break;
+                            if (slots[ax] == slots[by]) { overlaps = true; break; }
+                        }
+                    }
+                    if (!overlaps) continue;
+                    const uint32_t lo = a.event < b.event ? a.event : b.event;
+                    const uint32_t hi = a.event < b.event ? b.event : a.event;
+                    branchial.emplace_back(sig_of(lo), sig_of(hi));
+                }
+            }
+        }
 
         // THE REDUCED VIEW, from the same stored relation and the same rule the host engine
         // uses. It is computed here rather than on the device for two reasons: which pairs
@@ -894,7 +938,6 @@ public:
         q.event_sig        = event_sig_;
         q.event_sig_capacity = event_sig_capacity_;
         q.inst_applied     = inst_applied_.view();
-        q.branchial_pairs  = branchial_pairs_.view();
         q.num_branchial    = num_branchial_;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
@@ -931,7 +974,6 @@ private:
     DedupMap                  applied_;
     DedupMap                  canon_seen_;
     DedupMap                  causal_pairs_;
-    DedupMap                  branchial_pairs_;
     LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
