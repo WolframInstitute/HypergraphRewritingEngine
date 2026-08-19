@@ -1475,6 +1475,51 @@ TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
 // A chain rule is what reaches the regime cheaply. Consuming one edge and producing one gives a
 // single application per depth, so the recursion is deep while the work stays small -- the wide
 // rules in the corpus above would need 2^depth applications to get here.
+// A DEPTH WHERE THE DEVICE POOLS SATURATE, which is where a partial answer used to be returned
+// as though it were the answer.
+//
+// The device's quotient pools are sized off the EVENT count and filled per APPLICATION, and on a
+// dense workload those differ by two orders of magnitude: 970,584 applications against 4,512
+// events on a three-edge disconnected left side at depth 3. Two things followed. The branchial
+// pairs were stored as an expansion in a 2^22 map, so 133,218,996 of them came back as
+// 4,194,304; and the grow-and-retry ladder stopped at 64x, one doubling short, so the run still
+// truncated after the map was removed.
+//
+// The suite passed through both, because nothing compared the device's reconstruction against
+// the host's at a depth that saturates anything. This is that comparison. It asserts on COUNTS
+// rather than on the relations themselves: the relation is 133 million pairs, and materialising
+// it on both sides to compare them would cost more than the run.
+TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) {
+    Workload w;
+    w.name = "saturating/disc-l3a2g2r2";
+    // Three left edges in two components, arity 2, two growth edges: a cartesian product in the
+    // matcher, which is what makes the instance count explode away from the event count.
+    w.rules = {rule({{0, 1}, {2, 3}, {4, 5}},
+                    {{0, 1}, {2, 3}, {4, 5}, {0, 6}, {2, 7}})};
+    w.initial_state = {{0u, 1u}, {1u, 2u}, {2u, 0u}, {3u, 4u}};
+    w.num_steps = 3;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{true, true, true};
+    const auto gpu = hg_gpu::evolve(in);
+    ASSERT_TRUE(gpu.reconstruction_ran) << "the device did not reconstruct, so there is nothing "
+                                           "to compare and the gate asserts nothing";
+
+    const NormalizedResult cpu = run_cpu(w);
+
+    // The gate is worthless if the workload is small enough to fit without growing anything.
+    ASSERT_GT(cpu.branchial_edge_keys.size(), 4u * 1024u * 1024u)
+        << "this workload no longer exceeds the 2^22 ceiling the gate exists for; make it denser";
+
+    EXPECT_EQ(gpu.reconstructed_branchial, cpu.branchial_edge_keys.size())
+        << "the device returned a different number of branchial pairs than the host. A device "
+           "figure that is exactly a power of two is a container ceiling, not an answer";
+    EXPECT_EQ(gpu.reconstructed_causal_pairs, cpu.causal_edge_keys.size())
+        << "the device returned a different number of causal pairs than the host";
+}
+
 TEST(QuotientReconstruction, PastTheStackDepthItRecordsRatherThanFaults) {
     const uint32_t deep = 80;   // beyond any stack the cap allows
     hg_gpu::EvolveInput in;

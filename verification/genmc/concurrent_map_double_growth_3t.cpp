@@ -21,6 +21,13 @@
 // The assertions are the 2t harness's: exactly one of the two K-claims reports was_inserted,
 // both observe the same stored value, lookup agrees, and nothing else was lost.
 //
+// NOT CURRENTLY EXHAUSTED, measured 2026-08-19. The bound below is what makes this shape
+// tractable in principle, and GenMC estimates 24,565 executions and 204s for it; the actual run
+// produced no verdict in 15 minutes on a quiet box. The estimator is optimistic by more than an
+// order of magnitude on this map -- the 2t harness estimates 55s and does not finish in 55
+// minutes -- so neither the estimate nor this file's earlier wording is evidence of a completed
+// verification.
+//
 // GENMC-ARGS: --disable-estimation --sc --bound=2 --bound-type=context
 // GENMC-EXPECT: pass
 

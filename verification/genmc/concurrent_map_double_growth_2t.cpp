@@ -23,6 +23,18 @@
 // concurrent claim pair while removing one thread's interleavings: 130,897 complete
 // executions, 200s, exhaustive. Sized before running, not discovered by waiting.
 //
+// THAT RESULT NO LONGER REPRODUCES, measured 2026-08-19 on a quiet box (load 2.97): no verdict
+// in 9m50s, and none in a second run given 55 minutes. The recorded 130,897 executions in 200s
+// was real when it was written, so the state space this harness explores has grown since --
+// which is a statement about ConcurrentMap, not about the harness. GenMC's estimator is no help
+// deciding by how much: it reports 1,437 executions and 55s for this shape, an order of
+// magnitude BELOW a run that then does not finish, so an estimate here is not evidence that a
+// harness will complete.
+//
+// The property is therefore NOT currently verified at this shape. What is verified for this map
+// is concurrent_map_agreement (2 threads, 1 key, no resize, 32 executions) and
+// concurrent_map_resize (2 threads, ONE growth, 176 executions).
+//
 // CALIBRATED. Removing the re-anchor from drive_at_head (so a re-drive claims at the head on
 // a stale verdict) makes this harness report the safety violation after 1,517 executions.
 // The bound is small BECAUSE it is sufficient, not because it is convenient.
