@@ -263,7 +263,35 @@ public:
         }
 
         (void)table;
-        return drive_at_head(key, value, true);
+
+        // THE VERDICT IS THE EXCHANGE **AND** THE ANSWER.
+        //
+        // drive_at_head reports whether THIS caller's value exchange won the slot it reached.
+        // That is not sufficient on its own: a key can be claimed in more than one table, and a
+        // publish that beats the retiring table's seal leaves a settled entry there while
+        // another caller settles at the head. Two exchanges then win for one key and both
+        // callers are told they inserted -- found by concurrent_map_double_growth_3t at a
+        // four-context bound, where one caller settles in the initial table and the other in a
+        // table installed after it.
+        //
+        // Nor is comparing values sufficient on its own: two callers may offer the SAME value,
+        // and then a comparison calls both of them the inserter. concurrent_map_repeated_offer
+        // states exactly that and refutes it.
+        //
+        // The conjunction is what holds. A caller inserted iff its own exchange won AND the
+        // value the map now answers with is the one it offered. Two callers offering the same
+        // value are separated by the exchange; two winning exchanges in different tables are
+        // separated by the answer, since a lookup walks the chain newest-first and there is one
+        // answer. The re-read runs only on the winning path, so a losing caller pays nothing.
+        auto result = drive_at_head(key, value, true);
+        if (result.second) {
+            const auto authoritative = lookup(key);
+            if (!authoritative.has_value() || !(*authoritative == value)) {
+                result.second = false;
+                if (authoritative.has_value()) result.first = *authoritative;
+            }
+        }
+        return result;
     }
 
     // Drive `key` at the head, entering through the CHAIN.
@@ -311,11 +339,14 @@ public:
         // seals whole tables through the same exchanges (EMPTY keys to LOCKED, ABSENT values
         // to FORWARDED) before migrating. Three harnesses bound this, and they
         // bound different things: concurrent_map_double_growth_2t EXHAUSTS two workers across
-        // two growths, concurrent_map_double_growth_3t exhausts three workers under a two-context
-        // bound, and concurrent_map_double_growth samples three workers across two growths --
-        // that last one is estimation, not proof, because the graph cannot be exhausted and
-        // bounding the schedule does not shrink it (measured: both --bound=1 and --bound=2 time
-        // out at 580s).
+        // two growths (134,490 executions), concurrent_map_double_growth_3t exhausts three
+        // workers under a four-context bound (78,397), and concurrent_map_double_growth samples
+        // three workers -- estimation, not proof, since its graph is 1.1e9 executions.
+        //
+        // The three-worker shape is where the seal loses. A publish that beats the retiring
+        // table's ABSENT-to-FORWARDED exchange leaves a settled entry in a superseded table, so
+        // "my exchange won the slot I reached" is not unique to one caller. insert_if_absent
+        // therefore confirms the verdict against the map's ANSWER; see the note there.
         return insert_into_table(head, key, value, increment_count);
     }
 

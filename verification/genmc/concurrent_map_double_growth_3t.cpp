@@ -28,61 +28,37 @@
 // minutes -- so neither the estimate nor this file's earlier wording is evidence of a completed
 // verification.
 //
-// A DEFECT LIVES HERE. At a FOUR-context bound this harness reports a safety violation on the
-// shipped code, and is clean at three. Bisected to `assert(g_ins[0] != g_ins[1])`: two callers
-// are told they inserted the same key. The value assertion holds, so both are handed the SAME
-// value while both believe they created it.
+// THE DEFECT THIS HARNESS FOUND, and the fix it verifies.
 //
-// WHAT IT COSTS THE ENGINE. Every get-or-create site reads
-//     lst = ins.second ? nl : ins.first;
-// so two winners means each caller keeps the container IT allocated. One key ends up with two
-// lists, the map retains one, and everything pushed into the orphan is invisible to every
-// reader that goes through the map. In the quotient replay that is an instance list: those
-// instances never meet the matches captured for their class, so those (instance, match)
-// applications never run -- fewer raw events, and every causal and branchial pair over them
-// changes, while the canonical STATE set is untouched. That is the shape of the intermittent
-// CausalDeterminism failures exactly: states agree across runs, event count and both relations
-// do not.
+// At a FOUR-context bound this reported a safety violation on the shipped code and was clean at
+// three. Bisected to `assert(g_ins[0] != g_ins[1])`: two callers were told they inserted the
+// same key, both handed the SAME value while both believed they created it.
 //
-// NOT AN ARTEFACT OF THE REDUCTION. The violation persists at working_capacity 4 and 16 -- at
-// 16 the table holds 3 keys against a threshold of 12, so it is not a full table -- and it is
-// found under --sc, whose behaviours are a subset of RC11, so it is real on the shipped model.
+// THE MECHANISM, read out of the counterexample. Three tables exist. One claimant's value
+// exchange BEAT the retiring table's seal -- the seal exchanges ABSENT to FORWARDED and lost the
+// race -- so a settled entry stayed behind in a superseded table. The other claimant migrated
+// that value forward as part of a resize it was performing, and then settled its OWN value in a
+// third table. Two exchanges won for one key, in two tables.
 //
-// TWO FIXES ATTEMPTED AND BOTH REFUTED, by harnesses already here:
-//   verdict = (anchored value == our offer)  -- refuted by concurrent_map_repeated_offer, which
-//       states that was_inserted comes from the publishing EXCHANGE, not a value comparison:
-//       two callers offering the same value would both compare equal.
-//   verdict = anchored.second                -- under-reports and gives ZERO winners, because a
-//       migration or another anchor can place our value at the head first.
-// Both refutations say the same thing: the verdict logic is not the defect. TWO EXCHANGES CAN
-// WIN FOR ONE KEY, so the fault is in the mutual exclusion between a settle in a superseded
-// table and a settle at the head. That is where the fix has to go.
+// WHY THE VERDICT CANNOT COME FROM ONE EXCHANGE. `was_inserted` was "my value exchange won the
+// slot I reached", and a key can be reached in more than one table, so that predicate is not
+// unique. Nor can the verdict be a value comparison: concurrent_map_repeated_offer states that
+// two callers may offer the SAME value, and a comparison calls both of them the inserter.
 //
-// WHAT THE COUNTEREXAMPLE SHOWS. Reading the successful compare-exchanges out of the trace
-// (the two offers are 100 and 200, so the writes name their authors): the claim-2 thread
-// settles 200 in one table, and the claim-1 thread settles 100 in ANOTHER -- after that same
-// thread has already MIGRATED 200 forward as part of a resize it performed. So its chain scan
-// concluded the key was absent from a table where a settled entry for it existed.
+// The fix is the CONJUNCTION -- the caller inserted iff its own exchange won AND the value the
+// map now answers with is the one it offered. Same values are separated by the exchange; two
+// winning exchanges in different tables are separated by the answer, because a lookup walks the
+// chain newest-first and there is exactly one answer.
 //
-// FOUR CANDIDATE FIXES, ALL REFUTED, so the next attempt does not repeat them:
-//   1. verdict = (anchored value == our offer)
-//        refuted by concurrent_map_repeated_offer: was_inserted comes from the publishing
-//        EXCHANGE, and two callers offering the same value would both compare equal.
-//   2. verdict = anchored.second
-//        refuted here AND by repeated_offer: it under-reports to ZERO winners, because a
-//        migration or a rival anchor can place our value at the head before our anchor runs.
-//   3. claim only in the CURRENT head (re-drive when the table we hold is superseded)
-//        still violates. The stale-head claim is not the path.
-//   4. do not truncate the scan's probe run at LOCKED (continue instead of break)
-//        still violates. The seal converting EMPTY to LOCKED is not hiding the entry.
-//
-// So the surviving hypothesis is narrower than any of those: a settle that wins in a table
-// which is no longer the head must not be authoritative, and making it so without losing the
-// value -- the old table stays reachable and readers find it there -- is the part that is not
-// yet worked out.
+// WHY THIS HARNESS COULD NOT SEE ANY OF IT BEFORE. Its header records "130,897 complete
+// executions, 200s, exhaustive" and it had stopped completing -- no verdict in 55 minutes --
+// because growth was changed to jump straight to DEFAULT_INITIAL_CAPACITY, making the second
+// growth's seal 1024 slots x 2 compare-exchanges. The verification regressed behind a
+// performance change. The growth target is a constructor parameter now, defaulted, so the
+// harness can bound the protocol without changing it.
 //
 // GENMC-ARGS: --disable-estimation --sc --bound=4 --bound-type=context
-// GENMC-EXPECT: fail   (the defect above; restore to `pass` with the fix)
+// GENMC-EXPECT: pass
 
 #include <pthread.h>
 #include <cassert>
