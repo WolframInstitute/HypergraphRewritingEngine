@@ -45,6 +45,13 @@ namespace gpu {
 // Gather the occupied slots of a key array into a dense prefix. One thread per slot; the order
 // of the result is unspecified, which every caller already assumes because slot order is a
 // function of the hash rather than of anything meaningful.
+//
+// The anonymous namespace is what keeps this kernel to one registration per translation unit.
+// A `__global__` template has external linkage, and this header reaches most of the .cu set
+// through engine_state.hpp, so a shared specialization would be registered once per unit under
+// one name; the runtime then keeps whichever was registered first and reports the rest as
+// duplicates. Internal linkage gives each unit its own kernel and leaves the choice to nobody.
+namespace {
 template <typename K, K EMPTY, K LOCKED>
 __global__ void k_gather_keys(const K* __restrict__ keys, uint32_t capacity,
                               K* __restrict__ out, uint32_t* __restrict__ count) {
@@ -54,6 +61,7 @@ __global__ void k_gather_keys(const K* __restrict__ keys, uint32_t capacity,
     if (k == EMPTY || k == LOCKED) return;
     out[atomicAdd(count, 1u)] = k;
 }
+}  // namespace
 
 template <typename K, typename V, K EMPTY = K{0}, K LOCKED = static_cast<K>(~K{0})>
 class ConcurrentMap {
