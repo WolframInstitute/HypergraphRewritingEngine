@@ -165,6 +165,25 @@ Module[{gpuOne, sg, ok},
       check["device Query does not advance the session", HGSessionQuery[sg] === gpuOne[[-1]]];
       HGSessionClose[sg]]]];
 
+(* CONTINUATION MUST NOT DEPEND ON THE ORDER THE CALLER ASKED THINGS IN.
+   A session's record set cannot be derived from the properties named on its Open, because the
+   Open cannot know what a later Query will ask for. Opening for a cheap property and then
+   asking for an expensive one three steps later must give the SAME answer as asking for it from
+   the start -- not an empty relation that reads exactly like a system with none. *)
+Module[{sOrder, viaSession, viaOneShot, heavy = {"NumCausalEdges", "NumBranchialEdges"}},
+  sOrder = HGSessionOpen[rules, init, {"NumStates"}];
+  If[Head[sOrder] === HGSessionObject,
+    HGSessionStep[sOrder, maxDepth];
+    viaSession  = HGSessionQuery[sOrder, heavy];
+    viaOneShot  = HGEvolve[rules, init, maxDepth, heavy];
+    check["a session opened for one property answers a later Query for another",
+          viaSession["NumCausalEdges"]    === viaOneShot["NumCausalEdges"] &&
+          viaSession["NumBranchialEdges"] === viaOneShot["NumBranchialEdges"]];
+    check["and that answer is not the empty relation a missing record would give",
+          viaOneShot["NumCausalEdges"] > 0];
+    HGSessionClose[sOrder],
+    check["a session opened for one property answers a later Query for another", False]]];
+
 Print["\nfailures: ", failures];
 Print[If[failures == 0, "SESSIONS_VERIFIED", "SESSIONS_FAILED"]];
 Exit[If[failures == 0, 0, 1]]

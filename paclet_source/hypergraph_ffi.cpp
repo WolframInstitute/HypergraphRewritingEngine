@@ -835,8 +835,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         record.raw_events = req.include_events || req.include_events_minimal ||
                             req.include_num_events || req.show_progress;
 
-        // A session records what it was OPENED for, and an artifact it does not record cannot be
-        // produced afterwards: the evolution that would have built it has already run. Asking a
+        // A SESSION RECORDS EVERYTHING, because it exists to be continued and queried in ways
+        // its Open cannot know. Deriving its record set from the properties named on the Open
+        // call makes the answer to a later Query depend on what the FIRST call happened to ask
+        // for: open for "States", ask for the causal graph three steps later, and the relation
+        // comes back empty because the evolution that would have built it has already run. A
+        // continuation must not depend on the order the caller asked things in.
+        //
+        // One-shot calls keep the derived set above, which is where the saving is -- the raw
+        // unfolding alone is 25x on multirule at depth 6 -- and they have no later query to
+        // serve.
+        if (opening_session) {
+            record.causal = record.branchial = record.state_events = record.raw_events = true;
+        }
+
+        // What the session HOLDS is still checked, because a session opened by an older build,
+        // or invalidated and re-opened, may hold less than this one would record. Asking a
         // `Query` for one returns an empty relation that reads exactly like a system with none,
         // so the gap is reported rather than served silently -- the same rule the GPU's
         // unimplemented caps follow.

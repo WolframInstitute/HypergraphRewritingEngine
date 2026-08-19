@@ -204,6 +204,59 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 // no-op. Keeping it a parameter is what lets that error be gated too.
 // `from`, when non-empty, is the frontier subset a steered Step names. Sent as the wire's
 // "From" key so the gate exercises the same envelope a caller builds, not a shortcut past it.
+// The same envelope, with a RequestedData list in Options. That option is what makes the FFI
+// derive its RecordSet, so it is the only way to ask "was this run charged for something the
+// caller did not ask for" from outside.
+std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op,
+                                            const std::vector<std::string>& requested,
+                                            int64_t session = 0, bool with_rules = true) {
+    wxf::Writer w;
+    w.write_header();
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(kSeed);
+
+    if (with_rules) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(kLhs);
+        w.write(kRhs);
+    }
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(steps);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("RequestedData"));
+    w.write(requested);
+
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Op"));
+    w.write(op);
+
+    if (session) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Session"));
+        w.write(session);
+    }
+
+    return w.release_data();
+}
+
 std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
                                          int64_t session = 0, bool with_rules = true,
                                          const std::vector<int64_t>& from = {}) {
@@ -319,6 +372,50 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
 
 // Open and Close against a live engine: the LIFETIME, asserted against the real worker slot
 // rather than only against SessionSlot in isolation -- that a session is retained, that
+// A CONTINUATION MUST NOT DEPEND ON THE ORDER THE CALLER ASKED THINGS IN.
+//
+// The FFI derives its RecordSet from the properties a job requests, which is what stops a
+// one-shot call paying for the raw unfolding it will not report -- 25x on multirule at depth 6.
+// Deriving a SESSION's record set the same way makes the answer to a later Query depend on what
+// the Open happened to name: open for "NumStates", ask for the causal relation three steps
+// later, and the evolution that would have built it has already run. The relation comes back
+// empty, which reads exactly like a system that has none.
+//
+// So a session records everything. This is the gate for that, and it is a C++ gate on purpose:
+// the WL-layer session script runs under Windows wolframscript, which loads the Windows engine
+// binary, so it cannot exercise a change made to the Linux one.
+TEST(WxfSerializationPin, ASessionAnswersAQueryItsOpenDidNotNameTheOptionFor) {
+    HostBridge host;
+
+    // What the answer IS, asked for from the start by a one-shot call.
+    const auto direct = run_rewriting_core(
+        build_input_requesting(3, "Evolve", {"NumCausalEdges", "NumBranchialEdges"}), host);
+    ASSERT_FALSE(direct.empty());
+    const int64_t want_causal    = read_int_key(direct, "NumCausalEdges");
+    const int64_t want_branchial = read_int_key(direct, "NumBranchialEdges");
+
+    // The gate asserts nothing if the workload has no relation to lose.
+    ASSERT_GT(want_causal, 0) << "this workload must HAVE causal edges, or an empty answer "
+                                 "would pass for the wrong reason";
+
+    // Open naming only the cheapest property there is, then ask for the two it did not name.
+    const auto opened = run_rewriting_core(build_input_requesting(3, "Open", {"NumStates"}), host);
+    ASSERT_FALSE(opened.empty());
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+
+    const auto queried = run_rewriting_core(
+        build_input_requesting(3, "Query", {"NumCausalEdges", "NumBranchialEdges"}, handle,
+                               /*with_rules=*/false), host);
+    run_rewriting_core(build_input_with_op(0, "Close", handle, /*with_rules=*/false), host);
+
+    EXPECT_EQ(read_int_key(queried, "NumCausalEdges"), want_causal)
+        << "the session was opened naming NumStates and queried for the causal relation; it "
+           "must answer what a call that asked from the start answers, not an empty relation";
+    EXPECT_EQ(read_int_key(queried, "NumBranchialEdges"), want_branchial)
+        << "same for the branchial relation";
+}
+
 // retaining it does not change the answer, and that the one-at-a-time rule holds here too.
 TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
     HostBridge host;
