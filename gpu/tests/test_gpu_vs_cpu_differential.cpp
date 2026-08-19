@@ -1507,16 +1507,37 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
     ASSERT_TRUE(gpu.reconstruction_ran) << "the device did not reconstruct, so there is nothing "
                                            "to compare and the gate asserts nothing";
 
-    const NormalizedResult cpu = run_cpu(w);
+    // The host side is run DIRECTLY rather than through run_cpu, and only its counters are
+    // read. run_cpu normalises every relation into a multiset to compare them element by
+    // element, which at 133 million branchial pairs is the relation materialised twice over --
+    // more than the run costs, and the reason both engines stopped storing those pairs at all.
+    // The counters are exact and O(1) on both sides, which is the whole point of deriving them
+    // from the structure rather than from a stored expansion.
+    hypergraph::Hypergraph hg;
+    hg.set_state_canonicalization_mode(to_cpu_canon(w.canon_mode));
+    hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
+    {
+        hypergraph::ParallelEvolutionEngine engine(&hg, /*num_threads=*/0);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            engine.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        engine.set_transitive_reduction(w.transitive_reduction);
+        engine.set_explore_from_canonical_states_only(w.explore_from_canonical_states_only);
+        std::vector<std::vector<hypergraph::VertexId>> init;
+        for (const auto& e : w.initial_state)
+            init.emplace_back(e.begin(), e.end());
+        engine.evolve(init, static_cast<int>(w.num_steps));
+    }
+    const size_t host_branchial = hg.num_reconstructed_branchial();
+    const size_t host_causal    = hg.num_reconstructed_causal_pairs(false);
 
     // The gate is worthless if the workload is small enough to fit without growing anything.
-    ASSERT_GT(cpu.branchial_edge_keys.size(), 4u * 1024u * 1024u)
+    ASSERT_GT(host_branchial, 4u * 1024u * 1024u)
         << "this workload no longer exceeds the 2^22 ceiling the gate exists for; make it denser";
 
-    EXPECT_EQ(gpu.reconstructed_branchial, cpu.branchial_edge_keys.size())
+    EXPECT_EQ(gpu.reconstructed_branchial, host_branchial)
         << "the device returned a different number of branchial pairs than the host. A device "
            "figure that is exactly a power of two is a container ceiling, not an answer";
-    EXPECT_EQ(gpu.reconstructed_causal_pairs, cpu.causal_edge_keys.size())
+    EXPECT_EQ(gpu.reconstructed_causal_pairs, host_causal)
         << "the device returned a different number of causal pairs than the host";
 }
 
