@@ -112,7 +112,10 @@ def t1(build):
          r"\begin{tabular}{llrrrrrrrl}", r"\toprule",
          r"Workload & Class & Canon.\ states & Events & Causal & Branchial & "
          r"Arena B & Heap B & Heap allocs & Exactness \\", r"\midrule"]
-    for (case, cls, exact, canon, ev, ca, br, arena, heapb, heapa, _norel) in rows:
+    # cost_matrix's first numeric column is `raw` -- the raw state count, ahead of `canon`. Every
+    # column here is named against that header, so the unpacking names it and drops it rather
+    # than letting the values slide one place to the left.
+    for (case, cls, exact, _raw, canon, ev, ca, br, arena, heapb, heapa) in rows:
         b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
             tex_escape(case), tex_escape(cls), canon, ev, ca, br, arena, heapb, heapa,
             exact.lower()))
@@ -380,7 +383,11 @@ def t3(build):
                      r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
         if m:
             g = m.groups()
-            rows.append((g[0], int(g[3]), int(g[4]), int(g[7]), int(g[9])))
+            # Against cost_matrix's header: g[3] is raw, g[4] canon, g[5] events, g[6] causal,
+            # g[7] branch, g[8] arenaB, g[9] heapB, g[10] heapAllocs. This table wants the
+            # ALLOCATION count beside the size of the run, so it takes g[10] and not the byte
+            # totals either side of it.
+            rows.append((g[0], int(g[4]), int(g[5]), int(g[8]), int(g[10])))
     if not rows:
         raise SystemExit("cost_matrix produced no parseable rows")
     rows.sort(key=lambda r: r[2])   # by events: the work, which is what allocation must not track

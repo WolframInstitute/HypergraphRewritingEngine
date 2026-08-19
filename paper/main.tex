@@ -679,7 +679,7 @@ Evolution allocates from per-worker arenas rather than from the global allocator
 holds a bump cursor into blocks it owns, so allocation on the matching and rewriting paths is a
 pointer increment with no synchronisation, and memory is reclaimed in bulk by resetting the arena
 rather than by freeing individual objects. Calls to the global allocator are consequently confined
-to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $58$ to $227$ such calls for an
+to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $55$ to $225$ such calls for an
 entire run, which on the largest workload measured is $0.0033$ calls per event.
 
 \subsection{Memory Model}
