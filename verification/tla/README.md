@@ -62,3 +62,40 @@ no transition thinning (sampling draws are downstream of store+propagate in the
 code, so completeness of storage is unaffected by them).
 
 Second target (#80): quiescence liveness — not yet modeled.
+
+---
+
+## `SegmentedArray` — the segment-ordering invariant
+
+`SegmentedArray.tla`, run under `MCSegmentedArray.cfg` (shipped) and
+`MCSegmentedArrayBroken.cfg` (calibration).
+
+**Why this one is here and not in `verification/genmc/`.** Every other concurrent structure is
+model-checked against its own header by a GenMC harness. GenMC v0.17.0 cannot execute this one:
+merely CONSTRUCTING a `SegmentedArray<uint64_t,4>` segfaults it inside
+`SAddrAllocator::allocate`, in stack and in static storage, with and without the class's throw
+path. Isolated — a hand-written `std::atomic<uint64_t*>[4]` plus the same `hgcommon::ctz64` call
+verifies in one execution and 0.00 s, so it is this class the tool cannot take. `safe_verify.sh`
+already prescribes the alternative: move the argument to TLA+, which is state-bounded rather
+than execution-bounded.
+
+**The property.** `count` is a high-water mark advanced independently by each `emplace`, so a
+thread claiming an index in segment 2 advances it past segment 1's ENTIRE range. A walk over
+`[0, count)` is therefore only safe if the directory is dense below the mark, which is what
+`get_or_create_segment` creating predecessors before the segment asked for buys. `DenseBelowCount`
+states it; `CompleteWhenQuiescent` states that once no claim is outstanding the mark admits
+everything handed out and every index has been written.
+
+| configuration | result |
+|---|---|
+| `CreateInOrder = TRUE`, 3 threads, 3 segments of 2 | **No error. 6,412 states generated, 2,284 distinct, depth 21** |
+| `CreateInOrder = FALSE` (create only the segment asked for) | **`DenseBelowCount` violated**, 256 states in |
+
+The counterexample is the shape the invariant exists for: `t2` holds index 0 and `t1` holds index
+1 — both in segment 0, neither created yet — while `t3` claims index 2, creates only segment 1,
+writes and publishes, so the mark reaches 3 with segment 0 absent.
+
+**Two threads are not enough** and the calibration says so: at two threads the broken protocol is
+also clean (247 distinct states, identical to the shipped arm), because each thread holds one
+claim at a time and index 2 cannot be claimed until a segment-0 holder has published. The bound
+has to admit two outstanding claims in the lower segment plus one above it.
