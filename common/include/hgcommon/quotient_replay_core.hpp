@@ -165,12 +165,32 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     typename Ctx::AppliedRef mine{};
     if (m.num_consumed && c.want_branchial() &&
         c.applied_ref_valid(mine = c.publish_applied(inst, m, ev))) {
+        // This application's consumed slots are read once, not once per sibling. The scan below
+        // visits every application already published against the instance -- 167 of them on
+        // average on disc-l3a2g2r2 depth 3 -- and reading them through the view inside the
+        // comparison made the accessor alone a measurable share of the run.
+        //
+        // A 64-bit fold of the slots, tested against each sibling's fold to reject the disjoint
+        // ones in one AND, was measured and REJECTED: 81.6% of these comparisons DO share a
+        // slot on this workload, so the old loop usually decided on its first comparison, and
+        // computing a fold per sibling added a pass rather than replacing one --
+        // 14,509,903,885 instructions to 16,752,095,733, +15.5%.
+        uint32_t mine_slots[MAX_PATTERN_EDGES];
+        uint32_t mine_n = 0;
+        for (uint32_t i = 0; i < m.num_consumed && mine_n < MAX_PATTERN_EDGES; ++i)
+            mine_slots[mine_n++] = m.consumed(i);
         c.for_each_applied_before(inst, mine, [&](const typename Ctx::Applied& other) {
             if (other.event == ev) return;                 // this application
+            const uint32_t on = other.num_consumed;
+            // Swapping these loops so the sibling's slot is read in the OUTER one -- fewer
+            // accessor calls, one per slot instead of one per pair of slots -- was measured and
+            // REJECTED: 14,187,138,966 instructions to 15,749,617,571, +11.0%. The comparison
+            // almost always decides on the first pair, so the accessor count is not what this
+            // loop costs, and the original nesting is what the compiler schedules better.
             bool overlaps = false;
-            for (uint32_t i = 0; i < m.num_consumed && !overlaps; ++i)
-                for (uint32_t j = 0; j < other.num_consumed; ++j)
-                    if (m.consumed(i) == other.consumed(j)) { overlaps = true; break; }
+            for (uint32_t i = 0; i < mine_n && !overlaps; ++i)
+                for (uint32_t j = 0; j < on; ++j)
+                    if (mine_slots[i] == other.consumed(j)) { overlaps = true; break; }
             if (!overlaps) return;
             // Keyed on the two EVENTS, so the pair reads back as a pair of event signatures and
             // set-compares against full capture, which keys its own branchial edges the same
