@@ -543,9 +543,9 @@ and its per-instance replay. Ten such cores are shared in total.
 
 The consequence is that host and device agree by compilation rather than by testing, and a
 differential test between them can be reserved for the parts that genuinely differ---scheduling,
-memory placement and queueing---rather than re-checking a rule that exists once. Where the two did
-diverge historically it was because a rule had been written twice: a second matcher on the device
-reported a different event count than the host for the same input.
+memory placement and queueing---rather than re-checking a rule that exists once. What the arrangement rules out is a
+rule written twice: two implementations of one decision agree until one of them is edited, so the
+duplication is the defect and not the disagreement it eventually produces.
 
 \subsection{Unified Hypergraph Storage}
 \label{sec:storage}
