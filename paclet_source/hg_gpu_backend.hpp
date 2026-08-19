@@ -44,6 +44,16 @@ struct GpuJob {
     bool include_causal_edges = true;
     bool include_branchial_edges = true;
     bool include_canonical_hashes = false;
+    // The COUNT selection, which the device path did not carry at all: it emitted NumStates,
+    // NumEvents, NumCausalEdges and NumBranchialEdges on every reply while the CPU path gated
+    // each on its own flag. Two consequences, and both are defects: a caller asking for one
+    // count received four, and the two devices answered the same request with different reply
+    // shapes. Defaulted true so a job that names nothing keeps what it had, which is the same
+    // rule ParsedJob's own include_num_* follow.
+    bool include_num_states = true;
+    bool include_num_events = true;
+    bool include_num_causal_edges = true;
+    bool include_num_branchial_edges = true;
 
     // Graph properties (StatesGraph / CausalGraph / BranchialGraph / Evolution* and
     // their Structure variants) and the options that shape them. Marshalled through
