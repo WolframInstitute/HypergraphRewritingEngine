@@ -73,8 +73,8 @@
 \newcommand{\event}{\mathcal{E}}
 \newcommand{\rewriterule}{\mathcal{R}}
 \newcommand{\match}{\mathcal{M}}
-\newcommand{\hash}{\textsc{Hash}}
-\newcommand{\canon}{\textsc{Canon}}
+\newcommand{\hash}{\textup{\textsc{Hash}}}
+\newcommand{\canon}{\textup{\textsc{Canon}}}
 
 
 
@@ -106,9 +106,9 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the Wolfram \texttt{MultiwaySystem} paclet, so state and event deduplication are exact rather than heuristic. The engine is compared against two implementations of the same definition, on the same rule and
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, so state and event deduplication are exact rather than heuristic. The engine is compared against two implementations of the same definition, on the same rule and
 initial condition and agreeing with both on state and causal-edge counts at every depth: the
-Wolfram \texttt{MultiwaySystem} implementation, which is what a user's alternative costs, and
+\texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, which is the implementation a user would otherwise run, and
 this project's own brute-force reference implementation, which is what a direct, unoptimised
 implementation costs and which returns data rather than graph objects. Against the former the
 engine is faster by a factor of $5{,}507$ at depth four rising to $45{,}713$ at depth seven. The
@@ -207,11 +207,11 @@ canonicalization, rather than matching, the dominant cost. The two are therefore
 rather than competing: a token--event graph is cheaper and is the right object when history is
 what matters, and a deduplicated states graph is the right object when the reachable state space
 is. We compare against two implementations in Section~\ref{sec:benchmarks}, both of which compute the
-same object we do: the Wolfram Language \texttt{MultiwaySystem} implementation, and this
+same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, and this
 project's own reference implementation (\texttt{reference/MultiwayReference.wl}), a direct
 transcription of the definition used as the correctness oracle throughout this work. The two
-answer different questions. \texttt{MultiwaySystem} is what a user's available alternative
-costs, but every property it exposes is graph-valued, so its time necessarily includes building
+answer different questions. \texttt{MultiwaySystem} is the implementation a user would otherwise
+run, but every property it exposes is graph-valued, so its time necessarily includes building
 Wolfram \texttt{Graph} objects and no subtraction can remove that from the outside. The
 reference returns data, so its time is the closest Wolfram-side analogue of the engine's own
 native measurement. SetReplace computes a different object, so a wall-time comparison against it
@@ -251,7 +251,7 @@ Like nauty, IR is exponential in the worst case but fast on typical instances. I
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
 
-\paragraph{Two bounds, and only one of them fails loudly.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are what the quotient reconstruction identifies instances by (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
+\paragraph{Two bounds, and only one of them is evident when it is exceeded.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are what the quotient reconstruction identifies instances by (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
 
 \paragraph{The canonical labeling of a symmetric state is a coset.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
 
@@ -358,10 +358,10 @@ enum class StateCanonicalizationMode {
 };
 \end{lstlisting}
 
-\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies states with identical edge content, which is the convention used by the reference implementation. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
+\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies two states when their edge tuples are literally equal, and separates isomorphic states whose vertices carry different identifiers. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
 
 \begin{remark}[Incremental hashing]
-Child states differ from their parents by only the consumed and produced edges, so an incremental hash keyed on that delta is attractive. The engine already threads the per-event edge delta to the canonicalizer, but incremental WL hashing is not yet wired into the default path; it is ongoing work rather than a shipped optimization, and no incremental-hashing speedup is claimed here.
+Child states differ from their parents by only the consumed and produced edges, and the engine passes that per-event delta to the canonicalizer. The hash is nonetheless computed from the state's complete edge set in every mode. No incremental-hashing result is reported here, and none of the measurements in Section~\ref{sec:benchmarks} depends on one.
 \end{remark}
 
 % ----------------------------------------------------------------------------
@@ -620,8 +620,8 @@ compare-and-swap, and the owner reclaims the whole accumulated batch with one ex
 private list empties. That shape is free of the ABA problem by construction rather than by a tag:
 producers only ever prepend, and the single consumer takes the entire list at once, so there is no
 node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
-its owning pool, which is what lets a release on any thread route home; an object too large for a
-slot falls back to the general allocator, so correctness does not depend on the slot size being
+its owning pool, which is what lets a release on any thread reach the pool the slot came from; an
+object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
 estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
 slots when a thread exits---an array rather than a stack of free pools, because a pool that is
 claimed, used and released again is exactly the reuse a stack's head compare-and-swap cannot
@@ -638,16 +638,17 @@ for a capacity of 32{,}768 entries, which leaves 32 bits for the tag. Because bo
 both directions, the index pair recurs, and the tag is what makes a compare-exchange commit only
 if nothing changed since the load.
 
-A 32-bit tag wraps, so the defence is conditional and the condition is worth stating rather than
-assuming. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
+A 32-bit tag wraps, so the defence is conditional, and the condition is stated here rather than
+assumed. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
 indices must return to the values one popper read, all within that popper's own load-to-exchange
 window---a handful of instructions, so it requires the thread to be descheduled inside them. The
 throughput measurement that bounds this is direct: at eight threads the shared queue sustains
 $8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order of 500 seconds of
 continuous stall while every other thread runs flat out. The same measurement gives the cost of
 sharing one word: $1.33 \times 10^8$ operations per second at one thread against $8.16 \times
-10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not pay it; the
-injector is shared and does, which is why it holds only overflow and external submissions.
+10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not incur that
+reduction; the injector is shared and does, which is why it holds only overflow and external
+submissions.
 
 Neither queue offers a blocking push or pop. For a worker this is not a preference but a
 requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
@@ -684,7 +685,8 @@ entire run, which on the largest workload measured is $0.0033$ calls per event.
 
 \subsection{Memory Model}
 
-We employ careful memory ordering to ensure correctness:
+A new state is published to readers by a release store paired with an acquire load, so a reader
+that observes the state also observes the edge set written before it:
 
 \begin{lstlisting}[language=C++,caption=Memory synchronization example]
 // Producer: creating new state
@@ -834,11 +836,11 @@ and the reconstruction's cost tracked that rather than the canonical count. Quot
 visited 49 raw states there against full capture's 146,599 and still ran only 65 times faster: a
 large constant factor, not the asymptotic saving the state counts suggest.
 
-The consequence for a caller is that quotient exploration and raw reconstruction are separate
-requests that the implementation currently couples: asking to visit one representative per
-isomorphism class also asks for the raw observables of the system that was not visited. A caller
-wanting canonical observables alone pays for neither materialisation nor the exponential it
-carries. The reconstruction is also not a single-threaded pass---every worker drives it, and its
+Quotient exploration and raw reconstruction are separate requests, and the implementation keeps
+them separate. The reconstruction runs only when the causal relation, the branchial relation or
+the raw event set is among the requested outputs, so a run that asks for canonical states alone
+performs neither the materialisation nor the growth that accompanies it. The reconstruction is
+also not a single-threaded pass---every worker drives it, and its
 total cycle count grows with the thread count, which Section~\ref{sec:limitations} records among
 the measured limits.
 
@@ -885,7 +887,7 @@ it, and a farther producer is then usually eliminated by a query that terminates
 events are numbered in creation order and an event's producers necessarily precede it, this
 ordering is available without sorting.
 
-\paragraph{What the arrival order buys.}
+\paragraph{What the arrival order establishes.}
 Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
 edges are only inserted, never deleted, so no retained edge can become non-implied later, and an
 edge dropped as implied never has to be reconsidered. And edges arrive in an order consistent with
@@ -901,10 +903,10 @@ which edges were inserted. This is not automatic: a concurrent evolution inserts
 several workers, and a reduction that depended on interleaving would produce different graphs on
 different runs of the same input. The requirement is the same schedule-independence property as
 Section~\ref{sec:determinism} and is checked by the same gate, which compares the reduced edge set
-across thread counts and seeds. It is also the property that failed historically: an earlier
-version resolved a race by having whichever worker won a claim publish the result, and under
-contention that lost transitions, which the gate detected as a reduced graph that varied between
-runs.
+across thread counts and seeds. The property is secured by the definition rather than by the
+insertion protocol: a finite directed acyclic graph has exactly one transitive reduction, so the
+retained set is determined by the relation the run produces, and the engine reduces the stored
+relation rather than deciding each edge against the edges already present when it arrives.
 
 The reduction applies only to the causal graph. States, events and the branchial relation are never
 reduced: branchial edges connect states at the same step and carry no transitivity to remove.
@@ -965,8 +967,8 @@ events that create them, so one coin per new state and one coin per transition a
 under quotient exploration a canonical state has many incoming transitions and the two separate.
 
 \paragraph{Sampling and synchronisation.}
-Sampling interacts with parallelism in a way that is easy to miss. A sample cannot be acted on
-before its population is complete: a rewrite cannot be undone, so a match that has been applied
+Sampling constrains parallelism through the order in which decisions become final. A sample cannot
+be acted on before its population is complete: a rewrite cannot be undone, so a match that has been applied
 cannot later be evicted by a match that arrives afterwards. Any reservoir must therefore be
 finalised before its members are rewritten, and finalising requires knowing that the stream of
 candidates has ended. A scheme that samples from all matches produced in an evolution step
@@ -980,7 +982,7 @@ population keyed on a single (state, rule) pair satisfies this, because the engi
 that pair has no matches outstanding without consulting any other state; a population keyed on an
 evolution step does not.
 
-Restricting to locally-completing populations costs less than it appears, because the global
+Restricting to locally-completing populations removes less than it appears to, because the global
 population was not delivering a uniform sample either. Under the step-wide scheme each match job
 received a reservoir of the same capacity regardless of how many matches it saw, so a pair
 producing a thousand matches contributed no more samples than one producing twenty; the pooled
@@ -1018,18 +1020,18 @@ differently on the two targets would not be the same session.
 Events can be canonicalized at multiple granularities:
 
 \begin{description}
-\item[ByState:] Events with identical (input, output) state pairs are deduplicated. $\BigO(1)$ signature computation.
+\item[ByEndpointStates:] Two applications are the same event when they run between the same pair of canonical states. $\BigO(1)$ signature computation.
 
-\item[ByStateAndEdges:] Events include consumed/produced edge positions, canonicalized via the state's vertex ordering. $\BigO(E)$ signature computation.
+\item[ByConsumedProducedEdges:] The signature additionally carries the canonical ranks of the edges the application consumed and produced. $\BigO(E)$ signature computation.
 
-\item[None:] All events preserved. Required for complete causal graph reconstruction.
+\item[DistinctApplications:] No signature is computed and every application is its own event. This is the identity the raw causal graph is defined over.
 \end{description}
 
-The choice affects both correctness (for certain analyses) and performance. ByStateAndEdges mode requires computing edge correspondences between isomorphic states, using the canonical state's vertex hash ordering.
+The three refine one another in that order, so the canonical event count is non-decreasing across them; Table~\ref{tab:event-canon} reports it per workload. \textsc{ByConsumedProducedEdges} requires the edge correspondence between isomorphic states, which is the per-edge canonical rank produced by the same individualization--refinement pass as the state's hash.
 
 \paragraph{Event identity does not inherit the state-identity mode.} Event identity is defined over isomorphism classes of states, and the specification makes it independent of which state-identity mode a run selects. Resolving it through whichever hash the state mode happens to use would break that independence. The Weisfeiler--Leman hash is isomorphism-invariant but strictly coarser than the exact form, so outside the exact state mode more states share a representative, the edge correspondence between an event's endpoints resolves to a coarser one, and the event identity derived from it coarsens with it. The consequence is measurable rather than theoretical: on the binary-growth corpus case the same run reports eight events under the exact state mode and six under the approximate one, a difference produced entirely by the state mode leaking into a quantity that is not supposed to depend on it.
 
-The engine therefore resolves event representatives through the exact invariant in \emph{every} state mode whenever event canonicalization is enabled, independently of the hash the state mode uses for state identity. The two are separate values: one decides state identity, the other resolves event representatives. The exact hash is computed only when event canonicalization asks for it, so a run with event canonicalization disabled pays nothing for this and behaves exactly as its state mode dictates. When it is enabled, the same individualization--refinement pass yields both the exact hash the event path resolves through and the per-edge ranks that identify consumed and produced edges, so the guarantee costs one pass per state rather than two per event.
+The engine therefore resolves event representatives through the exact invariant in \emph{every} state mode whenever event canonicalization is enabled, independently of the hash the state mode uses for state identity. The two are separate values: one decides state identity, the other resolves event representatives. The exact hash is computed only when event canonicalization requires it, so a run with event canonicalization disabled does not compute it and behaves as its state mode specifies. When it is enabled, the same individualization--refinement pass yields both the exact hash the event path resolves through and the per-edge ranks that identify consumed and produced edges, so the guarantee costs one pass per state rather than two per event.
 
 % ----------------------------------------------------------------------------
 % GPU
@@ -1091,8 +1093,8 @@ The resident kernel exists to remove a host round trip per evolution step. That 
 nothing crosses the host--device boundary during evolution at all: rules and the initial state are
 uploaded and the queues seeded before the launch, results are read after it, and in between the
 device decides what work exists, which worker takes it, and when the evolution has finished. A
-round trip introduced for some other purpose costs what the per-step round trip cost, so the
-constraint has to be absolute to be worth anything.
+round trip introduced for any other purpose has the same cost as the per-step round trip the
+design removes, so the constraint admits no exceptions.
 
 Two properties of the device path follow from it rather than being chosen independently.
 
@@ -1159,8 +1161,8 @@ bounded by that vertex's degree, typically a few entries, in place of a signatur
 thousands on a dense state. This is the division adapted from HGMatch~\cite{yang2023hgmatch}:
 signature index for the seed, inverted index for the extensions.
 
-One detail of the semantics is pushed to the host so that the device does not pay for it per match.
-Because distinct pattern variables may bind to the same vertex, a single pattern signature is
+One detail of the semantics is computed on the host so that the device does not recompute it per
+match. Because distinct pattern variables may bind to the same vertex, a single pattern signature is
 compatible not with one data signature but with every coarsening of its partition. The list of
 compatible signature hashes for each pattern edge is therefore computed once on the host when the
 rule is added, and the kernel seeds from the index directly rather than enumerating coarsenings
@@ -1342,11 +1344,11 @@ schedules, and the schedules it does sample can still pass while holding a race,
 out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
 ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
 CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
-fail the build on a finding. The initialization checker is the one that earns its place least
-obviously and matters most: a host readback of device memory that no kernel wrote is a value the
-allocator last left there, so the assertion over it passes or fails on allocation history rather
-than on the code, and neither a test nor a model checker over the concurrent structures would
-observe it.
+fail the build on a finding. The initialization checker detects a case the others do not: a host
+readback of device memory that no kernel wrote returns whatever the allocator last left at that
+address, so an assertion over it succeeds or fails according to allocation history rather than
+according to the code, and neither a test nor a model checker over the concurrent structures
+observes it.
 
 \section{Experimental Evaluation}
 \label{sec:benchmarks}
@@ -1408,7 +1410,7 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
 \addplot[mark=square*, black, dashed] coordinates {(2,2123.2)(3,158.3)(4,550.7)(5,3776.6)(6,43372.0)(7,708556.0)};
-\addlegendentry{Wolfram \texttt{MultiwaySystem}}
+\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}
 \addplot[mark=*, black] coordinates {(2,0.2)(3,0.2)(4,0.1)(5,0.3)(6,1.6)(7,15.5)};
 \addlegendentry{this engine}
 \end{axis}
@@ -1425,7 +1427,7 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T2 --- Comparison against the Wolfram \texttt{MultiwaySystem} implementation and against this project's own reference implementation.} All three compute the same evolution and are timed at their respective interfaces: the native engine at its C++ API, \texttt{MultiwaySystem} through its exposed properties, and the reference implementation (\texttt{reference/MultiwayReference.wl}) at its function call. The reference is the brute-force Wolfram-language evolver this project validates its engine against; it is included because the authority answers what a user's alternative costs, while the reference answers what a direct, unoptimised implementation of the same definition costs. Unlike the authority it returns data rather than \texttt{Graph} objects, so its time is not charged for graph construction and the ratio against the engine's C++ core is not an artefact of it. The \emph{Counts agree} column requires all three to have produced the same state and causal-edge counts at that depth; a timing comparison between different state spaces is not a comparison. Every property that implementation exposes is graph-valued (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated by \texttt{reference/authority\_properties.wls}), so its measured time necessarily includes construction of Wolfram \texttt{Graph} objects, and no interface returning the state set alone is available. State and causal-edge counts agree exactly at every depth. The \emph{Engine ms (paclet)} column reports this project's own Wolfram-layer cost and is excluded from every speedup quoted here; at depth seven it is $315\times$ the engine's own evolution time, and it is the reason no speed claim in this paper is taken through that layer. The speed this paper reports is the engine's native speed with serialisation excluded, which is the only figure comparable across the three implementations: the authority cannot separate its graph construction from its evolution, and the reference does not build graphs at all. The depth-2 row includes one-time kernel and paclet initialisation on the Wolfram side, and the native times at depths 3--5 are near the timer's resolution. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe} and \texttt{reference/bench\_authority.wls}.}
+\caption{\textbf{T2 --- Comparison against \texttt{MultiwaySystem} and against this project's own reference implementation.} All three compute the same evolution and are timed at their respective interfaces: the native engine at its C++ API, the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} through its exposed properties, and the reference implementation (\texttt{reference/MultiwayReference.wl}) at its function call. The reference is the brute-force Wolfram-language evolver this project validates its engine against; it is included because \texttt{MultiwaySystem} gives the running time of the implementation a user would otherwise run, while the reference gives the running time of a direct, unoptimised implementation of the same definition. Unlike the authority it returns data rather than \texttt{Graph} objects, so its time is not charged for graph construction and the ratio against the engine's C++ core is not an artefact of it. The \emph{Counts agree} column requires all three to have produced the same state and causal-edge counts at that depth; a timing comparison between different state spaces is not a comparison. Every property that implementation exposes is graph-valued (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated by \texttt{reference/authority\_properties.wls}), so its measured time necessarily includes construction of Wolfram \texttt{Graph} objects, and no interface returning the state set alone is available. State and causal-edge counts agree exactly at every depth. The \emph{Engine ms (paclet)} column reports this project's own Wolfram-layer cost and is excluded from every speedup quoted here; at depth seven it is $315\times$ the engine's own evolution time, and it is the reason no speed claim in this paper is taken through that layer. The speed this paper reports is the engine's native speed with serialisation excluded, which is the only figure comparable across the three implementations: the authority cannot separate its graph construction from its evolution, and the reference does not build graphs at all. The depth-2 row includes one-time kernel and paclet initialisation on the Wolfram side, and the native times at depths 3--5 are near the timer's resolution. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe} and \texttt{reference/bench\_authority.wls}.}
 \label{tab:t2-speedup}
 \input{tables/t2_speedup}
 \end{table}
@@ -1587,7 +1589,7 @@ Per-phase attribution, taken from \texttt{clock64} deltas accumulated per block 
 A third bound sits outside the kernel, in the per-call bracket rather than in the evolution itself. Tracing a device run and placing every allocation and copy relative to the resident kernel's own execution: no copy, allocation or memset occurs while the kernel is in flight---the count is zero across every evolution measured---so the evolution proper is free of host traffic, as the design requires. The bracket around it is not. Each evolution runs a $3.8$\,ms kernel preceded by 189 and followed by 189 runtime allocation and copy calls (23 allocations, 23 frees, 50 copies and 93 memsets on each side). The design goal of a single readback at the end is therefore not met, though the stronger property of no traffic during evolution is. This bounds interactive and session use, where a caller pays that bracket on every call, rather than throughput on a single deep run, where it is amortised over the kernel's duration.
 
 
-\paragraph{Every device figure above is measured with the record set off, and that configuration hides a second regime.} The reconstruction of the raw causal and branchial relations is selectable independently of the evolution, and the measurements reported so far switch all of it off. Re-measured with causal recording on, the device and host agree \emph{exactly} on the reconstructed relation for all eight corpus workloads at depth six---identical distinct-pair counts and identical counts surviving transitive reduction---which is the strongest cross-engine agreement available for this path, since the two implementations share no code below the shared replay core. On the densest workload available, a three-edge disconnected left side at depth three, the two engines agree on $1{,}661{,}760$ causal pairs and $970{,}560$ surviving reduction.
+\paragraph{Every device figure above is measured with the record set off, and that configuration hides a second regime.} The reconstruction of the raw causal and branchial relations is selectable independently of the evolution, and the measurements reported so far switch all of it off. Re-measured with causal recording on, the device and host agree \emph{exactly} on the reconstructed relation for all eight corpus workloads at depth six---identical distinct-pair counts and identical counts surviving transitive reduction. The two implementations share no code below the shared replay core, so the agreement is between two separate schedulers, memory layouts and queueing disciplines. On the densest workload available, a three-edge disconnected left side at depth three, the two engines agree on $1{,}661{,}760$ causal pairs and $970{,}560$ surviving reduction.
 
 Reaching that agreement is a property of how the reduction is defined rather than of how it is computed. A finite directed acyclic graph has exactly one transitive reduction, so membership is a function of the finished relation; both engines therefore store the relation and reduce it on demand, rather than deciding each pair as it arrives against the pairs seen so far. The two engines share that body. Deciding on arrival is what makes the answer depend on the schedule: a pair reaching the relation before the longer path that bypasses it is kept, the same pair reaching it afterwards is dropped, and an append-only adjacency never retracts the difference. The reduction is computed once per source rather than once per pair---every edge leaving a given event shares the set reachable from it in two or more steps---and where event identifiers increase along every causal edge the search is bounded by the largest target of that source. The branchial relation is handled the same way: a branchial pair is two applications of one instance sharing a consumed slot, so neither engine stores the pairs, and both derive them from the applications on demand.
 
@@ -1605,7 +1607,7 @@ The residual on these two workloads is accordingly attributed to a named and evi
 
 The quotient decoupling of Section~\ref{sec:quotient} applies to the device on the same terms as the host. Separating capture of each class's frame from replay of that capture against instances---the first signing event identity at the cost of the canonical answer, the second recovering the raw event set at the cost of the raw one---leaves the canonical answer bit-identical while removing the exponential from runs that do not request raw events. On the two corpus shapes for which unconditional replay does not complete depth seven at all, the resident kernel's median falls from $183.4$\,ms to $4.14$\,ms at depth six and from a timeout beyond $150$\,s to $4.59$\,ms at depth seven (\texttt{multirule}), and from $107.6$\,ms to $5.27$\,ms and from a timeout to $5.27$\,ms respectively (\texttt{cycle4}), with identical state and event counts in both arms. Depth six to seven then costs $4.14 \to 4.59$\,ms and $5.27 \to 5.27$\,ms: flat, where the unconditional arm does not terminate.
 
-Two routes to the canonicalization bound were measured and rejected, and we record them because the bound remains open and both failure modes are instructive. Tiered canonicalization---bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision---was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so duplicates pay twice. A content-equality short-circuit---reuse a canonical form when two raw states hold literally the same edge tuples, which requires no confirmation because it is a proof of isomorphism on its own---cannot fire: measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite mints fresh vertex identifiers and so no two states reaching one canonical form carry the same labels. The measurement is order-independent and therefore an upper bound on what any content key could catch. The two routes fail oppositely: the first fires often but confirms redundantly, the second would need no confirmation but never fires. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
+Two routes to the canonicalization bound were measured and rejected. Both are reported here because the bound remains open, and because the two fail for opposite reasons. Tiered canonicalization---bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision---was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so a duplicate state is processed by both stages. A content-equality short-circuit---reuse a canonical form when two raw states hold literally the same edge tuples, which requires no confirmation because it is a proof of isomorphism on its own---cannot fire: measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite mints fresh vertex identifiers and so no two states reaching one canonical form carry the same labels. The measurement is order-independent and therefore an upper bound on what any content key could catch. The two routes fail oppositely: the first fires often but confirms redundantly, the second would need no confirmation but never fires. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
 
 These figures hold across the corpus rather than on one shape. Profiling the resident kernel on all eight workloads at depth six---measured with the profiler rather than by wall clock, because the host was shared and wall time on this machine is bimodal under load---gives occupancy between $16.58\%$ and $16.66\%$ on every one, over workloads whose kernel durations differ by a factor of seven hundred:
 
@@ -1628,7 +1630,7 @@ workload & kernel (ms) & warps active & SM thr. & DRAM thr. \\
 
 An occupancy that is constant across a corpus this varied is what a grid-determined limit looks like, and confirms from a third direction that it is not determined by register allocation.
 
-Two entries in that table are profiling artifacts and we flag them rather than leaving them to be read as results. The profiler serialises execution and fixes clocks, so a kernel whose resident blocks sit in a backoff loop rather than computing has its duration inflated by one to two orders of magnitude. Measured unprofiled, \texttt{binary} completes in $3.87$\,ms and \texttt{triangle} in $3.39$\,ms against the $857$\,ms and $209$\,ms above, while \texttt{wpp}, which is genuinely computing throughout, takes $7.52$\,ms unprofiled against the $2.97$\,ms the profiler reports---lower there because the profiler excludes the host-side bracket around the launch. The workloads that generate little work are therefore faster than the ones that generate much, as expected, and their $99.5\%$ and $99.7\%$ idle phase readings are $99.5\%$ of four milliseconds rather than of a second.
+Two entries in that table are artifacts of the profiler rather than properties of the workloads. The profiler serialises execution and fixes clocks, so a kernel whose resident blocks sit in a backoff loop rather than computing has its duration inflated by one to two orders of magnitude. Measured unprofiled, \texttt{binary} completes in $3.87$\,ms and \texttt{triangle} in $3.39$\,ms against the $857$\,ms and $209$\,ms above, while \texttt{wpp}, which is genuinely computing throughout, takes $7.52$\,ms unprofiled against the $2.97$\,ms the profiler reports---lower there because the profiler excludes the host-side bracket around the launch. The workloads that generate little work are therefore faster than the ones that generate much, as expected, and their $99.5\%$ and $99.7\%$ idle phase readings are $99.5\%$ of four milliseconds rather than of a second.
 
 The occupancy and throughput columns are unaffected. Those are ratios and structural properties rather than elapsed times, and they are what the table is for: an occupancy invariant at $16.6\%$ across workloads whose real durations span a factor of two, and utilisation figures that never approach any unit's limit.
 
@@ -1668,10 +1670,10 @@ not share that saving: it materialises instances, and there are as many instance
 holds. Measured on a two-rule set whose canonical state count grows linearly with depth, the
 reconstruction's cost grew about twentyfold per step---0.17, 0.22, 0.62, 7.36, 144.78 and 4981.05
 milliseconds at depths two through seven for three, four, five, six, seven and eight canonical
-states. Four fifths of that has since been removed by removing hash lookups from the paths
-concerned, but the growth rate is a property of the output, not of the implementation. A caller
-that wants only canonical observables should not be asked to pay it, and the interface does not yet
-let that be said.
+states. The growth rate is a property of the output rather than of the implementation: the raw
+observables are as numerous as the raw system holds, whatever computes them. The cost applies only
+to runs that request those observables. The reconstruction is enabled by the request, so a run
+asking for canonical states alone does not perform it.
 
 \textbf{The reconstruction does not scale with threads.} Every worker drives it, and the total
 cycles it consumes grow with the thread count---measured at 511 million cycles on one thread
@@ -1680,11 +1682,13 @@ The dedup marks prevent duplicate effects but not duplicate traversal, so added 
 rather than divide the work. On that workload wall time improves to eight threads and degrades
 beyond it.
 
-\textbf{One comparison point.} The only implementation compared against is the Wolfram
-\texttt{MultiwaySystem}, because it is the only other implementation known to us that computes the
-deduplicated states graph under an isomorphism identity. SetReplace computes a different object
-(Section~\ref{sec:background}), so no wall-time comparison against it is reported. A single
-baseline is a weaker evaluation than one with several, and we do not claim otherwise.
+\textbf{Two comparison points, one of them our own.} The implementations compared against are the
+\texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} and this project's own
+reference implementation. The first is the only external implementation known to us that computes
+the deduplicated states graph under an isomorphism identity; SetReplace computes a different
+object (Section~\ref{sec:background}), so no wall-time comparison against it is reported. The
+second is written by the same author as the engine, from the same definition, which makes it an
+independent implementation of the definition but not an independent party's implementation.
 
 \textbf{Workload scope.} The corpus is 24 rule-type workloads plus deeper runs of one canonical
 rule. It was constructed to cover rule shapes---productive, reductive, idempotent, mixed arity,
@@ -1706,7 +1710,7 @@ realised, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the Wolfram \texttt{MultiwaySystem} implementation on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $12.8\times$ on this machine's 24 physical cores, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $12.8\times$ on this machine's 24 physical cores, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
@@ -1720,13 +1724,28 @@ We have presented an implementation of multiway hypergraph evolution built on ex
 
 Several avenues remain for further optimization:
 
-\textbf{Incremental pattern matching:} Currently, pattern matching restarts for each state. Maintaining match validity across evolution could provide a substantial additional speedup for deep evolutions.
+\textbf{Incremental canonicalization:} Matching is already incremental---a child inherits its
+parent's surviving matches by forwarding and scans only for matches anchored on a produced edge
+(Sections~\ref{sec:pattern-matching} and~\ref{sec:delta})---while canonicalization is not: the
+individualization--refinement pass runs on each state from its complete edge set, though a child
+differs from its parent by only the consumed and produced edges. Warm-starting that pass from the
+parent's partition is the remaining incremental step, and it is the one that would act on the cost
+Section~\ref{sec:benchmarks} attributes the majority of instructions to.
 
-\textbf{Distributed computation:} The current design targets single-node execution. Extending to distributed memory systems would enable exploration of vastly larger state spaces.
+\textbf{Instance-parallel replay:} The reconstruction descends each instance subtree inline on the
+thread that discovered it, so the width it exploits is the class count rather than the instance
+count. The two differ by three orders of magnitude on the shapes where the device loses. The
+publication and claim machinery that would make a queue push equivalent to the recursive call is
+already present.
+
+\textbf{Distributed computation:} The current design targets single-node execution. Extending to distributed memory systems would enable exploration of larger state spaces than one machine's memory admits.
 
 \textbf{Rule learning:} Automatic discovery of rules producing desired structures (e.g., emergent dimensionality, causal invariants) remains an open challenge amenable to learned heuristics.
 
-\textbf{Formal verification:} Proving correctness of the lock-free algorithms under relaxed memory models would strengthen confidence in the implementation.
+\textbf{Verification beyond the bound:} The properties of Section~\ref{sec:verification} are
+established for bounded programs under RC11 and, for the forwarding protocol, over an unbounded
+worker count against a transcribed model. Neither establishes the code's properties for unbounded
+thread counts. A mechanised proof over the implementation itself would.
 
 \subsection{Availability}
 
@@ -1767,7 +1786,7 @@ The author thanks Stephen Wolfram for foundational work on the Wolfram Physics P
 
 \subsection{Canonicalization Complexity}
 
-For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, the two canonicalization roles have very different cost profiles.
+For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, the two canonicalization roles have different cost profiles.
 
 \textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
