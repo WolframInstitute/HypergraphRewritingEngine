@@ -120,6 +120,25 @@ jobs:
             echo "UBSan reported a runtime error"; exit 1
           fi
 
+      # detect_leaks=0 because LeakSanitizer cannot run where this was verified: under WSL2 it
+      # dies with "Can't open /proc/<pid>/task for reading" before any test executes, which also
+      # breaks CMake's post-build gtest_discover_tests step. What is gated here is what was
+      # measured -- the addressability errors -- not leak detection nobody has run.
+      - name: Configure + build ASan
+        run: >
+          cmake -S . -B build_asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_ASAN=ON -DBUILD_GPU=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_VISUALIZATION=OFF &&
+          ASAN_OPTIONS=detect_leaks=0 cmake --build build_asan --target all_tests
+
+      - name: ASan — the suite reports no addressability error
+        run: |
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=0 \
+            ./build_asan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee asan.log
+          if grep -q "ERROR: AddressSanitizer" asan.log; then
+            echo "AddressSanitizer reported an error"; exit 1
+          fi
+
       - name: Configure + build TSan
         run: >
           cmake -S . -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
