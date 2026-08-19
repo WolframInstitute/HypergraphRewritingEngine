@@ -44,3 +44,13 @@ jobs:
           cmake --build build_gpu --target gpu_differential_tests hg_gpu_tests -j
           ./build_gpu/gpu_differential_tests
           ./build_gpu/hg_gpu_tests
+      - name: Sanitizers — both must report zero
+        # initcheck catches a host readback of device memory nothing wrote, which is invisible to
+        # an assertion: the value is whatever the allocator last held, so the suite passes or
+        # fails on allocation history. memcheck catches a __global__ template registered by more
+        # than one translation unit, where the runtime picks the first and the caller does not
+        # choose. Both stand at zero, so any number here is a regression.
+        run: |
+          compute-sanitizer --tool initcheck --error-exitcode 1 ./build_gpu/hg_gpu_tests
+          compute-sanitizer --tool memcheck --leak-check full --error-exitcode 1 \
+            ./build_gpu/hg_gpu_tests --gtest_filter='Rewrite.*'
