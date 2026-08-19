@@ -254,7 +254,7 @@ def t2(build, maxd, reps):
     if windows:
         script = subprocess.run(["wslpath", "-w", script], capture_output=True, text=True).stdout.strip()
     out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=7200)
-    auth, hgev = {}, {}
+    auth, hgev, ref = {}, {}, {}
     for line in out.splitlines():
         m = re.search(r"AUTH d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
         if m:
@@ -262,6 +262,10 @@ def t2(build, maxd, reps):
         m = re.search(r"HGEV d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
         if m:
             hgev[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), float(m.group(4)))
+        # OUR OWN reference implementation, the second thing the engine is compared with.
+        m = re.search(r"REF\s+d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
+        if m:
+            ref[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), float(m.group(4)))
     if not auth or not hgev:
         raise SystemExit("bench_authority.wls printed no comparable rows:\n%s" % out[-2000:])
 
@@ -274,18 +278,28 @@ def t2(build, maxd, reps):
             core[int(m.group(1))] = float(m.group(3))
 
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
-         r"\begin{tabular}{rrrrrrl}", r"\toprule",
-         r"Depth & States & Authority ms & Engine ms (paclet) & Like-for-like & "
-         r"Engine ms (C++ core) & Counts agree \\", r"\midrule"]
+         r"\begin{tabular}{rrrrrrrl}", r"\toprule",
+         r"Depth & States & Authority ms & Reference ms & Engine ms (paclet) & "
+         r"Engine ms (C++ core) & Speedup vs reference & Counts agree \\", r"\midrule"]
     for d in sorted(auth):
         if d not in hgev:
             continue
         a_states, a_causal, a_ms = auth[d]
         h_states, h_causal, h_ms = hgev[d]
-        agree = "yes" if (a_states, a_causal) == (h_states, h_causal) else "NO"
+        r_states, r_causal, r_ms = ref.get(d, (None, None, None))
+        # Every implementation in the row must have computed the same thing, or the times are
+        # not comparable. The reference is included in that test, not exempt from it.
+        same = (a_states, a_causal) == (h_states, h_causal)
+        if r_ms is not None:
+            same = same and (r_states, r_causal) == (a_states, a_causal)
+        agree = "yes" if same else "NO"
         c = core.get(d)
-        b.append("%d & %d & %.1f & %.1f & %.0f$\\times$ & %s & %s \\\\" % (
-            d, a_states, a_ms, h_ms, a_ms / h_ms, ("%.1f" % c) if c else "--", agree))
+        # The engine's C++ core against the reference: both compute DATA, so neither is charged
+        # for building Wolfram Graph objects and the ratio is not a graph-construction artefact.
+        vs_ref = ("%.0f$\\times$" % (r_ms / c)) if (r_ms is not None and c) else "--"
+        b.append("%d & %d & %.1f & %s & %.1f & %s & %s & %s \\\\" % (
+            d, a_states, a_ms, ("%.1f" % r_ms) if r_ms is not None else "--", h_ms,
+            ("%.1f" % c) if c else "--", vs_ref, agree))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
     return len(auth)
