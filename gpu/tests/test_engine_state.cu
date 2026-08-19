@@ -164,4 +164,35 @@ TEST(EngineState, IndicesPopulatedByUpload) {
     cudaFree(d_cnt); cudaFree(d_out);
 }
 
+// counters_snapshot_host() transfers every slot of the counter block, including the two that are
+// bound to their pointers only when the feature owning them first runs. A run that never uses
+// that feature must still read zero there. Dirtying and releasing a block of the same size first
+// is what gives the allocator a non-zero block to hand back to the constructor.
+TEST(EngineState, EveryCounterSlotReadsZeroBeforeItsFeatureRuns) {
+    constexpr size_t kBlockBytes = sizeof(uint32_t) * 6;
+    void* dirty = nullptr;
+    ASSERT_EQ(cudaMalloc(&dirty, kBlockBytes), cudaSuccess);
+    ASSERT_EQ(cudaMemset(dirty, 0xAB, kBlockBytes), cudaSuccess);
+    ASSERT_EQ(cudaFree(dirty), cudaSuccess);
+
+    hg_gpu::EngineConfig cfg;
+    cfg.max_edges            = 64;
+    cfg.max_state_edge_total = 256;
+    cfg.max_states           = 8;
+    cfg.max_vertex_slots     = 256;
+    cfg.max_vertices         = 64;
+    cfg.sig_index_buckets    = 16;
+    cfg.sig_index_pool       = 64;
+    cfg.inverted_pool        = 256;
+
+    hg_gpu::EngineState engine(cfg);
+    const auto c = engine.counters_snapshot_host();
+    EXPECT_EQ(c.state_edge_ids, 0u);
+    EXPECT_EQ(c.states,         0u);
+    EXPECT_EQ(c.needs_indices,  0u);
+    EXPECT_EQ(c.vertex_high,    0u);
+    EXPECT_EQ(c.sig_fallbacks,  0u);
+    EXPECT_EQ(c.canonical_ev,   0u);
+}
+
 }  // namespace

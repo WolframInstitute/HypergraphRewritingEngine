@@ -337,6 +337,11 @@ public:
         // Device code is unaffected: it still writes through the same typed pointers.
         HG_CUDA_CHECK(cudaMalloc(&counter_block_, sizeof(uint32_t) * kCounterSlots),
               "EngineState counter block alloc");
+        // counters_snapshot_host() transfers all six slots at once, while slots 4 and 5 are bound
+        // to their pointers on first use of the feature that owns them. Zeroing the whole block
+        // here is what makes a slot read as zero when its feature never runs.
+        HG_CUDA_CHECK(cudaMemset(counter_block_, 0, sizeof(uint32_t) * kCounterSlots),
+              "EngineState counter block init");
         state_edge_ids_counter_ = counter_block_ + 0;
         state_count_            = counter_block_ + 1;
         HG_CUDA_CHECK(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
