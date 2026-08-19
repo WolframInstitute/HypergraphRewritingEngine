@@ -58,6 +58,29 @@
 // WIN FOR ONE KEY, so the fault is in the mutual exclusion between a settle in a superseded
 // table and a settle at the head. That is where the fix has to go.
 //
+// WHAT THE COUNTEREXAMPLE SHOWS. Reading the successful compare-exchanges out of the trace
+// (the two offers are 100 and 200, so the writes name their authors): the claim-2 thread
+// settles 200 in one table, and the claim-1 thread settles 100 in ANOTHER -- after that same
+// thread has already MIGRATED 200 forward as part of a resize it performed. So its chain scan
+// concluded the key was absent from a table where a settled entry for it existed.
+//
+// FOUR CANDIDATE FIXES, ALL REFUTED, so the next attempt does not repeat them:
+//   1. verdict = (anchored value == our offer)
+//        refuted by concurrent_map_repeated_offer: was_inserted comes from the publishing
+//        EXCHANGE, and two callers offering the same value would both compare equal.
+//   2. verdict = anchored.second
+//        refuted here AND by repeated_offer: it under-reports to ZERO winners, because a
+//        migration or a rival anchor can place our value at the head before our anchor runs.
+//   3. claim only in the CURRENT head (re-drive when the table we hold is superseded)
+//        still violates. The stale-head claim is not the path.
+//   4. do not truncate the scan's probe run at LOCKED (continue instead of break)
+//        still violates. The seal converting EMPTY to LOCKED is not hiding the entry.
+//
+// So the surviving hypothesis is narrower than any of those: a settle that wins in a table
+// which is no longer the head must not be authoritative, and making it so without losing the
+// value -- the old table stays reachable and readers find it there -- is the part that is not
+// yet worked out.
+//
 // GENMC-ARGS: --disable-estimation --sc --bound=4 --bound-type=context
 // GENMC-EXPECT: fail   (the defect above; restore to `pass` with the fix)
 
