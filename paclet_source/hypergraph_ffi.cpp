@@ -822,6 +822,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         record.branchial = req.include_branchial_edges || req.include_num_branchial_edges ||
                            req.include_branchial_state_edges || gneeds.branchial || req.show_progress;
         record.state_events = req.include_branchial_state_edges_all_siblings;
+        // THE RAW UNFOLDING, which under quotient exploration is the reconstruction and the
+        // engine's largest single cost -- 99.57% of all cycles on multirule at depth 6, growing
+        // 14.6x per depth step while the canonical answer grows 1.17x. It defaults ON in
+        // RecordSet so a caller that states nothing keeps the counts it always had; here the
+        // caller HAS stated something, so it is derived like the other three rather than left at
+        // the default. On for a request the raw set answers: the event records themselves, or a
+        // count taken over them.
+        //
+        // The causal and branchial relations do not need it named: under quotient they are
+        // reconstructed too, and record.causal / record.branchial already drive the replay.
+        record.raw_events = req.include_events || req.include_events_minimal ||
+                            req.include_num_events || req.show_progress;
 
         // A session records what it was OPENED for, and an artifact it does not record cannot be
         // produced afterwards: the evolution that would have built it has already run. Asking a
@@ -840,6 +852,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             if (record.causal && !held.causal) unrecorded("the causal relation");
             if (record.branchial && !held.branchial) unrecorded("the branchial relation");
             if (record.state_events && !held.state_events) unrecorded("per-state event lists");
+            if (record.raw_events && !held.raw_events) unrecorded("the raw event set");
         }
 
         if (!held_session) configure_and_evolve(req, hg, engine, record, host);
