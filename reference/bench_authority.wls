@@ -21,6 +21,14 @@
            as DATA. Its time therefore includes building Wolfram Graph objects, and no
            subtraction can remove that from the outside.
    
+     REF   OUR OWN reference implementation, reference/MultiwayReference.wl -- the brute-force
+           Wolfram-language multiway evolver this project validates its engine against. It is
+           the second thing the engine must be compared with: the authority answers what a
+           user's alternative costs, and the reference answers what a DIRECT, unoptimised
+           implementation of the same definition costs, with no graph construction in the way.
+           It returns DATA, not Graph objects, so its time is the closest Wolfram-side analogue
+           of the engine's native number.
+
      HGEV  this engine reached the same way a user reaches it: through the paclet, which
            serializes to the worker process, evolves, deserializes and builds the same kind of
            Wolfram structures. This is the LIKE-FOR-LIKE row, and it is the one a ratio against
@@ -49,6 +57,11 @@ PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 Needs["HypergraphRewriting`"];
 
+(* OUR reference implementation, loaded from source. Its rules are {lhs, rhs} pairs rather than
+   Rule objects, and it returns per-step tuples rather than graphs. *)
+Get[FileNameJoin[{repo, "reference", "MultiwayReference.wl"}]];
+refRules = {{{{1, 2}, {2, 3}}, {{1, 2}, {2, 4}, {4, 3}}}};
+
 hgRules = {{{1, 2}, {2, 3}} -> {{1, 2}, {2, 4}, {4, 3}}};
 
 rules = {{{1, 2}, {2, 3}} -> {{1, 2}, {2, 4}, {4, 3}}};
@@ -75,13 +88,31 @@ hgOnce[d_] := Module[{t, r},
    If[ListQ[r["CausalEdges"]], Length[r["CausalEdges"]], 0]}
 ];
 
+(* The reference, asked for the same two quantities. It computes DATA -- no Graph objects -- so
+   this row is the Wolfram-side measurement that is not charged for graph construction, and the
+   one the engine's native number is most nearly commensurable with. *)
+refOnce[d_] := Module[{t, r, st, cz},
+  {t, r} = AbsoluteTiming[
+    MultiwayReference`MultiwayEvolve[refRules, init, d,
+      "StateCanonicalization" -> "Canonical", "EventCanonicalization" -> "States"]];
+  (* PerStep's last row is the cumulative answer at this depth: "states" is the canonical state
+     count and "causal" the causal-edge count, which are the two the other rows report. *)
+  st = If[Length[r["PerStep"]] > 0, Last[r["PerStep"]]["states"], 0];
+  cz = If[Length[r["PerStep"]] > 0, Last[r["PerStep"]]["causal"], 0];
+  {t * 1000., st, cz}
+];
+
 Do[
-  Module[{runs, ms, states, causal, hgRuns, hgMs},
+  Module[{runs, ms, states, causal, hgRuns, hgMs, refRuns, refMs},
     runs = Table[once[d], reps];
     ms = Median[runs[[All, 1]]];
     states = runs[[1, 2]];
     causal = runs[[1, 3]];
     Print["AUTH d=", d, " states=", states, " causal=", causal, " ms=", ToString[Round[ms, 0.1]]];
+    refRuns = Table[refOnce[d], reps];
+    refMs = Median[refRuns[[All, 1]]];
+    Print["REF  d=", d, " states=", refRuns[[1, 2]], " causal=", refRuns[[1, 3]],
+          " ms=", ToString[Round[refMs, 0.1]]];
     hgRuns = Table[hgOnce[d], reps];
     hgMs = Median[hgRuns[[All, 1]]];
     Print["HGEV d=", d, " states=", hgRuns[[1, 2]], " causal=", hgRuns[[1, 3]],

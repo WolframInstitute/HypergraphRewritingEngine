@@ -7,6 +7,13 @@
 // A clean estimate is evidence, not proof; the proof at this shape is the 2t harness, which
 // is exhaustive.
 //
+// SCHEDULE BOUNDING DOES NOT RESCUE IT, measured 2026-08-19. The 3t harness is exhausted under
+// `--sc --bound=2 --bound-type=context`; applying the same bound here times out at 580s, and so
+// does `--bound=1`. The size is in the map's own resize and migration paths, not in the
+// interleavings, so bounding the schedule leaves the graph as large as it was. Reducing this
+// harness far enough to exhaust would mean removing the fourth key -- which is the one that
+// warrants the SECOND growth, and therefore the entire property.
+//
 // Sampling is not a weak instrument for this defect class. The un-anchored map -- a re-drive
 // claiming at the head on a verdict formed against an older table -- is refuted here in
 // 0.10s, while the dedicated fuzz gate (hypergraph/tests/test_concurrent_map_fuzz.cpp,

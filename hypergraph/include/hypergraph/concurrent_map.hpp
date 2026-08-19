@@ -297,9 +297,13 @@ public:
         // the sealer loaded table_ after the install, and the exchange carries that
         // visibility, so the re-drive cannot land back in the table it just left. resize()
         // seals whole tables through the same exchanges (EMPTY keys to LOCKED, ABSENT values
-        // to FORWARDED) before migrating. verification/genmc/concurrent_map_double_growth
-        // holds the tightest configuration that warrants two growths mid-claim, expected
-        // clean.
+        // to FORWARDED) before migrating. Three harnesses bound this, and they
+        // bound different things: concurrent_map_double_growth_2t EXHAUSTS two workers across
+        // two growths, concurrent_map_double_growth_3t exhausts three workers under a two-context
+        // bound, and concurrent_map_double_growth samples three workers across two growths --
+        // that last one is estimation, not proof, because the graph cannot be exhausted and
+        // bounding the schedule does not shrink it (measured: both --bound=1 and --bound=2 time
+        // out at 580s).
         return insert_into_table(head, key, value, increment_count);
     }
 
