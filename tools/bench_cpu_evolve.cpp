@@ -13,6 +13,7 @@
 #include "hgcommon/phase_timing.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/bitset.hpp"
+#include "hypergraph/pattern_matcher.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -296,6 +297,15 @@ int main(int argc, char** argv) {
     }
 #ifdef HG_BITSET_STATS
     hg::engine::bitset_stats_report(want);
+#endif
+#ifdef HG_MATCH_BRANCH_STATS
+    // CANDIDATE-BRANCH COVERAGE, reported so a corpus can be CHECKED to reach all three rather
+    // than assumed to. Order matches the branches in pattern_matcher.hpp.
+    std::fprintf(stderr,
+        "[matchbranch:%s] arity_scan=%llu repeated_var_seed=%llu bound_intersect=%llu\n", want,
+        (unsigned long long)hg::engine::match_branch_count(0),
+        (unsigned long long)hg::engine::match_branch_count(1),
+        (unsigned long long)hg::engine::match_branch_count(2));
 #endif
     return 0;
 }

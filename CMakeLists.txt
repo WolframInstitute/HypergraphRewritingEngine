@@ -19,6 +19,11 @@ option(HG_BITSET_STATS "SparseBitset search-depth histogram (measurement builds 
 if(HG_BITSET_STATS)
     add_compile_definitions(HG_BITSET_STATS)
 endif()
+
+option(HG_MATCH_BRANCH_STATS "Matcher candidate-branch coverage counters (measurement builds only)" OFF)
+if(HG_MATCH_BRANCH_STATS)
+    add_compile_definitions(HG_MATCH_BRANCH_STATS)
+endif()
 # is silently ignored and the binary keeps a VCRUNTIME140 / MSVCP140 (VC++ redist) dependency.
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)

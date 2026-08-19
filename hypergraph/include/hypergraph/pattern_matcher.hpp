@@ -23,6 +23,29 @@
 namespace HG_NAMESPACE {
 namespace engine {
 
+// CANDIDATE-BRANCH COVERAGE. The join reaches candidates three ways and they are not
+// interchangeable: an unbound seed edge with no repeated variable scans the state's edges by
+// arity, an unbound seed edge WITH a repeated variable scans a signature partition, and a seed
+// with bound variables intersects the inverted index. A corpus that never produces a
+// repeated-variable seed leaves the middle one unexercised by every bench and every sweep, which
+// is what happened until the Repeated shape was added.
+//
+// Registered as HG_MATCH_BRANCH_STATS in the top-level CMakeLists; never on in a shipping build,
+// where HG_MATCH_BRANCH_HIT expands to nothing.
+#ifdef HG_MATCH_BRANCH_STATS
+inline std::atomic<uint64_t>* match_branch_counters() {
+    static std::atomic<uint64_t> c[3];
+    return c;
+}
+#define HG_MATCH_BRANCH_HIT(i) \
+    (HG_NAMESPACE::engine::match_branch_counters()[(i)].fetch_add(1, std::memory_order_relaxed))
+inline uint64_t match_branch_count(int i) {
+    return match_branch_counters()[i].load(std::memory_order_relaxed);
+}
+#else
+#define HG_MATCH_BRANCH_HIT(i) ((void)0)
+#endif
+
 // =============================================================================
 // Pattern matching on the host
 // =============================================================================
@@ -207,6 +230,7 @@ void generate_candidates(
             // history filtered by the state bitset. Scan this state's own edges once and
             // keep those of matching arity — the same candidate set in one pass.
             // validate_candidate re-checks arity downstream.
+            HG_MATCH_BRANCH_HIT(0);
             const uint8_t want_arity = pattern_edge.arity;
             state_edges.for_each([&](EdgeId eid) {
                 const auto& edge = get_edge(eid);
@@ -217,6 +241,7 @@ void generate_candidates(
         } else {
             // Repeated-variable seed edge: the signature level genuinely prunes, so scan
             // the compatible signature partition using the pre-computed cache.
+            HG_MATCH_BRANCH_HIT(1);
             sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
                 on_candidate(eid, get_edge(eid));
             });
@@ -224,6 +249,7 @@ void generate_candidates(
     } else {
         // Have bound variables: use inverted index intersection. The intersection has
         // already fetched each edge to test containment; it hands that edge to us.
+        HG_MATCH_BRANCH_HIT(2);
         inv_index.for_each_edge_containing_all(
             bound_vertices, num_bound, state_edges, get_edge,
             [&](EdgeId eid, const auto& edge) {
