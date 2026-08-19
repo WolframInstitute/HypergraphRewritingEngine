@@ -171,6 +171,20 @@ int64_t read_int_key(const std::vector<uint8_t>& out, const std::string& key) {
     return result;
 }
 
+std::vector<int64_t> read_int_list_key(const std::vector<uint8_t>& out, const std::string& key) {
+    std::vector<int64_t> result;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k == key) {
+            result = vp.read<std::vector<int64_t>>();
+        } else {
+            vp.skip_value();
+        }
+    });
+    return result;
+}
+
 // A -> B -> C chain rule: {{1,2}} -> {{1,2},{2,3}}, from a 2-edge seed. Three steps
 // of full-multiway rewriting; the reached state/event set is deterministic.
 const StateList kSeed = {{{1, 2}, {2, 3}}};
@@ -648,6 +662,72 @@ TEST(WxfSerializationPin, StepContinuesTheHeldExplorationAndQueryOnlyReportsIt) 
     EXPECT_THROW(run_rewriting_core(build_input_with_op(0, "Query", handle, /*with_rules=*/false),
                                     host),
                  std::runtime_error);
+}
+
+// A Step naming frontier states continues from those and no others. The device refuses this
+// verb because it holds its frontier as device ids a caller cannot name; the host resolves the
+// selection against the frontier, so here it must be ANSWERED, and answered narrowly.
+TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly) {
+    HostBridge host;
+
+    const auto opened = run_rewriting_core(build_input_with_op(1, "Open"), host);
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+
+    const std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
+
+#ifdef HG_GPU_BACKEND
+    // The device session carries its frontier as device state ids with no host-visible identity,
+    // so it names none of them and resolves no selection. Both halves are asserted: reporting a
+    // frontier the caller could not steer by would be as wrong as answering the steered Step.
+    EXPECT_TRUE(frontier.empty())
+        << "the device named " << frontier.size() << " frontier states, so a caller can steer by "
+           "an id the device cannot resolve";
+    EXPECT_THROW(run_rewriting_core(
+                     build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{0}),
+                     host),
+                 std::runtime_error);
+    EXPECT_NO_THROW(run_rewriting_core(
+        build_input_with_op(0, "Query", handle, /*with_rules=*/false), host))
+        << "the refused Step took the session with it";
+    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
+#else
+    ASSERT_GE(frontier.size(), 2u)
+        << "this seed reaches a single frontier state, so steering cannot exclude anything and "
+           "the comparison below would hold for a selection that was never read";
+
+    // An id that is not on the frontier is an error, not an empty step: a caller steering toward
+    // a state the exploration has already passed would otherwise get a silent no-op it cannot
+    // distinguish from a branch that genuinely had no successors.
+    EXPECT_THROW(run_rewriting_core(
+                     build_input_with_op(1, "Step", handle, /*with_rules=*/false,
+                                         /*from=*/{1000000}), host),
+                 std::runtime_error);
+
+    // The refusal leaves the session usable, so the error path is not a disguised invalidation.
+    EXPECT_NO_THROW(run_rewriting_core(
+        build_input_with_op(0, "Query", handle, /*with_rules=*/false), host));
+
+    const auto steered = run_rewriting_core(
+        build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{frontier[0]}), host);
+    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
+
+    // The same continuation again, naming nothing. A second session rather than the same one,
+    // because the Step above already advanced this one; the slot holds a single session, so it
+    // is opened after the first is closed and its equal depth-1 size is asserted, not assumed.
+    const auto other = run_rewriting_core(build_input_with_op(1, "Open"), host);
+    const int64_t other_handle = read_int_key(other, "Session");
+    ASSERT_NE(other_handle, 0);
+    ASSERT_EQ(read_int_key(other, "NumStates"), read_int_key(opened, "NumStates"))
+        << "the two sessions did not open on the same exploration";
+    const auto unsteered = run_rewriting_core(
+        build_input_with_op(1, "Step", other_handle, /*with_rules=*/false), host);
+    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", other_handle), host));
+
+    EXPECT_LT(read_int_key(steered, "NumStates"), read_int_key(unsteered, "NumStates"))
+        << "naming one of " << frontier.size() << " frontier states reached as many states as "
+           "continuing from all of them, so the selection was not applied";
+#endif
 }
 
 TEST(WxfSerializationPin, DefaultStatesAndEvents) {
