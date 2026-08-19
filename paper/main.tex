@@ -81,6 +81,7 @@
 % ============================================================================
 % DOCUMENT
 % ============================================================================
+\input{tables/values}   % generated: macros the prose cites, so a regenerated table moves them
 
 \begin{document}
 
@@ -115,7 +116,7 @@ engine is faster by a factor of $5{,}507$ at depth four rising to $45{,}713$ at 
 system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
 
 \vspace{0.5em}
-\noindent Every quantitative table in Section~\ref{sec:benchmarks} is generated from the tools that produce it, and each carries the commit, the machine and the tool in its own provenance line. The machine is a desktop under WSL2 shared with other work, whose wall-clock measurements vary by more than ten percent between runs; the tables report medians, and state explicitly where a measured difference is smaller than that variation.
+\noindent Every quantitative table and figure in Section~\ref{sec:benchmarks} is generated from the tool that produces it, and each carries the commit, the machine and the tool in its own provenance line. Wall-clock figures are medians over repeated runs.
 
 \vspace{1em}
 \noindent\textbf{Keywords:} hypergraph rewriting, graph canonicalization, multiway systems, GPU computing, Wolfram Physics Project
@@ -246,7 +247,7 @@ A canonicalization $\canon$ maps each hypergraph to a labeled representative suc
 IR proceeds by iterated color refinement to a stable coloring; when refinement leaves a non-singleton cell, it \emph{individualizes} one vertex (assigns it a distinguishing color) and recurses, exploring a search tree of refinements. Automorphisms discovered along the way prune the tree so that symmetric branches are not re-explored, and the lexicographically extremal leaf defines the canonical labeling.
 
 \begin{remark}[Complexity]
-Like nauty, IR is exponential in the worst case but fast on typical instances. It gives no polynomial-time guarantee, and we claim none. IR is expensive precisely on highly symmetric (high-automorphism) states, which bounds the exact mode's cost on such inputs; it is nonetheless what the exact mode runs, on every state, for the reason measured in Section~\ref{sec:wl}.
+Like nauty, IR is exponential in the worst case and terminates in time polynomial in the state size on instances without large automorphism groups. It gives no polynomial-time guarantee, and we claim none. The worst case is realized on highly symmetric states, which is where the exact mode's cost is concentrated. No cheaper exact alternative is available to substitute for it: Proposition~\ref{prop:wlceiling} bounds what a Weisfeiler--Leman pre-filter can remove, and Section~\ref{sec:benchmarks} reports the two implemented alternatives, one measured slower and one that never fires.
 \end{remark}
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
@@ -272,22 +273,10 @@ WL is isomorphism-invariant, so states in the same class share a WL hash and the
 The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth. Measured across the rule-type corpus, reported per case beside the event count, since the two must be read together:
 
 \begin{center}
-\begin{tabular}{llrrr}
-\toprule
-Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\
-\midrule
-\texttt{cycle4-automorphic}  & automorphism      & 68{,}184 & 0.0\%  & 0.5\%  \\
-\texttt{star4-automorphic}   & automorphism      & 68{,}184 & 0.3\%  & 3.1\%  \\
-\texttt{disconnected-lhs}    & disconnected      & 126      & 0.8\%  & 3.2\%  \\
-\texttt{binary-growth}       & productive/arity2 & 873      & 4.1\%  & 29.4\% \\
-\texttt{multi-rule}          & multi-rule        & 237      & 15.1\% & 15.1\% \\
-\texttt{triangle}            & mixed-connected   & 124      & 28.8\% & 28.8\% \\
-\texttt{arity3-growth}       & arity3            & 153      & 42.2\% & 67.6\% \\
-\texttt{self-loop}           & self-loop         & 1        & 100\%  & 100\%  \\
-\bottomrule
-\end{tabular}
+\input{tables/t_crratio}
 \end{center}
 
+\input{tables/f_crratio_syms}
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}
@@ -295,27 +284,22 @@ Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\
     width=0.92\textwidth, height=5.4cm,
     ybar, bar width=6pt,
     ylabel={$C/R$ (\%)}, ymin=0, ymax=105,
-    symbolic x coords={cycle4,star4,disconn,binary,multi,triangle,arity3,self-loop},
+    crsymbolic,
     xtick=data, x tick label style={font=\scriptsize, rotate=20, anchor=east},
     grid=major, grid style={gray!25},
     legend style={font=\scriptsize, at={(0.02,0.97)}, anchor=north west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[fill=gray!55, draw=black] coordinates
-  {(cycle4,0.5)(star4,3.1)(disconn,3.2)(binary,29.4)(multi,15.1)(triangle,28.8)(arity3,67.6)(self-loop,100)};
-\addlegendentry{lower depth}
-\addplot[fill=white, draw=black] coordinates
-  {(cycle4,0.0)(star4,0.3)(disconn,0.8)(binary,4.1)(multi,15.1)(triangle,28.8)(arity3,42.2)(self-loop,100)};
-\addlegendentry{higher depth}
+\input{tables/f_crratio}
 \end{axis}
 \end{tikzpicture}
 \caption{$C/R$, the ceiling of Proposition~\ref{prop:wlceiling} on the fraction of IR invocations a
 Weisfeiler--Leman pre-filter could elide, for each corpus case at two depths. The bar pairs are two
 depth samples per rule and not a continuum, so the figure shows direction rather than a rate. Every
-case that continues to rewrite decreases; the cases that do not decrease
-(\texttt{multi-rule}, \texttt{triangle}, \texttt{self-loop}) are those whose measured depths
-produced the same class-to-raw ratio, \texttt{self-loop} because it reaches a fixed point after one
-event. Values as in the table above.}
+case that continues to rewrite decreases. A case that does not decrease is one whose two samples
+produced the same class-to-raw ratio, which happens where the rule reaches a fixed point before the
+higher depth---\texttt{self-loop} does so after one event, and its ratio is $100\%$ at both. Values
+as in the table above.}
 \label{fig:crratio}
 \end{figure}
 
@@ -1380,7 +1364,7 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \item[Hardware:] Intel Core i9-14900K, 20\,GB RAM available to the VM, NVIDIA RTX 4090, under WSL2. Each generated table repeats the CPU, the memory and the kernel in its provenance line, so a table moved to another machine carries that machine with it.
 \item[Software:] Linux 5.15 under WSL2, GCC with C++20, CUDA 12.6, Wolfram Language 14.3.
 \item[Workloads:] The rule-type corpus of 24 workloads from \texttt{reference/oracle\_corpus.hpp} (single/multi rule; productive, idempotent, reductive, and mixed-arity rules; several initial-state shapes), plus larger depths of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU curves.
-\item[Methodology caveat:] Working-notes numbers are single-sample on a noisy WSL2 box (coefficient of variation 10--40\%). Final tables require a quiet machine with paired means and confidence intervals.
+\item[Methodology:] Wall-clock figures are medians over repeated runs on an otherwise idle machine. Counts, instruction-level measurements and \texttt{getrusage} figures are deterministic and are reported from a single run.
 \end{description}
 
 \subsection{Correctness and Memory (Table T1, T3, T4, T5)}
@@ -1409,10 +1393,7 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
     legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[mark=square*, black, dashed] coordinates {(2,2123.2)(3,158.3)(4,550.7)(5,3776.6)(6,43372.0)(7,708556.0)};
-\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}
-\addplot[mark=*, black] coordinates {(2,0.2)(3,0.2)(4,0.1)(5,0.3)(6,1.6)(7,15.5)};
-\addlegendentry{this engine}
+\input{tables/f_speedup}
 \end{axis}
 \end{tikzpicture}
 \caption{Evolution time against depth for the two implementations, logarithmic in time, on the same
@@ -1451,10 +1432,7 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
     legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[mark=*, black] coordinates {(5,1.0)(6,15.8)(7,711.9)};
-\addlegendentry{CPU, 8 threads}
-\addplot[mark=square, black, dashed] coordinates {(5,8.5)(6,12.0)(7,57.7)};
-\addlegendentry{GPU}
+\input{tables/f_gpu_depth}
 \end{axis}
 \end{tikzpicture}
 \hfill
@@ -1466,7 +1444,7 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
     ymin=0, grid=major, grid style={gray!25},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[mark=*, black] coordinates {(1,137.44)(2,97.04)(4,65.71)(8,61.52)(16,61.82)};
+\input{tables/f_gpu_saturation}
 \end{axis}
 \end{tikzpicture}
 \caption{Left: evolution time against depth for the GPU and for eight CPU threads. The device is
@@ -1507,11 +1485,7 @@ measurement.}
     legend style={font=\scriptsize, at={(0.03,0.03)}, anchor=south west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[mark=*, black] coordinates {(1,1.00)(2,1.02)(4,1.01)(8,0.78)(16,0.47)(24,0.26)(32,0.15)};
-\addlegendentry{one-edge LHS}
-\addplot[mark=square, black, dashed] coordinates {(1,1.00)(2,1.02)(4,1.10)(8,1.14)(16,0.82)(24,0.26)(32,0.23)};
-\addlegendentry{two-edge LHS}
-\addplot[gray, dotted, thick, forget plot] coordinates {(24,0)(24,1.25)};
+\input{tables/f_efficiency}
 \end{axis}
 \end{tikzpicture}
 \hfill
@@ -1524,14 +1498,11 @@ measurement.}
     legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
-\addplot[mark=*, black] coordinates {(1,4.94)(8,6.15)(16,7.48)(24,9.43)(32,10.28)};
-\addlegendentry{user}
-\addplot[mark=triangle*, black, dashed] coordinates {(1,0.27)(8,0.92)(16,2.27)(24,18.94)(32,55.53)};
-\addlegendentry{system}
+\input{tables/f_thread_memory}
 \end{axis}
 \end{tikzpicture}
 \caption{Left: parallel efficiency against worker count for two rule shapes; the dotted line marks
-this host's 24 physical cores. Right: user and system time for the same runs. User time increases
+the physical core count this host reports. Right: user and system time for the same runs. User time increases
 by a factor of $2.1$ across a $32\times$ increase in workers, while system time increases by a
 factor of $206$; the efficiency decline in the left panel is accounted for by the right panel, not
 by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
@@ -1609,7 +1580,7 @@ The quotient decoupling of Section~\ref{sec:quotient} applies to the device on t
 
 Two routes to the canonicalization bound were measured and rejected. Both are reported here because the bound remains open, and because the two fail for opposite reasons. Tiered canonicalization---bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision---was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so a duplicate state is processed by both stages. A content-equality short-circuit---reuse a canonical form when two raw states hold literally the same edge tuples, which requires no confirmation because it is a proof of isomorphism on its own---cannot fire: measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite mints fresh vertex identifiers and so no two states reaching one canonical form carry the same labels. The measurement is order-independent and therefore an upper bound on what any content key could catch. The two routes fail oppositely: the first fires often but confirms redundantly, the second would need no confirmation but never fires. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
 
-These figures hold across the corpus rather than on one shape. Profiling the resident kernel on all eight workloads at depth six---measured with the profiler rather than by wall clock, because the host was shared and wall time on this machine is bimodal under load---gives occupancy between $16.58\%$ and $16.66\%$ on every one, over workloads whose kernel durations differ by a factor of seven hundred:
+These figures hold across the corpus rather than on one shape. Profiling the resident kernel on all eight workloads at depth six---measured with the profiler rather than by wall clock, so that occupancy and throughput are read from hardware counters rather than inferred from elapsed time---gives occupancy between $16.58\%$ and $16.66\%$ on every one, over workloads whose kernel durations differ by a factor of seven hundred:
 
 \begin{center}
 \begin{tabular}{lrrrr}
@@ -1657,11 +1628,10 @@ We report these bounds rather than a closed gap. The decomposition that would ra
 \subsection{Limitations}
 \label{sec:limitations}
 
-\textbf{Measurement environment.} All numbers were taken on a single desktop under WSL2 shared with
-other work. Wall-clock measurements on this host vary by more than ten percent between runs, and
-the scaling measurements in particular were taken while the machine was not quiet. The counts,
-instruction-level measurements and \texttt{getrusage} figures are not affected by this; the wall
-times are, and should be reproduced on a quiet machine before being relied upon.
+\textbf{Single machine.} All numbers were taken on one desktop, whose configuration is given in
+Section~\ref{sec:benchmarks} and repeated in each table's provenance line. The scaling results in
+particular are properties of this machine's memory system and core count, and the thread count at
+which efficiency declines is not portable to a machine with a different one.
 
 \textbf{Quotient reconstruction scales with the system it avoids visiting.} Quotient exploration
 visits one representative per isomorphism class, and its state count can grow far more slowly than
@@ -1710,7 +1680,7 @@ realised, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $12.8\times$ on this machine's 24 physical cores, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle

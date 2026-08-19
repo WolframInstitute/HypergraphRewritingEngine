@@ -79,6 +79,16 @@ def _fit(inner):
             + inner + "\n}\n")
 
 
+def write_raw(name, body):
+    """Emit a fragment verbatim. Figure data is pgfplots commands, not a tabular, so it must not
+    be wrapped in the resizebox write() applies."""
+    os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, name)
+    with open(path, "w") as f:
+        f.write(body)
+    print("wrote %s" % os.path.relpath(path, ROOT))
+
+
 def write(name, body):
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, name)
@@ -124,6 +134,70 @@ def t1(build):
     return len(rows)
 
 
+def cr_ratio(build, low_steps):
+    """C/R per corpus case at two depths, for Proposition 1's ceiling.
+
+    C/R is cost_matrix's `wlceil` column: the fraction of IR invocations a Weisfeiler--Leman
+    pre-filter could elide, which the proposition bounds above by the ratio of canonical classes
+    to raw states. Two runs, because the claim is that the ratio FALLS with depth, and one depth
+    cannot show a direction. The lower sample is taken with an explicit step override; the higher
+    is each case's own measure_steps, which is what every other table here reports.
+
+    The eight cases are named rather than taken from the whole corpus: the figure plots one bar
+    pair each and the surrounding text refers to them individually.
+    """
+    row_re = (r"^(\S+)\s+(\S+)\s+(?:EXACT|INEXACT|\S+)\s+\d+\s+\d+\s+(\d+)"
+              r"\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+[\d.]+\s+([\d.]+)%")
+
+    def sample(args):
+        out = run([os.path.join(build, "cost_matrix")] + args, timeout=1800)
+        got = {}
+        for line in out.splitlines():
+            m = re.match(row_re, line)
+            if m:
+                got[m.group(1)] = (m.group(2), int(m.group(3)), float(m.group(4)))
+        if not got:
+            raise SystemExit("cost_matrix produced no parseable C/R rows:\n%s" % out[-1500:])
+        return got
+
+    high = sample([])
+    low = sample([str(low_steps)])
+
+    # (case in cost_matrix, short name on the figure's x axis)
+    cases = [("cycle4-automorphic", "cycle4"), ("star4-automorphic", "star4"),
+             ("disconnected-lhs", "disconn"), ("binary-growth", "binary"),
+             ("multi-rule", "multi"), ("triangle", "triangle"),
+             ("arity3-growth", "arity3"), ("self-loop", "self-loop")]
+    rows = [(c, s, high[c], low.get(c)) for (c, s) in cases if c in high]
+    rows.sort(key=lambda r: r[2][2])
+
+    b = [provenance("tools/cost_matrix.cpp"),
+         r"\begin{tabular}{llrrr}", r"\toprule",
+         r"Case & Rule type & Events & $C/R$ & $C/R$ at lower depth \\", r"\midrule"]
+    for (case, _short, h, l) in rows:
+        b.append("\\texttt{%s} & %s & %s & %s\\%% & %s \\\\" % (
+            tex_escape(case), tex_escape(h[0]), "{:,}".format(h[1]).replace(",", "{,}"),
+            ("%g" % h[2]), ("%g\\%%" % l[2]) if l else "--"))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t_crratio.tex", "\n".join(b) + "\n")
+
+    coords = lambda idx: "".join("(%s,%g)" % (r[1], r[idx][2]) for r in rows if r[idx])
+    # The x axis is symbolic and its coordinate list must be declared before the axis begins,
+    # while the plots go inside it. Two fragments, because one file cannot be input in both
+    # places, and the order of the names has to match the order of the bars.
+    syms = ",".join(r[1] for r in rows)
+    write_raw("f_crratio_syms.tex",
+              provenance("tools/cost_matrix.cpp") + "\n"
+              + r"\pgfplotsset{crsymbolic/.style={symbolic x coords={%s}}}" % syms + "\n")
+    f = [provenance("tools/cost_matrix.cpp"),
+         r"\addplot[fill=gray!55, draw=black] coordinates {%s};" % coords(3),
+         r"\addlegendentry{lower depth}",
+         r"\addplot[fill=white, draw=black] coordinates {%s};" % coords(2),
+         r"\addlegendentry{higher depth}"]
+    write_raw("f_crratio.tex", "\n".join(f) + "\n")
+    return len(rows)
+
+
 # --- T8: thread scaling, and the single-thread column T2 compares against -----------
 
 def scaling(build, tool, name, steps, iters, caption_tool):
@@ -145,6 +219,15 @@ def scaling(build, tool, name, steps, iters, caption_tool):
         b.append("%s & %s & %s & %s & %s & %.2f \\\\" % (th, st, canon, raw, med, base / float(med)))
     b += [r"\bottomrule", r"\end{tabular}"]
     write(name, "\n".join(b) + "\n")
+
+    # The conclusion states the best speedup and the thread count it occurs at. Emitting them as
+    # macros is what keeps that sentence from drifting when this table is regenerated: the prose
+    # cites the value rather than repeating it.
+    best_t, best_s = max(((int(r[0]), base / float(r[4])) for r in rows), key=lambda p: p[1])
+    write_raw("values.tex",
+              provenance(caption_tool) + "\n"
+              + r"\newcommand{\MaxHostSpeedup}{%.1f}" % best_s + "\n"
+              + r"\newcommand{\MaxHostSpeedupThreads}{%d}" % best_t + "\n")
     return len(rows)
 
 
@@ -184,6 +267,16 @@ def t7(build, gpu_build, steps_list, iters):
             st, states, events, c1, c8, gpu, c1 / gpu, c8 / gpu))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t7_gpu.tex", "\n".join(b) + "\n")
+
+    # The left panel of the GPU figure plots the CPU 8-thread and GPU columns of this table.
+    cpu_pts = "".join("(%d,%.1f)" % (r[0], r[4]) for r in rows)
+    gpu_pts = "".join("(%d,%.1f)" % (r[0], r[5]) for r in rows)
+    f = [provenance("tools/bench_cpu_evolve.cpp + tools/bench_gpu_evolve.cpp"),
+         r"\addplot[mark=*, black] coordinates {%s};" % cpu_pts,
+         r"\addlegendentry{CPU, 8 threads}",
+         r"\addplot[mark=square, black, dashed] coordinates {%s};" % gpu_pts,
+         r"\addlegendentry{GPU}"]
+    write_raw("f_gpu_depth.tex", "\n".join(f) + "\n")
     return len(rows)
 
 
@@ -313,6 +406,19 @@ def t2(build, maxd, reps):
             ("%.1f" % c) if c else "--", vs_auth, vs_ref, agree))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
+
+    # The figure beside this table plots the same two series. Emitting them here is what keeps
+    # the figure and the table from drifting: one run produces both, so a regenerated table
+    # cannot leave the plot showing the previous run's numbers.
+    depths = [d for d in sorted(auth) if d in hgev and core.get(d)]
+    auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)
+    core_pts = "".join("(%d,%.1f)" % (d, core[d]) for d in depths)
+    f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
+         r"\addplot[mark=square*, black, dashed] coordinates {%s};" % auth_pts,
+         r"\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}",
+         r"\addplot[mark=*, black] coordinates {%s};" % core_pts,
+         r"\addlegendentry{this engine}"]
+    write_raw("f_speedup.tex", "\n".join(f) + "\n")
     return len(auth)
 
 
@@ -456,12 +562,16 @@ def main():
     ap.add_argument("--quotient-depth", type=int, default=7)
     ap.add_argument("--authority-depth", type=int, default=5)
     ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--cr-low-steps", type=int, default=2,
+                    help="step override for the lower C/R depth sample")
     ap.add_argument("--wolfram", action="store_true",
                     help="add T2, which needs a Wolfram kernel")
     a = ap.parse_args()
 
     n = t1(a.build_dir)
     print("T1: %d workloads" % n)
+    n = cr_ratio(a.build_dir, a.cr_low_steps)
+    print("C/R: %d cases" % n)
     n = scaling(a.build_dir, "bench_cpu_evolve", "t8_scaling.tex", a.steps, a.iters,
                 "tools/bench_cpu_evolve.cpp")
     print("T8: %d thread counts" % n)

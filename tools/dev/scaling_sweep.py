@@ -42,6 +42,28 @@ import paper_tables as pt  # provenance, tex_escape, write -- one implementation
 NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
 
 
+def physical_cores():
+    """Physical cores on this host, counted rather than assumed.
+
+    The efficiency figure marks this count, and it is the point the two series are read against,
+    so writing it as a literal would state a property of one machine in a document generated on
+    another. A (physical id, core id) pair identifies a core; hyperthreads share one.
+    """
+    pairs, phys, core = set(), None, None
+    with open("/proc/cpuinfo") as f:
+        for line in f:
+            if line.startswith("physical id"):
+                phys = line.split(":")[1].strip()
+            elif line.startswith("core id"):
+                core = line.split(":")[1].strip()
+            elif not line.strip() and phys is not None and core is not None:
+                pairs.add((phys, core))
+                phys = core = None
+    if phys is not None and core is not None:
+        pairs.add((phys, core))
+    return len(pairs) or (os.cpu_count() or 1)
+
+
 def run(cmd, env=None, timeout=3600):
     e = dict(os.environ)
     if env:
@@ -166,6 +188,11 @@ def gpu_saturation(gpu_build, steps, iters, sm_count):
         b.append("%d & %d & %.2f & %.2f$\\times$ & %s \\\\" % (mult, blocks, ms, base / ms, u))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t11_gpu_saturation.tex", "\n".join(b) + "\n")
+    # The right panel of the GPU figure plots the median against the grid size.
+    pts = "".join("(%d,%.2f)" % (mult, ms) for (mult, _blocks, ms, _u) in rows)
+    pt.write_raw("f_gpu_saturation.tex",
+                 pt.provenance("tools/bench_gpu_evolve.cpp (mode 2)") + "\n"
+                 + r"\addplot[mark=*, black] coordinates {%s};" % pts + "\n")
     return rows
 
 
@@ -231,6 +258,22 @@ def rule_shape_scaling(build, shapes, iters):
         b.append("%d & %s \\\\" % (rows[order[0]][i][0], " & ".join(cells)))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t12_rule_shapes.tex", "\n".join(b) + "\n")
+
+    # Left panel of the scaling figure: parallel efficiency against worker count, one series per
+    # rule shape, computed from the same medians the table prints.
+    styles = [r"[mark=*, black]", r"[mark=square, black, dashed]"]
+    labels = {"growth": "one-edge LHS", "pair": "two-edge LHS"}
+    f = [pt.provenance("tools/sampling_cost_smoke.cpp")]
+    for i, r in enumerate(rows):
+        base = rows[r][0][1]
+        pts = "".join("(%d,%.2f)" % (t, (base / ms) / t) for (t, ms, _s, _e) in rows[r])
+        f.append(r"\addplot%s coordinates {%s};" % (styles[i % len(styles)], pts))
+        f.append(r"\addlegendentry{%s}" % labels.get(r, r))
+    # The dotted rule marks this host's physical core count, which is a property of the machine
+    # rather than of the measurement, so it is written from the same place the sweep reads it.
+    f.append(r"\addplot[gray, dotted, thick, forget plot] coordinates {(%d,0)(%d,1.25)};"
+             % (physical_cores(), physical_cores()))
+    pt.write_raw("f_efficiency.tex", "\n".join(f) + "\n")
     return rows
 
 
@@ -286,6 +329,16 @@ def thread_memory_cost(build, shape, iters):
                  % (t, wall, u, s, rss, "{:,}".format(int(mf)).replace(",", "\\,")))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t13_thread_memory.tex", "\n".join(b) + "\n")
+
+    # Right panel of the scaling figure: user against system time, from the same getrusage rows.
+    user_pts = "".join("(%d,%.2f)" % (t, u) for (t, _w, u, _s, _r, _m) in rows)
+    sys_pts = "".join("(%d,%.2f)" % (t, s) for (t, _w, _u, s, _r, _m) in rows)
+    pt.write_raw("f_thread_memory.tex",
+                 pt.provenance("tools/sampling_cost_smoke.cpp under /usr/bin/time -v") + "\n"
+                 + r"\addplot[mark=*, black] coordinates {%s};" % user_pts + "\n"
+                 + r"\addlegendentry{user}" + "\n"
+                 + r"\addplot[mark=triangle*, black, dashed] coordinates {%s};" % sys_pts + "\n"
+                 + r"\addlegendentry{system}" + "\n")
     return rows
 
 
