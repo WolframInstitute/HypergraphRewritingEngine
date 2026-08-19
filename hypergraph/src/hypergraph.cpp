@@ -1094,12 +1094,18 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     const Event& ev = get_event(e);
     const EdgeOrbitTable* in_orb = state_orbits(ev.input_state);
     const EdgeOrbitTable* out_orb = state_orbits(ev.output_state);
-    if (!in_orb || !out_orb || !in_orb->slot || !out_orb->slot) return;
+    if (!in_orb || !out_orb || !in_orb->slot || !out_orb->slot) {
+        qc_capture_no_orbits_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     const uint64_t from = get_state(ev.input_state).canonical_hash;
 
     const uint64_t claim = static_cast<uint64_t>(ev.input_state) + 1;
     auto rep = qc_expansion_rep_.insert_if_absent(from, claim);
-    if (!rep.second && rep.first != claim) return;   // a different raw state owns this class
+    if (!rep.second && rep.first != claim) {         // a different raw state owns this class
+        qc_capture_not_rep_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     const uint32_t nprod = ev.num_produced;
 

@@ -60,6 +60,23 @@ struct Sample {
     uint64_t branchial_fp;
     uint64_t states_fp;
     size_t   branchial_pairs, canonical_states, instances;
+    // THE SAME RELATION, COUNTED TWO WAYS. branchial_pairs is what the enumeration yields;
+    // branchial_counted is what the replay incremented as it emitted. Neither engine stores the
+    // pairs any more, so these are two independent routes to one number and a disagreement says
+    // WHICH side is wrong -- the replay emitting a pair twice, or the walk that re-derives them
+    // reaching a different set.
+    size_t   branchial_counted;
+    // APPLICATIONS. Every relation the quotient route serves is built over these: a causal pair
+    // is a producer and a consumer of one slot, a branchial pair two applications of one
+    // instance sharing one. The (instance, match) rendezvous is what decides that an application
+    // happens at all -- each side publishes and then scans for the other -- and a pair missed by
+    // BOTH scans is an application that never runs. That would leave the canonical state and
+    // event counts untouched, since identity is over classes, while changing both relations:
+    // exactly the shape the suite reports.
+    size_t   applications;
+    size_t   claims;          // distinct (instance, match) keys in the replay's claim set
+    size_t   cap_no_orbits;   // captures dropped because an endpoint's orbits were not visible
+    size_t   cap_not_rep;     // captures skipped because another raw state represents the class
     size_t   frame_disagree, align_fail, align_badcorr;
     size_t   events, causal_pairs;
     // The relation the run does NOT serve on this route, carried alongside so the baseline line
@@ -165,6 +182,8 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     }
 
     return { fp, bfp, sfp, be.size(), st.size(), g.num_reconstructed_instances(),
+             g.num_reconstructed_branchial(), g.applied_scans(), g.applied_claims(),
+             g.capture_dropped_no_orbits(), g.capture_skipped_not_representative(),
              g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
              g.num_bad_correspondences(), g.observable_num_events(), ce.size(),
              g.causal_graph().num_causal_event_pairs(), threads, seed };
@@ -212,6 +231,23 @@ int main(int argc, char** argv) {
             std::printf("  %-8s alignment: frame_disagreements=%zu failures=%zu"
                         " bad_correspondences=%zu\n", w.name,
                         b.frame_disagree, b.align_fail, b.align_badcorr);
+            // THE TWO ROUTES TO ONE NUMBER, reported every run. The replay counts each pair as
+            // it emits it; the walk re-derives them from the applications. Equal is the
+            // invariant; unequal names which side to look at.
+            // n^2/2^65 with n the DISTINCT claim count: the probability that two distinct
+            // (instance, match) pairs mix to one key and the second application is dropped.
+            {
+                const double n = static_cast<double>(b.claims);
+                std::printf("  %-8s claims: distinct=%zu  applications=%zu  "
+                            "P(collision)=%.3g per run\n",
+                            w.name, b.claims, b.applications,
+                            n * n / 36893488147419103232.0);
+            }
+            std::printf("  %-8s capture: dropped_no_orbits=%zu skipped_not_rep=%zu\n",
+                        w.name, b.cap_no_orbits, b.cap_not_rep);
+            std::printf("  %-8s branchial: enumerated=%zu counted=%zu %s\n", w.name,
+                        b.branchial_pairs, b.branchial_counted,
+                        b.branchial_pairs == b.branchial_counted ? "agree" : "DISAGREE");
             if (b.causal_pairs == 0 || b.branchial_pairs == 0 || b.canonical_states == 0)
                 std::printf("  %-8s A FINGERPRINTED RELATION IS EMPTY -- it agrees with itself"
                             " forever and constrains nothing\n", w.name);
@@ -219,16 +255,54 @@ int main(int argc, char** argv) {
         size_t w_fail = 0;
         for (int it = 0; it < iterations; ++it) {
             std::set<uint64_t> fps, bfps, sfps;
+            // THE FIRST-ORDER QUANTITY. Under quotient both relations are derived from the
+            // replay's APPLICATIONS: a causal pair is a producer and a consumer of one slot, a
+            // branchial pair is two applications of one instance sharing one. If the instance
+            // set varies between runs then both relations vary with it, and a fingerprint
+            // spread is the symptom rather than the fault. Nothing was watching this.
+            std::set<size_t> inst_counts, event_counts, app_counts;
             std::vector<Sample> samples;
             for (uint64_t seed : {uint64_t(0xABCDEF), uint64_t(0)})
                 for (int th : {1, 2, 8, 16, 32}) {
                     Sample s = run_once(w, th, seed);
+                    // THE INVARIANT, CHECKED EVERY RUN rather than only on the baseline: the
+                    // replay counts each branchial pair as it emits it, the walk re-derives them
+                    // from the applications, and neither engine stores the pairs. A run where
+                    // these differ has already told us which side is wrong, and it is worth more
+                    // than the fingerprint spread that would otherwise be the only symptom.
+                    if (s.branchial_pairs != s.branchial_counted) {
+                        std::printf("  %s SPLIT at threads=%d seed=%s: enumerated %zu,"
+                                    " counted %zu (%+lld)\n",
+                                    w.name, th, seed ? "fixed" : "random",
+                                    s.branchial_pairs, s.branchial_counted,
+                                    (long long)s.branchial_pairs - (long long)s.branchial_counted);
+                    }
+                    if (s.cap_no_orbits != 0)
+                        std::printf("  %s DROPPED CAPTURE at threads=%d seed=%s: %zu match(es) "
+                                    "lost because an endpoint's orbits were not visible yet\n",
+                                    w.name, th, seed ? "fixed" : "random", s.cap_no_orbits);
+                    inst_counts.insert(s.instances);
+                    app_counts.insert(s.applications);
+                    event_counts.insert(s.events);
                     fps.insert(s.causal_fp);
                     bfps.insert(s.branchial_fp);
                     sfps.insert(s.states_fp);
                     samples.push_back(s);
                 }
             ++total;
+            if (app_counts.size() > 1) {
+                std::printf("  %s iteration %d: APPLICATIONS VARY -- {", w.name, it);
+                for (size_t c : app_counts) std::printf(" %zu", c);
+                std::printf(" }  (the relations are built over these, so they vary with them)\n");
+            }
+            if (inst_counts.size() > 1 || event_counts.size() > 1) {
+                std::printf("  %s iteration %d: THE REPLAY ITSELF VARIES -- instance counts {",
+                            w.name, it);
+                for (size_t c : inst_counts) std::printf(" %zu", c);
+                std::printf(" }, event counts {");
+                for (size_t c : event_counts) std::printf(" %zu", c);
+                std::printf(" }\n");
+            }
             if (fps.size() > 1 || bfps.size() > 1 || sfps.size() > 1) {
                 ++failed; ++w_fail;
                 std::printf("  %s iteration %d: distinct fingerprints -- states %zu,"

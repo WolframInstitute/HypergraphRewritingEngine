@@ -262,6 +262,23 @@ class Hypergraph {
     std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
     // Scans of an instance's applied list, and elements visited across them. visits/scans is
     // the mean fan-out m; pairs are bounded by sum m(m-1)/2 while the SCAN costs sum m^2.
+    // CAPTURES DROPPED BECAUSE AN ENDPOINT'S ORBITS WERE NOT THERE YET.
+    //
+    // qc_capture_expansion needs both endpoints' EdgeOrbitTable and its slot array to record a
+    // match in frame slots. Both are filled when the state is canonicalized, and this runs on
+    // the event, so whether this thread OBSERVES them is a question about publication order --
+    // schedule-dependent, and the match is dropped when the answer is no.
+    //
+    // It was not counted. A drop here removes a match from the capture, so the replay never
+    // applies it to any instance: fewer applications, hence fewer causal and branchial pairs,
+    // while the canonical state and event counts are untouched because the state was still
+    // explored. That is the exact shape of the intermittent quotient determinism failures, and
+    // every instrument reported zero because nothing was looking here.
+    mutable std::atomic<size_t> qc_capture_no_orbits_{0};
+    // The class already has a representative raw state and it is not this one. BY DESIGN -- one
+    // raw state per class captures -- but counted, because "by design" and "measured" are
+    // different claims and only one of them was on record.
+    mutable std::atomic<size_t> qc_capture_not_rep_{0};
     mutable std::atomic<size_t> qc_applied_scans_{0};
     mutable std::atomic<size_t> qc_applied_visits_{0};
     std::atomic<size_t> qc_num_branchial_{0};      // sibling matches of one instance, overlapping
@@ -1086,6 +1103,26 @@ public:
         return qc_causal_pairs_.count_enumerated();
     }
     size_t applied_scans() const { return qc_applied_scans_.load(std::memory_order_relaxed); }
+
+    // HOW MANY (instance, match) PAIRS THE REPLAY CLAIMED, distinct.
+    //
+    // The claim key is a 64-bit FNV mix of two dense counters (hgcommon::qr_apply_key), and the
+    // match side offers every captured match to every instance standing at its class, so the
+    // number of DISTINCT keys is the cross product rather than the number of applications that
+    // survive it -- the width check that rejects most of them runs AFTER the claim. Two distinct
+    // pairs that mix to one key make the second look already-claimed, and its application is
+    // dropped silently. That probability is n^2/2^65, so the count is the whole question and
+    // nothing was reporting it.
+    size_t applied_claims() const { return qc_applied_.size(); }
+
+    // Matches the capture never recorded. The first is a race and a defect; the second is the
+    // one-representative-per-class rule doing its job.
+    size_t capture_dropped_no_orbits() const {
+        return qc_capture_no_orbits_.load(std::memory_order_relaxed);
+    }
+    size_t capture_skipped_not_representative() const {
+        return qc_capture_not_rep_.load(std::memory_order_relaxed);
+    }
     size_t applied_visits() const { return qc_applied_visits_.load(std::memory_order_relaxed); }
 
     // DERIVED FROM THE SET, not from the counter that fed it. qc_num_branchial_ is incremented

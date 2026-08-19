@@ -313,10 +313,18 @@ TEST(CausalDeterminism, NonQuotientFullyDeterministic) {
 TEST(CausalDeterminism, QuotientStatesEventsBranchialDeterministic) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/true);
-        EXPECT_EQ(s.states.size(), 1u)    << w.name << ": state set non-deterministic under quotient";
-        EXPECT_EQ(s.branchial.size(), 1u) << w.name << ": branchial non-deterministic under quotient";
-        EXPECT_EQ(s.ne.size(), 1u)        << w.name << ": event count non-deterministic under quotient";
-        EXPECT_EQ(s.nb.size(), 1u)        << w.name << ": branchial count non-deterministic under quotient";
+        // describe() on every one of them. Without it a firing reports only how MANY distinct
+        // values there were, which names neither the configuration that differed nor the counts
+        // it produced -- and this test fires about once in twenty suite runs, so the report it
+        // leaves is the whole evidence.
+        EXPECT_EQ(s.states.size(), 1u)    << w.name << ": state set non-deterministic under quotient"
+                                          << describe(s, s.states_v, s.states_n, "state fingerprint");
+        EXPECT_EQ(s.branchial.size(), 1u) << w.name << ": branchial non-deterministic under quotient"
+                                          << describe(s, s.branchial_v, s.branchial_n, "branchial fingerprint");
+        EXPECT_EQ(s.ne.size(), 1u)        << w.name << ": event count non-deterministic under quotient"
+                                          << describe(s, s.branchial_v, s.branchial_n, "branchial fingerprint");
+        EXPECT_EQ(s.nb.size(), 1u)        << w.name << ": branchial count non-deterministic under quotient"
+                                          << describe(s, s.branchial_v, s.branchial_n, "branchial fingerprint");
     }
 }
 
