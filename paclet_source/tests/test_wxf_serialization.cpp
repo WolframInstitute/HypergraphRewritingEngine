@@ -209,7 +209,8 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 // caller did not ask for" from outside.
 std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op,
                                             const std::vector<std::string>& requested,
-                                            int64_t session = 0, bool with_rules = true) {
+                                            int64_t session = 0, bool with_rules = true,
+                                            bool quotient = false) {
     wxf::Writer w;
     w.write_header();
 
@@ -239,10 +240,22 @@ std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Options"));
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1);
+    w.write_varint(quotient ? 3 : 1);
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("RequestedData"));
     w.write(requested);
+    if (quotient) {
+        // The RAW UNFOLDING only exists as a separate quantity under quotient exploration, and
+        // that needs the exact identity: in tree mode every state is its own, the reconstruction
+        // never runs, and record.raw_events decides nothing. A gate for it that leaves these at
+        // their defaults cannot fail.
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("CanonicalizeStates"));
+        w.write_symbol("Full");
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("ExploreFromCanonicalStatesOnly"));
+        w.write_symbol("True");
+    }
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Op"));
@@ -372,6 +385,41 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
 
 // Open and Close against a live engine: the LIFETIME, asserted against the real worker slot
 // rather than only against SessionSlot in isolation -- that a session is retained, that
+// NARROWING THE REQUEST MUST NOT CHANGE THE ANSWER.
+//
+// RequestedData drives the FFI's RecordSet, and record.raw_events in particular decides whether
+// the run reconstructs the raw unfolding at all -- 25x on multirule at depth 6, and 99.57% of
+// engine cycles by RecordSet's own measurement. A derivation that turns it off for a request
+// that needed it would return a smaller answer, not a slower one, and the counts are where that
+// shows. Asked narrowly or asked broadly, the same question has the same answer.
+TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
+    HostBridge host;
+
+  for (const bool quotient : {false, true}) {
+    const auto broad = run_rewriting_core(
+        build_input_requesting(3, "Evolve",
+                               {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
+                               0, true, quotient),
+        host);
+    ASSERT_FALSE(broad.empty());
+
+    // Each component asked for ALONE. The narrow run derives a smaller RecordSet than the broad
+    // one; if that derivation drops something the component needed, this is where it shows.
+    struct Case { const char* key; };
+    for (const Case c : {Case{"NumStates"}, Case{"NumEvents"},
+                         Case{"NumCausalEdges"}, Case{"NumBranchialEdges"}}) {
+        const auto narrow = run_rewriting_core(
+            build_input_requesting(3, "Evolve", {c.key}, 0, true, quotient), host);
+        ASSERT_FALSE(narrow.empty()) << c.key;
+        EXPECT_EQ(read_int_key(narrow, c.key), read_int_key(broad, c.key))
+            << "asking for " << c.key << " alone answered differently from asking for it "
+            << "alongside the others, so the record set derived from the narrow request "
+            << "dropped something that component needed"
+            << (quotient ? " (quotient exploration)" : " (tree mode)");
+    }
+  }
+}
+
 // A CONTINUATION MUST NOT DEPEND ON THE ORDER THE CALLER ASKED THINGS IN.
 //
 // The FFI derives its RecordSet from the properties a job requests, which is what stops a
