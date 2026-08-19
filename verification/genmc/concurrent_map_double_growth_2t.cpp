@@ -24,7 +24,7 @@
 // executions, 200s, exhaustive. Sized before running, not discovered by waiting.
 //
 // THAT RESULT NO LONGER REPRODUCES, measured 2026-08-19 on a quiet box (load 2.97): no verdict
-// in 9m50s, and none in a second run given 55 minutes. The recorded 130,897 executions in 200s
+// in 9m50s, and none in a second run given 55 minutes (genmc exit 124 at 3,300 s). The recorded 130,897 executions in 200s
 // was real when it was written, so the state space this harness explores has grown since --
 // which is a statement about ConcurrentMap, not about the harness. GenMC's estimator is no help
 // deciding by how much: it reports 1,437 executions and 55s for this shape, an order of
