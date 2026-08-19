@@ -278,9 +278,10 @@ def t2(build, maxd, reps):
             core[int(m.group(1))] = float(m.group(3))
 
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
-         r"\begin{tabular}{rrrrrrrl}", r"\toprule",
+         r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
          r"Depth & States & Authority ms & Reference ms & Engine ms (paclet) & "
-         r"Engine ms (C++ core) & Speedup vs reference & Counts agree \\", r"\midrule"]
+         r"Engine ms (C++ core) & Speedup vs authority & Speedup vs reference & "
+         r"Counts agree \\", r"\midrule"]
     for d in sorted(auth):
         if d not in hgev:
             continue
@@ -297,9 +298,16 @@ def t2(build, maxd, reps):
         # The engine's C++ core against the reference: both compute DATA, so neither is charged
         # for building Wolfram Graph objects and the ratio is not a graph-construction artefact.
         vs_ref = ("%.0f$\\times$" % (r_ms / c)) if (r_ms is not None and c) else "--"
-        b.append("%d & %d & %.1f & %s & %.1f & %s & %s & %s \\\\" % (
+        # The engine's C++ core against the authority. Both sides are stated in the row beside
+        # it -- the authority's time includes building Wolfram Graph objects, because its
+        # MultiwaySystem exposes no property returning the state set as data, while the core
+        # builds none. That asymmetry is the reason the paclet column sits here too: it is the
+        # same-basis comparison, and this column is the engine's own speed with nothing
+        # marshalled.
+        vs_auth = ("%.0f$\\times$" % (a_ms / c)) if c else "--"
+        b.append("%d & %d & %.1f & %s & %.1f & %s & %s & %s & %s \\\\" % (
             d, a_states, a_ms, ("%.1f" % r_ms) if r_ms is not None else "--", h_ms,
-            ("%.1f" % c) if c else "--", vs_ref, agree))
+            ("%.1f" % c) if c else "--", vs_auth, vs_ref, agree))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
     return len(auth)

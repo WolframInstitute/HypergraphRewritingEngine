@@ -1266,7 +1266,13 @@ and that the flag comes from the publishing exchange rather than from a value co
 repeated offers of the same value for the same key do not each report success. For the deque: that
 the owner popping the back and a thief popping the front never extract the same item, checked at
 the single configuration where the two ends address the same slot. For the match rendezvous: that
-a match is claimed exactly once and never dropped on a collision. For the key set: that two
+a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
+an instance and the matches captured for its class, that every pair meets. For the per-instance
+application list: that of any two applications linked into one list exactly one observes the
+other, which is what permits the branchial pair they induce to be emitted once with nothing to
+deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
+node linked before it. For the per-worker scratch arena: that no two workers are handed the same
+index. For the key set: that two
 threads inserting one key while a third insertion forces a growth beneath them produce exactly one
 reported insertion, and that enumeration emits each key once across that growth---two properties
 that failed independently in earlier designs of the same structure, which is why they are checked
@@ -1314,6 +1320,33 @@ no  & no  & \textbf{violated} & trace depth 13 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{A second structure in the same layer.} The segmented array carries the states, the
+events, the edges and the per-instance application lists, and its ordering invariant is that if a
+segment exists then so does every segment below it---a reader that finds segment $k$ may index any
+position beneath it without further checking. That invariant is specified rather than tested,
+because the structure allocates segments on demand from concurrent appenders and the failure it
+guards against is a read of an unallocated segment rather than a wrong value. The shipped
+protocol checks clean at $2{,}284$ distinct states and a complete-graph depth of $21$; the
+configuration that creates only the segment asked for violates \emph{DenseBelowCount}. The
+calibration also fixes the bound: at two appenders the broken protocol is \emph{also} clean, since
+one claim each means the index that would expose the gap cannot be reached until a holder of the
+lower segment has published, so three are required. It is specified here rather than checked with
+the tools of the previous layer because that checker does not survive constructing this
+structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
+
+\paragraph{What a sampled execution reports.} The two layers above bound the schedule; the test
+suite does not, and no sanitizer changes that. What a sanitizer changes is what a given execution
+is able to report, which is the second half of the objection to testing: a stress run samples few
+schedules, and the schedules it does sample can still pass while holding a race, an
+out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
+ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
+CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
+fail the build on a finding. The initialization checker is the one that earns its place least
+obviously and matters most: a host readback of device memory that no kernel wrote is a value the
+allocator last left there, so the assertion over it passes or fails on allocation history rather
+than on the code, and neither a test nor a model checker over the concurrent structures would
+observe it.
 
 \section{Experimental Evaluation}
 \label{sec:benchmarks}
