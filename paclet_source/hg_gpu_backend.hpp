@@ -36,11 +36,22 @@ struct GpuJob {
     bool explore_from_canonical_states_only = false;
     bool quotient_initial_states = false;
     double exploration_probability = 1.0;
+    // The sampling seed. The device path did not carry it: EvolveInput::exploration_seed was
+    // left at 0, which the engine resolves to a FRESH random seed, so a caller giving
+    // RandomSeed got a different sample on every run while the host gave the same one. Same
+    // class as the RandomSeed defect the option-surface gate exists for -- declared, sent,
+    // parsed, and then dropped at the device boundary.
+    uint64_t random_seed = 0;
     uint64_t max_device_memory_bytes = 0;
 
     // Output selection (mirrors the FFI include_* flags).
     bool include_states = true;
     bool include_events = true;
+    // EventsMinimal is its OWN request, not a synonym for Events. The FFI collapsed the two into
+    // include_events when building this job, so the device could not tell them apart and always
+    // emitted the full record -- ConsumedEdges and ProducedEdges included, which is exactly what
+    // a caller asking for the minimal form asked not to receive.
+    bool include_events_minimal = false;
     bool include_causal_edges = true;
     bool include_branchial_edges = true;
     bool include_canonical_hashes = false;

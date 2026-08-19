@@ -457,9 +457,11 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.explore_from_canonical_states_only,
             req.quotient_initial_states,
             req.exploration_probability,
+            req.random_seed,
             0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
             req.include_states,
             req.include_events || req.include_events_minimal,
+            req.include_events_minimal && !req.include_events,
             req.include_causal_edges,
             req.include_branchial_edges,
             req.include_canonical_hashes,

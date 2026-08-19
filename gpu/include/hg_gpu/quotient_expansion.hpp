@@ -191,6 +191,13 @@ struct QeView {
     // Indexed by raw event id, which is what the pair keys hold; the triple is what a
     // cross-engine comparison can be made on. The host's qc_event_sig_.
     uint64_t* event_sig;
+    // Per raw event, the identity under the RUN'S MODE -- what observable_num_events counts
+    // distinct values of. Kept BESIDE the content triple, not instead of it: the triple is the
+    // schedule-stable key the relations compare on, and this is what a caller must group events
+    // by to build a graph whose vertex set is the set the count describes. Recording only the
+    // COUNT of distinct values, which is all this did, cannot say which event carries which, so
+    // a graph could not be built over them at all.
+    uint64_t* event_runsig;
     uint32_t  event_sig_capacity;
 
     typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
@@ -604,7 +611,8 @@ struct DeviceQrCtx {
         const auto fs = qe.frame_step.lookup_waiting(class_hash);
         return (fs.found && fs.value != 0) ? fs.value - 1u : fallback;
     }
-    __device__ void record_runsig(uint32_t, uint64_t csig) {
+    __device__ void record_runsig(uint32_t ev, uint64_t csig) {
+        if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = csig;
         if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
     }
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
@@ -735,6 +743,8 @@ public:
         event_sig_capacity_ = on ? max_events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
+        HG_CUDA_CHECK(cudaMalloc(&event_runsig_, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event runsig alloc");
         clear();
     }
     ~QeState() {
@@ -771,6 +781,8 @@ public:
         HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
         HG_CUDA_CHECK(cudaMemset(event_sig_, 0, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig clear");
+        HG_CUDA_CHECK(cudaMemset(event_runsig_, 0, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event runsig clear");
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
@@ -820,7 +832,8 @@ public:
     void reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial,
-                                  bool want_branchial) {
+                                  bool want_branchial,
+                                  std::vector<uint64_t>* event_signature = nullptr) {
         causal.clear();
         causal_reduced.clear();
         branchial.clear();
@@ -833,6 +846,19 @@ public:
         auto sig_of = [&](uint32_t e) -> uint64_t {
             return e < sigs.size() ? sigs[e] : 0ull;
         };
+        // Handed back whole, so a caller can identify an EVENT the same way the relations
+        // identify their endpoints rather than by a second convention.
+        if (event_signature) {
+            // The RUN identity, not the content triple: observable_num_events counts distinct
+            // values of THIS, so a graph grouped by it has the vertex set the count describes.
+            std::vector<uint64_t> rsigs(event_sig_capacity_);
+            if (event_sig_capacity_)
+                HG_CUDA_CHECK(cudaMemcpy(rsigs.data(), event_runsig_,
+                                         sizeof(uint64_t) * event_sig_capacity_,
+                                         cudaMemcpyDeviceToHost), "QeState event runsig read");
+            event_signature->assign(rsigs.begin(),
+                                    rsigs.begin() + std::min<size_t>(rsigs.size(), n));
+        }
         auto drain = [&](DedupMap& m, std::vector<std::pair<uint64_t, uint64_t>>& out) {
             std::vector<uint64_t> keys;
             m.copy_keys_to_host(keys);
@@ -941,6 +967,7 @@ public:
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;
         q.event_sig        = event_sig_;
+        q.event_runsig     = event_runsig_;
         q.event_sig_capacity = event_sig_capacity_;
         q.inst_applied     = inst_applied_.view();
         q.num_branchial    = num_branchial_;
@@ -989,6 +1016,7 @@ private:
     uint32_t*                 num_causal_edges_ = nullptr;
     uint32_t*                 num_branchial_    = nullptr;
     uint64_t*                 event_sig_        = nullptr;
+    uint64_t*                 event_runsig_     = nullptr;
     uint32_t                  event_sig_capacity_ = 0;
     DedupMap                  frame_;
     uint32_t*                 arr_ = nullptr;

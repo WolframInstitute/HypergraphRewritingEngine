@@ -360,3 +360,39 @@ message(STATUS "  create_paclet_archive - Build documentation and create paclet 
 message(STATUS "Paclet Build Configuration:")
 message(STATUS "  Platform: ${PLATFORM_DIR}")
 message(STATUS "  Output: ${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
+
+# =============================================================================
+# gpu_ffi_tests - the SAME serialization gates, answered by the DEVICE
+# =============================================================================
+# hg_gpu_backend.cpp shipped in hg_evolve_gpu and in no test target, so nothing executed it:
+# its reply-shape gating -- which counts a job returns -- was checked by compiling it and by
+# its CPU twin, and by nothing that runs. The GPU binary routes EVERY job to run_gpu_job, so
+# the same test file compiled with HG_GPU_BACKEND asks the DEVICE the questions all_tests asks
+# the host. One test file, two devices, which is the rule the shared graph marshaller already
+# follows one level down.
+#
+# It lives here rather than in testing/ because testing/ is added before gpu/, so TARGET hg_gpu
+# does not exist yet there -- the same reason hg_evolve_gpu is declared in this file.
+if(TARGET hg_gpu AND BUILD_TESTS)
+    add_executable(gpu_ffi_tests
+        ${CMAKE_SOURCE_DIR}/testing/main.cpp
+        tests/test_wxf_serialization.cpp
+        hypergraph_ffi.cpp
+        hg_gpu_backend.cpp
+    )
+    target_compile_definitions(gpu_ffi_tests PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND
+        HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="gpu_ffi_tests"
+        HG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_include_directories(gpu_ffi_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/hypergraph/include
+        ${CMAKE_SOURCE_DIR}/job_system/include
+        ${CMAKE_SOURCE_DIR}/lockfree_deque/include
+        ${CMAKE_SOURCE_DIR}/gpu/include
+        ${CMAKE_SOURCE_DIR}/common/include
+        ${CMAKE_SOURCE_DIR}/wxf
+        ${CMAKE_SOURCE_DIR}/testing
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(gpu_ffi_tests PRIVATE hypergraph hg_gpu wxf GTest::gtest GTest::gtest_main)
+endif()

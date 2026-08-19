@@ -97,11 +97,18 @@ public:
 
     // Take the holder and mint a handle. Refuses while one is live (D7): a caller that has not
     // closed its session has not finished with it.
+    // D7's refusal, in ONE place. Both devices refuse a second Open and both must say the same
+    // thing: a caller matching on the message has no way to know which engine answered, and the
+    // device's own wording drifted from this one until a test compiled against both found it.
+    static std::string already_live_message(uint64_t live_handle) {
+        return "Open: a session is already live (" + std::to_string(live_handle) +
+               "); this build serves one session at a time";
+    }
+
     uint64_t open(std::unique_ptr<EngineHolder> holder) {
         if (!holder) throw SessionError("Open: no engine holder");
         if (state_ == SessionState::Live)
-            throw SessionError("Open: a session is already live (" + std::to_string(handle_) +
-                               "); this build serves one session at a time");
+            throw SessionError(already_live_message(handle_));
         holder_ = std::move(holder);
         handle_ = next_++;
         state_ = SessionState::Live;

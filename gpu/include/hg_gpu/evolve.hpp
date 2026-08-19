@@ -198,6 +198,17 @@ struct EvolveResult {
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_causal_relation_reduced;
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_branchial_relation;
 
+    // Per RAW event id, the reconstruction's schedule-stable content signature -- the same
+    // hash(input class, output class, rule) its relations are keyed on, and 0 for an id the
+    // replay never minted.
+    //
+    // WITHOUT THIS a caller cannot build a graph over the events the COUNT describes. Under an
+    // identity mode observable_num_events reports the reconstruction's distinct identities,
+    // while a graph built by mapping materialised events through their own canonical_id
+    // describes a different set: measured 25 vertices against a count of 24 on the device, the
+    // same discrepancy the host removed by routing identity through the reconstruction instead.
+    std::vector<uint64_t> reconstructed_event_signature;
+
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;
 

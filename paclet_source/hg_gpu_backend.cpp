@@ -6,6 +6,7 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
+#include "session.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -117,13 +118,33 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     {
         const hgmarshal::GraphPropertyNeeds gneeds =
             hgmarshal::graph_property_needs(job.graph_properties);
-        in.record.causal    = job.include_causal_edges || gneeds.causal;
-        in.record.branchial = job.include_branchial_edges || gneeds.branchial;
+        // THE SAME DERIVATION AS THE CPU FFI, term for term. It was not: the COUNT flags were
+        // missing from both lines, so a job asking for NumCausalEdges alone recorded no causal
+        // relation and the device answered 0 where the host answers the count. GpuJob could not
+        // express it either -- it carried no include_num_* at all.
+        in.record.causal    = job.include_causal_edges || job.include_num_causal_edges ||
+                              gneeds.causal;
+        in.record.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
+                              gneeds.branchial;
+        // The RAW unfolding, which under quotient exploration is the reconstruction and the
+        // engine's largest single cost. It defaults ON in RecordSet, and the device never
+        // derived it, so every device job paid for it whatever it asked for -- the same defect
+        // the host had until the request began deciding it.
+        in.record.raw_events = job.include_events || job.include_num_events;
+
+        // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
+        // a session exists to be continued and queried in ways its Open cannot know, so deriving
+        // its record set from the properties that Open happened to name makes the answer to a
+        // later Query depend on the order the caller asked things in.
+        if (job.session_op == "Open") {
+            in.record.causal = in.record.branchial = in.record.raw_events = true;
+        }
     }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
     in.quotient_initial_states = job.quotient_initial_states;
     in.exploration_probability = static_cast<float>(job.exploration_probability);
+    in.exploration_seed = job.random_seed;
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
@@ -182,8 +203,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     hg_gpu::EvolveResult result;
     if (is_open || is_step) {
         if (is_open && held.handle != 0) {
-            throw std::runtime_error(
-                "this worker already holds a GPU session; Close it before opening another");
+            // The same refusal the host gives, from the one place that spells it.
+            throw std::runtime_error(hgffi::SessionSlot::already_live_message(held.handle));
         }
         if (is_open) {
             const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
@@ -342,8 +363,13 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             ea.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(e.output_state))});
             ea.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(rep_of(e.input_state))});
             ea.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(rep_of(e.output_state))});
-            ea.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
-            ea.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+            // The minimal form stops here: seven fields, not nine. The two edge lists are what
+            // a caller asking for EventsMinimal is declining, and they are the largest part of
+            // an event record.
+            if (!job.include_events_minimal) {
+                ea.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
+                ea.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+            }
             events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e.id)), wxf::WXFValue(ea)});
         }
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
@@ -462,7 +488,34 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         auto is_init = [&](hg_gpu::StateId sid) -> bool {
             return is_output.find(sid) == is_output.end();
         };
+        // THE EVENT IDENTITY THE COUNT USES, when the reconstruction ran.
+        //
+        // observable_num_events reports the reconstruction's distinct identities. Mapping a
+        // materialised event through its own canonical_id answers a different question -- that
+        // id is computed from each raw state's own labelling, which is the per-state convention
+        // the reconstruction exists to replace -- and the two sets differ: 25 graph vertices
+        // against a count of 24. So when the replay ran, identity comes from its signature, and
+        // an event it never minted stands for no vertex at all. This is the host's rule
+        // (hypergraph_ffi.cpp's recon.dense_of_sig), reached through the signature array the
+        // device now hands back.
+        std::unordered_map<uint64_t, int64_t> dense_of_sig;
+        const bool recon_identity = result.reconstruction_ran &&
+                                    !result.reconstructed_event_signature.empty();
+        if (recon_identity) {
+            for (uint64_t sig : result.reconstructed_event_signature) {
+                if (sig == 0ull) continue;
+                dense_of_sig.emplace(sig, static_cast<int64_t>(dense_of_sig.size()));
+            }
+        }
+        auto sig_of_event = [&](hg_gpu::EventId eid) -> uint64_t {
+            return eid < result.reconstructed_event_signature.size()
+                       ? result.reconstructed_event_signature[eid] : 0ull;
+        };
         auto eff_event = [&](hg_gpu::EventId eid) -> int64_t {
+            if (recon_identity) {
+                auto it = dense_of_sig.find(sig_of_event(eid));
+                return it == dense_of_sig.end() ? -1 : it->second;
+            }
             if (job.state_canon_mode == 0 || job.event_canon_mode == 0) return static_cast<int64_t>(eid);
             auto it = event_by_id.find(eid);
             if (it == event_by_id.end() || it->second->canonical_id == hg_gpu::INVALID_ID)
@@ -514,7 +567,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(is_init(sid))});
             return d;
         };
-        gsrc.event_valid_ = [&](uint32_t eid) { return event_by_id.find(eid) != event_by_id.end(); };
+        gsrc.event_valid_ = [&](uint32_t eid) {
+            // An application whose identity the replay never registered stands for no vertex,
+            // which is what keeps the vertex set equal to the set the count describes.
+            if (recon_identity) return dense_of_sig.count(sig_of_event(eid)) != 0;
+            return event_by_id.find(eid) != event_by_id.end();
+        };
         gsrc.eff_event_ = eff_event;
         gsrc.in_state_ = [&](uint32_t eid) -> uint32_t {
             auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->input_state; };
