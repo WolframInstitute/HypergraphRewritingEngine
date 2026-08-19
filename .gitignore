@@ -45,3 +45,12 @@ docs/RELEASE_CHECKLIST.md
 # The v1.0.0 clock. Process, not deliverable.
 /.v1_deadline_start
 /.v1_deadline_end
+
+# LaTeX build output. The paper source is tracked; what pdflatex writes from it is not.
+/paper/*.aux
+/paper/*.bbl
+/paper/*.blg
+/paper/*.log
+/paper/*.out
+/paper/*.pdf
+/paper/*.toc
