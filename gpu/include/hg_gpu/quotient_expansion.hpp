@@ -819,7 +819,8 @@ public:
     // disagree; a pair set says which pair is missing, which a count cannot.
     void reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
-                                  std::vector<std::pair<uint64_t, uint64_t>>& branchial) {
+                                  std::vector<std::pair<uint64_t, uint64_t>>& branchial,
+                                  bool want_branchial) {
         causal.clear();
         causal_reduced.clear();
         branchial.clear();
@@ -842,6 +843,29 @@ public:
             }
         };
         drain(causal_pairs_, causal);
+
+        // THE REDUCED VIEW, from the same stored relation and the same rule the host engine
+        // uses. It is computed here rather than on the device for two reasons: which pairs
+        // survive is a property of the FINISHED relation, and a device that tagged each pair as
+        // it landed would answer against whatever the warps had produced so far; and the
+        // reduction runs over event IDS, whose order carries the reachability prune, while
+        // these vectors carry signatures and two events may share one.
+        std::vector<uint64_t> ckeys;
+        causal_pairs_.copy_keys_to_host(ckeys);
+        hgcommon::tr_reduce(
+            [&](auto&& add) {
+                for (uint64_t k : ckeys) {
+                    const hgcommon::IdPair p = hgcommon::id_pair_from_key(k);
+                    add(static_cast<uint32_t>(p.a), static_cast<uint32_t>(p.b));
+                }
+            },
+            [&](uint32_t a, uint32_t b) { causal_reduced.emplace_back(sig_of(a), sig_of(b)); },
+            // A producer wrote the slot its consumer reads, so its application minted the
+            // lower id: ids increase along every causal edge of this relation.
+            /*ids_topological=*/true);
+
+        if (!want_branchial) return;
+
 
         // BRANCHIAL, DERIVED FROM THE APPLICATIONS rather than stored as pairs. A branchial pair
         // is two applications of ONE instance sharing a consumed slot, so the applications are
@@ -888,25 +912,6 @@ public:
             }
         }
 
-        // THE REDUCED VIEW, from the same stored relation and the same rule the host engine
-        // uses. It is computed here rather than on the device for two reasons: which pairs
-        // survive is a property of the FINISHED relation, and a device that tagged each pair as
-        // it landed would answer against whatever the warps had produced so far; and the
-        // reduction runs over event IDS, whose order carries the reachability prune, while
-        // these vectors carry signatures and two events may share one.
-        std::vector<uint64_t> ckeys;
-        causal_pairs_.copy_keys_to_host(ckeys);
-        hgcommon::tr_reduce(
-            [&](auto&& add) {
-                for (uint64_t k : ckeys) {
-                    const hgcommon::IdPair p = hgcommon::id_pair_from_key(k);
-                    add(static_cast<uint32_t>(p.a), static_cast<uint32_t>(p.b));
-                }
-            },
-            [&](uint32_t a, uint32_t b) { causal_reduced.emplace_back(sig_of(a), sig_of(b)); },
-            // A producer wrote the slot its consumer reads, so its application minted the
-            // lower id: ids increase along every causal edge of this relation.
-            /*ids_topological=*/true);
     }
 
     // Distinct event identities the replay produced under the run's mode. The host's

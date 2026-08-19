@@ -47,6 +47,16 @@ struct EvolveInput {
     EventCanonicalizationMode event_canonicalization = EventCanonicalizationMode::None;
     bool transitive_reduction = true;
 
+    // MATERIALISE the reconstructed relations, rather than only reporting their sizes.
+    //
+    // The counts come from the device's own counters and cost nothing. The PAIRS are an
+    // expansion of the applications they are derived from -- 133,218,996 against 970,584 on
+    // disc-l3a2g2r2 depth 3 -- so building the vectors is 3,798 ms of a 4,114 ms run there,
+    // against 309 ms of actual evolution. Off by default because a caller that reads only the
+    // counts must not pay for the expansion; the host draws the same line, between a counter and
+    // an enumeration the caller drives.
+    bool materialize_relations = false;
+
     // Quotient exploration: expand each canonical state exactly once, at its
     // shortest depth, so the run costs the canonical closure rather than the
     // provenance count, claiming each state at its minimum depth. Canonical

@@ -341,6 +341,9 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.num_steps              = w.num_steps;
     in.canonicalization       = w.canon_mode;
     in.event_canonicalization = w.event_canon_mode;
+    // This suite COMPARES the relations pair by pair, so it needs them built. A caller that
+    // reads only the counts leaves this off and does not pay for the expansion.
+    in.materialize_relations  = true;
     // The scheduler is part of the workload, so it is stated rather than inherited: this suite's
     // job is to validate the GPU against the CPU, and which GPU scheduler answered has to be a
     // property of the case rather than of whatever the default happens to be.

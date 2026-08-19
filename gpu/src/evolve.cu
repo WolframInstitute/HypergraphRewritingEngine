@@ -421,10 +421,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_causal_pairs = qc_counts.causal_pairs;
         out.reconstructed_causal_edges = qc_counts.causal_edges;
         out.reconstructed_branchial = qc_counts.branchial;
+        // Causal and its reduction are built whenever the route ran, because the reduced COUNT
+        // is the size of that relation and deriving it is the only way to know it. Branchial is
+        // the expansion, so it is built only for a caller that will read the pairs.
         if (qc_route)
             qe_state_->reconstructed_pairs_host(out.reconstructed_causal_relation,
                                                 out.reconstructed_causal_relation_reduced,
-                                                out.reconstructed_branchial_relation);
+                                                out.reconstructed_branchial_relation,
+                                                in.materialize_relations);
         // DERIVED from the relation the caller receives, not counted beside it: the reduction
         // is computed during that readback, so a separate tally could only ever disagree.
         out.reconstructed_causal_pairs_reduced =
