@@ -135,9 +135,9 @@ This paper presents a high-performance implementation addressing these challenge
 \begin{enumerate}
     \item \textbf{Exact canonicalization:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Proposition~\ref{prop:wlceiling} shows why it is not placed in front of IR: the saving available to such a filter is bounded above by the ratio of canonical classes to raw states, which falls toward zero as an evolution deepens.
 
-    \item \textbf{Lock-free concurrency:} Our data structures---concurrent hash maps, segmented arrays, lock-free lists---enable parallel evolution without contention bottlenecks.
+    \item \textbf{Lock-free concurrency:} The engine holds no lock. Its concurrent hash maps, segmented arrays, lock-free lists and work-stealing deques are non-blocking, and a worker with no work waits on an address rather than spinning.
 
-    \item \textbf{GPU acceleration:} A GPU evolution backend offloads pattern matching and canonicalization for suitable workloads.
+    \item \textbf{GPU acceleration:} A CUDA backend runs matching, rewriting and canonicalization in one kernel that stays resident across evolution steps, so no step returns to the host. It is faster than the host where the rule set yields enough independent work to fill the device, which Section~\ref{sec:benchmarks} quantifies.
 
     \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always IR, computed on every state.
 
@@ -232,7 +232,7 @@ would compare two different computations.
 \section{Graph Canonicalization}
 \label{sec:canonicalization}
 
-Efficient state deduplication is critical for multiway evolution, as the state space grows exponentially without isomorphism detection. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR) alone: it is computed for every state, and its hash serves directly as the deduplication key. Weisfeiler--Leman (WL) is a separate, coarser signature, used by the modes that request a coarser notion of state identity.
+State deduplication determines how large the explored set becomes: without isomorphism detection, every path to a state contributes a separate vertex and the set grows exponentially with depth. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR) alone: it is computed for every state, and its hash serves directly as the deduplication key. Weisfeiler--Leman (WL) is a separate, coarser signature, used by the modes that request a coarser notion of state identity.
 
 \subsection{Individualization--Refinement}
 \label{sec:ir}
@@ -1684,15 +1684,18 @@ We have presented an implementation of multiway hypergraph evolution built on ex
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
-    \item Lock-free concurrent data structures enabling efficient multi-threaded evolution
-    \item A GPU evolution backend for pattern matching and canonicalization
+    \item Lock-free concurrent data structures, whose properties are model-checked rather than
+stress-tested (Section~\ref{sec:verification})
+    \item A resident CUDA kernel that carries matching, rewriting and canonicalization without
+returning to the host between evolution steps
     \item Independent, exact state and event equivalencing axes with configurable granularity
     \item Quotient exploration, transition-level sampling, and an online transitive reduction of the causal graph, each preserving the observable contract of Section~\ref{sec:determinism}
 \end{enumerate}
 
 \subsection{Future Directions}
 
-Several avenues remain for further optimization:
+Four directions remain open. The first two are performance, and both are named by a
+measurement in this paper rather than by expectation; the last two are scope.
 
 \textbf{Incremental canonicalization:} Matching is already incremental---a child inherits its
 parent's surviving matches by forwarding and scans only for matches anchored on a produced edge
@@ -1719,9 +1722,9 @@ thread counts. A mechanised proof over the implementation itself would.
 
 \subsection{Availability}
 
-The engine is used both directly as a library and as the evolution backend for downstream tools,
-including interactive visualisation of evolution, causal and branchial graphs. The implementation
-is available as:
+The engine is used directly as a library and as the evolution backend for downstream tools; with
+\texttt{BUILD\_VISUALIZATION} enabled it emits an event stream that an external renderer consumes
+to draw the evolution, causal and branchial graphs. The implementation is available as:
 \begin{itemize}
     \item Source code: \url{https://github.com/WolframInstitute/HypergraphRewritingEngine}
     \item Wolfram Language paclet: \texttt{WolframInstitute/HypergraphRewriteEngine}, installable with
