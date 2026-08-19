@@ -78,13 +78,26 @@ public:
         // because draining means exactly that every key here is already in a newer table.
         std::atomic<bool> drained{false};
 
+        // Set once EVERY table reachable through prev is drained, so an insert can skip the
+        // chain walk entirely rather than testing each table's drained flag in turn. The walk
+        // is the top cost inside insert on a set that has grown: measured at 214 million
+        // instructions on disc-l3a2g2r2 depth 3, where the chain is about twenty tables and
+        // every one of them is drained.
+        //
+        // Only ever set, never cleared, and only after the table below has been drained, so a
+        // reader that observes it may skip the walk without missing a key. A reader that
+        // observes it stale-false walks, which is what the flag replaces rather than changes.
+        std::atomic<bool> chain_clear{false};
+
         static Table* create(size_t cap, Table* prev, ConcurrentHeterogeneousArena* arena) {
             size_t actual = 1;
             while (actual < cap) actual <<= 1;
             const size_t bytes = sizeof(Table) + sizeof(std::atomic<K>) * actual;
             void* mem = arena ? arena->allocate_raw(bytes, alignof(Table))
                               : ::operator new(bytes);
-            Table* t = new (mem) Table{actual, actual - 1, prev, nullptr, {false}};
+            // The first table has nothing below it, so its chain is clear by construction.
+            Table* t = new (mem) Table{actual, actual - 1, prev, nullptr, {false},
+                                       {prev == nullptr}};
             t->keys = reinterpret_cast<std::atomic<K>*>(
                 reinterpret_cast<char*>(mem) + sizeof(Table));
             for (size_t i = 0; i < actual; ++i) new (&t->keys[i]) std::atomic<K>(EMPTY_KEY);
@@ -134,8 +147,10 @@ public:
             // Checked by removing the scan's seal and re-running both harnesses -- 781
             // executions, no violation -- which is what says the seal was redundant here.
             bool in_chain = false;
-            for (Table* t = head->prev; t && !in_chain; t = t->prev)
-                if (!t->drained.load(std::memory_order_acquire)) in_chain = find_in_table(t, key);
+            if (!head->chain_clear.load(std::memory_order_acquire)) {
+                for (Table* t = head->prev; t && !in_chain; t = t->prev)
+                    if (!t->drained.load(std::memory_order_acquire)) in_chain = find_in_table(t, key);
+            }
             if (in_chain) return false;
 
             const Claim c = claim(head, key);
@@ -292,6 +307,11 @@ private:
         // Published last: every key is now in nt and every slot here is sealed, so a reader that
         // observes this flag may skip the table without missing a key.
         if (all_sealed) nt->prev->drained.store(true, std::memory_order_release);
+        // Published after the flag above, so a reader seeing a clear chain sees the drain that
+        // makes it clear. A table left unsealed keeps every table above it walking, which is the
+        // conservative direction.
+        if (all_sealed && nt->prev->chain_clear.load(std::memory_order_acquire))
+            nt->chain_clear.store(true, std::memory_order_release);
     }
 
     // Migration is not a claim: it carries a key that already won its claim elsewhere, so it
