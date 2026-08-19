@@ -81,7 +81,8 @@
 % ============================================================================
 % DOCUMENT
 % ============================================================================
-\input{tables/values}   % generated: macros the prose cites, so a regenerated table moves them
+\input{tables/values_tables}  % generated: macros the prose cites, so a regenerated table moves them
+\input{tables/values_sweep}
 
 \begin{document}
 
@@ -107,13 +108,9 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, so state and event deduplication are exact rather than heuristic. The engine is compared against two implementations of the same definition, on the same rule and
-initial condition and agreeing with both on state and causal-edge counts at every depth: the
-\texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, which is the implementation a user would otherwise run, and
-this project's own brute-force reference implementation, which is what a direct, unoptimised
-implementation costs and which returns data rather than graph objects. Against the former the
-engine is faster by a factor of $5{,}507$ at depth four rising to $45{,}713$ at depth seven. The
-system is available as both a standalone C++/CUDA library and a Wolfram Language paclet.
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, so state and event deduplication are exact rather than heuristic.
+
+The engine is compared against two implementations of the same definition, run on the same rule and initial condition, and agreeing with the engine on state and causal-edge counts at every depth. The first is the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, the implementation a user would otherwise run; the second is this project's own brute-force reference implementation, which returns data rather than graph objects and so measures the definition without the cost of constructing them. Against the first, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{}. The system is available as a standalone C++/CUDA library and as a Wolfram Language paclet.
 
 \vspace{0.5em}
 \noindent Every quantitative table and figure in Section~\ref{sec:benchmarks} is generated from the tool that produces it, and each carries the commit, the machine and the tool in its own provenance line. Wall-clock figures are medians over repeated runs.
@@ -131,7 +128,7 @@ system is available as both a standalone C++/CUDA library and a Wolfram Language
 
 The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This approach generates three derived structures: causal graphs, recording dependencies between rewriting events; branchial graphs, connecting states reachable at the same evolution step; and multiway evolution graphs, representing the set of all reachable histories.
 
-Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The reference implementation in Wolfram Language is mathematically complete but, as Section~\ref{sec:benchmarks} quantifies, its running time makes evolutions beyond a few hundred states impractical.
+Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The existing Wolfram Language implementation is mathematically complete but, as Section~\ref{sec:benchmarks} quantifies, its running time makes evolutions beyond a few hundred states impractical.
 
 This paper presents a high-performance implementation addressing these challenges through:
 
@@ -196,8 +193,10 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
 
-\textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace} is the reference
-implementation associated with the Wolfram Physics Project, and is the closest system to this work.
+\textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace} is the implementation
+most closely associated with the Wolfram Physics Project, and is the closest system to this work.
+Throughout this paper, \emph{reference implementation} denotes this project's own brute-force
+evolver, named below, and never SetReplace.
 The two target different objects. SetReplace's multiway construction is a token--event graph over a
 single growing token pool: it records which rewrites occurred and what each consumed and produced,
 and does not canonicalize or deduplicate states during evolution, so two structurally identical
@@ -1398,8 +1397,9 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \end{tikzpicture}
 \caption{Evolution time against depth for the two implementations, logarithmic in time, on the same
 rule and initial condition and producing identical state and causal-edge counts at every depth. The
-vertical separation is the speedup reported in Table~\ref{tab:t2-speedup}: $5{,}507\times$ at depth
-four rising to $45{,}713\times$ at depth seven. The depth-2 point includes one-time initialisation
+vertical separation is the speedup reported in Table~\ref{tab:t2-speedup}: $\SpeedupAtLowDepth\times$
+at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth\times$ at depth \SpeedupHighDepth{}. The
+depth-2 point includes one-time initialisation
 on the Wolfram side, and this engine's times at depths 3--5 are near the timer's resolution.}
 \label{fig:speedup}
 \end{figure}
@@ -1680,7 +1680,7 @@ realised, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by factors of $5{,}507$, $12{,}589$, $27{,}108$ and $45{,}713$ at depths four through seven respectively (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $0.78$ up to eight workers and at or above $0.82$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}); the measured cause is memory acquisition rather than contention, since user time increases by a factor of $2.1$ across a $32\times$ increase in worker count while system time increases by a factor of $206$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond eight blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}). The GPU is slower than eight CPU threads at depth five and $12.4\times$ faster at depth seven (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}); the ratio increases with depth over the range measured. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is memory acquisition rather than contention: across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$ while system time increases by a factor of $\SysTimeGrowth$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle

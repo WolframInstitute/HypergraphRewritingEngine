@@ -79,6 +79,26 @@ def _fit(inner):
             + inner + "\n}\n")
 
 
+# Values the PROSE cites. A number quoted in a sentence drifts from the table it came from as
+# soon as the table is regenerated, and nothing detects it, so the sentence cites a macro and the
+# macro is written here. Accumulated across generators and emitted once, since several contribute.
+VALUES = {}
+
+
+def value(name, latex):
+    VALUES[name] = latex
+
+
+def write_values(name="values_tables.tex"):
+    """Emit the accumulated macros. Each script writes its OWN file: they run as separate
+    processes, so a shared name would mean whichever ran second erased the other's macros."""
+    if not VALUES:
+        return
+    body = [provenance("the generators in this file")]
+    body += [r"\newcommand{\%s}{%s}" % (k, v) for k, v in sorted(VALUES.items())]
+    write_raw(name, "\n".join(body) + "\n")
+
+
 def write_raw(name, body):
     """Emit a fragment verbatim. Figure data is pgfplots commands, not a tabular, so it must not
     be wrapped in the resizebox write() applies."""
@@ -224,10 +244,8 @@ def scaling(build, tool, name, steps, iters, caption_tool):
     # macros is what keeps that sentence from drifting when this table is regenerated: the prose
     # cites the value rather than repeating it.
     best_t, best_s = max(((int(r[0]), base / float(r[4])) for r in rows), key=lambda p: p[1])
-    write_raw("values.tex",
-              provenance(caption_tool) + "\n"
-              + r"\newcommand{\MaxHostSpeedup}{%.1f}" % best_s + "\n"
-              + r"\newcommand{\MaxHostSpeedupThreads}{%d}" % best_t + "\n")
+    value("MaxHostSpeedup", "%.1f" % best_s)
+    value("MaxHostSpeedupThreads", "%d" % best_t)
     return len(rows)
 
 
@@ -267,6 +285,11 @@ def t7(build, gpu_build, steps_list, iters):
             st, states, events, c1, c8, gpu, c1 / gpu, c8 / gpu))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t7_gpu.tex", "\n".join(b) + "\n")
+
+    # The conclusion states where the device wins and by how much at the deepest depth measured.
+    deepest = rows[-1]
+    value("GpuDeepestDepth", "%d" % deepest[0])
+    value("GpuSpeedupAtDeepest", "%.1f" % (deepest[4] / deepest[5]))
 
     # The left panel of the GPU figure plots the CPU 8-thread and GPU columns of this table.
     cpu_pts = "".join("(%d,%.1f)" % (r[0], r[4]) for r in rows)
@@ -410,6 +433,18 @@ def t2(build, maxd, reps):
     # The figure beside this table plots the same two series. Emitting them here is what keeps
     # the figure and the table from drifting: one run produces both, so a regenerated table
     # cannot leave the plot showing the previous run's numbers.
+    # The abstract, the figure caption and the conclusion each quote the ratio against the
+    # authority at the shallowest and deepest measured depth, so both are emitted as macros.
+    ratios = [(d, auth[d][2] / core[d]) for d in sorted(auth) if d in hgev and core.get(d)]
+    # Depth 2 carries the authority's one-time initialisation, and the engine's time there is at
+    # the timer's resolution, so the quoted range starts one depth in.
+    quoted = [p for p in ratios if p[0] >= 4] or ratios
+    if quoted:
+        value("SpeedupLowDepth", "%d" % quoted[0][0])
+        value("SpeedupAtLowDepth", "{:,}".format(int(round(quoted[0][1]))).replace(",", "{,}"))
+        value("SpeedupHighDepth", "%d" % quoted[-1][0])
+        value("SpeedupAtHighDepth", "{:,}".format(int(round(quoted[-1][1]))).replace(",", "{,}"))
+
     depths = [d for d in sorted(auth) if d in hgev and core.get(d)]
     auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)
     core_pts = "".join("(%d,%.1f)" % (d, core[d]) for d in depths)
@@ -589,6 +624,7 @@ def main():
     if a.gpu:
         n = t7(a.build_dir, a.gpu_build_dir, [5, 6, 7], a.iters)
         print("T7: %d depths" % n)
+    write_values()
     return 0
 
 

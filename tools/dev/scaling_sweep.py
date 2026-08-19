@@ -188,6 +188,12 @@ def gpu_saturation(gpu_build, steps, iters, sm_count):
         b.append("%d & %d & %.2f & %.2f$\\times$ & %s \\\\" % (mult, blocks, ms, base / ms, u))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t11_gpu_saturation.tex", "\n".join(b) + "\n")
+    # The conclusion states the grid size beyond which time stops improving; it is the smallest
+    # multiplier whose median is within one percent of the best, which is what "ceases to
+    # improve" means when the remaining differences are smaller than the run-to-run spread.
+    best = min(ms for (_m, _b, ms, _u) in rows)
+    pt.value("SaturationBlocks", "%d" % next(m for (m, _b, ms, _u) in rows if ms <= best * 1.01))
+
     # The right panel of the GPU figure plots the median against the grid size.
     pts = "".join("(%d,%.2f)" % (mult, ms) for (mult, _blocks, ms, _u) in rows)
     pt.write_raw("f_gpu_saturation.tex",
@@ -258,6 +264,18 @@ def rule_shape_scaling(build, shapes, iters):
         b.append("%d & %s \\\\" % (rows[order[0]][i][0], " & ".join(cells)))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t12_rule_shapes.tex", "\n".join(b) + "\n")
+
+    # The conclusion quotes the efficiency floor at eight and sixteen workers across rule shapes.
+    # The floor rather than either shape's own figure, because the sentence says "depending on
+    # the rule's shape" and the weaker shape is what that qualifies.
+    # Spelled out, because a LaTeX control sequence cannot contain a digit.
+    for at, word in ((8, "Eight"), (16, "Sixteen")):
+        effs = []
+        for r in rows:
+            base = rows[r][0][1]
+            effs += [(base / ms) / t for (t, ms, _s, _e) in rows[r] if t == at]
+        if effs:
+            pt.value("EffAt" + word, "%.2f" % min(effs))
 
     # Left panel of the scaling figure: parallel efficiency against worker count, one series per
     # rule shape, computed from the same medians the table prints.
@@ -330,6 +348,13 @@ def thread_memory_cost(build, shape, iters):
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t13_thread_memory.tex", "\n".join(b) + "\n")
 
+    # The conclusion contrasts how user and system time grow across the thread sweep. Both are
+    # ratios of the last row to the first, which is the comparison the sentence makes.
+    if len(rows) > 1 and rows[0][2] and rows[0][3]:
+        pt.value("UserTimeGrowth", "%.1f" % (rows[-1][2] / rows[0][2]))
+        pt.value("SysTimeGrowth", "%.0f" % (rows[-1][3] / rows[0][3]))
+        pt.value("ThreadSweepFactor", "%d" % (rows[-1][0] // rows[0][0]))
+
     # Right panel of the scaling figure: user against system time, from the same getrusage rows.
     user_pts = "".join("(%d,%.2f)" % (t, u) for (t, _w, u, _s, _r, _m) in rows)
     sys_pts = "".join("(%d,%.2f)" % (t, s) for (t, _w, _u, s, _r, _m) in rows)
@@ -375,6 +400,7 @@ def main():
     if "gpu" in sections:
         print("GPU saturation, depth %d" % steps_list[-1])
         gpu_saturation(a.gpu_build_dir, steps_list[-1], a.iters, a.sm_count)
+    pt.write_values("values_sweep.tex")
     return 0
 
 
