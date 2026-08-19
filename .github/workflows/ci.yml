@@ -88,6 +88,54 @@ jobs:
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure
 
+  # UBSan over the whole suite and TSan over the concurrent structures. The build options have
+  # existed since before v1.0.0 and no workflow set any of them, so neither was a gate. Both
+  # stand at zero on this tree, which is what makes any output here a regression.
+  #
+  # TSan is scoped rather than run over everything: the three suites below take about 8.5 minutes
+  # under it while the rest of the suite adds hours, and they are where the engine's lock-free
+  # structures are actually exercised concurrently.
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure + build UBSan
+        run: >
+          cmake -S . -B build_ubsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_UBSAN=ON -DBUILD_GPU=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_VISUALIZATION=OFF &&
+          cmake --build build_ubsan --target all_tests
+
+      # halt_on_error=0 so one finding does not hide the rest; the grep is what fails the job,
+      # because UBSan reports a runtime error without changing the process exit status.
+      - name: UBSan — the suite reports no runtime error
+        run: |
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0 \
+            ./build_ubsan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee ubsan.log
+          if grep -q "runtime error" ubsan.log; then
+            echo "UBSan reported a runtime error"; exit 1
+          fi
+
+      - name: Configure + build TSan
+        run: >
+          cmake -S . -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_TSAN=ON -DBUILD_GPU=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_VISUALIZATION=OFF &&
+          cmake --build build_tsan --target all_tests
+
+      - name: TSan — no data race in the concurrent structures
+        run: |
+          TSAN_OPTIONS=halt_on_error=0 ./build_tsan/all_tests \
+            --gtest_filter='ConcurrentMapTest.*:ConcurrentMapFuzz.*:CausalDeterminism.*:Unified_ParallelEvolution.*:QuotientCompletenessTest.*' \
+            2>&1 | tee tsan.log
+          if grep -q "WARNING: ThreadSanitizer" tsan.log; then
+            echo "ThreadSanitizer reported a race"; exit 1
+          fi
+
   # The engine on wasm32, where no thread exists. The compile leg alone does not say the
   # engine WORKS there: it compiled for months while the first evolution trapped in
   # JobSystem::start() with "thread constructor failed". So this leg RUNS the oracle corpus
