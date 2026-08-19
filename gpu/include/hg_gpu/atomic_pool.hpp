@@ -63,6 +63,13 @@ public:
     explicit Pool(uint32_t capacity) : capacity_(capacity) {
         HG_CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * capacity_), "Pool data alloc");
         HG_CUDA_CHECK(cudaMalloc(&counter_, sizeof(uint32_t)),   "Pool counter alloc");
+        // The counter is a reservation high-water mark, so it can stand ahead of the writes: a
+        // thread that claims slots and then fails a later reservation returns without filling
+        // them. Host readbacks are bounded by the counter and therefore copy those slots. Zeroing
+        // the storage once here is what makes such a slot a defined value rather than whatever
+        // the allocator held, at one memset per pool for the life of the engine -- reset() is on
+        // the per-run path and clears only the counter.
+        HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * capacity_), "Pool data init");
         reset();
     }
 

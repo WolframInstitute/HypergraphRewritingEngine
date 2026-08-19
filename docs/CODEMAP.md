@@ -155,6 +155,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`types.hpp`** -- GPU aliases + device storage structs: `DeviceEvent`, `DeviceCausalEdge`, `DeviceBranchialEdge`, `Edge`, `StateEdgeSlice`; enums `CanonicalizationMode`, `EventCanonicalizationMode`
 - **`errors.hpp`** -- device error channel: `DeviceErrors` (`DeviceView::record`), `PoolOverflow`
 - **`atomic_pool.hpp`** -- `Pool<T>` (pre-allocated device array + atomic bump counter; `DeviceView::claim`/`claim_n`/`at`)
+  - CONTRACT: the counter is a RESERVATION high-water mark and can stand ahead of the writes -- a thread that claims slots and then fails a later reservation returns without filling them. Host readbacks bound themselves by the counter, so they copy those slots; the storage is zeroed once in the constructor to make them a defined value. `reset()` is the per-run path and clears only the counter
 - **`lock_free_list.hpp`** -- `LockFreeList<T>` (per-key linked-stack over a node Pool; `DeviceView::push` returns the node index, `for_each`, `for_each_before` for the same exactly-once meeting rule the host list documents)
 - **`hash_table.hpp`** -- `ConcurrentMap<K,V,EMPTY,LOCKED>` (open-addressing linear probe; `DeviceView::lookup[_waiting]`/`insert_if_absent`)
 - **`ring_buffer.hpp`** -- `RingBuffer<T>` (bounded MPMC ring; per-slot sequence numbers + CAS reservation, so producers that are also consumers neither lose nor duplicate an item across wraps)
@@ -171,6 +172,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`content_hash.hpp` / `ir_canon.hpp`** -- device `content_hash_state_device` (the content-ordered key `CanonicalizationMode::Automatic` asks for, never a fallback under `Full`), `state_exact_hash_device` (arena-backed, sized per state); host `compute_state_ir_hashes*`
 - **`initial_upload.hpp`** -- host `rebuild_indices`/`upload_initial_state[s]`
 - **`engine_state.hpp`** -- `DeviceState` (POD passed to kernels) + `EngineState` (host owner of all device pools/indices, readback helpers)
+  - CONTRACT: the six scalar counters are slots of one `cudaMalloc`'d block so `counters_snapshot_host()` reads them in a single transfer, and it reads ALL six. Two of them (`event_sig_raw_fallbacks`, `canonical_event_count`) bind to their pointers only when the feature owning them first runs, so the block is zeroed at allocation -- a slot whose feature never runs reads zero rather than whatever the allocator held
+  - CONTRACT: `state_edge_ids_counter_` is bumped before the capacity check and before the vertex reservations that can still fail, so `state_edge_ids_` is zeroed at allocation for the same reason `Pool<T>` zeroes its storage. A slot is only ever read through a slice that was written with it
 - **`evolve.hpp`** -- the public host API: DTOs `RewriteRule`/`EvolveInput`/`CanonicalState`/`Event`/`CausalEdge`/`BranchialEdge`/`EvolveResult`, `EngineConfig`; classes `Engine` (`run`/`reset`) and `PersistentEvolver` (grow-and-retry reusing one Engine); `evolve()`, `config_from_input()`, `estimated_device_bytes()`
 
 ## `gpu/src/` -- CUDA kernels + drivers

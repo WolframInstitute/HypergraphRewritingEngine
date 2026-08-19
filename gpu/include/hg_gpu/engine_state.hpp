@@ -324,6 +324,14 @@ public:
         HG_CUDA_CHECK(cudaMalloc(&state_edge_ids_,
               sizeof(EdgeId) * cfg_.max_state_edge_total),
               "EngineState state_edge_ids alloc");
+        // state_edge_ids_counter_ is bumped before the capacity check and before the vertex
+        // reservations that can still fail, so slots below the counter can be reserved and never
+        // written, and all_state_edges_host() copies everything below it. One memset here gives
+        // those slots a defined value; clear() leaves this array alone on the per-run path
+        // because a slot is only ever read through a slice that was written with it.
+        HG_CUDA_CHECK(cudaMemset(state_edge_ids_, 0,
+              sizeof(EdgeId) * cfg_.max_state_edge_total),
+              "EngineState state_edge_ids init");
         // ONE ALLOCATION FOR EVERY SCALAR COUNTER THE HOST READS BACK.
         //
         // Each of these is four bytes, and read on its own each costs a `cudaMemcpy` API call.
