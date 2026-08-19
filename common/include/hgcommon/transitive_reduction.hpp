@@ -3,8 +3,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -29,6 +27,11 @@ namespace common {
 // `ids_topological` says ids increase along every edge, which lets the search stop at the
 // largest target of p: a path to any target cannot pass through a node numbered above it. It is
 // false where ids are assigned first-writer-wins, and there the search runs unpruned.
+//
+// IDS ARE INDICES HERE, so they must be dense: the adjacency and the membership marks are arrays
+// sized by the largest id seen, not hash tables. Both callers pass event ids, which come from a
+// counter. A caller passing sparse ids -- hashes, say -- would allocate proportional to the
+// largest value rather than to the number of nodes.
 template <class Enumerate, class Emit>
 void tr_reduce(Enumerate&& enumerate, Emit&& emit, bool ids_topological = false) {
     std::vector<std::pair<uint32_t, uint32_t>> all;
@@ -36,42 +39,55 @@ void tr_reduce(Enumerate&& enumerate, Emit&& emit, bool ids_topological = false)
     std::sort(all.begin(), all.end());
     all.erase(std::unique(all.begin(), all.end()), all.end());
 
-    std::unordered_map<uint32_t, std::vector<uint32_t>> succ;
-    for (const auto& e : all) succ[e.first].push_back(e.second);
+    if (all.empty()) return;
 
-    std::unordered_set<uint32_t> reached;
+    // `all` is sorted by (source, target), so every source's targets are already contiguous and
+    // the adjacency is an index into it rather than a container: succ_begin[p] is where p's
+    // targets start and succ_begin[p+1] is where they end. The walk below then reaches a node's
+    // successors with two loads and no lookup.
+    uint32_t max_id = 0;
+    for (const auto& e : all) {
+        max_id = std::max(max_id, e.first);
+        max_id = std::max(max_id, e.second);
+    }
+    std::vector<uint32_t> succ_begin(static_cast<size_t>(max_id) + 2, 0);
+    for (const auto& e : all) ++succ_begin[e.first + 1];
+    for (size_t k = 1; k < succ_begin.size(); ++k) succ_begin[k] += succ_begin[k - 1];
+
+    // Membership by generation stamp rather than by a set that is emptied per source. Clearing a
+    // hash set rewrites its whole bucket array, so the cost is (sources x buckets) however few
+    // nodes each search actually reaches, and the searches here are small and numerous.
+    // Incrementing a counter costs one add, and a stale entry is stale precisely because it
+    // carries an earlier stamp.
+    std::vector<uint32_t> seen(static_cast<size_t>(max_id) + 1, 0);
+    uint32_t stamp = 0;
     std::vector<uint32_t> stack;
+
     for (size_t i = 0; i < all.size();) {
         const uint32_t p = all[i].first;
-        size_t j = i;
-        while (j < all.size() && all[j].first == p) ++j;      // [i, j) are p's targets, sorted
-
+        const size_t j = succ_begin[p + 1];                   // [i, j) are p's targets, sorted
         const uint32_t cmax = all[j - 1].second;
+
+        ++stamp;                                              // empties `seen` in one add
         auto admit = [&](uint32_t x) {
             if (ids_topological && x > cmax) return;          // beyond every target of p
-            if (reached.insert(x).second) stack.push_back(x);
+            if (seen[x] != stamp) { seen[x] = stamp; stack.push_back(x); }
         };
 
         // Seed at distance two: the direct edges themselves are what is being judged.
-        reached.clear();
         stack.clear();
-        auto sp = succ.find(p);
-        if (sp != succ.end()) {
-            for (uint32_t w : sp->second) {
-                auto sw = succ.find(w);
-                if (sw != succ.end()) for (uint32_t x : sw->second) admit(x);
-            }
+        for (size_t a = succ_begin[p]; a < succ_begin[p + 1]; ++a) {
+            const uint32_t w = all[a].second;
+            for (size_t b = succ_begin[w]; b < succ_begin[w + 1]; ++b) admit(all[b].second);
         }
         while (!stack.empty()) {
             const uint32_t x = stack.back();
             stack.pop_back();
-            auto sx = succ.find(x);
-            if (sx == succ.end()) continue;
-            for (uint32_t y : sx->second) admit(y);
+            for (size_t b = succ_begin[x]; b < succ_begin[x + 1]; ++b) admit(all[b].second);
         }
 
         for (size_t k = i; k < j; ++k)
-            if (!reached.count(all[k].second)) emit(p, all[k].second);
+            if (seen[all[k].second] != stamp) emit(p, all[k].second);
         i = j;
     }
 }
