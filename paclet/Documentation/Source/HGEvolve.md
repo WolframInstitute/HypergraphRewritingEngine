@@ -36,10 +36,20 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"CausalEdges"`, `"BranchialEdges"` | the causal / branchial edge lists |
 | `"NumStates"`, `"NumEvents"`, `"NumCausalEdges"`, `"NumBranchialEdges"` | the corresponding counts |
 | `"Debug"` | an association of the four counts |
+| `"All"` | an association of the states, the events, both edge lists and all four counts |
+| `"GlobalEdges"` | every edge the evolution created, as `{id, v1, v2, ...}` |
+| `"StateBitvectors"` | an association from state id to the ids of the edges that state holds |
 
 - `prop` may also be a list of property strings, in which case an association keyed by those strings is returned.
 - Any `*Graph` property may take the suffix `Structure` to return the same graph without vertex styling (a lighter-weight rendering), e.g. `"StatesGraphStructure"`.
 - A raw `"States"` result is a list of associations, one per state, with keys `"Id"`, `"CanonicalId"`, `"Step"`, `"IsInitial"`, `"Edges"` (the state's hyperedges), and — when `"IncludeCanonicalHashes" -> True` — `"CanonicalHash"`. A raw `"Events"` result is a list of associations with keys `"Id"`, `"CanonicalId"`, `"RuleIndex"`, `"Step"`, `"InputState"`/`"OutputState"` (state ids), `"ConsumedEdges"`/`"ProducedEdges"` (edge ids), and `"InputStateEdges"`/`"OutputStateEdges"` (the full edge lists).
+
+### Edge identity
+
+Every state is a set of edges drawn from one global store, and the two properties below expose
+that store rather than the states built out of it. `"GlobalEdges"` returns each edge once with
+its id, and `"StateBitvectors"` says which of those ids each state holds — so a state's contents
+are the edges its id list names, and two states sharing an edge name the same id.
 
 ### Evolution and output options
 
@@ -207,6 +217,18 @@ rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
 {Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Events"]],
  Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "CausalEdges"]],
  HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Debug"]}
+```
+
+### Edge identity
+
+`"GlobalEdges"` returns every edge the evolution created with its id, and `"StateBitvectors"`
+the ids each state holds. Asking for both is what makes either useful: the ids alone do not say
+what an edge is, and the edge list alone does not say which state holds it.
+
+```wl
+rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
+res = HGEvolve[rules, {{1, 2}}, 2, {"GlobalEdges", "StateBitvectors"}];
+{Length[res["GlobalEdges"]], Length[res["StateBitvectors"]]}
 ```
 
 ## Options
