@@ -567,6 +567,10 @@ public:
             case ErrorType::None: return "No error";
             case ErrorType::OutOfMemory: return "Out of memory";
             case ErrorType::Aborted: return "Aborted";
+            // Named, because this is the one error type that is not a defect: the work done so
+            // far is valid and the caller wants it. Falling through to "Unknown error" told a
+            // reader the opposite of what the classification exists to say.
+            case ErrorType::CapacityExhausted: return "Configured capacity limit reached";
             case ErrorType::Exception: return "Exception thrown";
             case ErrorType::Unhandled: return "Unhandled exception type";
         }

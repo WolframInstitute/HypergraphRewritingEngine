@@ -639,6 +639,13 @@ TEST(JobSystemErrors, ACapacityLimitIsItsOwnKindAndNotAGenericException) {
     EXPECT_NE(js.get_error_type(), ErrorType::Exception)
         << "it fell into the generic bucket, which is where it lands if the typed catch is gone";
     EXPECT_STREQ(js.get_error_message(), "a configured container ceiling was reached");
+    // AND THE KIND MUST DESCRIBE ITSELF. get_error_description() switches over ErrorType and had
+    // no case for this one, so the only error type that is not a defect fell through to the
+    // default and reported "Unknown error" -- the opposite of what classifying it achieves. The
+    // switch is not exhaustive by construction, so nothing but this notices a missing case.
+    EXPECT_STRNE(js.get_error_description(), "Unknown error")
+        << "a classified error type has no description of its own";
+    EXPECT_STREQ(js.get_error_description(), "Configured capacity limit reached");
     js.shutdown();
 }
 
