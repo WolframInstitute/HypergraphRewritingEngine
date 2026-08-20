@@ -46,6 +46,14 @@ jobs:
       - name: The build-stamp checker still detects what it claims to
         run: python3 tools/dev/artifact_stamp_check_selftest.py
 
+      # Option names are strings on both sides of the paclet boundary, so a rename leaves the
+      # old name in the prose and the prose still reads as correct. The sampling design was
+      # written against a "MatchRate" that ships as "TransitionRate", and against two options
+      # that do not exist at all. Checking the documented names against the WL Options[...]
+      # declarations and the FFI keys needs no build.
+      - name: The documentation names only options the paclet accepts
+        run: python3 tools/dev/option_names_check.py
+
       # The CUDA build-cost table must not name a translation unit that is gone: include_cost.py
       # would quote a cost for a file that does not exist, and a wrong number is worse than the
       # UNMEASURED an absent row already reports. Needs no build -- it reads the sources.
