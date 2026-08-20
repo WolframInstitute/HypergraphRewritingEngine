@@ -11,8 +11,15 @@ engine, and never mentioned again: not carried to the device, not warned about. 
 it set returned the uncapped state set in silence, while the documentation names that option as
 the reproducible alternative to the two caps that DO warn.
 
+The same gap exists on the OUTPUT surface. "BranchialStateEdges", "BranchialStateEdgesAllSiblings",
+"GlobalEdges" and "StateBitvectors" are built by the FFI for the host path and appear nowhere in
+the GPU backend, so a device reply carried no such key and the caller got a shorter association
+than the identical CPU call returns, again with nothing said.
+
 An option is covered when run_gpu_job either reads the ParsedJob field it writes -- carrying it
-to the device or testing it -- or names the option in a warning. Reads sources; no build.
+to the device or testing it -- or names the option in a warning. A requested-data component is
+covered when the GPU backend emits its key, or run_gpu_job names it in a warning. Reads sources;
+no build, and no device.
 """
 import re
 import sys
@@ -28,6 +35,16 @@ EXEMPT = {
     # include_* flags this sets, which are checked individually as GpuJob fields.
     "RequestedData",
     "GraphProperties",
+}
+
+BACKEND = ROOT / "paclet_source/hg_gpu_backend.cpp"
+
+# Components whose key is not the name the caller asks under, so a literal search for the name
+# in the backend cannot find them. Each is listed with the key it is actually served as.
+EXEMPT_COMPONENTS = {
+    # Served under the "Events" key: the backend emits the same association with the two edge
+    # lists omitted, gated on GpuJob::include_events_minimal.
+    "EventsMinimal",
 }
 
 
@@ -75,17 +92,38 @@ def main():
         if not carried and not warned:
             uncovered.append((name, fields))
 
-    if uncovered:
-        print(f"{len(uncovered)} option(s) reach the CPU engine but neither the device nor an "
-              f"OptionSkipped warning:\n")
-        for name, fields in uncovered:
-            fs = ", ".join(sorted(fields)) or "(no ParsedJob field)"
-            print(f'  "{name}"  writes req.{{{fs}}}')
-        print("\nEither carry it to the GpuJob, or push an OptionSkipped warning naming it.")
+    # The output surface: every RequestedData component the FFI parses.
+    backend = BACKEND.read_text()
+    components = sorted(set(re.findall(r'comp == "([A-Za-z0-9]+)"', ffi)))
+    if len(components) < 10:
+        print(f"FAIL: only {len(components)} requested-data components parsed from {FFI.name}.")
         return 1
 
-    print(f"OK: all {len(opts) - len(EXEMPT & opts.keys())} device-relevant options are "
-          f"carried to the GPU job or warned about.")
+    unserved = [c for c in components
+                if c not in EXEMPT_COMPONENTS
+                and f'"{c}"' not in backend
+                and f"'{c}'" not in gpu]
+
+    if uncovered or unserved:
+        if uncovered:
+            print(f"{len(uncovered)} option(s) reach the CPU engine but neither the device nor "
+                  f"an OptionSkipped warning:\n")
+            for name, fields in uncovered:
+                fs = ", ".join(sorted(fields)) or "(no ParsedJob field)"
+                print(f'  "{name}"  writes req.{{{fs}}}')
+            print("\nEither carry it to the GpuJob, or push an OptionSkipped warning naming it.")
+        if unserved:
+            print(f"\n{len(unserved)} requested-data component(s) the GPU backend does not emit "
+                  f"and does not warn about:\n")
+            for c in unserved:
+                print(f'  "{c}"')
+            print("\nEither emit the key from hg_gpu_backend.cpp, or push an OptionSkipped "
+                  "warning naming it.")
+        return 1
+
+    print(f"OK: all {len(opts) - len(EXEMPT & opts.keys())} device-relevant options and "
+          f"{len(components) - len(EXEMPT_COMPONENTS)} requested-data components are carried to "
+          f"the device or warned about.")
     return 0
 
 

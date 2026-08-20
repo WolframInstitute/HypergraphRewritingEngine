@@ -427,6 +427,36 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
                  "'MatchesPerStateRule' is not implemented on the GPU; the result is "
                  "uncapped."});
         }
+        // REQUESTED DATA THE DEVICE DOES NOT SERVE. The four below are built by this file for
+        // the host path and appear nowhere in hg_gpu_backend.cpp, so a device reply simply has
+        // no such key and the caller receives a shorter association than the same call on the
+        // CPU returns. That is the same divergence the option warnings above exist for, on the
+        // output surface rather than the option surface: the request is answered differently
+        // per device with nothing said.
+        if (req.include_branchial_state_edges) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'BranchialStateEdges' is not implemented on the GPU; the key is absent "
+                 "from the result."});
+        }
+        if (req.include_branchial_state_edges_all_siblings) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'BranchialStateEdgesAllSiblings' is not implemented on the GPU; the key "
+                 "is absent from the result."});
+        }
+        if (req.include_global_edges) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'GlobalEdges' is not implemented on the GPU; the key is absent from the "
+                 "result."});
+        }
+        if (req.include_state_bitvectors) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'StateBitvectors' is not implemented on the GPU; the key is absent from "
+                 "the result."});
+        }
         // The device thins states through `exploration_probability` and has no per-transition
         // draw, so it has no spine either. Silently running unthinned would return a FULL
         // evolution where the caller asked for a sample, which reads as a system with that
