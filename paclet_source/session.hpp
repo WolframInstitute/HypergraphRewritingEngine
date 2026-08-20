@@ -75,19 +75,8 @@ public:
     // that has one.
     DeliveryCursor& delivery_cursor() { return delivery_cursor_; }
 
-    // What this session was OPENED to record, which is not the same question as what the engine
-    // is recording now. The engine drops the branchial relation when the rule set provably
-    // cannot branch (parallel_evolution.cpp: analyze_rules -> !may_branch), and that is a
-    // saving, not a gap -- the caller asked for the empty relation and gets the empty relation.
-    // Comparing a later Query against the LIVE set reads that saving as "you did not ask for
-    // this", which is the opposite of what happened. Comparing against the opened set answers
-    // the question the warning is actually about: did this session ever intend to record it.
-    hgcommon::RecordSet& opened_record_set() { return opened_record_; }
-    const hgcommon::RecordSet& opened_record_set() const { return opened_record_; }
-
 private:
     DeliveryCursor delivery_cursor_;
-    hgcommon::RecordSet opened_record_{};
 };
 
 // Why a live handle cannot be served.

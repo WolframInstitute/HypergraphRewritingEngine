@@ -400,22 +400,20 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         if (req.max_states_per_step > 0) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
-                 "'MaxStatesPerStep' has no GPU implementation and was not applied; "
-                 "the returned state set is uncapped. Use TargetDevice -> \"CPU\" to "
-                 "apply it."});
+                 "'MaxStatesPerStep' is not implemented on the GPU; the result is "
+                 "uncapped."});
         }
         if (req.max_successor_states_per_parent > 0) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
-                 "'MaxSuccessorStatesPerParent' has no GPU implementation and was not "
-                 "applied; the returned state set is uncapped. Use TargetDevice -> "
-                 "\"CPU\" to apply it."});
+                 "'MaxSuccessorStatesPerParent' is not implemented on the GPU; the "
+                 "result is uncapped."});
         }
         if (req.uniform_random && req.matches_per_step > 0) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
-                 "'MatchesPerStep' maps to the MaxStatesPerStep cap, which has no GPU "
-                 "implementation and was not applied."});
+                 "'MatchesPerStep' maps to MaxStatesPerStep, which is not implemented "
+                 "on the GPU; the result is uncapped."});
         }
         // The device thins states through `exploration_probability` and has no per-transition
         // draw, so it has no spine either. Silently running unthinned would return a FULL
@@ -424,17 +422,14 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         if (!req.rule_weights.empty()) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
-                 "'RuleWeights' has no GPU implementation and was not applied; the returned "
-                 "evolution weights every rule equally. Use TargetDevice -> \"CPU\" to apply "
-                 "it."});
+                 "'RuleWeights' is not implemented on the GPU; every rule is weighted "
+                 "equally."});
         }
         if (req.transition_rate < 1.0) {
             req.ffi_warnings.push_back(
                 {"OptionSkipped", 1,
-                 "'TransitionRate' has no GPU implementation and was not applied; the "
-                 "returned evolution is unsampled. Use TargetDevice -> \"CPU\" to apply "
-                 "it, or 'ExplorationProbability', which thins states on both devices but "
-                 "carries no depth guarantee."});
+                 "'TransitionRate' is not implemented on the GPU; the result is "
+                 "unsampled."});
         }
 
         GpuJob job{
@@ -853,33 +848,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // serve.
         if (opening_session) {
             record.causal = record.branchial = record.state_events = record.raw_events = true;
-            // Remembered as the session's intent, for the gap check a later Step or Query makes.
-            holder->opened_record_set() = record;
-        }
-
-        // What the session was OPENED to record is checked against what this call asks for,
-        // because a session opened by an older build, or invalidated and re-opened, may intend
-        // less than this one would. Asking a `Query` for one it never recorded returns an empty
-        // relation that reads exactly like a system with none, so the gap is reported rather
-        // than served silently -- the same rule the GPU's unimplemented caps follow.
-        //
-        // Against the OPENED set and not the engine's live one. The engine drops the branchial
-        // relation when the rules provably cannot branch, and reading that as a gap tells the
-        // caller its empty answer is an artefact of what it asked for when the system genuinely
-        // has no branchial pairs -- the opposite of what happened.
-        if (held_session) {
-            const hypergraph::RecordSet held = holder->opened_record_set();
-            auto unrecorded = [&](const char* what) {
-                req.ffi_warnings.push_back(
-                    {"OptionSkipped", 1,
-                     std::string("this session does not record ") + what + ": it was opened "
-                     "without asking for it, so what is returned here is empty for that reason "
-                     "and not because the system has none. Open a session that asks for it."});
-            };
-            if (record.causal && !held.causal) unrecorded("the causal relation");
-            if (record.branchial && !held.branchial) unrecorded("the branchial relation");
-            if (record.state_events && !held.state_events) unrecorded("per-state event lists");
-            if (record.raw_events && !held.raw_events) unrecorded("the raw event set");
         }
 
         if (!held_session) configure_and_evolve(req, hg, engine, record, host);
