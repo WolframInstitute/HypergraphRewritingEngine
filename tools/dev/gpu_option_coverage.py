@@ -39,6 +39,27 @@ EXEMPT = {
 
 BACKEND = ROOT / "paclet_source/hg_gpu_backend.cpp"
 
+# A field CARRIED into the GpuJob is not thereby honoured: "ShowGenesisEvents" was packed into
+# every device job and read by nothing, so the device answered a request to show genesis events
+# with a graph that has none. Coverage therefore requires the BACKEND to read the field.
+
+# ParsedJob field -> the GpuJob field it is carried as, where the two names differ.
+FIELD_ALIASES = {
+    "causal_transitive_reduction": "transitive_reduction",
+    "event_signature_keys": "event_canon_mode",
+    "positional_event_identity": "event_canon_mode",
+}
+
+# Fields whose effect is applied by the FFI itself rather than by the backend, with the reason.
+EXEMPT_FIELDS = {
+    # run_gpu_job calls core_progress before and after run_gpu_evolution; the device does not
+    # report progress of its own, so there is nothing for the backend to read.
+    "show_progress",
+    # Selects arrival-order capping, which only has an effect together with MatchesPerStep --
+    # and that combination already pushes its own OptionSkipped warning.
+    "uniform_random",
+}
+
 # Components whose key is not the name the caller asks under, so a literal search for the name
 # in the backend cannot find them. Each is listed with the key it is actually served as.
 EXEMPT_COMPONENTS = {
@@ -83,17 +104,28 @@ def main():
     end = ffi.index("\nstatic ", start + 10)
     gpu = ffi[start:end]
 
+    backend = BACKEND.read_text()
+
     uncovered = []
     for name, fields in sorted(opts.items()):
         if name in EXEMPT:
             continue
-        carried = any(re.search(r"\breq\." + re.escape(f) + r"\b", gpu) for f in fields)
         warned = f"'{name}'" in gpu
-        if not carried and not warned:
+        honoured = False
+        for f in fields:
+            if f in EXEMPT_FIELDS:
+                honoured = True
+                break
+            for cand in {f, FIELD_ALIASES.get(f, f)}:
+                if re.search(r"\bjob\." + re.escape(cand) + r"\b", backend):
+                    honoured = True
+                    break
+            if honoured:
+                break
+        if not honoured and not warned:
             uncovered.append((name, fields))
 
     # The output surface: every RequestedData component the FFI parses.
-    backend = BACKEND.read_text()
     components = sorted(set(re.findall(r'comp == "([A-Za-z0-9]+)"', ffi)))
     if len(components) < 10:
         print(f"FAIL: only {len(components)} requested-data components parsed from {FFI.name}.")
@@ -111,7 +143,8 @@ def main():
             for name, fields in uncovered:
                 fs = ", ".join(sorted(fields)) or "(no ParsedJob field)"
                 print(f'  "{name}"  writes req.{{{fs}}}')
-            print("\nEither carry it to the GpuJob, or push an OptionSkipped warning naming it.")
+            print("\nEither have the backend READ the GpuJob field, or push an OptionSkipped "
+                  "warning naming the option.")
         if unserved:
             print(f"\n{len(unserved)} requested-data component(s) the GPU backend does not emit "
                   f"and does not warn about:\n")
