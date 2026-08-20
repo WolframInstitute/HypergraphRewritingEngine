@@ -100,6 +100,12 @@ DeviceRule make_device_rule(const RewriteRule& rule);
 // exactly these threads, so every scheduler that calls it must launch with this shape.
 constexpr uint32_t kMatchBlockThreads = 32;
 
+// How many of ONE (state, rule) pair's matches the per-(state, rule) cap can rank at once.
+// 512 x 8 bytes = 4 KB of shared memory, taken only by a block that is capping. Beyond it the
+// k-th smallest rank cannot be identified, so the cap is skipped and the run records
+// kDrainCapBufferFull rather than applying the cap to the wrong k.
+constexpr uint32_t kDrainCapBuffer = 512;
+
 // Publish a filled record: the release store that makes everything written before it visible
 // to a consumer that observes the flag.
 __device__ __forceinline__ void publish_match(MatchRecord& m) {

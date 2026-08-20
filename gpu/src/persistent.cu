@@ -460,7 +460,8 @@ __global__ void k_persistent_evolve(
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
-                                                 ds.transition_rate, ds.num_rule_weights);
+                                                 ds.transition_rate, ds.num_rule_weights,
+                                                 ds.matches_per_state_rule);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1194,7 +1195,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             session ? sess_v.states : canonical_owner.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
-                                 dsv.num_rule_weights),
+                                 dsv.num_rule_weights, dsv.matches_per_state_rule),
             arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
     }
     if (!(start_step > 0 && session)) {

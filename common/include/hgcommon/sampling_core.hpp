@@ -56,6 +56,20 @@ HG_HD inline bool transition_survives(uint64_t transition_key, uint64_t random_s
     return u < rate;
 }
 
+// THE ORDER A PER-(state, rule) CAP KEEPS ITS k IN. Seeded, so a different seed keeps a
+// different k rather than the same skeleton every run, and derived from the transition's own
+// identity, so the kept set does not depend on which worker or which DEVICE reached it first.
+//
+// A DIFFERENT MIX FROM transition_survives, deliberately: the same key must not produce a rank
+// correlated with whether it survived a rate draw, or the two controls would compound instead
+// of composing.
+HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_seed) {
+    uint64_t x = transition_key ^ (random_seed * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
 // Whether ANY draw can fail. Testing `transition_rate < 1` alone would skip sampling entirely for
 // a caller who left the rate at 1 and weighted a single rule to zero.
 HG_HD inline bool sampling_active(double transition_rate, const double* weights,

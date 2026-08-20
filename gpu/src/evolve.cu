@@ -329,6 +329,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                         in.exploration_seed,
                         in.max_states_per_step,
                         in.max_successor_states_per_parent,
+                        in.matches_per_state_rule,
                         in.num_steps);
 
     uint64_t resolved_seed = in.exploration_seed;
@@ -368,7 +369,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // pointer, the run faults, and the grow-and-retry loop reports the engine as too large
         // for the device rather than naming the real fault.
         const bool sampling_needs_ranks =
-            in.transition_rate < 1.0 || !in.rule_weights.empty();
+            in.transition_rate < 1.0 || !in.rule_weights.empty() ||
+            in.matches_per_state_rule != 0u;
         if (sampling_needs_ranks ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();

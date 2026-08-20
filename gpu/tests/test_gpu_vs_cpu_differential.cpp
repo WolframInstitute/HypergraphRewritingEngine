@@ -57,6 +57,7 @@ struct Workload {
     uint64_t random_seed = 0;
     uint32_t max_states_per_step = 0;
     uint32_t max_successor_states_per_parent = 0;
+    uint32_t matches_per_state_rule = 0;
     // Collapse isomorphic initial states under quotient exploration (default off).
     bool quotient_initial_states = false;
 };
@@ -207,6 +208,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_random_seed(w.random_seed);
     engine.set_max_states_per_step(w.max_states_per_step);
     engine.set_max_successor_states_per_parent(w.max_successor_states_per_parent);
+    engine.set_matches_per_state_rule(w.matches_per_state_rule);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -370,6 +372,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.exploration_seed = w.random_seed;
     in.max_states_per_step = w.max_states_per_step;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
+    in.matches_per_state_rule = w.matches_per_state_rule;
     return in;
 }
 
@@ -1451,6 +1454,43 @@ TEST(Sampling, DeviceHonoursTheHardBounds) {
     per_step.max_states_per_step = 2;
     const size_t capped_step = run_gpu(per_step).raw_states;
     EXPECT_LT(capped_step, uncapped) << "MaxStatesPerStep bound nothing on the device";
+}
+
+// THE PER-(state, rule) CAP KEEPS THE SAME k ON BOTH ENGINES.
+//
+// This is the option the documentation offers to a caller who needs a REPRODUCIBLE cap, as
+// against the two arrival-ordered bounds. That promise is only worth making if the kept set is
+// the same wherever it runs, so the comparison is against the host, as sets.
+//
+// It is also the one option that needs a completion point: choosing k of M requires all M. On the
+// host that is a state's drain; on the device it is a block, which matches one (state, rule) pair
+// and finds every match for it. Capping as matches arrived would decide by schedule instead.
+TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
+    for (uint32_t k : {1u, 2u}) {
+        Workload w;
+        w.name = "draincap";
+        w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
+                   rule({{0, 1}}, {{1, 0}})};
+        w.initial_states = {{{0u, 1u}}};
+        w.num_steps = 4;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.matches_per_state_rule = k;
+        w.random_seed = 0x5EED;
+
+        NormalizedResult cpu = run_cpu(w);
+        NormalizedResult gpu = run_gpu(w);
+
+        EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+            << "k=" << k << ": the two engines kept different states";
+        EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+            << "k=" << k << ": the two engines kept different transitions";
+
+        Workload uncapped = w;
+        uncapped.matches_per_state_rule = 0;
+        EXPECT_LT(gpu.canonical_state_hashes.size(),
+                  run_gpu(uncapped).canonical_state_hashes.size())
+            << "k=" << k << ": the cap removed nothing on the device";
+    }
 }
 
 TEST(CanonicalStateCount, ModesVsCpu) {

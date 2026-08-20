@@ -93,6 +93,10 @@ enum class ErrorKind : uint32_t {
     // report different event counts. Reported for the same reason kIRGeneratorsExceeded is --
     // the caller cannot otherwise distinguish it from a disagreement in the evolution.
     kEventSigRawFallback = 30,
+    // One (state, rule) pair produced more matches than the drain cap can rank at once, so
+    // "MatchesPerStateRule" was not applied to it. Not a wrong answer: an UNCAPPED one, said out
+    // loud, which is the engine's partial-result contract rather than a silent substitution.
+    kDrainCapBufferFull = 31,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
@@ -115,6 +119,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kTrPredsNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kTrPredsNodes is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
               static_cast<uint32_t>(ErrorKind::kCount), "kPersistentStall is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kDrainCapBufferFull) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kDrainCapBufferFull is unrecordable");
 
 inline const char* error_kind_name(ErrorKind k) {
     switch (k) {

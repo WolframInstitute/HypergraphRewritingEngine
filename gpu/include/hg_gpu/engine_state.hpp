@@ -63,6 +63,9 @@ struct DeviceState {
     uint32_t  max_states_per_step_slots;
     uint32_t  max_successor_states_per_parent;
     uint32_t* successors_per_parent;            // [max_states]
+    // Kept per (state, rule), chosen by rank at the point one block has found every match for
+    // that pair -- the device's drain. 0 is unlimited.
+    uint32_t  matches_per_state_rule;
 
     // Exact canonical hash per state, 0 until computed. [max_states]
     //
@@ -488,11 +491,13 @@ public:
     // memset of (steps + 2) and one of max_states, both of which the run is about to write.
     void set_sampling(double transition_rate, const double* weights, uint32_t num_weights,
                       uint64_t seed, uint32_t max_states_per_step,
-                      uint32_t max_successor_states_per_parent, uint32_t num_steps) {
+                      uint32_t max_successor_states_per_parent, uint32_t matches_per_state_rule,
+                      uint32_t num_steps) {
         transition_rate_     = transition_rate;
         sampling_seed_       = seed;
         max_states_per_step_ = max_states_per_step;
         max_succ_per_parent_ = max_successor_states_per_parent;
+        matches_per_state_rule_ = matches_per_state_rule;
 
         if (weights && num_weights) {
             if (num_rule_weights_ < num_weights) {
@@ -553,6 +558,7 @@ public:
         d.states_per_step                  = states_per_step_;
         d.max_states_per_step_slots        = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
+        d.matches_per_state_rule           = matches_per_state_rule_;
         d.successors_per_parent            = successors_per_parent_;
         d.state_edge_orbit        = state_edge_orbit_;
         d.state_num_orbits        = state_num_orbits_;
@@ -886,6 +892,7 @@ private:
     uint32_t                           states_per_step_slots_  = 0;
     uint32_t                           max_succ_per_parent_    = 0;
     uint32_t*                          successors_per_parent_  = nullptr;
+    uint32_t                           matches_per_state_rule_ = 0;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;

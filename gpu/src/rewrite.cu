@@ -4,6 +4,7 @@
 #include "hg_gpu/rewrite.hpp"
 
 #include "hgcommon/sampling_core.hpp"
+#include "hg_gpu/exploration.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
@@ -267,15 +268,8 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     if (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) {
         const double rate = hgcommon::sampling_rate_for_rule(
             ds.transition_rate, ds.rule_weights, ds.num_rule_weights, m.rule_id);
-        uint32_t ranks[kMaxPatternEdges];
-        uint8_t n = 0;
-        for (uint8_t i = 0; i < m.num_edges && n < kMaxPatternEdges; ++i) {
-            const uint32_t pos = state_edge_index(ds, m.state_id, m.matched_edges[i]);
-            ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : ds.state_edge_rank[pos];
-        }
-        const uint64_t key = hgcommon::event_signature(
-            hgcommon::EVENT_SIG_TRANSITION, ds.state_canonical_hash[m.state_id],
-            /*output_state_hash=*/0, /*step=*/0, m.rule_id, ranks, n, nullptr, 0);
+        const uint64_t key = transition_key_device(ds, m.state_id, m.rule_id,
+                                                   m.matched_edges, m.num_edges);
         if (!hgcommon::transition_survives(key, ds.sampling_seed, rate)) return AppliedMatch{};
     }
 

@@ -7,6 +7,8 @@
 // close.
 
 #include "hgcommon/core.hpp"
+#include "hgcommon/event_core.hpp"
+#include "hgcommon/sampling_core.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/types.hpp"
@@ -35,6 +37,32 @@ using DedupMap = ConcurrentMap<uint64_t, uint32_t>;
 // Defined here rather than in a .cu so every translation unit that asks the question links to
 // THIS body -- a device function defined in one .cu is not reachable from another target's
 // device link, and the answer to "does a second copy appear" must not depend on that.
+// THE TRANSITION'S IDENTITY, as the host computes it: the input state's canonical hash, the
+// rule, and the consumed edges' canonical ranks WITHIN that state, in pattern order. Two engines
+// reaching the same transition must produce the same value or nothing keyed on it agrees.
+//
+// ONE body, because two device call sites need it -- the rate draw in apply_one_match and the
+// per-(state, rule) cap in match_state_rule -- and a key spelled twice is a key that will drift.
+// __noinline__ ON PURPOSE. This is called from inside the join's innermost completion
+// callback, which is instantiated through a template per rule shape; inlined there it
+// carried event_signature's whole body into the DFS and ptxas ran out of memory
+// assembling match.cu. One call per completed match is not the cost that matters here.
+__device__ inline __noinline__ uint64_t transition_key_device(const DeviceState& ds, StateId state_id,
+                                                 RuleId rule_id, const EdgeId* matched_edges,
+                                                 uint8_t num_edges) {
+    uint32_t ranks[kMaxPatternEdges];
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < num_edges && n < kMaxPatternEdges; ++i) {
+        if (matched_edges[i] == INVALID_ID) continue;
+        const uint32_t pos = state_edge_index(ds, state_id, matched_edges[i]);
+        ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : ds.state_edge_rank[pos];
+    }
+    return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
+                                     ds.state_canonical_hash[state_id],
+                                     /*output_state_hash=*/0, /*step=*/0, rule_id,
+                                     ranks, n, /*produced_ranks=*/nullptr, 0);
+}
+
 __device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_t hash,
                                             DedupMap::DeviceView map, bool dedup,
                                             uint32_t explore_threshold_u32,

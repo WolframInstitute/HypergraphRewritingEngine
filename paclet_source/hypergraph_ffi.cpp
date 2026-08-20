@@ -375,6 +375,15 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
         });
 }
 
+// "MatchesPerStep" IS MaxStatesPerStep under another name, and only when "UniformRandom" selects
+// arrival-order capping -- which is what the host does, applying it after the plain option so it
+// wins. Spelled once here so the two devices cannot disagree about which of the two options took
+// effect; the CPU engine setup and the GpuJob both ask this.
+static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
+    if (req.uniform_random && req.matches_per_step > 0) return req.matches_per_step;
+    return req.max_states_per_step;
+}
+
 #ifdef HG_GPU_BACKEND
 // The GPU binary's whole job: translate a ParsedJob into a GpuJob, run hg_gpu::evolve, and
 // marshal the result through the same WXF path the CPU uses.
@@ -384,6 +393,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
 // CPU path, and this block was never part of it.
 // `req` is not const: the device has no implementation for the per-step caps and appends an
 // OptionSkipped warning for each, so the job it was handed carries what it did not apply.
+
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         // Sessions are served on the device too. What used to make that impossible -- the
         // evolver rebuilding its graph from `initial_states` every call -- no longer holds:
@@ -391,18 +401,6 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // run_session refuses to rebuild the engine rather than silently continuing against a
         // fresh one. The verb rides on the job and the backend answers it.
 
-        // The per-(state, rule) cap is applied at a state's drain, and the device has no drain
-        // to apply it at: EvolveInput carries no matches_per_state_rule, and the GpuJob built
-        // below has no field for it. Same class as the two above -- a cap the caller asked for
-        // and did not get -- and it is the one the documentation names as the reproducible
-        // alternative to them, so a caller steered there by that text is exactly who runs into
-        // this on a device job.
-        if (req.matches_per_state_rule > 0) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'MatchesPerStateRule' is not implemented on the GPU; the result is "
-                 "uncapped."});
-        }
         // The device has no genesis events to show or hide. On the host a genesis event
         // connects the genesis state to an initial state, and this option decides whether the
         // causal and branchial output carries the pairs those events take part in; the GPU
@@ -443,7 +441,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
             req.transition_rate,
             req.rule_weights,
-            req.max_states_per_step,
+            effective_max_states_per_step(req),
             req.max_successor_states_per_parent,
             req.matches_per_state_rule,
             req.include_states,
@@ -514,7 +512,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // sampling draws reproducible, which is the whole content of the option.
     engine.set_random_seed(req.random_seed);
     engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
-    engine.set_max_states_per_step(req.max_states_per_step);
+    engine.set_max_states_per_step(effective_max_states_per_step(req));
     engine.set_matches_per_state_rule(req.matches_per_state_rule);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
@@ -662,9 +660,6 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
     // always was, and the uniformity it used to claim moves to TransitionRate, which is a
     // rate and needs no depth to be defined over.
-    if (req.uniform_random && req.matches_per_step > 0) {
-        engine.set_max_states_per_step(req.matches_per_step);
-    }
     engine.evolve(initial_states, static_cast<size_t>(req.steps));
 
     if (req.show_progress) {

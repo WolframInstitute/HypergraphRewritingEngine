@@ -6,6 +6,8 @@
 #include <cuda_runtime.h>
 
 #include "hgcommon/join_core.hpp"   // THE JOIN -- one body, shared with the host matcher
+#include "hgcommon/sampling_core.hpp"
+#include "hg_gpu/exploration.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -224,12 +226,49 @@ struct MatchJoinCtx {
 // the other scheduler in THIS file -- was measured and rejected: match.cu already costs about
 // 5 GB to compile on its own, and adding one more kernel took a single nvcc to 8 GB.
 // See docs/GPU_PERSISTENT_DESIGN.md.
-__device__ void match_state_rule(DeviceState       ds,
-                                 const DeviceRule* rules,
-                                 StateId           state_id,
-                                 uint32_t          rid,
-                                 uint32_t          step,
-                                 typename Pool<MatchRecord>::DeviceView out) {
+// THE PER-(state, rule) CAP'S DECISION FOR ONE COMPLETED MATCH, deliberately NOT inlined.
+//
+// It is called from the join's innermost completion callback, which is instantiated per rule
+// shape through a template. Inlined there it carried the transition key and the selection
+// arithmetic into the DFS and ptxas ran out of memory assembling this file. One call per
+// completed match is not a cost worth that.
+//
+// `counting` is pass one: record the rank, emit nothing. Otherwise pass two: admit iff the rank
+// is within the threshold AND the block has not already taken k. The counter settles ties, which
+// a 64-bit rank makes vanishingly rare but which must still never admit k+1.
+__device__ __noinline__ bool drain_cap_admit(const DeviceState& ds, StateId state_id, RuleId rid,
+                                             const uint8_t* pattern, const EdgeId* matched,
+                                             uint8_t depth, bool counting, uint32_t cap_k,
+                                             uint32_t* s_seen, uint32_t* s_overflow,
+                                             uint32_t* s_emitted, uint64_t s_threshold,
+                                             uint64_t* s_ranks) {
+    EdgeId edges[kMaxPatternEdges];
+    for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
+    for (uint8_t d = 0; d < depth; ++d) edges[pattern[d]] = matched[d];
+    const uint64_t r = hgcommon::transition_rank(
+        transition_key_device(ds, state_id, rid, edges, depth), ds.sampling_seed);
+
+    if (counting) {
+        const uint32_t at = atomicAdd(s_seen, 1u);
+        if (at < kDrainCapBuffer) s_ranks[at] = r;
+        else atomicExch(s_overflow, 1u);
+        return false;
+    }
+    if (r > s_threshold) return false;
+    return atomicAdd(s_emitted, 1u) < cap_k;
+}
+
+// ONE PASS OF THE JOIN, compiled ONCE and called up to twice.
+//
+// __noinline__ is load-bearing, not a hint: the per-(state, rule) cap needs the join run twice --
+// once to learn every match's rank, once to emit the chosen k -- and a lambda called twice
+// instantiated this whole DFS twice, at which point ptxas ran out of memory assembling the file.
+// A non-inlined function called twice is one body.
+__device__ __noinline__ void match_state_rule_pass(
+        DeviceState ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
+        typename Pool<MatchRecord>::DeviceView out,
+        bool capping, bool counting, uint32_t cap_k, uint32_t* s_seen, uint32_t* s_overflow,
+        uint32_t* s_emitted, uint64_t s_threshold, uint64_t* s_ranks) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
@@ -238,6 +277,11 @@ __device__ void match_state_rule(DeviceState       ds,
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
+        if (capping && !drain_cap_admit(ds, state_id, rid, st.pattern, st.matched, st.depth,
+                                        counting, cap_k, s_seen, s_overflow, s_emitted,
+                                        s_threshold, s_ranks)) {
+            return;
+        }
         const uint32_t idx = out.claim();
         if (idx == Pool<MatchRecord>::kInvalid) {
             ds.errors.record(ErrorKind::kMatchPoolFull);
@@ -267,24 +311,90 @@ __device__ void match_state_rule(DeviceState       ds,
     // acts only on its own stripe.
     const DevicePatternEdge& pe0 = rule.lhs[0];
     StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
-    if (sl0.count <= ds.slice_scan_max_edges) {
-        for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
-            run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
+
+    auto drive_join = [&] () {
+        if (sl0.count <= ds.slice_scan_max_edges) {
+            for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
+                run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
+            }
+        } else {
+            uint32_t cand_seen = 0;
+            for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
+                ds.signature_index.list.for_each(
+                    static_cast<uint32_t>(pe0.compat_sig_hashes[s]) & ds.signature_index.mask,
+                    [&] (EdgeId cand) {
+                        if ((cand_seen % blockDim.x) == threadIdx.x) {
+                            run_dfs_from_root(cand);
+                        }
+                        ++cand_seen;
+                    });
+            }
         }
-    } else {
-        uint32_t cand_seen = 0;
-        for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
-            ds.signature_index.list.for_each(
-                static_cast<uint32_t>(pe0.compat_sig_hashes[s]) & ds.signature_index.mask,
-                [&] (EdgeId cand) {
-                    if ((cand_seen % blockDim.x) == threadIdx.x) {
-                        run_dfs_from_root(cand);
-                    }
-                    ++cand_seen;
-                });
-        }
+    };
+
+    drive_join();
+}
+
+// The entry point: one block, one (state, rule) pair. Without the cap this is a single pass and
+// nothing about matching changes. With it, TWO -- because choosing k of M requires all M, and
+// this block is where all M become known, which is the same completion point the host calls a
+// state's drain. Capping as matches arrive would decide the kept set by schedule, and then the
+// same seed would keep a different k on a different device, or on the same device twice.
+__device__ void match_state_rule(DeviceState       ds,
+                                 const DeviceRule* rules,
+                                 StateId           state_id,
+                                 uint32_t          rid,
+                                 uint32_t          step,
+                                 typename Pool<MatchRecord>::DeviceView out) {
+    const uint32_t cap_k = ds.matches_per_state_rule;
+    if (cap_k == 0u) {
+        match_state_rule_pass(ds, rules, state_id, rid, step, out,
+                              false, false, 0u, nullptr, nullptr, nullptr, ~0ULL, nullptr);
+        return;
     }
 
+    __shared__ uint32_t s_seen;
+    __shared__ uint32_t s_overflow;
+    __shared__ uint32_t s_emitted;
+    __shared__ uint64_t s_threshold;
+    __shared__ uint64_t s_ranks[kDrainCapBuffer];
+    if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_emitted = 0; s_threshold = ~0ULL; }
+    __syncthreads();
+
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, true, /*counting=*/true, cap_k,
+                          &s_seen, &s_overflow, &s_emitted, ~0ULL, s_ranks);
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        const uint32_t n = s_seen < kDrainCapBuffer ? s_seen : kDrainCapBuffer;
+        if (s_overflow) {
+            // More matches than the buffer can rank: the k-th smallest cannot be identified, so
+            // the cap is NOT applied to this pair rather than applied to the wrong k. Recorded,
+            // which puts the run under the engine's partial-result contract instead of silently
+            // returning a differently-sampled answer.
+            ds.errors.record(ErrorKind::kDrainCapBufferFull);
+            s_threshold = ~0ULL;
+        } else if (n > cap_k) {
+            // The k-th smallest, k small: k passes of a min above a floor. Same shape the host's
+            // drain uses, and it needs no sort and no scratch.
+            uint64_t floor = 0; bool have_floor = false;
+            for (uint32_t taken = 0; taken < cap_k; ++taken) {
+                uint64_t best = ~0ULL; bool found = false;
+                for (uint32_t i = 0; i < n; ++i) {
+                    const uint64_t r = s_ranks[i];
+                    if (have_floor && r <= floor) continue;
+                    if (r < best) { best = r; found = true; }
+                }
+                if (!found) break;
+                floor = best; have_floor = true;
+            }
+            s_threshold = have_floor ? floor : ~0ULL;
+        }
+    }
+    __syncthreads();
+
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, true, /*counting=*/false, cap_k,
+                          &s_seen, &s_overflow, &s_emitted, s_threshold, s_ranks);
 }
 
 namespace {

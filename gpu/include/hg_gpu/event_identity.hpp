@@ -43,9 +43,10 @@ inline HG_HD bool event_keys_need_ranks(EventSignatureKeys keys) {
 // run is bimodal on it, so the symptom was CPU and GPU each keeping one of two subgraphs, at
 // swapped parameters -- which reads like a seeding bug and is not one.
 HG_HD inline bool run_needs_edge_ranks(EventSignatureKeys event_keys, bool expansion_enabled,
-                                       double transition_rate, uint32_t num_rule_weights) {
+                                       double transition_rate, uint32_t num_rule_weights,
+                                       uint32_t matches_per_state_rule) {
     return event_keys_need_ranks(event_keys) || expansion_enabled ||
-           transition_rate < 1.0 || num_rule_weights != 0u;
+           transition_rate < 1.0 || num_rule_weights != 0u || matches_per_state_rule != 0u;
 }
 
 // Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan

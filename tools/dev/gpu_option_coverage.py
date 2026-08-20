@@ -59,9 +59,13 @@ EXEMPT_FIELDS = {
     # run_gpu_job calls core_progress before and after run_gpu_evolution; the device does not
     # report progress of its own, so there is nothing for the backend to read.
     "show_progress",
-    # Selects arrival-order capping, which only has an effect together with MatchesPerStep --
-    # and that combination already pushes its own OptionSkipped warning.
+    # These two RESOLVE INTO max_states_per_step rather than reaching the device under their own
+    # names: effective_max_states_per_step() answers "which of the two step caps won", and both
+    # the host engine setup and the GpuJob ask it. The GpuJob therefore carries the resolved
+    # value, and searching run_gpu_job for these field names cannot find them -- the read is one
+    # call away, which is the point of resolving it once.
     "uniform_random",
+    "matches_per_step",
 }
 
 # Components whose key is not the name the caller asks under, so a literal search for the name
