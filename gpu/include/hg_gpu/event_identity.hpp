@@ -34,6 +34,20 @@ inline HG_HD bool event_keys_need_ranks(EventSignatureKeys keys) {
                     hgcommon::EventKey_ProducedEdges)) != 0;
 }
 
+// WHETHER THIS RUN MUST COMPUTE CANONICAL EDGE RANKS. Three things read them -- the event
+// identity, the class-frame expansion, and the transition draw -- and the question is asked in
+// TWO places: once on the host, to seed the root states, and once in the kernel, for every child
+// it creates. Spelled twice they drifted the moment a third reader appeared: the roots were
+// seeded without ranks under sampling, so the draw keyed the FIRST transition on absent ranks
+// and the two engines disagreed about that one transition while agreeing everywhere else. The
+// run is bimodal on it, so the symptom was CPU and GPU each keeping one of two subgraphs, at
+// swapped parameters -- which reads like a seeding bug and is not one.
+HG_HD inline bool run_needs_edge_ranks(EventSignatureKeys event_keys, bool expansion_enabled,
+                                       double transition_rate, uint32_t num_rule_weights) {
+    return event_keys_need_ranks(event_keys) || expansion_enabled ||
+           transition_rate < 1.0 || num_rule_weights != 0u;
+}
+
 // Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan
 // over the state's own slice: slices are the size of a state's edge set and a rule consumes at
 // most kMaxPatternEdges of them, so this is bounded by the rule rather than by the run.

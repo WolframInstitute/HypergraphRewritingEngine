@@ -44,6 +44,14 @@ struct GpuJob {
     uint64_t random_seed = 0;
     uint64_t max_device_memory_bytes = 0;
 
+    // Sampling and capping. Reported to the caller as unimplemented on the device until the
+    // rules moved to hgcommon, where a kernel can call them.
+    double   transition_rate = 1.0;
+    std::vector<double> rule_weights;
+    uint64_t max_states_per_step = 0;
+    uint64_t max_successor_states_per_parent = 0;
+    uint64_t matches_per_state_rule = 0;
+
     // Output selection (mirrors the FFI include_* flags).
     bool include_states = true;
     bool include_events = true;

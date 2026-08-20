@@ -11,6 +11,8 @@
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/types.hpp"
 
+#include <cuda/atomic>
+
 #include <cstdint>
 
 namespace HG_NAMESPACE {
@@ -36,7 +38,8 @@ using DedupMap = ConcurrentMap<uint64_t, uint32_t>;
 __device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_t hash,
                                             DedupMap::DeviceView map, bool dedup,
                                             uint32_t explore_threshold_u32,
-                                            uint64_t explore_seed, uint32_t step) {
+                                            uint64_t explore_seed, uint32_t step,
+                                            StateId parent_sid = INVALID_ID) {
     if (dedup) {
         if (hash == 0) {
             // Not a hash: keep the state rather than merge every uncomputed one into one slot.
@@ -67,6 +70,24 @@ __device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_
                                   ^ static_cast<uint64_t>(sid));
         uint32_t draw = static_cast<uint32_t>(mix);
         if (draw >= explore_threshold_u32) return false;
+    }
+
+    // THE TWO HARD BOUNDS, applied AFTER dedup for the reason the host applies them there: the
+    // cap counts states RETAINED, and a state that merged into an existing one was never
+    // retained, so charging it would make the bound depend on how many duplicates arrived.
+    //
+    // Both admit the first k to arrive. Which k those are is not reproducible -- the same
+    // statement the host's documentation makes about these two options, and the reason
+    // "MatchesPerStateRule" exists for a caller who needs the kept set to be stable.
+    if (ds.max_states_per_step != 0u && step < ds.max_states_per_step_slots) {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(ds.states_per_step[step]);
+        if (c.fetch_add(1u, cuda::memory_order_relaxed) >= ds.max_states_per_step) return false;
+    }
+    if (ds.max_successor_states_per_parent != 0u && parent_sid < ds.max_states) {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(
+            ds.successors_per_parent[parent_sid]);
+        if (c.fetch_add(1u, cuda::memory_order_relaxed) >= ds.max_successor_states_per_parent)
+            return false;
     }
     return true;
 }

@@ -48,6 +48,22 @@ struct DeviceState {
     // State allocator (atomic-bumped)
     uint32_t* state_count;            // device atomic; current num_states
 
+    // SAMPLING AND CAPPING. The decisions live in hgcommon/sampling_core.hpp and are called
+    // from apply_one_match (the draw) and state_survives_dedup (the two bounds), so the device
+    // answers these options rather than reporting them unimplemented.
+    //
+    // A rate of 1.0 with no weights is the fast path and costs one compare per application.
+    double        transition_rate;      // 1.0 = every transition is taken
+    const double* rule_weights;         // null = every rule weighted 1
+    uint32_t      num_rule_weights;
+    uint64_t      sampling_seed;
+    // Hard bounds; 0 is unlimited. The counters are device atomics, cleared per run.
+    uint32_t  max_states_per_step;
+    uint32_t* states_per_step;                  // [max_steps + 2]
+    uint32_t  max_states_per_step_slots;
+    uint32_t  max_successor_states_per_parent;
+    uint32_t* successors_per_parent;            // [max_states]
+
     // Exact canonical hash per state, 0 until computed. [max_states]
     //
     // A state's hash is computed once, when the state is created; an EVENT identity needs the
@@ -366,6 +382,9 @@ public:
     ~EngineState() {
         if (state_edge_slices_)      cudaFree(state_edge_slices_);
         if (state_edge_ids_)         cudaFree(state_edge_ids_);
+        if (rule_weights_dev_)       cudaFree(rule_weights_dev_);
+        if (states_per_step_)        cudaFree(states_per_step_);
+        if (successors_per_parent_)  cudaFree(successors_per_parent_);
         // The six scalar counters are slices of counter_block_, not separate allocations, so
         // the block is freed once here and none of them is freed individually.
         if (counter_block_)          cudaFree(counter_block_);
@@ -460,6 +479,57 @@ public:
         return n;
     }
 
+    // SET THE SAMPLING AND CAPPING PARAMETERS FOR THIS RUN, allocating only what is asked for.
+    // A run that samples nothing and caps nothing allocates nothing here and the device takes
+    // the fast path in both places.
+    //
+    // The two counters are cleared on EVERY call, not on the first: they accumulate across a
+    // run and a session's second Step must not inherit the first's tallies. Clearing costs one
+    // memset of (steps + 2) and one of max_states, both of which the run is about to write.
+    void set_sampling(double transition_rate, const double* weights, uint32_t num_weights,
+                      uint64_t seed, uint32_t max_states_per_step,
+                      uint32_t max_successor_states_per_parent, uint32_t num_steps) {
+        transition_rate_     = transition_rate;
+        sampling_seed_       = seed;
+        max_states_per_step_ = max_states_per_step;
+        max_succ_per_parent_ = max_successor_states_per_parent;
+
+        if (weights && num_weights) {
+            if (num_rule_weights_ < num_weights) {
+                if (rule_weights_dev_) cudaFree(rule_weights_dev_);
+                HG_CUDA_CHECK(cudaMalloc(&rule_weights_dev_, sizeof(double) * num_weights),
+                              "EngineState rule_weights alloc");
+            }
+            HG_CUDA_CHECK(cudaMemcpy(rule_weights_dev_, weights, sizeof(double) * num_weights,
+                                     cudaMemcpyHostToDevice), "EngineState rule_weights h2d");
+            num_rule_weights_ = num_weights;
+        } else {
+            num_rule_weights_ = 0;
+        }
+
+        if (max_states_per_step_) {
+            const uint32_t slots = num_steps + 2u;
+            if (states_per_step_slots_ < slots) {
+                if (states_per_step_) cudaFree(states_per_step_);
+                HG_CUDA_CHECK(cudaMalloc(&states_per_step_, sizeof(uint32_t) * slots),
+                              "EngineState states_per_step alloc");
+                states_per_step_slots_ = slots;
+            }
+            HG_CUDA_CHECK(cudaMemset(states_per_step_, 0, sizeof(uint32_t) * states_per_step_slots_),
+                          "EngineState states_per_step clear");
+        }
+        if (max_succ_per_parent_) {
+            if (!successors_per_parent_) {
+                HG_CUDA_CHECK(cudaMalloc(&successors_per_parent_,
+                                         sizeof(uint32_t) * cfg_.max_states),
+                              "EngineState successors_per_parent alloc");
+            }
+            HG_CUDA_CHECK(cudaMemset(successors_per_parent_, 0,
+                                     sizeof(uint32_t) * cfg_.max_states),
+                          "EngineState successors_per_parent clear");
+        }
+    }
+
     DeviceState device() const {
         DeviceState d;
         d.vertex_pool             = vertex_pool_.view();
@@ -475,6 +545,15 @@ public:
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;
         d.state_edge_rank         = state_edge_rank_;
+        d.transition_rate                  = transition_rate_;
+        d.rule_weights                     = rule_weights_dev_;
+        d.num_rule_weights                 = num_rule_weights_;
+        d.sampling_seed                    = sampling_seed_;
+        d.max_states_per_step              = max_states_per_step_;
+        d.states_per_step                  = states_per_step_;
+        d.max_states_per_step_slots        = states_per_step_slots_;
+        d.max_successor_states_per_parent  = max_succ_per_parent_;
+        d.successors_per_parent            = successors_per_parent_;
         d.state_edge_orbit        = state_edge_orbit_;
         d.state_num_orbits        = state_num_orbits_;
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
@@ -796,6 +875,17 @@ private:
     uint64_t*                          state_exact_hash_       = nullptr;
     hgcommon::RecordSet                record_{};
     uint32_t*                          state_edge_rank_        = nullptr;
+    // Sampling and capping. The weights and the two counters are the only device memory these
+    // options need; everything else the draw reads was already here.
+    double                             transition_rate_        = 1.0;
+    double*                            rule_weights_dev_       = nullptr;
+    uint32_t                           num_rule_weights_       = 0;
+    uint64_t                           sampling_seed_          = 0;
+    uint32_t                           max_states_per_step_    = 0;
+    uint32_t*                          states_per_step_        = nullptr;
+    uint32_t                           states_per_step_slots_  = 0;
+    uint32_t                           max_succ_per_parent_    = 0;
+    uint32_t*                          successors_per_parent_  = nullptr;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;

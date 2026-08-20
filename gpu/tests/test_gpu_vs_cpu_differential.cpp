@@ -48,6 +48,15 @@ struct Workload {
     // Forwarded to EvolveInput::max_blocks_per_launch (0 = single launch). A
     // small value forces the match/rewrite kernels to run in chunks.
     uint32_t max_blocks_per_launch = 0;
+    // Sampling and capping, so a THINNED run can be compared across engines. That comparison is
+    // only meaningful because the draw is keyed on the transition's own identity rather than on
+    // thread state: keyed the other way, the two engines would keep different subgraphs by
+    // construction and there would be nothing to assert.
+    double   transition_rate = 1.0;
+    std::vector<double> rule_weights;
+    uint64_t random_seed = 0;
+    uint32_t max_states_per_step = 0;
+    uint32_t max_successor_states_per_parent = 0;
     // Collapse isomorphic initial states under quotient exploration (default off).
     bool quotient_initial_states = false;
 };
@@ -193,6 +202,11 @@ NormalizedResult run_cpu(const Workload& w) {
     }
     engine.set_transitive_reduction(w.transitive_reduction);
     engine.set_explore_from_canonical_states_only(w.explore_from_canonical_states_only);
+    engine.set_transition_rate(w.transition_rate);
+    if (!w.rule_weights.empty()) engine.set_rule_weights(w.rule_weights);
+    engine.set_random_seed(w.random_seed);
+    engine.set_max_states_per_step(w.max_states_per_step);
+    engine.set_max_successor_states_per_parent(w.max_successor_states_per_parent);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -351,6 +365,11 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.explore_from_canonical_states_only = w.explore_from_canonical_states_only;
     in.slice_scan_max_edges = w.slice_scan_max_edges;
     in.max_blocks_per_launch = w.max_blocks_per_launch;
+    in.transition_rate = w.transition_rate;
+    in.rule_weights = w.rule_weights;
+    in.exploration_seed = w.random_seed;
+    in.max_states_per_step = w.max_states_per_step;
+    in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     return in;
 }
 
@@ -1342,6 +1361,96 @@ TEST(EdgeIdentity, AbsentUnlessAskedFor) {
     ASSERT_FALSE(result.states.empty()) << "the run must still produce states";
     EXPECT_TRUE(result.state_edge_ids.empty());
     EXPECT_TRUE(result.global_edges.empty());
+}
+
+// A THINNED RUN KEEPS THE SAME TRANSITIONS ON BOTH ENGINES.
+//
+// "TransitionRate" and "RuleWeights" were reported to the caller as unimplemented on the GPU.
+// They are implemented now, and this is what makes that claim checkable rather than asserted:
+// the draw is a pure function of the transition's own identity and the seed, so two engines
+// reaching the same transition must decide it the same way. If the device keyed on anything
+// local -- a thread index, an arrival order, its own state numbering -- the two subgraphs would
+// differ and these sets would not match.
+//
+// Compared as SETS of canonical state hashes and event keys, not as counts: two runs can thin to
+// the same number of states and keep different ones, which is the failure this must catch.
+TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
+    for (double rate : {0.75, 0.5, 0.25}) {
+        for (uint64_t seed : {uint64_t(1), uint64_t(0xABCDEF)}) {
+            Workload w;
+            w.name = "thinned";
+            w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+            w.initial_states = {{{0u, 1u}}};
+            w.num_steps = 5;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+            w.transition_rate = rate;
+            w.random_seed = seed;
+
+            NormalizedResult cpu = run_cpu(w);
+            NormalizedResult gpu = run_gpu(w);
+
+            EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                << "rate=" << rate << " seed=" << seed
+                << ": the two engines kept different states from the same draw";
+            EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                << "rate=" << rate << " seed=" << seed
+                << ": the two engines kept different transitions from the same draw";
+        }
+    }
+}
+
+// A WEIGHT OF ZERO SILENCES ITS RULE AND LEAVES THE OTHER ALONE, on both engines. This is the
+// case that a rate-only test cannot reach: the run's rate stays at 1, so a device that tested
+// only `transition_rate < 1` would take the fast path and apply nothing.
+TEST(Sampling, RuleWeightsAgreeAcrossEngines) {
+    Workload w;
+    w.name = "weighted";
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
+               rule({{0, 1}}, {{1, 0}})};
+    w.initial_states = {{{0u, 1u}}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.transition_rate = 1.0;
+    w.rule_weights = {1.0, 0.0};      // rule 1 is silenced
+    w.random_seed = 7;
+
+    NormalizedResult cpu = run_cpu(w);
+    NormalizedResult gpu = run_gpu(w);
+
+    EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes);
+    EXPECT_EQ(cpu.event_keys, gpu.event_keys);
+
+    Workload unweighted = w;
+    unweighted.rule_weights.clear();
+    NormalizedResult full = run_gpu(unweighted);
+    EXPECT_LT(gpu.canonical_state_hashes.size(), full.canonical_state_hashes.size())
+        << "silencing a rule removed nothing, so the weight was not applied";
+}
+
+// THE TWO HARD BOUNDS HOLD ON THE DEVICE. Which states meet them is arrival-ordered and not
+// reproducible -- the same statement the host makes -- so what is asserted is the BOUND, plus
+// the fact that it bound something.
+TEST(Sampling, DeviceHonoursTheHardBounds) {
+    Workload base;
+    base.name = "bounds";
+    base.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    base.initial_states = {{{0u, 1u}}};
+    base.num_steps = 6;
+    base.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+    const size_t uncapped = run_gpu(base).raw_states;
+    ASSERT_GT(uncapped, 4u) << "the uncapped run is too small for a cap to bind";
+
+    Workload per_parent = base;
+    per_parent.max_successor_states_per_parent = 1;
+    const size_t capped_parent = run_gpu(per_parent).raw_states;
+    EXPECT_LT(capped_parent, uncapped)
+        << "MaxSuccessorStatesPerParent bound nothing on the device";
+
+    Workload per_step = base;
+    per_step.max_states_per_step = 2;
+    const size_t capped_step = run_gpu(per_step).raw_states;
+    EXPECT_LT(capped_step, uncapped) << "MaxStatesPerStep bound nothing on the device";
 }
 
 TEST(CanonicalStateCount, ModesVsCpu) {

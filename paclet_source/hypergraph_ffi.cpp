@@ -391,30 +391,6 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // run_session refuses to rebuild the engine rather than silently continuing against a
         // fresh one. The verb rides on the job and the backend answers it.
 
-        // The per-step caps have no device implementation: EvolveInput carries no
-        // max_states_per_step / max_successor_states_per_parent, so a capped run on the
-        // GPU returns the UNCAPPED state set while the same call on the CPU returns a
-        // capped one. Reported rather than applied -- silently returning a different
-        // answer per device is the divergence class the differential suite exists to
-        // catch, and a cap the caller asked for and did not get is exactly that.
-        if (req.max_states_per_step > 0) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'MaxStatesPerStep' is not implemented on the GPU; the result is "
-                 "uncapped."});
-        }
-        if (req.max_successor_states_per_parent > 0) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'MaxSuccessorStatesPerParent' is not implemented on the GPU; the "
-                 "result is uncapped."});
-        }
-        if (req.uniform_random && req.matches_per_step > 0) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'MatchesPerStep' maps to MaxStatesPerStep, which is not implemented "
-                 "on the GPU; the result is uncapped."});
-        }
         // The per-(state, rule) cap is applied at a state's drain, and the device has no drain
         // to apply it at: EvolveInput carries no matches_per_state_rule, and the GpuJob built
         // below has no field for it. Same class as the two above -- a cap the caller asked for
@@ -442,19 +418,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // draw, so it has no spine either. Silently running unthinned would return a FULL
         // evolution where the caller asked for a sample, which reads as a system with that
         // many states rather than as an option that did not apply.
-        if (!req.rule_weights.empty()) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'RuleWeights' is not implemented on the GPU; every rule is weighted "
-                 "equally."});
-        }
-        if (req.transition_rate < 1.0) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'TransitionRate' is not implemented on the GPU; the result is "
-                 "unsampled."});
-        }
-
+                
         GpuJob job{
             req.parsed_rules_raw,
             req.initial_states_raw,
@@ -477,6 +441,11 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.exploration_probability,
             req.random_seed,
             0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
+            req.transition_rate,
+            req.rule_weights,
+            req.max_states_per_step,
+            req.max_successor_states_per_parent,
+            req.matches_per_state_rule,
             req.include_states,
             req.include_events || req.include_events_minimal,
             req.include_events_minimal && !req.include_events,

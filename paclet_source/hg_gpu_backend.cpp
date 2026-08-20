@@ -153,6 +153,12 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.quotient_initial_states = job.quotient_initial_states;
     in.exploration_probability = static_cast<float>(job.exploration_probability);
     in.exploration_seed = job.random_seed;
+    in.transition_rate = job.transition_rate;
+    in.rule_weights = job.rule_weights;
+    in.max_states_per_step = static_cast<uint32_t>(job.max_states_per_step);
+    in.max_successor_states_per_parent =
+        static_cast<uint32_t>(job.max_successor_states_per_parent);
+    in.matches_per_state_rule = static_cast<uint32_t>(job.matches_per_state_rule);
     // Only these two components need the edge id -> contents table and the per-state id lists.
     in.edge_identity = job.include_global_edges || job.include_state_bitvectors;
     in.max_device_memory_bytes = job.max_device_memory_bytes;

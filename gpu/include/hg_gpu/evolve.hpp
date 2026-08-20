@@ -94,6 +94,21 @@ struct EvolveInput {
     float    exploration_probability = 1.0f;
     uint64_t exploration_seed        = 0;
 
+    // SAMPLING AND CAPPING, the same options the host accepts and applies. These were reported
+    // to the caller as unimplemented on the device; the rules are in hgcommon/sampling_core.hpp
+    // and the inputs they need were already here.
+    //
+    // transition_rate scaled by rule_weights[rule] decides whether a transition is taken at all,
+    // drawn from the transition's own identity so the kept subgraph is the same at any thread
+    // count and on either engine. rule_weights may be empty (every rule weighted 1) or shorter
+    // than the rule set (rules past its end weighted 1).
+    double   transition_rate = 1.0;
+    std::vector<double> rule_weights;
+    // Hard bounds. 0 means unlimited, as on the host.
+    uint32_t max_states_per_step = 0;
+    uint32_t max_successor_states_per_parent = 0;
+    uint32_t matches_per_state_rule = 0;
+
     // Override for EngineConfig::slice_scan_max_edges (0 keeps the default).
     // Tests set a tiny value to force the index-backed match path and the
     // lazy index rebuild on small workloads.

@@ -457,8 +457,10 @@ __global__ void k_persistent_evolve(
         unsigned long long* phase_cycles,
         SessionView sess) {
 
-    // Ranks are the reconstruction's frame alignment as well as Automatic's signature.
-    const bool need_ranks = event_keys_need_ranks(event_keys) || qe.enabled != 0;
+    // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
+    // draw's key. One predicate answers it for the roots and for every child; see its note.
+    const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
+                                                 ds.transition_rate, ds.num_rule_weights);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -757,7 +759,8 @@ __global__ void k_persistent_evolve(
                             const uint64_t s4 = clock64();
                             expand_child = state_survives_dedup(ds, child_sid, h, dedup_map,
                                                                 dedup, explore_threshold_u32,
-                                                                explore_seed, child_step);
+                                                                explore_seed, child_step,
+                                                                rec.state_id);
                             if (phase_cycles) atomicAdd(&phase_cycles[15], clock64() - s4);
                         } else if (sess.enabled) {
                             // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
@@ -768,7 +771,7 @@ __global__ void k_persistent_evolve(
                             // stopped at.
                             if (state_survives_dedup(ds, child_sid, h, dedup_map, dedup,
                                                      explore_threshold_u32, explore_seed,
-                                                     child_step)) {
+                                                     child_step, rec.state_id)) {
                                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device>
                                     fc(*sess.frontier_count);
                                 const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
@@ -1183,11 +1186,15 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     {
         const uint32_t block = 64;
         const uint32_t n = static_cast<uint32_t>(roots.size());
+        // The device view is taken once: the rank predicate reads the run's sampling parameters
+        // out of it, and it must be the SAME view the kernel is handed.
+        const DeviceState dsv = engine.device();
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
-            engine.device(), d_states, n,
+            dsv, d_states, n,
             session ? sess_v.states : canonical_owner.view(), state_mode,
             event_keys != EVENT_SIG_NONE,
-            event_keys_need_ranks(event_keys) || qe.enabled != 0,
+            run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
+                                 dsv.num_rule_weights),
             arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
     }
     if (!(start_step > 0 && session)) {

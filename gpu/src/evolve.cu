@@ -320,6 +320,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
 
+    // Sampling and capping parameters for this run. Allocates only what is asked for, and
+    // clears the two counters every call so a session's later Step does not inherit the
+    // tallies of its first.
+    engine.set_sampling(in.transition_rate,
+                        in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
+                        static_cast<uint32_t>(in.rule_weights.size()),
+                        in.exploration_seed,
+                        in.max_states_per_step,
+                        in.max_successor_states_per_parent,
+                        in.num_steps);
+
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {
         std::random_device rd;
@@ -350,7 +361,16 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // edges, which live in a per-edge-slot array no other mode reads. Taken here, once the
         // mode is known, so a run identifying events by their endpoint states alone is not
         // charged four bytes per edge slot for it.
-        if (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges)) {
+        // The transition draw keys on the consumed edges' ranks too, so a SAMPLED run needs the
+        // array whatever event identity it asked for. Taking it in the kernel's need_ranks alone
+        // is not enough: that flag decides whether the ranks are COMPUTED, and this decides
+        // whether there is anywhere to put them. Without it the kernel writes through a null
+        // pointer, the run faults, and the grow-and-retry loop reports the engine as too large
+        // for the device rather than naming the real fault.
+        const bool sampling_needs_ranks =
+            in.transition_rate < 1.0 || !in.rule_weights.empty();
+        if (sampling_needs_ranks ||
+            (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();
         }
 
