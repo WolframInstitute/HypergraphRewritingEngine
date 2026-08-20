@@ -115,6 +115,105 @@ inline uint32_t branchial_target_step(int branchial_step, int steps, bool& filte
     return static_cast<uint32_t>(steps + 1 + branchial_step);
 }
 
+// THE STATE-ENDPOINT PROJECTION OF THE BRANCHIAL RELATION, which "BranchialStateEdges" and
+// "BranchialStateEdgesAllSiblings" deliver as raw lists rather than as a GraphData.
+//
+// Two rules, not one, and they differ in more than their source: the pair form takes the
+// branchial relation the engine computed and reads each event's output state, while the sibling
+// form ignores overlap entirely and pairs every two events leaving the same input state. They
+// also filter by step differently -- the pair form tests the FIRST event's output state only,
+// the sibling form tests both -- which is behaviour the reference defines, so it is preserved
+// exactly rather than tidied into agreement.
+//
+// Neither multiset is deduplicated: multiplicity is meaning here, the same as for the branchial
+// event edges, and the reference preserves it.
+//
+// The TRAVERSAL is left to the caller and only the DECISION lives here. Which order an engine
+// visits its events in is a storage question -- a per-state list on the host, an id-ordered
+// array on the device -- and forcing one on both would change the host's output for no reason.
+struct BranchialStateEdgeSet {
+    std::vector<std::pair<int64_t, int64_t>> edges;   // (From, To), multiplicity preserved
+    std::vector<int64_t> vertices;                    // unique endpoints, ascending
+};
+
+// From branchial EVENT pairs. `pairs` is (event1, event2) with genesis already filtered, which
+// is exactly what Source::branchial_event_pairs() returns on both engines.
+template <class OutputStateOf, class CanonicalOf, class StepOf>
+inline BranchialStateEdgeSet branchial_state_edges_from_pairs(
+        const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
+        OutputStateOf&& output_state_of, CanonicalOf&& canonical_of, StepOf&& step_of,
+        const GraphOptions& opts) {
+    BranchialStateEdgeSet out;
+    bool filter_by_step = false;
+    const uint32_t target_step = branchial_target_step(opts.branchial_step, opts.steps,
+                                                       filter_by_step);
+    std::set<int64_t> unique_states;
+    for (const auto& pr : pairs) {
+        const uint32_t out1 = output_state_of(pr.first);
+        // The FIRST event's output state alone decides the step filter. Both events of a
+        // branchial pair were produced at the same step, so testing the second adds nothing.
+        if (filter_by_step && step_of(out1) != target_step) continue;
+        const int64_t state1 = canonical_of(out1);
+        const int64_t state2 = canonical_of(output_state_of(pr.second));
+        unique_states.insert(state1);
+        unique_states.insert(state2);
+        out.edges.emplace_back(state1, state2);
+    }
+    out.vertices.assign(unique_states.begin(), unique_states.end());
+    return out;
+}
+
+// From SIBLING groups: every two events leaving one input state, whether or not they overlap.
+// `for_each_group` calls its argument once per input state with that state's event ids, genesis
+// already excluded -- the caller enumerates, because the order it enumerates in is its own.
+template <class ForEachGroup, class OutputStateOf, class CanonicalOf, class StepOf>
+inline BranchialStateEdgeSet branchial_state_edges_all_siblings(
+        ForEachGroup&& for_each_group,
+        OutputStateOf&& output_state_of, CanonicalOf&& canonical_of, StepOf&& step_of,
+        const GraphOptions& opts) {
+    BranchialStateEdgeSet out;
+    bool filter_by_step = false;
+    const uint32_t target_step = branchial_target_step(opts.branchial_step, opts.steps,
+                                                       filter_by_step);
+    std::set<int64_t> unique_states;
+    for_each_group([&](const std::vector<uint32_t>& events) {
+        for (size_t i = 0; i < events.size(); ++i) {
+            const uint32_t out1 = output_state_of(events[i]);
+            if (filter_by_step && step_of(out1) != target_step) continue;
+            const int64_t state1 = canonical_of(out1);
+            for (size_t j = i + 1; j < events.size(); ++j) {
+                const uint32_t out2 = output_state_of(events[j]);
+                // Both endpoints are tested here, unlike the pair form: siblings of one input
+                // state are not required to have been produced at the same step.
+                if (filter_by_step && step_of(out2) != target_step) continue;
+                const int64_t state2 = canonical_of(out2);
+                unique_states.insert(state1);
+                unique_states.insert(state2);
+                out.edges.emplace_back(state1, state2);
+            }
+        }
+    });
+    out.vertices.assign(unique_states.begin(), unique_states.end());
+    return out;
+}
+
+// The two keys both forms deliver under, so the reply shape is spelled once.
+inline void push_branchial_state_edges(wxf::WXFValueAssociation& result,
+                                       const BranchialStateEdgeSet& set) {
+    wxf::WXFValueList edges;
+    for (const auto& e : set.edges) {
+        wxf::WXFValueAssociation ed;
+        ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(e.first)});
+        ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(e.second)});
+        edges.push_back(wxf::WXFValue(ed));
+    }
+    result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(edges)});
+
+    wxf::WXFValueList verts;
+    for (int64_t v : set.vertices) verts.push_back(wxf::WXFValue(v));
+    result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(verts)});
+}
+
 // Which relations a graph property is built FROM, decided by its name.
 //
 // Shared with whoever must decide what the run records: a property whose relation was never

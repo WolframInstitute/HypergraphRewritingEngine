@@ -427,36 +427,6 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
                  "'MatchesPerStateRule' is not implemented on the GPU; the result is "
                  "uncapped."});
         }
-        // REQUESTED DATA THE DEVICE DOES NOT SERVE. The four below are built by this file for
-        // the host path and appear nowhere in hg_gpu_backend.cpp, so a device reply simply has
-        // no such key and the caller receives a shorter association than the same call on the
-        // CPU returns. That is the same divergence the option warnings above exist for, on the
-        // output surface rather than the option surface: the request is answered differently
-        // per device with nothing said.
-        if (req.include_branchial_state_edges) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'BranchialStateEdges' is not implemented on the GPU; the key is absent "
-                 "from the result."});
-        }
-        if (req.include_branchial_state_edges_all_siblings) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'BranchialStateEdgesAllSiblings' is not implemented on the GPU; the key "
-                 "is absent from the result."});
-        }
-        if (req.include_global_edges) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'GlobalEdges' is not implemented on the GPU; the key is absent from the "
-                 "result."});
-        }
-        if (req.include_state_bitvectors) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'StateBitvectors' is not implemented on the GPU; the key is absent from "
-                 "the result."});
-        }
         // The device has no genesis events to show or hide. On the host a genesis event
         // connects the genesis state to an initial state, and this option decides whether the
         // causal and branchial output carries the pairs those events take part in; the GPU
@@ -517,6 +487,10 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.include_num_events,
             req.include_num_causal_edges,
             req.include_num_branchial_edges,
+            req.include_branchial_state_edges,
+            req.include_branchial_state_edges_all_siblings,
+            req.include_global_edges,
+            req.include_state_bitvectors,
             req.graph_properties,
             req.edge_deduplication,
             req.branchial_step,
@@ -1390,146 +1364,53 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial_edges)});
         }
 
-        // BranchialStateEdges -> List of {From -> canonical_state_id, To -> canonical_state_id}
-        // BranchialStateVertices -> List of unique state IDs that appear in branchial edges
-        // For BranchialGraph where state vertices are the output states of events
-        // NOTE: Do NOT deduplicate by canonical state pair - reference preserves edge multiplicity
+        // BranchialStateEdges / BranchialStateEdgesAllSiblings -> the state-endpoint projection
+        // of the branchial relation: {From -> state, To -> state} plus the unique vertices.
+        // Both rules live in hgmarshal so the device answers them identically; what stays here
+        // is this engine's traversal of its own storage, which is the part that legitimately
+        // differs.
+        const auto bse_output_state = [&](uint32_t eid) {
+            return static_cast<uint32_t>(hg.get_event(eid).output_state);
+        };
+        const auto bse_canonical = [&](uint32_t sid) {
+            return static_cast<int64_t>(hg.get_canonical_state(sid));
+        };
+        const auto bse_step = [&](uint32_t sid) { return hg.get_state(sid).step; };
+        hgmarshal::GraphOptions bse_opts;
+        bse_opts.branchial_step = req.branchial_step;
+        bse_opts.steps = static_cast<int>(req.steps);
+
         if (req.include_branchial_state_edges) {
-            wxf::WXFValueList branchial_state_edges;
-            std::set<hypergraph::StateId> unique_states;
-            auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
-
-            // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
-            uint32_t target_step = 0;
-            bool filter_by_step = (req.branchial_step != 0);
-            if (filter_by_step) {
-                if (req.branchial_step > 0) {
-                    // 1-based indexing: 1 = step 1, 2 = step 2, etc.
-                    target_step = static_cast<uint32_t>(req.branchial_step);
-                } else {
-                    // Negative from end: -1 = final step (steps), -2 = steps-1, etc.
-                    target_step = static_cast<uint32_t>(req.steps + 1 + req.branchial_step);
-                }
-            }
-
-            for (const auto& edge : branchial_edge_vec) {
-                // Skip edges involving genesis events if ShowGenesisEvents is false
+            std::vector<std::pair<uint32_t, uint32_t>> pairs;
+            for (const auto& be : hg.causal_graph().get_branchial_edges()) {
                 if (!req.show_genesis_events &&
-                    (hg.is_genesis_event(edge.event1) || hg.is_genesis_event(edge.event2))) {
+                    (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2))) {
                     continue;
                 }
-                // Get the output states of the events, mapped to canonical state IDs
-                const hypergraph::Event& event1 = hg.get_event(edge.event1);
-                const hypergraph::Event& event2 = hg.get_event(edge.event2);
-
-                // Filter by step if specified (branchial edges are between events at the same step)
-                if (filter_by_step) {
-                    const hypergraph::State& output_state = hg.get_state(event1.output_state);
-                    if (output_state.step != target_step) {
-                        continue;
-                    }
-                }
-
-                hypergraph::StateId state1 = hg.get_canonical_state(event1.output_state);
-                hypergraph::StateId state2 = hg.get_canonical_state(event2.output_state);
-
-                // Track unique states for vertices
-                unique_states.insert(state1);
-                unique_states.insert(state2);
-
-                // No deduplication - preserve edge multiplicity like reference
-                wxf::WXFValueAssociation edge_data;
-                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(state1))});
-                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(state2))});
-                branchial_state_edges.push_back(wxf::WXFValue(edge_data));
+                pairs.emplace_back(be.event1, be.event2);
             }
-            full_result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(branchial_state_edges)});
-
-            // Send unique state vertices
-            wxf::WXFValueList state_vertices;
-            for (hypergraph::StateId sid : unique_states) {
-                state_vertices.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
-            }
-            full_result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(state_vertices)});
+            hgmarshal::push_branchial_state_edges(
+                full_result,
+                hgmarshal::branchial_state_edges_from_pairs(
+                    pairs, bse_output_state, bse_canonical, bse_step, bse_opts));
         }
 
-        // BranchialStateEdgesAllSiblings: ALL pairs of output states from same input state
-        // This matches reference BranchialGraph behavior (no overlap check, all siblings)
         if (req.include_branchial_state_edges_all_siblings) {
-            wxf::WXFValueList branchial_state_edges;
-            std::set<hypergraph::StateId> unique_states;
-
-            // Compute target step for filtering (0 = all, positive = 1-based, negative = from end)
-            uint32_t target_step = 0;
-            bool filter_by_step = (req.branchial_step != 0);
-            if (filter_by_step) {
-                if (req.branchial_step > 0) {
-                    target_step = static_cast<uint32_t>(req.branchial_step);
-                } else {
-                    target_step = static_cast<uint32_t>(req.steps + 1 + req.branchial_step);
-                }
-            }
-
-            // Iterate over all input states and their events
-            hg.causal_graph().for_each_state_events([&]([[maybe_unused]] hypergraph::StateId input_state, auto* event_list) {
-                // Collect all events from this input state
-                std::vector<hypergraph::EventId> events;
-                event_list->for_each([&](hypergraph::EventId eid) {
-                    // Skip genesis events if not showing them
-                    if (!req.show_genesis_events && hg.is_genesis_event(eid)) {
-                        return;
-                    }
-                    events.push_back(eid);
-                });
-
-                // Create all pairs of output states (C(n,2) pairs)
-                for (size_t i = 0; i < events.size(); ++i) {
-                    const hypergraph::Event& event1 = hg.get_event(events[i]);
-
-                    // Filter by step if specified
-                    if (filter_by_step) {
-                        const hypergraph::State& output_state = hg.get_state(event1.output_state);
-                        if (output_state.step != target_step) {
-                            continue;
-                        }
-                    }
-
-                    hypergraph::StateId state1 = hg.get_canonical_state(event1.output_state);
-
-                    for (size_t j = i + 1; j < events.size(); ++j) {
-                        const hypergraph::Event& event2 = hg.get_event(events[j]);
-
-                        // Filter event2 by step too
-                        if (filter_by_step) {
-                            const hypergraph::State& output_state2 = hg.get_state(event2.output_state);
-                            if (output_state2.step != target_step) {
-                                continue;
-                            }
-                        }
-
-                        hypergraph::StateId state2 = hg.get_canonical_state(event2.output_state);
-
-                        // Track unique states
-                        unique_states.insert(state1);
-                        unique_states.insert(state2);
-
-                        // Add edge (no deduplication - preserve multiplicity like reference)
-                        wxf::WXFValueAssociation edge_data;
-                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(state1))});
-                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(state2))});
-                        branchial_state_edges.push_back(wxf::WXFValue(edge_data));
-                    }
-                }
-            });
-
-            full_result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(branchial_state_edges)});
-
-            // Send unique state vertices
-            wxf::WXFValueList state_vertices;
-            for (hypergraph::StateId sid : unique_states) {
-                state_vertices.push_back(wxf::WXFValue(static_cast<int64_t>(sid)));
-            }
-            full_result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(state_vertices)});
+            const auto for_each_group = [&](auto&& emit) {
+                hg.causal_graph().for_each_state_events(
+                    [&]([[maybe_unused]] hypergraph::StateId input_state, auto* event_list) {
+                        std::vector<uint32_t> events;
+                        event_list->for_each([&](hypergraph::EventId eid) {
+                            if (!req.show_genesis_events && hg.is_genesis_event(eid)) return;
+                            events.push_back(eid);
+                        });
+                        emit(events);
+                    });
+            };
+            hgmarshal::push_branchial_state_edges(
+                full_result,
+                hgmarshal::branchial_state_edges_all_siblings(
+                    for_each_group, bse_output_state, bse_canonical, bse_step, bse_opts));
         }
 
         // ========================================================================
