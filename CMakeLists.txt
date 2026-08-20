@@ -206,6 +206,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # on any toolchain this tree is built with.
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wmissing-field-initializers>
                         $<$<COMPILE_LANGUAGE:CXX>:-Werror=missing-field-initializers>)
+
+    # A switch over an enum that does not name every value falls to whatever the default does,
+    # and the default is usually a summary that is now wrong for the case it swallowed:
+    # JobSystem::get_error_description() described a CapacityExhausted run as "Unknown error",
+    # which is the opposite of what classifying that error separately achieves -- it is the one
+    # kind that is NOT a defect, and the whole point of the type is that a caller can tell.
+    #
+    # -Wswitch is in -Wall and was firing on every build of this tree; nothing acted on it.
+    # Measured at zero after that one case was added: 151 TUs in build_linux, 162 in build_gpu,
+    # and zero on clang, aarch64-linux-gnu-g++ and x86_64-w64-mingw32-g++ over the engine
+    # sources, so -Werror costs nothing on any toolchain this tree is built with.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror=switch>)
 endif()
 
 # POPCNT, on the x86-64 hosts that have had it since 2008 (SSE4.2 / x86-64-v2). The baseline
