@@ -1010,10 +1010,7 @@ public:
     // by per-transition survival. Seeding the spine attacks reachability directly: each seed
     // keeps a different one-per-state skeleton.
     uint64_t spine_rank(uint64_t canonical_key) const {
-        uint64_t x = canonical_key ^ (random_seed_ * 0x9E3779B97F4A7C15ULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
-        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-        return x ^ (x >> 31);
+        return hgcommon::transition_rank(canonical_key, random_seed_);
     }
 
     // Called once per state, after that state's last match task and before any of its matches
