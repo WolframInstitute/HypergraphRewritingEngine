@@ -1027,6 +1027,49 @@ TEST(WxfSerializationPin, AllSiblingsIsAtLeastTheOverlapRelation) {
                     << b << " against " << a;
 }
 
+// SHOWING GENESIS EVENTS ADDS EXACTLY ONE EVENT PER INITIAL STATE, on whichever engine this
+// binary was compiled against.
+//
+// A genesis event connects a synthetic genesis state to an initial state and produces that
+// state's edges. The host mints them during evolution and filters them out unless asked; the
+// device mints none and synthesises them here, so this asserts the SHAPE both must produce
+// rather than comparing ids, which are each engine's own.
+//
+// It also changes the CAUSAL relation, which is the part that makes this more than a cosmetic
+// list: a genesis event is the producer of every initial edge, so any event consuming one is
+// caused by it. A run whose first events consume the initial edges must therefore gain causal
+// pairs as well as events.
+TEST(WxfSerializationPin, ShowingGenesisEventsAddsOnePerInitialState) {
+    HostBridge host;
+
+    auto plain_in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"Events", "CausalEdges"});
+    }, 1);
+    auto plain = run_rewriting_core(plain_in, host);
+    ASSERT_FALSE(plain.empty());
+
+    auto shown_in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"Events", "CausalEdges"});
+        put_str_option(w, "ShowGenesisEvents", "True");
+    }, 2);
+    auto shown = run_rewriting_core(shown_in, host);
+    ASSERT_FALSE(shown.empty());
+
+    const int64_t plain_events = count_assoc_entries(plain, "Events");
+    const int64_t shown_events = count_assoc_entries(shown, "Events");
+    ASSERT_GT(plain_events, 0);
+    // kBranchSeed is ONE initial state, so exactly one genesis event joins the set.
+    EXPECT_EQ(shown_events, plain_events + 1)
+        << "showing genesis events did not add exactly one event per initial state";
+
+    const int64_t plain_causal = count_list_entries(plain, "CausalEdges");
+    const int64_t shown_causal = count_list_entries(shown, "CausalEdges");
+    ASSERT_GE(plain_causal, 0);
+    EXPECT_GT(shown_causal, plain_causal)
+        << "the genesis event produced the initial edges, so events consuming them are caused "
+           "by it -- showing it must add causal pairs, not only an event";
+}
+
 TEST(WxfSerializationPin, StatesGraphUnderFullCanonicalization) {
     HostBridge host;
     auto in = build_input(kSeed, kLhs, kRhs, 4, [](wxf::Writer& w) {

@@ -160,7 +160,11 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         static_cast<uint32_t>(job.max_successor_states_per_parent);
     in.matches_per_state_rule = static_cast<uint32_t>(job.matches_per_state_rule);
     // Only these two components need the edge id -> contents table and the per-state id lists.
-    in.edge_identity = job.include_global_edges || job.include_state_bitvectors;
+    // Genesis synthesis needs the per-state edge ids too: an INITIAL edge is one that
+    // appears in a root state's list, and that is the only way to tell one from an edge a
+    // rewrite produced.
+    in.edge_identity = job.include_global_edges || job.include_state_bitvectors ||
+                       job.show_genesis_events;
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
@@ -318,6 +322,43 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         is_output.insert(e.output_state);
     }
 
+    // GENESIS EVENTS, SYNTHESISED HERE BECAUSE THE DEVICE HAS NONE.
+    //
+    // On the host a genesis event is a real event: it connects a synthetic genesis state to an
+    // initial state, produces that state's edges, carries rule index -1, and registers itself as
+    // the PRODUCER of every initial edge -- which is why showing them adds causal edges as well
+    // as events. The device mints no such thing, so "ShowGenesisEvents" was reported to the
+    // caller as having no effect on the GPU.
+    //
+    // It is a presentation construct with no rewriting semantics -- nothing consumes a genesis
+    // event's output beyond what already consumes the initial state -- so it is built from the
+    // result rather than by the device, and costs a run that does not ask for it nothing.
+    //
+    // Ids are taken ABOVE every id the device issued, so a genesis event and a real one can
+    // never collide in the association the caller receives.
+    std::vector<hg_gpu::StateId> genesis_roots;
+    std::unordered_map<hg_gpu::EdgeId, size_t> initial_edge_root;   // edge -> index in roots
+    hg_gpu::StateId genesis_state_id = 0;
+    hg_gpu::EventId first_genesis_event = 0;
+    if (job.show_genesis_events) {
+        hg_gpu::StateId max_sid = 0;
+        for (const auto& st : result.states) if (st.id != hg_gpu::INVALID_ID && st.id > max_sid) max_sid = st.id;
+        hg_gpu::EventId max_eid = 0;
+        for (const auto& e : result.events) if (e.id != hg_gpu::INVALID_ID && e.id > max_eid) max_eid = e.id;
+        genesis_state_id   = max_sid + 1u;
+        first_genesis_event = max_eid + 1u;
+
+        for (const auto& st : result.states) {
+            if (st.id == hg_gpu::INVALID_ID) continue;
+            if (is_output.count(st.id)) continue;            // produced by an event: not a root
+            const size_t at = genesis_roots.size();
+            genesis_roots.push_back(st.id);
+            if (st.id < result.state_edge_ids.size()) {
+                for (auto eid : result.state_edge_ids[st.id]) initial_edge_root[eid] = at;
+            }
+        }
+    }
+
     wxf::WXFValueAssociation full_result;
 
     if (job.include_states) {
@@ -388,6 +429,31 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             }
             events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e.id)), wxf::WXFValue(ea)});
         }
+        // One genesis event per initial state, in the same shape a real one has. Rule index -1
+        // is the host's sentinel for "no rule applied", which is what produced these edges.
+        for (size_t i = 0; i < genesis_roots.size(); ++i) {
+            const hg_gpu::StateId root = genesis_roots[i];
+            const int64_t gid = static_cast<int64_t>(first_genesis_event + i);
+            wxf::WXFValueList consumed, produced;
+            if (root < result.state_edge_ids.size())
+                for (auto pe : result.state_edge_ids[root])
+                    produced.push_back(wxf::WXFValue(static_cast<int64_t>(pe)));
+            wxf::WXFValueAssociation ea;
+            ea.push_back({wxf::WXFValue("Id"), wxf::WXFValue(gid)});
+            ea.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(gid)});
+            ea.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(-1))});
+            ea.push_back({wxf::WXFValue("InputState"),
+                          wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
+            ea.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(root))});
+            ea.push_back({wxf::WXFValue("CanonicalInputState"),
+                          wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
+            ea.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(rep_of(root))});
+            if (!job.include_events_minimal) {
+                ea.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
+                ea.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+            }
+            events_assoc.push_back({wxf::WXFValue(gid), wxf::WXFValue(ea)});
+        }
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
     }
 
@@ -410,6 +476,32 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
                 causal.push_back(wxf::WXFValue(ed));
             }
         }
+        // THE GENESIS HALF OF THE RELATION. A genesis event produces its initial state's edges,
+        // so any event CONSUMING one of those edges is caused by it -- which is why showing
+        // genesis events changes the causal relation and not only the event list. The device
+        // records no producer for an initial edge, so the pair is derived here from the same
+        // fact that identifies one: an edge in a root state's edge list was never produced by a
+        // rewrite.
+        for (const auto& e : result.events) {
+            if (e.id == hg_gpu::INVALID_ID) continue;
+            for (auto c : e.consumed_edges) {
+                if (c == hg_gpu::INVALID_ID) continue;
+                auto it = initial_edge_root.find(c);
+                if (it == initial_edge_root.end()) continue;
+                const uint32_t from = static_cast<uint32_t>(first_genesis_event + it->second);
+                const uint64_t key = (static_cast<uint64_t>(from) << 32) | e.id;
+                if (!seen.insert(key).second) continue;
+                if (job.include_causal_edges) {
+                    wxf::WXFValueAssociation ed;
+                    ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(from))});
+                    ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(e.id))});
+                    ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(from))});
+                    ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(e.id))});
+                    causal.push_back(wxf::WXFValue(ed));
+                }
+            }
+        }
+
         num_causal = static_cast<int64_t>(seen.size());
         if (job.include_causal_edges)
             full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal)});

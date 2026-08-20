@@ -401,17 +401,6 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // run_session refuses to rebuild the engine rather than silently continuing against a
         // fresh one. The verb rides on the job and the backend answers it.
 
-        // The device has no genesis events to show or hide. On the host a genesis event
-        // connects the genesis state to an initial state, and this option decides whether the
-        // causal and branchial output carries the pairs those events take part in; the GPU
-        // engine never mints one, so the option selects between two identical answers there
-        // while selecting between two different ones here.
-        if (req.show_genesis_events) {
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "'ShowGenesisEvents' has no effect on the GPU; the device creates no "
-                 "genesis events."});
-        }
         // The device thins states through `exploration_probability` and has no per-transition
         // draw, so it has no spine either. Silently running unthinned would return a FULL
         // evolution where the caller asked for a sample, which reads as a system with that
