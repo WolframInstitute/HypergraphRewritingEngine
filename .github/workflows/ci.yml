@@ -88,6 +88,19 @@ jobs:
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure
 
+      # BUILD_VISUALIZATION is OFF by default and every other leg turns it off explicitly, so
+      # the emitter hooks compiled into the engine under HYPERGRAPH_ENABLE_VISUALIZATION were
+      # built by nothing. The renderer that consumes the stream lives in its own repository; the
+      # emitter is this side of that split and stays here, which means it needs a leg that
+      # compiles it or it rots against the engine it is compiled into.
+      - name: Configure + build + test with the visualisation emitter on
+        run: |
+          cmake -S . -B build_viz -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_VISUALIZATION=ON -DBUILD_GPU=OFF \
+            -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF -DBUILD_TESTS=ON
+          cmake --build build_viz --target all_tests
+          ./build_viz/all_tests --gtest_filter=-PacletTest.*
+
   # UBSan over the whole suite and TSan over the concurrent structures. The build options have
   # existed since before v1.0.0 and no workflow set any of them, so neither was a gate. Both
   # stand at zero on this tree, which is what makes any output here a regression.
