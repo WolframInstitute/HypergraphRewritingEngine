@@ -11,6 +11,10 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 #include <atomic>
 #include <new>
 #include <string>
@@ -37,12 +41,31 @@ void* operator new[](std::size_t n) { return operator new(n); }
 // to every such allocation -- including the arena's `new LocalCursor[MAX_ARENA_WORKERS]`,
 // where LocalCursor is alignas(64), so 16 KB per arena went uncounted by the very instrument
 // the de-heap numbers were measured with.
+// ALIGNED ALLOCATION IS NOT SPELLED THE SAME WAY EVERYWHERE, and the two halves must be
+// switched TOGETHER. C11 aligned_alloc is absent from mingw's <cstdlib>, which is why this file
+// did not compile for Windows at all; and on Windows the result of _aligned_malloc must be
+// released by _aligned_free, never by free -- mixing them corrupts the heap, which is the exact
+// failure class this tool exists to measure rather than cause.
+#if defined(_WIN32)
+static void* hg_aligned_alloc(std::size_t align, std::size_t size) {
+    return _aligned_malloc(size, align);
+}
+static void hg_aligned_free(void* p) noexcept { _aligned_free(p); }
+#else
+static void* hg_aligned_alloc(std::size_t align, std::size_t size) {
+    return std::aligned_alloc(align, size);
+}
+static void hg_aligned_free(void* p) noexcept { std::free(p); }
+#endif
+
 void* operator new(std::size_t n, std::align_val_t a) {
     g_alloc_count.fetch_add(1, std::memory_order_relaxed);
     g_alloc_bytes.fetch_add(n, std::memory_order_relaxed);
-    if (void* p = std::aligned_alloc(static_cast<std::size_t>(a),
-                                     (n + static_cast<std::size_t>(a) - 1) &
-                                         ~(static_cast<std::size_t>(a) - 1))) {
+    // aligned_alloc requires a size that is a multiple of the alignment; _aligned_malloc does
+    // not, but rounding for both keeps one call site.
+    if (void* p = hg_aligned_alloc(static_cast<std::size_t>(a),
+                                   (n + static_cast<std::size_t>(a) - 1) &
+                                       ~(static_cast<std::size_t>(a) - 1))) {
         return p;
     }
     throw std::bad_alloc();
@@ -53,10 +76,10 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t) noexcept { hg_aligned_free(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { hg_aligned_free(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { hg_aligned_free(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { hg_aligned_free(p); }
 
 using namespace hypergraph;
 
