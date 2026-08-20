@@ -541,6 +541,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // source_state differs.
         MatchRecord forwarded = match;
         forwarded.source_state = child_info.child_state;
+        forwarded.is_forwarded = true;
 
         // Deduplicate
         uint64_t h = forwarded.hash();
@@ -694,6 +695,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
         // Forward by reference: share the immutable core, set this child as source.
         MatchRecord forwarded = ancestor_match;
         forwarded.source_state = child;
+        forwarded.is_forwarded = true;
 
         // Deduplicate. seen_match_hashes_ protects against both push and pull duplicates.
         uint64_t h = forwarded.hash();
@@ -1125,6 +1127,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     // beats collecting the set.
     uint64_t rules_seen = 0;
     (*stored)->for_each([&](const MatchRecord& m) {
+        if (m.is_forwarded) return;
         if (m.rule_index() < 64) rules_seen |= (1ULL << m.rule_index());
     });
 
@@ -1141,6 +1144,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
             bool found = false;
             (*stored)->for_each([&](const MatchRecord& m) {
                 if (m.rule_index() != rule) return;
+                if (m.is_forwarded) return;          // not this state's own population
                 const uint64_t r = spine_rank(canonical_transition_key(state, m));
                 if (have_floor && r <= floor_rank) return;   // already taken
                 if (r < best_rank) { best_rank = r; best = m; found = true; }
@@ -1166,6 +1170,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     bool found = false;
     MatchRecord best{};
     (*stored)->for_each([&](const MatchRecord& m) {
+        if (m.is_forwarded) return;   // own_min_key is fed by own draws only
         if (!found && spine_rank(canonical_transition_key(state, m)) == want) {
             found = true; best = m;
         }

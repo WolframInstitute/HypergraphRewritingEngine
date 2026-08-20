@@ -69,6 +69,16 @@ struct MatchRecord {
     const MatchCore* core{nullptr};
     StateId source_state{INVALID_ID};
 
+    // Whether this record reached its state by FORWARDING from an ancestor rather than by that
+    // state's own matching. Forwarding rewrites source_state to the child, so without this the
+    // two are indistinguishable in state_matches_ -- and the drain cap, whose population is the
+    // state's own matches, counted both. A forwarded match arrives asynchronously and races the
+    // drain, so counting it makes the retained set depend on the worker count.
+    //
+    // Deliberately NOT part of hash(): that is the match-dedup key, and the same match must
+    // dedup against itself however it arrived.
+    bool is_forwarded{false};
+
     uint16_t rule_index() const { return core->rule_index; }
     uint8_t num_edges() const { return core->num_edges; }
     const EdgeId* matched_edges() const { return core->matched_edges; }

@@ -298,6 +298,44 @@ TEST(SamplingReproducibility, TransitionRateIsReproducibleForAGivenSeed) {
     EXPECT_GT(first.first, 1u) << "the run produced nothing, so equality is vacuous";
 }
 
+// THE DRAIN CAP READS A LIST THAT IS NOT ITS POPULATION, and this asks whether that shows.
+//
+// cap_at_drain chooses k of a state's matches per rule by seeded rank, at the state's drain --
+// the point its OWN matching completes. But the list it reads, state_matches_[s], also holds
+// matches FORWARDED to s from its ancestors, and those arrive asynchronously: a forwarded match
+// takes its own draw at arrival, deliberately upstream of the drain. So the set the cap chooses
+// from can differ between runs, which would make the chosen k differ with it.
+//
+// Unlike MaxStatesPerStep, this cap IS documented as reproducible, so if it varies with the
+// worker count that is a defect and not a design choice. Forwarding is stated rather than
+// assumed, and the rule's one-edge left-hand side would otherwise leave it off.
+TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
+    auto run = [](size_t threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_random_seed(2024);
+        e.set_match_forwarding(true);
+        e.set_matches_per_state_rule(2);
+        e.add_rule(make_growth_rule());
+        std::vector<std::vector<VertexId>> init;
+        for (int i = 0; i < 8; ++i)
+            init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+        e.evolve(init, 4);
+        std::set<uint64_t> hashes;
+        for (StateId sid = 0; sid < hg.num_states(); ++sid)
+            hashes.insert(hg.get_or_compute_canonical_hash(sid));
+        return hashes;
+    };
+
+    const std::set<uint64_t> one = run(1);
+    ASSERT_FALSE(one.empty());
+    for (size_t t : {2u, 4u, 8u}) {
+        EXPECT_EQ(run(t), one)
+            << "the drain cap kept a different set of states at " << t << " workers than at one";
+    }
+}
+
 // The per-state match join: a state's drain must fire exactly once, and strictly after that
 // state's last match. It is what lets anything be keyed on "the matches of one state" AS A SET
 // -- a reservoir first of all -- without a step barrier (docs/ASYNC_SAMPLING_DESIGN.md §5).
