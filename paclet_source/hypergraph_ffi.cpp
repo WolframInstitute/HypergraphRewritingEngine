@@ -415,6 +415,18 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
                  "'MatchesPerStep' maps to MaxStatesPerStep, which is not implemented "
                  "on the GPU; the result is uncapped."});
         }
+        // The per-(state, rule) cap is applied at a state's drain, and the device has no drain
+        // to apply it at: EvolveInput carries no matches_per_state_rule, and the GpuJob built
+        // below has no field for it. Same class as the two above -- a cap the caller asked for
+        // and did not get -- and it is the one the documentation names as the reproducible
+        // alternative to them, so a caller steered there by that text is exactly who runs into
+        // this on a device job.
+        if (req.matches_per_state_rule > 0) {
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "'MatchesPerStateRule' is not implemented on the GPU; the result is "
+                 "uncapped."});
+        }
         // The device thins states through `exploration_probability` and has no per-transition
         // draw, so it has no spine either. Silently running unthinned would return a FULL
         // evolution where the caller asked for a sample, which reads as a system with that
