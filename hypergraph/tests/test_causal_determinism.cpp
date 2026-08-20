@@ -291,6 +291,37 @@ Spread spread(const Workload& w, bool quotient) {
                     << " -- " << f.num_branchial << " edges from "
                     << f.branchial_pairs << " claimed pairs. add_branchial_edge runs only on a "
                        "winning claim, so the two cannot differ unless one key was claimed twice.";
+                // THE SILENT DROPS ARE ASSERTED, not merely reported. Each of the four
+                // counters below removes an application from the reconstruction while leaving
+                // the STATE set intact, so the relations come out short and the shape of the
+                // run does not change. Comparing fingerprints across configurations cannot see
+                // that: a drop that happens on EVERY run makes every run agree, and the spread
+                // is one value. The counters were carried only into the failure diagnostic,
+                // which fires after a disagreement has already been found -- so the case where
+                // the loss is deterministic had no gate at all.
+                //
+                // Zero on every quotient run of all three workloads at 1, 2, 8, 16 and 32
+                // threads, both seeds, four repetitions.
+                if (quotient) {
+                    EXPECT_EQ(f.drops, 0)
+                        << w.name << " at threads=" << th << ": " << f.drops << " capture(s) "
+                        << "dropped because an endpoint's orbits were not visible yet. The "
+                           "match is then absent from the class frame, so the replay never "
+                           "applies it to any instance and every causal and branchial pair it "
+                           "would have produced is missing.";
+                    EXPECT_EQ(f.align_fail, 0)
+                        << w.name << " at threads=" << th << ": " << f.align_fail
+                        << " capture(s) lost aligning a raw state onto its class frame.";
+                    EXPECT_EQ(f.badcorr, 0)
+                        << w.name << " at threads=" << th << ": " << f.badcorr
+                        << " capture(s) lost to a bad vertex correspondence.";
+                    EXPECT_EQ(f.claims, f.num_events)
+                        << w.name << " at threads=" << th << ": " << f.claims
+                        << " applications won their claim but " << f.num_events << " events "
+                        << "exist. Every claim mints an event unless the width check rejects "
+                           "it, so the difference is captures whose recorded class width "
+                           "disagreed with the instance they were replayed against.";
+                }
                 s.states.insert(f.states); s.causal.insert(f.causal); s.branchial.insert(f.branchial);
                 s.ns.insert(f.num_states); s.ne.insert(f.num_events);
                 s.nc.insert(f.num_causal); s.nb.insert(f.num_branchial);
