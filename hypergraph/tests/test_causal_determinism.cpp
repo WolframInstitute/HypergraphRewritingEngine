@@ -299,7 +299,8 @@ Spread spread(const Workload& w, bool quotient) {
                                         " seed=" + (seed ? "fixed" : "random") +
                                         " rep=" + std::to_string(rep);
                 const Variant var{0, cfg, f.num_states, f.num_events,
-                                  f.num_causal, f.num_branchial};
+                                  f.num_causal, f.num_branchial,
+                                  f.claims, f.drops, f.align_fail, f.badcorr};
                 s.states_v.emplace(f.states, var);
                 s.causal_v.emplace(f.causal, var);
                 s.branchial_v.emplace(f.branchial, var);
