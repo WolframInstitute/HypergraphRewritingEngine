@@ -95,6 +95,18 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     )
     target_link_libraries(gpu_differential_tests PRIVATE
         hg_gpu hypergraph gtest gtest_main)
+    # This file states its 26 workloads with C++20 DESIGNATED initializers, which name the
+    # members they set and leave the rest at their declared defaults on purpose. GCC reports
+    # each omission under -Wmissing-field-initializers; clang does not warn on designated
+    # initializers at all. The defect that flag is an error for tree-wide is a POSITIONAL
+    # initializer that runs out of members and zero-fills the tail silently -- which is what
+    # happened to the determinism test's drop counters -- and a designated initializer cannot
+    # have it, because every member it sets is named. Measured: this is the only C++ TU of the
+    # 162 in build_gpu that reports the warning.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        set_source_files_properties(tests/test_gpu_vs_cpu_differential.cpp
+            PROPERTIES COMPILE_OPTIONS -Wno-missing-field-initializers)
+    endif()
 
     add_executable(bench_cpu_vs_gpu
         tests/bench_cpu_vs_gpu.cpp
