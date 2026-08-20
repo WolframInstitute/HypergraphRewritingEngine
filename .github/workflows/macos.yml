@@ -35,7 +35,10 @@ jobs:
       # park.hpp took a third path that this leg was structurally unable to compile.
       # Compile-only: linking and running are the job above's, and neither is what the
       # deployment target decides.
-      - name: Configure at the SHIPPED deployment target
+      # 10.15 IS A REGRESSION GUARD, NOT THE SHIPPED TARGET. It is where park.hpp once had
+      # neither of its two primitives available and could not compile at all (29c9345). Kept
+      # compile-only: what it checks is that a path through the fallback chain still exists there.
+      - name: Configure at 10.15 (a past release blocker)
         run: >
           cmake -S . -B build-1015 -G Ninja
           -DCMAKE_BUILD_TYPE=Release
@@ -44,8 +47,33 @@ jobs:
           -DBUILD_GPU=OFF
           -DBUILD_VISUALIZATION=OFF
 
-      - name: Build at 10.15
+      - name: Build the library at 10.15
         run: cmake --build build-1015 --target hypergraph
+
+      # THE SHIPPED TARGET, BUILT AND RUN. build_all_platforms.sh passes 11.0 on every macOS
+      # configure, so 11.0 is what users get -- and the only macOS binary anything RAN was built
+      # at the runner's own OS version, which selects a DIFFERENT blocking primitive from the one
+      # shipped. park.hpp chooses by feature macro: os_sync_wait_on_address needs the 14.4 SDK,
+      # std::atomic::wait is marked availability(macosx, introduced=11.0), and below both there is
+      # a single process-wide mutex and condition variable. Which of the three a build lands on is
+      # a property of the deployment target, so testing one says nothing about another.
+      #
+      # JobSystemTest.ParkingDoesNotUseALock asserts the engine did not land on a lock-taking
+      # backend, and until now it had never executed against the shipped configuration.
+      - name: Configure at the SHIPPED deployment target (11.0)
+        run: >
+          cmake -S . -B build-shipped -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+
+      - name: Run the suite at the shipped deployment target
+        run: |
+          cmake --build build-shipped --target all_tests test_job_system
+          ./build-shipped/all_tests --gtest_filter=-PacletTest.*
+          ./build-shipped/test_job_system
 
       # THE XCODE GENERATOR, which is a different build system from Ninja and not a formatting
       # choice: it emits an .xcodeproj driven by xcodebuild, it is MULTI-CONFIG (so anything
