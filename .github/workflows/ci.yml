@@ -54,6 +54,13 @@ jobs:
       - name: The documentation names only options the paclet accepts
         run: python3 tools/dev/option_names_check.py
 
+      # The other direction: option_names_check.py verifies that every name the docs USE is
+      # real and built; this one verifies that everything real is DESCRIBED. Neither implies
+      # the other -- "GlobalEdges", "StateBitvectors" and "All" were accepted properties named
+      # in no shipped page, and every name the pages did use was correct.
+      - name: The documentation describes everything the paclet accepts
+        run: python3 tools/dev/doc_surface_audit.py
+
       # The GPU implements a subset of the options, and where it does not the FFI must say so
       # rather than return a different answer per device. "MatchesPerStateRule" was parsed,
       # applied to the CPU engine, and then neither carried to the device nor warned about, so a
