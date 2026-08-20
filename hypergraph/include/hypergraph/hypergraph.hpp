@@ -1060,49 +1060,23 @@ public:
     // Per-instance raw reconstruction: replays the captured expansion against every raw
     // instance so quotient mode can report the raw observables it never explores. Off by
     // default while it is proven out against full-capture.
-    void set_quotient_reconstruction(bool on) {
-        quotient_reconstruction_.store(on, std::memory_order_relaxed);
-    }
-    bool quotient_reconstruction() const {
-        return quotient_reconstruction_.load(std::memory_order_relaxed);
-    }
+    void set_quotient_reconstruction(bool on);
+    bool quotient_reconstruction() const;
     // Raw observables recovered by the reconstruction (the full-capture counts).
-    size_t num_reconstructed_events() const {
-        // Under an event-identity mode the observable is the count of distinct identities; with
-        // no identity selected every application is its own event and the raw count IS the
-        // answer. Mirrors num_events() on the full-capture side.
-        if (event_signature_keys() == hgcommon::EVENT_SIG_NONE)
-            return qc_next_raw_event_.load(std::memory_order_relaxed);
-        return qc_num_canon_events_.load(std::memory_order_relaxed);
-    }
-    size_t num_reconstructed_raw_events() const {
-        return qc_next_raw_event_.load(std::memory_order_relaxed);
-    }
+    size_t num_reconstructed_events() const;
+    size_t num_reconstructed_raw_events() const;
     // Instances the replay recorded: one per raw occurrence of a class at a depth. The
     // population every captured match is replayed against, so the relations it produces are a
     // function of it -- which makes it the first thing to compare when two runs disagree.
-    size_t num_reconstructed_instances() const {
-        return qc_next_instance_.load(std::memory_order_relaxed);
-    }
-    size_t num_reconstructed_causal_edges() const {
-        return qc_num_causal_edges_.load(std::memory_order_relaxed);
-    }
+    size_t num_reconstructed_instances() const;
+    size_t num_reconstructed_causal_edges() const;
     // TR-off view: every distinct (producer, consumer). TR-on view: those surviving reduction.
     // BOTH are DERIVED from the stored set, for the reason given on num_reconstructed_branchial
     // below -- a count and an enumeration that are maintained separately are the same number
     // only until one of them is wrong, and here the reduced count is what a caller compares
     // against what for_each_reconstructed_causal_as emits.
-    size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const {
-        if (transitively_reduced) {
-            size_t n = 0;
-            for_each_reconstructed_causal_as(
-                /*reduced=*/true, [](uint32_t e) { return e; },
-                [&](uint64_t, uint64_t) { ++n; });
-            return n;
-        }
-        return qc_causal_pairs_.count_enumerated();
-    }
-    size_t applied_scans() const { return qc_applied_scans_.load(std::memory_order_relaxed); }
+    size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const;
+    size_t applied_scans() const;
 
     // HOW MANY (instance, match) PAIRS THE REPLAY CLAIMED, distinct.
     //
@@ -1113,7 +1087,7 @@ public:
     // pairs that mix to one key make the second look already-claimed, and its application is
     // dropped silently. That probability is n^2/2^65, so the count is the whole question and
     // nothing was reporting it.
-    size_t applied_claims() const { return qc_applied_.size(); }
+    size_t applied_claims() const;
 
     // THE SHAPE OF THE APPLIED LISTS: the sorted multiset of per-instance application counts,
     // hashed. Two runs with the same TOTAL number of applications can still distribute them
@@ -1121,32 +1095,13 @@ public:
     // pair count would vary while the event count did not. That is exactly the shape the suite
     // reports, and nothing measured it: the totals agreed on every run and the distribution was
     // never looked at.
-    uint64_t applied_shape_fingerprint() const {
-        std::vector<uint32_t> lens;
-        const uint32_t n = qc_inst_applied_.size();
-        lens.reserve(n);
-        for (uint32_t i = 0; i < n; ++i) {
-            const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
-            if (!lst) continue;
-            uint32_t c = 0;
-            lst->for_each([&](const QcAppliedMatch&) { ++c; });
-            if (c) lens.push_back(c);
-        }
-        std::sort(lens.begin(), lens.end());
-        uint64_t h = 1469598103934665603ULL;
-        for (uint32_t v : lens) { h ^= v; h *= 1099511628211ULL; }
-        return h;
-    }
+    uint64_t applied_shape_fingerprint() const;
 
     // Matches the capture never recorded. The first is a race and a defect; the second is the
     // one-representative-per-class rule doing its job.
-    size_t capture_dropped_no_orbits() const {
-        return qc_capture_no_orbits_.load(std::memory_order_relaxed);
-    }
-    size_t capture_skipped_not_representative() const {
-        return qc_capture_not_rep_.load(std::memory_order_relaxed);
-    }
-    size_t applied_visits() const { return qc_applied_visits_.load(std::memory_order_relaxed); }
+    size_t capture_dropped_no_orbits() const;
+    size_t capture_skipped_not_representative() const;
+    size_t applied_visits() const;
 
     // DERIVED FROM THE SET, not from the counter that fed it. qc_num_branchial_ is incremented
     // when insert() reports a win; this returns what for_each will actually emit. The two are
@@ -1288,10 +1243,7 @@ public:
 
     // The schedule-stable content triple of ONE reconstructed event: hash(input class, output
     // class, rule). 0 when the event has no recorded triple.
-    uint64_t reconstructed_raw_triple(uint32_t e) const {
-        const QcEventContent* c = qc_event_sig_.get(e);
-        return c ? c->triple_hash() : 0;
-    }
+    uint64_t reconstructed_raw_triple(uint32_t e) const;
 
     // The event's content itself, for a caller that must DESCRIBE the event rather than
     // identify it. Null when no such reconstructed event exists.
@@ -1452,14 +1404,7 @@ public:
     // =========================================================================
 
     // Compute simple hash for a state's edge set (fast but not isomorphism-invariant)
-    static uint64_t compute_state_hash(const SparseBitset& edges) {
-        uint64_t h = 14695981039346656037ULL;
-        edges.for_each([&](EdgeId eid) {
-            h ^= eid;
-            h *= 1099511628211ULL;
-        });
-        return h;
-    }
+    static uint64_t compute_state_hash(const SparseBitset& edges);
 
     // Compute content-ordered hash for Automatic state canonicalization mode
     // Hashes edge contents in order by edge ID: (arity, v1, v2, ...) for each edge

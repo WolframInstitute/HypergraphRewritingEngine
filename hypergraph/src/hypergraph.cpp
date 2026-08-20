@@ -1396,5 +1396,105 @@ EdgeCorrespondence Hypergraph::find_edge_correspondence_dispatch(
     return EdgeCorrespondence{};
 }
 
+// =============================================================================
+// Reconstruction observables and replay diagnostics
+// =============================================================================
+// Read by tests, by the determinism fingerprint and by the FFI's count path -- never from a
+// matching or hashing loop -- so these live here rather than in the header.
+
+void Hypergraph::set_quotient_reconstruction(bool on) {
+    quotient_reconstruction_.store(on, std::memory_order_relaxed);
+}
+
+bool Hypergraph::quotient_reconstruction() const {
+    return quotient_reconstruction_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_reconstructed_events() const {
+    // Under an event-identity mode the observable is the count of distinct identities; with no
+    // identity selected every application is its own event and the raw count IS the answer.
+    // Mirrors num_events() on the full-capture side.
+    if (event_signature_keys() == hgcommon::EVENT_SIG_NONE)
+        return qc_next_raw_event_.load(std::memory_order_relaxed);
+    return qc_num_canon_events_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_reconstructed_raw_events() const {
+    return qc_next_raw_event_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_reconstructed_instances() const {
+    return qc_next_instance_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_reconstructed_causal_edges() const {
+    return qc_num_causal_edges_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
+    if (transitively_reduced) {
+        size_t n = 0;
+        for_each_reconstructed_causal_as(
+            /*reduced=*/true, [](uint32_t e) { return e; },
+            [&](uint64_t, uint64_t) { ++n; });
+        return n;
+    }
+    return qc_causal_pairs_.count_enumerated();
+}
+
+size_t Hypergraph::applied_scans() const {
+    return qc_applied_scans_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
+
+uint64_t Hypergraph::applied_shape_fingerprint() const {
+    std::vector<uint32_t> lens;
+    const uint32_t n = qc_inst_applied_.size();
+    lens.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
+        if (!lst) continue;
+        uint32_t c = 0;
+        lst->for_each([&](const QcAppliedMatch&) { ++c; });
+        if (c) lens.push_back(c);
+    }
+    std::sort(lens.begin(), lens.end());
+    uint64_t h = 1469598103934665603ULL;
+    for (uint32_t v : lens) { h ^= v; h *= 1099511628211ULL; }
+    return h;
+}
+
+size_t Hypergraph::capture_dropped_no_orbits() const {
+    return qc_capture_no_orbits_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::capture_skipped_not_representative() const {
+    return qc_capture_not_rep_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::applied_visits() const {
+    return qc_applied_visits_.load(std::memory_order_relaxed);
+}
+
+// Simple hash of a state's edge SET -- fast, and not isomorphism-invariant. Its neighbours
+// (compute_content_ordered_hash, compute_canonical_hash, compute_exact_canonical_hash) were
+// already defined here; this was the outlier left in the header.
+uint64_t Hypergraph::compute_state_hash(const SparseBitset& edges) {
+    uint64_t h = 14695981039346656037ULL;
+    edges.for_each([&](EdgeId eid) {
+        h ^= eid;
+        h *= 1099511628211ULL;
+    });
+    return h;
+}
+
+// The schedule-stable content triple of ONE reconstructed event: hash(input class, output class,
+// rule). 0 when the event has no recorded triple.
+uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
+    const QcEventContent* c = qc_event_sig_.get(e);
+    return c ? c->triple_hash() : 0;
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
