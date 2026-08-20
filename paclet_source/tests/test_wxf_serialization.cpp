@@ -730,6 +730,52 @@ TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly)
 #endif
 }
 
+// Counts the warnings in a reply. Returns -1 when the key is absent, which is distinct from a
+// reply that carries an empty warning list.
+int64_t count_warnings(const std::vector<uint8_t>& out) {
+    int64_t n = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Warnings") { vp.skip_value(); return; }
+        vp.read_function([&](const std::string&, size_t count, wxf::Parser& ep) {
+            for (size_t i = 0; i < count; ++i) ep.skip_value();
+            n = static_cast<int64_t>(count);
+        });
+    });
+    return n;
+}
+
+// A saving is not a gap. The engine drops the branchial relation when the rules provably cannot
+// branch, and a session's later Query for it must not be told the empty answer is an artefact of
+// what its Open asked for -- that inverts the truth, because the system genuinely has no
+// branchial pairs.
+//
+// kLhs is the one-edge left-hand side this file already documents as the provably branchial-free
+// case, which is what makes the engine take that path here.
+TEST(WxfSerializationPin, AProvablyEmptyRelationIsNotReportedAsUnrecorded) {
+    HostBridge host;
+
+    const auto opened = run_rewriting_core(build_input_with_op(1, "Open"), host);
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+
+    const auto queried = run_rewriting_core(
+        build_input_requesting(0, "Query", {"NumBranchialEdges"}, handle, /*with_rules=*/false),
+        host);
+
+    EXPECT_EQ(read_int_key(queried, "NumBranchialEdges"), 0)
+        << "this rule set cannot branch, so the count is zero and the warning below is the only "
+           "thing at issue";
+    EXPECT_LE(count_warnings(queried), 0)
+        << "a session was warned that it did not ask to record the branchial relation, when it "
+           "opened recording everything and the relation is empty because the rules cannot "
+           "branch. The warning tells the caller its empty answer is an artefact of its request, "
+           "which is the opposite of what happened";
+
+    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
+}
+
 TEST(WxfSerializationPin, DefaultStatesAndEvents) {
     auto input = build_input(kSeed, kLhs, kRhs, 3, [](wxf::Writer&) {}, 0);
     HostBridge host;

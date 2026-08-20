@@ -853,15 +853,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // serve.
         if (opening_session) {
             record.causal = record.branchial = record.state_events = record.raw_events = true;
+            // Remembered as the session's intent, for the gap check a later Step or Query makes.
+            holder->opened_record_set() = record;
         }
 
-        // What the session HOLDS is still checked, because a session opened by an older build,
-        // or invalidated and re-opened, may hold less than this one would record. Asking a
-        // `Query` for one returns an empty relation that reads exactly like a system with none,
-        // so the gap is reported rather than served silently -- the same rule the GPU's
-        // unimplemented caps follow.
+        // What the session was OPENED to record is checked against what this call asks for,
+        // because a session opened by an older build, or invalidated and re-opened, may intend
+        // less than this one would. Asking a `Query` for one it never recorded returns an empty
+        // relation that reads exactly like a system with none, so the gap is reported rather
+        // than served silently -- the same rule the GPU's unimplemented caps follow.
+        //
+        // Against the OPENED set and not the engine's live one. The engine drops the branchial
+        // relation when the rules provably cannot branch, and reading that as a gap tells the
+        // caller its empty answer is an artefact of what it asked for when the system genuinely
+        // has no branchial pairs -- the opposite of what happened.
         if (held_session) {
-            const hypergraph::RecordSet held = hg.record_set();
+            const hypergraph::RecordSet held = holder->opened_record_set();
             auto unrecorded = [&](const char* what) {
                 req.ffi_warnings.push_back(
                     {"OptionSkipped", 1,
