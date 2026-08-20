@@ -227,8 +227,8 @@ what an edge is, and the edge list alone does not say which state holds it.
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
-res = HGEvolve[rules, {{1, 2}}, 2, {"GlobalEdges", "StateBitvectors"}];
-{Length[res["GlobalEdges"]], Length[res["StateBitvectors"]]}
+{Length[HGEvolve[rules, {{1, 2}}, 2, "GlobalEdges"]],
+ Length[HGEvolve[rules, {{1, 2}}, 2, "StateBitvectors"]]}
 ```
 
 ## Options
