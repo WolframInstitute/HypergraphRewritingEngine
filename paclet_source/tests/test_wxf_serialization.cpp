@@ -134,6 +134,27 @@ int64_t count_assoc_entries(const std::vector<uint8_t>& out, const std::string& 
     return result;
 }
 
+// Entries in a LIST-valued key. -1 when the key is absent, which is distinct from a key that
+// came back empty -- the difference between "this device does not serve it" and "this run had
+// none", and the first is what went unnoticed.
+int64_t count_list_entries(const std::vector<uint8_t>& out, const std::string& key) {
+    int64_t result = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k == key) {
+            // A WXF list is a Function with head List; its argument count is the length.
+            vp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                for (size_t i = 0; i < n; ++i) ep.skip_value();
+                result = static_cast<int64_t>(n);
+            });
+        } else {
+            vp.skip_value();
+        }
+    });
+    return result;
+}
+
 // Vertices in the FIRST GraphData entry. The graph properties are requested one at a time
 // here, so "first" is "the one asked for". Returns -1 if no Vertices field came back, which
 // is distinct from a graph that legitimately has none.
@@ -939,6 +960,73 @@ TEST(WxfSerializationPin, RequestedDataChangesNothingItReturns) {
 // A content-bearing graph property under Full canonicalization: the path where every event
 // carries its two endpoint states' edge lists, so the same state's canonical form is asked for
 // once as a state and again by every event incident to it.
+// THE COMPONENTS THAT ARE DERIVED RATHER THAN REPORTED, asked of whichever engine this binary
+// was compiled against.
+//
+// BranchialStateEdges, BranchialStateEdgesAllSiblings, GlobalEdges and StateBitvectors are built
+// from the relations and the edge store rather than handed over by the engine, and each was
+// served by the host and absent from a device reply -- the key simply missing, so a caller got a
+// shorter association from the same request. Nothing executed them on the device to notice,
+// which is why the assertions live in this file: it is compiled into all_tests against the host
+// and into gpu_ffi_tests against the device.
+//
+// A two-edge left-hand side, so two matches can share a consumed edge and the branchial relation
+// is not empty. Counts are not compared across devices -- state ids are each engine's own -- so
+// what is asserted is that the key is SERVED and its two halves agree with each other.
+TEST(WxfSerializationPin, TheDerivedComponentsAreServed) {
+    HostBridge host;
+    auto in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData",
+            {"States", "Events", "BranchialStateEdges", "GlobalEdges", "StateBitvectors"});
+    }, 1);
+    auto out = run_rewriting_core(in, host);
+    ASSERT_FALSE(out.empty());
+
+    const int64_t bse = count_list_entries(out, "BranchialStateEdges");
+    ASSERT_GE(bse, 0) << "BranchialStateEdges was asked for and no such key came back";
+    EXPECT_GT(bse, 0) << "this rule branches, so the branchial relation is not empty";
+
+    const auto verts = read_int_list_key(out, "BranchialStateVertices");
+    EXPECT_GT(verts.size(), 0u) << "edges were served with no vertices beside them";
+    EXPECT_LE(static_cast<int64_t>(verts.size()), 2 * bse)
+        << "more distinct endpoints than the edges can have";
+
+    const int64_t ge = count_list_entries(out, "GlobalEdges");
+    ASSERT_GE(ge, 0) << "GlobalEdges was asked for and no such key came back";
+    EXPECT_GT(ge, 0) << "an evolution that produced states produced edges";
+
+    const int64_t sb = count_assoc_entries(out, "StateBitvectors");
+    ASSERT_GE(sb, 0) << "StateBitvectors was asked for and no such key came back";
+    EXPECT_GT(sb, 0) << "an evolution that produced states has an edge set for each";
+}
+
+// The all-siblings form is a DIFFERENT rule under the same key: every two events leaving one
+// input state, whether or not their consumed edges overlap. It therefore cannot return fewer
+// edges than the overlap form on the same run.
+TEST(WxfSerializationPin, AllSiblingsIsAtLeastTheOverlapRelation) {
+    HostBridge host;
+
+    auto overlap_in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"States", "BranchialStateEdges"});
+    }, 1);
+    auto overlap = run_rewriting_core(overlap_in, host);
+    ASSERT_FALSE(overlap.empty());
+
+    auto siblings_in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData",
+            {"States", "BranchialStateEdgesAllSiblings"});
+    }, 1);
+    auto siblings = run_rewriting_core(siblings_in, host);
+    ASSERT_FALSE(siblings.empty());
+
+    const int64_t a = count_list_entries(overlap, "BranchialStateEdges");
+    const int64_t b = count_list_entries(siblings, "BranchialStateEdges");
+    ASSERT_GT(a, 0);
+    ASSERT_GE(b, 0) << "BranchialStateEdgesAllSiblings was asked for and nothing came back";
+    EXPECT_GE(b, a) << "all sibling pairs cannot be fewer than the overlapping ones: "
+                    << b << " against " << a;
+}
+
 TEST(WxfSerializationPin, StatesGraphUnderFullCanonicalization) {
     HostBridge host;
     auto in = build_input(kSeed, kLhs, kRhs, 4, [](wxf::Writer& w) {

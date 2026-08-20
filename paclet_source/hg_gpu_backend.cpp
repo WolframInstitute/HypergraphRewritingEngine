@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -125,12 +126,19 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         in.record.causal    = job.include_causal_edges || job.include_num_causal_edges ||
                               gneeds.causal;
         in.record.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
+                              job.include_branchial_state_edges ||
                               gneeds.branchial;
         // The RAW unfolding, which under quotient exploration is the reconstruction and the
         // engine's largest single cost. It defaults ON in RecordSet, and the device never
         // derived it, so every device job paid for it whatever it asked for -- the same defect
         // the host had until the request began deciding it.
-        in.record.raw_events = job.include_events || job.include_num_events;
+        // The two state-endpoint components read each event's input and output state, so they
+        // need the raw unfolding even when the caller named no event output. The pair form
+        // additionally needs the branchial relation above; the sibling form does not, since it
+        // pairs every two events leaving one input state whether or not they overlap.
+        in.record.raw_events = job.include_events || job.include_num_events ||
+                               job.include_branchial_state_edges ||
+                               job.include_branchial_state_edges_all_siblings;
 
         // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
         // a session exists to be continued and queried in ways its Open cannot know, so deriving
@@ -145,6 +153,8 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.quotient_initial_states = job.quotient_initial_states;
     in.exploration_probability = static_cast<float>(job.exploration_probability);
     in.exploration_seed = job.random_seed;
+    // Only these two components need the edge id -> contents table and the per-state id lists.
+    in.edge_identity = job.include_global_edges || job.include_state_bitvectors;
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
@@ -411,12 +421,94 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});
     }
 
+    // BranchialStateEdges / BranchialStateEdgesAllSiblings: the state-endpoint projection of the
+    // branchial relation, through the same hgmarshal rules the host calls. Everything the two
+    // rules need is already in EvolveResult -- the branchial event pairs, each event's input and
+    // output state, the class representative and the per-state step -- so nothing is read back
+    // from the device for them.
+    //
+    // No genesis filter: the device mints no genesis event, which is why ShowGenesisEvents
+    // carries its own advisory rather than being applied here.
+    if (job.include_branchial_state_edges || job.include_branchial_state_edges_all_siblings) {
+        std::unordered_map<hg_gpu::EventId, hg_gpu::StateId> ev_out;
+        ev_out.reserve(result.events.size());
+        for (const auto& e : result.events) ev_out[e.id] = e.output_state;
+
+        const auto out_state_of = [&](uint32_t eid) -> uint32_t {
+            auto it = ev_out.find(eid);
+            return it == ev_out.end() ? 0u : it->second;
+        };
+        const auto canonical_of = [&](uint32_t sid) { return rep_of(sid); };
+        const auto step_of = [&](uint32_t sid) -> uint32_t {
+            auto it = state_step.find(sid);
+            return it == state_step.end() ? 0u : it->second;
+        };
+        hgmarshal::GraphOptions bse_opts;
+        bse_opts.branchial_step = job.branchial_step;
+        bse_opts.steps = static_cast<int>(job.steps);
+
+        if (job.include_branchial_state_edges) {
+            std::vector<std::pair<uint32_t, uint32_t>> pairs;
+            pairs.reserve(result.branchial_edges.size());
+            for (const auto& b : result.branchial_edges) pairs.emplace_back(b.a, b.b);
+            hgmarshal::push_branchial_state_edges(
+                full_result,
+                hgmarshal::branchial_state_edges_from_pairs(
+                    pairs, out_state_of, canonical_of, step_of, bse_opts));
+        }
+
+        if (job.include_branchial_state_edges_all_siblings) {
+            // Grouped by input state and ordered by it, which is this engine's traversal of its
+            // own storage; the host walks a per-state list instead. The rule the groups are fed
+            // to is the same one.
+            std::map<hg_gpu::StateId, std::vector<uint32_t>> by_input;
+            for (const auto& e : result.events) by_input[e.input_state].push_back(e.id);
+            const auto for_each_group = [&](auto&& emit) {
+                for (const auto& kv : by_input) emit(kv.second);
+            };
+            hgmarshal::push_branchial_state_edges(
+                full_result,
+                hgmarshal::branchial_state_edges_all_siblings(
+                    for_each_group, out_state_of, canonical_of, step_of, bse_opts));
+        }
+    }
+
     // NumStates mirrors the CPU's num_canonical_states() = canonical_state_map_.count_unique(),
     // verified against the CPU engine in gpu/tests/test_gpu_vs_cpu_differential.cpp
     // (CanonicalStateCount.ModesVsCpu). class_reps is grouped by the mode's dedup key, so its size
     // is exactly the CPU count in every mode: None -> raw state count, Automatic -> distinct
     // content, Full -> distinct IR class. (The CPU's None-mode sentinel undercount is fixed in
     // create_or_get_canonical_state, so no adjustment is needed here.)
+    // GlobalEdges -> {edge_id, v1, v2, ...} for every edge the evolution created, and
+    // StateBitvectors -> state id -> the edge ids that state holds. Both come from
+    // EvolveResult::global_edges / state_edge_ids, which the readback fills when
+    // EvolveInput::edge_identity is set. Same shape as the host serialises.
+    if (job.include_global_edges) {
+        wxf::WXFValueList global_edges;
+        for (size_t eid = 0; eid < result.global_edges.size(); ++eid) {
+            const auto& vs = result.global_edges[eid];
+            if (vs.empty()) continue;
+            wxf::WXFValueList edge_data;
+            edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
+            for (auto v : vs) edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+            global_edges.push_back(wxf::WXFValue(edge_data));
+        }
+        full_result.push_back({wxf::WXFValue("GlobalEdges"), wxf::WXFValue(global_edges)});
+    }
+    if (job.include_state_bitvectors) {
+        wxf::WXFValueAssociation state_bitvectors;
+        for (size_t sid = 0; sid < result.state_edge_ids.size(); ++sid) {
+            wxf::WXFValueList edge_ids;
+            for (auto eid : result.state_edge_ids[sid]) {
+                edge_ids.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
+            }
+            state_bitvectors.push_back({wxf::WXFValue(static_cast<int64_t>(sid)),
+                                        wxf::WXFValue(edge_ids)});
+        }
+        full_result.push_back({wxf::WXFValue("StateBitvectors"),
+                               wxf::WXFValue(state_bitvectors)});
+    }
+
     if (job.include_num_states) {
         full_result.push_back({wxf::WXFValue("NumStates"),
                                wxf::WXFValue(static_cast<int64_t>(class_reps.size()))});

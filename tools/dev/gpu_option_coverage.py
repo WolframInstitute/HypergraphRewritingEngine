@@ -38,6 +38,10 @@ EXEMPT = {
 }
 
 BACKEND = ROOT / "paclet_source/hg_gpu_backend.cpp"
+# A component emitted by the SHARED marshaller is emitted by both engines by construction, so
+# its key is looked for there as well as in the backend -- that is the whole point of the rule
+# living there rather than being spelled once per engine.
+SHARED = ROOT / "paclet_source/graph_marshal.hpp"
 
 # A field CARRIED into the GpuJob is not thereby honoured: "ShowGenesisEvents" was packed into
 # every device job and read by nothing, so the device answered a request to show genesis events
@@ -131,9 +135,11 @@ def main():
         print(f"FAIL: only {len(components)} requested-data components parsed from {FFI.name}.")
         return 1
 
+    shared = SHARED.read_text()
     unserved = [c for c in components
                 if c not in EXEMPT_COMPONENTS
                 and f'"{c}"' not in backend
+                and f'"{c}"' not in shared
                 and f"'{c}'" not in gpu]
 
     if uncovered or unserved:
@@ -150,8 +156,8 @@ def main():
                   f"and does not warn about:\n")
             for c in unserved:
                 print(f'  "{c}"')
-            print("\nEither emit the key from hg_gpu_backend.cpp, or push an OptionSkipped "
-                  "warning naming it.")
+            print("\nEither emit the key from hg_gpu_backend.cpp or the shared marshaller, "
+                  "or push an OptionSkipped warning naming it.")
         return 1
 
     print(f"OK: all {len(opts) - len(EXEMPT & opts.keys())} device-relevant options and "

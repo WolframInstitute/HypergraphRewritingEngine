@@ -66,6 +66,14 @@ struct GpuJob {
     bool include_num_causal_edges = true;
     bool include_num_branchial_edges = true;
 
+    // Requested-data components the device path did not build at all, so a caller naming one of
+    // them received an association with no such key while the same call on the CPU returned it.
+    // Default false: each is asked for by name in RequestedData, unlike the counts above.
+    bool include_branchial_state_edges = false;
+    bool include_branchial_state_edges_all_siblings = false;
+    bool include_global_edges = false;
+    bool include_state_bitvectors = false;
+
     // Graph properties (StatesGraph / CausalGraph / BranchialGraph / Evolution* and
     // their Structure variants) and the options that shape them. Marshalled through
     // the shared hgmarshal::build_graph_data so GPU GraphData matches the CPU FFI.
