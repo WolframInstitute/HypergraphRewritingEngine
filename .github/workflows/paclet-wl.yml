@@ -30,12 +30,35 @@ jobs:
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
 
+      # A license secret is REQUIRED. Without one the Engine installs and then refuses to
+      # evaluate, so the golden corpus below would fail for a reason that has nothing to do with
+      # this repository. Checked first so that is said plainly rather than discovered three steps
+      # later.
+      - name: Require a license secret
+        run: |
+          if [ -z "${WOLFRAM_ID}" ] && [ -z "${WOLFRAMSCRIPT_ENTITLEMENTID}" ]; then
+            echo "No Wolfram license secret is configured on this repository."
+            echo "Set WOLFRAMSCRIPT_ENTITLEMENTID, or WOLFRAM_ID with WOLFRAM_PASSWORD, in"
+            echo "Settings -> Secrets and variables -> Actions. The Free Wolfram Engine for"
+            echo "Developers is free: https://www.wolfram.com/engine/"
+            exit 1
+          fi
+
       - name: Install Free Wolfram Engine
         run: |
           set -euo pipefail
-          # The download URL is version-pinned; update as needed. This resolves to a .sh installer.
-          curl -L -o /tmp/WolframEngine.sh \
+          # The endpoint answers with a JSON error body rather than an HTTP error when it will
+          # not serve the installer, and bash will happily try to execute that: a dead URL showed
+          # up as "line 1: success:false: command not found" after downloading 67 bytes. So the
+          # download is checked for being an installer before it is run.
+          curl -fL --retry 3 -o /tmp/WolframEngine.sh \
             "https://account.wolfram.com/download/public/wolfram-engine/desktop/LINUX"
+          if [ "$(stat -c%s /tmp/WolframEngine.sh)" -lt 1000000 ]; then
+            echo "The download is not an installer. The endpoint returned:"
+            head -c 500 /tmp/WolframEngine.sh; echo
+            echo "The URL is version-pinned in this workflow and needs updating."
+            exit 1
+          fi
           sudo bash /tmp/WolframEngine.sh -- -auto -verbose
           wolframscript -version
 
