@@ -192,6 +192,20 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
                         $<$<COMPILE_LANGUAGE:CXX>:-Werror=shadow>)
+
+    # A brace initializer that runs out before the members do is silently zero-filled, and the
+    # members it leaves behind are the ones added last -- so a struct that grows acquires
+    # zeroed fields at every existing construction site and nothing says so. The determinism
+    # test's failure diagnostic was built that way: four counters naming which drop mechanism
+    # lost a match were computed, never copied into the record that prints them, and reported
+    # clean whatever had happened.
+    #
+    # Not part of -Wall, and -Wextra is not enabled here, so nothing was checking. Measured
+    # across all 151 C++ translation units at zero, and over the engine sources at zero on
+    # clang, aarch64-linux-gnu-g++ and x86_64-w64-mingw32-g++ as well, so -Werror costs nothing
+    # on any toolchain this tree is built with.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wmissing-field-initializers>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Werror=missing-field-initializers>)
 endif()
 
 # POPCNT, on the x86-64 hosts that have had it since 2008 (SSE4.2 / x86-64-v2). The baseline
