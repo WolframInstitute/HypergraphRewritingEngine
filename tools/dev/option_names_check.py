@@ -10,7 +10,13 @@ The authoritative surface is the union of the WL `Options[...]` declarations (wh
 accepts) and the FFI option keys (what the engine reads off the wire). A name used as an option
 in the documentation must appear in one of them.
 
-Reads sources only; no build.
+The shipped documentation is a set of BUILT notebooks, generated from those markdown sources by
+tools/build_docs.wls and tracked in git. Nothing regenerates them and nothing compared them to
+their source, so a page outlived the feature it was built before: "Delivery" and
+"MatchesPerStateRule" were documented in the markdown and appeared ZERO times across all three
+notebooks -- which is what a user actually opens.
+
+Reads sources only; no build, and no Wolfram kernel.
 """
 import re
 import sys
@@ -84,6 +90,28 @@ def main():
                 if name not in accepted:
                     findings.append((f.relative_to(ROOT), lineno, name))
 
+    # Every option the MARKDOWN documents must appear in a BUILT notebook. The notebooks are
+    # generated from exactly these sources, so a name in one and not the other means the built
+    # pages predate the feature -- rebuild with ./build_docs.sh.
+    src_dir = ROOT / "paclet/Documentation/Source"
+    nb_dir = ROOT / "paclet/Documentation/English"
+    documented = set()
+    for f in sorted(src_dir.glob("*.md")):
+        documented |= set(USE_RE.findall(f.read_text()))
+    notebooks = sorted(nb_dir.rglob("*.nb"))
+    if not notebooks:
+        print(f"FAIL: no built notebooks under {nb_dir.relative_to(ROOT)}")
+        return 1
+    built = "".join(n.read_text(errors="replace") for n in notebooks)
+    stale = sorted(o for o in documented if o in accepted and o not in built)
+    if stale:
+        print(f"{len(stale)} option(s) documented in the markdown and absent from every one of "
+              f"the {len(notebooks)} built notebooks:\n")
+        for o in stale:
+            print(f'  "{o}"')
+        print("\nThe built pages predate the feature. Rebuild them with ./build_docs.sh.")
+        return 1
+
     if findings:
         print(f"{len(findings)} documented option name(s) the paclet does not accept:\n")
         for path, lineno, name in findings:
@@ -92,7 +120,8 @@ def main():
         return 1
 
     print(f"OK: every option named in {len(files)} shipped documents is one of the "
-          f"{len(accepted)} the paclet accepts.")
+          f"{len(accepted)} the paclet accepts, and all {len(documented & accepted)} documented "
+          f"in the markdown appear in the {len(notebooks)} built notebooks.")
     return 0
 
 
