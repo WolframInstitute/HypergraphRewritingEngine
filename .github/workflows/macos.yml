@@ -47,6 +47,24 @@ jobs:
       - name: Build at 10.15
         run: cmake --build build-1015 --target hypergraph
 
+      # THE XCODE GENERATOR, which is a different build system from Ninja and not a formatting
+      # choice: it emits an .xcodeproj driven by xcodebuild, it is MULTI-CONFIG (so anything
+      # keyed on CMAKE_BUILD_TYPE at configure time behaves differently), and it resolves
+      # per-file flags and output directories its own way. A project that only ever configures
+      # under Ninja can accumulate assumptions that hold nowhere else, and this is the generator
+      # a macOS developer opening the repo will reach for first.
+      #
+      # Configure and build the library, not the suite: what is being checked is that the
+      # generator can express this project, which linking a test binary does not tell us again.
+      - name: Configure with the Xcode generator
+        run: >
+          cmake -S . -B build-xcode -G Xcode
+          -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_GPU=OFF
+          -DBUILD_VISUALIZATION=OFF
+      - name: Build the engine under Xcode
+        run: cmake --build build-xcode --target hypergraph --config Release
+
       - name: Build tests
         run: cmake --build build --target all_tests
 
