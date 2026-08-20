@@ -54,6 +54,14 @@ jobs:
       - name: The documentation names only options the paclet accepts
         run: python3 tools/dev/option_names_check.py
 
+      # The GPU implements a subset of the options, and where it does not the FFI must say so
+      # rather than return a different answer per device. "MatchesPerStateRule" was parsed,
+      # applied to the CPU engine, and then neither carried to the device nor warned about, so a
+      # GPU run with it set returned an uncapped result in silence. Reads the parser and
+      # run_gpu_job; no build, and no device.
+      - name: An option the GPU does not implement warns
+        run: python3 tools/dev/gpu_option_coverage.py
+
       # The CUDA build-cost table must not name a translation unit that is gone: include_cost.py
       # would quote a cost for a file that does not exist, and a wrong number is worse than the
       # UNMEASURED an absent row already reports. Needs no build -- it reads the sources.
