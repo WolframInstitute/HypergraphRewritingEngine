@@ -220,6 +220,30 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror=switch>)
 endif()
 
+# LINK-TIME OPTIMISATION, AND WHY IT IS NOT A MICRO-OPTIMISATION HERE.
+#
+# Without it the compiler can only inline what it can SEE, which is whatever a translation unit
+# includes. That single fact is why an engine like this drifts into being written in headers:
+# move a hot accessor into a .cpp and every other TU gets a real call plus the loss of constant
+# propagation and register allocation across the boundary, so the header is the only place the
+# optimiser can do its job. Structure then follows the optimiser instead of the other way round.
+#
+# With IPO the linker inlines across TUs, so where a body LIVES stops being a performance
+# decision and becomes an organisational one -- which is the point.
+#
+# Release only: a debug build gains nothing and pays the link cost. CUDA targets are excluded
+# below, because device code is linked by nvcc's own device-link step and IPO does not apply to
+# it. Guarded by check_ipo_supported so a toolchain without it configures rather than fails.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT HG_IPO_SUPPORTED OUTPUT HG_IPO_WHY)
+if(HG_IPO_SUPPORTED)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    message(STATUS "Link-time optimisation: enabled for Release")
+else()
+    message(STATUS "Link-time optimisation: unavailable (${HG_IPO_WHY})")
+endif()
+
 # POPCNT, on the x86-64 hosts that have had it since 2008 (SSE4.2 / x86-64-v2). The baseline
 # x86-64 ISA does not include the instruction, so __builtin_popcountll compiles to a libgcc CALL
 # -- __popcountdi2 shows up in the engine's own profile, and the bitsets that call it are on the

@@ -5,6 +5,8 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 
+# Device code is linked by nvcc's own device-link step, which IPO does not participate in, so
+# every CUDA target opts out of the global Release setting rather than inheriting it.
 add_library(hg_gpu STATIC
     src/evolve.cu
     src/initial_upload.cu
@@ -89,6 +91,8 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     )
     set_property(TARGET hg_gpu_tests PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
     target_link_libraries(hg_gpu_tests PRIVATE hg_gpu gtest gtest_main)
+
+set_target_properties(hg_gpu PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
 
     add_executable(gpu_differential_tests
         tests/test_gpu_vs_cpu_differential.cpp
