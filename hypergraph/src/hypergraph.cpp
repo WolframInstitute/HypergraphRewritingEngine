@@ -1496,5 +1496,14 @@ uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
     return c ? c->triple_hash() : 0;
 }
 
+// THE HOTTEST ACCESSORS IN THE ENGINE: the matcher and the WL hash read edges through these on
+// every candidate. They are here rather than in the class to test the premise of this work --
+// with link-time optimisation the linker still inlines them, so where a body lives stops being a
+// performance decision. The instruction count beside this commit is that test.
+const Edge& Hypergraph::get_edge(EdgeId eid) const { return edges_[eid]; }
+Edge& Hypergraph::get_edge(EdgeId eid) { return edges_[eid]; }
+const VertexId* Hypergraph::edge_vertices(EdgeId eid) const { return edges_[eid].vertices; }
+uint8_t Hypergraph::edge_arity(EdgeId eid) const { return edges_[eid].arity; }
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

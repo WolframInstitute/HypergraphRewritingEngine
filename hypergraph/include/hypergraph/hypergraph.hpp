@@ -541,13 +541,8 @@ public:
                        uint32_t step = 0);
 
     // Get edge by ID
-    const Edge& get_edge(EdgeId eid) const {
-        return edges_[eid];
-    }
-
-    Edge& get_edge(EdgeId eid) {
-        return edges_[eid];
-    }
+    const Edge& get_edge(EdgeId eid) const;
+    Edge& get_edge(EdgeId eid);
 
     // Edge accessor (for pattern matching)
     auto edge_accessor() const {
@@ -571,14 +566,10 @@ public:
     // These provide the interface needed by WLHash::compute_state_hash*()
 
     // Get vertex array for an edge (returns pointer to vertices)
-    const VertexId* edge_vertices(EdgeId eid) const {
-        return edges_[eid].vertices;
-    }
+    const VertexId* edge_vertices(EdgeId eid) const;
 
     // Get arity of an edge
-    uint8_t edge_arity(EdgeId eid) const {
-        return edges_[eid].arity;
-    }
+    uint8_t edge_arity(EdgeId eid) const;
 
     // Get cached signature for an edge (computed once at creation)
     const EdgeSignature& edge_signature(EdgeId eid) const {
