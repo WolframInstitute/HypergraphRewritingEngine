@@ -121,11 +121,15 @@ Module[{gFull, gDelta, sA, sB},
         Module[{g = HGSessionQuery[sB]}, {VertexCount[g], EdgeCount[g]}] === Last[gFull]];
   HGSessionClose[sB]];
 
-(* A property the session was not opened to record is reported, not served as emptiness. *)
+(* A property the session's Open did not name is SERVED, not warned about. A session exists to be
+   continued and queried in ways its Open cannot anticipate, so it records everything and a later
+   Step or Query for an artifact Open never mentioned is answered like any other. The warning this
+   once asserted belonged to the earlier rule, where the record set was derived from the
+   properties Open happened to list and a later Query for anything else returned emptiness. *)
 s3 = HGSessionOpen[rules, init, "NumStates"];
 If[Head[s3] === HGSessionObject,
-  check["an unrecorded artifact warns rather than returning silently",
-        Quiet[Check[HGSessionStep[s3, 2, "CausalEdges"]; False, True],
+  check["an artifact the Open did not name is served, and without a warning",
+        Quiet[Check[HGSessionStep[s3, 2, "CausalEdges"]; True, False],
               {HGEvolve::warn, HGEvolve::missingdata}]];
   HGSessionClose[s3]];
 
