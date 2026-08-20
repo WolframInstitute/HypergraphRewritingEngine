@@ -734,6 +734,16 @@ observable defined above is stated over canonical identities and is invariant. T
 checked by a determinism gate that compares the expanded state set and the (input, output, rule)
 transition multiset across thread counts and seeds.
 
+The capping options are outside it, and the reason is the same one that shapes the sampling
+design. \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
+which states are admitted follows the order they arrive in and varies with the worker count. An
+exact cap that was also schedule-independent would have to hold every candidate at that depth
+until the depth settled, which is the barrier Section~\ref{sec:sampling} declines: only a
+population that completes locally can be finalised without one, and a per-step population does
+not. What a capped run guarantees is therefore the bound, at every worker count, and not which
+states meet it. The per-parent cap has a locally-completing population and could be made
+schedule-independent on the same terms as the transition spine; it is not today.
+
 \subsection{Depth as a Shortest Path, and Termination}
 \label{sec:depth}
 

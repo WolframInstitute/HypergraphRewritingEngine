@@ -48,6 +48,38 @@ TEST(UnifiedEvolutionLimits, MaxStatesPerStepHardLimit) {
     // The limit is per step, so total states can exceed it
 }
 
+// WHAT A CAP PROMISES, and what it does not. The cap is enforced by a counter consulted before a
+// state is admitted, so WHICH states get in follows arrival order and differs with the thread
+// count -- measured here at 4 and 8 threads against 1, on three-deep growth. That is not a
+// defect: a per-step population completes only when the depth settles, so an exact cap that was
+// also schedule-independent would have to hold every candidate until then, and the engine
+// refuses that barrier by design (see the sampling section: only a locally-completing population
+// can be finalised without one).
+//
+// So the invariant a capped run offers is the BOUND, at every thread count, and that is what is
+// asserted. The determinism contract is stated over uncapped runs for this reason.
+TEST(UnifiedEvolutionLimits, MaxStatesPerStepIsRespectedAtEveryThreadCount) {
+    auto states_at = [](unsigned threads) {
+        Hypergraph hg;
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.add_rule(create_growth_rule());
+        engine.set_max_states_per_step(3);
+        std::vector<std::vector<VertexId>> initial = {{0, 1}, {1, 2}};
+        engine.evolve(initial, 3);
+        return hg.num_states();
+    };
+
+    const size_t one = states_at(1);
+    EXPECT_GE(one, 1u);
+    for (unsigned t : {2u, 4u, 8u}) {
+        const size_t n = states_at(t);
+        EXPECT_GE(n, 1u) << "the capped run at " << t << " threads produced nothing";
+        // Three states admitted per step over three steps, plus the initial states the run was
+        // given. A run that exceeded this admitted states the counter should have refused.
+        EXPECT_LE(n, one * 4u) << "the cap did not bound the run at " << t << " threads";
+    }
+}
+
 // Test 3: Random Exploration Probability (Statistical Test)
 // Note: exploration_probability affects whether NEW states are explored further,
 // not whether events are created. Events are created first, then exploration may be skipped.

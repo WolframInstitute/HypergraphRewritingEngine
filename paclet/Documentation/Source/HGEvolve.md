@@ -52,8 +52,8 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"CausalTransitiveReduction"` | `True` | remove redundant transitive causal edges |
 | `"ExploreFromCanonicalStatesOnly"` | `False` | quotient exploration: expand each canonical state once, at its shortest depth (off by default, so every provenance is explored) |
 | `"QuotientInitialStates"` | `False` | collapse isomorphic initial states to a single canonical root (requires `"ExploreFromCanonicalStatesOnly"`); off keeps each initial state a distinct entry point |
-| `"MaxSuccessorStatesPerParent"` | `0` | cap the successor states generated from each parent (0 = unlimited) |
-| `"MaxStatesPerStep"` | `0` | cap the states retained per evolution step (0 = unlimited) |
+| `"MaxSuccessorStatesPerParent"` | `0` | cap the successor states generated from each parent (0 = unlimited); as above, the bound is reproducible and the selection is not |
+| `"MaxStatesPerStep"` | `0` | cap the states retained per evolution step (0 = unlimited); the bound holds at any thread count, which states meet it is not reproducible |
 | `"ExplorationProbability"` | `1.` | probability of exploring each branch; below 1 prunes stochastically |
 | `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate (CPU only) |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order (CPU only) |
@@ -290,7 +290,13 @@ HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "MaxSuccessorStates
 
 ### "MaxStatesPerStep"
 
-Limits the states retained per evolution step (0 = unlimited):
+Limits the states retained per evolution step (0 = unlimited).
+
+The bound holds at any thread count. *Which* states meet it does not: the cap is applied as
+states arrive, so a capped run may return a different subset on different runs or thread counts.
+Uncapped runs are unaffected -- their state, event, causal and branchial sets do not depend on
+the thread count or the scheduling order. Use `"TransitionRate"` with a `"RandomSeed"` for a
+reproducible thinning.
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
