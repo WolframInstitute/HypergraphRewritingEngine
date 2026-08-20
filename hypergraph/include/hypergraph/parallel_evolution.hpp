@@ -18,6 +18,7 @@
 #include "bitset.hpp"
 #include "hypergraph.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
+#include "hgcommon/sampling_core.hpp"
 #include "hypergraph/scratch_alloc.hpp"
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
@@ -981,20 +982,17 @@ public:
     // The rate THIS rule's transitions are drawn at. Clamped, because a weight is a caller's
     // number and a rate outside [0,1] is not a probability.
     double rate_for_rule(uint16_t rule) const {
-        double w = 1.0;
-        if (rule < rule_weights_.size()) w = rule_weights_[rule];
-        const double r = transition_rate_ * w;
-        return r < 0.0 ? 0.0 : (r > 1.0 ? 1.0 : r);
+        return hgcommon::sampling_rate_for_rule(transition_rate_, rule_weights_.data(),
+                                                static_cast<uint32_t>(rule_weights_.size()), rule);
     }
 
     // Whether ANY draw can fail. The draw sites used to test transition_rate_ < 1.0 directly,
     // which would skip sampling entirely for a caller who left the rate at 1 and weighted a
     // single rule to zero.
     bool sampling_active() const {
-        if (transition_rate_ < 1.0) return true;
-        if (matches_per_state_rule_ != 0) return true;
-        for (double w : rule_weights_) if (w < 1.0) return true;
-        return false;
+        return hgcommon::sampling_active(transition_rate_, rule_weights_.data(),
+                                         static_cast<uint32_t>(rule_weights_.size()),
+                                         static_cast<uint32_t>(matches_per_state_rule_));
     }
     // True while a state's own transitions must wait for its drain, because choosing k of M
     // needs all M and M is complete only there.

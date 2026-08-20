@@ -3,6 +3,8 @@
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
 
 #include "hypergraph/parallel_evolution.hpp"
+
+#include "hgcommon/sampling_core.hpp"
 #include "hypergraph/rule_analysis.hpp"
 
 #include <algorithm>
@@ -1193,19 +1195,9 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int s
     draws_taken_.fetch_add(1, std::memory_order_relaxed);
     if (site >= 0 && site < 5) draws_by_site_[site].fetch_add(1, std::memory_order_relaxed);
 
-    // splitmix64 of (seed, transition). Deliberately NOT a worker RNG: drawing from thread
-    // state would make the surviving subgraph depend on which thread happened to reach the
-    // transition, so the same run would sample differently at a different thread count and
-    // "representative" would have nothing to be reproducible about.
-    uint64_t x = transition_key ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
-    x += 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    x ^= (x >> 31);
-
-    // Compare in [0,1) via the top 53 bits, so the threshold means the same thing at any q.
-    const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
-    const bool survives = u < rate;
+    // The draw itself lives in hgcommon so the device runs THIS rule and not a second copy of
+    // it; keyed on the transition rather than on thread state, for the reason recorded there.
+    const bool survives = hgcommon::transition_survives(transition_key, random_seed_, rate);
     if (survives) draws_survived_.fetch_add(1, std::memory_order_relaxed);
     return survives;
 }
