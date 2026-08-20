@@ -461,7 +461,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_readback_start).count();
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
-    auto all_edges = engine.all_state_edges_host();
+    auto all_edges = in.edge_identity
+        ? engine.all_state_edges_host(&out.state_edge_ids, &out.global_edges)
+        : engine.all_state_edges_host();
     out.states.reserve(all_edges.size());
     for (uint32_t s = 0; s < all_edges.size(); ++s) {
         CanonicalState cs;

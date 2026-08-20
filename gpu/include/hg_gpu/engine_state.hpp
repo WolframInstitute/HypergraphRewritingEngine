@@ -670,9 +670,17 @@ public:
     // four bulk cudaMemcpy calls (slices, ids, edges, vertices) then
     // reconstructs on host. O(total state-edge slots) on the wire rather
     // than the O(max_states × max_edges/32) bitset readback.
-    std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host() const {
+    // `out_edge_ids` and `out_global_edges`, when non-null, are filled from the four arrays
+    // this already copies down: the per-state edge id lists, and the edge id -> vertices table.
+    // Neither costs an additional transfer -- the ids and the edge records are read here either
+    // way, and were being discarded once the vertex contents had been built from them.
+    std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host(
+            std::vector<std::vector<EdgeId>>* out_edge_ids = nullptr,
+            std::vector<std::vector<VertexId>>* out_global_edges = nullptr) const {
         uint32_t n_states = num_states_host();
         std::vector<std::vector<std::vector<VertexId>>> out(n_states);
+        if (out_edge_ids) out_edge_ids->assign(n_states, {});
+        if (out_global_edges) out_global_edges->clear();
         if (n_states == 0) return out;
 
         uint32_t n_edges      = edge_pool_.size_host();
@@ -701,12 +709,24 @@ public:
                        sizeof(EdgeId) * n_id_slots, cudaMemcpyDeviceToHost);
         }
 
+        if (out_global_edges) {
+            out_global_edges->assign(n_edges, {});
+            for (uint32_t eid = 0; eid < n_edges; ++eid) {
+                const Edge& e = edges[eid];
+                if (static_cast<size_t>(e.vertex_offset) + e.arity > verts.size()) continue;
+                std::vector<VertexId> vs(e.arity);
+                for (uint8_t i = 0; i < e.arity; ++i) vs[i] = verts[e.vertex_offset + i];
+                (*out_global_edges)[eid] = std::move(vs);
+            }
+        }
+
         for (uint32_t s = 0; s < n_states; ++s) {
             const StateEdgeSlice& sl = slices[s];
             if (static_cast<size_t>(sl.offset) + sl.count > ids.size()) continue;
             for (uint32_t k = 0; k < sl.count; ++k) {
                 EdgeId eid = ids[sl.offset + k];
                 if (eid >= n_edges) continue;
+                if (out_edge_ids) (*out_edge_ids)[s].push_back(eid);
                 const Edge& e = edges[eid];
                 std::vector<VertexId> vs(e.arity);
                 for (uint8_t i = 0; i < e.arity; ++i) {

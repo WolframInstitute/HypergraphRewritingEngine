@@ -1281,6 +1281,69 @@ TEST(CanonicalEventCount, ModesVsCpu) {
 
 // Diagnostic: print the count conventions across modes and root counts so the GPU marshalling's
 // NumStates (= the CPU's num_canonical_states()) can be reproduced exactly, not reverse-engineered.
+// THE EDGE IDENTITY THE READBACK CARRIES OUT MUST DESCRIBE THE STATES IT CARRIES OUT.
+//
+// all_state_edges_host() builds each state's edge CONTENTS by mapping that state's edge id list
+// through the global edge table, and returns those two alongside the contents when asked. The
+// three are therefore redundant by construction, which is exactly what makes the check sharp: if
+// the ids came back in a different order from the contents built out of them, or an entry were
+// dropped, then "StateBitvectors" would name edges belonging to another state and "GlobalEdges"
+// would give them the wrong vertices -- and NOTHING else in the result would move, because every
+// other consumer reads the contents.
+TEST(EdgeIdentity, TheIdsDescribeTheContents) {
+    Workload w;
+    w.name = "edge_identity";
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_states = {{{0u, 1u}}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+    hg_gpu::EvolveInput in = make_input(w);
+    in.edge_identity = true;
+    auto result = hg_gpu::evolve(in);
+
+    ASSERT_FALSE(result.states.empty());
+    ASSERT_EQ(result.state_edge_ids.size(), result.states.size())
+        << "one id list per state, indexed the same way";
+    ASSERT_FALSE(result.global_edges.empty());
+
+    size_t checked = 0;
+    for (size_t s = 0; s < result.states.size(); ++s) {
+        const auto& contents = result.states[s].edges;
+        const auto& ids = result.state_edge_ids[s];
+        ASSERT_EQ(ids.size(), contents.size())
+            << "state " << s << ": " << ids.size() << " edge ids for "
+            << contents.size() << " edges";
+        for (size_t k = 0; k < ids.size(); ++k) {
+            ASSERT_LT(static_cast<size_t>(ids[k]), result.global_edges.size())
+                << "state " << s << " slot " << k << ": edge id past the global table";
+            EXPECT_EQ(result.global_edges[ids[k]], contents[k])
+                << "state " << s << " slot " << k
+                << ": the id list and the contents built from it disagree";
+            ++checked;
+        }
+    }
+    EXPECT_GT(checked, 0u) << "the workload produced no edges to check";
+}
+
+// And a run that does not ask for it does not carry it. The two arrays roughly double what the
+// result holds about edges, and only "GlobalEdges" and "StateBitvectors" ask.
+TEST(EdgeIdentity, AbsentUnlessAskedFor) {
+    Workload w;
+    w.name = "edge_identity_off";
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_states = {{{0u, 1u}}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+    hg_gpu::EvolveInput in = make_input(w);   // edge_identity defaults false
+    auto result = hg_gpu::evolve(in);
+
+    ASSERT_FALSE(result.states.empty()) << "the run must still produce states";
+    EXPECT_TRUE(result.state_edge_ids.empty());
+    EXPECT_TRUE(result.global_edges.empty());
+}
+
 TEST(CanonicalStateCount, ModesVsCpu) {
     using M = hg_gpu::CanonicalizationMode;
     auto r = rule({{0, 1}}, {{0, 2}, {2, 1}});   // binary edge splitting

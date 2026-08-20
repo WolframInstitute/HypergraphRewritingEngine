@@ -29,6 +29,14 @@ struct EvolveInput {
     // states nothing gets what it always got.
     hgcommon::RecordSet record;
 
+    // CARRY THE EDGE IDENTITY OUT WITH THE STATES: the per-state list of global edge ids, and
+    // the edge id -> vertices table. all_state_edges_host() already copies both down -- it reads
+    // the slices, the ids, the edge records and the vertex pool in one call and then keeps only
+    // the vertex contents -- so this decides whether they are KEPT, not whether they are
+    // fetched. Off by default because holding them roughly doubles what the result carries
+    // about edges, and only "GlobalEdges" and "StateBitvectors" ask for them.
+    bool edge_identity = false;
+
     std::vector<RewriteRule> rules;
     std::vector<std::vector<VertexId>> initial_state;
     // Multiple initial states (multiway with several roots). When non-empty this
@@ -138,6 +146,12 @@ struct BranchialEdge {
 
 struct EvolveResult {
     std::vector<CanonicalState> states;
+    // Global edge ids of each state, indexed by StateId and parallel to `states`, and the edge
+    // id -> vertices table. Both empty unless EvolveInput::edge_identity was set: CanonicalState
+    // carries edge CONTENTS with no ids, and Event carries edge IDS with no contents, so neither
+    // "StateBitvectors" nor "GlobalEdges" can be answered from the rest of this structure.
+    std::vector<std::vector<EdgeId>> state_edge_ids;
+    std::vector<std::vector<VertexId>> global_edges;
     std::vector<Event> events;
     std::vector<CausalEdge> causal_edges;
     std::vector<BranchialEdge> branchial_edges;
