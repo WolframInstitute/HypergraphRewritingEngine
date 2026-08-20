@@ -121,11 +121,36 @@ fi
 
 # ---- Windows x86-64 ----
 if selected "Windows-x86-64"; then
-    if have x86_64-w64-mingw32-gcc; then
+    # THE WINDOWS CPU ARTIFACTS ARE BUILT NATIVELY WHERE MSVC EXISTS, and cross-compiled only
+    # where it does not. mingw-w64 corrupts the heap destroying a thread_local object with a
+    # non-trivial destructor at WORKER-THREAD exit -- 20/20 runs against 0/20 under MSVC on the
+    # same machine, reproduced in twenty-five lines with no engine code. The engine runs every
+    # evolution on worker threads and keeps thread_local scratch, so a mingw-built binary hits it
+    # on any threaded run. It went unnoticed because the corruption is detected at teardown,
+    # after the answer has been written to stdout.
+    #
+    # A Linux host with no Visual Studio still gets a cross-built pair, because a binary with a
+    # teardown fault beats no binary at all -- but it is the fallback, not the shipping route.
+    if [[ -e "/mnt/c/Program Files/CMake/bin/cmake.exe" \
+          && -d "/mnt/c/Program Files/Microsoft Visual Studio/2022" ]]; then
+        if ./build_windows_msvc.sh cpu $([[ "$CLEAN" == "1" ]] && echo clean); then
+            BUILT+=("Windows-x86-64 (native MSVC)")
+        else
+            echo -e "${RED}Windows-x86-64: native MSVC build failed${NC}"
+            FAILED+=("Windows-x86-64 (native MSVC)")
+        fi
+    elif have x86_64-w64-mingw32-gcc; then
+        echo -e "${YELLOW}Windows-x86-64: no Visual Studio found; cross-compiling with mingw-w64.${NC}"
+        echo    "  mingw-w64 corrupts the heap when it destroys a thread_local object with a"
+        echo    "  non-trivial destructor at worker-thread exit (20/20 runs here; 0/20 under MSVC)."
+        echo    "  The engine keeps thread_local scratch and runs on worker threads, so the binary"
+        echo    "  this produces faults at teardown on any threaded run. The answer it writes is"
+        echo    "  correct and complete; the process exit code is not. Install Visual Studio 2022"
+        echo    "  with the C++ workload to build the shipping artifact instead."
         build_target "Windows-x86-64" build_windows "$LR/Windows-x86-64/HypergraphRewriting.dll" \
             -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake
     else
-        skip "Windows-x86-64" "mingw not found (apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64)"
+        skip "Windows-x86-64" "no Visual Studio and no mingw"
     fi
     # The Windows CUDA engine (hg_evolve_gpu.exe) can't be cross-compiled with mingw — on Windows
     # nvcc requires MSVC as its host compiler. Build it natively (best-effort) via the Windows
@@ -142,7 +167,7 @@ if selected "Windows-x86-64"; then
         # a stale binary and knowing you cannot ship.
         # `clean` propagates: the caller asking for a fresh configure means the GPU leg's cache
         # is as suspect as every other target's.
-        if ./build_windows_gpu.sh $([[ "$CLEAN" == "1" ]] && echo clean); then
+        if ./build_windows_msvc.sh gpu $([[ "$CLEAN" == "1" ]] && echo clean); then
             BUILT+=("Windows-x86-64/hg_evolve_gpu.exe")
         elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
             echo -e "${RED}Windows-x86-64/hg_evolve_gpu.exe: build failed and HG_REQUIRE_GPU=1${NC}"
