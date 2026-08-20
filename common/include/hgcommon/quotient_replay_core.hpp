@@ -188,9 +188,24 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
             // almost always decides on the first pair, so the accessor count is not what this
             // loop costs, and the original nesting is what the compiler schedules better.
             bool overlaps = false;
-            for (uint32_t i = 0; i < mine_n && !overlaps; ++i)
-                for (uint32_t j = 0; j < on; ++j)
-                    if (mine_slots[i] == other.consumed(j)) { overlaps = true; break; }
+            if (on <= 3) {
+                // MAX_PATTERN_EDGES is 16 and a left-hand side of one to three edges is what
+                // every rule in the corpus has, so the general loop below spends most of this
+                // test on bookkeeping for a trip count of three. Reading the sibling's slots
+                // into registers and comparing without an inner loop is the same comparison in
+                // the same order, with the loop gone.
+                const uint32_t o0 = on > 0 ? other.consumed(0) : ~0u;
+                const uint32_t o1 = on > 1 ? other.consumed(1) : ~0u;
+                const uint32_t o2 = on > 2 ? other.consumed(2) : ~0u;
+                for (uint32_t i = 0; i < mine_n; ++i) {
+                    const uint32_t s = mine_slots[i];
+                    if (s == o0 || s == o1 || s == o2) { overlaps = true; break; }
+                }
+            } else {
+                for (uint32_t i = 0; i < mine_n && !overlaps; ++i)
+                    for (uint32_t j = 0; j < on; ++j)
+                        if (mine_slots[i] == other.consumed(j)) { overlaps = true; break; }
+            }
             if (!overlaps) return;
             // Keyed on the two EVENTS, so the pair reads back as a pair of event signatures and
             // set-compares against full capture, which keys its own branchial edges the same
