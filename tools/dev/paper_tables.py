@@ -13,7 +13,8 @@ Run:  python3 tools/dev/paper_tables.py [--gpu] [--build-dir build_linux]
 
 import argparse
 import os
-import platform
+
+import procstat
 import re
 import subprocess
 import sys
@@ -34,23 +35,8 @@ def commit():
 
 
 def machine():
-    cpu = "unknown"
-    try:
-        with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("model name"):
-                    cpu = line.split(":", 1)[1].strip()
-                    break
-    except OSError:
-        pass
-    mem_gb = "?"
-    try:
-        with open("/proc/meminfo") as f:
-            kb = int(f.readline().split()[1])
-            mem_gb = "%.0f" % (kb / 1048576.0)
-    except (OSError, ValueError, IndexError):
-        pass
-    return "%s, %s GB RAM, %s %s" % (cpu, mem_gb, platform.system(), platform.release())
+    """The provenance line's machine string. procstat answers it on both platforms."""
+    return procstat.machine()
 
 
 def provenance(tool):

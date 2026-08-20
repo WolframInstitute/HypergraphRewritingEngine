@@ -38,8 +38,9 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tools", "dev"))
 import paper_tables as pt  # provenance, tex_escape, write -- one implementation of each
+import procstat            # machine facts and child resource usage, one implementation of each
 
-NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
+NVIDIA_SMI = procstat.nvidia_smi_path() or "/usr/lib/wsl/lib/nvidia-smi"
 
 
 def physical_cores():
@@ -47,21 +48,9 @@ def physical_cores():
 
     The efficiency figure marks this count, and it is the point the two series are read against,
     so writing it as a literal would state a property of one machine in a document generated on
-    another. A (physical id, core id) pair identifies a core; hyperthreads share one.
+    another. procstat counts them on whichever platform this is running on.
     """
-    pairs, phys, core = set(), None, None
-    with open("/proc/cpuinfo") as f:
-        for line in f:
-            if line.startswith("physical id"):
-                phys = line.split(":")[1].strip()
-            elif line.startswith("core id"):
-                core = line.split(":")[1].strip()
-            elif not line.strip() and phys is not None and core is not None:
-                pairs.add((phys, core))
-                phys = core = None
-    if phys is not None and core is not None:
-        pairs.add((phys, core))
-    return len(pairs) or (os.cpu_count() or 1)
+    return procstat.physical_cores()
 
 
 def run(cmd, env=None, timeout=3600):
@@ -314,34 +303,28 @@ def thread_memory_cost(build, shape, iters):
     for threads in (1, 8, 16, 24, 32):
         best = None
         for _ in range(max(2, iters // 4)):
-            p = subprocess.run(
-                ["/usr/bin/time", "-v", os.path.join(build, "sampling_cost_smoke"), "off", rule,
+            m = procstat.measure(
+                [os.path.join(build, "sampling_cost_smoke"), "off", rule,
                  str(edges), str(steps), str(threads), "4", "full"],
-                cwd=ROOT, capture_output=True, text=True, timeout=7200)
-            if p.returncode != 0:
-                raise SystemExit("sampling_cost_smoke failed:\n%s" % p.stderr[-2000:])
-            g = lambda pat: float(re.search(pat, p.stderr).group(1))
-            # getrusage's elapsed field is h:mm:ss.ss OR m:ss.ss depending on duration, so the
-            # fields are folded from the right rather than matched against one of the two shapes.
-            # The label itself contains colons ("(h:mm:ss or m:ss)"), so the greedy .* is what
-            # anchors this to the LAST colon on the line rather than one inside the label.
-            m = re.search(r"Elapsed \(wall clock\) time.*:\s*([\d:.]+)", p.stderr)
-            wall = 0.0
-            for part in m.group(1).split(":"):
-                wall = wall * 60.0 + float(part)
-            row = (threads, wall, g(r"User time \(seconds\): ([\d.]+)"),
-                   g(r"System time \(seconds\): ([\d.]+)"),
-                   g(r"Maximum resident set size \(kbytes\): (\d+)") / 1024.0,
-                   g(r"Minor \(reclaiming a frame\) page faults: (\d+)"))
+                cwd=ROOT, timeout=7200)
+            if m.returncode != 0:
+                raise SystemExit("sampling_cost_smoke failed:\n%s" % m.stderr[-2000:])
+            u = m.usage
+            # The fault column is a DIFFERENT quantity per platform -- Linux counts minor faults,
+            # Windows counts all of them -- so the column is labelled from the measurement rather
+            # than from a literal, and a table says which it holds.
+            fault_kind = u.fault_kind
+            row = (threads, u.wall, u.user, u.system, u.peak_rss_mb, float(u.faults))
             if best is None or row[1] < best[1]:
                 best = row
         rows.append(best)
-        print("  %2dt: wall %6.2f s  user %6.2f s  sys %6.2f s  RSS %7.0f MB  minor-faults %9.0f"
-              % best)
+        print("  %2dt: wall %6.2f s  user %6.2f s  sys %6.2f s  RSS %7.0f MB  %s %9.0f"
+              % (best[0], best[1], best[2], best[3], best[4], fault_kind.lower(), best[5]))
 
-    b = [pt.provenance("tools/sampling_cost_smoke.cpp under /usr/bin/time -v (getrusage)"),
+    b = [pt.provenance("tools/sampling_cost_smoke.cpp under procstat.measure"),
          r"\begin{tabular}{rrrrrr}", r"\toprule",
-         r"Threads & Wall s & User s & System s & Peak RSS MB & Minor faults \\", r"\midrule"]
+         r"Threads & Wall s & User s & System s & Peak RSS MB & %s \\" % fault_kind,
+         r"\midrule"]
     for (t, wall, u, s, rss, mf) in rows:
         b.append("%d & %.2f & %.2f & %.2f & %.0f & %s \\\\"
                  % (t, wall, u, s, rss, "{:,}".format(int(mf)).replace(",", "\\,")))
@@ -359,7 +342,7 @@ def thread_memory_cost(build, shape, iters):
     user_pts = "".join("(%d,%.2f)" % (t, u) for (t, _w, u, _s, _r, _m) in rows)
     sys_pts = "".join("(%d,%.2f)" % (t, s) for (t, _w, _u, s, _r, _m) in rows)
     pt.write_raw("f_thread_memory.tex",
-                 pt.provenance("tools/sampling_cost_smoke.cpp under /usr/bin/time -v") + "\n"
+                 pt.provenance("tools/sampling_cost_smoke.cpp under procstat.measure") + "\n"
                  + r"\addplot[mark=*, black] coordinates {%s};" % user_pts + "\n"
                  + r"\addlegendentry{user}" + "\n"
                  + r"\addplot[mark=triangle*, black, dashed] coordinates {%s};" % sys_pts + "\n"
