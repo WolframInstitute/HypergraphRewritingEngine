@@ -151,6 +151,7 @@ endfunction()
 create_test_executable(all_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     # Hypergraph tests
     ../hypergraph/tests/test_join_core.cpp
     ../hypergraph/tests/test_slot_core.cpp
@@ -210,6 +211,7 @@ target_include_directories(all_tests PRIVATE
 create_test_executable(core_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     ../hypergraph/tests/test_ir_canonicalization.cpp
     ../wxf/tests/test_wxf.cpp
 )
@@ -220,6 +222,7 @@ create_test_executable(core_tests
 create_test_executable(evolution_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     ../hypergraph/tests/test_pattern_matching.cpp
     ../hypergraph/tests/test_match_completeness.cpp
     ../hypergraph/tests/test_match_dedup_exactness.cpp
@@ -235,6 +238,7 @@ create_test_executable(evolution_tests
 create_test_executable(causal_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
 )
@@ -245,6 +249,7 @@ create_test_executable(causal_tests
 create_test_executable(stress_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
     ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
@@ -256,6 +261,7 @@ create_test_executable(stress_tests
 create_test_executable(integration_tests
     main.cpp
     test_helpers.hpp
+    test_helpers.cpp
     ../paclet_source/tests/test_paclet.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
 )
