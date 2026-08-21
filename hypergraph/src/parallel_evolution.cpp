@@ -2450,5 +2450,112 @@ bool ParentInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t nu
     return false;
 }
 
+// =============================================================================
+// ParallelEvolutionEngine configuration and counters
+// =============================================================================
+size_t ParallelEvolutionEngine::hash_collisions() const { return hash_collisions_.load(std::memory_order_relaxed); }
+
+size_t ParallelEvolutionEngine::dedup_allocs() const { return dedup_allocs_.load(std::memory_order_relaxed); }
+
+void ParallelEvolutionEngine::set_max_steps(size_t max) { max_steps_ = max; }
+
+size_t ParallelEvolutionEngine::max_steps() const { return max_steps_; }
+
+void ParallelEvolutionEngine::set_max_states(size_t max) { max_states_ = max; }
+
+void ParallelEvolutionEngine::set_max_events(size_t max) { max_events_ = max; }
+
+void ParallelEvolutionEngine::set_batched_matching(bool enable) { batched_matching_ = enable; }
+
+void ParallelEvolutionEngine::set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
+
+void ParallelEvolutionEngine::set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
+
+bool ParallelEvolutionEngine::genesis_events() const { return enable_genesis_events_; }
+
+void ParallelEvolutionEngine::set_task_based_matching(bool enable) { task_based_matching_ = enable; }
+
+bool ParallelEvolutionEngine::task_based_matching() const { return task_based_matching_; }
+
+void ParallelEvolutionEngine::set_transition_rate(double q) { transition_rate_ = q; }
+
+double ParallelEvolutionEngine::transition_rate() const { return transition_rate_; }
+
+void ParallelEvolutionEngine::set_rule_weights(std::vector<double> w) { rule_weights_ = std::move(w); }
+
+const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { return rule_weights_; }
+
+bool ParallelEvolutionEngine::defers_to_drain() const { return matches_per_state_rule_ != 0; }
+
+bool ParallelEvolutionEngine::records_own_matches() const { return enable_match_forwarding_ || defers_to_drain(); }
+
+bool ParallelEvolutionEngine::depth_signal_available() const { return !explore_from_canonical_states_only_; }
+
+size_t ParallelEvolutionEngine::states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
+
+void ParallelEvolutionEngine::set_quotient_initial_states(bool enable) { quotient_initial_states_ = enable; }
+
+bool ParallelEvolutionEngine::quotient_initial_states() const { return quotient_initial_states_; }
+
+double ParallelEvolutionEngine::exploration_probability() const { return exploration_probability_; }
+
+size_t ParallelEvolutionEngine::max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
+
+size_t ParallelEvolutionEngine::max_states_per_step() const { return max_states_per_step_; }
+
+void ParallelEvolutionEngine::set_matches_per_state_rule(size_t k) { matches_per_state_rule_ = k; }
+
+size_t ParallelEvolutionEngine::matches_per_state_rule() const { return matches_per_state_rule_; }
+
+size_t ParallelEvolutionEngine::validation_mismatches() const { return validation_mismatches_.load(); }
+
+size_t ParallelEvolutionEngine::validations_performed() const { return validations_performed_.load(); }
+
+size_t ParallelEvolutionEngine::missing_owed_by_forwarding() const { return missing_owed_by_forwarding_.load(); }
+
+size_t ParallelEvolutionEngine::missing_owed_by_delta() const { return missing_owed_by_delta_.load(); }
+
+size_t ParallelEvolutionEngine::draws_taken() const { return draws_taken_.load(); }
+
+size_t ParallelEvolutionEngine::draws_survived() const { return draws_survived_.load(); }
+
+size_t ParallelEvolutionEngine::draws_at_site(int i) const { return draws_by_site_[i].load(); }
+
+size_t ParallelEvolutionEngine::late_arrivals() const { return late_arrivals_.load(); }
+
+size_t ParallelEvolutionEngine::num_threads() const { return num_threads_; }
+
+bool ParallelEvolutionEngine::is_serial() const { return mode_ == ExecutionMode::Serial; }
+
+size_t ParallelEvolutionEngine::num_states() const { return hg_ ? hg_->num_states() : 0; }
+
+size_t ParallelEvolutionEngine::num_canonical_states() const { return hg_ ? hg_->num_canonical_states() : 0; }
+
+size_t ParallelEvolutionEngine::num_events() const { return hg_ ? hg_->num_events() : 0; }
+
+size_t ParallelEvolutionEngine::num_causal_edges() const { return hg_ ? hg_->causal_graph().num_causal_event_pairs() : 0; }
+
+size_t ParallelEvolutionEngine::num_branchial_edges() const { return hg_ ? hg_->causal_graph().num_branchial_edges() : 0; }
+
+const EvolutionStats& ParallelEvolutionEngine::stats() const { return stats_; }
+
+const std::vector<std::string>& ParallelEvolutionEngine::warnings() const { return warnings_; }
+
+void ParallelEvolutionEngine::set_continuable(bool on) { continuable_ = on; }
+
+bool ParallelEvolutionEngine::continuable() const { return continuable_; }
+
+size_t ParallelEvolutionEngine::total_matches() const { return total_matches_found_.load(std::memory_order_relaxed); }
+
+size_t ParallelEvolutionEngine::total_rewrites() const { return total_rewrites_.load(std::memory_order_relaxed); }
+
+size_t ParallelEvolutionEngine::pending_jobs() const { return job_system_ ? job_system_->get_pending_count() : 0; }
+
+size_t ParallelEvolutionEngine::job_system_park_waits() const { return job_system_ ? job_system_->park_waits() : 0; }
+
+size_t ParallelEvolutionEngine::executing_jobs() const { return job_system_ ? job_system_->get_executing_count() : 0; }
+
+bool ParallelEvolutionEngine::has_error() const { return job_system_ && job_system_->has_error(); }
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

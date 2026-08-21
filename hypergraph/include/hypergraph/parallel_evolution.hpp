@@ -433,11 +433,11 @@ public:
 
     // Distinct matches that landed on an equal key, and claims that ran out of probes. Both are
     // expected to be 0; they are counted so "collisions do not happen here" is a measurement.
-    size_t hash_collisions() const { return hash_collisions_.load(std::memory_order_relaxed); }
+    size_t hash_collisions() const;
     size_t dedup_probe_exhaustions() const {
         return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
     }
-    size_t dedup_allocs() const { return dedup_allocs_.load(std::memory_order_relaxed); }
+    size_t dedup_allocs() const;
     size_t dedup_allocs_wasted() const {
         return dedup_allocs_wasted_.load(std::memory_order_relaxed);
     }
@@ -786,14 +786,14 @@ public:
         rules_.back().compute_var_counts();
     }
 
-    void set_max_steps(size_t max) { max_steps_ = max; }
+    void set_max_steps(size_t max);
     // The depth this run is budgeted to, which evolve_more RAISES rather than replaces. A caller
     // that continues an exploration and then reports on it needs the accumulated depth, not the
     // increment it just asked for: a step index counted from the end ("the final step") is
     // defined against this total.
-    size_t max_steps() const { return max_steps_; }
-    void set_max_states(size_t max) { max_states_ = max; }
-    void set_max_events(size_t max) { max_events_ = max; }
+    size_t max_steps() const;
+    void set_max_states(size_t max);
+    void set_max_events(size_t max);
     // FORWARDING PAYS ONLY WHEN RE-MATCHING IS A JOIN. A child re-matched from scratch runs the
     // matcher once per rule; forwarding replaces that with a walk of the ancestor's records plus
     // the coordination that keeps the walk complete. Against identical event counts (#49):
@@ -807,8 +807,8 @@ public:
         enable_match_forwarding_ = enable;
         match_forwarding_explicit_ = true;
     }
-    void set_batched_matching(bool enable) { batched_matching_ = enable; }
-    void set_validate_match_forwarding(bool enable) { validate_match_forwarding_ = enable; }
+    void set_batched_matching(bool enable);
+    void set_validate_match_forwarding(bool enable);
 
     // Enable online transitive reduction for causal edges (Goranci algorithm)
     // When enabled, redundant causal edges are filtered out at insertion time.
@@ -820,14 +820,14 @@ public:
     // When enabled, a synthetic event is created for each initial state that
     // "produces" all edges in that state. This allows causal edges to be
     // tracked from the initial state's edges to events that consume them.
-    void set_genesis_events(bool enable) { enable_genesis_events_ = enable; }
-    bool genesis_events() const { return enable_genesis_events_; }
+    void set_genesis_events(bool enable);
+    bool genesis_events() const;
 
     // Enable task-based matching (HGMatch SCAN→EXPAND join model)
     // When enabled, pattern matching spawns fine-grained tasks for better parallelism.
     // When disabled (default), uses synchronous find_matches() within MATCH task.
-    void set_task_based_matching(bool enable) { task_based_matching_ = enable; }
-    bool task_based_matching() const { return task_based_matching_; }
+    void set_task_based_matching(bool enable);
+    bool task_based_matching() const;
 
     // Pruning options.
     //
@@ -889,10 +889,10 @@ public:
     // Each path of length L survives with probability q^L, so deep structure thins faster than
     // shallow. That is inherent to online thinning -- a deep path cannot be kept without its
     // prefix -- and the answer is a depth-dependent q, not a different mechanism.
-    void set_transition_rate(double q) { transition_rate_ = q; }
-    double transition_rate() const { return transition_rate_; }
-    void set_rule_weights(std::vector<double> w) { rule_weights_ = std::move(w); }
-    const std::vector<double>& rule_weights() const { return rule_weights_; }
+    void set_transition_rate(double q);
+    double transition_rate() const;
+    void set_rule_weights(std::vector<double> w);
+    const std::vector<double>& rule_weights() const;
 
     // The rate THIS rule's transitions are drawn at. Clamped, because a weight is a caller's
     // number and a rate outside [0,1] is not a probability.
@@ -911,13 +911,13 @@ public:
     }
     // True while a state's own transitions must wait for its drain, because choosing k of M
     // needs all M and M is complete only there.
-    bool defers_to_drain() const { return matches_per_state_rule_ != 0; }
+    bool defers_to_drain() const;
 
     // A state's own matches are RECORDED for two consumers, and only one of them is forwarding.
     // The drain cap chooses k of them by rank after the state's matching completes, so it reads
     // the same list; without this the cap silently keeps nothing whenever forwarding is off, and
     // a cap that keeps nothing is an off switch wearing a limit's name.
-    bool records_own_matches() const { return enable_match_forwarding_ || defers_to_drain(); }
+    bool records_own_matches() const;
     // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
     // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving
     // ancestor class both left the union-recovery curve unchanged, because recovery is limited
@@ -953,12 +953,12 @@ public:
     }
     // Whether the depth signal will fire for the configuration this engine is set to. False
     // under quotient exploration; see set_on_depth_complete.
-    bool depth_signal_available() const { return !explore_from_canonical_states_only_; }
+    bool depth_signal_available() const;
     // States that arrived at a depth already reported complete. Must be zero.
     size_t depth_late_arrivals() const {
         return depth_late_arrivals_.load(std::memory_order_relaxed);
     }
-    size_t states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
+    size_t states_drained() const;
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's
     // final count, which is what makes "the drain fired after the last match" checkable.
@@ -979,8 +979,8 @@ public:
     // When true, isomorphic initial states collapse to one canonical root under
     // explore_from_canonical_states_only. Default false: each provided initial
     // state is a distinct entry point (reference MultiwaySystem semantics).
-    void set_quotient_initial_states(bool enable) { quotient_initial_states_ = enable; }
-    bool quotient_initial_states() const { return quotient_initial_states_; }
+    void set_quotient_initial_states(bool enable);
+    bool quotient_initial_states() const;
 
     void set_explore_from_canonical_states_only(bool enable) {
         explore_from_canonical_states_only_ = enable;
@@ -989,21 +989,21 @@ public:
         return explore_from_canonical_states_only_;
     }
 
-    double exploration_probability() const { return exploration_probability_; }
-    size_t max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
-    size_t max_states_per_step() const { return max_states_per_step_; }
+    double exploration_probability() const;
+    size_t max_successor_states_per_parent() const;
+    size_t max_states_per_step() const;
     // k of the state's own matches per rule, chosen by rank at the drain. 0 keeps all.
-    void set_matches_per_state_rule(size_t k) { matches_per_state_rule_ = k; }
-    size_t matches_per_state_rule() const { return matches_per_state_rule_; }
+    void set_matches_per_state_rule(size_t k);
+    size_t matches_per_state_rule() const;
 
-    size_t validation_mismatches() const { return validation_mismatches_.load(); }
-    size_t validations_performed() const { return validations_performed_.load(); }
-    size_t missing_owed_by_forwarding() const { return missing_owed_by_forwarding_.load(); }
-    size_t missing_owed_by_delta() const { return missing_owed_by_delta_.load(); }
-    size_t draws_taken() const { return draws_taken_.load(); }
-    size_t draws_survived() const { return draws_survived_.load(); }
-    size_t draws_at_site(int i) const { return draws_by_site_[i].load(); }
-    size_t late_arrivals() const { return late_arrivals_.load(); }
+    size_t validation_mismatches() const;
+    size_t validations_performed() const;
+    size_t missing_owed_by_forwarding() const;
+    size_t missing_owed_by_delta() const;
+    size_t draws_taken() const;
+    size_t draws_survived() const;
+    size_t draws_at_site(int i) const;
+    size_t late_arrivals() const;
     // Matches recorded absent by the validator and STILL absent when the run ended.
     //
     // Tested with contains_match, the validator's own membership test: it probes the whole dedup
@@ -1027,20 +1027,20 @@ public:
         });
     }
 
-    size_t num_threads() const { return num_threads_; }
+    size_t num_threads() const;
     // Serial runs execute every job on the calling thread and spawn nothing.
-    bool is_serial() const { return mode_ == ExecutionMode::Serial; }
-    size_t num_states() const { return hg_ ? hg_->num_states() : 0; }
-    size_t num_canonical_states() const { return hg_ ? hg_->num_canonical_states() : 0; }
-    size_t num_events() const { return hg_ ? hg_->num_events() : 0; }
-    size_t num_causal_edges() const { return hg_ ? hg_->causal_graph().num_causal_event_pairs() : 0; }
-    size_t num_branchial_edges() const { return hg_ ? hg_->causal_graph().num_branchial_edges() : 0; }
+    bool is_serial() const;
+    size_t num_states() const;
+    size_t num_canonical_states() const;
+    size_t num_events() const;
+    size_t num_causal_edges() const;
+    size_t num_branchial_edges() const;
     size_t num_redundant_edges_skipped() const {
         return hg_ ? hg_->causal_graph().num_redundant_edges_skipped() : 0;
     }
 
-    const EvolutionStats& stats() const { return stats_; }
-    const std::vector<std::string>& warnings() const { return warnings_; }
+    const EvolutionStats& stats() const;
+    const std::vector<std::string>& warnings() const;
 
     // Request early termination of evolution
     // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
@@ -1088,8 +1088,8 @@ public:
     // Record what a continuation would resume from. Off by default: the frontier costs 12.5 MB
     // across the oracle corpus, +3.9% of the arena, and a run that is never continued pays all
     // of it for nothing. Set before evolve().
-    void set_continuable(bool on) { continuable_ = on; }
-    bool continuable() const { return continuable_; }
+    void set_continuable(bool on);
+    bool continuable() const;
 
     // Carry the SAME run `additional_steps` further, from the frontier where the budget stopped
     // it. Equivalent to having asked for the total in the first place; the states, events and
@@ -1139,16 +1139,16 @@ public:
     // Statistics
     // =========================================================================
 
-    size_t total_matches() const { return total_matches_found_.load(std::memory_order_relaxed); }
-    size_t total_rewrites() const { return total_rewrites_.load(std::memory_order_relaxed); }
+    size_t total_matches() const;
+    size_t total_rewrites() const;
 
     // Job system diagnostics
-    size_t pending_jobs() const { return job_system_ ? job_system_->get_pending_count() : 0; }
-    size_t job_system_park_waits() const { return job_system_ ? job_system_->park_waits() : 0; }
-    size_t executing_jobs() const { return job_system_ ? job_system_->get_executing_count() : 0; }
+    size_t pending_jobs() const;
+    size_t job_system_park_waits() const;
+    size_t executing_jobs() const;
 
     // Error state - check after evolution completes
-    bool has_error() const { return job_system_ && job_system_->has_error(); }
+    bool has_error() const;
     job_system::ErrorType get_error_type() const {
         return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
     }
