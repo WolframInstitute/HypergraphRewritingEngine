@@ -147,6 +147,41 @@ struct QeAppliedView {
 // child's producer vector and this file reads it back, so one value or neither works.
 inline constexpr uint32_t kQeNoProducer = hgcommon::QR_NO_PRODUCER;
 
+// ONE PENDING DESCENT. The replay used to descend by CALLING itself, and the cycle
+// qe_apply -> qr_apply -> descend -> qe_add_instance -> qe_drive_instance cost 8,704 bytes of
+// per-thread stack per level of reconstruction depth. What it actually carried across a level is
+// these three scalars. Sixteen bytes against 8,704 is why the depth a run can reconstruct was a
+// property of the launch rather than of the workload.
+struct QeWorkItem {
+    uint64_t hash;    // the class the instance stands at
+    uint32_t rec;     // its record in the instance pool
+    uint32_t depth;
+};
+
+// A driver's private descent stack. LIFO, so the order instances are driven in is the order the
+// recursion drove them -- which is what lets the existing corpus gate this change directly.
+//
+// PRIVATE TO ONE DRIVER, and that is a property of where the replay runs rather than an
+// assumption: in the persistent kernel the whole rewrite path is inside `threadIdx.x == 0`, so
+// there is one driver per BLOCK, and in the root seeder there is one per root.
+struct QeWork {
+    QeWorkItem* items = nullptr;
+    uint32_t    cap   = 0;
+    uint32_t    n     = 0;
+
+    __device__ bool push(uint64_t hash, uint32_t rec, uint32_t depth) {
+        if (n >= cap) return false;
+        items[n].hash = hash; items[n].rec = rec; items[n].depth = depth;
+        ++n;
+        return true;
+    }
+    __device__ bool pop(QeWorkItem& out) {
+        if (n == 0) return false;
+        out = items[--n];
+        return true;
+    }
+};
+
 struct QeView {
     typename Pool<DeviceSlotMatch>::DeviceView          matches;
     typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(from_hash)
@@ -221,12 +256,19 @@ struct QeView {
     uint32_t  arr_capacity;
 
     uint32_t* next_id;         // device atomic; dense match ids
+
+    // Backing store for the descent stacks, one contiguous slice of `work_cap` items per driver.
+    // Sized from the run's step budget the way the IR arena is sized from its state budget, and
+    // exhausted the same way: a capacity overflow that reports and returns partial work.
+    QeWorkItem* work_items  = nullptr;
+    uint32_t    work_cap    = 0;   // items per driver
+    uint32_t    work_slices = 0;   // drivers this run can serve
+
     uint32_t  max_steps = 0;
-    // How deep the replay may recurse before the per-thread stack runs out. The cycle
-    // qe_apply -> qe_add_instance -> qe_drive_instance descends once per depth, so this is a
-    // property of the stack the engine was given (EngineState::qe_max_recursion_depth) and not
-    // of the workload. Past it the replay stops and records, which loses deep events and says
-    // so; without it the next frame faults and the whole run returns nothing.
+    // Retained because the DP cascade in quotient_causal_core.hpp still recurses and reads it
+    // through QcCtx::enter. The REPLAY no longer does: it descends through a QeWork stack, so its
+    // depth is bounded by that stack's capacity in device memory and not by the launch's
+    // per-thread stack.
     uint32_t  max_recursion_depth = 0;
     uint32_t  enabled   = 0;
     // Whether the captured expansion is REPLAYED against instances, as against merely captured.
@@ -248,11 +290,14 @@ struct QeView {
 // match drives the instances, and an application publishes a child instance. Declared here so
 // each publisher can drive without the definitions having to be ordered around each other.
 struct DeviceQcInstance;
+
 __device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
                                          const DeviceQcInstance& inst,
-                                         uint64_t state_hash, uint32_t depth);
+                                         uint64_t state_hash, uint32_t depth, QeWork& work);
+__device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work);
+__device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint64_t from_hash);
+                                      uint64_t from_hash, QeWork& work);
 
 // Bucket a hash into a list's key space. Same mixing as the DP's qc_bucket, so a shared bucket
 // count distributes the two the same way.
@@ -351,7 +396,7 @@ constexpr uint32_t kQeMaxSurvivors = 256;
 // `depth` is the parent's depth (the event's step - 1).
 __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
                                             StateId parent, StateId child, EventId event,
-                                            uint32_t rule, uint32_t depth) {
+                                            uint32_t rule, uint32_t depth, uint32_t work_slice) {
     if (!qe.enabled || depth > qe.max_steps) return;
 
     const uint64_t from = ds.state_canonical_hash[parent];
@@ -433,7 +478,9 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     if (qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec}) == INVALID_ID)
         ds.errors.record(ErrorKind::kQcNodes);
 
-    qe_drive_match(ds, qe, m, from);
+    QeWork work = qe_work_for(ds, qe, work_slice);
+    qe_drive_match(ds, qe, m, from, work);
+    qe_run(ds, qe, work);
 }
 
 // Walk the captured matches of one class. The bucket is shared, so the exact hash on each node
@@ -489,7 +536,8 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
 // produced any of them. Claims the class frame first, so the root's producer vector and the
 // expansion captured from it are in the SAME labelling by construction -- the host does the
 // same, and for the same reason.
-__device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId root) {
+__device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId root,
+                                             uint32_t work_slice) {
     if (!qe.enabled) return;
     const uint64_t h = ds.state_canonical_hash[root];
     const uint32_t nslots = ds.state_edge_slices[root].count;
@@ -505,7 +553,10 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     if (off == UINT32_MAX) return;
     for (uint32_t i = 0; i < nslots; ++i) qe.arr_words[off + i] = kQeNoProducer;
     const uint32_t rec = qe_add_instance(ds, qe, h, 0u, off, nslots);
-    if (rec != UINT32_MAX) qe_drive_instance(ds, qe, qe.instances.at(rec), h, 0u);
+    if (rec == UINT32_MAX) return;
+    QeWork work = qe_work_for(ds, qe, work_slice);
+    if (!work.push(h, rec, 0u)) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
+    qe_run(ds, qe, work);
 }
 
 // Visit every instance recorded for `state_hash` at `depth`.
@@ -541,37 +592,57 @@ __device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t mat
 // tools/dev/ptx_frame_sizes.py: as its own frame it holds a 64-byte depot.
 __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth);
+                                         uint32_t depth, QeWork& work);
 
 // Instance side of the rendezvous: replay every match already captured for this class.
 __device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
                                          const DeviceQcInstance& inst,
-                                         uint64_t state_hash, uint32_t depth) {
+                                         uint64_t state_hash, uint32_t depth, QeWork& work) {
     if (depth >= qe.max_steps) return;   // final-depth instances are recorded, never expanded
-    if (depth >= qe.max_recursion_depth) {
-        // Out of stack, not out of work. Recorded and returned rather than descended: one more
-        // frame faults, and a fault takes the entire run's result with it.
-        ds.errors.record(ErrorKind::kScratchOverflow);
-        return;
-    }
+    // NO DEPTH GUARD. There was one, because this function used to re-enter itself and the
+    // per-thread stack it re-entered on is a fixed reservation the driver takes across every
+    // resident thread. The descent is a worklist now, so what bounds it is that list's capacity
+    // -- checked where the push happens, and reported as the capacity overflow it is.
+    //
     // Published before scanning; pairs with the fence on the match side so a concurrent
     // instance and match cannot both miss each other.
     __threadfence();
     qe_for_each_match_from(qe, state_hash, [&](const DeviceSlotMatch& m) {
-        qe_apply(ds, qe, inst, m, state_hash, depth);
+        qe_apply(ds, qe, inst, m, state_hash, depth, work);
     });
 }
 
 // Match side of the rendezvous: replay this match against every instance already standing at
 // this class, at every depth it could stand at.
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint64_t from_hash) {
+                                      uint64_t from_hash, QeWork& work) {
     __threadfence();
     for (uint32_t d = 0; d < qe.max_steps; ++d) {
         qe_for_each_instance(qe, from_hash, d, [&](const DeviceQcInstance& inst) {
-            qe_apply(ds, qe, inst, m, from_hash, d);
+            qe_apply(ds, qe, inst, m, from_hash, d, work);
         });
     }
+}
+
+// Drain the descent stack. Every instance an application publishes lands here rather than on the
+// call stack, so this loop is the whole of the replay's depth.
+__device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work) {
+    QeWorkItem it;
+    while (work.pop(it))
+        qe_drive_instance(ds, qe, qe.instances.at(it.rec), it.hash, it.depth, work);
+}
+
+// The slice of the descent arena belonging to one driver. Out of range yields an empty stack,
+// which pushes nothing and reports -- the same partial-work contract as any other capacity here.
+__device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice) {
+    QeWork w;
+    if (qe.work_items == nullptr || slice >= qe.work_slices) {
+        if (qe.replay) ds.errors.record(ErrorKind::kScratchOverflow);
+        return w;
+    }
+    w.items = qe.work_items + static_cast<size_t>(slice) * qe.work_cap;
+    w.cap   = qe.work_cap;
+    return w;
 }
 
 struct DeviceQrCtx {
@@ -587,6 +658,7 @@ struct DeviceQrCtx {
     // partial result. The caller's copies outlive this object.
     DeviceState& ds;
     QeView& qe;
+    QeWork& work;
 
     __device__ bool claim(uint64_t apply_key) {
         return qe.applied.insert_if_absent(apply_key, 1u).inserted;
@@ -667,11 +739,11 @@ struct DeviceQrCtx {
         (void)hi;
         atomicAdd(qe.num_branchial, 1u);
     }
-    // __forceinline__ IS LOAD-BEARING. qr_apply calls this exactly once, at its tail, and the
-    // call closes the recursion cycle whose per-level cost EngineState::kDeviceStackBytesPerDepth
-    // records. Left as its own frame it holds a 1104-byte depot plus a call's ABI save area, on
-    // every level of reconstruction depth; folded into qr_apply the depot merges and the frame
-    // is not paid. Measured with tools/dev/ptx_frame_sizes.py.
+    // __forceinline__ so its 1104-byte depot merges into qr_apply's frame rather than taking
+    // one of its own. That frame is now paid ONCE per drive rather than once per level of
+    // reconstruction depth -- this function ends the descent by pushing instead of calling --
+    // but a depot that need not exist still should not. Measured with
+    // tools/dev/ptx_frame_sizes.py.
     __device__ __forceinline__ void descend(const QeMatchView& m, uint32_t depth, uint32_t ev,
                                             const DeviceQcInstance& parent) {
         const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
@@ -689,15 +761,17 @@ struct DeviceQrCtx {
         }
         const uint32_t rec = qe_add_instance(ds, qe, m.to_hash, depth + 1u, off, m.to_slots);
         if (rec == UINT32_MAX) return;
-        qe_drive_instance(ds, qe, qe.instances.at(rec), m.to_hash, depth + 1u);
+        // PUSHED, NOT CALLED. This was the recursive edge; the driver loop takes it from here.
+        if (!work.push(m.to_hash, rec, depth + 1u))
+            ds.errors.record(ErrorKind::kScratchOverflow);
     }
 };
 
 __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth) {
+                                         uint32_t depth, QeWork& work) {
     if (!qe.enabled || depth >= qe.max_steps) return;
-    DeviceQrCtx c{ds, qe};
+    DeviceQrCtx c{ds, qe, work};
     hgcommon::qr_apply(c, inst, QeMatchView(m, qe.arr_words), state_hash, depth);
 }
 
@@ -772,6 +846,15 @@ public:
     // before any replay, and one more per application once the replay lands.
     uint32_t num_instances_host();
 
+    // Size the descent arena for this run. Called before the launch, so the caller supplies the
+    // number of drivers it will start (one per block in the persistent kernel, one per root in
+    // the seeder) and the depth budget the stacks must hold.
+    //
+    // GROWS, NEVER SHRINKS, for the reason the IR arena does: an interactive caller reuses one
+    // engine across many runs and a buffer whose contents never outlive a run should not be
+    // reallocated on each of them.
+    void ensure_work(uint32_t slices, uint32_t max_steps);
+
     QeView view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth,
                 bool replay);
 
@@ -809,6 +892,10 @@ private:
     uint32_t*                 cursor_ = nullptr;
     uint32_t*                 next_id_ = nullptr;
     uint32_t                  arr_cap_ = 0;
+    // The replay's descent stacks: work_slices_ contiguous slices of work_cap_ items.
+    QeWorkItem*               work_items_  = nullptr;
+    uint32_t                  work_cap_    = 0;
+    uint32_t                  work_slices_ = 0;
     bool                      on_ = false;
 };
 

@@ -185,7 +185,9 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // The class's root instance: every slot's edge came with the initial state, so no event
     // produced any of them. Idempotent across duplicate roots -- only the state that wins the
     // class frame records one.
-    qe_seed_root_instance(ds, qe, sid);
+    // One driver per ROOT here: this kernel runs one thread per root, so the thread's own
+    // index is the slice.
+    qe_seed_root_instance(ds, qe, sid, tid);
 
     bool merged = false;
     if (key == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
@@ -751,8 +753,10 @@ __global__ void k_persistent_evolve(
                             }
                             // Same event, same endpoints: the class frame's match record.
                             const uint64_t s3 = clock64();
+                            // One driver per BLOCK: this whole path is inside
+                            // `threadIdx.x == 0`, so blockIdx is the slice.
                             qe_capture_expansion(ds, qe, rec.state_id, child_sid,
-                                                 child_event, rec.rule_id, step);
+                                                 child_event, rec.rule_id, step, blockIdx.x);
                             if (phase_cycles) atomicAdd(&phase_cycles[14], clock64() - s3);
                         }
 

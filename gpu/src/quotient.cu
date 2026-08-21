@@ -114,6 +114,7 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
     }
 
 QeState::~QeState() {
+    if (work_items_) cudaFree(work_items_);
         if (arr_)     cudaFree(arr_);
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
@@ -287,6 +288,25 @@ uint32_t QeState::num_align_failures_host() { return read_counter(align_fail_, "
 
 uint32_t QeState::num_instances_host() { return instances_.size_host(); }
 
+// The replay descends through this rather than through the call stack, so its size is what
+// bounds reconstruction depth. Sized from the run: `slices` drivers, each holding enough items
+// for a depth-first walk of `max_steps` levels with room for the siblings a level fans out to.
+//
+// 64 items per level is a bound on FAN-OUT, not on depth -- the stack holds the matches of each
+// level that have not been descended into yet. A workload wider than that reports a capacity
+// overflow and returns partial work, which is the same contract every other pool here has, and
+// unlike the per-thread stack it can be raised without costing every resident thread.
+void QeState::ensure_work(uint32_t slices, uint32_t max_steps) {
+    if (!on_) return;
+    const uint32_t cap = max_steps * 64u < 256u ? 256u : max_steps * 64u;
+    if (work_items_ && work_slices_ >= slices && work_cap_ >= cap) return;
+    if (work_items_) { cudaFree(work_items_); work_items_ = nullptr; }
+    work_slices_ = slices > work_slices_ ? slices : work_slices_;
+    work_cap_    = cap > work_cap_ ? cap : work_cap_;
+    const size_t bytes = sizeof(QeWorkItem) * work_slices_ * work_cap_;
+    HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState descent stacks alloc");
+}
+
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth,
                 bool replay) {
         QeView q{};
@@ -319,6 +339,9 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_r
         q.next_id      = next_id_;
         q.max_steps    = max_steps;
         q.max_recursion_depth = max_recursion_depth;
+        q.work_items   = work_items_;
+        q.work_cap     = work_cap_;
+        q.work_slices  = work_slices_;
         q.enabled      = on_ ? 1u : 0u;
         q.replay       = (on_ && replay) ? 1u : 0u;
         return q;

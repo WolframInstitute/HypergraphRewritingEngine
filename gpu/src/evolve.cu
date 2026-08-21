@@ -314,6 +314,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // exponential in depth against an answer that is linear (b98a943c). Capture is untouched, so
     // Automatic event identity -- signed from the class frame -- is unchanged either way.
     const bool qe_replay = in.record.causal || in.record.branchial || in.record.raw_events;
+    // The descent stacks the replay walks instead of the call stack. One driver per persistent
+    // block and one per root, so the arena covers whichever launch starts more of them.
+    if (qe_replay) {
+        const uint32_t drivers =
+            default_persistent_grid() > static_cast<uint32_t>(roots.size())
+                ? default_persistent_grid()
+                : static_cast<uint32_t>(roots.size());
+        qe_state_->ensure_work(drivers, in.num_steps);
+    }
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      state_.qe_max_recursion_depth(), qe_replay);
 
