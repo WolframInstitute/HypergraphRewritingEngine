@@ -211,20 +211,73 @@ std::vector<uint8_t> Parser::read_binary_string() {
     return result;
 }
 
-std::string Parser::read_big_integer() {
-    Token token = peek_token();
-    if (token != Token::BigInteger) {
-        throw TypeError("Expected big integer", read_position_);
+// WXF CARRIES BIG NUMBERS AS TEXT, so reading one needs no arbitrary-precision library -- which
+// is what these two claimed to be waiting for. Both are a varint length followed by that many
+// ASCII bytes, read off BinarySerialize output: 2^80 encodes as `49 19` then the 25 characters
+// "1208925819614629174706176", and N[Pi, 40] as `52 40` then 64 characters ending "`40.".
+// Returning that text is exactly what the declared std::string return type is for; a caller that
+// wants a number parses it, and a caller that only needs to carry the value through does not.
+std::string Parser::read_big_number(Token expected, const char* what) {
+    if (peek_token() != expected) {
+        throw TypeError(what, read_position_);
     }
-    throw ParseError("BigInteger not implemented - requires arbitrary precision library", read_position_);
+    read_byte();                       // the token
+    const size_t len = read_varint();
+    ensure_bytes(len);
+    std::string out(reinterpret_cast<const char*>(&data_[read_position_]), len);
+    read_position_ += len;
+    return out;
+}
+
+std::string Parser::read_big_integer() {
+    return read_big_number(Token::BigInteger, "Expected big integer");
 }
 
 std::string Parser::read_big_real() {
-    Token token = peek_token();
-    if (token != Token::BigReal) {
-        throw TypeError("Expected big real", read_position_);
+    return read_big_number(Token::BigReal, "Expected big real");
+}
+
+namespace {
+
+// Bytes per element for each WXF array type code. MEASURED against BinarySerialize rather than
+// recalled -- every entry below was read off a real encoding of a two-element array, where the
+// data length is the total minus the six bytes of header, token, type, rank and dimension.
+size_t array_element_size(uint8_t type) {
+    switch (type) {
+        case 0x00: case 0x10: return 1;                        // Integer8,  UnsignedInteger8
+        case 0x01: case 0x11: return 2;                        // Integer16, UnsignedInteger16
+        case 0x02: case 0x12: case 0x22: return 4;             // Integer32, UnsignedInteger32, Real32
+        case 0x03: case 0x13: case 0x23: case 0x33: return 8;  // Integer64, UnsignedInteger64,
+                                                               // Real64, ComplexReal32
+        case 0x34: return 16;                                  // ComplexReal64
+        default: return 0;                                     // not an array type this build knows
     }
-    throw ParseError("BigReal not implemented - requires arbitrary precision library", read_position_);
+}
+
+}  // namespace
+
+void Parser::skip_array() {
+    read_byte();                            // the PackedArray / NumericArray token
+    const uint8_t type = read_byte();
+    const size_t elem = array_element_size(type);
+    if (elem == 0) {
+        throw TypeError("Cannot skip array of unknown element type", read_position_);
+    }
+    const size_t rank = read_varint();
+    // The dimensions come from OUTSIDE, so their product is computed with an overflow check
+    // rather than trusted: a crafted message could otherwise wrap the total to a small number
+    // and leave the cursor inside the array, which desynchronises every later read.
+    size_t count = 1;
+    for (size_t i = 0; i < rank; ++i) {
+        const size_t d = read_varint();
+        if (d != 0 && count > (size_t(-1) / elem) / d) {
+            throw ParseError("array dimensions overflow", read_position_);
+        }
+        count *= d;
+    }
+    const size_t bytes = count * elem;
+    ensure_bytes(bytes);
+    read_position_ += bytes;
 }
 
 void Parser::read_association(const AssociationCallback& callback) {
@@ -330,6 +383,23 @@ void Parser::skip_value(size_t depth) {
             read_byte(); // consume '-'
             skip_value(depth + 1); // skip key
             skip_value(depth + 1); // skip value
+            break;
+        // SKIPPING IS WHAT AN UNKNOWN OPTION NEEDS, and these four were the gap: a caller that
+        // passed an option this build does not recognise got a THROW rather than the option being
+        // ignored, whenever its value happened to be a big number or an array. Both shapes are
+        // walkable without decoding anything.
+        case Token::BigInteger:
+        case Token::BigReal:
+            read_byte();                                  // the token
+            {
+                const size_t len = read_varint();
+                ensure_bytes(len);
+                read_position_ += len;
+            }
+            break;
+        case Token::PackedArray:
+        case Token::NumericArray:
+            skip_array();
             break;
         default:
             throw TypeError("Cannot skip unsupported or invalid token", read_position_);

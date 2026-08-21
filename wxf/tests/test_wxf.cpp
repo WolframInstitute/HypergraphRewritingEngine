@@ -554,17 +554,27 @@ TEST_F(WXFTest, TypeMismatch) {
     EXPECT_THROW(parser.read<std::string>(), wxf::TypeError);
 }
 
-TEST_F(WXFTest, UnimplementedTypes) {
+TEST_F(WXFTest, BigNumbersReadAsText) {
+    // WXF carries a big number as ASCII, so both readers return the text and neither needs an
+    // arbitrary-precision library. This test used to assert that they THREW.
     std::vector<uint8_t> big_int_data = {'8', ':', 'I', 5, '1', '2', '3', '4', '5'};
     wxf::Parser parser1(big_int_data);
     parser1.skip_header();
-    EXPECT_THROW(parser1.read_big_integer(), wxf::ParseError);
+    EXPECT_EQ(parser1.read_big_integer(), "12345");
 
     std::vector<uint8_t> big_real_data = {'8', ':', 'R', 5, '3', '.', '1', '4', '1'};
     wxf::Parser parser2(big_real_data);
     parser2.skip_header();
-    EXPECT_THROW(parser2.read_big_real(), wxf::ParseError);
+    EXPECT_EQ(parser2.read_big_real(), "3.141");
 
+    // A reader still refuses the WRONG token, which is what keeps a mis-typed read an error.
+    std::vector<uint8_t> wrong_token = {'8', ':', 'I', 5, '1', '2', '3', '4', '5'};
+    wxf::Parser parser3(wrong_token);
+    parser3.skip_header();
+    EXPECT_THROW(parser3.read_big_real(), wxf::TypeError);
+}
+
+TEST_F(WXFTest, UnimplementedTypes) {
     std::vector<uint8_t> delayed_rule_data = {'8', ':', ':'};
     wxf::Parser parser3(delayed_rule_data);
     parser3.skip_header();
@@ -933,4 +943,153 @@ TEST_F(WXFTest, ImpossibleListLengthIsRejectedBeforeAllocating) {
         << "an element count past the remaining input must be refused on the count itself; "
            "reaching the allocation means an 18-byte message can size a multi-terabyte "
            "reservation";
+}
+
+// =============================================================================
+// Skipping the four tokens this build does not decode
+// =============================================================================
+//
+// An option the engine does not recognise is SKIPPED, not refused -- that is what lets a newer
+// wrapper talk to an older binary. skip_value could not step over a BigInteger, a BigReal, a
+// PackedArray or a NumericArray, so an unknown option carrying any of them threw instead.
+//
+// EVERY BYTE STRING BELOW CAME OUT OF BinarySerialize, not out of a reading of the spec. The
+// comment on each names the expression that produced it.
+
+namespace {
+
+// <|"Known" -> 1, "Unknown" -> <payload>, "After" -> 7|>, assembled around a payload so the test
+// checks the thing that actually matters: that the cursor lands on the NEXT key, not merely that
+// skipping did not throw.
+std::vector<uint8_t> association_around(const std::vector<uint8_t>& payload) {
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(3);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Known"));
+    w.write(static_cast<int64_t>(1));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Unknown"));
+    std::vector<uint8_t> out = w.release_data();
+    out.insert(out.end(), payload.begin(), payload.end());
+    wxf::Writer tail;
+    tail.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    tail.write(std::string("After"));
+    tail.write(static_cast<int64_t>(7));
+    const std::vector<uint8_t>& t = tail.data();
+    out.insert(out.end(), t.begin(), t.end());
+    return out;
+}
+
+// Read the association, skipping whatever "Unknown" carries, and return what "After" held. A
+// value of 7 means the cursor stayed aligned across the skip.
+int64_t after_skipping(const std::vector<uint8_t>& payload) {
+    const std::vector<uint8_t> data = association_around(payload);
+    wxf::Parser parser(data.data(), data.size());
+    parser.skip_header();
+    int64_t after = -1;
+    parser.read_association([&](const std::string& key, wxf::Parser& p) {
+        if (key == "After") after = p.read<int64_t>();
+        else if (key == "Known") (void)p.read<int64_t>();
+        else p.skip_value();
+    });
+    return after;
+}
+
+}  // namespace
+
+TEST(WXFSkip, BigIntegerIsSkipped) {
+    // BinarySerialize[2^80] without its 2-byte header: 'I', varint 25, then the digits.
+    const std::vector<uint8_t> big = {
+        0x49, 0x19, '1','2','0','8','9','2','5','8','1','9','6','1','4',
+        '6','2','9','1','7','4','7','0','6','1','7','6'};
+    EXPECT_EQ(after_skipping(big), 7);
+}
+
+TEST(WXFSkip, BigRealIsSkipped) {
+    // BinarySerialize[N[Pi, 40]] without its header: 'R', varint 64, then 64 ASCII bytes.
+    std::vector<uint8_t> big = {0x52, 0x40};
+    const std::string digits =
+        "3.141592653589793238462643383279502884197169399375105815120`40.";
+    big.insert(big.end(), digits.begin(), digits.end());
+    big.push_back('0');                       // pad to the declared 64
+    EXPECT_EQ(big.size(), 66u);
+    EXPECT_EQ(after_skipping(big), 7);
+}
+
+TEST(WXFSkip, PackedArrayIsSkipped) {
+    // BinarySerialize[Developer`ToPackedArray[{1,2,3,4}]] without its header:
+    // 0xC1, type 0x00 (Integer8), rank 1, dim 4, then four bytes.
+    const std::vector<uint8_t> arr = {0xC1, 0x00, 0x01, 0x04, 1, 2, 3, 4};
+    EXPECT_EQ(after_skipping(arr), 7);
+}
+
+TEST(WXFSkip, PackedRealArrayIsSkipped) {
+    // BinarySerialize[Developer`ToPackedArray[{1.5, 2.5}]]: type 0x23 (Real64), rank 1, dim 2,
+    // then sixteen bytes. Checks that the element SIZE is read from the type byte.
+    std::vector<uint8_t> arr = {0xC1, 0x23, 0x01, 0x02};
+    arr.insert(arr.end(), 16, 0x00);
+    EXPECT_EQ(after_skipping(arr), 7);
+}
+
+TEST(WXFSkip, RankTwoPackedArrayIsSkipped) {
+    // BinarySerialize[Developer`ToPackedArray[{{1,2,3},{4,5,6}}]]: rank 2, dims 2 and 3, so the
+    // body is the PRODUCT of the dimensions -- six bytes, not two and not three.
+    const std::vector<uint8_t> arr = {0xC1, 0x00, 0x02, 0x02, 0x03, 1, 2, 3, 4, 5, 6};
+    EXPECT_EQ(after_skipping(arr), 7);
+}
+
+TEST(WXFSkip, NumericArrayIsSkipped) {
+    // BinarySerialize[NumericArray[{1,2,3}, "UnsignedInteger8"]]: 0xC2, type 0x10, rank 1, dim 3.
+    const std::vector<uint8_t> arr = {0xC2, 0x10, 0x01, 0x03, 1, 2, 3};
+    EXPECT_EQ(after_skipping(arr), 7);
+}
+
+TEST(WXFSkip, ArrayDimensionsCannotOverflowTheByteCount) {
+    // Dimensions come from outside. Two that multiply past SIZE_MAX must be refused on the
+    // arithmetic; wrapping would leave the cursor inside the array and desynchronise every
+    // later read, which is worse than a rejection.
+    std::vector<uint8_t> arr = {0xC1, 0x23, 0x02};      // Real64, rank 2
+    for (int i = 0; i < 2; ++i) {                       // each dimension 2^62
+        for (int b = 0; b < 8; ++b) arr.push_back(0x80);
+        arr.push_back(0x40);
+    }
+    const std::vector<uint8_t> data = association_around(arr);
+    wxf::Parser parser(data.data(), data.size());
+    parser.skip_header();
+
+    // ASSERT THE SPECIFIC REJECTION. A build that cannot skip arrays at all throws too -- from
+    // the default arm -- so requiring merely "some WXF error" cannot tell the two apart. What
+    // distinguishes them is being refused on the ARITHMETIC.
+    bool refused_on_overflow = false;
+    try {
+        parser.read_association([](const std::string& key, wxf::Parser& p) {
+            if (key == "Known") (void)p.read<int64_t>();
+            else p.skip_value();
+        });
+    } catch (const wxf::WXFException& e) {
+        refused_on_overflow = std::string(e.what()).find("overflow") != std::string::npos;
+    }
+    EXPECT_TRUE(refused_on_overflow)
+        << "dimensions whose product passes SIZE_MAX must be refused on the multiply; wrapping "
+           "leaves the cursor inside the array and desynchronises every later read";
+}
+
+TEST(WXFSkip, BigNumbersReadBackAsTheirText) {
+    // The readers claimed to need an arbitrary-precision library. WXF carries the value as
+    // ASCII, so the text IS available and the declared std::string return is what holds it.
+    const std::vector<uint8_t> data = [] {
+        wxf::Writer w;
+        w.write_header();
+        std::vector<uint8_t> d = w.release_data();
+        const std::vector<uint8_t> big = {
+            0x49, 0x19, '1','2','0','8','9','2','5','8','1','9','6','1','4',
+            '6','2','9','1','7','4','7','0','6','1','7','6'};
+        d.insert(d.end(), big.begin(), big.end());
+        return d;
+    }();
+    wxf::Parser parser(data.data(), data.size());
+    parser.skip_header();
+    EXPECT_EQ(parser.read_big_integer(), "1208925819614629174706176");
 }

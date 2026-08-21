@@ -229,6 +229,11 @@ public:
 private:
     void ensure_bytes(size_t count);
     Token peek_token();
+    // Step over a PackedArray or NumericArray body: element type, rank, the dimensions,
+    // then the product of the dimensions times the element size.
+    void skip_array();
+    // Both big-number tokens have one wire shape; one body reads either.
+    std::string read_big_number(Token expected, const char* what);
 };
 
 /**
