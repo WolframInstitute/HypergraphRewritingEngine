@@ -34,13 +34,7 @@ struct EdgeSignature {
     uint8_t pattern[MAX_ARITY];  // Vertex repetition pattern
 
     // Compute signature from edge vertices
-    static EdgeSignature from_edge(const VertexId* vertices, uint8_t arity) {
-        EdgeSignature sig;
-        sig.arity = arity;
-        std::memset(sig.pattern, 0, MAX_ARITY);
-        hgcommon::signature_pattern_from_vertices(vertices, arity, sig.pattern);
-        return sig;
-    }
+    static EdgeSignature from_edge(const VertexId* vertices, uint8_t arity);
 
     // Compute signature from pattern variable indices
     // Pattern edge stores variable indices directly, so we compute signature
@@ -49,22 +43,13 @@ struct EdgeSignature {
     static EdgeSignature from_pattern(const uint8_t* vars, uint8_t arity);
 
     // Compute hash for signature (for use in ConcurrentMap)
-    uint64_t hash() const { return hgcommon::signature_hash(arity, pattern); }
+    uint64_t hash() const;
 
-    bool operator==(const EdgeSignature& other) const {
-        if (arity != other.arity) return false;
-        for (uint8_t i = 0; i < arity; ++i) {
-            if (pattern[i] != other.pattern[i]) return false;
-        }
-        return true;
-    }
-
-    bool operator!=(const EdgeSignature& other) const {
-        return !(*this == other);
-    }
+    bool operator==(const EdgeSignature& other) const;
+    bool operator!=(const EdgeSignature& other) const;
 
     // Number of distinct vertices (max label + 1)
-    uint8_t num_distinct() const { return hgcommon::signature_num_distinct(arity, pattern); }
+    uint8_t num_distinct() const;
 };
 
 // =============================================================================
@@ -81,11 +66,8 @@ struct EdgeSignature {
 // But if the pattern has different variables, the data edge can have
 // either the same or different vertices (non-distinct variable semantics).
 
-inline bool signature_compatible(const EdgeSignature& data_sig,
-                                 const EdgeSignature& pattern_sig) {
-    return hgcommon::signature_compatible(data_sig.arity, data_sig.pattern,
-                                          pattern_sig.arity, pattern_sig.pattern);
-}
+bool signature_compatible(const EdgeSignature& data_sig,
+                          const EdgeSignature& pattern_sig);
 
 // =============================================================================
 // Signature Enumeration
@@ -109,7 +91,7 @@ namespace detail {
 
 // Recursive helper to enumerate all set partitions
 // merged_to[i] is the partition id for class i (must be <= max partition seen so far + 1)
-inline void enumerate_partitions_recursive(
+void enumerate_partitions_recursive(
     uint8_t num_classes,
     uint8_t current_class,
     uint8_t* merged_to,
@@ -118,93 +100,15 @@ inline void enumerate_partitions_recursive(
     const uint8_t* var_to_class,  // pattern variable -> class id
     SignatureVisitor visitor,
     void* user_data
-) {
-    if (current_class == num_classes) {
-        // All classes assigned - generate signature
-        EdgeSignature result;
-        result.arity = pattern_sig.arity;
-        std::memset(result.pattern, 0, MAX_ARITY);
-
-        for (uint8_t i = 0; i < pattern_sig.arity; ++i) {
-            uint8_t pvar = pattern_sig.pattern[i];
-            uint8_t pclass = var_to_class[pvar];
-            result.pattern[i] = merged_to[pclass];
-        }
-
-        visitor(result, user_data);
-        return;
-    }
-
-    // Try assigning current_class to each existing partition (0..max_partition_used)
-    // or to a new partition (max_partition_used + 1)
-    for (uint8_t partition = 0; partition <= max_partition_used + 1; ++partition) {
-        merged_to[current_class] = partition;
-
-        uint8_t new_max = max_partition_used;
-        if (partition > max_partition_used) {
-            new_max = partition;
-        }
-
-        enumerate_partitions_recursive(
-            num_classes, current_class + 1, merged_to, new_max,
-            pattern_sig, var_to_class, visitor, user_data
-        );
-    }
-}
+);
 
 }  // namespace detail
 
-inline void enumerate_compatible_signatures(
+void enumerate_compatible_signatures(
     const EdgeSignature& pattern_sig,
     SignatureVisitor visitor,
     void* user_data
-) {
-    if (pattern_sig.arity == 0) {
-        visitor(pattern_sig, user_data);
-        return;
-    }
-
-    // Find equivalence classes in pattern (positions that share a variable)
-    // Pattern variable → class id
-    uint8_t var_to_class[MAX_ARITY];
-    std::memset(var_to_class, 0xFF, MAX_ARITY);
-
-    uint8_t num_classes = 0;
-
-    for (uint8_t i = 0; i < pattern_sig.arity; ++i) {
-        uint8_t pvar = pattern_sig.pattern[i];
-        if (var_to_class[pvar] == 0xFF) {
-            var_to_class[pvar] = num_classes;
-            num_classes++;
-        }
-    }
-
-    // Enumerate all set partitions of {0, 1, ..., num_classes-1}
-    // Each partition represents a way that distinct pattern variables can
-    // collapse to the same data vertex
-    uint8_t merged_to[MAX_ARITY];
-    std::memset(merged_to, 0, MAX_ARITY);
-
-    // First class always goes to partition 0
-    merged_to[0] = 0;
-
-    if (num_classes == 1) {
-        // Only one class - just one signature possible
-        EdgeSignature result;
-        result.arity = pattern_sig.arity;
-        std::memset(result.pattern, 0, MAX_ARITY);
-        for (uint8_t i = 0; i < pattern_sig.arity; ++i) {
-            result.pattern[i] = 0;  // All map to same partition
-        }
-        visitor(result, user_data);
-        return;
-    }
-
-    detail::enumerate_partitions_recursive(
-        num_classes, 1, merged_to, 0,  // start from class 1, class 0 is in partition 0
-        pattern_sig, var_to_class, visitor, user_data
-    );
-}
+);
 
 // =============================================================================
 // CompatibleSignatureCache
