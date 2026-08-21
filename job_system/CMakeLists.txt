@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 add_library(job_system STATIC
     src/job_pool.cpp
+    src/park.cpp
 )
 target_include_directories(job_system PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
