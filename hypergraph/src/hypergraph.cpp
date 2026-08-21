@@ -1875,5 +1875,73 @@ void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
     hg.qc_add_instance(m.to_hash, depth + 1, cp, m.to_slots);
 }
 
+// count_unique rather than size: ConcurrentMap can hold duplicate keys when two threads insert
+// the same canonical hash, and the unique count is the answer once evolution is complete.
+size_t Hypergraph::num_canonical_states() const { return canonical_state_map_.count_unique(); }
+
+// Release/acquire: the mode is set on the main thread and read by workers, which matters on a
+// weak model like ARM64.
+void Hypergraph::set_state_canonicalization_mode(StateCanonicalizationMode mode) {
+    state_canonicalization_mode_.store(mode, std::memory_order_release);
+}
+
+StateCanonicalizationMode Hypergraph::state_canonicalization_mode() const {
+    return state_canonicalization_mode_.load(std::memory_order_acquire);
+}
+
+void Hypergraph::enable_wl_hash()  { use_wl_hash_ = true; }
+void Hypergraph::disable_wl_hash() { use_wl_hash_ = false; }
+bool Hypergraph::wl_hash_enabled() const { return use_wl_hash_; }
+
+bool Hypergraph::is_full_canonicalization() const {
+    return state_canonicalization_mode_.load(std::memory_order_acquire) ==
+           StateCanonicalizationMode::Full;
+}
+
+size_t Hypergraph::num_reconstructed_branchial() const {
+    return qc_num_branchial_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_frame_alignment_disagreements() const {
+    return qc_frame_disagree_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_alignment_failures() const {
+    return qc_align_fail_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::num_bad_correspondences() const {
+    return qc_align_badcorr_.load(std::memory_order_relaxed);
+}
+
+// The state whose labelling defines a canonical class -- the class FRAME. INVALID_ID when the
+// class has no frame, which happens for a class no captured transition touched.
+StateId Hypergraph::class_frame_state(uint64_t class_hash) const {
+    auto r = qc_frame_.lookup(class_hash);
+    return r.has_value() ? static_cast<StateId>(*r - 1) : INVALID_ID;
+}
+
+// Falls back to the internal (input, output, rule) triple when no identity mode is selected:
+// full capture leaves Event::signature at 0 there, so neither value is comparable and the
+// internal one at least distinguishes events.
+uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
+    if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
+        const uint64_t* r = qc_event_runsig_.get(e);
+        if (r) return *r;
+    }
+    return reconstructed_raw_triple(e);
+}
+
+// The event's content itself, for a caller that must DESCRIBE the event rather than identify it.
+const QcEventContent* Hypergraph::reconstructed_event_content(uint32_t e) const {
+    return qc_event_sig_.get(e);
+}
+
+uint32_t Hypergraph::count_state_edges(StateId sid) const {
+    uint32_t count = 0;
+    states_[sid].edges.for_each([&](EdgeId) { count++; });
+    return count;
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

@@ -488,9 +488,8 @@ public:
 
     // Edge accessor (for pattern matching)
     auto edge_accessor() const {
-        return [this](EdgeId eid) -> const Edge& {
-            return edges_[eid];
-        };
+        // Returns a lambda, so its type is deduced and the body must be visible.
+        return [this](EdgeId eid) -> const Edge& { return edges_[eid]; };
     }
 
     // Number of edges
@@ -707,9 +706,7 @@ public:
     // Uses count_unique() for accurate counting after evolution completes,
     // handling the case where ConcurrentMap may have duplicate keys due to
     // concurrent insertions of the same canonical hash.
-    size_t num_canonical_states() const {
-        return canonical_state_map_.count_unique();
-    }
+    size_t num_canonical_states() const;
 
     // =========================================================================
     // State Canonicalization Configuration
@@ -717,34 +714,22 @@ public:
 
     // State canonicalization mode: controls state deduplication strategy
     // Uses release semantics to ensure visibility to worker threads on ARM64
-    void set_state_canonicalization_mode(StateCanonicalizationMode mode) {
-        state_canonicalization_mode_.store(mode, std::memory_order_release);
-    }
+    void set_state_canonicalization_mode(StateCanonicalizationMode mode);
 
     // Uses acquire semantics to see updates from main thread on ARM64
-    StateCanonicalizationMode state_canonicalization_mode() const {
-        return state_canonicalization_mode_.load(std::memory_order_acquire);
-    }
+    StateCanonicalizationMode state_canonicalization_mode() const;
 
     // Select the WL approximate hash for compute_canonical_hash (fast hot path)
-    void enable_wl_hash() {
-        use_wl_hash_ = true;
-    }
+    void enable_wl_hash();
 
     // Select IR exact canonicalization for compute_canonical_hash
-    void disable_wl_hash() {
-        use_wl_hash_ = false;
-    }
+    void disable_wl_hash();
 
     // Whether compute_canonical_hash uses the WL approximate hash
-    bool wl_hash_enabled() const {
-        return use_wl_hash_;
-    }
+    bool wl_hash_enabled() const;
 
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
-    bool is_full_canonicalization() const {
-        return state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::Full;
-    }
+    bool is_full_canonicalization() const;
 
     // =========================================================================
     // Event Management
@@ -947,14 +932,10 @@ public:
     // once -- migrate_into dropped keys the caller had already been told it won (f694c062),
     // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
     // the class of divergence rather than re-synchronising one more site.
-    size_t num_reconstructed_branchial() const {
-        return qc_num_branchial_.load(std::memory_order_relaxed);
-    }
-    size_t num_frame_alignment_disagreements() const {
-        return qc_frame_disagree_.load(std::memory_order_relaxed);
-    }
-    size_t num_alignment_failures() const { return qc_align_fail_.load(std::memory_order_relaxed); }
-    size_t num_bad_correspondences() const { return qc_align_badcorr_.load(std::memory_order_relaxed); }
+    size_t num_reconstructed_branchial() const;
+    size_t num_frame_alignment_disagreements() const;
+    size_t num_alignment_failures() const;
+    size_t num_bad_correspondences() const;
 
     // Visit the DISTINCT event identities the reconstruction produced, under the run's
     // EventCanonicalizationMode. The counterpart of for_each_reconstructed_causal for events:
@@ -969,10 +950,7 @@ public:
     // pins one to align slots, so a class hash resolves to a state a caller can point at without
     // anything being materialised for it. INVALID_ID when the class has no frame, which happens
     // for a class no captured transition touched.
-    StateId class_frame_state(uint64_t class_hash) const {
-        auto r = qc_frame_.lookup(class_hash);
-        return r.has_value() ? static_cast<StateId>(*r - 1) : INVALID_ID;
-    }
+    StateId class_frame_state(uint64_t class_hash) const;
 
     // Visit each DISTINCT reconstructed event once, as (dense id, content).
     //
@@ -1022,13 +1000,7 @@ public:
     // pairs on Event::signature. Falls back to the internal (input, output, rule) triple when no
     // identity mode is selected -- full capture leaves Event::signature at 0 in that case, so
     // neither value is comparable then and the internal one at least distinguishes events.
-    uint64_t event_pair_signature(uint32_t e) const {
-        if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
-            const uint64_t* r = qc_event_runsig_.get(e);
-            if (r) return *r;
-        }
-        return reconstructed_raw_triple(e);
-    }
+    uint64_t event_pair_signature(uint32_t e) const;
 
     // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
     // signatures. `reduced` selects the view: false walks every recorded pair (TR off), true
@@ -1085,9 +1057,7 @@ public:
 
     // The event's content itself, for a caller that must DESCRIBE the event rather than
     // identify it. Null when no such reconstructed event exists.
-    const QcEventContent* reconstructed_event_content(uint32_t e) const {
-        return qc_event_sig_.get(e);
-    }
+    const QcEventContent* reconstructed_event_content(uint32_t e) const;
 
     // Visit the reconstructed branchial relation as pairs of isomorphism-invariant event
     // signatures, so it can be set-compared against full capture's branchial edges rather than
@@ -1247,13 +1217,7 @@ public:
     ) const;
 
     // Count edges in a state
-    uint32_t count_state_edges(StateId sid) const {
-        uint32_t count = 0;
-        states_[sid].edges.for_each([&](EdgeId) {
-            count++;
-        });
-        return count;
-    }
+    uint32_t count_state_edges(StateId sid) const;
 };
 
 }  // namespace engine
