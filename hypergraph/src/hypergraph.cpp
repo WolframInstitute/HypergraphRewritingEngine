@@ -1770,5 +1770,110 @@ const ConcurrentHeterogeneousArena& Hypergraph::arena() const { return arena_; }
 GlobalCounters& Hypergraph::counters() { return counters_; }
 const GlobalCounters& Hypergraph::counters() const { return counters_; }
 
+// =============================================================================
+// QcCtx / QrCtx -- the storage face the shared quotient cores drive
+// =============================================================================
+// WHERE a producer vector, an applied list or a claim set lives is here; what an application
+// DOES is in hgcommon, which is the body the device runs too. Both cores are instantiated in
+// this translation unit and nowhere else, which is what lets these bodies live here.
+
+uint32_t Hypergraph::QcCtx::max_steps() const { return steps; }
+
+bool Hypergraph::QcCtx::enter(uint32_t) const { return true; }
+
+bool Hypergraph::QcCtx::mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
+    if (!hg.qc_reached_.insert(rkey)) return false;
+    // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made terminal;
+    // nothing else reads the list.
+    hg.qc_reached_list_.push(QcReachPoint{state_hash, depth}, hg.arena_);
+    return true;
+}
+
+bool Hypergraph::QcCtx::mark_producer_seen(uint64_t seen_key) {
+    return hg.qc_dsup_seen_.insert(seen_key);
+}
+
+void Hypergraph::QcCtx::push_producer(uint64_t key, uint32_t producer) {
+    hg.qc_dsup_list(key)->push(producer, hg.arena_);
+}
+
+void Hypergraph::QcCtx::emit(uint32_t producer, uint32_t consumer) {
+    hg.qc_emit(producer, consumer);
+}
+
+void Hypergraph::QcCtx::fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
+
+Hypergraph::QcCtx Hypergraph::qc_ctx() {
+    return QcCtx{*this, static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed))};
+}
+
+bool Hypergraph::QrCtx::claim(uint64_t apply_key) { return hg.qc_applied_.insert(apply_key); }
+
+uint32_t Hypergraph::QrCtx::mint_event() {
+    return hg.qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
+                                       uint32_t rule) {
+    hg.qc_event_sig_.emplace_at(ev, hg.arena_, QcEventContent{from_class, to_class, rule});
+}
+
+hgcommon::EventSignatureKeys Hypergraph::QrCtx::keys() const {
+    return hg.event_signature_keys();
+}
+
+uint32_t Hypergraph::QrCtx::frame_step(uint64_t class_hash, uint32_t fallback) const {
+    if (auto fo = hg.qc_frame_.lookup(class_hash))
+        return hg.get_state(static_cast<StateId>(*fo - 1)).step;
+    return fallback;
+}
+
+void Hypergraph::QrCtx::record_runsig(uint32_t ev, uint64_t csig) {
+    hg.qc_event_runsig_.emplace_at(ev, hg.arena_, csig);
+    if (hg.qc_canon_event_seen_.insert(csig))
+        hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Hypergraph::QrCtx::want_causal() const    { return hg.record_set().causal; }
+bool Hypergraph::QrCtx::want_branchial() const { return hg.record_set().branchial; }
+
+uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {
+    return inst.prod[slot];
+}
+
+void Hypergraph::QrCtx::record_causal(uint32_t producer, uint32_t consumer) {
+    hg.qc_record_causal(producer, consumer);
+}
+
+bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
+
+Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstance& inst,
+                                                                 const SlotMatch& m,
+                                                                 uint32_t ev) {
+    auto& applied = hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_);
+    return applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
+}
+
+void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
+    (void)lo; (void)hi;
+    hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The child instance: survivors carry their producer across, produced slots take THIS event.
+void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
+                                const QcInstance& parent) {
+    uint32_t* cp = hg.arena_.allocate_array<uint32_t>(m.to_slots ? m.to_slots : 1);
+    for (uint32_t i = 0; i < m.to_slots; ++i) cp[i] = hgcommon::QR_NO_PRODUCER;
+    for (uint32_t i = 0; i < m.num_survivors; ++i) {
+        const uint32_t a = m.surv_from(i), b = m.surv_to(i);
+        if (a < parent.nslots && b < m.to_slots) cp[b] = parent.prod[a];
+    }
+    for (uint32_t i = 0; i < m.num_produced; ++i) {
+        const uint32_t s = m.produced(i);
+        if (s < m.to_slots) cp[s] = ev;
+    }
+    hg.qc_add_instance(m.to_hash, depth + 1, cp, m.to_slots);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
