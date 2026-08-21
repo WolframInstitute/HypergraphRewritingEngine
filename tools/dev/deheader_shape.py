@@ -2,48 +2,42 @@
 """The SHAPE of what a de-header would move, per header, from SOURCE_MAP.md.
 
 WHY THIS AND NOT A LINE COUNT. "68% of the engine lives in headers" is true and decides
-nothing: a template body cannot move at all, and a one-line accessor moved into a
-translation unit costs its inlining and buys back one line of header. The question #20
-actually turns on is the SIZE DISTRIBUTION of the movable bodies -- whether a header is
-big because of a few large functions (move those, the rest stays) or because of hundreds
-of tiny ones (moving them is a large diff that buys a small number and risks the hot
-path).
+nothing: a template body cannot move at all, and a body that must stay for a stated reason is
+not work outstanding. What this prints is the SIZE DISTRIBUTION of the movable bodies, so a
+header's remaining cost can be read rather than guessed.
 
-Reads the report `source_map.py` already writes rather than re-parsing the tree: one
-libclang pass costs about four minutes, and a second body asking the same question of the
-same sources would be a second implementation of the rule.
+READS SOURCE_MAP.md, NOT THE TREE. One libclang pass costs about four minutes, and a second
+body asking the same question of the same sources would be a second implementation of the
+rule. THE CONSEQUENCE IS THAT THIS REPORT IS AS OLD AS THAT FILE: after a de-header pass its
+counts describe the tree as it was when SOURCE_MAP.md was generated, not as it is. Regenerate
+the map before trusting a number here, and check header line counts against git as the
+independent reading.
 
-THE DONE-LINE, AND WHERE IT STANDS (measured 2026-08-12, 404 movable bodies / 2100 lines).
-De-headering is finished when every movable body large enough to matter is either already in
-a translation unit or is on a hot path, because moving a hot body trades its inlining for
-nothing. Reading the distribution this run prints:
+THE STATE OF THE WORK. The project is de-headered: every non-template body in the host tree
+and in the GPU port has moved to a translation unit except where a stated reason keeps it in
+place, and each of those reasons is recorded at the definition itself --
 
-  - median movable body: 3 lines. 291 of 404 are five lines or fewer -- accessors, whose
-    move is a large diff for no measurable gain.
-  - bodies over 40 lines: FOUR. `signature.hpp:enumerate_compatible_signatures` and
-    `detail::enumerate_partitions_recursive` are reached per pattern edge per state through
-    `SignatureIndex::for_each_candidate`, and `MatchRecord::hash` runs once per discovered
-    match and again per (match, descendant) pair. All three stay. The fourth,
-    `rule_analysis.hpp:lhs_is_acyclic`, runs once per rule.
+  hypergraph.hpp    edge_accessor returns a lambda's closure type, deduced from the body
+  bitset.hpp        contains and find_chunk are HG_INLINE with the measurement that pins them
+  arena.hpp         ArenaWorkerRegistry is compiled by a GenMC harness that links no library
+  signature.hpp     a defaulted default constructor kept in-class stays trivial
+  cuda_check.hpp    cuda_check_at is one comparison at every CUDA call in the port
+  portable_intrinsics.hpp  every body is a single instruction, and some are device code
 
-So the criterion is met at the floor: what is left in headers is there because moving it
-would cost more than it saves. Re-run this after any header growth -- a NEW body over 40
-lines that is not hot is the signal that the floor moved.
+WHAT MOVING A BODY COSTS, MEASURED. An earlier experiment moved hypergraph.hpp's small member
+bodies and measured +0.21% (callgrind, two-edge rule, depth 4, one thread), and that number
+was the reason the accessors stayed. IT NO LONGER HOLDS, because the project now builds with
+link-time optimisation (CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE), which restores the
+cross-translation-unit inlining that moving a body out of a header removes. Re-measured across
+the whole de-header, one header at a time, on
+`sampling_cost_smoke off wolfram24 2 5 1 4 full`:
 
-AND THE FLOOR IS MEASURED FROM BOTH SIDES, so the accessor question is settled rather than
-argued. The cold bodies moved (rule_analysis.hpp 275 -> 163, pattern.hpp 492 -> 435,
-signature.hpp 300 -> 241). Then the remaining 61 one-to-three-line member bodies of
-hypergraph.hpp were moved as an experiment and MEASURED:
+  baseline before any move   36,846,454 instructions
+  host side complete         36,331,780 instructions   (-1.40%)
 
-  runtime      16,996,459 -> 17,032,941 instructions, +0.21% (callgrind, two-edge rule,
-               depth 4, one thread -- an instrument this box's CPU contention cannot touch)
-  compile      0.85-0.89 s before, 0.85-0.89 s after, on a translation unit that includes
-               only this header: NO measurable change
-
-Moving them costs runtime and buys nothing, because the header's cost is its include CLOSURE
-and not its bodies -- the same result the closure work established from the other direction
-(types.hpp 757 -> 154 ms by dropping <sstream>, <random>, <stdexcept> and <algorithm>). The
-experiment was reverted. Do not repeat it: the numbers above are what it produces.
+with no single header costing more than +0.26%, and that one attributed by callgrind_annotate
+to LTO re-deciding hgcommon::ir_refine rather than to any moved body. The instrument is
+deterministic to 36 instructions on a fixed binary, so those deltas are codegen and not noise.
 """
 import os
 import re
