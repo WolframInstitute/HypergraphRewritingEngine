@@ -1253,5 +1253,50 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     return stats;
 }
 
+
+// =============================================================================
+// persistent.hpp host bodies
+// =============================================================================
+//
+// SessionState owns device allocations and reads a counter back across the boundary; none of
+// it is device code and none runs per item. persistent_arena_words is arithmetic a launch does
+// once. The kernels and the SessionView the device sees stay in the header.
+
+uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
+    return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
+}
+
+SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), cap_(max_states) {
+        states_.clear();
+        events_.clear();
+        HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
+        HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
+        HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)),
+                      "session frontier count clear");
+    }
+
+SessionState::~SessionState() {
+        if (frontier_) cudaFree(frontier_);
+        if (count_)    cudaFree(count_);
+    }
+
+uint32_t SessionState::frontier_size() const {
+        uint32_t n = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&n, count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "session frontier count read");
+        return n < cap_ ? n : cap_;
+    }
+
+SessionView SessionState::view() {
+        SessionView v;
+        v.states         = states_.view();
+        v.events         = events_.view();
+        v.frontier       = frontier_;
+        v.frontier_count = count_;
+        v.frontier_cap   = cap_;
+        v.enabled        = 1;
+        return v;
+    }
+
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

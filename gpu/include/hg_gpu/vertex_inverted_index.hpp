@@ -38,17 +38,16 @@ public:
         }
     };
 
-    VertexInvertedIndex(uint32_t max_vertices, uint32_t pool_capacity)
-        : list_(max_vertices, pool_capacity) {}
+    VertexInvertedIndex(uint32_t max_vertices, uint32_t pool_capacity);
 
-    DeviceView view() const { return DeviceView{list_.view()}; }
+    DeviceView view() const;
 
-    uint32_t max_vertices() const { return list_.num_keys(); }
-    uint32_t used()         const { return list_.pool_used_host(); }
+    uint32_t max_vertices() const;
+    uint32_t used() const;
 
     // `used_vertices` bounds the head reset to the ids a run actually minted; see
     // LockFreeList::clear. Vertex ids come from a monotone counter, so the prefix is exact.
-    void clear(uint32_t used_vertices = 0xFFFFFFFFu) { list_.clear(used_vertices); }
+    void clear(uint32_t used_vertices = 0xFFFFFFFFu);
 
 private:
     LockFreeList<EdgeId> list_;

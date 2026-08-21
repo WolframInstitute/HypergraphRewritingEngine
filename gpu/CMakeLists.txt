@@ -8,6 +8,9 @@ set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 # Device code is linked by nvcc's own device-link step, which IPO does not participate in, so
 # every CUDA target opts out of the global Release setting rather than inheriting it.
 add_library(hg_gpu STATIC
+    src/engine_state.cu
+    src/errors.cu
+    src/quotient.cu
     src/evolve.cu
     src/initial_upload.cu
     src/ir_canon.cu

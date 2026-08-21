@@ -94,55 +94,25 @@ public:
         }
     };
 
-    explicit TerminationDetector(uint32_t num_roles) : num_roles_(num_roles) {
-        if (num_roles_ == 0 || num_roles_ > kMaxRoles) {
-            throw std::invalid_argument("TerminationDetector num_roles out of range");
-        }
-        HG_CUDA_CHECK(cudaMalloc(&pushed_,      sizeof(uint64_t) * kMaxRoles), "TD pushed alloc");
-        HG_CUDA_CHECK(cudaMalloc(&completed_,   sizeof(uint64_t) * kMaxRoles), "TD completed alloc");
-        HG_CUDA_CHECK(cudaMalloc(&should_exit_, sizeof(uint32_t)),             "TD should_exit alloc");
-        clear();
-    }
+    explicit TerminationDetector(uint32_t num_roles);
 
-    ~TerminationDetector() {
-        if (pushed_)      cudaFree(pushed_);
-        if (completed_)   cudaFree(completed_);
-        if (should_exit_) cudaFree(should_exit_);
-    }
+    ~TerminationDetector();
 
     TerminationDetector(const TerminationDetector&)            = delete;
     TerminationDetector& operator=(const TerminationDetector&) = delete;
 
-    DeviceView view() {
-        return DeviceView{pushed_, completed_, should_exit_, num_roles_};
-    }
+    DeviceView view();
 
-    void clear() {
-        HG_CUDA_CHECK(cudaMemset(pushed_,      0, sizeof(uint64_t) * kMaxRoles), "TD clear pushed");
-        HG_CUDA_CHECK(cudaMemset(completed_,   0, sizeof(uint64_t) * kMaxRoles), "TD clear completed");
-        HG_CUDA_CHECK(cudaMemset(should_exit_, 0, sizeof(uint32_t)),             "TD clear should_exit");
-    }
+    void clear();
 
     // Record work the HOST enqueued before launching, so the counters start balanced against
     // what the workers will complete. Without it the detector sees pushed == completed == 0 at
     // launch and signals exit before a worker has claimed anything.
-    void mark_pushed_host(uint32_t role, uint64_t n) {
-        if (role >= num_roles_) throw std::invalid_argument("TD mark_pushed_host bad role");
-        uint64_t v = 0;
-        HG_CUDA_CHECK(cudaMemcpy(&v, pushed_ + role, sizeof(uint64_t), cudaMemcpyDeviceToHost),
-              "TD read pushed");
-        v += n;
-        HG_CUDA_CHECK(cudaMemcpy(pushed_ + role, &v, sizeof(uint64_t), cudaMemcpyHostToDevice),
-              "TD write pushed");
-    }
+    void mark_pushed_host(uint32_t role, uint64_t n);
 
-    bool exit_requested_host() const {
-        uint32_t v = 0;
-        cudaMemcpy(&v, should_exit_, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-        return v != 0;
-    }
+    bool exit_requested_host() const;
 
-    uint32_t num_roles() const { return num_roles_; }
+    uint32_t num_roles() const;
 
 private:
 

@@ -1062,5 +1062,41 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
     return EvolveResult{};
 }
 
+
+// =============================================================================
+// evolve.hpp host bodies
+// =============================================================================
+//
+// EvolveResult's observable_* answer what a caller is TOLD -- the same question
+// Hypergraph::observable_num_causal_pairs answers on the host -- by folding the reconstruction's
+// relations or deduplicating the materialised ones. evolve.hpp is the header a host-only
+// translation unit includes to avoid cuda_runtime.h, so keeping these out of it is what that
+// separation is for.
+
+size_t EvolveResult::observable_num_causal_pairs(bool reduced) const {
+        if (reconstruction_ran)
+            return reduced ? reconstructed_causal_relation_reduced.size()
+                           : reconstructed_causal_relation.size();
+        std::set<std::pair<EventId, EventId>> seen;
+        for (const auto& c : causal_edges) seen.insert({c.from, c.to});
+        return seen.size();
+    }
+
+size_t EvolveResult::observable_num_branchial() const {
+        return reconstruction_ran ? reconstructed_branchial_relation.size()
+                                  : branchial_edges.size();
+    }
+
+size_t EvolveResult::observable_num_events() const {
+        if (reconstruction_ran) return reconstructed_events;
+        size_t n = 0;
+        for (const auto& e : events) if (e.canonical_id == INVALID_ID) ++n;
+        return n;
+    }
+
+bool PersistentEvolver::has_engine() const { return has_engine_; }
+
+const EngineConfig& PersistentEvolver::engine_config() const { return cfg_; }
+
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

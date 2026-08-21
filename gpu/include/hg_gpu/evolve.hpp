@@ -249,28 +249,13 @@ struct EvolveResult {
     // `reduced` selects the TR view; both come from the same base, so either is available at no
     // extra cost. Off the reconstruction route this is the materialised relation, deduplicated
     // by (from, to) as the FFI reports it.
-    size_t observable_num_causal_pairs(bool reduced) const {
-        if (reconstruction_ran)
-            return reduced ? reconstructed_causal_relation_reduced.size()
-                           : reconstructed_causal_relation.size();
-        std::set<std::pair<EventId, EventId>> seen;
-        for (const auto& c : causal_edges) seen.insert({c.from, c.to});
-        return seen.size();
-    }
+    size_t observable_num_causal_pairs(bool reduced) const;
 
     // The branchial pair count a caller is told, mirroring
     // Hypergraph::observable_num_branchial.
-    size_t observable_num_branchial() const {
-        return reconstruction_ran ? reconstructed_branchial_relation.size()
-                                  : branchial_edges.size();
-    }
+    size_t observable_num_branchial() const;
 
-    size_t observable_num_events() const {
-        if (reconstruction_ran) return reconstructed_events;
-        size_t n = 0;
-        for (const auto& e : events) if (e.canonical_id == INVALID_ID) ++n;
-        return n;
-    }
+    size_t observable_num_events() const;
 };
 
 // Sizing knobs, chosen by config_from_input from the workload and adjusted by the
@@ -501,8 +486,8 @@ public:
 
     // The config the engine was built with, so a session can tell whether a later call would
     // rebuild it.
-    bool has_engine() const { return has_engine_; }
-    const EngineConfig& engine_config() const { return cfg_; }
+    bool has_engine() const;
+    const EngineConfig& engine_config() const;
 
 private:
     std::unique_ptr<Engine> engine_;

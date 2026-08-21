@@ -27,12 +27,11 @@ namespace gpu {
 
 // Out of line from the check itself so the success path is a single comparison with no string
 // machinery for the optimiser to carry through it.
-[[noreturn]] inline void cuda_fail(cudaError_t err, const char* what,
-                                   const char* file, int line) {
-    throw std::runtime_error(std::string(file) + ":" + std::to_string(line) + " " + what + ": " +
-                             cudaGetErrorString(err));
-}
+[[noreturn]] void cuda_fail(cudaError_t err, const char* what, const char* file, int line);
 
+// STAYS INLINE, and that is the whole point of splitting cuda_fail out: this is one comparison
+// at every CUDA call in the port, with the throw and its string machinery behind a call the
+// success path never makes.
 inline void cuda_check_at(cudaError_t err, const char* what, const char* file, int line) {
     if (err != cudaSuccess) cuda_fail(err, what, file, line);
 }

@@ -118,9 +118,7 @@ uint32_t default_persistent_grid();
 // keeps one slot at a time and grows it to the largest state it personally canonicalizes, so
 // the AVERAGE share is what matters, not a per-holder partition. A workload that outgrows the
 // pool records kIRArenaExhausted, which grow-and-retry answers by doubling the share.
-inline uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
-    return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
-}
+uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders);
 
 // A CONTINUABLE evolution's state, owned by the caller across calls.
 //
@@ -155,39 +153,14 @@ struct SessionView {
 // device allocation.
 class SessionState {
 public:
-    SessionState(uint32_t max_states, uint32_t max_events)
-        : states_(max_states * 2u), events_(max_events * 2u), cap_(max_states) {
-        states_.clear();
-        events_.clear();
-        HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
-        HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
-        HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)),
-                      "session frontier count clear");
-    }
-    ~SessionState() {
-        if (frontier_) cudaFree(frontier_);
-        if (count_)    cudaFree(count_);
-    }
+    SessionState(uint32_t max_states, uint32_t max_events);
+    ~SessionState();
     SessionState(const SessionState&)            = delete;
     SessionState& operator=(const SessionState&) = delete;
 
-    uint32_t frontier_size() const {
-        uint32_t n = 0;
-        HG_CUDA_CHECK(cudaMemcpy(&n, count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
-                      "session frontier count read");
-        return n < cap_ ? n : cap_;
-    }
+    uint32_t frontier_size() const;
 
-    SessionView view() {
-        SessionView v;
-        v.states         = states_.view();
-        v.events         = events_.view();
-        v.frontier       = frontier_;
-        v.frontier_count = count_;
-        v.frontier_cap   = cap_;
-        v.enabled        = 1;
-        return v;
-    }
+    SessionView view();
 
 private:
     DedupMap  states_;

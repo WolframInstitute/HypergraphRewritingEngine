@@ -42,27 +42,16 @@ struct DeviceErrors {
         }
     };
 
-    DeviceErrors() {
-        cudaError_t err = cudaMalloc(&counters_, sizeof(uint32_t) * kMaxKinds);
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("DeviceErrors alloc: ") +
-                                     cudaGetErrorString(err));
-        }
-        clear();
-    }
+    DeviceErrors();
 
-    ~DeviceErrors() {
-        if (counters_) cudaFree(counters_);
-    }
+    ~DeviceErrors();
 
     DeviceErrors(const DeviceErrors&)            = delete;
     DeviceErrors& operator=(const DeviceErrors&) = delete;
 
-    DeviceView view() const { return DeviceView{counters_}; }
+    DeviceView view() const;
 
-    void clear() {
-        cudaMemset(counters_, 0, sizeof(uint32_t) * kMaxKinds);
-    }
+    void clear();
 
     // Drain the device counters into `out` as OverflowWarning entries
     // tagged with `context`, then clear the counters so the next kernel
@@ -70,38 +59,14 @@ struct DeviceErrors {
     // warnings, not errors. Genuine driver failures (cudaMemcpy fails)
     // still throw std::runtime_error since those indicate a programmer
     // problem, not a runtime resource limit.
-    void collect_warnings_into(std::vector<OverflowWarning>& out,
-                               const char* context) {
-        uint32_t host[kMaxKinds] = {};
-        cudaError_t err = cudaMemcpy(host, counters_,
-                                     sizeof(uint32_t) * kMaxKinds,
-                                     cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("DeviceErrors d2h: ") +
-                                     cudaGetErrorString(err));
-        }
-        bool any = false;
-        for (uint32_t i = 0; i < kMaxKinds; ++i) {
-            if (host[i] == 0) continue;
-            out.push_back(OverflowWarning{
-                static_cast<ErrorKind>(i),
-                host[i],
-                std::string(context),
-            });
-            any = true;
-        }
-        if (any) {
-            cudaMemset(counters_, 0, sizeof(uint32_t) * kMaxKinds);
-        }
-    }
+    void collect_warnings_into(std::vector<OverflowWarning>& out, const char* context);
 
     // Typed exception carrying the specific ErrorKind that overflowed.
     // The host-side `evolve()` wrapper catches this and grows the
     // corresponding EngineConfig field before retrying. Inherits from
     // std::runtime_error so user-code that catches the latter still works.
     struct PoolOverflow : public std::runtime_error {
-        PoolOverflow(ErrorKind k, uint32_t cnt, const std::string& full_msg)
-            : std::runtime_error(full_msg), kind(k), count(cnt) {}
+        PoolOverflow(ErrorKind k, uint32_t cnt, const std::string& full_msg);
         ErrorKind kind;
         uint32_t  count;   // how many times the kernel observed this overflow
     };
@@ -111,36 +76,7 @@ struct DeviceErrors {
     // counter is non-zero, naming the FIRST overflowing kind so the host
     // retry loop can grow the corresponding EngineConfig field. The full
     // multi-line message lists ALL overflowing kinds for diagnosis.
-    void throw_if_any(const char* context) const {
-        uint32_t host[kMaxKinds] = {};
-        cudaError_t err = cudaMemcpy(host, counters_,
-                                     sizeof(uint32_t) * kMaxKinds,
-                                     cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("DeviceErrors d2h: ") +
-                                     cudaGetErrorString(err));
-        }
-        std::string msg;
-        ErrorKind first_kind = ErrorKind::kCount;  // sentinel
-        uint32_t  first_count = 0;
-        for (uint32_t i = 0; i < kMaxKinds; ++i) {
-            if (host[i] == 0) continue;
-            if (first_kind == ErrorKind::kCount) {
-                first_kind = static_cast<ErrorKind>(i);
-                first_count = host[i];
-            }
-            if (!msg.empty()) msg += "; ";
-            msg += error_kind_name(static_cast<ErrorKind>(i));
-            msg += " overflowed ";
-            msg += std::to_string(host[i]);
-            msg += " times";
-        }
-        if (first_kind != ErrorKind::kCount) {
-            throw PoolOverflow(first_kind, first_count,
-                std::string("hg_gpu capacity overflow during ") + context +
-                ": " + msg + ". Raise the corresponding EngineConfig field.");
-        }
-    }
+    void throw_if_any(const char* context) const;
 
 private:
     uint32_t* counters_ = nullptr;

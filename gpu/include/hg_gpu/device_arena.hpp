@@ -51,34 +51,21 @@ public:
         }
     };
 
-    explicit DeviceArena(uint64_t capacity_words) : capacity_(capacity_words) {
-        HG_CUDA_CHECK(cudaMalloc(&base_, capacity_ * sizeof(uint32_t)), "arena alloc");
-        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint64_t)), "arena cursor alloc");
-        reset();
-    }
+    explicit DeviceArena(uint64_t capacity_words);
 
-    ~DeviceArena() {
-        if (base_)   cudaFree(base_);
-        if (cursor_) cudaFree(cursor_);
-    }
+    ~DeviceArena();
 
     DeviceArena(const DeviceArena&)            = delete;
     DeviceArena& operator=(const DeviceArena&) = delete;
 
-    void reset() {
-        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint64_t)), "arena cursor clear");
-    }
+    void reset();
 
-    View view() { return View{base_, cursor_, capacity_}; }
+    View view();
 
-    uint64_t capacity_words() const { return capacity_; }
+    uint64_t capacity_words() const;
 
     // Words handed out. Reads across the boundary, so it is for AFTER a run, not during one.
-    uint64_t used_words_host() const {
-        uint64_t v = 0;
-        cudaMemcpy(&v, cursor_, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-        return v;
-    }
+    uint64_t used_words_host() const;
 
 private:
 

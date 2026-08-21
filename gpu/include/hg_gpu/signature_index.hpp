@@ -35,21 +35,14 @@ public:
         }
     };
 
-    SignatureIndex(uint32_t num_buckets_pow2, uint32_t max_edges)
-        : list_(num_buckets_pow2, max_edges),
-          mask_(num_buckets_pow2 - 1)
-    {
-        if ((num_buckets_pow2 & mask_) != 0 || num_buckets_pow2 == 0) {
-            throw std::invalid_argument("SignatureIndex num_buckets must be a power of two ≥ 1");
-        }
-    }
+    SignatureIndex(uint32_t num_buckets_pow2, uint32_t max_edges);
 
-    DeviceView view() const { return DeviceView{list_.view(), mask_}; }
+    DeviceView view() const;
 
-    uint32_t num_buckets() const { return list_.num_keys(); }
-    uint32_t used()        const { return list_.pool_used_host(); }
+    uint32_t num_buckets() const;
+    uint32_t used() const;
 
-    void clear() { list_.clear(); }
+    void clear();
 
 private:
     LockFreeList<EdgeId> list_;

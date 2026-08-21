@@ -122,37 +122,7 @@ static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
 static_assert(static_cast<uint32_t>(ErrorKind::kDrainCapBufferFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kDrainCapBufferFull is unrecordable");
 
-inline const char* error_kind_name(ErrorKind k) {
-    switch (k) {
-        case ErrorKind::kEdgePoolFull:        return "edge_pool";
-        case ErrorKind::kVertexPoolFull:      return "vertex_pool";
-        case ErrorKind::kEventPoolFull:       return "event_pool";
-        case ErrorKind::kStatePoolFull:       return "state_pool (max_states)";
-        case ErrorKind::kCausalPoolFull:      return "causal_edge_pool";
-        case ErrorKind::kBranchialPoolFull:   return "branchial_edge_pool";
-        case ErrorKind::kMatchPoolFull:       return "match_pool";
-        case ErrorKind::kCausalTripleMapFull: return "causal_triple_dedup";
-        case ErrorKind::kCausalPairMapFull:   return "causal_pair_dedup";
-        case ErrorKind::kBranchialMapFull:    return "branchial_pair_dedup";
-        case ErrorKind::kEdgeConsumerNodes:   return "edge_consumers (node pool)";
-        case ErrorKind::kBranchialIndexNodes: return "branchial_index (node pool)";
-        case ErrorKind::kTrPredsNodes:        return "tr_preds (node pool)";
-        case ErrorKind::kQcNodes:             return "quotient-causal records/nodes";
-        case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
-        case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
-        case ErrorKind::kFrontierCapFull:     return "frontier buffer";
-        case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
-        case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
-        case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";
-        case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";
-        case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
-        case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
-        case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
-        case ErrorKind::kEventSigRawFallback:
-            return "event signatures built from a raw edge id (not an isomorphism invariant)";
-        default:                              return "unknown";
-    }
-}
+const char* error_kind_name(ErrorKind k);
 
 // One occurrence of a capacity overflow during evolve(). Counts are the
 // per-kernel-launch tally observed on the device, not a cumulative

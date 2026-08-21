@@ -39,6 +39,7 @@
 
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/exploration.hpp"   // DedupMap, which QcView and QcState are declared in terms of
 #include "hg_gpu/rewrite.hpp"       // try_add_causal_edge
 #include "hgcommon/core.hpp"        // isort_u64
 #include "hgcommon/quotient_causal_core.hpp"   // the DP itself
@@ -114,62 +115,23 @@ struct QcView {
 // would otherwise pay on every evolve.
 class QcState {
 public:
-    QcState(bool on, uint32_t max_events)
-        : transitions_(on ? max_events : 1u),
-          trans_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
-          seen_(on ? max_events * 2u : 8u),
-          dsup_(on ? (1u << 18) : 1u, on ? max_events * 8u : 8u),
-          dsup_seen_(on ? max_events * 16u : 8u),
-          reached_(on ? (1u << 20) : 8u),
-          arr_cap_(on ? max_events * 16u : 1u),
-          on_(on) {
-        HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QcState arr alloc");
-        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint32_t)), "QcState cursor alloc");
-        clear();
-    }
-    ~QcState() {
-        if (arr_)    cudaFree(arr_);
-        if (cursor_) cudaFree(cursor_);
-    }
+    QcState(bool on, uint32_t max_events);
+    ~QcState();
     QcState(const QcState&)            = delete;
     QcState& operator=(const QcState&) = delete;
 
-    bool enabled() const { return on_; }
+    bool enabled() const;
 
     // Set by the caller from its RecordSet before the view is taken. Defaults true so a caller
     // that says nothing gets exactly what it got before.
-    void set_record_causal(bool on) { record_causal_ = on; }
-    bool record_causal() const { return record_causal_; }
+    void set_record_causal(bool on);
+    bool record_causal() const;
 
     // Between runs: every map, list and record pool starts empty. The orbit-array words need
     // no wipe -- records reference them by offset and the cursor restarts at zero.
-    void clear() {
-        seen_.clear();
-        dsup_seen_.clear();
-        reached_.clear();
-        trans_from_.clear();
-        dsup_.clear();
-        transitions_.reset();
-        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
-    }
+    void clear();
 
-    QcView view(uint32_t max_steps, uint32_t max_recursion_depth) {
-        QcView q{};
-        q.transitions      = transitions_.view();
-        q.trans_from       = trans_from_.view();
-        q.seen_transitions = seen_.view();
-        q.arr_words        = arr_;
-        q.arr_cursor       = cursor_;
-        q.arr_capacity     = arr_cap_;
-        q.dsup             = dsup_.view();
-        q.dsup_seen        = dsup_seen_.view();
-        q.reached          = reached_.view();
-        q.max_steps        = max_steps;
-        q.max_recursion_depth = max_recursion_depth;
-        q.enabled          = on_ ? 1u : 0u;
-        q.record_causal    = record_causal_ ? 1u : 0u;
-        return q;
-    }
+    QcView view(uint32_t max_steps, uint32_t max_recursion_depth);
 
 private:
 
