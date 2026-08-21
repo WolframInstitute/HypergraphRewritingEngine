@@ -1781,6 +1781,15 @@ uint32_t Hypergraph::QcCtx::max_steps() const { return steps; }
 
 bool Hypergraph::QcCtx::enter(uint32_t) const { return true; }
 
+void Hypergraph::QcCtx::defer_reach(uint64_t state_hash, uint32_t depth) {
+    hgcommon::qc_reach(*this, state_hash, depth);
+}
+
+void Hypergraph::QcCtx::defer_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
+                                       uint32_t producer) {
+    hgcommon::qc_add_producer(*this, state_hash, depth, orbit, producer);
+}
+
 bool Hypergraph::QcCtx::mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
     if (!hg.qc_reached_.insert(rkey)) return false;
     // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made terminal;

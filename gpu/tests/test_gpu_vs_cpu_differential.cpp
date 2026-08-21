@@ -1753,8 +1753,8 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
         << "the device returned a different number of causal pairs than the host";
 }
 
-TEST(QuotientReconstruction, PastTheStackDepthItRecordsRatherThanFaults) {
-    const uint32_t deep = 80;   // beyond any stack the cap allows
+TEST(QuotientReconstruction, PastTheOldStackDepthItReachesTheDepthInstead) {
+    const uint32_t deep = 80;   // past any per-thread stack a launch could have reserved
     hg_gpu::EvolveInput in;
     in.rules = {rule({{0, 1}}, {{1, 2}})};
     in.initial_state = {{0u, 1u}};
@@ -1764,17 +1764,34 @@ TEST(QuotientReconstruction, PastTheStackDepthItRecordsRatherThanFaults) {
 
     auto result = hg_gpu::evolve(in);
 
-    // The run came back. This is the whole point: before the bound existed this faulted, and a
-    // faulted context returns an empty result for every later call in the process too.
+    // The run came back. Before any bound existed this FAULTED, and a faulted context returns an
+    // empty result for every later call in the process too.
     EXPECT_FALSE(result.states.empty())
         << "the deep run returned no states at all, which is what a device fault looks like";
 
+    // THIS TEST USED TO REQUIRE kScratchOverflow HERE, and requiring it was the defect.
+    //
+    // The reconstruction descended by CALLING itself, on a per-thread stack the driver reserves
+    // across every resident thread -- so it could not be sized to the workload, was capped, and
+    // past the cap the device recorded that it had stopped and returned a PARTIAL answer. The
+    // host has no such cap. Above the cap the two engines answered different questions, and the
+    // old form of this test pinned that difference in place as though it were the contract.
+    //
+    // Both cascades now carry depth in a worklist in device memory instead, so there is no stack
+    // to run out of and nothing to record. What the run must do at depth 80 is REACH it.
     bool faulted = false, bounded = false;
     for (const auto& w : result.warnings) {
         if (w.context.find("illegal memory access") != std::string::npos) faulted = true;
         if (w.kind == hg_gpu::ErrorKind::kScratchOverflow) bounded = true;
     }
-    EXPECT_FALSE(faulted) << "the replay faulted instead of stopping at its depth bound";
-    EXPECT_TRUE(bounded)
-        << "a run " << deep << " deep neither reached that depth nor recorded that it could not";
+    EXPECT_FALSE(faulted) << "the reconstruction faulted";
+    EXPECT_FALSE(bounded)
+        << "the reconstruction still stopped at a stack bound at depth " << deep
+        << "; the worklist exists so that depth is bounded by the evolution, not by the launch";
+
+    // NOT a state count. This rule consumes its one edge and produces one, so every state is a
+    // single binary edge and all of them are isomorphic -- under quotient the whole 80-step
+    // evolution has two canonical states, the root and its class. Depth is what is deep here,
+    // not breadth, which is exactly why this workload reaches depth 80 at all: the cascade walks
+    // (class, depth) points for every depth, while the exploration has almost nothing to hold.
 }

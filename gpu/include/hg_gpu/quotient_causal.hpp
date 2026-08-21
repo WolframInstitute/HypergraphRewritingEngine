@@ -72,6 +72,40 @@ struct QcTransitionRef {
     uint32_t record;
 };
 
+// ONE PENDING STEP OF THE DP. The cascade advanced depth by CALLING itself, and the cycle
+// qc_reach -> qc_process_transition -> qc_reach cost about 5,100 bytes of per-thread stack a
+// level -- 808 bytes of PTX depots over five frames plus their ABI save areas. What advances
+// across a level is these four scalars.
+struct QcWorkItem {
+    uint64_t hash;
+    uint32_t depth;
+    uint32_t orbit;      // producer items only
+    uint32_t producer;   // producer items only
+    uint32_t is_producer;
+};
+
+// A driver's private cascade stack. LIFO, so the DP visits points in the order the recursion
+// visited them.
+struct QcWork {
+    QcWorkItem* items = nullptr;
+    uint32_t    cap   = 0;
+    uint32_t    n     = 0;
+
+    __device__ bool push(uint64_t hash, uint32_t depth, uint32_t orbit, uint32_t producer,
+                         uint32_t is_producer) {
+        if (n >= cap) return false;
+        items[n].hash = hash; items[n].depth = depth; items[n].orbit = orbit;
+        items[n].producer = producer; items[n].is_producer = is_producer;
+        ++n;
+        return true;
+    }
+    __device__ bool pop(QcWorkItem& out) {
+        if (n == 0) return false;
+        out = items[--n];
+        return true;
+    }
+};
+
 struct QcView {
     typename Pool<DeviceCanonicalTransition>::DeviceView transitions;
     typename LockFreeList<QcTransitionRef>::DeviceView   trans_from;   // bucket(from_hash)
@@ -105,6 +139,11 @@ struct QcView {
     // Past it the cascade stops and records; without it the next frame faults and the fault
     // takes the whole run's result, not just the part past the bound.
     uint32_t max_recursion_depth = 0;
+
+    // Backing store for the cascade stacks, one slice of `work_cap` items per driver.
+    QcWorkItem* work_items  = nullptr;
+    uint32_t    work_cap    = 0;
+    uint32_t    work_slices = 0;
     uint32_t enabled   = 0;
 };
 
@@ -131,6 +170,10 @@ public:
     // no wipe -- records reference them by offset and the cursor restarts at zero.
     void clear();
 
+    // Size the cascade stacks for this run: one slice per driver, deep enough for a
+    // depth-first walk of `max_steps` levels. Grows and never shrinks, as the IR arena does.
+    void ensure_work(uint32_t slices, uint32_t max_steps);
+
     QcView view(uint32_t max_steps, uint32_t max_recursion_depth);
 
 private:
@@ -144,6 +187,10 @@ private:
     uint32_t*                       arr_ = nullptr;
     uint32_t*                       cursor_ = nullptr;
     uint32_t                        arr_cap_ = 0;
+    // The DP's cascade stacks: work_slices_ slices of work_cap_ items.
+    QcWorkItem* work_items_  = nullptr;
+    uint32_t    work_cap_    = 0;
+    uint32_t    work_slices_ = 0;
     bool                            on_ = false;
     // Defaults true so a caller that says nothing gets exactly what it got before.
     bool                            record_causal_ = true;
@@ -212,15 +259,52 @@ struct DeviceQcCtx {
     using Transition = DeviceQcTransition;
     DeviceState ds;
     QcView qc;
+    QcWork* work = nullptr;
 
     __device__ uint32_t max_steps() const { return qc.max_steps; }
     // The device recurses on a per-thread stack the launch reserved, so past the bound the
     // cascade stops and records rather than faulting -- a fault takes the whole run's result,
     // not just the part past the bound.
-    __device__ bool enter(uint32_t depth) {
-        if (depth < qc.max_recursion_depth) return true;
-        ds.errors.record(ErrorKind::kScratchOverflow);
-        return false;
+    // NOTHING TO REFUSE. This returned false past a depth the per-thread stack could not hold,
+    // and recorded a capacity overflow for a resource that was not a capacity. Depth now rides
+    // the worklist below, so the device answers what the host answers -- which was the point.
+    __device__ bool enter(uint32_t) const { return true; }
+
+    // The DP's depth-advancing edges. RECURSE WHILE IT IS CHEAP, DEFER WHEN IT IS NOT.
+    //
+    // Deferring every edge was measured at +5.4% (15.331 ms against 14.548 ms median of seven,
+    // same box, same load): unlike the replay -- whose frame was 8,704 bytes a level, so any
+    // trade was favourable -- the DP's frame is about 5,100 bytes and its edges are far more
+    // numerous, one per orbit, per survivor, per producer. Writing each of those to global
+    // memory costs more than the call did.
+    //
+    // So the stack is used for what it is good at. kMaxNest levels recurse exactly as before,
+    // which covers ordinary runs end to end and pays nothing; past that the cascade continues
+    // through the worklist instead of refusing. The budget is a CONSTANT, so the per-thread
+    // stack no longer scales with the caller's step count.
+    static constexpr uint32_t kMaxNest = 8;
+    uint32_t nest = 0;
+
+    __device__ void defer_reach(uint64_t hash, uint32_t depth) {
+        if (nest < kMaxNest) {
+            ++nest;
+            hgcommon::qc_reach(*this, hash, depth);
+            --nest;
+            return;
+        }
+        if (!work || !work->push(hash, depth, 0u, 0u, 0u))
+            ds.errors.record(ErrorKind::kScratchOverflow);
+    }
+    __device__ void defer_producer(uint64_t hash, uint32_t depth, uint32_t orbit,
+                                   uint32_t producer) {
+        if (nest < kMaxNest) {
+            ++nest;
+            hgcommon::qc_add_producer(*this, hash, depth, orbit, producer);
+            --nest;
+            return;
+        }
+        if (!work || !work->push(hash, depth, orbit, producer, 1u))
+            ds.errors.record(ErrorKind::kScratchOverflow);
     }
     __device__ bool mark_reached(uint64_t rkey, uint64_t, uint32_t) {
         return qc.reached.insert_if_absent(rkey, 1u).inserted;
@@ -257,23 +341,56 @@ struct DeviceQcCtx {
     }
 };
 
+// The slice of the cascade arena belonging to one driver. Out of range yields an empty stack,
+// which pushes nothing and reports -- the partial-work contract every capacity here has.
+__device__ inline QcWork qc_work_for(DeviceState ds, QcView qc, uint32_t slice) {
+    QcWork w;
+    if (qc.work_items == nullptr || slice >= qc.work_slices) {
+        if (qc.enabled) ds.errors.record(ErrorKind::kScratchOverflow);
+        return w;
+    }
+    w.items = qc.work_items + static_cast<size_t>(slice) * qc.work_cap;
+    w.cap   = qc.work_cap;
+    return w;
+}
+
+// Drain the cascade stack. Every depth-advancing edge the DP takes lands here rather than on
+// the call stack, so this loop is the whole of the cascade's depth.
+__device__ inline void qc_run(DeviceQcCtx& c, QcWork& work) {
+    QcWorkItem it;
+    while (work.pop(it)) {
+        if (it.is_producer)
+            hgcommon::qc_add_producer(c, it.hash, it.depth, it.orbit, it.producer);
+        else
+            hgcommon::qc_reach(c, it.hash, it.depth);
+    }
+}
+
 __device__ inline void qc_add_producer(DeviceState ds, QcView qc, uint64_t state_hash,
-                                       uint32_t depth, uint32_t orbit, EventId producer) {
-    DeviceQcCtx c{ds, qc};
+                                       uint32_t depth, uint32_t orbit, EventId producer,
+                                       uint32_t work_slice) {
+    QcWork work = qc_work_for(ds, qc, work_slice);
+    DeviceQcCtx c{ds, qc, &work};
     hgcommon::qc_add_producer(c, state_hash, depth, orbit, producer);
+    qc_run(c, work);
 }
 
 __device__ inline void qc_reach(DeviceState ds, QcView qc, uint64_t state_hash,
-                                uint32_t depth) {
-    DeviceQcCtx c{ds, qc};
+                                uint32_t depth, uint32_t work_slice) {
+    QcWork work = qc_work_for(ds, qc, work_slice);
+    DeviceQcCtx c{ds, qc, &work};
     hgcommon::qc_reach(c, state_hash, depth);
+    qc_run(c, work);
 }
 
 __device__ inline void qc_process_transition(DeviceState ds, QcView qc,
                                              const DeviceCanonicalTransition& t,
-                                             uint64_t from_hash, uint32_t depth) {
-    DeviceQcCtx c{ds, qc};
+                                             uint64_t from_hash, uint32_t depth,
+                                             uint32_t work_slice) {
+    QcWork work = qc_work_for(ds, qc, work_slice);
+    DeviceQcCtx c{ds, qc, &work};
     hgcommon::qc_process_transition(c, DeviceQcTransition(t, qc.arr_words), from_hash, depth);
+    qc_run(c, work);
 }
 
 // Survivor pairs a registration can hold in local scratch. A state with more surviving edges
@@ -286,7 +403,8 @@ constexpr uint32_t kQcMaxSurvivors = 256;
 // `depth` is the PARENT state's depth (the event's step - 1).
 __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
                                               StateId parent, StateId child, EventId event,
-                                              uint32_t rule, uint32_t depth) {
+                                              uint32_t rule, uint32_t depth,
+                                              uint32_t work_slice) {
     const uint64_t from = ds.state_canonical_hash[parent];
     const uint64_t to   = ds.state_canonical_hash[child];
     const DeviceEvent& ev = ds.event_pool.at(event);
@@ -372,9 +490,16 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
     // Drive the transition at every depth its source is already reached at; pairs with the
     // fence in qc_reach.
     cuda::atomic_thread_fence(cuda::memory_order_seq_cst, cuda::thread_scope_device);
+    // ONE worklist across every depth this transition is driven at, rather than one per depth:
+    // the cascade each drive starts can reach any depth, and draining between them would only
+    // reorder work the DP is already order-independent under.
+    QcWork work = qc_work_for(ds, qc, work_slice);
+    DeviceQcCtx c{ds, qc, &work};
     for (uint32_t d = 0; d <= qc.max_steps; ++d)
         if (qc.reached.lookup(qc_rkey(from, d)).found)
-            qc_process_transition(ds, qc, qc.transitions.at(rec), from, d);
+            hgcommon::qc_process_transition(c, DeviceQcTransition(qc.transitions.at(rec),
+                                                                  qc.arr_words), from, d);
+    qc_run(c, work);
 }
 
 }  // namespace gpu

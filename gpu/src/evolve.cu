@@ -294,6 +294,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // recorded -- the same predicate the replay uses. `enabled` stays on the route so orbits are
     // still computed and the state set is unchanged; see QcView::record_causal.
     qc_state_->set_record_causal(in.record.causal || in.record.branchial || in.record.raw_events);
+    if (qc_route) {
+        const uint32_t drivers =
+            default_persistent_grid() > static_cast<uint32_t>(roots.size())
+                ? default_persistent_grid()
+                : static_cast<uint32_t>(roots.size());
+        qc_state_->ensure_work(drivers, in.num_steps);
+    }
     QcView qc_view = qc_state_->view(in.num_steps, state_.qe_max_recursion_depth());
 
     // The class-frame expansion capture rides the same route decision as the causal DP: both

@@ -314,6 +314,12 @@ class Hypergraph {
         // The host recurses on the ordinary stack, which is heap-sized here, so no depth is out
         // of reach and the cascade is bounded by max_steps alone.
         bool enter(uint32_t) const;
+        // The DP's depth-advancing edges. The host descends by CALLING, on a thread stack with
+        // about a thousand levels of room at the tightest platform it ships on against a bound
+        // of `steps` -- so it has nothing to gain from a worklist and nothing to prove by one.
+        void defer_reach(uint64_t state_hash, uint32_t depth);
+        void defer_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
+                            uint32_t producer);
         bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth);
         bool mark_producer_seen(uint64_t seen_key);
         void push_producer(uint64_t key, uint32_t producer);

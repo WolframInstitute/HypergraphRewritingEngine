@@ -130,10 +130,19 @@ template <class Ctx>
 HG_HD void qc_process_transition(Ctx& c, const typename Ctx::Transition& t,
                                  uint64_t from_hash, uint32_t depth) {
     if (depth + 1 > c.max_steps()) return;
-    qc_reach(c, t.to_hash, depth + 1);
+    // DEFERRED, NOT CALLED. Every edge in this DP that advances DEPTH goes through the Ctx,
+    // which is what lets a device carry the depth in a worklist instead of on a per-thread
+    // stack it must reserve across the whole machine. A host Ctx calls straight through, so
+    // its traversal is unchanged.
+    //
+    // Deferring is sound because the protocol is SYMMETRIC: this publishes at (to, depth+1)
+    // while the scan below reads (from, depth), so no scan here is looking for what is
+    // deferred -- and whichever party runs second does its own publish-fence-scan and finds
+    // the first. That is the same argument the rendezvous already rests on.
+    c.defer_reach(t.to_hash, depth + 1);
     // The produced edges are produced by THIS canonical event, at the child depth.
     for (uint32_t i = 0; i < t.num_produced; ++i)
-        qc_add_producer(c, t.to_hash, depth + 1, t.produced(i), t.canon_event);
+        c.defer_producer(t.to_hash, depth + 1, t.produced(i), t.canon_event);
     // Rendezvous with producers already standing at (from, depth): publish the reach and the
     // produces above before scanning for them.
     c.fence();
@@ -145,7 +154,7 @@ HG_HD void qc_process_transition(Ctx& c, const typename Ctx::Transition& t,
         const uint64_t k = qc_key(from_hash, depth, t.surv_from(i));
         const uint32_t to_orbit = t.surv_to(i);
         c.for_each_producer(k, [&](uint32_t p) {
-            qc_add_producer(c, t.to_hash, depth + 1, to_orbit, p);
+            c.defer_producer(t.to_hash, depth + 1, to_orbit, p);
         });
     }
 }
@@ -174,6 +183,9 @@ HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t
     // A producer landing at (state, depth) witnesses that the point is reachable, so mark it
     // and drive its transitions once. Without this a producer arriving via the survivor cascade
     // leaves (state, depth) unreached and a transition registered later out of it is skipped.
+    // DIRECT, and it stays direct: it advances no depth, and it is what marks (state, depth)
+    // reached before the scan below. Synchronous nesting is therefore bounded at three frames
+    // -- add_producer -> reach -> process_transition -- whatever the reconstruction depth.
     qc_reach(c, state_hash, depth);
 
     // The DP reads depths 0..max_steps-1. A producer landing at the final depth is stored and
@@ -187,7 +199,7 @@ HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t
             if (t.consumed(i) == orbit) { c.emit(producer, t.canon_event); break; }
         for (uint32_t i = 0; i < t.num_survivors; ++i)
             if (t.surv_from(i) == orbit)
-                qc_add_producer(c, t.to_hash, depth + 1, t.surv_to(i), producer);
+                c.defer_producer(t.to_hash, depth + 1, t.surv_to(i), producer);
     });
 }
 

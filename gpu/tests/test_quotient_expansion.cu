@@ -162,3 +162,84 @@ TEST(QuotientExpansion, NoOrbitArrayMeansNoSlot) {
 }
 
 }  // namespace
+
+// =============================================================================
+// The reconstruction does not depend on the recursion budget
+// =============================================================================
+
+#include "hg_gpu/evolve.hpp"
+#include "hg_gpu/persistent.hpp"
+#include "hg_gpu/initial_upload.hpp"
+#include "hg_gpu/match.hpp"
+
+// THE DEPTH A RUN CAN RECONSTRUCT IS NOT A PROPERTY OF THE LAUNCH, and this is the assertion
+// that says so without needing a workload deep enough to be infeasible.
+//
+// Both the replay and the causal DP used to descend by CALLING themselves, on a per-thread stack
+// the driver reserves across every RESIDENT thread. That reservation cannot be made large -- it
+// is an occupancy tax on the whole device, and paid by all 32 threads of a block for a path only
+// thread 0 executes -- so it was capped, and past the cap the device recorded kScratchOverflow
+// and returned a PARTIAL reconstruction. The host, recursing at 512 bytes a level on a thread
+// stack with about a thousand levels of room, returned a complete one. The two engines answered
+// different questions above the cap.
+//
+// Rather than reach that depth -- the replay is exponential in it by construction, which is why
+// nobody hit this -- run the SAME evolution twice with two different recursion budgets and
+// require the same answer. A build whose depth is bounded by the budget cannot pass this: the
+// small-budget arm truncates. It is the property itself, at a depth that costs nothing.
+TEST(QuotientExpansion, TheCausalRelationDoesNotDependOnTheRecursionBudget) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}};
+    r.rhs = {{0, 1}, {1, 2}};
+    r.num_lhs_vars = 2;
+    r.num_rhs_vars = 3;
+
+    const std::vector<std::vector<hg_gpu::VertexId>> init = {{0u, 1u}};
+    const uint32_t kSteps = 5;
+
+    // One evolution, parameterised only by the budget the cascade is allowed to recurse to.
+    auto run_with_budget = [&](uint32_t budget) {
+        hg_gpu::EvolveInput in;
+        in.rules         = {r};
+        in.initial_state = init;
+        in.num_steps     = kSteps;
+        in.record.causal = true;
+
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState engine(cfg);
+        hg_gpu::upload_initial_state(engine, init);
+        engine.ensure_edge_orbits();
+
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(64ull << 20);
+
+        hg_gpu::QcState qc(/*on=*/true, cfg.max_events);
+        qc.clear();
+        qc.set_record_causal(true);
+        qc.ensure_work(64u, kSteps);
+        const hg_gpu::QcView qc_view = qc.view(kSteps, budget);
+
+        engine.set_quotient_causal(true);
+        hg_gpu::run_persistent_evolve(
+            engine, rules, /*roots=*/{0u}, kSteps, matches, arena, /*dedup=*/true,
+            /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0,
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE, /*blocks=*/8,
+            /*quotient_roots=*/true, &qc_view, /*qe_in=*/nullptr, /*session=*/nullptr,
+            /*start_step=*/0);
+
+        // The DP emits through the engine's causal pool, so the relation is read from there.
+        return engine.num_causal_edges_host();
+    };
+
+    // A budget far below the depth the cascade reaches, and one far above it.
+    const uint32_t shallow = run_with_budget(2u);
+    const uint32_t deep    = run_with_budget(64u);
+
+    EXPECT_GT(deep, 0u) << "the workload must actually produce a causal relation to compare";
+    EXPECT_EQ(shallow, deep)
+        << "the causal relation changed with the recursion budget: " << shallow << " against "
+        << deep << ". The cascade is bounded by the per-thread stack rather than by the "
+           "evolution, so a deep run answers a different question from the host's.";
+}

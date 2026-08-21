@@ -179,8 +179,8 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     if (qc.enabled) {
         const uint32_t norb = ds.state_num_orbits[sid];
         for (uint32_t j = 0; j < norb; ++j)
-            qc_add_producer(ds, qc, key, 0, j, INVALID_ID);
-        qc_reach(ds, qc, key, 0);
+            qc_add_producer(ds, qc, key, 0, j, INVALID_ID, tid);
+        qc_reach(ds, qc, key, 0, tid);
     }
     // The class's root instance: every slot's edge came with the initial state, so no event
     // produced any of them. Idempotent across duplicate roots -- only the state that wins the
@@ -748,7 +748,8 @@ __global__ void k_persistent_evolve(
                             if (qc.enabled && qc.record_causal) {
                                 const uint64_t s2 = clock64();
                                 qc_register_transition(ds, qc, rec.state_id, child_sid,
-                                                       child_event, rec.rule_id, step);
+                                                       child_event, rec.rule_id, step,
+                                                       blockIdx.x);
                                 if (phase_cycles) atomicAdd(&phase_cycles[13], clock64() - s2);
                             }
                             // Same event, same endpoints: the class frame's match record.

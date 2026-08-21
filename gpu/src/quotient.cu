@@ -30,6 +30,7 @@ QcState::QcState(bool on, uint32_t max_events): transitions_(on ? max_events : 1
     }
 
 QcState::~QcState() {
+    if (work_items_) cudaFree(work_items_);
         if (arr_)    cudaFree(arr_);
         if (cursor_) cudaFree(cursor_);
     }
@@ -50,6 +51,19 @@ void QcState::clear() {
         HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QcState cursor clear");
     }
 
+// The DP descends through this rather than through the call stack, so its size is what bounds
+// cascade depth. Same shape and same reasoning as QeState::ensure_work.
+void QcState::ensure_work(uint32_t slices, uint32_t max_steps) {
+    if (!on_) return;
+    const uint32_t cap = max_steps * 64u < 256u ? 256u : max_steps * 64u;
+    if (work_items_ && work_slices_ >= slices && work_cap_ >= cap) return;
+    if (work_items_) { cudaFree(work_items_); work_items_ = nullptr; }
+    work_slices_ = slices > work_slices_ ? slices : work_slices_;
+    work_cap_    = cap > work_cap_ ? cap : work_cap_;
+    HG_CUDA_CHECK(cudaMalloc(&work_items_, sizeof(QcWorkItem) * work_slices_ * work_cap_),
+                  "QcState cascade stacks alloc");
+}
+
 QcView QcState::view(uint32_t max_steps, uint32_t max_recursion_depth) {
         QcView q{};
         q.transitions      = transitions_.view();
@@ -63,6 +77,9 @@ QcView QcState::view(uint32_t max_steps, uint32_t max_recursion_depth) {
         q.reached          = reached_.view();
         q.max_steps        = max_steps;
         q.max_recursion_depth = max_recursion_depth;
+        q.work_items   = work_items_;
+        q.work_cap     = work_cap_;
+        q.work_slices  = work_slices_;
         q.enabled          = on_ ? 1u : 0u;
         q.record_causal    = record_causal_ ? 1u : 0u;
         return q;
