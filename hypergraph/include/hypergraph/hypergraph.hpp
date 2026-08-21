@@ -221,7 +221,7 @@ class Hypergraph {
         uint32_t num_consumed;
         const uint32_t* consumed_slots;   // arena-backed, stable
 
-        uint32_t consumed(uint32_t j) const { return consumed_slots[j]; }
+        uint32_t consumed(uint32_t j) const;
     };
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
     std::atomic<uint32_t> qc_next_instance_{0};
@@ -293,15 +293,11 @@ class Hypergraph {
     //
     // Ids are engine-minted and bounded well below INVALID_ID, so neither offset can wrap and
     // the key cannot reach the LOCKED sentinel either.
-    static uint64_t qc_pair_key(uint32_t a, uint32_t b) { return id_key(a, b); }
+    static uint64_t qc_pair_key(uint32_t a, uint32_t b);
 
     // The DP's key spaces come from hgcommon so the device indexes the same ones.
-    static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
-        return hgcommon::qc_key(state_hash, depth, orbit);
-    }
-    static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
-        return hgcommon::qc_rkey(state_hash, depth);
-    }
+    static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit);
+    static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth);
 
     LockFreeList<EventId>* qc_dsup_list(uint64_t key);
 
@@ -430,20 +426,7 @@ class Hypergraph {
     std::atomic<StateId> genesis_state_{INVALID_ID};
 
 public:
-    Hypergraph()
-        // Route every map's table storage through the arena (no malloc, no per-map
-        // heap contention). Ordered by member-declaration order. arena_ is declared
-        // before these maps, so it is fully constructed here.
-        : canonical_state_map_(
-              decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
-        , event_canonical_state_map_(
-              decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
-        , wl_hash_(std::make_unique<WLHash>(&arena_))
-        , canonical_event_map_(
-              decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
-    {
-        causal_graph_.set_arena(&arena_);
-    }
+    Hypergraph();
 
     // Non-copyable
     Hypergraph(const Hypergraph&) = delete;
@@ -487,8 +470,10 @@ public:
     Edge& get_edge(EdgeId eid);
 
     // Edge accessor (for pattern matching)
+    // STAYS IN THE HEADER, and it is the only body in this class that does: the return type is
+    // a lambda's closure type, which is deduced from the body, so a caller cannot name it and
+    // the definition has to be visible.
     auto edge_accessor() const {
-        // Returns a lambda, so its type is deduced and the body must be visible.
         return [this](EdgeId eid) -> const Edge& { return edges_[eid]; };
     }
 
@@ -518,22 +503,16 @@ public:
     class EdgeVertexAccessorRaw {
         const Hypergraph* hg_;
     public:
-        explicit EdgeVertexAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
-
-        const VertexId* operator[](EdgeId eid) const {
-            return hg_->edges_[eid].vertices;
-        }
+        explicit EdgeVertexAccessorRaw(const Hypergraph* hg);
+        const VertexId* operator[](EdgeId eid) const;
     };
 
     // Direct arity accessor - reads from struct field, O(1)
     class EdgeArityAccessorRaw {
         const Hypergraph* hg_;
     public:
-        explicit EdgeArityAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
-
-        uint8_t operator[](EdgeId eid) const {
-            return hg_->edges_[eid].arity;
-        }
+        explicit EdgeArityAccessorRaw(const Hypergraph* hg);
+        uint8_t operator[](EdgeId eid) const;
     };
 
     EdgeVertexAccessorRaw edge_vertex_accessor_raw() const;

@@ -1943,5 +1943,47 @@ uint32_t Hypergraph::count_state_edges(StateId sid) const {
     return count;
 }
 
+// Route every map's table storage through the arena (no malloc, no per-map heap contention).
+// The initialiser order follows member declaration order; arena_ is declared before these maps,
+// so it is fully constructed by the time they take its address.
+Hypergraph::Hypergraph()
+    : canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+    , event_canonical_state_map_(
+          decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+    , wl_hash_(std::make_unique<WLHash>(&arena_))
+    , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+{
+    causal_graph_.set_arena(&arena_);
+}
+
+// An ordered pair of event ids as one map key. Both ids are offset by one before packing, which
+// makes the key injective and never zero -- ConcurrentMap reserves 0 as EMPTY.
+uint64_t Hypergraph::qc_pair_key(uint32_t a, uint32_t b) { return id_key(a, b); }
+
+// The DP's key spaces come from hgcommon so the device indexes the same ones.
+uint64_t Hypergraph::qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
+    return hgcommon::qc_key(state_hash, depth, orbit);
+}
+
+uint64_t Hypergraph::qc_rkey(uint64_t state_hash, uint32_t depth) {
+    return hgcommon::qc_rkey(state_hash, depth);
+}
+
+Hypergraph::EdgeVertexAccessorRaw::EdgeVertexAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
+
+const VertexId* Hypergraph::EdgeVertexAccessorRaw::operator[](EdgeId eid) const {
+    return hg_->edges_[eid].vertices;
+}
+
+Hypergraph::EdgeArityAccessorRaw::EdgeArityAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
+
+uint8_t Hypergraph::EdgeArityAccessorRaw::operator[](EdgeId eid) const {
+    return hg_->edges_[eid].arity;
+}
+
+uint32_t Hypergraph::QcAppliedMatch::consumed(uint32_t j) const {
+    return consumed_slots[j];
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
