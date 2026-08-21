@@ -116,9 +116,7 @@ class CausalGraph {
     // of one canonical type collapse to a single representative -- cannot land on the map's
     // EMPTY sentinel and be silently dropped. Packing stays injective: event ids are far below
     // 2^32-1, so the +1 cannot carry into the neighbouring field.
-    static uint64_t causal_pair_key(EventId producer, EventId consumer) {
-        return id_key(producer, consumer);
-    }
+    static uint64_t causal_pair_key(EventId producer, EventId consumer);
 
     std::atomic<bool> ids_are_topological_{true};
 
@@ -179,32 +177,19 @@ class CausalGraph {
     std::atomic<size_t> num_branchial_edges_{0};
 
 public:
-    CausalGraph() : arena_(nullptr) {}
+    CausalGraph();
 
-    explicit CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {}
+    explicit CausalGraph(ConcurrentHeterogeneousArena* arena);
 
     // Enable/disable online transitive reduction
-    void set_transitive_reduction(bool enabled) {
-        transitive_reduction_enabled_.store(enabled, std::memory_order_relaxed);
-    }
+    void set_transitive_reduction(bool enabled);
 
-    bool transitive_reduction_enabled() const {
-        return transitive_reduction_enabled_.load(std::memory_order_relaxed);
-    }
+    bool transitive_reduction_enabled() const;
 
     // Set arena (for deferred initialization). Also re-homes every member map's table
     // storage onto the arena (no malloc). Single-threaded setup only, before any
     // event is registered.
-    void set_arena(ConcurrentHeterogeneousArena* arena) {
-        arena_ = arena;
-        seen_causal_triples_.set_arena(arena);
-        seen_causal_event_pairs_.set_arena(arena);
-        seen_branchial_pairs_.set_arena(arena);
-        state_events_.set_arena(arena);
-        state_edge_events_.set_arena(arena);
-        edge_producers_.set_arena(arena);
-        edge_consumers_.set_arena(arena);
-    }
+    void set_arena(ConcurrentHeterogeneousArena* arena);
 
     // =========================================================================
     // Edge Causal Tracking
@@ -222,10 +207,7 @@ public:
 
     // Is the reduction computed on read rather than maintained incrementally? True exactly
     // when the reduction is on and the id assignment does not support the incremental rule.
-    bool reduces_on_read() const {
-        return transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
-               !ids_are_topological_.load(std::memory_order_relaxed);
-    }
+    bool reduces_on_read() const;
 
     // The reduced pair set, computed from the stored relation. Unique for a given relation, so
     // the answer does not depend on the schedule that produced it. SORTED, which is what
@@ -241,12 +223,8 @@ public:
     // first-writer-wins, which are not monotonic under recurrence -- measured on chain6,
     // producer 9 -> consumer 8 among others. With the assumption false the pruned walk misses
     // paths that exist and the reduction over-keeps, so it runs unpruned instead.
-    void set_ids_are_topological(bool on) {
-        ids_are_topological_.store(on, std::memory_order_relaxed);
-    }
-    bool ids_are_topological() const {
-        return ids_are_topological_.load(std::memory_order_relaxed);
-    }
+    void set_ids_are_topological(bool on);
+    bool ids_are_topological() const;
 
     // Get or create the event list for a state (thread-safe)
     LockFreeList<EventId>* get_or_create_state_events(StateId state);
@@ -285,9 +263,7 @@ public:
     // states of one input state, with no overlap test -- and that view is the only reader.
     // Recorded separately from the pair relation below because the two answer different
     // questions and a caller asking for one should not pay for the other.
-    void record_state_event(EventId event, StateId input_state) {
-        get_or_create_state_events(input_state)->push(event, *arena_);
-    }
+    void record_state_event(EventId event, StateId input_state);
 
     // The branchial PAIR relation: two events branch iff they consumed a common edge at a
     // shared input state.
@@ -299,29 +275,7 @@ public:
         StateId input_state,
         const EdgeId* consumed_edges,
         uint8_t num_consumed
-    ) {
-        // Inverted index: for each consumed edge, publish this event into that edge's
-        // co-consumer bucket, then scan the same bucket. Per bucket this is
-        // "add first, then check", so both events of a pair see each other (whichever
-        // scans the shared bucket second finds the first); seen_branchial_pairs_
-        // dedups the double add. Work is proportional to the actual number of
-        // co-consumers, replacing the O(events^2) pairwise scan of the whole state's
-        // event list (one bucket lookup per consumed edge, not two).
-        for (uint8_t i = 0; i < num_consumed; ++i) {
-            EdgeId shared = consumed_edges[i];
-            LockFreeList<EventId>* bucket = get_or_create_state_edge_events(input_state, shared);
-            bucket->push(event, *arena_);
-            bucket->for_each([&](EventId other_event) {
-                if (other_event == event) return;  // Skip self
-                EventId e1 = std::min(event, other_event);
-                EventId e2 = std::max(event, other_event);
-                auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(id_key(e1, e2), true);
-                if (inserted) {
-                    add_branchial_edge(e1, e2, shared);
-                }
-            });
-        }
-    }
+    );
 
     // =========================================================================
     // Graph Access
@@ -359,22 +313,10 @@ public:
     }
 
     // Statistics
-    size_t num_causal_edges() const {
-        // Reducing on read means the stored relation is the FULL one, so the live edge count is
-        // what the filtered iteration yields, not the admitted-triple counter.
-        if (reduces_on_read()) {
-            size_t n = 0;
-            for_each_causal_edge([&](const CausalEdge&) { ++n; });
-            return n;
-        }
-        return num_causal_edges_.load(std::memory_order_relaxed);
-    }
+    size_t num_causal_edges() const;
 
     // Number of unique event pairs with a causal relationship.
-    size_t num_causal_event_pairs() const {
-        if (reduces_on_read()) return reduced_pairs().size();
-        return num_causal_event_pairs_.load(std::memory_order_relaxed);
-    }
+    size_t num_causal_event_pairs() const;
 
     // Pairs the branchial dedup actually claimed. add_branchial_edge is reached ONLY on a
     // winning claim, so this must equal num_branchial_edges() at every point in a run.
@@ -386,9 +328,7 @@ public:
     // of only as two runs disagreeing afterwards: the branchial graph went non-deterministic at
     // 8 threads once in 24 runs (30064 edges against 30063, states/events/causal identical),
     // and a spread across runs cannot say WHICH run was wrong or why.
-    size_t num_branchial_pairs_claimed() const {
-        return seen_branchial_pairs_.count_unique();
-    }
+    size_t num_branchial_pairs_claimed() const;
 
     // The branchial relation AS CLIQUES. Every event in one (state, shared-edge) bucket is
     // branchially related to every other, so the bucket IS the relation and the pair list is a
@@ -403,14 +343,10 @@ public:
         });
     }
 
-    size_t num_branchial_edges() const {
-        return num_branchial_edges_.load(std::memory_order_relaxed);
-    }
+    size_t num_branchial_edges() const;
 
     // Number of redundant causal edges skipped by online TR
-    size_t num_redundant_edges_skipped() const {
-        return num_redundant_edges_skipped_.load(std::memory_order_relaxed);
-    }
+    size_t num_redundant_edges_skipped() const;
 
     // =========================================================================
     // Utility

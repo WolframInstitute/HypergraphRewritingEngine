@@ -268,5 +268,119 @@ std::vector<BranchialEdge> CausalGraph::get_branchial_edges() const {
     return result;
 }
 
+
+// =============================================================================
+// Construction, configuration and counters
+// =============================================================================
+
+uint64_t CausalGraph::causal_pair_key(EventId producer, EventId consumer) {
+    return id_key(producer, consumer);
+}
+
+CausalGraph::CausalGraph() : arena_(nullptr) {}
+
+CausalGraph::CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {}
+
+void CausalGraph::set_transitive_reduction(bool enabled) {
+    transitive_reduction_enabled_.store(enabled, std::memory_order_relaxed);
+}
+
+bool CausalGraph::transitive_reduction_enabled() const {
+    return transitive_reduction_enabled_.load(std::memory_order_relaxed);
+}
+
+void CausalGraph::set_arena(ConcurrentHeterogeneousArena* arena) {
+    arena_ = arena;
+    seen_causal_triples_.set_arena(arena);
+    seen_causal_event_pairs_.set_arena(arena);
+    seen_branchial_pairs_.set_arena(arena);
+    state_events_.set_arena(arena);
+    state_edge_events_.set_arena(arena);
+    edge_producers_.set_arena(arena);
+    edge_consumers_.set_arena(arena);
+}
+
+bool CausalGraph::reduces_on_read() const {
+    return transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
+           !ids_are_topological_.load(std::memory_order_relaxed);
+}
+
+void CausalGraph::set_ids_are_topological(bool on) {
+    ids_are_topological_.store(on, std::memory_order_relaxed);
+}
+
+bool CausalGraph::ids_are_topological() const {
+    return ids_are_topological_.load(std::memory_order_relaxed);
+}
+
+// =============================================================================
+// Branchial recording
+// =============================================================================
+
+void CausalGraph::record_state_event(EventId event, StateId input_state) {
+    get_or_create_state_events(input_state)->push(event, *arena_);
+}
+
+void CausalGraph::record_branchial_overlaps(
+    EventId event,
+    StateId input_state,
+    const EdgeId* consumed_edges,
+    uint8_t num_consumed
+) {
+    // Inverted index: for each consumed edge, publish this event into that edge's
+    // co-consumer bucket, then scan the same bucket. Per bucket this is
+    // "add first, then check", so both events of a pair see each other (whichever
+    // scans the shared bucket second finds the first); seen_branchial_pairs_
+    // dedups the double add. Work is proportional to the actual number of
+    // co-consumers, replacing the O(events^2) pairwise scan of the whole state's
+    // event list (one bucket lookup per consumed edge, not two).
+    for (uint8_t i = 0; i < num_consumed; ++i) {
+        EdgeId shared = consumed_edges[i];
+        LockFreeList<EventId>* bucket = get_or_create_state_edge_events(input_state, shared);
+        bucket->push(event, *arena_);
+        bucket->for_each([&](EventId other_event) {
+            if (other_event == event) return;  // Skip self
+            EventId e1 = std::min(event, other_event);
+            EventId e2 = std::max(event, other_event);
+            auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(id_key(e1, e2), true);
+            if (inserted) {
+                add_branchial_edge(e1, e2, shared);
+            }
+        });
+    }
+}
+
+// =============================================================================
+// Statistics
+// =============================================================================
+
+size_t CausalGraph::num_causal_edges() const {
+    // Reducing on read means the stored relation is the FULL one, so the live edge count is
+    // what the filtered iteration yields, not the admitted-triple counter.
+    if (reduces_on_read()) {
+        size_t n = 0;
+        for_each_causal_edge([&](const CausalEdge&) { ++n; });
+        return n;
+    }
+    return num_causal_edges_.load(std::memory_order_relaxed);
+}
+
+size_t CausalGraph::num_causal_event_pairs() const {
+    if (reduces_on_read()) return reduced_pairs().size();
+    return num_causal_event_pairs_.load(std::memory_order_relaxed);
+}
+
+size_t CausalGraph::num_branchial_pairs_claimed() const {
+    return seen_branchial_pairs_.count_unique();
+}
+
+size_t CausalGraph::num_branchial_edges() const {
+    return num_branchial_edges_.load(std::memory_order_relaxed);
+}
+
+size_t CausalGraph::num_redundant_edges_skipped() const {
+    return num_redundant_edges_skipped_.load(std::memory_order_relaxed);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
