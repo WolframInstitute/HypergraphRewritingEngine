@@ -2557,5 +2557,115 @@ size_t ParallelEvolutionEngine::executing_jobs() const { return job_system_ ? jo
 
 bool ParallelEvolutionEngine::has_error() const { return job_system_ && job_system_->has_error(); }
 
+// True when the two records denote the same match: same source state, rule, edge tuple and
+// binding. This is the predicate the dedup is defined by; the hash only selects where to look.
+bool ParallelEvolutionEngine::match_records_equal(const MatchRecord& a, const MatchRecord& b) {
+    if (a.core == b.core) return a.source_state == b.source_state;  // forwarded copies share
+    if (!a.core || !b.core) return false;
+    return a == b;   // MatchRecord::operator== is the definition; do not restate it here
+}
+
+// The key for probe attempt `n`, skipping the map's reserved sentinels.
+uint64_t ParallelEvolutionEngine::dedup_probe_key(uint64_t h, uint32_t n) {
+    uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
+    if (k == MATCH_MAP_EMPTY || k == MATCH_MAP_LOCKED) k += 0x9E3779B97F4A7C15ull;
+    return k;
+}
+
+// The read-only twin of claim_match: it walks the SAME probe chain and decides by the SAME
+// content comparison. "Is this hash in the set" would answer yes when a DIFFERENT match occupies
+// the slot, which is the error the completeness validator exists to detect.
+bool ParallelEvolutionEngine::contains_match(uint64_t h, const MatchRecord& rec) const {
+    for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
+        auto seen = seen_match_hashes_.lookup(dedup_probe_key(h, n));
+        if (!seen) return false;      // an empty slot terminates the chain
+        if (*seen && match_records_equal(**seen, rec)) return true;
+    }
+    return false;
+}
+
+size_t ParallelEvolutionEngine::dedup_probe_exhaustions() const {
+    return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
+}
+
+size_t ParallelEvolutionEngine::dedup_allocs_wasted() const {
+    return dedup_allocs_wasted_.load(std::memory_order_relaxed);
+}
+
+ParallelEvolutionEngine::DepthTaskGuard::DepthTaskGuard(ParallelEvolutionEngine& engine,
+                                                        uint32_t depth)
+    : engine_(engine), depth_(depth) {}
+
+ParallelEvolutionEngine::DepthTaskGuard::~DepthTaskGuard() {
+    engine_.note_depth_task_done(depth_);
+}
+
+ParallelEvolutionEngine::ParallelEvolutionEngine() : hg_(nullptr), rewriter_(nullptr) {}
+
+// Finalise the rule's matching data at the single point of registration: join order plus the
+// per-edge signature and compatible-signature caches the matcher reads. A hand-built RewriteRule
+// need only populate lhs/rhs and the edge counts. Idempotent.
+void ParallelEvolutionEngine::add_rule(const RewriteRule& rule) {
+    rules_.push_back(rule);
+    rules_.back().compute_var_counts();
+}
+
+// The setter is the OVERRIDE, not a hint: a caller that sets this explicitly owns the decision
+// from that point, which is what match_forwarding_explicit_ records.
+void ParallelEvolutionEngine::set_match_forwarding(bool enable) {
+    enable_match_forwarding_ = enable;
+    match_forwarding_explicit_ = true;
+}
+
+void ParallelEvolutionEngine::set_transitive_reduction(bool enable) {
+    if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
+}
+
+void ParallelEvolutionEngine::set_exploration_probability(double p) {
+    exploration_probability_ = std::clamp(p, 0.0, 1.0);
+}
+
+void ParallelEvolutionEngine::set_max_successor_states_per_parent(size_t max) {
+    max_successor_states_per_parent_ = max;
+}
+
+void ParallelEvolutionEngine::set_max_states_per_step(size_t max) {
+    max_states_per_step_ = max;
+}
+
+void ParallelEvolutionEngine::set_random_seed(uint64_t seed) { random_seed_ = seed; }
+
+// The rate THIS rule's transitions are drawn at. Clamped, because a weight is a caller's number
+// and a rate outside [0,1] is not a probability.
+double ParallelEvolutionEngine::rate_for_rule(uint16_t rule) const {
+    return hgcommon::sampling_rate_for_rule(transition_rate_, rule_weights_.data(),
+                                            static_cast<uint32_t>(rule_weights_.size()), rule);
+}
+
+// Whether ANY draw can fail. Testing transition_rate_ < 1.0 alone would skip sampling entirely
+// for a caller who left the rate at 1 and weighted a single rule to zero.
+bool ParallelEvolutionEngine::sampling_active() const {
+    return hgcommon::sampling_active(transition_rate_, rule_weights_.data(),
+                                     static_cast<uint32_t>(rule_weights_.size()),
+                                     static_cast<uint32_t>(matches_per_state_rule_));
+}
+
+uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key) const {
+    return hgcommon::transition_rank(canonical_key, random_seed_);
+}
+
+void ParallelEvolutionEngine::set_on_state_matches_complete(
+        std::function<void(StateId, uint32_t)> cb) {
+    on_state_matches_complete_ = std::move(cb);
+}
+
+void ParallelEvolutionEngine::set_on_depth_complete(std::function<void(uint32_t)> cb) {
+    on_depth_complete_ = std::move(cb);
+}
+
+size_t ParallelEvolutionEngine::depth_late_arrivals() const {
+    return depth_late_arrivals_.load(std::memory_order_relaxed);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

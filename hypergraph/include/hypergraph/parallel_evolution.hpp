@@ -358,18 +358,10 @@ public:
     // True when the two records denote the same match: same source state, rule, edge tuple and
     // binding. This is the predicate the dedup is defined by; the hash only selects where to
     // look.
-    static bool match_records_equal(const MatchRecord& a, const MatchRecord& b) {
-        if (a.core == b.core) return a.source_state == b.source_state;  // forwarded copies share
-        if (!a.core || !b.core) return false;
-        return a == b;   // MatchRecord::operator== is the definition; do not restate it here
-    }
+    static bool match_records_equal(const MatchRecord& a, const MatchRecord& b);
 
     // Derive the key for probe attempt `n`, skipping the map's reserved sentinels.
-    static uint64_t dedup_probe_key(uint64_t h, uint32_t n) {
-        uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
-        if (k == MATCH_MAP_EMPTY || k == MATCH_MAP_LOCKED) k += 0x9E3779B97F4A7C15ull;
-        return k;
-    }
+    static uint64_t dedup_probe_key(uint64_t h, uint32_t n);
 
 public:
     // Claim `rec` for processing. Returns true when it is NEW and the caller must process it,
@@ -389,14 +381,7 @@ public:
     // content comparison. A presence check written as "is this hash in the set" would answer yes
     // when a DIFFERENT match occupies the slot, which is the very error the completeness
     // validator exists to detect -- so the check cannot itself be written that way.
-    bool contains_match(uint64_t h, const MatchRecord& rec) const {
-        for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
-            auto seen = seen_match_hashes_.lookup(dedup_probe_key(h, n));
-            if (!seen) return false;      // an empty slot terminates the chain
-            if (*seen && match_records_equal(**seen, rec)) return true;
-        }
-        return false;
-    }
+    bool contains_match(uint64_t h, const MatchRecord& rec) const;
 
     template <typename MakeStable>
     bool claim_match(uint64_t h, const MatchRecord& rec, MakeStable&& make_stable) {
@@ -434,13 +419,9 @@ public:
     // Distinct matches that landed on an equal key, and claims that ran out of probes. Both are
     // expected to be 0; they are counted so "collisions do not happen here" is a measurement.
     size_t hash_collisions() const;
-    size_t dedup_probe_exhaustions() const {
-        return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
-    }
+    size_t dedup_probe_exhaustions() const;
     size_t dedup_allocs() const;
-    size_t dedup_allocs_wasted() const {
-        return dedup_allocs_wasted_.load(std::memory_order_relaxed);
-    }
+    size_t dedup_allocs_wasted() const;
 private:
 
     // Track which raw states have been matched (lock-free)
@@ -737,9 +718,8 @@ private:
     // Books one task against its depth however its function exits.
     class DepthTaskGuard {
     public:
-        DepthTaskGuard(ParallelEvolutionEngine& engine, uint32_t depth)
-            : engine_(engine), depth_(depth) {}
-        ~DepthTaskGuard() { engine_.note_depth_task_done(depth_); }
+        DepthTaskGuard(ParallelEvolutionEngine& engine, uint32_t depth);
+        ~DepthTaskGuard();
         DepthTaskGuard(const DepthTaskGuard&) = delete;
         DepthTaskGuard& operator=(const DepthTaskGuard&) = delete;
     private:
@@ -758,10 +738,7 @@ private:
     EvolutionStats stats_;
 
 public:
-    ParallelEvolutionEngine()
-        : hg_(nullptr)
-        , rewriter_(nullptr)
-    {}
+    ParallelEvolutionEngine();
 
     explicit ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads = 0,
                                      ExecutionMode mode = ExecutionMode::Parallel);
@@ -776,15 +753,7 @@ public:
     // Configuration
     // =========================================================================
 
-    void add_rule(const RewriteRule& rule) {
-        rules_.push_back(rule);
-        // Finalize the rule's matching data at the single point of registration:
-        // join order plus the per-edge signature / compatible-signature caches the
-        // matcher reads (lhs_sig / lhs_cache). A hand-built RewriteRule need only
-        // populate lhs/rhs and the edge counts; compute_var_counts derives the rest
-        // from them. Idempotent for callers that already computed it.
-        rules_.back().compute_var_counts();
-    }
+    void add_rule(const RewriteRule& rule);
 
     void set_max_steps(size_t max);
     // The depth this run is budgeted to, which evolve_more RAISES rather than replaces. A caller
@@ -803,18 +772,13 @@ public:
     //
     // So the decision is the rule set's, taken once at the start of a run. A caller that sets it
     // explicitly owns it from that point: the setter is the override, not a hint.
-    void set_match_forwarding(bool enable) {
-        enable_match_forwarding_ = enable;
-        match_forwarding_explicit_ = true;
-    }
+    void set_match_forwarding(bool enable);
     void set_batched_matching(bool enable);
     void set_validate_match_forwarding(bool enable);
 
     // Enable online transitive reduction for causal edges (Goranci algorithm)
     // When enabled, redundant causal edges are filtered out at insertion time.
-    void set_transitive_reduction(bool enable) {
-        if (hg_) hg_->causal_graph().set_transitive_reduction(enable);
-    }
+    void set_transitive_reduction(bool enable);
 
     // Enable genesis events for initial states.
     // When enabled, a synthetic event is created for each initial state that
@@ -846,21 +810,13 @@ public:
     //    which draw, so multi-thread runs are not bit-reproducible.
     //  - Rule application order is shuffled per task for fairness, but that is
     //    order-only and does NOT change the canonical result.
-    void set_exploration_probability(double p) {
-        exploration_probability_ = std::clamp(p, 0.0, 1.0);
-    }
-    void set_max_successor_states_per_parent(size_t max) {
-        max_successor_states_per_parent_ = max;
-    }
-    void set_max_states_per_step(size_t max) {
-        max_states_per_step_ = max;
-    }
+    void set_exploration_probability(double p);
+    void set_max_successor_states_per_parent(size_t max);
+    void set_max_states_per_step(size_t max);
     // Seed for the sampling RNGs (both the ExplorationProbability draw and the
     // uniform-random evolve path). 0 (default) draws a fresh random_device seed each
     // run; nonzero makes the sample reproducible run-to-run on a single thread.
-    void set_random_seed(uint64_t seed) {
-        random_seed_ = seed;
-    }
+    void set_random_seed(uint64_t seed);
     // Keep k of each state's matches, chosen uniformly at random from ALL of that state's
     // matches, and rewrite only those. 0 disables sampling entirely.
     //
@@ -896,19 +852,12 @@ public:
 
     // The rate THIS rule's transitions are drawn at. Clamped, because a weight is a caller's
     // number and a rate outside [0,1] is not a probability.
-    double rate_for_rule(uint16_t rule) const {
-        return hgcommon::sampling_rate_for_rule(transition_rate_, rule_weights_.data(),
-                                                static_cast<uint32_t>(rule_weights_.size()), rule);
-    }
+    double rate_for_rule(uint16_t rule) const;
 
     // Whether ANY draw can fail. The draw sites used to test transition_rate_ < 1.0 directly,
     // which would skip sampling entirely for a caller who left the rate at 1 and weighted a
     // single rule to zero.
-    bool sampling_active() const {
-        return hgcommon::sampling_active(transition_rate_, rule_weights_.data(),
-                                         static_cast<uint32_t>(rule_weights_.size()),
-                                         static_cast<uint32_t>(matches_per_state_rule_));
-    }
+    bool sampling_active() const;
     // True while a state's own transitions must wait for its drain, because choosing k of M
     // needs all M and M is complete only there.
     bool defers_to_drain() const;
@@ -924,16 +873,12 @@ public:
     // by REACHABILITY (a coin cannot fire on a transition whose source was never created), not
     // by per-transition survival. Seeding the spine attacks reachability directly: each seed
     // keeps a different one-per-state skeleton.
-    uint64_t spine_rank(uint64_t canonical_key) const {
-        return hgcommon::transition_rank(canonical_key, random_seed_);
-    }
+    uint64_t spine_rank(uint64_t canonical_key) const;
 
     // Called once per state, after that state's last match task and before any of its matches
     // could be superseded. Anything keyed on "the matches of one state" as a set belongs here.
     // Set it before evolve(); it runs on a worker thread.
-    void set_on_state_matches_complete(std::function<void(StateId, uint32_t)> cb) {
-        on_state_matches_complete_ = std::move(cb);
-    }
+    void set_on_state_matches_complete(std::function<void(StateId, uint32_t)> cb);
 
     // Called once per DEPTH, after every state that entered that depth has drained and every
     // shallower depth has done the same -- so nothing can still arrive there. Fires on a worker
@@ -948,16 +893,12 @@ public:
     // the one relaxation breaks, and repairing it would need "no live task can still submit
     // here", which is the global barrier this exists to avoid. Quotient callers have the
     // per-state drain and the run's own completion.
-    void set_on_depth_complete(std::function<void(uint32_t)> cb) {
-        on_depth_complete_ = std::move(cb);
-    }
+    void set_on_depth_complete(std::function<void(uint32_t)> cb);
     // Whether the depth signal will fire for the configuration this engine is set to. False
     // under quotient exploration; see set_on_depth_complete.
     bool depth_signal_available() const;
     // States that arrived at a depth already reported complete. Must be zero.
-    size_t depth_late_arrivals() const {
-        return depth_late_arrivals_.load(std::memory_order_relaxed);
-    }
+    size_t depth_late_arrivals() const;
     size_t states_drained() const;
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's
