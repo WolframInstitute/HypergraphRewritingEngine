@@ -51,10 +51,9 @@ enum class Token : uint8_t {
 // Exception types for structured error handling
 class WXFException : public std::runtime_error {
 public:
-    WXFException(const std::string& message, size_t position = 0)
-        : std::runtime_error(message), position_(position) {}
+    WXFException(const std::string& message, size_t position = 0);
 
-    size_t position() const noexcept { return position_; }
+    size_t position() const noexcept;
 
 private:
     size_t position_;
@@ -62,14 +61,12 @@ private:
 
 class ParseError : public WXFException {
 public:
-    ParseError(const std::string& message, size_t position = 0)
-        : WXFException("Parse error: " + message, position) {}
+    ParseError(const std::string& message, size_t position = 0);
 };
 
 class TypeError : public WXFException {
 public:
-    TypeError(const std::string& message, size_t position = 0)
-        : WXFException("Type error: " + message, position) {}
+    TypeError(const std::string& message, size_t position = 0);
 };
 
 // Forward declarations
@@ -168,11 +165,8 @@ private:
     size_t read_position_;
 
 public:
-    explicit Parser(const uint8_t* data, size_t size)
-        : data_(data), size_(size), read_position_(0) {}
-
-    explicit Parser(const std::vector<uint8_t>& data)
-        : Parser(data.data(), data.size()) {}
+    explicit Parser(const uint8_t* data, size_t size);
+    explicit Parser(const std::vector<uint8_t>& data);
 
     // Core reading methods
     uint8_t read_byte();
@@ -208,23 +202,20 @@ public:
     void read_function(const FunctionCallback& callback);
 
     // Utility methods
-    size_t position() const noexcept { return read_position_; }
+    size_t position() const noexcept;
     // Where this parser's view begins. read_association hands each value a SUB-PARSER over the
     // remaining bytes, so its position() counts from that value's first byte and says nothing
     // about the offset into the original buffer. A caller that wants a value's bytes needs the
     // base too, and computing the offset from position() alone yields the start of the whole
     // stream for every value -- a slice that compares equal for any two outputs.
-    const uint8_t* data() const noexcept { return data_; }
-    size_t remaining() const noexcept { return size_ - read_position_; }
-    bool at_end() const noexcept { return read_position_ >= size_; }
+    const uint8_t* data() const noexcept;
+    size_t remaining() const noexcept;
+    bool at_end() const noexcept;
     // Restore the cursor to a position previously obtained from position(). A read that
     // throws mid-value leaves the cursor inside that value; error recovery seeks back to
     // the value's start and skip_value()s the whole thing, so the stream stays aligned
     // for every later read. Seeking anywhere else breaks token alignment.
-    void seek(size_t pos) {
-        if (pos > size_) throw ParseError("seek past end of data", pos);
-        read_position_ = pos;
-    }
+    void seek(size_t pos);
     // Skip over any WXF value (atomic or structured).
     //
     // Structured values recurse, and the input decides how deep -- a Rule token costs ONE
@@ -232,7 +223,7 @@ public:
     // and crash the process. WXF arrives from outside, so the depth is bounded rather than
     // trusted; exceeding it is a malformed message, not a fatal condition.
     static constexpr size_t MAX_SKIP_DEPTH = 512;
-    void skip_value() { skip_value(0); }
+    void skip_value();
     void skip_value(size_t depth);
 
 private:
@@ -276,23 +267,21 @@ public:
     void write_function(const std::string& head, size_t arg_count);
 
     // Data access
-    const std::vector<uint8_t>& data() const noexcept { return data_; }
-    std::vector<uint8_t> release_data() noexcept { return std::move(data_); }
-    void clear() noexcept { data_.clear(); }
-    size_t size() const noexcept { return data_.size(); }
+    const std::vector<uint8_t>& data() const noexcept;
+    std::vector<uint8_t> release_data() noexcept;
+    void clear() noexcept;
+    size_t size() const noexcept;
 
     // Reserve output capacity up front so a large serialization grows the single
     // backing buffer at most once instead of on every doubling. Capacity only; the
     // emitted bytes are unaffected.
-    void reserve(std::size_t n) { data_.reserve(n); }
+    void reserve(std::size_t n);
 
     // Splice an already-serialized byte run into the stream. Used to compose a
     // top-level association whose element count is known only after its largest
     // sections have been streamed into a scratch Writer: write the association
     // header, append the streamed section bytes, then emit the remaining pairs.
-    void append(const std::vector<uint8_t>& bytes) {
-        data_.insert(data_.end(), bytes.begin(), bytes.end());
-    }
+    void append(const std::vector<uint8_t>& bytes);
 };
 
 // Template implementations
@@ -446,32 +435,10 @@ void Writer::write_association(const MapType& map) {
     }
 }
 
-// Specialization for WXFValue type - supports heterogeneous nesting
+// Specialization for WXFValue type - supports heterogeneous nesting. A full specialization is
+// a function, not a template, so its body is in wxf.cpp.
 template<>
-inline void Writer::write<WXFValue>(const WXFValue& value) {
-    std::visit([this](const auto& v) {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, std::monostate>) {
-            // Write empty list for null/empty
-            write_function("List", 0);
-        } else if constexpr (std::is_same_v<T, WXFValueList>) {
-            write_function("List", v.size());
-            for (const auto& item : v) {
-                write(item);
-            }
-        } else if constexpr (std::is_same_v<T, WXFValueAssociation>) {
-            write_byte(static_cast<uint8_t>(Token::Association));
-            write_varint(v.size());
-            for (const auto& [k, val] : v) {
-                write_byte(static_cast<uint8_t>(Token::Rule));
-                write(k);
-                write(val);
-            }
-        } else {
-            write(v);  // Use generic write for primitives
-        }
-    }, value.data);
-}
+void Writer::write<WXFValue>(const WXFValue& value);
 
 // Convenience functions for common operations
 template<typename T>

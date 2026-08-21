@@ -518,5 +518,98 @@ void Writer::write_function(const std::string& head, size_t arg_count) {
     write_symbol(head);
 }
 
+
+// =============================================================================
+// Exception types
+// =============================================================================
+//
+// The constructors are defined here rather than in the header so each class has one
+// translation unit that anchors its vtable and type_info, instead of every includer
+// emitting a weak copy.
+
+WXFException::WXFException(const std::string& message, size_t position)
+    : std::runtime_error(message), position_(position) {}
+
+size_t WXFException::position() const noexcept { return position_; }
+
+ParseError::ParseError(const std::string& message, size_t position)
+    : WXFException("Parse error: " + message, position) {}
+
+TypeError::TypeError(const std::string& message, size_t position)
+    : WXFException("Type error: " + message, position) {}
+
+// =============================================================================
+// Parser: construction and cursor
+// =============================================================================
+
+Parser::Parser(const uint8_t* data, size_t size)
+    : data_(data), size_(size), read_position_(0) {}
+
+Parser::Parser(const std::vector<uint8_t>& data)
+    : Parser(data.data(), data.size()) {}
+
+size_t Parser::position() const noexcept { return read_position_; }
+
+const uint8_t* Parser::data() const noexcept { return data_; }
+
+size_t Parser::remaining() const noexcept { return size_ - read_position_; }
+
+bool Parser::at_end() const noexcept { return read_position_ >= size_; }
+
+void Parser::seek(size_t pos) {
+    if (pos > size_) throw ParseError("seek past end of data", pos);
+    read_position_ = pos;
+}
+
+void Parser::skip_value() { skip_value(0); }
+
+// =============================================================================
+// Writer: buffer access
+// =============================================================================
+
+const std::vector<uint8_t>& Writer::data() const noexcept { return data_; }
+
+std::vector<uint8_t> Writer::release_data() noexcept { return std::move(data_); }
+
+void Writer::clear() noexcept { data_.clear(); }
+
+size_t Writer::size() const noexcept { return data_.size(); }
+
+void Writer::reserve(std::size_t n) { data_.reserve(n); }
+
+void Writer::append(const std::vector<uint8_t>& bytes) {
+    data_.insert(data_.end(), bytes.begin(), bytes.end());
+}
+
+// =============================================================================
+// Writer::write<WXFValue>
+// =============================================================================
+
+template<>
+void Writer::write<WXFValue>(const WXFValue& value) {
+    std::visit([this](const auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            // Write empty list for null/empty
+            write_function("List", 0);
+        } else if constexpr (std::is_same_v<T, WXFValueList>) {
+            write_function("List", v.size());
+            for (const auto& item : v) {
+                write(item);
+            }
+        } else if constexpr (std::is_same_v<T, WXFValueAssociation>) {
+            write_byte(static_cast<uint8_t>(Token::Association));
+            write_varint(v.size());
+            for (const auto& [k, val] : v) {
+                write_byte(static_cast<uint8_t>(Token::Rule));
+                write(k);
+                write(val);
+            }
+        } else {
+            write(v);  // Use generic write for primitives
+        }
+    }, value.data);
+}
+
 }  // namespace wxf
 }  // namespace HG_NAMESPACE
