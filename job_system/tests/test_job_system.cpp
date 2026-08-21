@@ -142,28 +142,6 @@ TEST_F(JobSystemTest, CustomCompatibilityFunction) {
     EXPECT_EQ(jobs_executed.load(), 3);
 }
 
-// TEST_F(JobSystemTest, JobWithFuture) {
-//     job_system->start();
-//     
-//     auto future = job_system->submit_with_future([]() {
-//         return 42;
-//     }, TestJobType::GRAPHICS);
-//     
-//     EXPECT_EQ(future.get(), 42);
-// }
-
-// TEST_F(JobSystemTest, JobWithVoidFuture) {
-//     std::atomic<bool> job_executed{false};
-//     job_system->start();
-//     
-//     auto future = job_system->submit_with_future([&job_executed]() {
-//         job_executed.store(true);
-//     }, TestJobType::GRAPHICS);
-//     
-//     future.wait();
-//     EXPECT_TRUE(job_executed.load());
-// }
-
 TEST_F(JobSystemTest, WorkStealing) {
     std::atomic<int> counter{0};
     const int jobs_per_worker = 10;
