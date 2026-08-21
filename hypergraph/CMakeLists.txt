@@ -6,6 +6,7 @@ add_library(hypergraph
     src/rewriter.cpp
     src/causal_graph.cpp
     src/parallel_evolution.cpp
+    src/arena.cpp
     src/hypergraph.cpp
     src/rule_analysis.cpp
     src/pattern.cpp
