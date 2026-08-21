@@ -64,26 +64,15 @@ struct VertexHashCache {
     uint32_t count;
     uint32_t capacity;
 
-    VertexHashCache() : vertices(nullptr), hashes(nullptr), adjacency_ptr(nullptr), count(0), capacity(0) {}
+    VertexHashCache();
 
-    uint64_t lookup(VertexId v) const {
-        // vertices[] is built sorted ascending (WL hash builds it from a sorted,
-        // deduplicated vertex list), so binary-search for v and read the parallel
-        // hashes[] slot at the same index. Returns 0 when v is absent.
-        const VertexId* pos = std::lower_bound(vertices, vertices + count, v);
-        if (pos != vertices + count && *pos == v) {
-            return hashes[pos - vertices];
-        }
-        return 0;
-    }
+    // vertices[] is built sorted ascending (WL hash builds it from a sorted,
+    // deduplicated vertex list), so binary-search for v and read the parallel
+    // hashes[] slot at the same index. Returns 0 when v is absent.
+    uint64_t lookup(VertexId v) const;
 
-
-    void insert(VertexId v, uint64_t hash) {
-        // Note: caller must ensure capacity
-        vertices[count] = v;
-        hashes[count] = hash;
-        ++count;
-    }
+    // Note: caller must ensure capacity
+    void insert(VertexId v, uint64_t hash);
 
 };
 
@@ -99,9 +88,7 @@ public:
     // FNV constants are defined in types.hpp
     static constexpr size_t MAX_REFINEMENT_DEPTH = 100;
 
-    explicit WLHash(ConcurrentHeterogeneousArena* arena)
-        : arena_(arena)
-    {}
+    explicit WLHash(ConcurrentHeterogeneousArena* arena);
 
     // Non-copyable
     WLHash(const WLHash&) = delete;
@@ -414,9 +401,7 @@ private:
     // =========================================================================
 
     // Use fnv_hash from types.hpp - alias for compatibility
-    static uint64_t fnv_combine(uint64_t h, uint64_t value) {
-        return fnv_hash(h, value);
-    }
+    static uint64_t fnv_combine(uint64_t h, uint64_t value);
 
     // Insertion sort for small arrays (faster than std::sort for n < 16)
     template<typename Iter>
@@ -434,12 +419,7 @@ private:
 
     // splitmix64 finaliser — strong avalanche so a multiset SUM of these is a
     // collision-resistant order-independent hash.
-    static uint64_t mix64(uint64_t z) {
-        z += 0x9e3779b97f4a7c15ull;
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-        return z ^ (z >> 31);
-    }
+    static uint64_t mix64(uint64_t z);
 
     // Canonical state hash as a COMMUTATIVE multiset combine of per-vertex colours
     // and per-edge hashes. Order-independent => no sort needed to canonicalise, and
@@ -485,17 +465,7 @@ private:
         const VertexId* vertices,
         uint8_t arity,
         const VertexHashCache& cache
-    ) const {
-        uint64_t sig = FNV_OFFSET;
-        sig = fnv_combine(sig, arity);
-
-        for (uint8_t i = 0; i < arity; ++i) {
-            uint64_t vh = cache.lookup(vertices[i]);
-            sig = fnv_combine(sig, vh);
-        }
-
-        return sig;
-    }
+    ) const;
 
     // Compute signature for a set of edges
     template<typename VertexAccessor, typename ArityAccessor>

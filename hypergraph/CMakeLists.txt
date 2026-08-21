@@ -10,6 +10,7 @@ add_library(hypergraph
     src/types.cpp
     src/bitset.cpp
     src/index.cpp
+    src/wl_hash.cpp
     src/hypergraph.cpp
     src/rule_analysis.cpp
     src/pattern.cpp
