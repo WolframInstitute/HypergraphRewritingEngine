@@ -13,7 +13,7 @@ if(NOT WolframLanguage_FOUND)
 endif()
 
 # Source files - relative to LibraryResources directory
-set(SOURCES hypergraph_ffi.cpp)
+set(SOURCES hypergraph_ffi.cpp paclet_support.cpp)
 
 # Create the library
 add_library(HypergraphRewriting SHARED ${SOURCES})
@@ -33,6 +33,7 @@ target_compile_definitions(HypergraphRewriting PRIVATE
 add_executable(hg_evolve
     hg_evolve_main.cpp
     hypergraph_ffi.cpp
+    paclet_support.cpp
 )
 target_compile_definitions(hg_evolve PRIVATE HG_STANDALONE_BINARY
     HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="hg_evolve")
@@ -84,6 +85,7 @@ if(TARGET hg_gpu)
         hg_evolve_main.cpp
         hypergraph_ffi.cpp
         hg_gpu_backend.cpp
+        paclet_support.cpp
     )
     target_compile_definitions(hg_evolve_gpu PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND
         HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="hg_evolve_gpu")
@@ -379,6 +381,7 @@ if(TARGET hg_gpu AND BUILD_TESTS)
         tests/test_wxf_serialization.cpp
         hypergraph_ffi.cpp
         hg_gpu_backend.cpp
+        paclet_support.cpp
     )
     target_compile_definitions(gpu_ffi_tests PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND
         HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="gpu_ffi_tests"

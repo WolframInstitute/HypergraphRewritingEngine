@@ -193,6 +193,7 @@ create_test_executable(all_tests
     # to read in one sitting -- these are the contract the verbs get written against.
     ../paclet_source/tests/test_session.cpp
     ../paclet_source/hypergraph_ffi.cpp
+    ../paclet_source/paclet_support.cpp
 )
 # run_rewriting_core is the standalone-binary marshaling path (WXF over the FFI):
 # no Wolfram SDK, process-kill abort. HG_STANDALONE_BINARY only guards code in the

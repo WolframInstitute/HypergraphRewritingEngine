@@ -45,7 +45,9 @@ namespace ffi {
 // what matters now is that the slot below owns one of THESE and not a device type.
 class EngineHolder {
 public:
-    virtual ~EngineHolder() = default;
+    // Defined in paclet_support.cpp, so this polymorphic class has one translation unit
+    // anchoring its vtable rather than a weak copy in every includer.
+    virtual ~EngineHolder();
 
     // Extend the exploration by `steps` from the CURRENT frontier.
     //
@@ -73,7 +75,7 @@ public:
     // and not per-device: the record is of the SERIALISATION, which both devices marshal through
     // one build_graph_data, so a second copy per engine would be a second answer to a question
     // that has one.
-    DeliveryCursor& delivery_cursor() { return delivery_cursor_; }
+    DeliveryCursor& delivery_cursor();
 
 private:
     DeliveryCursor delivery_cursor_;
@@ -84,71 +86,37 @@ enum class SessionState { None, Live, Invalidated };
 
 class SessionError : public std::runtime_error {
 public:
-    explicit SessionError(const std::string& what) : std::runtime_error(what) {}
+    explicit SessionError(const std::string& what);
 };
 
 class SessionSlot {
 public:
     static constexpr uint64_t kNoSession = 0;
 
-    bool is_live() const { return state_ == SessionState::Live; }
-    SessionState state() const { return state_; }
-    uint64_t handle() const { return handle_; }
+    bool is_live() const;
+    SessionState state() const;
+    uint64_t handle() const;
 
     // Take the holder and mint a handle. Refuses while one is live (D7): a caller that has not
     // closed its session has not finished with it.
     // D7's refusal, in ONE place. Both devices refuse a second Open and both must say the same
     // thing: a caller matching on the message has no way to know which engine answered, and the
     // device's own wording drifted from this one until a test compiled against both found it.
-    static std::string already_live_message(uint64_t live_handle) {
-        return "Open: a session is already live (" + std::to_string(live_handle) +
-               "); this build serves one session at a time";
-    }
+    static std::string already_live_message(uint64_t live_handle);
 
-    uint64_t open(std::unique_ptr<EngineHolder> holder) {
-        if (!holder) throw SessionError("Open: no engine holder");
-        if (state_ == SessionState::Live)
-            throw SessionError(already_live_message(handle_));
-        holder_ = std::move(holder);
-        handle_ = next_++;
-        state_ = SessionState::Live;
-        return handle_;
-    }
+    uint64_t open(std::unique_ptr<EngineHolder> holder);
 
     // The live session's engine. Throws rather than returning null, because every caller of this
     // is about to use it and a null check skipped once is a session served as a fresh engine.
-    EngineHolder& engine(uint64_t handle) {
-        require(handle);
-        return *holder_;
-    }
+    EngineHolder& engine(uint64_t handle);
 
     // D14. The engine is gone; the handle stays addressable so the next verb on it can say so.
-    void invalidate() {
-        if (state_ != SessionState::Live) return;
-        holder_.reset();
-        state_ = SessionState::Invalidated;
-    }
+    void invalidate();
 
-    void close(uint64_t handle) {
-        require(handle);
-        holder_.reset();
-        handle_ = kNoSession;
-        state_ = SessionState::None;
-    }
+    void close(uint64_t handle);
 
 private:
-    void require(uint64_t handle) const {
-        if (handle == kNoSession) throw SessionError("no session handle given");
-        if (handle != handle_)
-            throw SessionError("session " + std::to_string(handle) + " is not this worker's live "
-                               "session");
-        if (state_ == SessionState::Invalidated)
-            throw SessionError("session " + std::to_string(handle) + " was invalidated: the run "
-                               "overflowed and its engine was discarded, so the exploration it "
-                               "held is gone. Open a new session");
-        if (state_ != SessionState::Live)
-            throw SessionError("session " + std::to_string(handle) + " is closed");
-    }
+    void require(uint64_t handle) const;
 
     std::unique_ptr<EngineHolder> holder_;
     uint64_t handle_ = kNoSession;
