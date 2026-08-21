@@ -1050,52 +1050,6 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     return stats;
 }
 
-// THE DEVICE STACK MUST HOLD THE KERNEL'S OWN FRAME BEFORE ANY RECURSION, and how big that
-// frame is, is a property of the COMPILED kernel -- not something a formula on the host can
-// predict. So it is read from the kernel.
-//
-// EngineState sizes the stack from the run's reconstruction depth: a 32 KB floor plus 8,704
-// bytes per level, which is the recursion budget the replay needs. That says nothing about the
-// frame the evolve kernel occupies before it recurses at all, and ptxas puts that at 61,616
-// bytes. For any run of TWO STEPS OR FEWER the depth-derived request is below it -- 58,880 at
-// two steps, 50,176 at one -- so the kernel overflowed its stack on entry. It surfaced as
-// "an illegal memory access was encountered" at the launch's sync, which poisons the context so
-// every later CUDA call in the process fails too, and the retry loop then reported the whole
-// thing as "engine at the grown size no longer fits in device memory". compute-sanitizer names
-// it directly: "Stack overflow ... in k_persistent_evolve".
-//
-// MEASURED, by forcing the limit and bisecting: at 61,616 the kernel still overflows, at 62,464
-// it does not, and the test that exposed this passes from there up. So the requirement is the
-// frame plus a little, and the guard asks for the frame plus 8 KB.
-//
-// Raising only when the limit is short leaves EngineState's larger request alone, so a deep run
-// keeps the recursion budget it asked for. EngineState derives qe_max_recursion_depth_ from the
-// stack IT was granted, which is now the smaller of the two; that bounds the replay lower than
-// it needs to be, which is the safe direction.
-// Headroom over the kernel's reported frame; see ensure_device_stack_for.
-static constexpr size_t kStackAbiHeadroomBytes = 8u * 1024u;
-
-static void ensure_device_stack_for(const void* kernel, const char* what) {
-    cudaFuncAttributes attr{};
-    if (cudaFuncGetAttributes(&attr, kernel) != cudaSuccess) return;
-    size_t have = 0;
-    if (cudaDeviceGetLimit(&have, cudaLimitStackSize) != cudaSuccess) return;
-    // THE FRAME PLUS HEADROOM, because the frame alone is not enough. Measured on this kernel:
-    // localSizeBytes is 61,616 and a limit of exactly that still overflows; 62,464 does not. The
-    // gap is the call ABI's own overhead -- return address, saved registers, alignment -- which
-    // the reported frame does not include. 8 KB is an order of magnitude above the ~850 bytes
-    // observed, and costs nothing that matters: the driver reserves per resident thread, and
-    // this is 8 KB against a 61 KB frame.
-    const size_t need = static_cast<size_t>(attr.localSizeBytes) + kStackAbiHeadroomBytes;
-    if (have >= need) return;
-    // Best effort, exactly as EngineState's own request is: a driver that refuses leaves the
-    // smaller limit, and the launch fails as it did before rather than the run being refused.
-    if (cudaDeviceSetLimit(cudaLimitStackSize, need) != cudaSuccess) {
-        cudaGetLastError();                       // clear the sticky error
-        (void)what;
-    }
-}
-
 PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             const std::vector<DeviceRule>& rules,
                                             const std::vector<StateId>& roots,
@@ -1262,8 +1216,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         std::fprintf(stderr, "[persistent setup] dedup_maps=%.2f allocs=%.2f seed=%.2f (ms)\n",
                      t_maps, t_alloc, t_seed);
 
-    ensure_device_stack_for(reinterpret_cast<const void*>(&k_persistent_evolve),
-                            "k_persistent_evolve");
     k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,

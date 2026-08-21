@@ -95,7 +95,39 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
     set_property(TARGET hg_gpu_tests PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
     target_link_libraries(hg_gpu_tests PRIVATE hg_gpu gtest gtest_main)
 
-set_target_properties(hg_gpu PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+# NO DEVICE LTO, AND THE PER-CONFIG PROPERTY IS THE ONE THAT DECIDES. The root sets
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE, which initialises
+# INTERPROCEDURAL_OPTIMIZATION_RELEASE on every target created after it, and that beats a
+# config-less INTERPROCEDURAL_OPTIMIZATION FALSE. Setting only the config-less one left every
+# CUDA target compiling to `code=[compute_89,lto_89]` -- whole-program device LTO -- so nvlink
+# re-optimised the entire device program at link time and took 14.6 GB of resident memory to do
+# it on a single architecture.
+#
+# Device code is linked by nvcc's own device-link step. Every CUDA target opts out for all
+# configurations rather than inheriting the host setting.
+foreach(hg_cuda_target hg_gpu hg_gpu_tests)
+    set_target_properties(${hg_cuda_target} PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION FALSE
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO FALSE
+        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL FALSE)
+
+    # CHECKED, NOT ASSUMED. The opt-out above is easy to write and easy to get wrong -- the
+    # first version set only the config-less property and did nothing, and nothing said so.
+    # What the mistake cost is why this check exists rather than a comment: device LTO
+    # flattened the replay's recursive cycle into one 61,616-byte frame, which forced a
+    # per-thread stack that collapsed occupancy, and the GPU test suite ran 23.6 s instead of
+    # 7.5 s while one test faulted outright.
+    foreach(hg_cfg RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
+        get_target_property(hg_ipo ${hg_cuda_target} INTERPROCEDURAL_OPTIMIZATION_${hg_cfg})
+        if(hg_ipo)
+            message(FATAL_ERROR
+                "${hg_cuda_target} has INTERPROCEDURAL_OPTIMIZATION_${hg_cfg} on. Device LTO "
+                "flattens the reconstruction replay's recursion into a single huge stack frame; "
+                "see the note above this check.")
+        endif()
+    endforeach()
+endforeach()
 
     add_executable(gpu_differential_tests
         tests/test_gpu_vs_cpu_differential.cpp
