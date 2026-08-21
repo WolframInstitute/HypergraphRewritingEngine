@@ -72,16 +72,7 @@ namespace marshal {
 // ONE BODY, BOTH DEVICES, for the same reason build_graph_data() is one body: a caller cannot
 // tell which device answered and must not be able to. Two copies of this were byte-identical
 // and separately named, so nothing compared them and either could have drifted alone.
-inline std::vector<uint8_t> session_ack(uint64_t handle) {
-    wxf::Writer w;
-    w.write_header();
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(1);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Session"));
-    w.write(static_cast<int64_t>(handle));
-    return w.release_data();
-}
+std::vector<uint8_t> session_ack(uint64_t handle);
 
 // Edge-kind tags for the delivery cursor's keys. They distinguish edges that share endpoints
 // but not meaning -- a causal edge and a branchial edge between the same two events are two
@@ -108,12 +99,7 @@ struct GraphOptions {
 };
 
 // Resolve branchial_step into an absolute target step (0 means "no filter").
-inline uint32_t branchial_target_step(int branchial_step, int steps, bool& filter_by_step) {
-    filter_by_step = (branchial_step != 0);
-    if (!filter_by_step) return 0;
-    if (branchial_step > 0) return static_cast<uint32_t>(branchial_step);
-    return static_cast<uint32_t>(steps + 1 + branchial_step);
-}
+uint32_t branchial_target_step(int branchial_step, int steps, bool& filter_by_step);
 
 // THE STATE-ENDPOINT PROJECTION OF THE BRANCHIAL RELATION, which "BranchialStateEdges" and
 // "BranchialStateEdgesAllSiblings" deliver as raw lists rather than as a GraphData.
@@ -198,21 +184,8 @@ inline BranchialStateEdgeSet branchial_state_edges_all_siblings(
 }
 
 // The two keys both forms deliver under, so the reply shape is spelled once.
-inline void push_branchial_state_edges(wxf::WXFValueAssociation& result,
-                                       const BranchialStateEdgeSet& set) {
-    wxf::WXFValueList edges;
-    for (const auto& e : set.edges) {
-        wxf::WXFValueAssociation ed;
-        ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(e.first)});
-        ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(e.second)});
-        edges.push_back(wxf::WXFValue(ed));
-    }
-    result.push_back({wxf::WXFValue("BranchialStateEdges"), wxf::WXFValue(edges)});
-
-    wxf::WXFValueList verts;
-    for (int64_t v : set.vertices) verts.push_back(wxf::WXFValue(v));
-    result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(verts)});
-}
+void push_branchial_state_edges(wxf::WXFValueAssociation& result,
+                                const BranchialStateEdgeSet& set);
 
 // Which relations a graph property is built FROM, decided by its name.
 //
@@ -224,25 +197,10 @@ struct GraphPropertyNeeds {
     bool branchial = false;
 };
 
-inline GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {
-    const bool is_causal    = graph_property.rfind("Causal", 0) == 0;
-    const bool is_branchial = graph_property.rfind("Branchial", 0) == 0;
-    const bool is_evolution = graph_property.find("Evolution") != std::string::npos;
-    return GraphPropertyNeeds{
-        is_causal    || (is_evolution && graph_property.find("Causal") != std::string::npos),
-        is_branchial || (is_evolution && graph_property.find("Branchial") != std::string::npos)};
-}
+GraphPropertyNeeds graph_property_needs(const std::string& graph_property);
 
 // The union over a list of properties.
-inline GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties) {
-    GraphPropertyNeeds n;
-    for (const std::string& p : properties) {
-        const GraphPropertyNeeds one = graph_property_needs(p);
-        n.causal    = n.causal    || one.causal;
-        n.branchial = n.branchial || one.branchial;
-    }
-    return n;
-}
+GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties);
 
 // Build the "GraphData" association: property name -> <|Vertices, Edges, VertexData|>.
 template <typename Source>

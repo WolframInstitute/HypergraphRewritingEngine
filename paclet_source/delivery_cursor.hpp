@@ -37,30 +37,20 @@ class DeliveryCursor {
 public:
     // True when this vertex has not been sent for this property, or was sent with a different
     // revision. Records it either way, so a caller loops over vertices once.
-    bool take_vertex(const std::string& property, int64_t id, uint32_t revision) {
-        auto& sent = by_property_[property].vertex_revision;
-        auto it = sent.find(id);
-        if (it != sent.end() && it->second == revision) return false;
-        sent[id] = revision;
-        return true;
-    }
+    bool take_vertex(const std::string& property, int64_t id, uint32_t revision);
 
     // True when this edge has not been sent for this property. Edges have no revision: an edge
     // is a pair of endpoints and a type, and none of the three changes after it is minted.
-    bool take_edge(const std::string& property, uint64_t key) {
-        return by_property_[property].edges.insert(key).second;
-    }
+    bool take_edge(const std::string& property, uint64_t key);
 
     // Has this property ever been delivered? A caller needs this to decide whether a reply is a
     // delta to merge or a graph to replace -- the FIRST delivery of a property is a whole graph
     // even in delta mode.
-    bool delivered_before(const std::string& property) const {
-        return by_property_.find(property) != by_property_.end();
-    }
+    bool delivered_before(const std::string& property) const;
 
     // Forget everything. A caller that asks for a full delivery is asking to resynchronise, and
     // its next delta must be measured from that, not from what was sent before it.
-    void reset() { by_property_.clear(); }
+    void reset();
 
 private:
     struct PropertyRecord {
