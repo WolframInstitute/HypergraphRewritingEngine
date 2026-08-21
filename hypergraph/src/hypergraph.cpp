@@ -1611,5 +1611,64 @@ uint64_t Hypergraph::canonical_hash_computations() const {
     return canonical_hash_computations_.load(std::memory_order_relaxed);
 }
 
+// =============================================================================
+// Event accessors, identity settings and index access
+// =============================================================================
+
+const Event& Hypergraph::get_event(EventId eid) const { return events_[eid]; }
+Event& Hypergraph::get_event(EventId eid) { return events_[eid]; }
+
+// The CANONICAL count once an event identity is selected, the raw count otherwise. The acquire
+// synchronises with the release stores in alloc_event.
+uint32_t Hypergraph::num_events() const {
+    if (event_signature_keys_ != EVENT_SIG_NONE) {
+        return canonical_event_count_.load(std::memory_order_acquire);
+    }
+    return counters_.next_event.load(std::memory_order_acquire);
+}
+
+uint32_t Hypergraph::num_raw_events() const {
+    return counters_.next_event.load(std::memory_order_acquire);
+}
+
+// PUBLISHED events, the bound for enumeration. See num_published_states for why the claim
+// counter is not that bound.
+uint32_t Hypergraph::num_published_events() const { return events_.size(); }
+
+bool Hypergraph::is_event_canonical(EventId eid) const {
+    if (eid >= num_raw_events()) return false;
+    return events_[eid].is_canonical();
+}
+
+EventId Hypergraph::get_canonical_event(EventId eid) const {
+    if (eid >= num_raw_events()) return INVALID_ID;
+    const Event& event = events_[eid];
+    return event.is_canonical() ? eid : event.canonical_event_id;
+}
+
+void Hypergraph::set_event_signature_keys(EventSignatureKeys keys) {
+    event_signature_keys_ = keys;
+}
+
+EventSignatureKeys Hypergraph::event_signature_keys() const { return event_signature_keys_; }
+
+void Hypergraph::set_positional_event_identity(bool on) {
+    positional_event_identity_.store(on, std::memory_order_relaxed);
+}
+
+bool Hypergraph::positional_event_identity() const {
+    return positional_event_identity_.load(std::memory_order_relaxed);
+}
+
+const SignatureIndex& Hypergraph::signature_index() const {
+    return match_index_.signature_index();
+}
+
+const InvertedVertexIndex& Hypergraph::inverted_index() const {
+    return match_index_.inverted_index();
+}
+
+const PatternMatchingIndex& Hypergraph::match_index() const { return match_index_; }
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

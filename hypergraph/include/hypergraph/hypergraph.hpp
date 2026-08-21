@@ -823,31 +823,18 @@ public:
     );
 
     // Get event by ID
-    const Event& get_event(EventId eid) const {
-        return events_[eid];
-    }
-
-    Event& get_event(EventId eid) {
-        return events_[eid];
-    }
+    const Event& get_event(EventId eid) const;
+    Event& get_event(EventId eid);
 
     // Number of events (returns canonical count when canonicalization enabled)
-    uint32_t num_events() const {
-        if (event_signature_keys_ != EVENT_SIG_NONE) {
-            return canonical_event_count_.load(std::memory_order_acquire);
-        }
-        // Use acquire to synchronize with release stores in alloc_event
-        return counters_.next_event.load(std::memory_order_acquire);
-    }
+    uint32_t num_events() const;
 
     // Number of raw events (always returns total count)
-    uint32_t num_raw_events() const {
-        return counters_.next_event.load(std::memory_order_acquire);
-    }
+    uint32_t num_raw_events() const;
 
     // PUBLISHED events, the bound for enumeration. See num_published_states for why the claim
     // counter above is not that bound.
-    uint32_t num_published_events() const { return events_.size(); }
+    uint32_t num_published_events() const;
 
     // Iterate over canonical events only (skips duplicates)
     // Callback signature: void(EventId eid, const Event& event)
@@ -863,26 +850,14 @@ public:
     }
 
     // Check if an event is canonical (not a duplicate)
-    bool is_event_canonical(EventId eid) const {
-        if (eid >= num_raw_events()) return false;
-        return events_[eid].is_canonical();
-    }
+    bool is_event_canonical(EventId eid) const;
 
     // Get the canonical event ID for a raw event ID
-    EventId get_canonical_event(EventId eid) const {
-        if (eid >= num_raw_events()) return INVALID_ID;
-        const Event& event = events_[eid];
-        return event.is_canonical() ? eid : event.canonical_event_id;
-    }
+    EventId get_canonical_event(EventId eid) const;
 
     // Event signature keys (bitflag controlling event equivalence)
-    void set_event_signature_keys(EventSignatureKeys keys) {
-        event_signature_keys_ = keys;
-    }
-
-    EventSignatureKeys event_signature_keys() const {
-        return event_signature_keys_;
-    }
+    void set_event_signature_keys(EventSignatureKeys keys);
+    EventSignatureKeys event_signature_keys() const;
 
     // WHERE the consumed/produced ranks in an Automatic-keyed signature are read from.
     //
@@ -898,29 +873,17 @@ public:
     // differs from the reference oracle's like-named column where tie-breaks differ (23 vs 25 on
     // two-rules-overlap step 3) and from the authority (21). It requires raw presentations, so
     // requesting it disables quotient exploration (the engine reports that in warnings()).
-    void set_positional_event_identity(bool on) {
-        positional_event_identity_.store(on, std::memory_order_relaxed);
-    }
-    bool positional_event_identity() const {
-        return positional_event_identity_.load(std::memory_order_relaxed);
-    }
+    void set_positional_event_identity(bool on);
+    bool positional_event_identity() const;
 
 
     // =========================================================================
     // Index Access
     // =========================================================================
 
-    const SignatureIndex& signature_index() const {
-        return match_index_.signature_index();
-    }
-
-    const InvertedVertexIndex& inverted_index() const {
-        return match_index_.inverted_index();
-    }
-
-    const PatternMatchingIndex& match_index() const {
-        return match_index_;
-    }
+    const SignatureIndex& signature_index() const;
+    const InvertedVertexIndex& inverted_index() const;
+    const PatternMatchingIndex& match_index() const;
 
     // =========================================================================
     // Causal Graph Access
