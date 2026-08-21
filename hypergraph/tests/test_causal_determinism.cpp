@@ -35,6 +35,8 @@ struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
     long claims = 0, drops = 0, align_fail = 0, badcorr = 0;
+    long not_rep = 0, visits = 0;
+    uint64_t shape = 0;
     long branchial_stored = 0;
     long stored_before_walk = 0;
     long branchial_pairs = 0;
@@ -169,6 +171,15 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     fp.drops      = static_cast<long>(g.capture_dropped_no_orbits());
     fp.align_fail = static_cast<long>(g.num_alignment_failures());
     fp.badcorr    = static_cast<long>(g.num_bad_correspondences());
+    // THE THREE THE ENGINE ALREADY COUNTED AND NOTHING READ. A firing whose EVENT count moved
+    // by one needs to say where the extra application came from, and these separate the
+    // candidates: not_rep says whether a different raw state won its class's expansion, visits
+    // says how many times an (instance, match) pair was reached, and the shape is the sorted
+    // multiset of per-instance application counts -- so a new instance and an existing instance
+    // gaining one are distinguishable rather than both reading as "one more event".
+    fp.not_rep    = static_cast<long>(g.capture_skipped_not_representative());
+    fp.visits     = static_cast<long>(g.applied_visits());
+    fp.shape      = g.applied_shape_fingerprint();
     return fp;
 }
 
@@ -231,6 +242,8 @@ struct Variant {
     // Each of these is a silent drop that changes every relation while leaving the STATE set
     // alone -- the observed shape -- and each was invisible until it was counted.
     long claims, drops, align_fail, badcorr;
+    long not_rep, visits;
+    uint64_t shape;
 };
 struct Spread {
     std::set<uint64_t> states, causal, branchial;
@@ -258,8 +271,11 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
                "  [claims=" + std::to_string(var.claims) +
                " width_dropped=" + std::to_string(var.claims - var.ne) +
                " no_orbits=" + std::to_string(var.drops) +
+               " not_rep=" + std::to_string(var.not_rep) +
+               " visits=" + std::to_string(var.visits) +
                " align_fail=" + std::to_string(var.align_fail) +
-               " badcorr=" + std::to_string(var.badcorr) + "]";
+               " badcorr=" + std::to_string(var.badcorr) +
+               " applied_shape=" + std::to_string(var.shape) + "]";
     }
     // THREE SHAPES, NOT TWO, and reading only the STATE count cannot tell them apart. This
     // concluded "counts AGREE -> CANONICALIZATION" on a firing whose event count differed by one
@@ -344,7 +360,8 @@ Spread spread(const Workload& w, bool quotient) {
                                         " rep=" + std::to_string(rep);
                 const Variant var{0, cfg, f.num_states, f.num_events,
                                   f.num_causal, f.num_branchial,
-                                  f.claims, f.drops, f.align_fail, f.badcorr};
+                                  f.claims, f.drops, f.align_fail, f.badcorr,
+                                  f.not_rep, f.visits, f.shape};
                 s.states_v.emplace(f.states, var);
                 s.causal_v.emplace(f.causal, var);
                 s.branchial_v.emplace(f.branchial, var);
