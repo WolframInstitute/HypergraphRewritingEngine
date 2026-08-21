@@ -2336,5 +2336,119 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     return true;
 }
 
+// =============================================================================
+// MatchRecord, MatchContext, ExpandTaskData, ChildInfo, ParentInfo
+// =============================================================================
+
+uint16_t MatchRecord::rule_index() const { return core->rule_index; }
+uint8_t MatchRecord::num_edges() const { return core->num_edges; }
+const EdgeId* MatchRecord::matched_edges() const { return core->matched_edges; }
+const VariableBinding& MatchRecord::binding() const { return core->binding; }
+
+// THE MATCH-DEDUP KEY, and it must use source_state -- the RAW state id -- not any canonical
+// identifier. Isomorphic raw states share a canonical hash, so two matches on an edge inherited
+// from a common ancestor would key alike and dedup against each other. Raw ids are not stable
+// across runs, which is fine: dedup only has to hold within one run.
+//
+// ONE FNV, hgcommon's. fnv_hash(h, v) is exactly `h ^= v; h *= FNV_PRIME`, so the value is
+// unchanged by having one implementation instead of two.
+uint64_t MatchRecord::hash() const {
+    const MatchCore& c = *core;
+    uint64_t h = hgcommon::FNV_OFFSET;
+
+    h = hgcommon::fnv_hash(h, c.rule_index);
+
+    // source_state twice, the second time shifted: the raw ids are dense and low, so the extra
+    // mix spreads what would otherwise be a near-linear run of keys.
+    h = hgcommon::fnv_hash(h, source_state);
+    h = hgcommon::fnv_hash(h, source_state >> 16);
+
+    for (uint8_t i = 0; i < c.num_edges; ++i) h = hgcommon::fnv_hash(h, c.matched_edges[i]);
+
+    h = hgcommon::fnv_hash(h, c.binding.bound_mask);
+
+    // Walk the SET BITS of the mask rather than all MAX_VARS positions. Identical result -- the
+    // loop body was already guarded by is_bound, which is that same mask -- for as many
+    // iterations as there are bound variables instead of 32. This is the engine's most-probed
+    // hash: once per discovered match, and again per (match, descendant) pair forwarding carries.
+    uint32_t mask = c.binding.bound_mask;
+    while (mask) {
+        const uint32_t i = hgcommon::ctz(mask);
+        mask &= mask - 1;
+        h = hgcommon::fnv_hash(
+            h, (static_cast<uint64_t>(i) << 32) | c.binding.get(static_cast<uint8_t>(i)));
+    }
+
+    return h;
+}
+
+bool MatchRecord::operator==(const MatchRecord& other) const {
+    const MatchCore& a = *core;
+    const MatchCore& b = *other.core;
+    if (a.rule_index != b.rule_index || a.num_edges != b.num_edges ||
+        source_state != other.source_state) return false;
+    for (uint8_t i = 0; i < a.num_edges; ++i) {
+        if (a.matched_edges[i] != b.matched_edges[i]) return false;
+    }
+    for (uint8_t i = 0; i < MAX_VARS; ++i) {
+        if (a.binding.is_bound(i) != b.binding.is_bound(i)) return false;
+        if (a.binding.is_bound(i) && a.binding.get(i) != b.binding.get(i)) return false;
+    }
+    return true;
+}
+
+bool MatchContext::has_parent() const { return parent_state != INVALID_ID; }
+
+bool MatchContext::edge_was_consumed(EdgeId eid) const {
+    for (uint8_t i = 0; i < num_consumed; ++i) {
+        if (consumed_edges[i] == eid) return true;
+    }
+    return false;
+}
+
+bool MatchContext::edge_was_produced(EdgeId eid) const {
+    for (uint8_t i = 0; i < num_produced; ++i) {
+        if (produced_edges[i] == eid) return true;
+    }
+    return false;
+}
+
+bool ExpandTaskData::is_complete() const { return num_matched >= num_pattern_edges; }
+
+bool ExpandTaskData::contains_edge(EdgeId eid) const {
+    for (uint8_t i = 0; i < num_matched; ++i) {
+        if (matched_edges[i] == eid) return true;
+    }
+    return false;
+}
+
+void ExpandTaskData::to_pattern_order(EdgeId* out) const {
+    for (uint8_t i = 0; i < num_matched; ++i) {
+        out[match_order[i]] = matched_edges[i];
+    }
+}
+
+bool ChildInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
+    for (uint8_t i = 0; i < num_edges; ++i) {
+        for (uint8_t j = 0; j < num_consumed; ++j) {
+            if (matched_edges[i] == consumed_edges[j]) return true;
+        }
+    }
+    return false;
+}
+
+ParentInfo::ParentInfo() : parent_state(INVALID_ID), num_consumed(0) {}
+
+bool ParentInfo::has_parent() const { return parent_state != INVALID_ID; }
+
+bool ParentInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
+    for (uint8_t i = 0; i < num_edges; ++i) {
+        for (uint8_t j = 0; j < num_consumed; ++j) {
+            if (matched_edges[i] == consumed_edges[j]) return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

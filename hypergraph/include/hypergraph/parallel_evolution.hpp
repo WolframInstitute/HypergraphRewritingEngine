@@ -80,10 +80,10 @@ struct MatchRecord {
     // dedup against itself however it arrived.
     bool is_forwarded{false};
 
-    uint16_t rule_index() const { return core->rule_index; }
-    uint8_t num_edges() const { return core->num_edges; }
-    const EdgeId* matched_edges() const { return core->matched_edges; }
-    const VariableBinding& binding() const { return core->binding; }
+    uint16_t rule_index() const;
+    uint8_t num_edges() const;
+    const EdgeId* matched_edges() const;
+    const VariableBinding& binding() const;
 
     // Hash for deduplication - uses source_state + matched edges + binding.
     // MUST use source_state (raw state ID), NOT any canonical identifier!
@@ -102,53 +102,9 @@ struct MatchRecord {
     // v) is exactly `h ^= v; h *= FNV_PRIME`, so every mix below is the same arithmetic on the
     // same constants and the hash VALUE is unchanged; MatchRecord::hash is the match-dedup key,
     // so a changed value would silently re-partition the dedup map.
-    uint64_t hash() const {
-        const MatchCore& c = *core;
-        uint64_t h = hgcommon::FNV_OFFSET;
+    uint64_t hash() const;
 
-        h = hgcommon::fnv_hash(h, c.rule_index);
-
-        // source_state twice, the second time shifted: the raw ids are dense and low, so the
-        // extra mix spreads what would otherwise be a near-linear run of keys.
-        h = hgcommon::fnv_hash(h, source_state);
-        h = hgcommon::fnv_hash(h, source_state >> 16);
-
-        for (uint8_t i = 0; i < c.num_edges; ++i) h = hgcommon::fnv_hash(h, c.matched_edges[i]);
-
-        h = hgcommon::fnv_hash(h, c.binding.bound_mask);
-
-        // Mix in bound variables, walking the SET BITS of the mask rather than all MAX_VARS
-        // positions. Identical result -- the loop body was already guarded by is_bound, which is
-        // that same mask -- for as many iterations as there are bound variables instead of 32.
-        // This is the engine's most-probed hash: once per discovered match, and again per
-        // (match, descendant) pair that forwarding carries.
-        uint32_t mask = c.binding.bound_mask;
-        while (mask) {
-            const uint32_t i = hgcommon::ctz(mask);
-            mask &= mask - 1;
-            h = hgcommon::fnv_hash(
-                h, (static_cast<uint64_t>(i) << 32) | c.binding.get(static_cast<uint8_t>(i)));
-        }
-
-        return h;
-    }
-
-    bool operator==(const MatchRecord& other) const {
-        const MatchCore& a = *core;
-        const MatchCore& b = *other.core;
-        if (a.rule_index != b.rule_index || a.num_edges != b.num_edges ||
-            source_state != other.source_state) return false;
-        // Compare matched edges
-        for (uint8_t i = 0; i < a.num_edges; ++i) {
-            if (a.matched_edges[i] != b.matched_edges[i]) return false;
-        }
-        // Compare bindings
-        for (uint8_t i = 0; i < MAX_VARS; ++i) {
-            if (a.binding.is_bound(i) != b.binding.is_bound(i)) return false;
-            if (a.binding.is_bound(i) && a.binding.get(i) != b.binding.get(i)) return false;
-        }
-        return true;
-    }
+    bool operator==(const MatchRecord& other) const;
 };
 
 // =============================================================================
@@ -241,21 +197,9 @@ struct MatchContext {
     EdgeId produced_edges[MAX_PATTERN_EDGES];
     uint8_t num_produced{0};
 
-    bool has_parent() const { return parent_state != INVALID_ID; }
-
-    bool edge_was_consumed(EdgeId eid) const {
-        for (uint8_t i = 0; i < num_consumed; ++i) {
-            if (consumed_edges[i] == eid) return true;
-        }
-        return false;
-    }
-
-    bool edge_was_produced(EdgeId eid) const {
-        for (uint8_t i = 0; i < num_produced; ++i) {
-            if (produced_edges[i] == eid) return true;
-        }
-        return false;
-    }
+    bool has_parent() const;
+    bool edge_was_consumed(EdgeId eid) const;
+    bool edge_was_produced(EdgeId eid) const;
 };
 
 // =============================================================================
@@ -289,23 +233,10 @@ struct ExpandTaskData {
     VariableBinding binding{};              // Current variable bindings
     uint32_t step{0};                       // Evolution step
 
-    bool is_complete() const {
-        return num_matched >= num_pattern_edges;
-    }
-
-    bool contains_edge(EdgeId eid) const {
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            if (matched_edges[i] == eid) return true;
-        }
-        return false;
-    }
-
+    bool is_complete() const;
+    bool contains_edge(EdgeId eid) const;
     // Convert matched edges to pattern order
-    void to_pattern_order(EdgeId* out) const {
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            out[match_order[i]] = matched_edges[i];
-        }
-    }
+    void to_pattern_order(EdgeId* out) const;
 };
 
 // =============================================================================
@@ -319,14 +250,7 @@ struct ChildInfo {
     uint8_t num_consumed;
     uint32_t creation_step{0};  // Step at which child was created
 
-    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            for (uint8_t j = 0; j < num_consumed; ++j) {
-                if (matched_edges[i] == consumed_edges[j]) return true;
-            }
-        }
-        return false;
-    }
+    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const;
 };
 
 // =============================================================================
@@ -339,18 +263,9 @@ struct ParentInfo {
     EdgeId consumed_edges[MAX_PATTERN_EDGES];
     uint8_t num_consumed;
 
-    ParentInfo() : parent_state(INVALID_ID), num_consumed(0) {}
-
-    bool has_parent() const { return parent_state != INVALID_ID; }
-
-    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            for (uint8_t j = 0; j < num_consumed; ++j) {
-                if (matched_edges[i] == consumed_edges[j]) return true;
-            }
-        }
-        return false;
-    }
+    ParentInfo();
+    bool has_parent() const;
+    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const;
 };
 
 // =============================================================================
