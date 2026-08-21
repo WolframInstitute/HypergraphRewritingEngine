@@ -368,6 +368,13 @@ int main(){
         {"mProdRed/I3",  "mixed",      mProdRed,  I3, 3},
         {"mIdemProd/I1", "mixed",      mIdemProd, I1, 4},
         {"mIdemProd/I6", "mixed",      mIdemProd, I6, 3},
+        // THE CONFIGURATION THAT ACTUALLY FIRED. CausalDeterminism.QuotientCausalAttribution
+        // has reported two distinct causal fingerprints on "mixed1" three times, and mixed1 is
+        // mAllThree from a SINGLE EDGE at SIX steps -- twice the depth this table ran these
+        // rules at, and depth is what drives the canonical collapse those runs race over. The
+        // determinism gate can only say two runs disagreed; here the skeleton is diffed
+        // against the exhaustive expansion, so a deviation says which one is wrong.
+        {"mAllThree/mixed1", "mixed", mAllThree, I1, 6},
         {"mAllThree/I3", "mixed",      mAllThree, I3, 3},
         {"mAllThree/I2", "mixed",      mAllThree, I2, 3},
         {"mDupeDedup/I4","mixed",      mDupeDedup,I4, 3},

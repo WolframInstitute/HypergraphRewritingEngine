@@ -261,10 +261,23 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
                " align_fail=" + std::to_string(var.align_fail) +
                " badcorr=" + std::to_string(var.badcorr) + "]";
     }
-    out += std::string("\n  counts ") + (s.ns.size() == 1 ? "AGREE" : "DIFFER") +
-           " across variants -> fault is in " +
-           (s.ns.size() == 1 ? "CANONICALIZATION (same states, hashed differently)"
-                             : "EXPLORATION (a state exists in one run and not another)");
+    // THREE SHAPES, NOT TWO, and reading only the STATE count cannot tell them apart. This
+    // concluded "counts AGREE -> CANONICALIZATION" on a firing whose event count differed by one
+    // (10632 against 10633) purely because both runs had 241 states -- pointing the next reader
+    // at hashing when the evidence said an extra application had been claimed.
+    if (s.ns.size() != 1) {
+        out += "\n  STATE counts differ -> EXPLORATION: a state exists in one run and not "
+               "another";
+    } else if (s.ne.size() != 1 || s.nc.size() != 1 || s.nb.size() != 1) {
+        out += "\n  states agree but EVENT/CAUSAL/BRANCHIAL counts differ -> RECONSTRUCTION "
+               "COMPLETENESS: the same canonical evolution yielded a different number of raw "
+               "applications, so an (instance, match) pair was claimed in one run and not the "
+               "other. Read `claims` above: it tracks the event count, so an extra event is an "
+               "extra claim rather than a lost dedup downstream";
+    } else {
+        out += "\n  every count agrees and only the fingerprint moved -> ATTRIBUTION: the same "
+               "applications, related differently";
+    }
     return out;
 }
 
@@ -392,7 +405,15 @@ TEST(CausalDeterminism, QuotientStatesEventsBranchialDeterministic) {
 TEST(CausalDeterminism, QuotientCausalAttribution) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/true);
-        EXPECT_EQ(s.causal.size(), 1u) << w.name << ": causal attribution non-deterministic under quotient";
+        // describe() ON THE FIRING, as the sibling gate above already does. A bare "took 2
+        // distinct values" cannot separate a race that fired once in a hundred from an axis that
+        // changes the answer every time, and cannot say whether the COUNT moved with the
+        // fingerprint -- which is the difference between attribution landing elsewhere and
+        // attribution going missing. This gate fires rarely enough that the report it leaves is
+        // the whole of the evidence.
+        EXPECT_EQ(s.causal.size(), 1u)
+            << w.name << ": causal attribution non-deterministic under quotient"
+            << describe(s, s.causal_v, s.causal_n, "causal fingerprint");
     }
 }
 
