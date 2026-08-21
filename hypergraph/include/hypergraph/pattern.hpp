@@ -36,62 +36,25 @@ struct PatternEdge {
     uint8_t arity;
 
     // Default constructor - empty edge
-    PatternEdge() : arity(0) {
-        std::memset(vars, 0, MAX_ARITY);
-    }
+    PatternEdge();
 
     // Construct from variable indices
-    PatternEdge(std::initializer_list<uint8_t> var_list) : arity(0) {
-        if (var_list.size() > MAX_ARITY) {
-            throw std::length_error("PatternEdge: arity exceeds MAX_ARITY");
-        }
-        std::memset(vars, 0, MAX_ARITY);
-        for (uint8_t v : var_list) {
-            vars[arity++] = v;
-        }
-    }
+    PatternEdge(std::initializer_list<uint8_t> var_list);
 
     // Construct from array
-    PatternEdge(const uint8_t* var_array, uint8_t n) : arity(n) {
-        if (n > MAX_ARITY) {
-            throw std::length_error("PatternEdge: arity exceeds MAX_ARITY");
-        }
-        std::memset(vars, 0, MAX_ARITY);
-        for (uint8_t i = 0; i < n; ++i) {
-            vars[i] = var_array[i];
-        }
-    }
+    PatternEdge(const uint8_t* var_array, uint8_t n);
 
     // Get variable at position
-    uint8_t var_at(uint8_t pos) const {
-        return vars[pos];
-    }
+    uint8_t var_at(uint8_t pos) const;
 
     // Compute signature for this pattern edge
-    EdgeSignature signature() const {
-        return EdgeSignature::from_pattern(vars, arity);
-    }
+    EdgeSignature signature() const;
 
     // Get mask of variables used in this edge
-    uint32_t var_mask() const {
-        uint32_t mask = 0;
-        for (uint8_t i = 0; i < arity; ++i) {
-            mask |= (1u << vars[i]);
-        }
-        return mask;
-    }
+    uint32_t var_mask() const;
 
-    bool operator==(const PatternEdge& other) const {
-        if (arity != other.arity) return false;
-        for (uint8_t i = 0; i < arity; ++i) {
-            if (vars[i] != other.vars[i]) return false;
-        }
-        return true;
-    }
-
-    bool operator!=(const PatternEdge& other) const {
-        return !(*this == other);
-    }
+    bool operator==(const PatternEdge& other) const;
+    bool operator!=(const PatternEdge& other) const;
 };
 
 // =============================================================================
@@ -132,44 +95,19 @@ struct RewriteRule {
     CompatibleSignatureCache lhs_cache[MAX_PATTERN_EDGES];
 
     // Default constructor
-    RewriteRule()
-        : index(0)
-        , num_lhs_edges(0)
-        , num_rhs_edges(0)
-        , num_lhs_vars(0)
-        , num_rhs_vars(0)
-        , num_new_vars(0)
-    {
-        for (uint8_t i = 0; i < MAX_PATTERN_EDGES; ++i) match_order[i] = i;
-    }
+    RewriteRule();
 
     // Get mask of all LHS variables
-    uint32_t lhs_var_mask() const {
-        uint32_t mask = 0;
-        for (uint8_t i = 0; i < num_lhs_edges; ++i) {
-            mask |= lhs[i].var_mask();
-        }
-        return mask;
-    }
+    uint32_t lhs_var_mask() const;
 
     // Get mask of all RHS variables
-    uint32_t rhs_var_mask() const {
-        uint32_t mask = 0;
-        for (uint8_t i = 0; i < num_rhs_edges; ++i) {
-            mask |= rhs[i].var_mask();
-        }
-        return mask;
-    }
+    uint32_t rhs_var_mask() const;
 
     // Get mask of new variables (in RHS but not LHS)
-    uint32_t new_var_mask() const {
-        return rhs_var_mask() & ~lhs_var_mask();
-    }
+    uint32_t new_var_mask() const;
 
     // Check if two LHS edges share any variables (are "connected")
-    bool lhs_edges_connected(uint8_t edge1, uint8_t edge2) const {
-        return (lhs[edge1].var_mask() & lhs[edge2].var_mask()) != 0;
-    }
+    bool lhs_edges_connected(uint8_t edge1, uint8_t edge2) const;
 
     // Compute variable counts from edge definitions
     // Body in pattern.cpp: runs once per rule at registration, never per state.
@@ -201,18 +139,10 @@ class RuleBuilder {
 public:
     RuleBuilder() = default;
 
-    explicit RuleBuilder(uint16_t index) {
-        rule_.index = index;
-    }
+    explicit RuleBuilder(uint16_t index);
 
     // Add LHS edge (initializer list)
-    RuleBuilder& lhs(std::initializer_list<uint8_t> vars) {
-        if (rule_.num_lhs_edges >= MAX_PATTERN_EDGES) {
-            throw std::length_error("RuleBuilder::lhs: exceeds MAX_PATTERN_EDGES");
-        }
-        rule_.lhs[rule_.num_lhs_edges++] = PatternEdge(vars);
-        return *this;
-    }
+    RuleBuilder& lhs(std::initializer_list<uint8_t> vars);
 
     // Add LHS edge (vector - for dynamic construction)
     template<typename T>
@@ -244,13 +174,7 @@ public:
     }
 
     // Add RHS edge (initializer list)
-    RuleBuilder& rhs(std::initializer_list<uint8_t> vars) {
-        if (rule_.num_rhs_edges >= MAX_PATTERN_EDGES) {
-            throw std::length_error("RuleBuilder::rhs: exceeds MAX_PATTERN_EDGES");
-        }
-        rule_.rhs[rule_.num_rhs_edges++] = PatternEdge(vars);
-        return *this;
-    }
+    RuleBuilder& rhs(std::initializer_list<uint8_t> vars);
 
     // Add RHS edge (vector - for dynamic construction)
     template<typename T>
@@ -282,16 +206,11 @@ public:
     }
 
     // Build and return the rule
-    RewriteRule build() {
-        rule_.compute_var_counts();
-        return rule_;
-    }
+    RewriteRule build();
 };
 
 // Convenience function
-inline RuleBuilder make_rule(uint16_t index = 0) {
-    return RuleBuilder(index);
-}
+RuleBuilder make_rule(uint16_t index = 0);
 
 // =============================================================================
 // MatchIdentity
@@ -307,42 +226,14 @@ struct MatchIdentity {
     EdgeId edges[MAX_PATTERN_EDGES];  // In pattern order
     uint8_t num_edges;
 
-    MatchIdentity() : rule_index(0), num_edges(0) {
-        std::memset(edges, 0xFF, sizeof(edges));
-    }
-
-    MatchIdentity(uint16_t rule, const EdgeId* edge_array, uint8_t n)
-        : rule_index(rule), num_edges(n) {
-        std::memset(edges, 0xFF, sizeof(edges));
-        for (uint8_t i = 0; i < n; ++i) {
-            edges[i] = edge_array[i];
-        }
-    }
+    MatchIdentity();
+    MatchIdentity(uint16_t rule, const EdgeId* edge_array, uint8_t n);
 
     // Hash for ConcurrentMap
-    uint64_t hash() const {
-        uint64_t h = 14695981039346656037ULL;
-        h ^= rule_index;
-        h *= 1099511628211ULL;
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            h ^= edges[i];
-            h *= 1099511628211ULL;
-        }
-        return h;
-    }
+    uint64_t hash() const;
 
-    bool operator==(const MatchIdentity& other) const {
-        if (rule_index != other.rule_index) return false;
-        if (num_edges != other.num_edges) return false;
-        for (uint8_t i = 0; i < num_edges; ++i) {
-            if (edges[i] != other.edges[i]) return false;
-        }
-        return true;
-    }
-
-    bool operator!=(const MatchIdentity& other) const {
-        return !(*this == other);
-    }
+    bool operator==(const MatchIdentity& other) const;
+    bool operator!=(const MatchIdentity& other) const;
 };
 
 // =============================================================================
@@ -365,71 +256,28 @@ struct PartialMatch {
     VariableBinding binding;                  // Current variable bindings
     StateId origin_state;                     // State where this partial started
 
-    PartialMatch()
-        : id(INVALID_ID)
-        , rule_index(0)
-        , num_matched(0)
-        , num_pattern_edges(0)
-        , binding()
-        , origin_state(INVALID_ID)
-    {
-        std::memset(match_order, 0, sizeof(match_order));
-        std::memset(matched_edges, 0xFF, sizeof(matched_edges));
-    }
+    PartialMatch();
 
     // Check if all pattern edges are matched
-    bool is_complete() const {
-        return num_matched == num_pattern_edges;
-    }
+    bool is_complete() const;
 
     // Check if complete (with rule parameter for backwards compatibility)
-    bool is_complete(const RewriteRule& rule) const {
-        return num_matched == rule.num_lhs_edges;
-    }
+    bool is_complete(const RewriteRule& rule) const;
 
     // Add an edge match (for simple sequential matching)
-    void add_match(uint8_t pattern_idx, EdgeId data_edge, const VariableBinding& new_binding) {
-        match_order[num_matched] = pattern_idx;
-        matched_edges[num_matched] = data_edge;
-        binding = new_binding;
-        num_matched++;
-    }
+    void add_match(uint8_t pattern_idx, EdgeId data_edge, const VariableBinding& new_binding);
 
     // Create a copy for branching during depth-first expansion.
-    PartialMatch branch() const {
-        return *this;
-    }
+    PartialMatch branch() const;
 
     // Check if data edge is already used
-    bool contains_edge(EdgeId eid) const {
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            if (matched_edges[i] == eid) return true;
-        }
-        return false;
-    }
+    bool contains_edge(EdgeId eid) const;
 
     // Convert to edges array in pattern order
-    void to_pattern_order(EdgeId* out) const {
-        std::memset(out, 0xFF, MAX_PATTERN_EDGES * sizeof(EdgeId));
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            uint8_t pattern_idx = match_order[i];
-            out[pattern_idx] = matched_edges[i];
-        }
-    }
+    void to_pattern_order(EdgeId* out) const;
 
     // Convert to MatchIdentity (reorder edges to pattern order)
-    MatchIdentity to_identity([[maybe_unused]] const RewriteRule& rule) const {
-        MatchIdentity mid;
-        mid.rule_index = rule_index;
-        mid.num_edges = num_matched;
-
-        // matched_edges is in match_order, convert to pattern order
-        for (uint8_t i = 0; i < num_matched; ++i) {
-            uint8_t pattern_idx = match_order[i];
-            mid.edges[pattern_idx] = matched_edges[i];
-        }
-        return mid;
-    }
+    MatchIdentity to_identity(const RewriteRule& rule) const;
 };
 
 }  // namespace engine
