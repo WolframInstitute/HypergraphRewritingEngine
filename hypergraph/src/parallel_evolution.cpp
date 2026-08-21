@@ -2667,5 +2667,59 @@ size_t ParallelEvolutionEngine::depth_late_arrivals() const {
     return depth_late_arrivals_.load(std::memory_order_relaxed);
 }
 
+void ParallelEvolutionEngine::set_explore_from_canonical_states_only(bool enable) {
+    explore_from_canonical_states_only_ = enable;
+}
+
+bool ParallelEvolutionEngine::explore_from_canonical_states_only() const {
+    return explore_from_canonical_states_only_;
+}
+
+// Tested with contains_match, the validator's own membership test: it probes the whole dedup
+// chain and compares the RECORD. Testing probe slot 0 for the key alone reports a colliding
+// different match as an arrival and silently under-counts.
+size_t ParallelEvolutionEngine::still_missing() const {
+    size_t count = 0;
+    missing_match_hashes_.for_each([&](uint64_t h, const MatchRecord* rec) {
+        if (rec && !contains_match(h, *rec)) ++count;
+    });
+    return count;
+}
+
+size_t ParallelEvolutionEngine::num_redundant_edges_skipped() const {
+    return hg_ ? hg_->causal_graph().num_redundant_edges_skipped() : 0;
+}
+
+// Relaxed on both sides: workers poll this between tasks, so an acquire/release pair would
+// order nothing while adding a fence to every check. Coherence guarantees the store becomes
+// visible; observing it late costs at most one more task.
+void ParallelEvolutionEngine::request_stop() {
+    should_stop_.store(true, std::memory_order_relaxed);
+}
+
+bool ParallelEvolutionEngine::stop_requested() const {
+    return should_stop_.load(std::memory_order_relaxed);
+}
+
+job_system::ErrorType ParallelEvolutionEngine::last_error() const {
+    return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
+}
+
+job_system::ErrorType ParallelEvolutionEngine::get_error_type() const {
+    return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
+}
+
+const char* ParallelEvolutionEngine::get_error_description() const {
+    return job_system_ ? job_system_->get_error_description() : "No job system";
+}
+
+ParallelEvolutionEngine::MatchTaskGuard::MatchTaskGuard(ParallelEvolutionEngine& engine,
+                                                        StateId state, uint32_t step)
+    : engine_(engine), state_(state), step_(step) {}
+
+ParallelEvolutionEngine::MatchTaskGuard::~MatchTaskGuard() {
+    engine_.note_match_task_done(state_, step_);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

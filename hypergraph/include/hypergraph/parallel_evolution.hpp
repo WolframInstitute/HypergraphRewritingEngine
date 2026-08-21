@@ -923,12 +923,8 @@ public:
     void set_quotient_initial_states(bool enable);
     bool quotient_initial_states() const;
 
-    void set_explore_from_canonical_states_only(bool enable) {
-        explore_from_canonical_states_only_ = enable;
-    }
-    bool explore_from_canonical_states_only() const {
-        return explore_from_canonical_states_only_;
-    }
+    void set_explore_from_canonical_states_only(bool enable);
+    bool explore_from_canonical_states_only() const;
 
     double exploration_probability() const;
     size_t max_successor_states_per_parent() const;
@@ -950,13 +946,7 @@ public:
     // Tested with contains_match, the validator's own membership test: it probes the whole dedup
     // chain and compares the RECORD. Testing probe slot 0 for the key alone -- which this did --
     // reports a colliding different match as an arrival and silently under-counts.
-    size_t still_missing() const {
-        size_t count = 0;
-        missing_match_hashes_.for_each([&](uint64_t h, const MatchRecord* rec) {
-            if (rec && !contains_match(h, *rec)) ++count;
-        });
-        return count;
-    }
+    size_t still_missing() const;
 
     // Every still-absent match, with the state and rule read off the record itself.
     template <typename F>
@@ -976,9 +966,7 @@ public:
     size_t num_events() const;
     size_t num_causal_edges() const;
     size_t num_branchial_edges() const;
-    size_t num_redundant_edges_skipped() const {
-        return hg_ ? hg_->causal_graph().num_redundant_edges_skipped() : 0;
-    }
+    size_t num_redundant_edges_skipped() const;
 
     const EvolutionStats& stats() const;
     const std::vector<std::string>& warnings() const;
@@ -992,19 +980,13 @@ public:
     // to pick up, and an acquire/release pair here would order nothing while adding a
     // fence to every one of those checks. Coherence alone guarantees the store becomes
     // visible; observing it late costs at most one more task.
-    void request_stop() {
-        should_stop_.store(true, std::memory_order_relaxed);
-    }
+    void request_stop();
 
     // Check if stop has been requested
-    bool stop_requested() const {
-        return should_stop_.load(std::memory_order_relaxed);
-    }
+    bool stop_requested() const;
 
     // Error latched by a worker during the last evolve(), or None.
-    job_system::ErrorType last_error() const {
-        return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
-    }
+    job_system::ErrorType last_error() const;
 
     // =========================================================================
     // Main Evolution Loop - Dataflow Driven
@@ -1090,12 +1072,8 @@ public:
 
     // Error state - check after evolution completes
     bool has_error() const;
-    job_system::ErrorType get_error_type() const {
-        return job_system_ ? job_system_->get_error_type() : job_system::ErrorType::None;
-    }
-    const char* get_error_description() const {
-        return job_system_ ? job_system_->get_error_description() : "No job system";
-    }
+    job_system::ErrorType get_error_type() const;
+    const char* get_error_description() const;
 
 private:
     // Helper: Get or create the match list for a state (thread-safe)
@@ -1251,9 +1229,8 @@ private:
     // Books one match task's completion however its function exits.
     class MatchTaskGuard {
     public:
-        MatchTaskGuard(ParallelEvolutionEngine& engine, StateId state, uint32_t step)
-            : engine_(engine), state_(state), step_(step) {}
-        ~MatchTaskGuard() { engine_.note_match_task_done(state_, step_); }
+        MatchTaskGuard(ParallelEvolutionEngine& engine, StateId state, uint32_t step);
+        ~MatchTaskGuard();
         MatchTaskGuard(const MatchTaskGuard&) = delete;
         MatchTaskGuard& operator=(const MatchTaskGuard&) = delete;
     private:
