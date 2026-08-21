@@ -138,5 +138,8 @@ RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
     return s;
 }
 
+
+bool edge_cover_is_tight(const RewriteRule& r) { return lhs_is_acyclic(r); }
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

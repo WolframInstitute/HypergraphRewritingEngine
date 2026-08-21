@@ -125,7 +125,7 @@ bool can_branch(const std::vector<RewriteRule>& rules);
 // only for cyclic ones. Every rule in the shipped corpus is acyclic, which is why no LP is
 // implemented here: it would have no input to run on and no way to be checked. When a cyclic rule
 // arrives, the closed forms above are the test it must reproduce.
-inline bool edge_cover_is_tight(const RewriteRule& r) { return lhs_is_acyclic(r); }
+bool edge_cover_is_tight(const RewriteRule& r);
 
 // Facts about the SET, which is what a strategy is chosen from.
 struct RuleSetFacts {

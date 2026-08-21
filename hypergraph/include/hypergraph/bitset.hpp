@@ -29,6 +29,10 @@ namespace engine {
 // Allocation: All memory allocated from provided arena.
 //
 
+// The counters below stay in this header, and are the one place in it that is neither a
+// template nor force-inlined. They are inside HG_BITSET_STATS, which no shipping build
+// defines, and the accumulator is read from inside contains() -- which is force-inlined for
+// a measured reason recorded at its definition.
 #ifdef HG_BITSET_STATS
 // SparseBitset search-depth histogram. Answers one question: how many DEPENDENT loads does
 // contains() serialise? Chain length, not instruction count, is what a latency-bound path pays.

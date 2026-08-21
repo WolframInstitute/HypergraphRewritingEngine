@@ -131,4 +131,18 @@ std::string executeWolframScriptCapture(const std::string& code) {
     return output;
 }
 
+
+// A wall-clock stopwatch for the tests that report timings.
+
+PerfTimer::PerfTimer(): start_(std::chrono::high_resolution_clock::now()) {}
+
+double PerfTimer::elapsed_ms() const {
+        auto end = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double, std::milli>(end - start_).count();
+    }
+
+void PerfTimer::reset() {
+        start_ = std::chrono::high_resolution_clock::now();
+    }
+
 }  // namespace test_utils

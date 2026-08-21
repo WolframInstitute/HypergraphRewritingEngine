@@ -38,6 +38,10 @@ namespace engine {
 // find_in_table still reach it. Counted because it is the cost side of that decision -- a
 // superseded table stays in the chain and is walked -- and because a number that climbs steeply
 // says the growth policy is under-sizing the destination. Process-wide, never reset.
+// DEFINED HERE, and it has to be: verification/genmc/key_set_exactly_once.cpp,
+// key_set_distinct_keys_across_growth.cpp and key_set_enumeration.cpp each compile this
+// header on its own and link no library, and the migrate path they check calls this. An
+// out-of-line definition would leave it undefined at link for all three.
 inline std::atomic<uint64_t>& migrate_deferrals() {
     static std::atomic<uint64_t> n{0};
     return n;

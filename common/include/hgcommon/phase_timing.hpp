@@ -25,6 +25,11 @@
 // roughly the thread count, which is the point: a phase that is 60% of worker cycles is where
 // the parallel machine is spending itself, whatever the wall clock says.
 
+// EVERYTHING BELOW STAYS IN THIS HEADER. Two reasons, and neither is that it was skipped.
+// It is all inside HG_PHASE_TIMING, off by default, so a shipping build compiles none of it
+// and there is nothing for a translation unit to carry. And PhaseTimer's constructor and
+// destructor ARE the measurement: outlining them puts a call inside the interval whose
+// cycles they count, which changes the number being read.
 #ifdef HG_PHASE_TIMING
 #include "hgcommon/portable_intrinsics.hpp"
 #include <atomic>

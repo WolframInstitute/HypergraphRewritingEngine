@@ -18,16 +18,11 @@ namespace test_utils {
 class PerfTimer {
     std::chrono::high_resolution_clock::time_point start_;
 public:
-    PerfTimer() : start_(std::chrono::high_resolution_clock::now()) {}
+    PerfTimer();
 
-    double elapsed_ms() const {
-        auto end = std::chrono::high_resolution_clock::now();
-        return std::chrono::duration<double, std::milli>(end - start_).count();
-    }
+    double elapsed_ms() const;
 
-    void reset() {
-        start_ = std::chrono::high_resolution_clock::now();
-    }
+    void reset();
 };
 
 // A canonical form written out, for an assertion message that has to say WHICH two forms
