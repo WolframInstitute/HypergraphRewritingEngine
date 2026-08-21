@@ -9,6 +9,7 @@ add_library(hypergraph
     src/arena.cpp
     src/types.cpp
     src/bitset.cpp
+    src/index.cpp
     src/hypergraph.cpp
     src/rule_analysis.cpp
     src/pattern.cpp
