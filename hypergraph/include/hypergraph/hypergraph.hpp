@@ -889,15 +889,13 @@ public:
     // Causal Graph Access
     // =========================================================================
 
-    CausalGraph& causal_graph() { return causal_graph_; }
-    const CausalGraph& causal_graph() const { return causal_graph_; }
+    CausalGraph& causal_graph();
+    const CausalGraph& causal_graph() const;
 
     // Set edge producer: register `producer` as a producer of the canonical edge `key`
     // (mint keys with causal_edge_keys). raw_edge is the concrete edge id kept on the
     // CausalEdge record for viz.
-    void set_edge_producer(CanonicalEdgeKey key, EventId producer, EdgeId raw_edge) {
-        causal_graph_.set_edge_producer(key, producer, raw_edge);
-    }
+    void set_edge_producer(CanonicalEdgeKey key, EventId producer, EdgeId raw_edge);
 
     // Mint the canonical edge key for each of the n `edges` belonging to `state`, writing
     // results into out. Under quotient (and Full canonicalization) the key is
@@ -916,10 +914,7 @@ public:
 
     // The cached edge-orbit table for a state (null if not computed -- e.g. full-capture
     // mode, or before canonicalization).
-    const EdgeOrbitTable* state_orbits(StateId s) const {
-        auto r = state_orbit_tables_.lookup(static_cast<uint64_t>(s) + 1);  // +1: key 0 is the map's EMPTY sentinel
-        return r.has_value() ? *r : nullptr;
-    }
+    const EdgeOrbitTable* state_orbits(StateId s) const;
 
     // Capture the canonical transition an event realizes into the quotient causal skeleton
     // (idempotent per distinct canonical transition). No-op if either endpoint's orbit
@@ -1203,57 +1198,30 @@ public:
     // which report what is MATERIALISED -- internal code iterates records by id against those,
     // and would break if they started reporting counts with no records behind them.
 
-    size_t observable_num_events() const {
-        return quotient_reconstruction() ? num_reconstructed_events() : num_events();
-    }
-    size_t observable_num_causal_edges() const {
-        return quotient_reconstruction() ? num_reconstructed_causal_edges()
-                                         : causal_graph_.num_causal_edges();
-    }
-    size_t observable_num_causal_pairs(bool transitively_reduced) const {
-        return quotient_reconstruction() ? num_reconstructed_causal_pairs(transitively_reduced)
-                                         : causal_graph_.num_causal_event_pairs();
-    }
-    size_t observable_num_branchial() const {
-        return quotient_reconstruction() ? num_reconstructed_branchial()
-                                         : causal_graph_.num_branchial_edges();
-    }
+    size_t observable_num_events() const;
+    size_t observable_num_causal_edges() const;
+    size_t observable_num_causal_pairs(bool transitively_reduced) const;
+    size_t observable_num_branchial() const;
 
     // Get a representative edge producer for a canonical edge key (INVALID_ID if none).
-    EventId get_edge_producer(CanonicalEdgeKey key) const {
-        return causal_graph_.get_edge_producer(key);
-    }
+    EventId get_edge_producer(CanonicalEdgeKey key) const;
 
     // Add edge consumer: register `consumer` as a consumer of the canonical edge `key`.
-    void add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge) {
-        causal_graph_.add_edge_consumer(key, consumer, raw_edge);
-    }
+    void add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge);
 
     // Carry a surviving edge's producers from its parent-state orbit key to its
     // child-state orbit key (see CausalGraph::propagate_producers).
-    void propagate_producers(CanonicalEdgeKey from, CanonicalEdgeKey to, EdgeId raw_edge) {
-        causal_graph_.propagate_producers(from, to, raw_edge);
-    }
+    void propagate_producers(CanonicalEdgeKey from, CanonicalEdgeKey to, EdgeId raw_edge);
 
     // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set
     // by the evolution engine before evolving; read when minting causal edge keys.
-    void set_quotient_causal(bool q) { quotient_causal_.store(q, std::memory_order_relaxed); }
-    bool quotient_causal() const { return quotient_causal_.load(std::memory_order_relaxed); }
+    void set_quotient_causal(bool q);
+    bool quotient_causal() const;
 
     // Which artifacts this run builds. Set before evolving and read by the workers, so the
     // two components are stored as atomics like every other pre-evolution switch here.
-    void set_record_set(RecordSet r) {
-        record_causal_.store(r.causal, std::memory_order_relaxed);
-        record_branchial_.store(r.branchial, std::memory_order_relaxed);
-        record_state_events_.store(r.state_events, std::memory_order_relaxed);
-        record_raw_events_.store(r.raw_events, std::memory_order_relaxed);
-    }
-    RecordSet record_set() const {
-        return RecordSet{record_causal_.load(std::memory_order_relaxed),
-                         record_branchial_.load(std::memory_order_relaxed),
-                         record_state_events_.load(std::memory_order_relaxed),
-                         record_raw_events_.load(std::memory_order_relaxed)};
-    }
+    void set_record_set(RecordSet r);
+    RecordSet record_set() const;
 
     // Create a genesis event for an initial state.
     // This synthetic event connects the empty genesis state to the initial state.
@@ -1266,32 +1234,28 @@ public:
     // and skips branchial edges between canonically equivalent events
     // The per-state event list and the branchial pair relation, recorded independently: they
     // feed different outputs, so a run that needs one need not build the other.
-    void record_state_event(EventId event, StateId input_state) {
-        causal_graph_.record_state_event(event, input_state);
-    }
+    void record_state_event(EventId event, StateId input_state);
     void record_branchial_overlaps(EventId event, StateId input_state,
-                                   const EdgeId* consumed_edges, uint8_t num_consumed) {
-        causal_graph_.record_branchial_overlaps(event, input_state, consumed_edges, num_consumed);
-    }
+                                   const EdgeId* consumed_edges, uint8_t num_consumed);
 
     // Get causal/branchial statistics
-    size_t num_causal_edges() const { return causal_graph_.num_causal_edges(); }
-    size_t num_causal_event_pairs() const { return causal_graph_.num_causal_event_pairs(); }
-    size_t num_branchial_edges() const { return causal_graph_.num_branchial_edges(); }
+    size_t num_causal_edges() const;
+    size_t num_causal_event_pairs() const;
+    size_t num_branchial_edges() const;
 
     // =========================================================================
     // Arena Access
     // =========================================================================
 
-    ConcurrentHeterogeneousArena& arena() { return arena_; }
-    const ConcurrentHeterogeneousArena& arena() const { return arena_; }
+    ConcurrentHeterogeneousArena& arena();
+    const ConcurrentHeterogeneousArena& arena() const;
 
     // =========================================================================
     // Counter Access
     // =========================================================================
 
-    GlobalCounters& counters() { return counters_; }
-    const GlobalCounters& counters() const { return counters_; }
+    GlobalCounters& counters();
+    const GlobalCounters& counters() const;
 
     // =========================================================================
     // Utility
