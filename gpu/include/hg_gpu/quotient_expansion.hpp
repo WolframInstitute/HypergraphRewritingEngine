@@ -37,6 +37,7 @@
 #include "hgcommon/core.hpp"        // isort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
+#include "hgcommon/quotient_causal_core.hpp"  // qc_key -- the (class, depth, orbit) key rule
 
 #include <cuda/atomic>
 
@@ -97,12 +98,12 @@ struct QeMatchRef {
 // index the same (class, depth) space and a reader comparing them must not have to check that
 // two spellings agree.
 __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
-    uint64_t h = hgcommon::FNV_OFFSET;
-    h ^= state_hash; h *= hgcommon::FNV_PRIME;
-    h ^= (static_cast<uint64_t>(depth) << 32); h *= hgcommon::FNV_PRIME;
-    return h;
+    // THE DP'S KEY RULE, not a second one that happens to agree. This open-coded FNV over
+    // (state_hash, depth << 32) computed exactly hgcommon::qc_key(state_hash, depth, 0) -- the
+    // orbit term is zero here because an instance is keyed by its class and depth alone -- and
+    // two spellings of one rule agree until one of them is edited.
+    return hgcommon::qc_key(state_hash, depth, 0u);
 }
-
 // One raw occurrence of a canonical class, at one depth. `prod_offset` addresses `nslots` words
 // in the expansion arena: per FRAME SLOT, the event that produced the edge now in that slot, or
 // kQeNoProducer for an edge the initial state came with.
@@ -294,8 +295,12 @@ __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
                                       uint64_t from_hash, QeWork& work);
 
-// Bucket a hash into a list's key space. Same mixing as the DP's qc_bucket, so a shared bucket
-// count distributes the two the same way.
+// Bucket a hash into a list's key space.
+//
+// SAME MIXING AS qc_bucket, DIFFERENT REDUCTION, and the two are not interchangeable: this takes
+// the full 64-bit value modulo the key count, while the DP's masks the LOW 32 bits with
+// `num_keys - 1` and so requires a power-of-two count. Each list is read with the function it was
+// written with, which is what makes both correct; a claim that they distribute alike is not.
 __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
