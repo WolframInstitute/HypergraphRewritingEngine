@@ -8,6 +8,7 @@ add_library(hypergraph
     src/parallel_evolution.cpp
     src/arena.cpp
     src/types.cpp
+    src/bitset.cpp
     src/hypergraph.cpp
     src/rule_analysis.cpp
     src/pattern.cpp

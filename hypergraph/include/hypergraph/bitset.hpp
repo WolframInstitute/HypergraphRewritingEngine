@@ -96,42 +96,13 @@ public:
     struct Chunk {
         uint64_t words[WORDS_PER_CHUNK];
 
-        Chunk() {
-            std::memset(words, 0, sizeof(words));
-        }
+        Chunk();
 
-        bool get(size_t bit_index) const {
-            size_t word_idx = bit_index / 64;
-            size_t bit_idx = bit_index % 64;
-            return (words[word_idx] >> bit_idx) & 1;
-        }
-
-        void set(size_t bit_index) {
-            size_t word_idx = bit_index / 64;
-            size_t bit_idx = bit_index % 64;
-            words[word_idx] |= (1ULL << bit_idx);
-        }
-
-        void clear(size_t bit_index) {
-            size_t word_idx = bit_index / 64;
-            size_t bit_idx = bit_index % 64;
-            words[word_idx] &= ~(1ULL << bit_idx);
-        }
-
-        bool empty() const {
-            for (size_t i = 0; i < WORDS_PER_CHUNK; ++i) {
-                if (words[i] != 0) return false;
-            }
-            return true;
-        }
-
-        size_t popcount() const {
-            size_t count = 0;
-            for (size_t i = 0; i < WORDS_PER_CHUNK; ++i) {
-                count += hgcommon::popcount64(words[i]);
-            }
-            return count;
-        }
+        bool get(size_t bit_index) const;
+        void set(size_t bit_index);
+        void clear(size_t bit_index);
+        bool empty() const;
+        size_t popcount() const;
 
         template<typename F>
         void for_each(size_t base_id, F&& f) const {
@@ -158,51 +129,15 @@ public:
     };
 
     // Default constructor - empty bitset
-    SparseBitset()
-        : entries_(nullptr)
-        , num_entries_(0)
-        , capacity_(0)
-        , count_cached_(0)
-        , count_valid_(true)
-    {}
+    SparseBitset();
 
     // Move constructor - takes ownership of the other's data (single-owner
     // context: relaxed atomic access)
-    SparseBitset(SparseBitset&& other) noexcept
-        : entries_(other.entries_)
-        , num_entries_(other.num_entries_)
-        , capacity_(other.capacity_)
-        , count_cached_(other.count_cached_.load(std::memory_order_relaxed))
-        , count_valid_(other.count_valid_.load(std::memory_order_relaxed))
-    {
-        // Clear the source to prevent aliasing
-        other.entries_ = nullptr;
-        other.num_entries_ = 0;
-        other.capacity_ = 0;
-        other.count_cached_.store(0, std::memory_order_relaxed);
-        other.count_valid_.store(true, std::memory_order_relaxed);
-    }
+    SparseBitset(SparseBitset&& other) noexcept;
 
     // Move assignment - takes ownership of the other's data (single-owner
     // context: relaxed atomic access)
-    SparseBitset& operator=(SparseBitset&& other) noexcept {
-        if (this != &other) {
-            // Take over other's data
-            entries_ = other.entries_;
-            num_entries_ = other.num_entries_;
-            capacity_ = other.capacity_;
-            count_cached_.store(other.count_cached_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-            count_valid_.store(other.count_valid_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-
-            // Clear the source to prevent aliasing
-            other.entries_ = nullptr;
-            other.num_entries_ = 0;
-            other.capacity_ = 0;
-                other.count_cached_.store(0, std::memory_order_relaxed);
-            other.count_valid_.store(true, std::memory_order_relaxed);
-        }
-        return *this;
-    }
+    SparseBitset& operator=(SparseBitset&& other) noexcept;
 
     // Delete copy constructor and assignment to prevent accidental aliasing
     SparseBitset(const SparseBitset&) = delete;
@@ -284,23 +219,10 @@ public:
     // immutable, so racing fills compute the same total (idempotent). The cached
     // value is stored before the valid flag (release) so a reader that observes
     // valid (acquire) also observes the value.
-    size_t count() const {
-        if (count_valid_.load(std::memory_order_acquire)) {
-            return count_cached_.load(std::memory_order_relaxed);
-        }
-        size_t total = 0;
-        for (size_t i = 0; i < num_entries_; ++i) {
-            total += entries_[i].chunk->popcount();
-        }
-        count_cached_.store(total, std::memory_order_relaxed);
-        count_valid_.store(true, std::memory_order_release);
-        return total;
-    }
+    size_t count() const;
 
     // Is the set empty?
-    bool empty() const {
-        return count() == 0;
-    }
+    bool empty() const;
 
     // Iterate over all set bits
     template<typename F>
@@ -364,9 +286,7 @@ public:
     }
 
     // Number of chunks (for diagnostics)
-    size_t num_chunks() const {
-        return num_entries_;
-    }
+    size_t num_chunks() const;
 
 private:
     // Binary search for chunk by id (const version)
@@ -390,15 +310,7 @@ private:
 
     // Binary search. Returns true and sets out_idx to the entry index when chunk_id
     // is present; otherwise returns false and sets out_idx to the insertion point.
-    bool find_entry_index(uint32_t chunk_id, size_t& out_idx) const {
-        size_t lo = 0, hi = num_entries_;
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (entries_[mid].chunk_id < chunk_id) lo = mid + 1; else hi = mid;
-        }
-        out_idx = lo;
-        return lo < num_entries_ && entries_[lo].chunk_id == chunk_id;
-    }
+    bool find_entry_index(uint32_t chunk_id, size_t& out_idx) const;
 
     // Ensure entries_[idx]'s chunk is private to this bitset. If it is shared from a
     // parent (copy-on-write), copy it once and take ownership. Returns the mutable chunk.
@@ -452,9 +364,7 @@ private:
         // Old entries_ left in arena, not freed (arena semantics)
     }
 
-    void invalidate_count() {
-        count_valid_.store(false, std::memory_order_relaxed);
-    }
+    void invalidate_count();
 
     ChunkEntry* entries_;
     size_t num_entries_;
