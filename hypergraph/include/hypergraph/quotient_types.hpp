@@ -43,9 +43,7 @@ struct QcEventContent {
     // From hgcommon, because the DEVICE stores this hash where the host stores the triple and
     // hashes on demand. Two engines writing the same identity is exactly one rule, and two
     // open-codings of the same arithmetic agree only until one is edited.
-    uint64_t triple_hash() const {
-        return hgcommon::qr_content_hash(from_class, to_class, rule);
-    }
+    uint64_t triple_hash() const;
 };
 
 // The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an
@@ -103,23 +101,10 @@ struct EdgeOrbitTable {
     const uint32_t* slot = nullptr;     // length n, parallel to edges
     const uint32_t* klass = nullptr;    // length n, parallel to edges (canonical content class)
 
-    uint32_t index_of(EdgeId e) const {
-        // Binary search the sorted edge array; returns n if absent (edge not in state).
-        uint32_t lo = 0, hi = n;
-        while (lo < hi) {
-            uint32_t mid = lo + ((hi - lo) >> 1);
-            if (edges[mid] < e) lo = mid + 1; else hi = mid;
-        }
-        return (lo < n && edges[lo] == e) ? lo : n;
-    }
-    uint32_t orbit_of(EdgeId e) const {
-        const uint32_t i = index_of(e);
-        return i < n ? orbit[i] : 0;
-    }
-    uint32_t slot_of(EdgeId e) const {
-        const uint32_t i = index_of(e);
-        return (i < n && slot) ? slot[i] : 0;
-    }
+    // Binary search the sorted edge array; returns n if absent (edge not in state).
+    uint32_t index_of(EdgeId e) const;
+    uint32_t orbit_of(EdgeId e) const;
+    uint32_t slot_of(EdgeId e) const;
 };
 
 // One distinct canonical transition out of a canonical state, in edge-orbit terms -- the
@@ -143,10 +128,10 @@ struct CanonicalTransition {
     // Accessors, because hgcommon/quotient_causal_core.hpp reads the orbit arrays through them
     // and the device packs its four into one contiguous word arena. The DP does not know or
     // care which layout it is walking.
-    uint32_t consumed(uint32_t i) const { return consumed_orbits[i]; }
-    uint32_t produced(uint32_t i) const { return produced_orbits[i]; }
-    uint32_t surv_from(uint32_t i) const { return surv_from_orbits[i]; }
-    uint32_t surv_to(uint32_t i) const { return surv_to_orbits[i]; }
+    uint32_t consumed(uint32_t i) const;
+    uint32_t produced(uint32_t i) const;
+    uint32_t surv_from(uint32_t i) const;
+    uint32_t surv_to(uint32_t i) const;
 };
 
 // One match of the expanded representative of a canonical state, named in SLOTS -- the unit
@@ -178,13 +163,13 @@ struct SlotMatch {
     // Accessors, because hgcommon/quotient_replay_core.hpp reads the slot arrays through them
     // and the device packs its four into one contiguous word arena. The replay walks both
     // through the same calls and knows neither layout.
-    uint32_t consumed(uint32_t i) const { return consumed_slots[i]; }
-    uint32_t produced(uint32_t i) const { return produced_slots[i]; }
-    uint32_t surv_from(uint32_t i) const { return surv_from_slot[i]; }
-    uint32_t surv_to(uint32_t i) const { return surv_to_slot[i]; }
+    uint32_t consumed(uint32_t i) const;
+    uint32_t produced(uint32_t i) const;
+    uint32_t surv_from(uint32_t i) const;
+    uint32_t surv_to(uint32_t i) const;
     // The signature reads consumed/produced as CONTIGUOUS runs in match/RHS order.
-    const uint32_t* consumed_ptr() const { return consumed_slots; }
-    const uint32_t* produced_ptr() const { return produced_slots; }
+    const uint32_t* consumed_ptr() const;
+    const uint32_t* produced_ptr() const;
 };
 
 }  // namespace engine

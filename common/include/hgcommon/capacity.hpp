@@ -29,7 +29,10 @@ namespace common {
 
 class CapacityExhausted : public std::length_error {
 public:
-    explicit CapacityExhausted(const std::string& what) : std::length_error(what) {}
+    // Defined in job_system/src/capacity.cpp, so one translation unit anchors this class's
+    // vtable and type_info instead of every includer emitting a weak copy. job_system is the
+    // CATCHER and is linked by the engine that throws, so the definition reaches both.
+    explicit CapacityExhausted(const std::string& what);
 };
 
 }  // namespace common

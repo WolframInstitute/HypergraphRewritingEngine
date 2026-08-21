@@ -1,4 +1,5 @@
 #include "hypergraph/pattern.hpp"
+#include "hypergraph/pattern_matcher.hpp"
 
 // The bodies behind pattern.hpp: PatternEdge, RewriteRule, RuleBuilder, MatchIdentity and
 // PartialMatch. A rule's derived matching data -- variable counts and the join order -- is
@@ -308,6 +309,24 @@ MatchIdentity PartialMatch::to_identity([[maybe_unused]] const RewriteRule& rule
         mid.edges[pattern_idx] = matched_edges[i];
     }
     return mid;
+}
+
+
+// =============================================================================
+// pattern_matcher.hpp
+// =============================================================================
+
+// The rule itself lives in hgcommon so the device runs the same one; VariableBinding already
+// stores exactly the array-plus-mask the shared form takes.
+bool validate_candidate(
+    const VertexId* edge_vertices,
+    uint8_t edge_arity,
+    const PatternEdge& pattern_edge,
+    VariableBinding& binding
+) {
+    return hgcommon::bind_pattern_edge(edge_vertices, edge_arity,
+                                       pattern_edge.vars, pattern_edge.arity,
+                                       binding.bindings, binding.bound_mask);
 }
 
 }  // namespace engine

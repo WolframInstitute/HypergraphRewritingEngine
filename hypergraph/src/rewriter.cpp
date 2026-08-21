@@ -204,5 +204,38 @@ RewriteResult Rewriter::apply(
     return result;
 }
 
+
+// =============================================================================
+// RewriteResult / Rewriter construction, and the free-function form of apply
+// =============================================================================
+
+RewriteResult::RewriteResult()
+    : new_state(INVALID_ID)
+    , raw_state(INVALID_ID)
+    , event(INVALID_ID)
+    , canonical_event(INVALID_ID)
+    , num_produced(0)
+    , success(false)
+    , was_new_state(false)
+    , is_canonical_event(false)
+{
+    std::memset(produced_edges, 0xFF, sizeof(produced_edges));
+}
+
+Rewriter::Rewriter(Hypergraph* hg) : hg_(hg) {}
+
+RewriteResult apply_rewrite(
+    Hypergraph& hg,
+    const RewriteRule& rule,
+    StateId input_state,
+    const EdgeId* matched_edges,
+    uint8_t num_matched,
+    const VariableBinding& binding,
+    uint32_t output_step
+) {
+    Rewriter rewriter(&hg);
+    return rewriter.apply(rule, input_state, matched_edges, num_matched, binding, output_step);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

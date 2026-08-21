@@ -41,21 +41,15 @@ struct ScratchAlloc {
 // arenas can redirect it (via PersistTarget below) so a cached object is built into
 // its own arena and reclaimed by resetting that arena on eviction — the A4 reclaim
 // mechanism, without stateful/nested-propagating allocators.
-inline ConcurrentHeterogeneousArena*& worker_persistent_target() {
-    static thread_local ConcurrentHeterogeneousArena default_arena;
-    static thread_local ConcurrentHeterogeneousArena* current = &default_arena;
-    return current;
-}
-inline ConcurrentHeterogeneousArena& worker_persistent() { return *worker_persistent_target(); }
+ConcurrentHeterogeneousArena*& worker_persistent_target();
+ConcurrentHeterogeneousArena& worker_persistent();
 
 // RAII: redirect worker_persistent() to `arena` for this scope (single-threaded per
 // worker). Everything allocated via PersistAlloc while in scope lands in `arena`.
 struct PersistTarget {
     ConcurrentHeterogeneousArena* prev_;
-    explicit PersistTarget(ConcurrentHeterogeneousArena& arena) : prev_(worker_persistent_target()) {
-        worker_persistent_target() = &arena;
-    }
-    ~PersistTarget() { worker_persistent_target() = prev_; }
+    explicit PersistTarget(ConcurrentHeterogeneousArena& arena);
+    ~PersistTarget();
     PersistTarget(const PersistTarget&) = delete;
     PersistTarget& operator=(const PersistTarget&) = delete;
 };
@@ -92,42 +86,16 @@ class ScratchIdSet {
 public:
     static constexpr uint32_t kEmpty = 0xFFFFFFFFu;
 
-    explicit ScratchIdSet(uint32_t hint = 64) { rehash(round_up_pow2(hint < 8 ? 8 : hint)); }
+    explicit ScratchIdSet(uint32_t hint = 64);
 
     // True iff the key was not already present.
-    bool insert(uint32_t key) {
-        if (key == kEmpty) { const bool fresh = !has_empty_; has_empty_ = true; return fresh; }
-        if (count_ * 4 >= cap_ * 3) rehash(cap_ * 2);   // keep the load factor under 3/4
-        return insert_into(slots_, cap_, key);
-    }
+    bool insert(uint32_t key);
 
 private:
-    static uint32_t round_up_pow2(uint32_t v) {
-        uint32_t p = 8; while (p < v) p <<= 1; return p;
-    }
-    static uint32_t mix(uint32_t x) {
-        x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
-        return x;
-    }
-    bool insert_into(uint32_t* slots, uint32_t cap, uint32_t key) {
-        uint32_t i = mix(key) & (cap - 1);
-        for (;;) {
-            const uint32_t cur = slots[i];
-            if (cur == key) return false;
-            if (cur == kEmpty) { slots[i] = key; ++count_; return true; }
-            i = (i + 1) & (cap - 1);
-        }
-    }
-    void rehash(uint32_t cap) {
-        uint32_t* fresh = static_cast<uint32_t*>(
-            worker_scratch().allocate_raw(sizeof(uint32_t) * cap, alignof(uint32_t)));
-        for (uint32_t i = 0; i < cap; ++i) fresh[i] = kEmpty;
-        const uint32_t old_cap = cap_;
-        uint32_t* old = slots_;
-        slots_ = fresh; cap_ = cap; count_ = 0;
-        for (uint32_t i = 0; i < old_cap; ++i)
-            if (old[i] != kEmpty) insert_into(slots_, cap_, old[i]);
-    }
+    static uint32_t round_up_pow2(uint32_t v);
+    static uint32_t mix(uint32_t x);
+    bool insert_into(uint32_t* slots, uint32_t cap, uint32_t key);
+    void rehash(uint32_t cap);
 
     uint32_t* slots_ = nullptr;
     uint32_t  cap_ = 0;

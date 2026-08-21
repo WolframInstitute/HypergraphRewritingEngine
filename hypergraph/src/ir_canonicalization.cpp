@@ -297,5 +297,41 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
     return h;
 }
 
+
+// =============================================================================
+// canonical_types.hpp
+// =============================================================================
+//
+// The canonical-form value types are the OUTPUT of this file's canonicalizer and are read
+// nowhere else but hypergraph.hpp, so their bodies live with the code that produces them.
+
+bool CanonicalForm::operator==(const CanonicalForm& other) const {
+    return vertex_count == other.vertex_count && edges == other.edges;
+}
+
+bool CanonicalForm::operator!=(const CanonicalForm& other) const {
+    return !(*this == other);
+}
+
+VertexId VertexMapping::map_vertex(VertexId original) const {
+    auto it = original_to_canonical.find(original);
+    return (it != original_to_canonical.end()) ? it->second : INVALID_VERTEX;
+}
+
+VertexId VertexMapping::get_original(VertexId canonical) const {
+    return (canonical < canonical_to_original.size()) ?
+           canonical_to_original[canonical] : INVALID_VERTEX;
+}
+
+std::size_t VertexMapping::map_edge(std::size_t original_idx) const {
+    auto it = original_edge_to_canonical.find(original_idx);
+    return (it != original_edge_to_canonical.end()) ? it->second : static_cast<std::size_t>(-1);
+}
+
+bool CanonicalizationResult::are_isomorphic(const CanonicalizationResult& a,
+                                            const CanonicalizationResult& b) {
+    return a.canonical_form == b.canonical_form;
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

@@ -105,18 +105,12 @@ inline uint64_t match_branch_count(int i) {
 
 // Validate candidate edge against pattern edge, extending binding
 // Returns true if validation succeeds, binding is modified in place
-inline bool validate_candidate(
+bool validate_candidate(
     const VertexId* edge_vertices,
     uint8_t edge_arity,
     const PatternEdge& pattern_edge,
     VariableBinding& binding
-) {
-    // The rule itself lives in hgcommon so the device runs the same one; VariableBinding
-    // already stores exactly the array-plus-mask the shared form takes.
-    return hgcommon::bind_pattern_edge(edge_vertices, edge_arity,
-                                       pattern_edge.vars, pattern_edge.arity,
-                                       binding.bindings, binding.bound_mask);
-}
+);
 
 // =============================================================================
 // Pattern Matching Context

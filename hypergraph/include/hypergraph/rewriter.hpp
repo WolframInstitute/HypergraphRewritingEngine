@@ -31,18 +31,7 @@ struct RewriteResult {
     bool was_new_state;        // true if new canonical state, false if existing canonical found
     bool is_canonical_event;   // true if this event is canonical (first with this signature)
 
-    RewriteResult()
-        : new_state(INVALID_ID)
-        , raw_state(INVALID_ID)
-        , event(INVALID_ID)
-        , canonical_event(INVALID_ID)
-        , num_produced(0)
-        , success(false)
-        , was_new_state(false)
-        , is_canonical_event(false)
-    {
-        std::memset(produced_edges, 0xFF, sizeof(produced_edges));
-    }
+    RewriteResult();
 };
 
 // =============================================================================
@@ -63,7 +52,7 @@ class Rewriter {
     Hypergraph* hg_;
 
 public:
-    explicit Rewriter(Hypergraph* hg) : hg_(hg) {}
+    explicit Rewriter(Hypergraph* hg);
 
     // Apply a match to create a new state
     RewriteResult apply(
@@ -81,7 +70,7 @@ public:
 // =============================================================================
 
 // Apply a rewrite rule directly to a state with given matched edges
-inline RewriteResult apply_rewrite(
+RewriteResult apply_rewrite(
     Hypergraph& hg,
     const RewriteRule& rule,
     StateId input_state,
@@ -89,10 +78,7 @@ inline RewriteResult apply_rewrite(
     uint8_t num_matched,
     const VariableBinding& binding,
     uint32_t output_step = 0
-) {
-    Rewriter rewriter(&hg);
-    return rewriter.apply(rule, input_state, matched_edges, num_matched, binding, output_step);
-}
+);
 
 }  // namespace engine
 }  // namespace HG_NAMESPACE

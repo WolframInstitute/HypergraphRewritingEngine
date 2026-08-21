@@ -1,4 +1,5 @@
 #include "hypergraph/arena.hpp"
+#include "hypergraph/scratch_alloc.hpp"
 
 namespace HG_NAMESPACE {
 namespace engine {
@@ -283,6 +284,68 @@ ConcurrentHeterogeneousArena& worker_scratch() {
     static thread_local ConcurrentHeterogeneousArena scratch(
         ConcurrentHeterogeneousArena::DEFAULT_BLOCK_SIZE, /*recycle_blocks=*/true);
     return scratch;
+}
+
+
+// =============================================================================
+// scratch_alloc.hpp
+// =============================================================================
+//
+// The per-worker PERSISTENT arena and its redirect, alongside worker_scratch() above: the two
+// are the same mechanism at two lifetimes, and a reader looking for one wants the other.
+// ScratchIdSet comes with them because it allocates from worker_scratch().
+
+ConcurrentHeterogeneousArena*& worker_persistent_target() {
+    static thread_local ConcurrentHeterogeneousArena default_arena;
+    static thread_local ConcurrentHeterogeneousArena* current = &default_arena;
+    return current;
+}
+
+ConcurrentHeterogeneousArena& worker_persistent() { return *worker_persistent_target(); }
+
+PersistTarget::PersistTarget(ConcurrentHeterogeneousArena& arena)
+    : prev_(worker_persistent_target()) {
+    worker_persistent_target() = &arena;
+}
+
+PersistTarget::~PersistTarget() { worker_persistent_target() = prev_; }
+
+ScratchIdSet::ScratchIdSet(uint32_t hint) { rehash(round_up_pow2(hint < 8 ? 8 : hint)); }
+
+bool ScratchIdSet::insert(uint32_t key) {
+    if (key == kEmpty) { const bool fresh = !has_empty_; has_empty_ = true; return fresh; }
+    if (count_ * 4 >= cap_ * 3) rehash(cap_ * 2);   // keep the load factor under 3/4
+    return insert_into(slots_, cap_, key);
+}
+
+uint32_t ScratchIdSet::round_up_pow2(uint32_t v) {
+    uint32_t p = 8; while (p < v) p <<= 1; return p;
+}
+
+uint32_t ScratchIdSet::mix(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+
+bool ScratchIdSet::insert_into(uint32_t* slots, uint32_t cap, uint32_t key) {
+    uint32_t i = mix(key) & (cap - 1);
+    for (;;) {
+        const uint32_t cur = slots[i];
+        if (cur == key) return false;
+        if (cur == kEmpty) { slots[i] = key; ++count_; return true; }
+        i = (i + 1) & (cap - 1);
+    }
+}
+
+void ScratchIdSet::rehash(uint32_t cap) {
+    uint32_t* fresh = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw(sizeof(uint32_t) * cap, alignof(uint32_t)));
+    for (uint32_t i = 0; i < cap; ++i) fresh[i] = kEmpty;
+    const uint32_t old_cap = cap_;
+    uint32_t* old = slots_;
+    slots_ = fresh; cap_ = cap; count_ = 0;
+    for (uint32_t i = 0; i < old_cap; ++i)
+        if (old[i] != kEmpty) insert_into(slots_, cap_, old[i]);
 }
 
 }  // namespace engine

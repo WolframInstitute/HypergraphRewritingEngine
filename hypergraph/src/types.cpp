@@ -252,5 +252,48 @@ uint64_t EventSignature::hash() const {
     return h;
 }
 
+
+// =============================================================================
+// quotient_types.hpp
+// =============================================================================
+//
+// types.hpp includes quotient_types.hpp and nothing else does, so the quotient identity
+// records' bodies land here rather than in a file of their own.
+
+uint64_t QcEventContent::triple_hash() const {
+    return hgcommon::qr_content_hash(from_class, to_class, rule);
+}
+
+uint32_t EdgeOrbitTable::index_of(EdgeId e) const {
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        uint32_t mid = lo + ((hi - lo) >> 1);
+        if (edges[mid] < e) lo = mid + 1; else hi = mid;
+    }
+    return (lo < n && edges[lo] == e) ? lo : n;
+}
+
+uint32_t EdgeOrbitTable::orbit_of(EdgeId e) const {
+    const uint32_t i = index_of(e);
+    return i < n ? orbit[i] : 0;
+}
+
+uint32_t EdgeOrbitTable::slot_of(EdgeId e) const {
+    const uint32_t i = index_of(e);
+    return (i < n && slot) ? slot[i] : 0;
+}
+
+uint32_t CanonicalTransition::consumed(uint32_t i) const { return consumed_orbits[i]; }
+uint32_t CanonicalTransition::produced(uint32_t i) const { return produced_orbits[i]; }
+uint32_t CanonicalTransition::surv_from(uint32_t i) const { return surv_from_orbits[i]; }
+uint32_t CanonicalTransition::surv_to(uint32_t i) const { return surv_to_orbits[i]; }
+
+uint32_t SlotMatch::consumed(uint32_t i) const { return consumed_slots[i]; }
+uint32_t SlotMatch::produced(uint32_t i) const { return produced_slots[i]; }
+uint32_t SlotMatch::surv_from(uint32_t i) const { return surv_from_slot[i]; }
+uint32_t SlotMatch::surv_to(uint32_t i) const { return surv_to_slot[i]; }
+const uint32_t* SlotMatch::consumed_ptr() const { return consumed_slots; }
+const uint32_t* SlotMatch::produced_ptr() const { return produced_slots; }
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

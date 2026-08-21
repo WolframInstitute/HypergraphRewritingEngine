@@ -8,6 +8,13 @@
 // calls; only the MSVC branch is new. The MSVC branch targets x86/x64 (the
 // Windows CUDA host); ARM-MSVC is not a build target.
 
+// EVERY BODY IN THIS FILE IS INLINE ON PURPOSE, and it is the one header in the project where
+// that is the answer rather than an omission. Each function compiles to a single instruction, so
+// an out-of-line definition would cost a call to save that instruction. The HG_HD ones are
+// reached from device code, which has no library to link against at all. And hgcommon is a
+// header-only surface shared by the engine and the CUDA port with no target of its own, so there
+// is no object file these could go in that both sides already link.
+
 #include <cstdint>
 
 #include "hgcommon/core.hpp"
