@@ -90,14 +90,6 @@ void VertexInvertedIndex::clear(uint32_t used_vertices) { list_.clear(used_verti
 // EngineState
 // =============================================================================
 
-size_t EngineState::stack_bytes_for_depth(uint32_t depth) {
-        const size_t want = kDeviceStackFloorBytes +
-                            static_cast<size_t>(depth + 1u) * kDeviceStackBytesPerDepth;
-        if (want < kDeviceStackFloorBytes) return kDeviceStackFloorBytes;
-        return want > kDeviceStackCapBytes ? kDeviceStackCapBytes : want;
-    }
-
-uint32_t EngineState::qe_max_recursion_depth() const { return qe_max_recursion_depth_; }
 
 EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         , vertex_pool_(cfg.max_vertex_slots)
@@ -124,19 +116,28 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         // failure mode either way is a stack overflow surfacing as an illegal memory access,
         // which reads like a pointer bug and is diagnosed as one.
         // ASK FOR LESS RATHER THAN FAIL. The driver reserves this per-thread size across every
-        // thread the device can hold resident -- not across the launch grid -- so a deep run's
-        // request can exceed device memory outright, and cudaDeviceSetLimit then returns
-        // out-of-memory. Throwing there turns a run that could have proceeded shallower into no
-        // run at all, which is the opposite of this class's contract: past the depth it can
-        // support it RECORDS and carries on, and qe_max_recursion_depth_ below is already derived
-        // from what the driver ACTUALLY gave rather than from what was asked.
+        // thread the device can hold resident -- not across the launch grid -- so on a small or
+        // busy device even this fixed request can exceed what is available, and
+        // cudaDeviceSetLimit returns out-of-memory. Throwing there would turn a run that could
+        // have proceeded into no run at all. Halving until it is accepted reaches the largest
+        // stack the device will actually grant.
         //
-        // Measured cause: an 80-step configuration asks for the 256 KB per-thread cap, and the
-        // memory budget (which counts this since abe5f732) then exceeds the cap by more than the
-        // pools can give back -- fit_config_to_cap scales pools only, and the stack is not a pool.
-        // Halving the request until it is accepted reaches the largest stack the device will
-        // actually grant.
-        size_t want_stack = stack_bytes_for_depth(cfg.reconstruction_max_depth);
+        // THE REQUEST NO LONGER GROWS WITH THE RUN. It once did -- 32 KB plus 8,704 bytes per
+        // step, capped at 256 KB -- because the reconstruction recursed once per depth. An
+        // 80-step configuration then asked for the whole 256 KB cap and the memory budget
+        // exceeded what the pools could give back, since fit_config_to_cap scales pools and the
+        // stack is not a pool. Depth rides a worklist now, so this is a constant and a deep run
+        // costs the device exactly what a shallow one does.
+        // BOUNDED BY A CONSTANT, and no larger than the run can use. The DP recurses at most
+        // kDpNestLevels deep and at most as deep as the evolution, so a short run asks for the
+        // shorter of the two: this is <= what the old depth-scaled request asked at EVERY depth,
+        // which is what keeps a shallow run from paying for a budget it cannot reach. Measured
+        // at two steps, where the request would otherwise have grown: 4.736 ms median against
+        // 4.672 for the old sizing, so asking for the full budget there cost 1.4%.
+        const uint32_t nest = cfg.reconstruction_max_depth + 1u < kDpNestLevels
+                                  ? cfg.reconstruction_max_depth + 1u
+                                  : kDpNestLevels;
+        size_t want_stack = kDeviceStackFloorBytes + nest * kDpBytesPerNestLevel;
         cudaError_t st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
         while (st_rc != cudaSuccess && want_stack > kDeviceStackFloorBytes) {
             cudaGetLastError();                      // clear the sticky error before retrying
@@ -147,13 +148,6 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         HG_CUDA_CHECK(st_rc, "set device stack size");
         size_t actual_stack = 0;
         HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
-        // The depth the replay may reach is derived from what the driver ACTUALLY gave, not from
-        // what was asked for, because a driver may clamp a request rather than refuse it.
-        qe_max_recursion_depth_ =
-            actual_stack > kDeviceStackFloorBytes
-                ? static_cast<uint32_t>((actual_stack - kDeviceStackFloorBytes) /
-                                        kDeviceStackBytesPerDepth)
-                : 0u;
         if (actual_stack < kDeviceStackFloorBytes) {
             throw std::runtime_error(
                 "EngineState: device stack is " + std::to_string(actual_stack) +

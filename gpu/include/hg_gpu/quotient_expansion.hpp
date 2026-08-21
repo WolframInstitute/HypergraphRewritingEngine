@@ -265,11 +265,6 @@ struct QeView {
     uint32_t    work_slices = 0;   // drivers this run can serve
 
     uint32_t  max_steps = 0;
-    // Retained because the DP cascade in quotient_causal_core.hpp still recurses and reads it
-    // through QcCtx::enter. The REPLAY no longer does: it descends through a QeWork stack, so its
-    // depth is bounded by that stack's capacity in device memory and not by the launch's
-    // per-thread stack.
-    uint32_t  max_recursion_depth = 0;
     uint32_t  enabled   = 0;
     // Whether the captured expansion is REPLAYED against instances, as against merely captured.
     //
@@ -649,13 +644,9 @@ struct DeviceQrCtx {
     using Instance = DeviceQcInstance;
     using Match    = QeMatchView;
     using Applied  = QeAppliedView;
-    // REFERENCES, not copies. This Ctx is constructed inside qe_apply, which is in the replay's
-    // recursion cycle (qe_apply -> descend -> qe_add_instance -> qe_drive_instance -> qe_apply),
-    // so anything it holds by value is paid once PER LEVEL. DeviceState and QeView are large
-    // aggregates, and EngineState::qe_max_recursion_depth is calibrated against a measured
-    // 5461 bytes per level -- inflating the frame makes the guard fire after the frame that
-    // faults instead of before it, which is an illegal memory access rather than a bounded
-    // partial result. The caller's copies outlive this object.
+    // REFERENCES, not copies. DeviceState and QeView are large aggregates and this Ctx is
+    // constructed once per application, so holding either by value would copy it that often.
+    // The caller's copies outlive this object.
     DeviceState& ds;
     QeView& qe;
     QeWork& work;
@@ -855,7 +846,7 @@ public:
     // reallocated on each of them.
     void ensure_work(uint32_t slices, uint32_t max_steps);
 
-    QeView view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth,
+    QeView view(uint32_t max_steps, EventSignatureKeys keys,
                 bool replay);
 
 private:

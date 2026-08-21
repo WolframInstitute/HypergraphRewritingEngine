@@ -301,7 +301,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                 : static_cast<uint32_t>(roots.size());
         qc_state_->ensure_work(drivers, in.num_steps);
     }
-    QcView qc_view = qc_state_->view(in.num_steps, state_.qe_max_recursion_depth());
+    QcView qc_view = qc_state_->view(in.num_steps);
 
     // The class-frame expansion capture rides the same route decision as the causal DP: both
     // ARE the quotient reconstruction, and a run that reconstructs causality is exactly a run
@@ -331,7 +331,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         qe_state_->ensure_work(drivers, in.num_steps);
     }
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     state_.qe_max_recursion_depth(), qe_replay);
+                                     qe_replay);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
@@ -771,7 +771,9 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     //
     // EngineState's constructor raises cudaLimitStackSize before it allocates any pool, and the
     // driver reserves that per-thread size across every resident thread -- so it is real device
-    // memory, sized from reconstruction_max_depth, and this estimate did not count a byte of it.
+    // memory, and this estimate did not count a byte of it. It is a CONSTANT now -- the
+    // reconstruction carries depth in a worklist rather than on the stack -- so what a deep run
+    // reserves is what a shallow one does.
     // The consequence was not academic: scaling the state estimate with depth twice produced
     // "engine at the grown size no longer fits in device memory ... set device stack size: out of
     // memory" on an 80-step run, because the budget said the pools fitted while the reservation
@@ -779,8 +781,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     //
     // Resident threads are bounded by the shipped grid (default_persistent_grid blocks of
     // kMatchBlockThreads), which is what the reservation actually has to cover.
-    b += static_cast<uint64_t>(
-             EngineState::stack_bytes_for_depth(cfg.reconstruction_max_depth)) *
+    b += static_cast<uint64_t>(EngineState::kDeviceStackBytes) *
          static_cast<uint64_t>(default_persistent_grid()) *
          static_cast<uint64_t>(kMatchBlockThreads);
 

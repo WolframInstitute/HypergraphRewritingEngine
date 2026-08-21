@@ -220,53 +220,45 @@ public:
     // bounded by kMaxPatternEdges.
     static constexpr size_t kDeviceStackFloorBytes = 32u * 1024u;
 
-    // The reconstruction's replay is different in kind: qe_apply -> qr_apply -> descend ->
-    // qe_add_instance -> qe_drive_instance -> qe_apply is a cycle, and it descends once per
-    // reconstruction DEPTH, which the caller chooses through num_steps.
+    // THE RECONSTRUCTION'S DEPTH IS NOT ON THIS STACK, so this size does not scale with the
+    // caller's step count. Both cascades -- the replay and the causal DP -- carry depth in a
+    // worklist in device memory. What remains on the stack is a fixed nesting budget the DP
+    // recurses within because recursing is cheaper than deferring while it is shallow; past it
+    // the DP defers, so the budget is a constant and not a limit on what a run can reconstruct.
     //
-    // DERIVED FROM TWO MEASUREMENTS, because the cycle gained frames when the replay moved to
-    // hgcommon and a per-level cost measured for the old shape does not carry to the new one.
-    //
-    //   1. Fault bisection on the FOUR-frame cycle, the method this constant was first set by:
-    //      on sm_89 a 32 KB stack faults entering depth 7 and a 64 KB stack entering depth 13,
-    //      so 32768/6 == 65536/12 == 5461 bytes per level, linear with no significant intercept.
-    //   2. Per-frame `.local` depots, read out of the built PTX by
-    //      tools/dev/ptx_frame_sizes.py --cycle:
-    //        four-frame cycle (replay open-coded here)  2000 bytes over 4 frames
-    //        six-frame cycle  (replay in hgcommon)      3168 bytes over 6 frames
-    //
-    // A level costs its depots PLUS the ABI save area, which the depots do not include and the
-    // PTX does not name. The first measurement pins that: (5461 - 2000) / 4 == 865 bytes of ABI
-    // per frame. So six frames cost 3168 + 6*865 == 8360, and this is that rounded up to the
-    // next multiple of 512 -- a 4.1% margin, against the 3.1% the four-frame value carried.
-    //
-    // THE ABI TERM IS AN AVERAGE. It varies per function with the registers each saves, so 865
-    // is not a constant of the hardware. If the cycle changes shape again, re-run the depot tool
-    // AND re-do the fault bisection rather than reusing this arithmetic.
-    //
-    // TO RE-DERIVE IT after changing anything the cycle calls, run
-    //
-    //     tools/dev/ptx_frame_sizes.py <build>/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o --cycle
-    //
-    // which reads each frame's `.local` depot out of the PTX of an object that is already built
-    // -- no GPU, no run, and it names WHICH frame moved. Two terms make up a level: the depot
-    // sum it reports, and the ABI save area of the frames in the cycle, which it cannot see. So
-    // a change that only adds BYTES moves the reported sum and a change that adds a CALL does
-    // not, while costing a level's worth of ABI frame all the same. Both invalidate this number,
-    // and the fault-bisection above is what settles the total.
-    static constexpr size_t kDeviceStackBytesPerDepth = 8704;
+    // ONE PLACE DECIDES THE BUDGET. DeviceQcCtx::kMaxNest reads it from here rather than
+    // declaring its own, because a nesting budget and the stack sized for it are one decision.
+    static constexpr uint32_t kDpNestLevels = 8;
 
-    // Stack is per-thread and the driver reserves it for every resident thread, so this is
-    // multiplied by the occupancy of the whole device -- it cannot simply be made large. Past
-    // this the replay is bounded instead and records kScratchOverflow, which is the overflow
-    // contract: partial work and a warning, never a fault.
-    static constexpr size_t kDeviceStackCapBytes = 256u * 1024u;
+    // Bytes one nest level costs, MEASURED rather than assumed:
+    //
+    //   depots, read out of the built PTX by tools/dev/ptx_frame_sizes.py -- the deeper of the
+    //   two paths through the cycle is qc_reach -> for_each_transition_from -> the list walk ->
+    //   its lambda -> qc_process_transition, at 40 + 8 + 24 + 32 + 704 = 808 bytes over FIVE
+    //   frames (the producer path is 768 over five);
+    //
+    //   plus the ABI save area the depots exclude and the PTX does not name, at the 865 bytes a
+    //   frame the earlier fault bisection pins -- 5 * 865 = 4,325.
+    //
+    // 808 + 4,325 = 5,133, rounded up to the next multiple of 512 for a 9.7% margin. THE ABI
+    // TERM IS AN AVERAGE and varies with the registers each function saves, so re-run the depot
+    // tool if the cycle changes shape:
+    //
+    //     tools/dev/ptx_frame_sizes.py <build>/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o
+    static constexpr size_t kDpBytesPerNestLevel = 5632;
 
-    static size_t stack_bytes_for_depth(uint32_t depth);
+    // The CEILING on what a launch asks the driver for. The driver reserves this per RESIDENT
+    // thread, so a request that grew with the step count charged a deep run's depth to every
+    // thread on the device -- including the 31 of every 32 that never reconstruct, since the
+    // whole path is inside `threadIdx.x == 0`. It used to reach the 256 KB cap at 27 steps;
+    // it now stops here however deep the run is.
+    //
+    // The constructor asks for the SHORTER of this and what the run can reach, since the DP
+    // cannot nest deeper than the evolution -- so the request is <= the old depth-scaled one at
+    // every depth, and a two-step run does not pay for a budget it cannot use.
+    static constexpr size_t kDeviceStackBytes =
+        kDeviceStackFloorBytes + kDpNestLevels * kDpBytesPerNestLevel;
 
-    // How deep the replay may recurse on the stack this engine actually got. One level is
-    // reserved so the guard fires before the frame that would fault.
-    uint32_t qe_max_recursion_depth() const;
 
     explicit EngineState(EngineConfig cfg);
 
@@ -460,7 +452,6 @@ private:
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
     bool                               quotient_causal_ = false;
-    uint32_t                           qe_max_recursion_depth_ = 0;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

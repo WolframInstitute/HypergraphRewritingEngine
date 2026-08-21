@@ -291,8 +291,9 @@ struct EngineConfig {
     uint32_t event_canon_slots    = 1u << 16;
 
     // How deep the quotient reconstruction's replay will be asked to go, which is the run's
-    // step count. It sizes the per-thread device stack, because the replay recurses once per
-    // depth (EngineState::stack_bytes_for_depth). 0 for a run that does not reconstruct.
+    // step count. It NO LONGER SIZES THE DEVICE STACK: the replay and the causal DP both carry
+    // depth in a worklist, so the stack is a constant (EngineState::kDeviceStackBytes) and this
+    // is a description of the run rather than a budget anything is derived from.
     uint32_t reconstruction_max_depth = 0;
 
     // Event / causal / branchial sizing.

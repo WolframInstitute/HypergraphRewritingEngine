@@ -133,12 +133,6 @@ struct QcView {
     uint32_t record_causal = 1;
 
     uint32_t max_steps = 0;
-    // How deep this DP may recurse before the per-thread stack runs out. qc_reach ->
-    // qc_process_transition -> qc_add_producer -> qc_reach descends once per depth, exactly as
-    // the replay's cycle does, so the two share one bound (EngineState::qe_max_recursion_depth).
-    // Past it the cascade stops and records; without it the next frame faults and the fault
-    // takes the whole run's result, not just the part past the bound.
-    uint32_t max_recursion_depth = 0;
 
     // Backing store for the cascade stacks, one slice of `work_cap` items per driver.
     QcWorkItem* work_items  = nullptr;
@@ -174,7 +168,7 @@ public:
     // depth-first walk of `max_steps` levels. Grows and never shrinks, as the IR arena does.
     void ensure_work(uint32_t slices, uint32_t max_steps);
 
-    QcView view(uint32_t max_steps, uint32_t max_recursion_depth);
+    QcView view(uint32_t max_steps);
 
 private:
 
@@ -282,7 +276,9 @@ struct DeviceQcCtx {
     // which covers ordinary runs end to end and pays nothing; past that the cascade continues
     // through the worklist instead of refusing. The budget is a CONSTANT, so the per-thread
     // stack no longer scales with the caller's step count.
-    static constexpr uint32_t kMaxNest = 8;
+    // The budget is EngineState's, because the stack sized for it is EngineState's. Two places
+    // deciding one number is how they come to disagree.
+    static constexpr uint32_t kMaxNest = EngineState::kDpNestLevels;
     uint32_t nest = 0;
 
     __device__ void defer_reach(uint64_t hash, uint32_t depth) {

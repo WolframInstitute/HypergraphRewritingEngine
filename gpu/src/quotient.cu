@@ -64,7 +64,7 @@ void QcState::ensure_work(uint32_t slices, uint32_t max_steps) {
                   "QcState cascade stacks alloc");
 }
 
-QcView QcState::view(uint32_t max_steps, uint32_t max_recursion_depth) {
+QcView QcState::view(uint32_t max_steps) {
         QcView q{};
         q.transitions      = transitions_.view();
         q.trans_from       = trans_from_.view();
@@ -76,7 +76,6 @@ QcView QcState::view(uint32_t max_steps, uint32_t max_recursion_depth) {
         q.dsup_seen        = dsup_seen_.view();
         q.reached          = reached_.view();
         q.max_steps        = max_steps;
-        q.max_recursion_depth = max_recursion_depth;
         q.work_items   = work_items_;
         q.work_cap     = work_cap_;
         q.work_slices  = work_slices_;
@@ -324,7 +323,7 @@ void QeState::ensure_work(uint32_t slices, uint32_t max_steps) {
     HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState descent stacks alloc");
 }
 
-QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_recursion_depth,
+QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
                 bool replay) {
         QeView q{};
         q.matches      = matches_.view();
@@ -355,7 +354,6 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys, uint32_t max_r
         q.arr_capacity = arr_cap_;
         q.next_id      = next_id_;
         q.max_steps    = max_steps;
-        q.max_recursion_depth = max_recursion_depth;
         q.work_items   = work_items_;
         q.work_cap     = work_cap_;
         q.work_slices  = work_slices_;
