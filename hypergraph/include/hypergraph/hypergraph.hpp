@@ -505,20 +505,13 @@ public:
     // =========================================================================
 
     // Allocate a new vertex ID
-    VertexId alloc_vertex() {
-        return counters_.alloc_vertex();
-    }
+    VertexId alloc_vertex();
 
     // Allocate N consecutive vertex IDs
-    VertexId alloc_vertices(uint32_t count) {
-        VertexId first = counters_.next_vertex.fetch_add(count, std::memory_order_relaxed);
-        return first;
-    }
+    VertexId alloc_vertices(uint32_t count);
 
     // Get current vertex count (upper bound)
-    uint32_t num_vertices() const {
-        return counters_.next_vertex.load(std::memory_order_relaxed);
-    }
+    uint32_t num_vertices() const;
 
     // Ensure vertex ID space is at least `max_id + 1`
     void reserve_vertices(VertexId max_id);
@@ -552,13 +545,11 @@ public:
     }
 
     // Number of edges
-    uint32_t num_edges() const {
-        return counters_.next_edge.load(std::memory_order_relaxed);
-    }
+    uint32_t num_edges() const;
 
     // PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim
     // counter above is not that bound.
-    uint32_t num_published_edges() const { return edges_.size(); }
+    uint32_t num_published_edges() const;
 
     // =========================================================================
     // Edge Accessors for the WL hash
@@ -572,9 +563,7 @@ public:
     uint8_t edge_arity(EdgeId eid) const;
 
     // Get cached signature for an edge (computed once at creation)
-    const EdgeSignature& edge_signature(EdgeId eid) const {
-        return edge_signatures_[eid];
-    }
+    const EdgeSignature& edge_signature(EdgeId eid) const;
 
     // Lightweight accessor for the WL hash that provides pointer indexing
     // Returns pointer to edge's inline vertex array - no copying or allocation
@@ -599,13 +588,8 @@ public:
         }
     };
 
-    EdgeVertexAccessorRaw edge_vertex_accessor_raw() const {
-        return EdgeVertexAccessorRaw(this);
-    }
-
-    EdgeArityAccessorRaw edge_arity_accessor_raw() const {
-        return EdgeArityAccessorRaw(this);
-    }
+    EdgeVertexAccessorRaw edge_vertex_accessor_raw() const;
+    EdgeArityAccessorRaw edge_arity_accessor_raw() const;
 
     // =========================================================================
     // State Management
@@ -635,38 +619,19 @@ public:
                          EventId parent_event = INVALID_ID);
 
     // Get state by ID
-    const State& get_state(StateId sid) const {
-        // CRITICAL: Acquire fence to ensure we see all state data written by
-        // the thread that created this state. Pairs with release fence in create_state.
-        std::atomic_thread_fence(std::memory_order_acquire);
-        return states_[sid];
-    }
-
-    State& get_state(StateId sid) {
-        std::atomic_thread_fence(std::memory_order_acquire);
-        return states_[sid];
-    }
+    const State& get_state(StateId sid) const;
+    State& get_state(StateId sid);
 
     // Get state's edge set
-    const SparseBitset& get_state_edges(StateId sid) const {
-        // CRITICAL: Acquire fence to ensure we see all state data written by
-        // the thread that created this state. Pairs with release fence in create_state.
-        std::atomic_thread_fence(std::memory_order_acquire);
-        return states_[sid].edges;
-    }
+    const SparseBitset& get_state_edges(StateId sid) const;
 
     // Get content-ordered hash for a state (for Automatic state canonicalization)
     // This is the same hash function used during evolution for state deduplication
     // in Automatic mode, ensuring consistency between evolution and display.
-    uint64_t get_state_content_hash(StateId sid) const {
-        std::atomic_thread_fence(std::memory_order_acquire);
-        return compute_content_ordered_hash(states_[sid].edges);
-    }
+    uint64_t get_state_content_hash(StateId sid) const;
 
     // Number of states
-    uint32_t num_states() const {
-        return counters_.next_state.load(std::memory_order_relaxed);
-    }
+    uint32_t num_states() const;
 
     // How many states are PUBLISHED, as against how many ids have been CLAIMED.
     //
@@ -679,7 +644,7 @@ public:
     // This is the bound for enumerating states. It is exact once the workers are quiescent,
     // which is the only time enumeration is meaningful anyway: mid-run the array is being
     // written and no bound is stable.
-    uint32_t num_published_states() const { return states_.size(); }
+    uint32_t num_published_states() const;
 
     // Get the genesis state ID (creates it lazily if needed)
     // The genesis state is an empty state (no edges) that serves as the origin
@@ -688,22 +653,13 @@ public:
 
     // Check if a state is the genesis state. INVALID_ID until one is published, and no
     // state id equals INVALID_ID, so the comparison alone answers both questions.
-    bool is_genesis_state(StateId sid) const {
-        return sid == genesis_state_.load(std::memory_order_acquire);
-    }
+    bool is_genesis_state(StateId sid) const;
 
     // Check if an event is a genesis event (connects from genesis state to initial state)
-    bool is_genesis_event(EventId eid) const {
-        const StateId genesis = genesis_state_.load(std::memory_order_acquire);
-        if (genesis == INVALID_ID) return false;
-        if (eid >= events_.size()) return false;
-        return events_[eid].input_state == genesis;
-    }
+    bool is_genesis_event(EventId eid) const;
 
     // Get genesis state ID (returns INVALID_ID if not created)
-    StateId genesis_state() const {
-        return genesis_state_.load(std::memory_order_acquire);
-    }
+    StateId genesis_state() const;
 
     // =========================================================================
     // Canonical State Deduplication
@@ -739,26 +695,14 @@ public:
 
 
     // Lookup existing canonical state by hash (waits for concurrent inserts)
-    std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const {
-        return canonical_state_map_.lookup_waiting(canonical_hash);
-    }
+    std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const;
 
     // Get the canonical representative for a given state
     // Behavior depends on state_canonicalization_mode_:
     // - None: returns raw_state (no canonicalization)
     // - Automatic/Full: returns cached canonical_id (may differ from raw_state)
     // NOTE: Uses acquire fence to ensure visibility of canonical_id on ARM64
-    StateId get_canonical_state(StateId raw_state) const {
-        if (raw_state == INVALID_ID) return INVALID_ID;
-        if (state_canonicalization_mode_.load(std::memory_order_acquire) == StateCanonicalizationMode::None) {
-            return raw_state;
-        }
-        // Acquires the canonical_id released by create_or_get_canonical_state. The load
-        // itself carries the edge, which matters on a weak model like ARM64.
-        const State& state = get_state(raw_state);
-        return hgcommon::atomic_ref<StateId>(const_cast<StateId&>(state.canonical_id))
-            .load(std::memory_order_acquire);
-    }
+    StateId get_canonical_state(StateId raw_state) const;
 
     // Get the canonical state for event canonicalization purposes.
     // Always uses the isomorphism-invariant hash (WL/IR) to find the canonical
@@ -787,17 +731,13 @@ public:
 
     // Event signatures that fell back to a raw edge id. Non-zero means the event identity is
     // approximate rather than canonical.
-    uint64_t event_signature_raw_fallbacks() const {
-        return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
-    }
+    uint64_t event_signature_raw_fallbacks() const;
 
     // How many times a reported canonical hash was computed. Divide by the state count for the
     // per-state figure; anything above 1.0 is duplication, and under contention a small excess
     // is expected rather than a defect (racing writers compute the same value and the last
     // store wins).
-    uint64_t canonical_hash_computations() const {
-        return canonical_hash_computations_.load(std::memory_order_relaxed);
-    }
+    uint64_t canonical_hash_computations() const;
 
     // Quotient exploration support. try_lower_explore_depth records a shorter path to a
     // canonical state, returning true only when it improved on what was known. Depth is a

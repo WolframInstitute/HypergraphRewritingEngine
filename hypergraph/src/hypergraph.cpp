@@ -1505,5 +1505,111 @@ Edge& Hypergraph::get_edge(EdgeId eid) { return edges_[eid]; }
 const VertexId* Hypergraph::edge_vertices(EdgeId eid) const { return edges_[eid].vertices; }
 uint8_t Hypergraph::edge_arity(EdgeId eid) const { return edges_[eid].arity; }
 
+// =============================================================================
+// Vertex, edge and state accessors
+// =============================================================================
+
+VertexId Hypergraph::alloc_vertex() { return counters_.alloc_vertex(); }
+
+VertexId Hypergraph::alloc_vertices(uint32_t count) {
+    return counters_.next_vertex.fetch_add(count, std::memory_order_relaxed);
+}
+
+uint32_t Hypergraph::num_vertices() const {
+    return counters_.next_vertex.load(std::memory_order_relaxed);
+}
+
+uint32_t Hypergraph::num_edges() const {
+    return counters_.next_edge.load(std::memory_order_relaxed);
+}
+
+// PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim counter
+// is not that bound.
+uint32_t Hypergraph::num_published_edges() const { return edges_.size(); }
+
+const EdgeSignature& Hypergraph::edge_signature(EdgeId eid) const { return edge_signatures_[eid]; }
+
+Hypergraph::EdgeVertexAccessorRaw Hypergraph::edge_vertex_accessor_raw() const {
+    return EdgeVertexAccessorRaw(this);
+}
+
+Hypergraph::EdgeArityAccessorRaw Hypergraph::edge_arity_accessor_raw() const {
+    return EdgeArityAccessorRaw(this);
+}
+
+// The acquire fence pairs with the release fence in create_state: it is what makes every field
+// the creating thread wrote visible to this reader.
+const State& Hypergraph::get_state(StateId sid) const {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return states_[sid];
+}
+
+State& Hypergraph::get_state(StateId sid) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return states_[sid];
+}
+
+const SparseBitset& Hypergraph::get_state_edges(StateId sid) const {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return states_[sid].edges;
+}
+
+// The same hash evolution deduplicates on in Automatic mode, so display and evolution agree.
+uint64_t Hypergraph::get_state_content_hash(StateId sid) const {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return compute_content_ordered_hash(states_[sid].edges);
+}
+
+uint32_t Hypergraph::num_states() const {
+    return counters_.next_state.load(std::memory_order_relaxed);
+}
+
+// The bound for ENUMERATING states, as against num_states(), which is the claim counter and runs
+// ahead of what exists.
+uint32_t Hypergraph::num_published_states() const { return states_.size(); }
+
+// INVALID_ID until a genesis state is published, and no state id equals INVALID_ID, so the
+// comparison alone answers both questions.
+bool Hypergraph::is_genesis_state(StateId sid) const {
+    return sid == genesis_state_.load(std::memory_order_acquire);
+}
+
+bool Hypergraph::is_genesis_event(EventId eid) const {
+    const StateId genesis = genesis_state_.load(std::memory_order_acquire);
+    if (genesis == INVALID_ID) return false;
+    if (eid >= events_.size()) return false;
+    return events_[eid].input_state == genesis;
+}
+
+StateId Hypergraph::genesis_state() const {
+    return genesis_state_.load(std::memory_order_acquire);
+}
+
+std::optional<StateId> Hypergraph::find_canonical_state(uint64_t canonical_hash) const {
+    return canonical_state_map_.lookup_waiting(canonical_hash);
+}
+
+// None: the raw state IS the answer. Automatic/Full: the cached canonical_id, acquired -- the
+// load carries the edge released by create_or_get_canonical_state, which matters on ARM64.
+StateId Hypergraph::get_canonical_state(StateId raw_state) const {
+    if (raw_state == INVALID_ID) return INVALID_ID;
+    if (state_canonicalization_mode_.load(std::memory_order_acquire) ==
+        StateCanonicalizationMode::None) {
+        return raw_state;
+    }
+    const State& state = get_state(raw_state);
+    return hgcommon::atomic_ref<StateId>(const_cast<StateId&>(state.canonical_id))
+        .load(std::memory_order_acquire);
+}
+
+// Non-zero means at least one event identity is approximate rather than canonical.
+uint64_t Hypergraph::event_signature_raw_fallbacks() const {
+    return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
+}
+
+uint64_t Hypergraph::canonical_hash_computations() const {
+    return canonical_hash_computations_.load(std::memory_order_relaxed);
+}
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
