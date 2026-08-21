@@ -1,13 +1,21 @@
 cmake_minimum_required(VERSION 3.14)
 
-add_library(job_system INTERFACE)
-target_include_directories(job_system INTERFACE
+add_library(job_system STATIC
+    src/job_pool.cpp
+)
+target_include_directories(job_system PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
+# The paclet is a shared library and links this one in, so its objects must be
+# position independent -- as hypergraph's and wxf's are, for the same reason.
+set_target_properties(job_system PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 find_package(Threads REQUIRED)
-target_link_libraries(job_system INTERFACE 
+target_link_libraries(job_system PUBLIC
     Threads::Threads
     lockfree_deque
 )
