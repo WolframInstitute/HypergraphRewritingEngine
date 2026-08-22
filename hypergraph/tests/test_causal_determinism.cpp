@@ -378,6 +378,19 @@ Spread spread(const Workload& w, bool quotient) {
                     EXPECT_EQ(f.badcorr, 0)
                         << w.name << " at threads=" << th << ": " << f.badcorr
                         << " capture(s) lost to a bad vertex correspondence.";
+                    // ONE WIN PER KEY, CHECKED ON EVERY RUN. The claim tally counts inserts
+                    // that reported a win; applied_unique() walks the keys those wins are
+                    // supposed to name. A shortfall is one (instance, match) pair replayed
+                    // twice, and the claim is the only thing standing between the two paths
+                    // into qc_apply -- qc_add_instance iterating a class's captured matches,
+                    // and qc_capture_expansion replaying a new match against the instances
+                    // already standing. Comparing runs finds it too, but only as a fingerprint
+                    // that differs; this names it where it happens.
+                    EXPECT_EQ(f.claims, f.unique)
+                        << w.name << " at threads=" << th << ": " << f.claims
+                        << " applications won their claim but the applied set holds only "
+                        << f.unique << " keys, so " << (f.claims - f.unique)
+                        << " (instance, match) pair(s) were claimed twice and replayed twice.";
                     EXPECT_EQ(f.claims, f.num_events)
                         << w.name << " at threads=" << th << ": " << f.claims
                         << " applications won their claim but " << f.num_events << " events "

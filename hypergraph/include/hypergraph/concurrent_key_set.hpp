@@ -109,9 +109,18 @@ public:
         }
     };
 
+    // `working_capacity` is the size the FIRST growth jumps to. It is a parameter for the same
+    // reason ConcurrentMap's is: the migration exchanges an atomic per slot of the retiring
+    // table and the successor is initialised slot by slot, so growing into a 1024-wide table
+    // gives a model checker thousands of operations to interleave and the double-claim shapes
+    // cannot be exhausted. The property -- install, carry, seal, chain-scan, re-drive, and
+    // exactly one caller told it inserted -- does not depend on the width; the capacity decides
+    // probe-run length, and a harness holds few enough keys that the runs are trivial either
+    // way. So the constant is a parameter and the default is unchanged.
     explicit ConcurrentKeySet(size_t initial_capacity = DEFAULT_INITIAL_CAPACITY,
-                              ConcurrentHeterogeneousArena* arena = nullptr)
-        : count_(0), arena_(arena) {
+                              ConcurrentHeterogeneousArena* arena = nullptr,
+                              size_t working_capacity = WORKING_CAPACITY)
+        : count_(0), arena_(arena), working_capacity_(working_capacity) {
         table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
     }
 
@@ -262,13 +271,44 @@ private:
     // sealed slot re-drives against the head, which is exactly ConcurrentMap's discipline, and it
     // is the part a key-only set does not get to skip.
     void grow(Table* expected) {
+        // CLOSE THE RETIRING TABLE TO NEW CLAIMS BEFORE ITS SUCCESSOR EXISTS.
+        //
+        // Carrying a slot and sealing it in one step keeps the key from being LOST, and that is
+        // all it does. It leaves every slot the carry has not reached yet still EMPTY, so a
+        // claimant holding this table as its head can still win one AFTER the successor is
+        // installed -- and a rival that scanned this table a moment earlier, found nothing, and
+        // claimed at the new head has already been told it inserted. Both are told they inserted
+        // one key. Losing a key and double-reporting a claim are different failures and the
+        // carry-then-seal exchange only addresses the first.
+        //
+        // Sealing every EMPTY slot BEFORE the install removes the second. After this pass the
+        // table has no EMPTY slot, so a probe run for an absent key exhausts and re-drives at the
+        // head instead of claiming here; and every key that did win here was published before any
+        // successor existed, which is before any rival could load the new head, so a rival's chain
+        // scan sees it and reports it lost rather than claiming it again. The pass moves nothing,
+        // so it is safe ahead of the install: a grower that loses the install has only closed
+        // slots of a table that is retiring regardless.
+        //
+        // Measured: qc_applied_ (the per-(instance, match) claim gating qr_apply) reported a win
+        // twice for one key on about one run in a hundred at 32 threads, which the determinism
+        // gate saw as one extra raw event, one extra causal edge and its branchial pairs --
+        // claims 18313 against 18312 with the claim tally one ahead of the keys the set could
+        // enumerate.
+        for (size_t i = 0; i < expected->capacity; ++i) {
+            std::atomic<K>& slot = expected->keys[i];
+            K k = slot.load(std::memory_order_acquire);
+            if (k == EMPTY_KEY)
+                slot.compare_exchange_strong(k, MIGRATED_KEY, std::memory_order_acq_rel,
+                                             std::memory_order_acquire);
+        }
+
         // INSTALL EMPTY FIRST, THEN MIGRATE. Carrying keys into a table before knowing it will be
         // the head means a grower that loses the install has already moved keys into a table it
         // must discard, while the slots it sealed say the keys are elsewhere -- they are nowhere.
         // GenMC finds that as a lost key in four executions. Installing an empty table first makes
         // the discarded table EMPTY, so a loser throws away nothing and simply re-drives.
-        const size_t next = expected->capacity < WORKING_CAPACITY ? WORKING_CAPACITY
-                                                                  : expected->capacity * 2;
+        const size_t next = expected->capacity < working_capacity_ ? working_capacity_
+                                                                   : expected->capacity * 2;
         Table* nt = Table::create(next, expected, arena_);
         if (!table_.compare_exchange_strong(expected, nt, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
@@ -343,6 +383,7 @@ private:
     std::atomic<Table*> table_{nullptr};
     std::atomic<size_t> count_;
     ConcurrentHeterogeneousArena* arena_;
+    size_t working_capacity_ = WORKING_CAPACITY;
 };
 
 }  // namespace engine
