@@ -1448,7 +1448,7 @@ size_t Hypergraph::applied_scans() const {
 
 size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
 
-uint64_t Hypergraph::applied_shape_fingerprint() const {
+std::vector<uint32_t> Hypergraph::applied_shape() const {
     std::vector<uint32_t> lens;
     const uint32_t n = qc_inst_applied_.size();
     lens.reserve(n);
@@ -1460,8 +1460,12 @@ uint64_t Hypergraph::applied_shape_fingerprint() const {
         if (c) lens.push_back(c);
     }
     std::sort(lens.begin(), lens.end());
+    return lens;
+}
+
+uint64_t Hypergraph::applied_shape_fingerprint() const {
     uint64_t h = 1469598103934665603ULL;
-    for (uint32_t v : lens) { h ^= v; h *= 1099511628211ULL; }
+    for (uint32_t v : applied_shape()) { h ^= v; h *= 1099511628211ULL; }
     return h;
 }
 
@@ -1475,6 +1479,18 @@ size_t Hypergraph::capture_skipped_not_representative() const {
 
 size_t Hypergraph::applied_visits() const {
     return qc_applied_visits_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::captured_matches() const {
+    return qc_next_match_id_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::reconstruction_instances() const {
+    return qc_next_instance_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::applied_unique() const {
+    return qc_applied_.count_enumerated();
 }
 
 // Simple hash of a state's edge SET -- fast, and not isomorphism-invariant. Its neighbours

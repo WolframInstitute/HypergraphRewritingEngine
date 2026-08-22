@@ -903,6 +903,10 @@ public:
     // pair count would vary while the event count did not. That is exactly the shape the suite
     // reports, and nothing measured it: the totals agreed on every run and the distribution was
     // never looked at.
+    // The multiset itself, sorted. A hash says two runs differ and not HOW: an instance
+    // appearing and an existing instance going from nine applications to ten are the same
+    // one-event difference in every scalar the suite reports, and different defects.
+    std::vector<uint32_t> applied_shape() const;
     uint64_t applied_shape_fingerprint() const;
 
     // Matches the capture never recorded. The first is a race and a defect; the second is the
@@ -910,6 +914,21 @@ public:
     size_t capture_dropped_no_orbits() const;
     size_t capture_skipped_not_representative() const;
     size_t applied_visits() const;
+
+    // THE TWO POPULATIONS THE APPLICATIONS ARE DRAWN FROM. An application is one (instance,
+    // match) pair, so a run with one application too many either replayed a pair it should not
+    // have, or was handed an extra member of one of these two sets. Reporting only the
+    // applications cannot tell those apart: captured_matches() is every SlotMatch pushed onto a
+    // class's expansion list, reconstruction_instances() is every instance record minted.
+    size_t captured_matches() const;
+    size_t reconstruction_instances() const;
+
+    // THE CLAIM TALLY AGAINST WHAT THE SET CAN HAND BACK. applied_claims() counts inserts that
+    // reported a win; this walks the keys those wins are supposed to correspond to. They are the
+    // same number only while every (instance, match) pair wins its claim exactly once, so a
+    // shortfall here IS a pair replayed twice under one key -- which is the only thing the claim
+    // stands between the two paths into qc_apply, and cannot be seen in any other count.
+    size_t applied_unique() const;
 
     // DERIVED FROM THE SET, not from the counter that fed it. qc_num_branchial_ is incremented
     // when insert() reports a win; this returns what for_each will actually emit. The two are

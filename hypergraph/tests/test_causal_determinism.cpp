@@ -36,7 +36,9 @@ struct Fingerprint {
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
     long claims = 0, drops = 0, align_fail = 0, badcorr = 0;
     long not_rep = 0, visits = 0;
+    long matches = 0, instances = 0, unique = 0;
     uint64_t shape = 0;
+    std::vector<uint32_t> shape_v;
     long branchial_stored = 0;
     long stored_before_walk = 0;
     long branchial_pairs = 0;
@@ -179,7 +181,11 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     // gaining one are distinguishable rather than both reading as "one more event".
     fp.not_rep    = static_cast<long>(g.capture_skipped_not_representative());
     fp.visits     = static_cast<long>(g.applied_visits());
+    fp.matches    = static_cast<long>(g.captured_matches());
+    fp.instances  = static_cast<long>(g.reconstruction_instances());
+    fp.unique     = static_cast<long>(g.applied_unique());
     fp.shape      = g.applied_shape_fingerprint();
+    fp.shape_v    = g.applied_shape();
     return fp;
 }
 
@@ -243,7 +249,9 @@ struct Variant {
     // alone -- the observed shape -- and each was invisible until it was counted.
     long claims, drops, align_fail, badcorr;
     long not_rep, visits;
+    long matches, instances, unique;
     uint64_t shape;
+    std::vector<uint32_t> shape_v;
 };
 struct Spread {
     std::set<uint64_t> states, causal, branchial;
@@ -273,6 +281,9 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
                " no_orbits=" + std::to_string(var.drops) +
                " not_rep=" + std::to_string(var.not_rep) +
                " visits=" + std::to_string(var.visits) +
+               " matches=" + std::to_string(var.matches) +
+               " instances=" + std::to_string(var.instances) +
+               " claims_minus_unique=" + std::to_string(var.claims - var.unique) +
                " align_fail=" + std::to_string(var.align_fail) +
                " badcorr=" + std::to_string(var.badcorr) +
                " applied_shape=" + std::to_string(var.shape) + "]";
@@ -281,6 +292,29 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
     // concluded "counts AGREE -> CANONICALIZATION" on a firing whose event count differed by one
     // (10632 against 10633) purely because both runs had 241 states -- pointing the next reader
     // at hashing when the evidence said an extra application had been claimed.
+    // WHICH instance moved. The scalars above cannot separate an instance APPEARING from an
+    // existing one gaining an application, and those are different defects: the first is a
+    // duplicate instance record, the second is a pair applied twice under two identities.
+    if (v.size() == 2) {
+        auto it = v.begin();
+        std::vector<uint32_t> a = it->second.shape_v;
+        std::vector<uint32_t> b = (++it)->second.shape_v;
+        if (!a.empty() && !b.empty()) {
+            out += "\n  applied shape: " + std::to_string(a.size()) +
+                   " applying instances vs " + std::to_string(b.size()) + " applying instances";
+            if (a.size() == b.size()) {
+                out += " -- SAME COUNT, so one of them gained an application; matches= and\n        instances= above say whether a record was added to draw it from:";
+                for (size_t i = 0, shown = 0; i < a.size() && shown < 6; ++i)
+                    if (a[i] != b[i]) {
+                        out += " [" + std::to_string(i) + "] " + std::to_string(a[i]) + "->" +
+                               std::to_string(b[i]);
+                        ++shown;
+                    }
+            } else {
+                out += " -- COUNT DIFFERS, so an instance published its first\n        application in one run and none in the other";
+            }
+        }
+    }
     if (s.ns.size() != 1) {
         out += "\n  STATE counts differ -> EXPLORATION: a state exists in one run and not "
                "another";
@@ -361,7 +395,8 @@ Spread spread(const Workload& w, bool quotient) {
                 const Variant var{0, cfg, f.num_states, f.num_events,
                                   f.num_causal, f.num_branchial,
                                   f.claims, f.drops, f.align_fail, f.badcorr,
-                                  f.not_rep, f.visits, f.shape};
+                                  f.not_rep, f.visits, f.matches, f.instances, f.unique,
+                                  f.shape, f.shape_v};
                 s.states_v.emplace(f.states, var);
                 s.causal_v.emplace(f.causal, var);
                 s.branchial_v.emplace(f.branchial, var);
