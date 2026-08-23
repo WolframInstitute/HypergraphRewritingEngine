@@ -387,21 +387,38 @@ public:
 
 private:
 
+    // Every host-read scalar counter, contiguous so ONE transfer fetches them all. Declared
+    // FIRST because the pools below keep their counters in its slots: a pool member's
+    // constructor runs in declaration order and needs the block to exist. Slots 0..5 are the
+    // engine's own counters; slots 6..10 are the five pools' live counters, so the snapshot
+    // read needs no staging of any kind -- no kernel launch, which on this platform was
+    // measured COSTLIER than the seven cudaMemcpy calls it replaced (triangle floor,
+    // interleaved x7: staged 9.8 ms median against 8.7 unstaged).
+    struct CounterBlock {
+        uint32_t* p = nullptr;
+        explicit CounterBlock(uint32_t slots);
+        ~CounterBlock();
+        CounterBlock(const CounterBlock&) = delete;
+        CounterBlock& operator=(const CounterBlock&) = delete;
+    };
+    static constexpr uint32_t          kCounterSlots = 11;
+    CounterBlock                       block_{kCounterSlots};
+
     EngineConfig                       cfg_;
     Pool<VertexId>                     vertex_pool_;
     Pool<Edge>                         edge_pool_;
     StateEdgeSlice*                    state_edge_slices_      = nullptr;
     EdgeId*                            state_edge_ids_         = nullptr;
-    // The six host-read scalar counters, contiguous so one transfer fetches them all. The
-    // pointers below are offsets into this and are NOT separately freed.
-    static constexpr uint32_t          kCounterSlots = 6;
+    // Alias of block_.p, kept because the slot pointers below are offsets into it.
     uint32_t*                          counter_block_          = nullptr;
 public:
     // Every host-read scalar counter, in ONE transfer.
     //
     // Read individually these cost one cudaMemcpy API call each, and the call dominates: a
     // four-byte transfer is instant while the call runs about 23.5 us. A caller that needs more
-    // than one of these should take a snapshot rather than several accessors.
+    // than one of these should take a snapshot rather than several accessors. Slots 6..10 are
+    // the five pools' LIVE counters -- the pools are constructed onto slots of the block -- so
+    // the snapshot is one transfer and nothing else.
     struct CounterSnapshot {
         uint32_t state_edge_ids = 0;   // slot 0
         uint32_t states         = 0;   // slot 1
@@ -409,8 +426,19 @@ public:
         uint32_t vertex_high    = 0;   // slot 3
         uint32_t sig_fallbacks  = 0;   // slot 4
         uint32_t canonical_ev   = 0;   // slot 5
+        uint32_t edges          = 0;   // slot 6, staged from edge_pool_
+        uint32_t vertex_slots   = 0;   // slot 7, staged from vertex_pool_
+        uint32_t events         = 0;   // slot 8, staged from event_pool_
+        uint32_t causal         = 0;   // slot 9, staged from causal_edge_pool_
+        uint32_t branchial      = 0;   // slot 10, staged from branchial_edge_pool_
     };
     CounterSnapshot counters_snapshot_host() const;
+    // all_state_edges_host with the four sizing counts taken from a snapshot instead of four
+    // cudaMemcpy calls. Declared here because the snapshot type is.
+    std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host(
+            const CounterSnapshot& snap,
+            std::vector<std::vector<EdgeId>>* out_edge_ids = nullptr,
+            std::vector<std::vector<VertexId>>* out_global_edges = nullptr) const;
 private:
     uint32_t*                          state_edge_ids_counter_ = nullptr;
     uint32_t*                          state_count_            = nullptr;
@@ -465,6 +493,11 @@ public:
     std::vector<DeviceEvent> events_host() const;
     std::vector<DeviceCausalEdge> causal_edges_host() const;
     std::vector<DeviceBranchialEdge> branchial_edges_host() const;
+    // The same readbacks with the count already in hand (from a counter snapshot); the
+    // zero-argument forms above delegate here after one size read.
+    std::vector<DeviceEvent> events_host(uint32_t n) const;
+    std::vector<DeviceCausalEdge> causal_edges_host(uint32_t n) const;
+    std::vector<DeviceBranchialEdge> branchial_edges_host(uint32_t n) const;
 };
 
 }  // namespace gpu

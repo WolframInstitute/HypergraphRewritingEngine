@@ -91,14 +91,25 @@ void VertexInvertedIndex::clear(uint32_t used_vertices) { list_.clear(used_verti
 // =============================================================================
 
 
+// The block exists before any pool member's constructor runs -- block_ is declared first --
+// so the pools can be constructed straight onto its slots.
+EngineState::CounterBlock::CounterBlock(uint32_t slots) {
+    HG_CUDA_CHECK(cudaMalloc(&p, sizeof(uint32_t) * slots), "EngineState counter block alloc");
+    // Slots 4 and 5 are bound to their pointers on first use of the feature that owns them.
+    // Zeroing the whole block here is what makes such a slot read as zero when its feature
+    // never runs.
+    HG_CUDA_CHECK(cudaMemset(p, 0, sizeof(uint32_t) * slots), "EngineState counter block init");
+}
+EngineState::CounterBlock::~CounterBlock() { if (p) cudaFree(p); }
+
 EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
-        , vertex_pool_(cfg.max_vertex_slots)
-        , edge_pool_(cfg.max_edges)
+        , vertex_pool_(cfg.max_vertex_slots, block_.p + 7)
+        , edge_pool_(cfg.max_edges, block_.p + 6)
         , signature_index_(cfg.sig_index_buckets, cfg.sig_index_pool)
         , vertex_inverted_index_(cfg.max_vertices, cfg.inverted_pool)
-        , event_pool_(cfg.max_events)
-        , causal_edge_pool_(cfg.max_causal_edges)
-        , branchial_edge_pool_(cfg.max_branchial_edges)
+        , event_pool_(cfg.max_events, block_.p + 8)
+        , causal_edge_pool_(cfg.max_causal_edges, block_.p + 9)
+        , branchial_edge_pool_(cfg.max_branchial_edges, block_.p + 10)
         , edge_consumers_(cfg.max_edges, cfg.edge_consumer_nodes)
         , branchial_index_(cfg.branchial_index_buckets, cfg.branchial_index_nodes)
         , causal_triple_dedup_(cfg.causal_triple_slots)
@@ -176,17 +187,12 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         // `multirule`: 42 cudaMemcpy calls totalling 1.884 ms against a 4.74 ms window -- 39.8%
         // of the call -- at a median of 23.5 us each, 27 of them moving eight bytes or fewer.
         // Reading four bytes six times costs six times 23.5 us; reading twenty-four bytes once
-        // costs 23.5 us. Contiguity is what makes the second possible, so these six live in one
-        // block and the individual pointers are offsets into it.
+        // costs 23.5 us. Contiguity is what makes the second possible, so these live in one
+        // block and the individual pointers are offsets into it. The five pools' counters are
+        // slots 6..10, taken in the member-initializer list above.
         //
         // Device code is unaffected: it still writes through the same typed pointers.
-        HG_CUDA_CHECK(cudaMalloc(&counter_block_, sizeof(uint32_t) * kCounterSlots),
-              "EngineState counter block alloc");
-        // counters_snapshot_host() transfers all six slots at once, while slots 4 and 5 are bound
-        // to their pointers on first use of the feature that owns them. Zeroing the whole block
-        // here is what makes a slot read as zero when its feature never runs.
-        HG_CUDA_CHECK(cudaMemset(counter_block_, 0, sizeof(uint32_t) * kCounterSlots),
-              "EngineState counter block init");
+        counter_block_          = block_.p;
         state_edge_ids_counter_ = counter_block_ + 0;
         state_count_            = counter_block_ + 1;
         HG_CUDA_CHECK(cudaMalloc(&state_canonical_hash_, sizeof(uint64_t) * cfg_.max_states),
@@ -206,9 +212,8 @@ EngineState::~EngineState() {
         if (rule_weights_dev_)       cudaFree(rule_weights_dev_);
         if (states_per_step_)        cudaFree(states_per_step_);
         if (successors_per_parent_)  cudaFree(successors_per_parent_);
-        // The six scalar counters are slices of counter_block_, not separate allocations, so
-        // the block is freed once here and none of them is freed individually.
-        if (counter_block_)          cudaFree(counter_block_);
+        // The scalar counters and the pool counters are slices of block_, which frees itself;
+        // nothing here is freed individually.
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
@@ -530,17 +535,22 @@ std::vector<VertexId> EngineState::edge_vertices_host(EdgeId eid) const {
 std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_host(
             std::vector<std::vector<EdgeId>>* out_edge_ids ,
             std::vector<std::vector<VertexId>>* out_global_edges) const {
-        uint32_t n_states = num_states_host();
+        return all_state_edges_host(counters_snapshot_host(), out_edge_ids, out_global_edges);
+    }
+
+std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_host(
+            const CounterSnapshot& snap,
+            std::vector<std::vector<EdgeId>>* out_edge_ids ,
+            std::vector<std::vector<VertexId>>* out_global_edges) const {
+        const uint32_t n_states = snap.states;
         std::vector<std::vector<std::vector<VertexId>>> out(n_states);
         if (out_edge_ids) out_edge_ids->assign(n_states, {});
         if (out_global_edges) out_global_edges->clear();
         if (n_states == 0) return out;
 
-        uint32_t n_edges      = edge_pool_.size_host();
-        uint32_t n_vert_slots = vertex_pool_.size_host();
-        uint32_t n_id_slots   = 0;
-        cudaMemcpy(&n_id_slots, state_edge_ids_counter_, sizeof(uint32_t),
-                   cudaMemcpyDeviceToHost);
+        const uint32_t n_edges      = snap.edges;
+        const uint32_t n_vert_slots = snap.vertex_slots;
+        const uint32_t n_id_slots   = snap.state_edge_ids;
 
         std::vector<Edge>           edges(n_edges);
         std::vector<VertexId>       verts(n_vert_slots);
@@ -608,12 +618,17 @@ Edge*     EngineState::edge_pool_view_data()    const { return edge_pool_.view()
 VertexId* EngineState::vertex_pool_view_data()  const { return vertex_pool_.view().data; }
 
 EngineState::CounterSnapshot EngineState::counters_snapshot_host() const {
+        // The pools' counters LIVE in slots 6..10 -- the pools were constructed onto the
+        // block -- so this one transfer carries every scalar with no staging. A staging
+        // kernel was measured costlier than the copies it replaced on this platform.
         uint32_t raw[kCounterSlots] = {};
         HG_CUDA_CHECK(cudaMemcpy(raw, counter_block_, sizeof(raw), cudaMemcpyDeviceToHost),
               "EngineState counter block d2h");
         CounterSnapshot c;
         c.state_edge_ids = raw[0]; c.states        = raw[1]; c.needs_indices = raw[2];
         c.vertex_high    = raw[3]; c.sig_fallbacks = raw[4]; c.canonical_ev  = raw[5];
+        c.edges          = raw[6]; c.vertex_slots  = raw[7]; c.events        = raw[8];
+        c.causal         = raw[9]; c.branchial     = raw[10];
         return c;
     }
 
@@ -624,23 +639,32 @@ uint32_t EngineState::num_causal_edges_host()    const { return causal_edge_pool
 uint32_t EngineState::num_branchial_edges_host() const { return branchial_edge_pool_.size_host(); }
 
 std::vector<DeviceEvent> EngineState::events_host() const {
-        uint32_t n = num_events_host();
+        return events_host(num_events_host());
+    }
+
+std::vector<DeviceCausalEdge> EngineState::causal_edges_host() const {
+        return causal_edges_host(num_causal_edges_host());
+    }
+
+std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host() const {
+        return branchial_edges_host(num_branchial_edges_host());
+    }
+
+std::vector<DeviceEvent> EngineState::events_host(uint32_t n) const {
         std::vector<DeviceEvent> out(n);
         if (n > 0) cudaMemcpy(out.data(), event_pool_.view().data,
                               sizeof(DeviceEvent) * n, cudaMemcpyDeviceToHost);
         return out;
     }
 
-std::vector<DeviceCausalEdge> EngineState::causal_edges_host() const {
-        uint32_t n = num_causal_edges_host();
+std::vector<DeviceCausalEdge> EngineState::causal_edges_host(uint32_t n) const {
         std::vector<DeviceCausalEdge> out(n);
         if (n > 0) cudaMemcpy(out.data(), causal_edge_pool_.view().data,
                               sizeof(DeviceCausalEdge) * n, cudaMemcpyDeviceToHost);
         return out;
     }
 
-std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host() const {
-        uint32_t n = num_branchial_edges_host();
+std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host(uint32_t n) const {
         std::vector<DeviceBranchialEdge> out(n);
         if (n > 0) cudaMemcpy(out.data(), branchial_edge_pool_.view().data,
                               sizeof(DeviceBranchialEdge) * n, cudaMemcpyDeviceToHost);

@@ -63,6 +63,22 @@ public:
     explicit Pool(uint32_t capacity) : capacity_(capacity) {
         HG_CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * capacity_), "Pool data alloc");
         HG_CUDA_CHECK(cudaMalloc(&counter_, sizeof(uint32_t)),   "Pool counter alloc");
+        owns_counter_ = true;
+        init_storage();
+    }
+
+    // The counter lives in caller-owned device memory -- a slot of EngineState's counter
+    // block -- so a host snapshot of that block reads this pool's live count with no per-pool
+    // transfer and no staging. The caller owns the slot's lifetime.
+    Pool(uint32_t capacity, uint32_t* external_counter) : capacity_(capacity) {
+        HG_CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * capacity_), "Pool data alloc");
+        counter_ = external_counter;
+        owns_counter_ = false;
+        init_storage();
+    }
+
+private:
+    void init_storage() {
         // The counter is a reservation high-water mark, so it can stand ahead of the writes: a
         // thread that claims slots and then fails a later reservation returns without filling
         // them. Host readbacks are bounded by the counter and therefore copy those slots. Zeroing
@@ -73,16 +89,18 @@ public:
         reset();
     }
 
+public:
     ~Pool() {
-        if (data_)    cudaFree(data_);
-        if (counter_) cudaFree(counter_);
+        if (data_)                     cudaFree(data_);
+        if (counter_ && owns_counter_) cudaFree(counter_);
     }
 
     Pool(const Pool&) = delete;
     Pool& operator=(const Pool&) = delete;
 
     Pool(Pool&& o) noexcept
-        : data_(o.data_), counter_(o.counter_), capacity_(o.capacity_) {
+        : data_(o.data_), counter_(o.counter_), capacity_(o.capacity_),
+          owns_counter_(o.owns_counter_) {
         o.data_ = nullptr; o.counter_ = nullptr; o.capacity_ = 0;
     }
 
@@ -102,8 +120,11 @@ public:
     // The VALID entries, copied to the host. Clamped to capacity for the same reason size()
     // is: claim() bumps the counter unconditionally and reports exhaustion afterwards, so an
     // overflowed run leaves the counter past the allocation.
-    void copy_to_host(std::vector<T>& out) const {
-        const uint32_t n = size_host();
+    void copy_to_host(std::vector<T>& out) const { copy_to_host(out, size_host()); }
+
+    // The same copy with the count already in hand -- a caller holding a counter snapshot
+    // spends no extra cudaMemcpy call re-reading it.
+    void copy_to_host(std::vector<T>& out, uint32_t n) const {
         const uint32_t valid = n < capacity_ ? n : capacity_;
         out.resize(valid);
         if (!valid) return;
@@ -127,6 +148,8 @@ public:
     T*        data_    = nullptr;
     uint32_t* counter_ = nullptr;
     uint32_t  capacity_ = 0;
+    // False when the counter is a slot of caller-owned memory (EngineState's counter block).
+    bool      owns_counter_ = true;
 };
 
 }  // namespace gpu

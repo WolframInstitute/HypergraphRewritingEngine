@@ -492,8 +492,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     auto t_readback_start = std::chrono::steady_clock::now();
 
-    // Readback — hashes were persisted across steps, no re-hashing needed.
-    uint32_t total_states = engine.num_states_host();
+    // Readback — hashes were persisted across steps, no re-hashing needed. ONE counter
+    // snapshot sizes everything below: the states, the per-state edge readback and the three
+    // relation pools, which read individually were eight ~23.5 us cudaMemcpy calls of the
+    // ~3.3 ms per-call floor.
+    const auto snap = engine.counters_snapshot_host();
+    uint32_t total_states = snap.states;
     std::vector<uint64_t> h_hashes(total_states);
     if (total_states > 0) {
         HG_CUDA_CHECK(cudaMemcpy(h_hashes.data(), d_state_hashes, sizeof(uint64_t) * total_states,
@@ -504,8 +508,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
     auto all_edges = in.edge_identity
-        ? engine.all_state_edges_host(&out.state_edge_ids, &out.global_edges)
-        : engine.all_state_edges_host();
+        ? engine.all_state_edges_host(snap, &out.state_edge_ids, &out.global_edges)
+        : engine.all_state_edges_host(snap);
     out.states.reserve(all_edges.size());
     for (uint32_t s = 0; s < all_edges.size(); ++s) {
         CanonicalState cs;
@@ -519,7 +523,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_readback_states_start).count();
 
     auto t_readback_evcb_start = std::chrono::steady_clock::now();
-    auto d_events = engine.events_host();
+    auto d_events = engine.events_host(snap.events);
     out.events.reserve(d_events.size());
     for (const auto& de : d_events) {
         Event e;
@@ -535,10 +539,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.events.push_back(std::move(e));
     }
 
-    auto d_causal = engine.causal_edges_host();
+    auto d_causal = engine.causal_edges_host(snap.causal);
     out.causal_edges.reserve(d_causal.size());
     for (const auto& c : d_causal) out.causal_edges.push_back(CausalEdge{c.from, c.to});
-    auto d_branch = engine.branchial_edges_host();
+    auto d_branch = engine.branchial_edges_host(snap.branchial);
     out.branchial_edges.reserve(d_branch.size());
     for (const auto& b : d_branch) out.branchial_edges.push_back(BranchialEdge{b.a, b.b});
 
