@@ -941,6 +941,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         for (const auto& w : engine.warnings())
             req.ffi_warnings.push_back({"Engine", 1, w});
 
+        // A rank that was unavailable was substituted with a raw edge id and counted (SPEC.md
+        // sec 4.2); such an event signature is not an isomorphism invariant, and a caller
+        // comparing event counts across runs needs to know it happened. The device reports the
+        // same count as its EventSigRawFallback warning kind.
+        if (const uint64_t n = hg.event_signature_raw_fallbacks()) {
+            req.ffi_warnings.push_back(
+                {"EventSigRawFallback", static_cast<int64_t>(n),
+                 "event signature(s) used a raw edge id where no canonical rank was "
+                 "available; those identities are not isomorphism-invariant"});
+        }
+
         // Build WXF output - only include requested data components
         wxf::Writer wxf_writer;
         wxf_writer.write_header();
