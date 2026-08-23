@@ -1,7 +1,7 @@
 #include "hypergraph/pattern.hpp"
 #include "hypergraph/pattern_matcher.hpp"
 
-// The bodies behind pattern.hpp: PatternEdge, RewriteRule, RuleBuilder, MatchIdentity and
+// The bodies behind pattern.hpp: PatternEdge, RewriteRule, RuleBuilder and
 // PartialMatch. A rule's derived matching data -- variable counts and the join order -- is
 // computed once at add_rule and read from then on; the rest is small value-type code. None of
 // it is a template, so it lives here rather than in the header that every engine translation
@@ -206,46 +206,6 @@ RuleBuilder make_rule(uint16_t index) {
 }
 
 // =============================================================================
-// MatchIdentity
-// =============================================================================
-
-MatchIdentity::MatchIdentity() : rule_index(0), num_edges(0) {
-    std::memset(edges, 0xFF, sizeof(edges));
-}
-
-MatchIdentity::MatchIdentity(uint16_t rule, const EdgeId* edge_array, uint8_t n)
-    : rule_index(rule), num_edges(n) {
-    std::memset(edges, 0xFF, sizeof(edges));
-    for (uint8_t i = 0; i < n; ++i) {
-        edges[i] = edge_array[i];
-    }
-}
-
-uint64_t MatchIdentity::hash() const {
-    uint64_t h = 14695981039346656037ULL;
-    h ^= rule_index;
-    h *= 1099511628211ULL;
-    for (uint8_t i = 0; i < num_edges; ++i) {
-        h ^= edges[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-bool MatchIdentity::operator==(const MatchIdentity& other) const {
-    if (rule_index != other.rule_index) return false;
-    if (num_edges != other.num_edges) return false;
-    for (uint8_t i = 0; i < num_edges; ++i) {
-        if (edges[i] != other.edges[i]) return false;
-    }
-    return true;
-}
-
-bool MatchIdentity::operator!=(const MatchIdentity& other) const {
-    return !(*this == other);
-}
-
-// =============================================================================
 // PartialMatch
 // =============================================================================
 
@@ -296,20 +256,6 @@ void PartialMatch::to_pattern_order(EdgeId* out) const {
     }
 }
 
-// rule names the pattern this match was built against; the edge permutation it describes is
-// already carried in match_order, so the parameter is not read.
-MatchIdentity PartialMatch::to_identity([[maybe_unused]] const RewriteRule& rule) const {
-    MatchIdentity mid;
-    mid.rule_index = rule_index;
-    mid.num_edges = num_matched;
-
-    // matched_edges is in match_order, convert to pattern order
-    for (uint8_t i = 0; i < num_matched; ++i) {
-        uint8_t pattern_idx = match_order[i];
-        mid.edges[pattern_idx] = matched_edges[i];
-    }
-    return mid;
-}
 
 
 // =============================================================================

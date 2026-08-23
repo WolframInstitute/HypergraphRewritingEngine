@@ -153,9 +153,6 @@ struct PatternMatchingContext {
         uint16_t, const EdgeId*, uint8_t, const VariableBinding&, StateId)>;
     MatchCallback on_match;
 
-    // Match deduplication (optional)
-    ConcurrentMap<uint64_t, MatchId>* match_dedup;
-
     PatternMatchingContext(
         const RewriteRule* r,
         uint16_t ridx,
@@ -179,7 +176,6 @@ struct PatternMatchingContext {
         , matches_found(nullptr)
         , max_matches(SIZE_MAX)
         , on_match(callback)
-        , match_dedup(nullptr)
     {}
 };
 
@@ -339,13 +335,6 @@ void emit_match(PatternMatchingContext<EdgeAccessor, SignatureAccessor>& mc,
     std::memset(edges_in_order, 0xFF, sizeof(edges_in_order));
     for (uint8_t d = 0; d < st.depth; ++d) edges_in_order[st.pattern[d]] = st.matched[d];
 
-    if (mc.match_dedup) {
-        MatchIdentity identity(mc.rule_index, edges_in_order, mc.rule->num_lhs_edges);
-        auto [existing, inserted] = mc.match_dedup->insert_if_absent(
-            identity.hash(), static_cast<MatchId>(0));
-        if (!inserted) return;
-    }
-
     if (mc.on_match) {
         // Only the BOUND variables are copied across. The join's unwind restores the mask and
         // leaves behind the vertex a discarded branch wrote, while resolve_rhs_vertices
@@ -409,8 +398,7 @@ void find_matches(
     MatchCallback&& on_match,
     std::atomic<bool>* should_terminate = nullptr,
     std::atomic<size_t>* matches_found = nullptr,
-    size_t max_matches = SIZE_MAX,
-    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
+    size_t max_matches = SIZE_MAX
 ) {
     PatternMatchingContext<EdgeAccessor, SignatureAccessor> ctx(
         &rule, rule_index, state_id, &state_edges,
@@ -421,7 +409,6 @@ void find_matches(
     ctx.should_terminate = should_terminate;
     ctx.matches_found = matches_found;
     ctx.max_matches = max_matches;
-    ctx.match_dedup = match_dedup;
 
     scan_pattern(ctx);
 }
@@ -440,8 +427,7 @@ void find_matches(
     MatchCallback&& on_match,
     std::atomic<bool>* should_terminate = nullptr,
     std::atomic<size_t>* matches_found = nullptr,
-    size_t max_matches = SIZE_MAX,
-    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
+    size_t max_matches = SIZE_MAX
 ) {
     // Create a signature accessor that computes on-the-fly
     auto compute_signature = [&get_edge](EdgeId eid) -> EdgeSignature {
@@ -452,7 +438,7 @@ void find_matches(
     find_matches(rule, rule_index, state_id, state_edges,
                  sig_index, inv_index, get_edge, compute_signature,
                  std::forward<MatchCallback>(on_match),
-                 should_terminate, matches_found, max_matches, match_dedup);
+                 should_terminate, matches_found, max_matches);
 }
 
 // =============================================================================
@@ -504,8 +490,7 @@ void find_delta_matches(
     uint8_t num_produced,
     std::atomic<bool>* should_terminate = nullptr,
     std::atomic<size_t>* matches_found = nullptr,
-    size_t max_matches = SIZE_MAX,
-    ConcurrentMap<uint64_t, MatchId>* match_dedup = nullptr
+    size_t max_matches = SIZE_MAX
 ) {
     if (num_produced == 0) return;
 
@@ -518,7 +503,6 @@ void find_delta_matches(
     ctx.should_terminate = should_terminate;
     ctx.matches_found = matches_found;
     ctx.max_matches = max_matches;
-    ctx.match_dedup = match_dedup;
 
     // For each produced edge, try it at each pattern position
     // This ensures we find all matches that include at least one produced edge

@@ -213,30 +213,6 @@ public:
 RuleBuilder make_rule(uint16_t index = 0);
 
 // =============================================================================
-// MatchIdentity
-// =============================================================================
-// Uniquely identifies a match by its rule and edge mapping.
-// Two matches are the same iff they have the same rule and map the same
-// pattern edges to the same data edges.
-//
-// Note: Edges are stored in PATTERN order, not match order.
-
-struct MatchIdentity {
-    uint16_t rule_index;
-    EdgeId edges[MAX_PATTERN_EDGES];  // In pattern order
-    uint8_t num_edges;
-
-    MatchIdentity();
-    MatchIdentity(uint16_t rule, const EdgeId* edge_array, uint8_t n);
-
-    // Hash for ConcurrentMap
-    uint64_t hash() const;
-
-    bool operator==(const MatchIdentity& other) const;
-    bool operator!=(const MatchIdentity& other) const;
-};
-
-// =============================================================================
 // PartialMatch
 // =============================================================================
 // Represents a partially completed match - some pattern edges have been
@@ -275,9 +251,6 @@ struct PartialMatch {
 
     // Convert to edges array in pattern order
     void to_pattern_order(EdgeId* out) const;
-
-    // Convert to MatchIdentity (reorder edges to pattern order)
-    MatchIdentity to_identity(const RewriteRule& rule) const;
 };
 
 }  // namespace engine
