@@ -7,6 +7,13 @@ User-visible semantic changes since v0.0.1-alpha.6, carried here so the release 
 - `ExplorationProbability` samples **per canonical state**, not per transition.
 - `QuotientInitialStates` defaults to keeping every root, matching the reference `MultiwaySystem`.
 - Quotient exploration expands each canonical state once, **at its shortest depth**.
+- A steered session `Step` (`"From" -> {ids}`) works under `TargetDevice -> "GPU"`; the device
+  previously refused it. Both devices report `"Frontier"` in every session reply, resolve the
+  selection against it, and put unselected entries back at the depths they were stranded at.
+- Fixed a rare high-contention nondeterminism: a concurrent set's membership query could miss a
+  settled key while a table growth carried it, dropping one causal edge from a full-capture run
+  (seen once on a 4-core ARM64 CI machine at 16 threads). Model-checked exhaustively after the
+  fix.
 
 ---
 
