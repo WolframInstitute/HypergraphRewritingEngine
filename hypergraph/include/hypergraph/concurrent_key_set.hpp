@@ -201,9 +201,29 @@ public:
 
     bool contains(K key) const {
         reject_sentinel_key(key, "contains");
-        for (Table* t = table_.load(std::memory_order_acquire); t; t = t->prev)
-            if (!t->drained.load(std::memory_order_acquire) && find_in_table(t, key)) return true;
-        return false;
+        // OLDEST TABLE FIRST. During a growth a key moves old -> new: the carry lands in the
+        // successor BEFORE the source slot seals, and the seal is the release this walk's
+        // acquire pairs with -- so a probe that meets the key's slot already MIGRATED is
+        // ordered after the carry, and the destination, walked LATER in this order, shows the
+        // key. Newest-first visits each table on the wrong side of the hand-off (the head
+        // before the carry lands, the source after its seal) and reports a settled key absent.
+        // insert()'s chain scan survives the same window only because its head claim re-probes
+        // the run the carry lands in and meets the key there; contains has no claim, so the
+        // walk order is the whole answer. Calibrated: key_set_contains_during_growth reports
+        // the violation against the newest-first walk in its first explored execution.
+        //
+        // The retry: carries only land in the table that is head when their growth installs
+        // it, so with the head unchanged across a walk the destination of every in-flight
+        // carry is the table this order probes last. A head that MOVED mid-walk can have
+        // received and re-emitted the key (a double hop into a successor the snapshot never
+        // reaches), so the verdict "absent" stands only when the head it was decided against
+        // is still the head. Growths are finite -- capacity is monotone -- so this loop
+        // terminates.
+        for (;;) {
+            Table* head = table_.load(std::memory_order_acquire);
+            if (find_oldest_first(head, key)) return true;
+            if (table_.load(std::memory_order_acquire) == head) return false;
+        }
     }
 
     // The claim counter. Drives the growth decision and nothing else, because it is a VERDICT
@@ -245,6 +265,14 @@ private:
         return static_cast<size_t>(h);
     }
 
+    // The chain, probed oldest table first; see contains() for why that order is the
+    // correctness condition. Recursion depth is the number of live tables: growths double the
+    // capacity, so it is logarithmic in the largest table plus any unsealed stragglers.
+    static bool find_oldest_first(const Table* t, K key) {
+        if (!t) return false;
+        if (find_oldest_first(t->prev, key)) return true;
+        return !t->drained.load(std::memory_order_acquire) && find_in_table(t, key);
+    }
     // Linear probing stops at EMPTY: a key is published by one exchange, so a probe reaching an
     // untouched slot has passed every slot the key could occupy. MIGRATED is skipped rather than
     // treated as a stop, because it once held a key and the run continues past it.
