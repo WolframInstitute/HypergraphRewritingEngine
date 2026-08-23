@@ -700,8 +700,31 @@ add_test(NAME quotient_twin_check
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 set_tests_properties(quotient_twin_check PROPERTIES TIMEOUT 60)
 
+# THE TIMEOUT IS MEASURED, NOT GUESSED, and it has to be: a model-checking gate that is cut off
+# mid-enumeration reports a failure indistinguishable from a real violation, and one set below
+# what the suite costs is a gate that can only ever fail. Per-harness wall clock, measured
+# 2026-08-23 on this box, exhaustive runs at each harness's own recorded bound:
+#
+#   concurrent_map_double_growth_3t   442.97 s   (78,397 executions -- the count its header cites)
+#   concurrent_map_double_growth_2t   238.39 s
+#   concurrent_map_repeated_offer     227.64 s
+#   key_set_exactly_once_3t            80.86 s
+#   concurrent_map_resize              20.34 s
+#   the remaining fourteen             ~13 s combined
+#
+# ~1,023 s of enumeration plus a clang compile per harness, against a budget that was 900. The
+# four expensive ones are three-worker shapes across a table growth, and they are expensive
+# because that is where the defects are: every double-claim this project has found needed a
+# growth concurrent with two claimants.
+#
+# REDUCING THEM IS NOT AVAILABLE, and this was tested rather than assumed. Dropping
+# concurrent_map_double_growth_3t from --bound=4 to --bound=3 makes it finish in 112.76 s and
+# STOP DETECTING THE DEFECT: with insert_if_absent's confirmation deleted it reports no violation
+# in 21,041 executions, where at --bound=4 it reports one. Shrinking the table instead
+# (working_capacity 16 -> 4) does not help, since the cost is the three-thread interleaving space
+# and not the table width. So the budget is stated honestly instead.
 add_test(NAME genmc_harnesses
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/genmc/run.sh all)
 set_tests_properties(genmc_harnesses PROPERTIES
-                     TIMEOUT 900
+                     TIMEOUT 2400
                      SKIP_RETURN_CODE 2)
