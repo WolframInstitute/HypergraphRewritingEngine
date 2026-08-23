@@ -175,6 +175,22 @@ jobs:
             echo "AddressSanitizer reported an error"; exit 1
           fi
 
+      # LeakSanitizer executes HERE and nowhere else: under WSL2 it dies before any test runs
+      # ("Can't open /proc/<pid>/task"), so no local run can triage its reports. Report-only
+      # until the first reports are read; the step flips to fatal in the triage commit (P7.8),
+      # with real leaks fixed and intentional process-lifetime allocations suppressed by name.
+      - name: LSan — leak report (report-only until triaged)
+        continue-on-error: true
+        run: |
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=0 \
+            ./build_asan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee lsan.log
+          if grep -q "ERROR: LeakSanitizer" lsan.log; then
+            echo "LeakSanitizer reported leaks; read the summary above (triage pending)"
+            grep -A4 "SUMMARY: AddressSanitizer" lsan.log || true
+            exit 1
+          fi
+          echo "no leaks reported"
+
       - name: Configure + build TSan
         run: >
           cmake -S . -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
