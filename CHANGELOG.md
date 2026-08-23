@@ -12,7 +12,7 @@ User-visible semantic changes since v0.0.1-alpha.6, carried here so the release 
 
 ## v0.0.1-alpha.6
 
-_Changes since **v0.0.1-alpha.5** (2026-01-11) — 202 commits. Released 2026-07-22._
+_Changes since **v0.0.1-alpha.5** (2026-01-11) — 202 commits._
 
 A large release focused on making the engine dramatically faster, adding a working GPU backend,
 isolating evolution in a standalone process, and shipping a proper cross-platform paclet with
