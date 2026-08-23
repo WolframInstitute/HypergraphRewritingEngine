@@ -146,6 +146,11 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         // later Query depend on the order the caller asked things in.
         if (job.session_op == "Open") {
             in.record.causal = in.record.branchial = in.record.raw_events = true;
+        // The reply serves the reconstructed relations as DATA (the edge lists) and as GRAPHS;
+        // both need the pair vectors, not only the counts. A counts-only request keeps this
+        // off, which is the whole point of the flag.
+        in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
+                                   gneeds.causal || gneeds.branchial;
         }
     }
     in.transitive_reduction = job.transitive_reduction;
@@ -461,7 +466,46 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // NumCausalEdges and must be computed even when the edge list itself is not requested
     // (e.g. the counts-only "Debug" property), so the count matches the CPU in every case.
     int64_t num_causal = 0;
-    {
+    // The identity a reconstructed application is REPORTED under, shared by the edge lists and
+    // the graph below: the run signature when an event signature is in force, the application id
+    // itself under EVENT_SIG_NONE -- where every application is its own event, and the signature
+    // array would collapse them.
+    const bool recon_ran = result.reconstruction_ran &&
+                           !result.reconstructed_event_signature.empty();
+    auto recon_dense = [&]() {
+        std::unordered_map<uint64_t, int64_t> dense;
+        if (recon_ran && job.event_canon_mode != 0) {
+            for (uint64_t sig : result.reconstructed_event_signature) {
+                if (sig == 0ull) continue;
+                dense.emplace(sig, static_cast<int64_t>(dense.size()));
+            }
+        }
+        return dense;
+    }();
+    auto recon_id = [&](uint32_t eid) -> int64_t {
+        if (job.event_canon_mode == 0) return static_cast<int64_t>(eid);
+        const uint64_t sig = eid < result.reconstructed_event_signature.size()
+                                 ? result.reconstructed_event_signature[eid] : 0ull;
+        auto it = recon_dense.find(sig);
+        return it == recon_dense.end() ? -1 : it->second;
+    };
+    if (recon_ran) {
+        const auto& raw = job.transitive_reduction ? result.reconstructed_causal_raw_reduced
+                                                   : result.reconstructed_causal_raw;
+        if (job.include_causal_edges) {
+            wxf::WXFValueList causal;
+            for (const auto& [p, c] : raw) {
+                wxf::WXFValueAssociation ed;
+                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(recon_id(p))});
+                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(c))});
+                ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(p))});
+                ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c))});
+                causal.push_back(wxf::WXFValue(ed));
+            }
+            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal)});
+        }
+        num_causal = static_cast<int64_t>(raw.size());
+    } else {
         wxf::WXFValueList causal;
         std::unordered_set<uint64_t> seen;
         for (const auto& c : result.causal_edges) {
@@ -508,7 +552,16 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     }
 
     // BranchialEdges: no dedup (multiplicity matters).
-    if (job.include_branchial_edges) {
+    if (job.include_branchial_edges && recon_ran) {
+        wxf::WXFValueList branchial;
+        for (const auto& [a, b] : result.reconstructed_branchial_raw) {
+            wxf::WXFValueAssociation ed;
+            ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(recon_id(a))});
+            ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(b))});
+            branchial.push_back(wxf::WXFValue(ed));
+        }
+        full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});
+    } else if (job.include_branchial_edges) {
         wxf::WXFValueList branchial;
         for (const auto& b : result.branchial_edges) {
             wxf::WXFValueAssociation ed;
@@ -703,6 +756,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         };
         auto eff_event = [&](hg_gpu::EventId eid) -> int64_t {
             if (recon_identity) {
+                // Under EVENT_SIG_NONE every application is its own event; the signature array
+                // would collapse distinct applications into one vertex.
+                if (job.event_canon_mode == 0) return static_cast<int64_t>(eid);
                 auto it = dense_of_sig.find(sig_of_event(eid));
                 return it == dense_of_sig.end() ? -1 : it->second;
             }
@@ -760,7 +816,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         gsrc.event_valid_ = [&](uint32_t eid) {
             // An application whose identity the replay never registered stands for no vertex,
             // which is what keeps the vertex set equal to the set the count describes.
-            if (recon_identity) return dense_of_sig.count(sig_of_event(eid)) != 0;
+            if (recon_identity) {
+                if (job.event_canon_mode == 0)
+                    return eid < result.reconstructed_event_signature.size() &&
+                           result.reconstructed_event_signature[eid] != 0ull;
+                return dense_of_sig.count(sig_of_event(eid)) != 0;
+            }
             return event_by_id.find(eid) != event_by_id.end();
         };
         gsrc.eff_event_ = eff_event;
@@ -787,10 +848,20 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_edges(e.output_state))});
             return d;
         };
+        if (result.reconstruction_ran) {
+            // The reconstruction's raw relation, reduced per the option -- the same source the
+            // edge lists serve, so the graph is their rendered form and not a second relation.
+            const auto& raw = job.transitive_reduction ? result.reconstructed_causal_raw_reduced
+                                                       : result.reconstructed_causal_raw;
+            gsrc.causal_pairs_.assign(raw.begin(), raw.end());
+            gsrc.branchial_pairs_.assign(result.reconstructed_branchial_raw.begin(),
+                                         result.reconstructed_branchial_raw.end());
+        } else {
         for (const auto& c : result.causal_edges)
             gsrc.causal_pairs_.emplace_back(static_cast<uint32_t>(c.from), static_cast<uint32_t>(c.to));
         for (const auto& b : result.branchial_edges)
             gsrc.branchial_pairs_.emplace_back(static_cast<uint32_t>(b.a), static_cast<uint32_t>(b.b));
+        }
 
         hgmarshal::GraphOptions gopts;
         gopts.edge_deduplication = job.edge_deduplication;

@@ -1459,3 +1459,216 @@ TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
 }
 
 #endif  // _WIN32
+
+// =============================================================================
+// Relation coherence across the identity surface
+// =============================================================================
+//
+// One causal relation reaches the caller through three shapes -- the NumCausalEdges count, the
+// CausalEdges list, and the CausalGraphStructure graph -- and they are the SAME observable, so
+// they must agree in every cell of the identity surface: state mode x event mode x quotient
+// exploration x transitive reduction. Measured before this gate existed (binary-growth, depth 3,
+// TR on, through the paclet): quotient off + Automatic events served list 6 against graph 8;
+// quotient on + None served list 6 against graph 3 where full capture serves 8; quotient on +
+// Automatic served 6 against 8 -- three different answers for one relation in one reply, because
+// the three shapes routed through different stores (the list read the stored skeleton with no
+// reconstruction branch, the graph took the reconstruction branch whenever the identity
+// machinery was on, and the two carry different event-id spaces).
+//
+// The quotient rows also state the exploration contract: quotient is a performance mode, never a
+// semantic one, so every number it serves equals full capture's in the same cell.
+
+namespace {
+
+// The doc's transitive-reduction example: two LHS edges chained through a shared vertex, whose
+// raw causal DAG has bypassed pairs -- the workload on which CausalTransitiveReduction must
+// visibly change the graph, where a single-LHS-edge rule's raw DAG is a forest and cannot.
+const StateList kSeedTR = {{{1, 1}, {1, 1}}};
+const EdgeList kLhsTR = {{1, 2}, {2, 3}};
+const EdgeList kRhsTR = {{1, 3}, {3, 4}, {1, 4}};
+
+std::vector<uint8_t> build_relation_request(int64_t steps, const char* states_mode,
+                                            const char* events_mode, bool quotient, bool tr,
+                                            bool reducible_workload = false) {
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(5);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(reducible_workload ? kSeedTR : kSeed);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Rules"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(1);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("r0"));
+    w.write_function("Rule", 2);
+    w.write(reducible_workload ? kLhsTR : kLhs);
+    w.write(reducible_workload ? kRhsTR : kRhs);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(steps);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(7);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("ShowProgress"));
+    w.write_symbol("True");
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("RequestedData"));
+    w.write(std::vector<std::string>{"CausalEdges", "NumCausalEdges"});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("GraphProperties"));
+    w.write(std::vector<std::string>{"CausalGraphStructure"});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("CanonicalizeStates"));
+    w.write_symbol(states_mode);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("CanonicalizeEvents"));
+    w.write_symbol(events_mode);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("ExploreFromCanonicalStatesOnly"));
+    w.write_symbol(quotient ? "True" : "False");
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("CausalTransitiveReduction"));
+    w.write_symbol(tr ? "True" : "False");
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Op"));
+    w.write(std::string("Evolve"));
+    return w.release_data();
+}
+
+// Edges in the FIRST GraphData entry, the twin of graph_vertex_count above.
+int64_t graph_edge_count(const std::vector<uint8_t>& out) {
+    int64_t edge_count = -1;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "GraphData") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string&, wxf::Parser& gp) {
+            gp.read_association([&](const std::string& field, wxf::Parser& fp) {
+                if (field != "Edges") { fp.skip_value(); return; }
+                fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                    for (size_t i = 0; i < n; ++i) ep.skip_value();
+                    edge_count = static_cast<int64_t>(n);
+                });
+            });
+        });
+    });
+    return edge_count;
+}
+
+struct CausalView { int64_t num; int64_t list; int64_t graph; };
+
+CausalView causal_view(int64_t steps, const char* states_mode, const char* events_mode,
+                       bool quotient, bool tr, std::string* routing = nullptr,
+                       bool reducible_workload = false) {
+    HostBridge host;
+    if (routing) {
+        host.progress = [routing](const std::string& m) {
+            const auto at = m.find("recon=");
+            if (at != std::string::npos) *routing = m.substr(at);
+        };
+    }
+    const auto out = run_rewriting_core(
+        build_relation_request(steps, states_mode, events_mode, quotient, tr,
+                               reducible_workload), host);
+    return CausalView{read_int_key(out, "NumCausalEdges"),
+                      count_list_entries(out, "CausalEdges"),
+                      graph_edge_count(out)};
+}
+
+}  // namespace
+
+TEST(RelationCoherence, CountListAndGraphAgreeInEveryIdentityCell) {
+    // The invariants, per cell:
+    //   count == list length     -- both are the raw relation, in every cell;
+    //   graph == count           -- when event identity is None, since the graph's vertices are
+    //                               then the raw events and no projection happens;
+    //   graph <= count           -- otherwise: the graph is the identity-projected,
+    //                               deduplicated view of the same relation;
+    //   TR on <= TR off          -- CausalTransitiveReduction drops redundant edges at
+    //                               registration (stored path) or on read (reconstruction), so
+    //                               count, list and graph all shrink together; the strict case
+    //                               is pinned by TransitiveReductionVisiblyReducesTheGraph.
+    for (const char* sm : {"None", "Automatic", "Full"}) {
+        for (const char* em : {"None", "Full", "Automatic"}) {
+            for (bool quotient : {false, true}) {
+                const CausalView off = causal_view(3, sm, em, quotient, false);
+                const CausalView on  = causal_view(3, sm, em, quotient, true);
+                for (const CausalView* v : {&off, &on}) {
+                    EXPECT_GT(v->num, 0) << sm << "/" << em << " q=" << quotient;
+                    EXPECT_EQ(v->num, v->list)
+                        << "count vs list, states=" << sm << " events=" << em
+                        << " quotient=" << quotient;
+                }
+                EXPECT_LE(on.num, off.num)
+                    << "reduction only removes, states=" << sm << " events=" << em
+                    << " quotient=" << quotient;
+                if (std::string(em) == "None") {
+                    EXPECT_EQ(off.graph, off.num) << sm << " q=" << quotient << " (tr off)";
+                } else {
+                    EXPECT_LE(off.graph, off.num) << sm << "/" << em << " q=" << quotient;
+                    EXPECT_GT(off.graph, 0) << sm << "/" << em << " q=" << quotient;
+                }
+                EXPECT_LE(on.graph, off.graph)
+                    << "reduction only removes, states=" << sm << " events=" << em
+                    << " quotient=" << quotient;
+            }
+        }
+    }
+}
+
+// The documented promise of CausalTransitiveReduction, held on a workload whose raw causal DAG
+// has bypassed pairs: the relation is strictly smaller with the reduction on, and count, list
+// and graph move together because they are one relation.
+TEST(RelationCoherence, TransitiveReductionVisiblyReducesTheGraph) {
+    for (const char* sm : {"None", "Full"}) {
+        for (bool quotient : {false, true}) {
+            const CausalView off = causal_view(3, sm, "None", quotient, false, nullptr, true);
+            const CausalView on  = causal_view(3, sm, "None", quotient, true,  nullptr, true);
+            EXPECT_LT(on.num, off.num)   << sm << " q=" << quotient;
+            EXPECT_EQ(on.num, on.list)   << sm << " q=" << quotient;
+            EXPECT_EQ(on.num, on.graph)  << sm << " q=" << quotient;
+            EXPECT_EQ(off.num, off.list) << sm << " q=" << quotient;
+            EXPECT_EQ(off.num, off.graph) << sm << " q=" << quotient;
+        }
+    }
+}
+
+TEST(RelationCoherence, QuotientServesFullCapturesNumbers) {
+    // The quotient contract holds where the quotient runs: it needs Full state
+    // canonicalization, and the engine says so in a warning otherwise.
+    for (const char* em : {"None", "Full", "Automatic"}) {
+        for (bool tr : {false, true}) {
+            const CausalView full = causal_view(3, "Full", em, false, tr);
+            const CausalView quot = causal_view(3, "Full", em, true, tr);
+            EXPECT_EQ(full.num, quot.num)
+                << "events=" << em << " tr=" << tr << " (count)";
+            EXPECT_EQ(full.list, quot.list)
+                << "events=" << em << " tr=" << tr << " (list)";
+            EXPECT_EQ(full.graph, quot.graph)
+                << "events=" << em << " tr=" << tr << " (graph)";
+        }
+    }
+}
+
+// The whole surface, printed. Not an assertion: the two gates above state the invariants; this
+// exists so a failure reads as a table rather than as thirty scattered EXPECT lines.
+TEST(RelationCoherence, PrintSurface) {
+    std::printf("%-10s %-10s %-9s %-6s | %6s %6s %6s\n",
+                "states", "events", "quotient", "tr", "num", "list", "graph");
+    for (const char* sm : {"None", "Automatic", "Full"})
+        for (const char* em : {"None", "Full", "Automatic"})
+            for (bool q : {false, true})
+                for (bool tr : {false, true}) {
+                    std::string routing;
+                    const CausalView v = causal_view(3, sm, em, q, tr, &routing);
+                    std::printf("%-10s %-10s %-9s %-6s | %6lld %6lld %6lld | %s\n",
+                                sm, em, q ? "on" : "off", tr ? "on" : "off",
+                                (long long)v.num, (long long)v.list, (long long)v.graph,
+                                routing.c_str());
+                }
+}

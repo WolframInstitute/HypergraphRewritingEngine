@@ -449,7 +449,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                                 out.reconstructed_causal_relation_reduced,
                                                 out.reconstructed_branchial_relation,
                                                 in.materialize_relations,
-                                                &out.reconstructed_event_signature);
+                                                &out.reconstructed_event_signature,
+                                                &out.reconstructed_causal_raw,
+                                                &out.reconstructed_causal_raw_reduced,
+                                                in.materialize_relations
+                                                    ? &out.reconstructed_branchial_raw : nullptr);
         // DERIVED from the relation the caller receives, not counted beside it: the reduction
         // is computed during that readback, so a separate tally could only ever disagree.
         out.reconstructed_causal_pairs_reduced =

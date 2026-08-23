@@ -189,10 +189,16 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial,
                                   bool want_branchial,
-                                  std::vector<uint64_t>* event_signature) {
+                                  std::vector<uint64_t>* event_signature,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* causal_raw,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* causal_raw_reduced,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* branchial_raw) {
         causal.clear();
         causal_reduced.clear();
         branchial.clear();
+        if (causal_raw) causal_raw->clear();
+        if (causal_raw_reduced) causal_raw_reduced->clear();
+        if (branchial_raw) branchial_raw->clear();
         const uint32_t n = num_raw_events_host();
         if (n == 0) return;
         std::vector<uint64_t> sigs(event_sig_capacity_);
@@ -222,6 +228,9 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
             for (uint64_t k : keys) {
                 const hgcommon::IdPair p = hgcommon::id_pair_from_key(k);
                 out.emplace_back(sig_of(p.a), sig_of(p.b));
+                if (causal_raw)
+                    causal_raw->emplace_back(static_cast<uint32_t>(p.a),
+                                             static_cast<uint32_t>(p.b));
             }
         };
         drain(causal_pairs_, causal);
@@ -241,7 +250,10 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
                     add(static_cast<uint32_t>(p.a), static_cast<uint32_t>(p.b));
                 }
             },
-            [&](uint32_t a, uint32_t b) { causal_reduced.emplace_back(sig_of(a), sig_of(b)); },
+            [&](uint32_t a, uint32_t b) {
+                causal_reduced.emplace_back(sig_of(a), sig_of(b));
+                if (causal_raw_reduced) causal_raw_reduced->emplace_back(a, b);
+            },
             // A producer wrote the slot its consumer reads, so its application minted the
             // lower id: ids increase along every causal edge of this relation.
             /*ids_topological=*/true);
@@ -290,6 +302,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
                     const uint32_t lo = a.event < b.event ? a.event : b.event;
                     const uint32_t hi = a.event < b.event ? b.event : a.event;
                     branchial.emplace_back(sig_of(lo), sig_of(hi));
+                    if (branchial_raw) branchial_raw->emplace_back(lo, hi);
                 }
             }
         }

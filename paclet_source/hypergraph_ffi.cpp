@@ -660,6 +660,15 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
             << "Events: " << hg.num_events() << ", "
             << "Causal: " << hg.num_causal_event_pairs() << ", "
             << "Branchial: " << hg.num_branchial_edges();
+        // The routing facts every relation-shaped output branches on. Serialization defects in
+        // this file have twice come down to which of these held, so DebugFFI states them.
+        oss << " | recon=" << (hg.quotient_reconstruction() ? 1 : 0)
+            << " tr_enabled=" << (hg.causal_graph().transitive_reduction_enabled() ? 1 : 0)
+            << " stored_edges=" << hg.causal_graph().get_causal_edges().size()
+            << " recon_pairs=" << (hg.quotient_reconstruction()
+                                       ? hg.num_reconstructed_causal_pairs(false) : 0)
+            << " recon_reduced=" << (hg.quotient_reconstruction()
+                                         ? hg.num_reconstructed_causal_pairs(true) : 0);
         core_progress(host, oss.str());
         core_progress(host, "HGEvolve: Starting serialization...");
     }
@@ -1256,6 +1265,47 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // but preserving all unique raw relationships (which may share canonical endpoints)
         if (req.include_causal_edges) {
             wxf::WXFValueList causal_edges;
+            // Under the reconstruction the raw relation exists nowhere else: the rewriter
+            // routes causal registration through the quotient machinery, so the stored edges
+            // are the canonical skeleton, not the raw pairs this list carries ("the raw
+            // causal edge lists" -- raw as opposed to canonical-event pairs; reduced or not
+            // per CausalTransitiveReduction, as everywhere, and its length is NumCausalEdges).
+            // Endpoints are
+            // the replay's application ids; From/To carry the same dense identity the Events
+            // property serves, so the list joins with it, and RawFrom/RawTo carry the
+            // application id itself.
+            if (hg.quotient_reconstruction()) {
+                // The reported identity: the run signature when an event signature is in
+                // force, the application id itself under EVENT_SIG_NONE (the fallback triple
+                // would collapse distinct applications; see the graph adapter's twin).
+                auto list_event_key = [&](uint32_t e) -> uint64_t {
+                    if (hg.event_signature_keys() == hypergraph::EVENT_SIG_NONE)
+                        return 0x8000000000000000ULL | static_cast<uint64_t>(e);
+                    return hg.event_pair_signature(e);
+                };
+                std::unordered_map<uint64_t, int64_t> dense_of_sig;
+                hg.for_each_reconstructed_event(
+                    [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent&) {
+                        dense_of_sig[list_event_key(raw)] = static_cast<int64_t>(dense);
+                    });
+                auto dense_id = [&](uint64_t e) -> int64_t {
+                    auto it = dense_of_sig.find(list_event_key(static_cast<uint32_t>(e)));
+                    return it == dense_of_sig.end() ? -1 : it->second;
+                };
+                hg.for_each_reconstructed_causal_as(
+                    hg.causal_graph().transitive_reduction_enabled(),
+                    [](uint32_t e) { return e; },
+                    [&](uint64_t p, uint64_t c) {
+                        wxf::WXFValueAssociation edge_data;
+                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(dense_id(p))});
+                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(c))});
+                        edge_data.push_back({wxf::WXFValue("RawFrom"),
+                                             wxf::WXFValue(static_cast<int64_t>(p))});
+                        edge_data.push_back({wxf::WXFValue("RawTo"),
+                                             wxf::WXFValue(static_cast<int64_t>(c))});
+                        causal_edges.push_back(wxf::WXFValue(edge_data));
+                    });
+            } else {
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
 
             // Deduplicate by RAW event pairs (not canonical) - this removes internal doubling
@@ -1290,6 +1340,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 edge_data.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(edge.consumer))});
                 causal_edges.push_back(wxf::WXFValue(edge_data));
             }
+            }
             full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal_edges)});
         }
 
@@ -1298,6 +1349,34 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // NO deduplication - multiplicity matters for branchial edges
         if (req.include_branchial_edges) {
             wxf::WXFValueList branchial_edges;
+            // Same routing as the causal list above, for the same reason.
+            if (hg.quotient_reconstruction()) {
+                // The reported identity: the run signature when an event signature is in
+                // force, the application id itself under EVENT_SIG_NONE (the fallback triple
+                // would collapse distinct applications; see the graph adapter's twin).
+                auto list_event_key = [&](uint32_t e) -> uint64_t {
+                    if (hg.event_signature_keys() == hypergraph::EVENT_SIG_NONE)
+                        return 0x8000000000000000ULL | static_cast<uint64_t>(e);
+                    return hg.event_pair_signature(e);
+                };
+                std::unordered_map<uint64_t, int64_t> dense_of_sig;
+                hg.for_each_reconstructed_event(
+                    [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent&) {
+                        dense_of_sig[list_event_key(raw)] = static_cast<int64_t>(dense);
+                    });
+                auto dense_id = [&](uint64_t e) -> int64_t {
+                    auto it = dense_of_sig.find(list_event_key(static_cast<uint32_t>(e)));
+                    return it == dense_of_sig.end() ? -1 : it->second;
+                };
+                hg.for_each_reconstructed_branchial_as(
+                    [](uint32_t e) { return e; },
+                    [&](uint64_t a, uint64_t b) {
+                        wxf::WXFValueAssociation edge_data;
+                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(dense_id(a))});
+                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(b))});
+                        branchial_edges.push_back(wxf::WXFValue(edge_data));
+                    });
+            } else {
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
             for (const auto& edge : branchial_edge_vec) {
                 // Skip edges involving genesis events if ShowGenesisEvents is false
@@ -1313,6 +1392,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
                 edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
                 branchial_edges.push_back(wxf::WXFValue(edge_data));
+            }
             }
             full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial_edges)});
         }
@@ -1483,6 +1563,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // the materialised ones, and NumEvents already reports those. Built once here so the
             // graph's vertices are the same set: dense id per distinct identity, and the content
             // that describes it.
+            // The identity a reconstructed application is REPORTED under. With an event
+            // signature in force it is the run signature, so equal events share one vertex;
+            // under EVENT_SIG_NONE every application is its own event, and the fallback triple
+            // (input class, output class, rule) would collapse distinct applications into one
+            // vertex -- measured as a 24-pair raw relation drawn over 21 vertices. The
+            // application id itself is the identity there.
+            auto recon_event_key = [&](uint32_t e) -> uint64_t {
+                if (hg.event_signature_keys() == hypergraph::EVENT_SIG_NONE)
+                    return 0x8000000000000000ULL | static_cast<uint64_t>(e);
+                return hg.event_pair_signature(e);
+            };
             struct ReconEvents {
                 bool active = false;
                 std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
@@ -1496,7 +1587,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 hg.for_each_reconstructed_event(
                     [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
                         const int64_t id = static_cast<int64_t>(dense);
-                        recon.dense_of_sig[hg.event_pair_signature(raw)] = id;
+                        recon.dense_of_sig[recon_event_key(raw)] = id;
                         recon.content[id] = c;
                     });
             }
@@ -1504,6 +1595,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             struct CpuGraphSource {
                 const hypergraph::Hypergraph& hg;
                 const ReconEvents& recon;
+                // The reported identity of a reconstructed application (recon_event_key above).
+                std::function<uint64_t(uint32_t)> key;
                 bool show_genesis;
                 std::function<int64_t(hypergraph::StateId)> eff_state;
                 std::function<int64_t(hypergraph::EventId)> eff_event;
@@ -1540,11 +1633,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 bool is_valid_event(uint32_t eid) const {
                     if (!recon.active) return valid_event(eid);
                     // An application whose identity was not registered stands for no vertex.
-                    return recon.dense_of_sig.count(hg.event_pair_signature(eid)) != 0;
+                    return recon.dense_of_sig.count(key(eid)) != 0;
                 }
                 int64_t effective_event_id(uint32_t eid) const {
                     if (!recon.active) return eff_event(eid);
-                    auto it = recon.dense_of_sig.find(hg.event_pair_signature(eid));
+                    auto it = recon.dense_of_sig.find(key(eid));
                     return it == recon.dense_of_sig.end() ? -1 : it->second;
                 }
                 // The endpoints of a reconstructed event are CLASSES, and a class is pointed at
@@ -1599,6 +1692,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             });
                         return out;
                     }
+                    // The stored relation already honours CausalTransitiveReduction: a
+                    // redundant edge is dropped at registration when the reduction is on
+                    // (add_causal_edge), so the stored set IS the reduced set there and this
+                    // loop serves the option either way.
                     for (const auto& ce : hg.causal_graph().get_causal_edges()) {
                         if (!show_genesis && (hg.is_genesis_event(ce.producer) || hg.is_genesis_event(ce.consumer))) continue;
                         out.emplace_back(ce.producer, ce.consumer);
@@ -1627,7 +1724,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     return out;
                 }
             };
-            CpuGraphSource gsrc{hg, recon, req.show_genesis_events,
+            CpuGraphSource gsrc{hg, recon, recon_event_key, req.show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
                 serialize_state_data, serialize_event_data,
                 gneeds.causal, gneeds.branchial};
@@ -1688,6 +1785,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // would misread a reconstruction id -- must not run on them.
             int64_t causal_count;
             if (hg.quotient_reconstruction()) {
+                // The count follows CausalTransitiveReduction, exactly as the stored path's
+                // does: under full capture a redundant edge is dropped AT REGISTRATION when the
+                // reduction is on (add_causal_edge), so the stored count, list and graph are
+                // all the reduced relation. The reconstruction stores every pair and reduces on
+                // read; passing the flag here is what keeps the quotient's numbers equal to
+                // full capture's in the same cell, which is the exploration contract.
                 causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
                     hg.causal_graph().transitive_reduction_enabled()));
             } else if (req.show_genesis_events) {

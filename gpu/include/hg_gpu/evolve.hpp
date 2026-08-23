@@ -226,6 +226,13 @@ struct EvolveResult {
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_causal_relation;
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_causal_relation_reduced;
     std::vector<std::pair<uint64_t, uint64_t>> reconstructed_branchial_relation;
+    // The same relations as RAW application-id pairs -- the reply's data form. The triple-pair
+    // vectors above identify endpoints by content, which two distinct applications can share;
+    // a caller serving "the raw causal edge lists" needs one entry per raw pair with endpoints
+    // it can join against the event list, and that is the application id.
+    std::vector<std::pair<uint32_t, uint32_t>> reconstructed_causal_raw;
+    std::vector<std::pair<uint32_t, uint32_t>> reconstructed_causal_raw_reduced;
+    std::vector<std::pair<uint32_t, uint32_t>> reconstructed_branchial_raw;
 
     // Per RAW event id, the reconstruction's schedule-stable content signature -- the same
     // hash(input class, output class, rule) its relations are keyed on, and 0 for an id the

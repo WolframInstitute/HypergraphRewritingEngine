@@ -828,7 +828,10 @@ public:
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial,
                                   bool want_branchial,
-                                  std::vector<uint64_t>* event_signature = nullptr);
+                                  std::vector<uint64_t>* event_signature,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* causal_raw = nullptr,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* causal_raw_reduced = nullptr,
+                                  std::vector<std::pair<uint32_t, uint32_t>>* branchial_raw = nullptr);
 
     // Distinct event identities the replay produced under the run's mode. The host's
     // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.

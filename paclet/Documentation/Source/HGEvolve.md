@@ -282,14 +282,14 @@ Transitive reduction removes causal edges implied by longer paths. Off keeps eve
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 2, "CausalGraphStructure", "CausalTransitiveReduction" -> False]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "CausalGraphStructure", "CausalTransitiveReduction" -> False]
 ```
 
 On reduces to the transitive skeleton:
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 2, "CausalGraphStructure", "CausalTransitiveReduction" -> True]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "CausalGraphStructure", "CausalTransitiveReduction" -> True]
 ```
 
 ### "ExploreFromCanonicalStatesOnly"
