@@ -82,11 +82,13 @@ class Hypergraph {
     // Used by event signature computation to find canonical representatives for edge
     // correspondence when state_canonicalization_mode_ is None or Automatic.
     //
-    // CAVEAT, measured: canonical_hash is the EXACT IR hash in Full mode and the APPROXIMATE
-    // WL hash otherwise. Both are isomorphism-invariant, but WL is coarser, so more states
-    // share a representative and the event identity derived from it is coarser too. The two
-    // axes are therefore not independent the way SPEC.md sec 4 states: on the binary-growth
-    // corpus case, ByConsumedProducedEdges reports 8 events under Full and 6 under Automatic.
+    // The key is the EXACT IR invariant in every state mode whenever event canonicalization is
+    // on (compute_reported_canonical_hash), so the event identity resolved through this map is
+    // the same identity whatever the state mode -- mode_matrix_probe measures identical event
+    // counts down every state-mode column. SPEC.md sec 4 states the axes independent, and for
+    // EVENTS that holds. The CAUSAL relation under Automatic event identity is the
+    // canonical-class relation only when the orbit tables exist (the Full state mode computes
+    // them); in the other state modes the engine warns and serves the raw-edge rendezvous.
     ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> event_canonical_state_map_;
 
     // State canonicalization mode: controls how states are deduplicated, via the map_key
