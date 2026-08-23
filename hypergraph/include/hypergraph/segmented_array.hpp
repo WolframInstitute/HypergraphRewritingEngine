@@ -12,6 +12,7 @@
 #include <new>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace HG_NAMESPACE {
 namespace engine {

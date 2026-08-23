@@ -8,6 +8,7 @@
 #include <type_traits>
 
 #include <job_system/job_pool.hpp>
+#include <utility>
 
 namespace HG_NAMESPACE {
 namespace jobs {
