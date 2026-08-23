@@ -71,6 +71,9 @@ private:
     // Logical CPUs the workers bind to, empty meaning the operating system places them.
     std::vector<unsigned> worker_cpus_;
     std::atomic<size_t> pin_failures_{0};
+    // Workers that have passed their binding attempt this start; start() waits for all of
+    // them, which is what makes pin_failures() settled rather than racing worker startup.
+    std::atomic<size_t> workers_entered_{0};
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -295,6 +298,10 @@ private:
             if (!hgcommon::pin_this_thread_to_cpu(cpu))
                 pin_failures_.fetch_add(1, std::memory_order_relaxed);
         }
+        // Past the binding attempt: start() waits on this, which is what makes pin_failures()
+        // a settled count once start() returns. Release pairs with start()'s acquire so the
+        // failure increment above is visible when the count is.
+        workers_entered_.fetch_add(1, std::memory_order_release);
         uint64_t rng = static_cast<uint64_t>(index) * 2654435761ull + 1ull;
 
         while (true) {
@@ -421,7 +428,8 @@ public:
     //
     // Whether a binding took effect is NOT assumed: pin_failures() counts workers that asked and
     // were refused, which is every worker on macOS (no such API) and any CPU index the platform
-    // cannot express. A caller reporting a pinned measurement checks it is zero.
+    // cannot express. A caller reporting a pinned measurement checks it is zero. Settled once
+    // start() returns -- start() waits for every worker to pass its binding attempt.
     void set_worker_cpus(std::vector<unsigned> cpus) { worker_cpus_ = std::move(cpus); }
     const std::vector<unsigned>& worker_cpus() const { return worker_cpus_; }
     size_t pin_failures() const { return pin_failures_.load(std::memory_order_relaxed); }
@@ -436,10 +444,18 @@ public:
         for (size_t i = 0; i < workers_.size(); ++i) {
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
+        workers_entered_.store(0, std::memory_order_relaxed);
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
             worker->thread = std::thread([this, worker, i] { worker_loop(worker, i); });
         }
+        // Wait until every worker has passed its binding attempt, so pin_failures() is a
+        // settled count when start() returns rather than a snapshot racing worker startup --
+        // on a small machine a spawned thread can lag past an entire short workload before it
+        // first runs. One yield loop, once per start; the workers park themselves if no work
+        // arrives, so this costs thread-spawn latency and nothing else.
+        while (workers_entered_.load(std::memory_order_acquire) < workers_.size())
+            std::this_thread::yield();
         is_running_.store(true);
     }
 
