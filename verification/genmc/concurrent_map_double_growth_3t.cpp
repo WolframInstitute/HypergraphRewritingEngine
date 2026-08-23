@@ -1,4 +1,5 @@
-// Two INDEPENDENT claimants of one key while a third thread drives the growths.
+// Two INDEPENDENT claimants of one key, offering the SAME value, while a third thread drives
+// the growths.
 //
 // WHY THIS EXISTS BESIDE THE 2t HARNESS. concurrent_map_double_growth_2t verifies the same
 // shape and is calibrated, but it reaches tractability by FOLDING the third worker's inserts
@@ -18,44 +19,42 @@
 // bug and CANNOT find a relaxed-memory one. The 2t harness covers RC11 for the folded shape;
 // this covers three-thread interleavings under SC. Neither subsumes the other.
 //
-// The assertions are the 2t harness's: exactly one of the two K-claims reports was_inserted,
-// both observe the same stored value, lookup agrees, and nothing else was lost.
+// WHY THE TWO CLAIMANTS OFFER THE SAME VALUE. A verdict that compares the stored value against
+// the caller's cannot separate two winners that offered the same thing -- it calls both of them
+// the inserter -- and a set-like caller passing a constant is the ordinary way to use
+// insert_if_absent as a claim. So equal values are the case that a wrong verdict passes and a
+// right one must still decide. concurrent_map_repeated_offer covers one caller offering the
+// same value twice; this covers two callers offering it once each, across a growth.
 //
-// NOT CURRENTLY EXHAUSTED, measured 2026-08-19. The bound below is what makes this shape
-// tractable in principle, and GenMC estimates 24,565 executions and 204s for it; the actual run
-// produced no verdict in 15 minutes on a quiet box. The estimator is optimistic by more than an
-// order of magnitude on this map -- the 2t harness estimates 55s and does not finish in 55
-// minutes -- so neither the estimate nor this file's earlier wording is evidence of a completed
-// verification.
+// WHAT THE MAP GUARANTEES, and what this harness holds it to. The publish exchange is unique
+// per key. A claimant scans every older table before claiming at the head, sealing as it goes
+// so no late claim can land behind it; a settled value is returned; an UNSETTLED claim is
+// offered into only after every older table has been scanned, because an unsettled entry is
+// either a fresh claim or a copy the growth is carrying forward between its two exchanges, and
+// only a copy has a settled original older than itself. Nothing is copied to the head by the
+// claimant that settled: the carry is the one place copies are made.
 //
-// THE DEFECT THIS HARNESS FOUND, and the fix it verifies.
+// THE EXECUTION THIS HARNESS FOUND, read from GenMC's trace. One claimant settled K in the
+// initial table. The other claimant grew the map, installing the second table; the third
+// thread grew it again. The second claimant's scan of the chain, under that third table, then
+// found in the second an entry for K whose value was still unpublished -- a copy of the
+// settled value that the first claimant's settle() was placing at what it had read as the
+// head -- offered its own value into it, and won that exchange. Two winning exchanges for one
+// key, both reporting was_inserted.
 //
-// At a FOUR-context bound this reported a safety violation on the shipped code and was clean at
-// three. Bisected to `assert(g_ins[0] != g_ins[1])`: two callers were told they inserted the
-// same key, both handed the SAME value while both believed they created it.
+// CALIBRATED TWICE, because two things were changed and each must be shown to carry weight.
+// With settle() again copying its value to the head, and the scan offering into an unsettled
+// entry at once, this harness reports a safety violation in 4,530 complete executions. With
+// the copy restored but the scan walking older tables first, it is clean over 59,501; with no
+// copy and the scan offering at once, clean over 26,573; as shipped -- no copy, scan walks
+// older first -- clean over 26,573.
 //
-// THE MECHANISM, read out of the counterexample. Three tables exist. One claimant's value
-// exchange BEAT the retiring table's seal -- the seal exchanges ABSENT to FORWARDED and lost the
-// race -- so a settled entry stayed behind in a superseded table. The other claimant migrated
-// that value forward as part of a resize it was performing, and then settled its OWN value in a
-// third table. Two exchanges won for one key, in two tables.
+// The assertions: exactly one of the two K-claims reports was_inserted, both observe the same
+// stored value, lookup agrees, and nothing else was lost.
 //
-// WHY THE VERDICT CANNOT COME FROM ONE EXCHANGE. `was_inserted` was "my value exchange won the
-// slot I reached", and a key can be reached in more than one table, so that predicate is not
-// unique. Nor can the verdict be a value comparison: concurrent_map_repeated_offer states that
-// two callers may offer the SAME value, and a comparison calls both of them the inserter.
-//
-// The fix is the CONJUNCTION -- the caller inserted iff its own exchange won AND the value the
-// map now answers with is the one it offered. Same values are separated by the exchange; two
-// winning exchanges in different tables are separated by the answer, because a lookup walks the
-// chain newest-first and there is exactly one answer.
-//
-// WHY THIS HARNESS COULD NOT SEE ANY OF IT BEFORE. Its header records "130,897 complete
-// executions, 200s, exhaustive" and it had stopped completing -- no verdict in 55 minutes --
-// because growth was changed to jump straight to DEFAULT_INITIAL_CAPACITY, making the second
-// growth's seal 1024 slots x 2 compare-exchanges. The verification regressed behind a
-// performance change. The growth target is a constructor parameter now, defaulted, so the
-// harness can bound the protocol without changing it.
+// The growth target is a constructor parameter (working_capacity) so the protocol can be
+// bounded without changing it: a growth out of a 1024-slot table is 2048 compare-exchanges for
+// the checker to interleave, and the shape cannot be exhausted at that width.
 //
 // GENMC-ARGS: --disable-estimation --sc --bound=4 --bound-type=context
 // GENMC-EXPECT: pass
@@ -78,14 +77,15 @@ uint64_t g_val[2];
 bool g_ins[2];
 
 // The two claimants of K, each in its own thread -- this is the separation the 2t harness folds
-// away.
+// away -- and each offering the SAME value, which is the case a value comparison cannot decide.
+constexpr uint64_t kV = 100;
 void* w_claim1(void*) {
-    auto [v, ins] = g_map->insert_if_absent(kK, 100);
+    auto [v, ins] = g_map->insert_if_absent(kK, kV);
     g_val[0] = v; g_ins[0] = ins;
     return nullptr;
 }
 void* w_claim2(void*) {
-    auto [v, ins] = g_map->insert_if_absent(kK, 200);
+    auto [v, ins] = g_map->insert_if_absent(kK, kV);
     g_val[1] = v; g_ins[1] = ins;
     return nullptr;
 }

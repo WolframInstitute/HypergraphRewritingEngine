@@ -1,14 +1,16 @@
 // GenMC harness: exactly-one insert winner across a WARRANTED double growth, at a bound
-// small enough to EXHAUST.
+// small enough to EXHAUST, under RC11.
 //
 // The property. A key claimed while the table chain grows twice must still produce exactly
-// one was_inserted, one stored value, and no lost entries. The map holds that by anchoring
-// every absence verdict to the head it claims in: an insert enters through the chain, and a
-// scan that finds no claim SEALS the slot a late claim would need (find_and_settle_in_chain),
-// so each older table either yields its claim or is foreclosed. resize() seals whole tables
-// the same way after installing the new head. Re-drives -- after a seal, an exhausted probe
-// run, or a growth -- go back through that scan (drive_at_head) rather than claiming at the
-// head on a verdict formed against an older table.
+// one was_inserted, one stored value, and no lost entries. The map holds that by sending every
+// claim through the chain first: an insert scans the older tables before claiming at the
+// head, a scan that finds no claim SEALS the slot a late claim would need
+// (find_and_settle_in_chain), so each older table either yields its claim or is foreclosed,
+// and an unsettled claim is offered into only once every older table has been scanned, so a
+// copy the growth is carrying forward is never mistaken for a fresh claim. resize() seals
+// whole tables the same way after installing the new head. Re-drives -- after a seal, an
+// exhausted probe run, or a growth -- go back through that scan (drive_at_head) rather than
+// claiming at the head on a verdict formed against an older table.
 //
 // The shape, minimal for two warranted growths:
 //   capacity 2 (threshold: count > 1.5), one key pre-inserted single-threaded;
@@ -20,24 +22,17 @@
 // WHY TWO WORKERS AND NOT THREE. The three-worker spelling of the same shape prices at
 // 3.3e9 executions (genmc --mode=estimate, ~40 days) -- unrunnable, and an enumeration that
 // cannot finish proves nothing. Folding W3's insert into W2 preserves both growths and the
-// concurrent claim pair while removing one thread's interleavings: 130,897 complete
-// executions, 200s, exhaustive. Sized before running, not discovered by waiting.
+// concurrent claim pair while removing one thread's interleavings. The three-thread shape is
+// covered under a context bound by concurrent_map_double_growth_3t, which checks SC rather
+// than RC11; this harness is the weak-memory check, and it is exhaustive: 34,485 complete
+// executions, 68 s, no bound.
 //
-// THAT RESULT NO LONGER REPRODUCES, measured 2026-08-19 on a quiet box (load 2.97): no verdict
-// in 9m50s, and none in a second run given 55 minutes (genmc exit 124 at 3,300 s). The recorded 130,897 executions in 200s
-// was real when it was written, so the state space this harness explores has grown since --
-// which is a statement about ConcurrentMap, not about the harness. GenMC's estimator is no help
-// deciding by how much: it reports 1,437 executions and 55s for this shape, an order of
-// magnitude BELOW a run that then does not finish, so an estimate here is not evidence that a
-// harness will complete.
-//
-// The property is therefore NOT currently verified at this shape. What is verified for this map
-// is concurrent_map_agreement (2 threads, 1 key, no resize, 32 executions) and
-// concurrent_map_resize (2 threads, ONE growth, 176 executions).
-//
-// CALIBRATED. Removing the re-anchor from drive_at_head (so a re-drive claims at the head on
-// a stale verdict) makes this harness report the safety violation after 1,517 executions.
+// CALIBRATED. Removing the chain scan from drive_at_head (so a re-drive claims at the head on
+// a stale verdict) makes this harness report the safety violation after 797 executions.
 // The bound is small BECAUSE it is sufficient, not because it is convenient.
+//
+// The estimator is no help sizing this shape: it reports a few thousand executions and a few
+// seconds, which is an order of magnitude below what a run then takes. Size by running.
 //
 // The assertions: exactly one of the two K-claims reports was_inserted, both observe the same
 // stored value, lookup agrees, and nothing else was lost while the tables churned.

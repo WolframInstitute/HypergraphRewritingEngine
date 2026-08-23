@@ -264,34 +264,17 @@ public:
 
         (void)table;
 
-        // THE VERDICT IS THE EXCHANGE **AND** THE ANSWER.
-        //
-        // drive_at_head reports whether THIS caller's value exchange won the slot it reached.
-        // That is not sufficient on its own: a key can be claimed in more than one table, and a
-        // publish that beats the retiring table's seal leaves a settled entry there while
-        // another caller settles at the head. Two exchanges then win for one key and both
-        // callers are told they inserted -- found by concurrent_map_double_growth_3t at a
-        // four-context bound, where one caller settles in the initial table and the other in a
-        // table installed after it.
-        //
-        // Nor is comparing values sufficient on its own: two callers may offer the SAME value,
-        // and then a comparison calls both of them the inserter. concurrent_map_repeated_offer
-        // states exactly that and refutes it.
-        //
-        // The conjunction is what holds. A caller inserted iff its own exchange won AND the
-        // value the map now answers with is the one it offered. Two callers offering the same
-        // value are separated by the exchange; two winning exchanges in different tables are
-        // separated by the answer, since a lookup walks the chain newest-first and there is one
-        // answer. The re-read runs only on the winning path, so a losing caller pays nothing.
-        auto result = drive_at_head(key, value, true);
-        if (result.second) {
-            const auto authoritative = lookup(key);
-            if (!authoritative.has_value() || !(*authoritative == value)) {
-                result.second = false;
-                if (authoritative.has_value()) result.first = *authoritative;
-            }
-        }
-        return result;
+        // THE VERDICT IS THE EXCHANGE. drive_at_head reports whether THIS caller's offer won
+        // the ABSENT-to-value exchange that settled the key, and that exchange is unique per
+        // key: a claimant's scan of the older tables either finds the settled value, or finds
+        // the one unsettled fresh claim and offers into it, or forecloses the slot a late claim
+        // would need (see find_and_settle_in_chain). A copy of a settled value in flight to a
+        // newer table is never offered into, because its original is found first. No comparison
+        // of the stored value against the caller's is made afterwards: two callers may offer the
+        // same value, and a comparison would call both of them the inserter.
+        // concurrent_map_double_growth_3t drives two claimants offering the SAME value through
+        // a growth under a third thread and asserts exactly one is told it inserted.
+        return drive_at_head(key, value, true);
     }
 
     // Drive `key` at the head, entering through the CHAIN.
@@ -307,17 +290,15 @@ public:
     // walking past it and creating a rival. Offering a value is the same exchange every
     // publisher uses, so this closes the window without anyone waiting.
     //
-    // THE VERDICT MUST BE ANCHORED TO THE HEAD IT CLAIMS IN. Every path that re-drives -- a
-    // seal, an exhausted probe run, a growth -- arrives with an absence verdict for the ONE
-    // table it came from, while tables installed meanwhile may hold a rival's settled claim
-    // the migration has not yet carried forward. Claiming fresh on that verdict tells two
-    // callers was_inserted for one key, and the migration's exchange for the older claim then
-    // loses to the fresh one and drops its value. Rescanning from the current head re-anchors
-    // it: each older table either yields its claim to the scan or is foreclosed by the scan's
-    // seal.
+    // EVERY RE-DRIVE COMES BACK THROUGH THE SCAN. A path that re-drives -- a seal, an
+    // exhausted probe run, a growth -- arrives with an absence verdict for the ONE table it
+    // came from, while tables installed meanwhile may hold a rival's settled claim the carry
+    // has not yet placed in the head. Claiming fresh on that verdict would tell two callers
+    // was_inserted for one key. Rescanning from the current head re-establishes it: each older
+    // table either yields its claim to the scan or is foreclosed by the scan's seal.
     //
-    // The scan is skipped only for an ANCHOR (increment_count false): that caller carries a
-    // value already settled elsewhere and is placing it at the head, not deciding absence.
+    // The scan is skipped only for a CARRY (increment_count false): that caller is placing a
+    // value already settled in a superseded table, not deciding absence.
     std::pair<V, bool> drive_at_head(K key, V value, bool increment_count) {
         Table* head = table_.load(std::memory_order_acquire);
         if (increment_count && head->prev) {
@@ -337,16 +318,18 @@ public:
         // the sealer loaded table_ after the install, and the exchange carries that
         // visibility, so the re-drive cannot land back in the table it just left. resize()
         // seals whole tables through the same exchanges (EMPTY keys to LOCKED, ABSENT values
-        // to FORWARDED) before migrating. Three harnesses bound this, and they
-        // bound different things: concurrent_map_double_growth_2t EXHAUSTS two workers across
-        // two growths (134,490 executions), concurrent_map_double_growth_3t exhausts three
-        // workers under a four-context bound (78,397), and concurrent_map_double_growth samples
-        // three workers -- estimation, not proof, since its graph is 1.1e9 executions.
+        // to FORWARDED) before migrating.
         //
-        // The three-worker shape is where the seal loses. A publish that beats the retiring
-        // table's ABSENT-to-FORWARDED exchange leaves a settled entry in a superseded table, so
-        // "my exchange won the slot I reached" is not unique to one caller. insert_if_absent
-        // therefore confirms the verdict against the map's ANSWER; see the note there.
+        // A settled value that beat the retiring table's seal stays in that superseded table
+        // and is carried to the head by the growth. The carry is a key exchange followed by a
+        // value exchange, and between them the head holds a copy that looks like a fresh
+        // unsettled claim; the scan distinguishes the two by what lies older (see
+        // find_and_settle_in_chain), so the copy is never offered into and the exchange that
+        // settled the original stays the only winner. Three harnesses bound this, and they
+        // bound different things: concurrent_map_double_growth_2t EXHAUSTS two workers across
+        // two growths under RC11, concurrent_map_double_growth_3t exhausts three workers with
+        // both claimants offering the same value under a four-context bound, and
+        // concurrent_map_double_growth samples three workers -- estimation, not proof.
         return insert_into_table(head, key, value, increment_count);
     }
 
@@ -497,7 +480,7 @@ private:
         // A probe run exhausted in a SUPERSEDED table calls for the head, not for growth. The
         // head is already a larger table with room, and growing it would install another one --
         // and every extra installation is another chance for one key to be claimed in two tables
-        // at once, which is what the head re-check in insert_if_absent exists to catch.
+        // at once.
         if (head != table) return drive_at_head(key, value, increment_count);
 
         // The head itself is full, so grow it regardless of the load factor: capacity elsewhere
@@ -539,39 +522,32 @@ private:
         return std::make_pair(current, false);   // another thread's value won
     }
 
-    // Settle through `entry` in `table`, then anchor the result at the HEAD: a settle that
-    // won in a table that has since been superseded drives the settled value through the
-    // head too, so the key is answerable from the head's own probe run and not only from the
-    // chain walk. (The local copy stays; newer tables are scanned first, so it is shadowed,
-    // and the migration pass carries the same value forward anyway.) The head read is an
-    // anchor, not a correctness gate -- if it is stale, rivals still cannot answer from a
-    // different exchange: their chain scan either reads this claim or loses its seal
-    // exchange to it (see find_and_settle_in_chain), and either way offers HERE.
+    // Settle through `entry` in `table`. publish_value performs the one compare-exchange that
+    // decides who published this key's value, and its answer is the verdict: nothing is
+    // compared or recomputed afterwards. A value that settled here is carried into the head by
+    // whichever growth retires this table -- the seal that would have forwarded this slot lost
+    // to the publish, so the carry reads the settled value -- and until then it is answerable
+    // from the chain walk.
     //
-    // THE VERDICT IS THE EXCHANGE'S, NOT A COMPARISON'S. publish_value performs the one
-    // compare-exchange that decides who published this key's value and hands back that
-    // answer; anchoring afterwards is bookkeeping and cannot change it. Recomputing it as
-    // "does the stored value equal mine" holds only while every call for a key offers a
-    // DISTINCT value: a caller offering the same value twice finds its own value already
-    // stored and a comparison cannot tell that from having just won.
+    // NOTHING IS COPIED TO THE HEAD FROM HERE. A copy is a key claimed in a newer table with
+    // its value still unpublished, which is exactly what a fresh claim looks like to a scan;
+    // the carry is the one place copies are made, and it copies only settled values, so every
+    // copy has a settled original in an older table for the scan to find first.
+    //
+    // A sealed slot (publish_value returns nullopt) means this table is superseded and nothing
+    // will ever settle here. Re-drive at the head, where the claim belongs.
     std::pair<V, bool> settle(Table* table, Entry& entry, K key, V value,
                               bool increment_count) {
-        auto r = publish_value(entry, value);
-        if (!r) {
-            // Sealed under us: nothing settled here, ever. Re-drive at the head.
-            return drive_at_head(key, value, increment_count);
-        }
-        Table* head = table_.load(std::memory_order_acquire);
-        if (head == table) return *r;
-        auto anchored = insert_into_table(head, key, r->first, false);
-        return {anchored.first, r->second};
+        (void)table;
+        if (auto r = publish_value(entry, value)) return *r;
+        return drive_at_head(key, value, increment_count);
     }
 
     // Find `key` anywhere in the chain and ensure its value is settled, offering `value` if it
     // is not. Returns the settled value and whether it is the caller's, or nullopt if the key
     // is absent from every table. A sealed (FORWARDED) claim is a claim that never settled and
     // never will; the chain runs newest-first, so nothing newer holds it either -- skip it and
-    // keep scanning for an older settled original the migration may not have carried yet.
+    // keep scanning for an older settled original the carry may not have placed yet.
     //
     // SEAL ON SCAN. A probe run that reaches an EMPTY slot does not just report "not here":
     // it exchanges the slot to LOCKED first. The slot it seals is exactly the slot any
@@ -580,9 +556,25 @@ private:
     // seal wins -- then no claim for `key` can ever settle in this table, because a later
     // claim's exchange reads the LOCKED slot and re-drives at the head -- or a claim got
     // there first, in which case the failed exchange hands back that claim and the scan
-    // offers into it: the ONE exchange for the key. This is what makes the scan complete:
-    // it cannot walk past a concurrent claim, it either discovers it or forecloses it.
+    // interprets it. This is what makes the scan complete: it cannot walk past a concurrent
+    // claim, it either discovers it or forecloses it.
+    //
+    // AN UNSETTLED CLAIM IS OFFERED INTO ONLY AFTER EVERY OLDER TABLE HAS BEEN SCANNED. A key
+    // with its value still ABSENT is one of two things, and they look identical: a fresh claim
+    // whose publisher has not yet exchanged, or a COPY -- the carry placing a value that
+    // settled in an older table, between its key exchange and its value exchange. Offering
+    // into a copy hands the key a second winner: the original's publisher was already told it
+    // inserted, and the offer into the copy wins an exchange nothing else is contending.
+    // GenMC produced exactly that execution: one claimant settled in the initial table, the
+    // other's scan found the in-flight copy of that value in the next table and won its
+    // exchange, and both reported was_inserted. The two cases are separated by what lies
+    // OLDER: a copy always has a settled original in an older table, a fresh claim never does.
+    // So the scan remembers the newest unsettled entry and keeps walking; it returns an older
+    // settled value if there is one, and offers into the remembered entry only when there is
+    // not. The walk past the entry seals as it goes, so no claim can land in the older tables
+    // between the walk and the offer.
     std::optional<std::pair<V, bool>> find_and_settle_in_chain(Table* table, K key, V value) {
+        Entry* unsettled = nullptr;
         while (table) {
             const size_t start = hash(key) & table->mask;
             for (size_t probe = 0; probe < table->capacity; ++probe) {
@@ -597,20 +589,22 @@ private:
                 }
                 if (current == LOCKED_KEY) break;         // not in THIS table; try the next
                 if (current == key) {
-                    auto r = publish_value(entry, value);
-                    if (!r) break;                        // sealed dead claim; try the next
-                    // A settle in a superseded table anchors at the head (see settle()); a
-                    // read of an already-settled value needs no anchoring, and this caller's
-                    // tables are all superseded, so distinguish by whether OUR offer won.
-                    if (!r->second) return r;
-                    auto anchored = insert_into_table(
-                        table_.load(std::memory_order_acquire), key, r->first, false);
-                    return std::make_pair(anchored.first, r->second);
+                    const V v = entry.value.load(std::memory_order_acquire);
+                    if (v == forwarded_value()) break;    // sealed dead claim; try the next
+                    if (v != ABSENT_VALUE) return std::make_pair(v, false);
+                    if (!unsettled) unsettled = &entry;   // fresh claim or copy: decide below
+                    break;
                 }
             }
             table = table->prev;
         }
-        return std::nullopt;
+        if (!unsettled) return std::nullopt;
+        // Nothing settled older, so this is the one fresh claim for `key`. Offer into it: the
+        // exchange decides between this caller and the claimant. If the slot was sealed in the
+        // meantime the claim is dead and its claimant re-drives; so does this caller.
+        auto r = publish_value(*unsettled, value);
+        if (!r) return std::nullopt;
+        return r;
     }
 
     std::optional<V> lookup_in_chain(Table* table, K key) const {
