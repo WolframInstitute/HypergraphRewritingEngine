@@ -119,6 +119,18 @@ public:
         size_t capacity;
         size_t mask;  // capacity - 1, for fast modulo
         Table* prev;  // Previous table (for resize chain)
+        // TRUE ONCE EVERY VALUE THAT SETTLED HERE HAS A SETTLED COPY IN A STRICTLY NEWER
+        // TABLE, so a chain walk may skip this table without missing anything. Set by the
+        // thread that ran this table's migration, after its carry loop returns: the carry
+        // offers at the live head (drive_at_head skips the chain scan on the carry path), and
+        // each insert_into_table call returns only when the copy's value exchange is done --
+        // so the flag's release publishes settled copies, never in-flight ones. The seal that
+        // precedes the migration is what freezes the settled set this promise is about.
+        std::atomic<bool> drained{false};
+        // TRUE when EVERY older table is drained: a walk from this table need probe nothing
+        // below it. Seeded true on the first table (nothing is older) and propagated by each
+        // resize whose retiring table both drained and carried the flag.
+        std::atomic<bool> chain_clear{false};
 
         // When arena != nullptr the table is allocated from the arena (no malloc, no
         // per-map heap contention) and is NEVER individually freed — it is reclaimed in
@@ -139,6 +151,9 @@ public:
             table->capacity = actual_cap;
             table->mask = actual_cap - 1;
             table->prev = prev_table;
+            new (&table->drained) std::atomic<bool>(false);
+            // The first table has nothing older, so a walk from it never needs the chain.
+            new (&table->chain_clear) std::atomic<bool>(prev_table == nullptr);
 
             // Initialize entries
             for (size_t i = 0; i < actual_cap; ++i) {
@@ -301,7 +316,11 @@ public:
     // value already settled in a superseded table, not deciding absence.
     std::pair<V, bool> drive_at_head(K key, V value, bool increment_count) {
         Table* head = table_.load(std::memory_order_acquire);
-        if (increment_count && head->prev) {
+        // chain_clear is read BEFORE any probe of the head, which is what makes skipping the
+        // scan sound: true means every older table drained before the flag's release, so the
+        // settled copies those drains promised are visible to every probe this call makes.
+        if (increment_count && head->prev &&
+            !head->chain_clear.load(std::memory_order_acquire)) {
             auto settled = find_and_settle_in_chain(head->prev, key, value);
             if (settled.has_value()) return *settled;
         }
@@ -343,6 +362,9 @@ public:
     // Lookup value by key
     std::optional<V> lookup(K key) const {
         Table* table = table_.load(std::memory_order_acquire);
+        // Read before the probe, which is what makes the skip sound; see drive_at_head.
+        if (table->chain_clear.load(std::memory_order_acquire))
+            return lookup_in_table(table, key);
         return lookup_in_chain(table, key);
     }
 
@@ -575,7 +597,29 @@ private:
     // between the walk and the offer.
     std::optional<std::pair<V, bool>> find_and_settle_in_chain(Table* table, K key, V value) {
         Entry* unsettled = nullptr;
+        // EVERY DRAINED FLAG IS READ BEFORE ANY TABLE IS PROBED. Reading a table's flag only
+        // when the walk reaches it reopens the hand-off window ConcurrentKeySet::contains
+        // had: a newer table probed before a carry lands its copy, the older table drained by
+        // the time the walk arrives and skipped -- the key invisible at both, and the offer
+        // that follows is a second exchange for a settled key. Read up front, a flag that is
+        // TRUE orders this walk after the drain's release, so the copies it promised are
+        // visible to every probe below; a flag that is FALSE merely probes a table whose
+        // entries are all still in place, which is always sound. Tables past the snapshot are
+        // probed unconditionally, the sound direction.
+        constexpr size_t kSnapshot = 64;
+        bool skip[kSnapshot];
+        size_t chain_len = 0;
+        for (Table* t = table; t; t = t->prev, ++chain_len)
+            if (chain_len < kSnapshot)
+                skip[chain_len] = t->drained.load(std::memory_order_acquire);
+        size_t depth = 0;
         while (table) {
+            if (depth < kSnapshot && skip[depth]) {
+                table = table->prev;
+                ++depth;
+                continue;
+            }
+            ++depth;
             const size_t start = hash(key) & table->mask;
             for (size_t probe = 0; probe < table->capacity; ++probe) {
                 Entry& entry = table->entries[(start + probe) & table->mask];
@@ -608,9 +652,23 @@ private:
     }
 
     std::optional<V> lookup_in_chain(Table* table, K key) const {
+        // Drained flags read up front, before any probe -- same discipline and same reason as
+        // find_and_settle_in_chain, minus the offer: here the hazard of a late-read flag is a
+        // settled key reported absent.
+        constexpr size_t kSnapshot = 64;
+        bool skip[kSnapshot];
+        size_t chain_len = 0;
+        for (Table* t = table; t; t = t->prev, ++chain_len)
+            if (chain_len < kSnapshot)
+                skip[chain_len] = t->drained.load(std::memory_order_acquire);
+        size_t depth = 0;
         while (table) {
-            auto result = lookup_in_table(table, key);
-            if (result.has_value()) return result;
+            const bool probe = depth >= kSnapshot || !skip[depth];
+            ++depth;
+            if (probe) {
+                auto result = lookup_in_table(table, key);
+                if (result.has_value()) return result;
+            }
             table = table->prev;
         }
         return std::nullopt;
@@ -728,6 +786,13 @@ private:
         // lost to the seal and settles at the head under its own power -- so this copy is
         // complete, and every key that ever settled here is answerable from the head chain.
         // The old entries stay in place; newer tables are scanned first, so they are shadowed.
+        //
+        // Each carry call returns with its copy SETTLED at whichever table was head when it
+        // landed: the carry path never chain-scans (drive_at_head skips the scan when the
+        // count is not incremented), so a bounce off a sealed slot re-offers at the newer
+        // head rather than resolving to the original below. That is what makes `drained`
+        // safe to set after this loop -- every settled key of this table has a settled copy
+        // strictly above it, published before the flag's release.
         for (size_t i = 0; i < old_table->capacity; ++i) {
             const K key = old_table->entries[i].key.load(std::memory_order_acquire);
             if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
@@ -735,6 +800,13 @@ private:
             if (value == ABSENT_VALUE || value == forwarded_value()) continue;
             insert_into_table(table_.load(std::memory_order_acquire), key, value, false);
         }
+        old_table->drained.store(true, std::memory_order_release);
+        // With everything below old_table already drained and old_table now drained too, a
+        // walk from its successor needs no chain at all. Set on the successor even if it has
+        // itself been superseded meanwhile: the flag is about what lies BELOW that table, and
+        // the resize retiring it reads it to keep the propagation going.
+        if (old_table->chain_clear.load(std::memory_order_acquire))
+            new_table->chain_clear.store(true, std::memory_order_release);
     }
 
     std::atomic<Table*> table_;
