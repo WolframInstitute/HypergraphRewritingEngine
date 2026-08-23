@@ -3,7 +3,10 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cassert>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <new>
 
 #include "arena.hpp"
@@ -142,7 +145,30 @@ public:
     }
 
     // True iff this call is the one that added the key.
+    // A key equal to a reserved sentinel cannot be stored: EMPTY_KEY would leave the slot
+    // reading as free and MIGRATED_KEY as carried, so the claim would silently never exist.
+    // The same mistake cost four investigations on ConcurrentMap before its guard existed;
+    // this is that guard, for this container. The operation name goes in the thrown message
+    // because the throw is most likely seen in a release build, where knowing the call site
+    // is most of the diagnosis.
+    static void reject_sentinel_key(K key, const char* op) {
+        if (key == EMPTY_KEY || key == MIGRATED_KEY) {
+#ifdef HG_VERIFICATION
+            // A model checker faults on the throw's typeinfo while initialising; an assert is
+            // the same precondition stated as a safety property it can report.
+            (void)op;
+            assert(false && "ConcurrentKeySet: key collides with a reserved sentinel");
+#else
+            throw std::logic_error(
+                std::string("ConcurrentKeySet::") + op +
+                ": key collides with the EMPTY/MIGRATED sentinel. Offset dense ids or use a "
+                "reserved band.");
+#endif
+        }
+    }
+
     bool insert(K key) {
+        reject_sentinel_key(key, "insert");
         for (;;) {
             Table* head = table_.load(std::memory_order_acquire);
             if (count_.load(std::memory_order_relaxed) > head->capacity * LOAD_FACTOR_THRESHOLD) {
@@ -174,6 +200,7 @@ public:
     }
 
     bool contains(K key) const {
+        reject_sentinel_key(key, "contains");
         for (Table* t = table_.load(std::memory_order_acquire); t; t = t->prev)
             if (!t->drained.load(std::memory_order_acquire) && find_in_table(t, key)) return true;
         return false;

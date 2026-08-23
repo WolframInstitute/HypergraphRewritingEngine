@@ -191,9 +191,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
     if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
         ids_are_topological_.load(std::memory_order_relaxed)) {
         const uint64_t pair_key = causal_pair_key(producer, consumer);
-        auto existing_pair = seen_causal_event_pairs_.lookup(pair_key);
-
-        if (!existing_pair.has_value()) {
+        if (!seen_causal_event_pairs_.contains(pair_key)) {
             if (is_reachable(producer, consumer)) {
                 num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
                 return;
@@ -208,10 +206,9 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
     triple_key *= 1099511628211ULL;
     triple_key ^= edge;
     triple_key *= 1099511628211ULL;
-    if (triple_key == 0) triple_key = 1;   // never the map's EMPTY sentinel
+    if (triple_key == 0) triple_key = 1;   // never the set's EMPTY sentinel
 
-    auto [_, inserted] = seen_causal_triples_.insert_if_absent(triple_key, true);
-    if (inserted) {
+    if (seen_causal_triples_.insert(triple_key)) {
         causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
         num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
 
@@ -220,8 +217,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 #endif
 
         const uint64_t pair_key = causal_pair_key(producer, consumer);
-        auto [_2, pair_inserted] = seen_causal_event_pairs_.insert_if_absent(pair_key, true);
-        if (pair_inserted) {
+        if (seen_causal_event_pairs_.insert(pair_key)) {
             num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
             // Record the kept edge in the reduced adjacency once per unique event
             // pair, so preds_ holds no duplicate producers for a consumer.
@@ -342,8 +338,7 @@ void CausalGraph::record_branchial_overlaps(
             if (other_event == event) return;  // Skip self
             EventId e1 = std::min(event, other_event);
             EventId e2 = std::max(event, other_event);
-            auto [_, inserted] = seen_branchial_pairs_.insert_if_absent(id_key(e1, e2), true);
-            if (inserted) {
+            if (seen_branchial_pairs_.insert(id_key(e1, e2))) {
                 add_branchial_edge(e1, e2, shared);
             }
         });
@@ -371,7 +366,7 @@ size_t CausalGraph::num_causal_event_pairs() const {
 }
 
 size_t CausalGraph::num_branchial_pairs_claimed() const {
-    return seen_branchial_pairs_.count_unique();
+    return seen_branchial_pairs_.count_enumerated();
 }
 
 size_t CausalGraph::num_branchial_edges() const {
