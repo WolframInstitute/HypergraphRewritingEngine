@@ -9,9 +9,10 @@
 // how the two devices come to disagree about what a match is.
 //
 // Everything here is a pure function over caller-provided arrays: no allocation, no
-// synchronisation, no container. That is the criterion for living in hgcommon (see
-// docs/HARDWARE_AS_PHYSICS.md), and it is what lets one definition compile for host and
-// device.
+// synchronisation, no container. That is the criterion for living in hgcommon -- shared code is
+// allocation-free and synchronisation-free by construction, so anything that allocates or
+// synchronises is orchestration and belongs to one device -- and it is what lets one definition
+// compile for host and device.
 
 #include <cstdint>
 #include "hgcommon/core.hpp"

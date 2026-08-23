@@ -33,8 +33,13 @@
 // unrestricted on vertices: distinct pattern variables may bind the same vertex, and two pattern
 // edges may not take the same data edge. That is the convention the reference implementation
 // uses (reference/MultiwayReference.wl: "all ordered injective edge assignments with a
-// consistent (non-injective-allowed) vertex binding"), and it is what makes the DPO rewrite
-// total -- see docs/REPRESENTATION_DESIGN.md. The injectivity check lives here, once.
+// consistent (non-injective-allowed) vertex binding"), and it is what makes the rewrite
+// total as a double pushout: the gluing condition holds for every match. Identification -- what
+// the match identifies must be preserved by the rule -- holds because the match identifies only
+// vertices (it is edge-injective) and a rule preserves every vertex of its left side; dangling
+// triggers only on vertex deletion, and no vertex is ever deleted. So no match the join emits is
+// ever rejected at application, which is exactly what makes non-injective vertex binding safe.
+// The injectivity check lives here, once.
 //
 // THE UNWIND SAVES NO VALUES. A variable bound for the first time by this pattern edge has no
 // previous value to restore, so clearing exactly the bits the edge newly set restores the

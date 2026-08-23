@@ -20,10 +20,10 @@
 // event signatures. This factors out benign id/order churn and detects only
 // genuine structural non-determinism.
 //
-// Crucially the matrix includes LOOP-FORMING / recurrence rulesets under quotient
-// exploration -- the case the earlier growing-rule determinism gates never
-// exercised, which is exactly why the quotient causal-attribution non-determinism
-// hid. See docs/VERIFICATION_PLAN.md.
+// The matrix includes LOOP-FORMING / recurrence rulesets under quotient exploration:
+// a canonical state that recurs across depths has its attribution resolved among
+// several producers, which a purely growing rule never exercises, and it is the case
+// in which attribution non-determinism shows.
 // =============================================================================
 
 
