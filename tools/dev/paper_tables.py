@@ -151,11 +151,29 @@ def value(name, latex):
 
 def write_values(name="values_tables.tex"):
     """Emit the accumulated macros. Each script writes its OWN file: they run as separate
-    processes, so a shared name would mean whichever ran second erased the other's macros."""
+    processes, so a shared name would mean whichever ran second erased the other's macros.
+
+    Macros already in the file whose section did NOT run this invocation are CARRIED FORWARD
+    under their own marker rather than dropped: the prose cites them, so dropping them breaks
+    the build silently -- a --gpu-only regeneration removed the four authority-ratio macros
+    and the paper stopped compiling until the next `make`. A carried macro keeps the value of
+    the run that measured it; regenerating its section replaces it and the marker."""
     if not VALUES:
         return
+    carried = {}
+    path = os.path.join(OUT, name)
+    if os.path.exists(path):
+        with open(path) as f:
+            for m in re.finditer(r"\\newcommand\{\\([A-Za-z]+)\}\{(.*)\}\s*$",
+                                 f.read(), re.MULTILINE):
+                if m.group(1) not in VALUES:
+                    carried[m.group(1)] = m.group(2)
     body = [provenance("the generators in this file")]
     body += [r"\newcommand{\%s}{%s}" % (k, v) for k, v in sorted(VALUES.items())]
+    if carried:
+        body.append("% carried forward from the previous generation of this file: their")
+        body.append("% measurement did not run in this invocation, and the prose cites them.")
+        body += [r"\newcommand{\%s}{%s}" % (k, v) for k, v in sorted(carried.items())]
     write_raw(name, "\n".join(body) + "\n")
 
 
