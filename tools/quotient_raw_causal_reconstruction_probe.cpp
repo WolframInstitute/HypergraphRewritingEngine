@@ -1,6 +1,6 @@
 // Per-instance RAW causal reconstruction from the quotient skeleton.
 //
-// Tests the DECIDED design (docs/MEMORY_ARCHITECTURE_DESIGN.md §2b): the quotient retains the
+// Tests the design: the quotient retains the
 // representative's FULL expansion (every match with its consumed/produced canonical edge slots)
 // plus multiplicity; so enumerate raw INSTANCES (paths) over the depth-unrolled skeleton, each
 // carrying a per-instance producer assignment indexed by canonical edge SLOT. Each match in the
@@ -164,7 +164,7 @@ static Recon reconstruct(const WL& w, size_t& skel_states, size_t& skel_events){
     // transitive reduction of the reconstructed RAW graph (ids are topological: a parent is
     // always created at a strictly earlier depth than its consumer)
     std::map<uint32_t,std::vector<uint32_t>> adj;
-    for(auto&e:cedges) adj[e.first].push_back(e.second);
+    for(auto&ce:cedges) adj[ce.first].push_back(ce.second);
     auto bypassed=[&](uint32_t u,uint32_t v)->bool{
         std::set<uint32_t> vis; std::vector<uint32_t> st;
         auto a=adj.find(u); if(a==adj.end()) return false;
@@ -173,8 +173,8 @@ static Recon reconstruct(const WL& w, size_t& skel_states, size_t& skel_events){
             auto b=adj.find(x); if(b==adj.end()) continue;
             for(uint32_t y:b->second) if(y<=v && vis.insert(y).second) st.push_back(y); }
         return false; };
-    for(auto&e:cedges){
-        if(!bypassed(e.first,e.second)){ R.tr_pairs++; R.proj.insert({esig[e.first], esig[e.second]}); } }
+    for(auto&ce:cedges){
+        if(!bypassed(ce.first,ce.second)){ R.tr_pairs++; R.proj.insert({esig[ce.first], esig[ce.second]}); } }
     return R;
 }
 

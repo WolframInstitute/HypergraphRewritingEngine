@@ -93,8 +93,8 @@ static std::map<std::pair<uint64_t,uint64_t>,long long> oracle(const WL& w, size
         std::map<uint64_t,long long> nev, ninst;
         for (uint32_t s=0;s<hg.num_states();++s){ if(hg.get_state(s).id==INVALID_ID) continue;
             if (hg.get_state(s).step < (uint32_t)w.steps) ninst[sh[s]]++; }
-        for (uint32_t i=0;i<hg.num_events();++i){ const auto& e=hg.get_event(i); if(e.id==INVALID_ID) continue;
-            nev[sh[e.input_state]]++; }
+        for (uint32_t i=0;i<hg.num_events();++i){ const auto& ev=hg.get_event(i); if(ev.id==INVALID_ID) continue;
+            nev[sh[ev.input_state]]++; }
         full_W.clear();
         for (auto& kv : ninst) if (kv.second) full_W[kv.first] = (double)nev[kv.first]/(double)kv.second;
     }
