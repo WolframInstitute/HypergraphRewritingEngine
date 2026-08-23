@@ -332,6 +332,10 @@ target_link_libraries(ir_vs_wl PRIVATE hypergraph)
 # ---------------------------------------------------------------------------------------------
 add_custom_target(probes)
 
+add_executable(park_cost_bench EXCLUDE_FROM_ALL tools/park_cost_bench.cpp)
+target_include_directories(park_cost_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(park_cost_bench PRIVATE job_system)
+add_dependencies(probes park_cost_bench)
 add_executable(arena_bump_bench EXCLUDE_FROM_ALL tools/arena_bump_bench.cpp)
 target_include_directories(arena_bump_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(arena_bump_bench PRIVATE hypergraph)
