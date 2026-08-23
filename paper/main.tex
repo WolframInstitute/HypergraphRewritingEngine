@@ -1021,6 +1021,17 @@ the step budget rather than by deduplication---which is the distinction the two 
 between. The device implements the same separation as the host, since a continuation that behaved
 differently on the two targets would not be the same session.
 
+Every session reply reports the frontier, because a caller cannot steer a continuation toward
+states it cannot name, and a step may name a subset of it: the named states are expanded and every
+other frontier entry is put back, so steering narrows what runs next, never what remains
+reachable. Naming a state that is not on the frontier is an error rather than an empty step---a
+caller steering toward a state the exploration has already passed would otherwise get a silent
+no-op indistinguishable from a branch with no successors. Retention is also why each frontier
+entry carries its own depth: after a steered step, entries stranded by different budgets sit on
+the frontier together, and an entry resumed at a uniform depth would have its subtree truncated by
+steps it never took. Both devices serve this contract, resolving the selection against the
+frontier as it was last reported.
+
 \subsection{Event Canonicalization}
 \label{sec:event-canon}
 
