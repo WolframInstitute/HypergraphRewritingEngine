@@ -419,8 +419,8 @@ class Hypergraph {
     // reported a uniform 2.00 per state on all 17 cost_matrix cases. The uniformity was the
     // tell -- real duplication varies with the workload, an off-by-a-factor does not.
     //
-    // Why it exists: FFI_INTERFACE_DESIGN section 5 recorded "IR canonicalization up to 3x per
-    // state" in 2026-07-25 and named it the biggest measurable win. get_or_compute_canonical_hash
+    // Why it exists: a 2026-07-25 profile recorded "IR canonicalization up to 3x per state"
+    // and named it the biggest measurable win. get_or_compute_canonical_hash
     // has memoized into State::canonical_hash since, so the steady state is one computation per
     // state plus whatever racing writers duplicate -- and NOTHING MEASURED THAT. A number that
     // cannot be re-derived is not a number to plan against.

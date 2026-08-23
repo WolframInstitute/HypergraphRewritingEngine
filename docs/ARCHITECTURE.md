@@ -132,6 +132,71 @@ Boundary + tooling:
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
   without justification (an inverted-index skip once cost 200x).
 
+## Sessions
+
+The FFI serves four verbs over an opaque session — `Open`, `Step`, `Query`, `Close` — beside the
+one-shot `Evolve`, on both devices. The decisions the session code encodes, numbered as the code
+cites them:
+
+- **D7 — one session at a time.** A single slot, matching the transport (the socket worker
+  accepts one connection). A second `Open` while one is live is an error, not an eviction:
+  evicting would discard a caller's exploration silently. Both devices refuse with one spelling.
+- **D9 — sessions exist on both devices.** The holder is an interface and the slot never names a
+  device, so the device half extends the same shape rather than replacing it.
+- **D10 — continuation preserves raw vertex labels.** A session that renumbered vertices between
+  steps would disconnect a caller's own bookkeeping from the state it names.
+- **D11 — the handle is an opaque `uint64`,** minted per worker, with 0 reserved for "no
+  session" — absence and a real handle are never confused, the discipline every id space here
+  follows.
+- **D13 — the device gap was retained *exploration*, not retained *allocation*:** a device
+  session extends from its own frontier rather than re-uploading, and `Step` with a frontier
+  SUBSET is the remaining device limitation (it is refused with the reason).
+- **D14 — a hard overflow invalidates the session,** and the handle then reports that rather
+  than silently serving a fresh empty engine — which would return a graph that had lost its
+  history and satisfy every internal check.
+- **D16 — a held verb takes its identity options from the session,** not from its own envelope:
+  a `Query` answered under different identity choices than the session's `Open` would describe a
+  different multiway system with the same handle.
+- **D17 — an artifact the session was not asked to record is a WARNING on a held verb,** not an
+  error: the caller can re-`Open` to widen, and refusing the whole query would discard what it
+  did record.
+
+`paclet_source/session.hpp` carries D7/D11/D14 as assertions; `test_session.cpp` and
+`verify_sessions.wls` gate the verbs end to end.
+
+## Sampling
+
+The samplers thin the multiway graph while keeping the observables of the unpruned evolution
+well-defined; `docs/SPEC.md` §5 states which options are samplers and which are caps.
+
+- **A rate, not a count.** With match forwarding on, a state's match population is not local: a
+  parent keeps forwarding matches to a child long after the child's own discovery tree drained,
+  so the population closes only when the whole ancestor chain has — most of the run. A per-state
+  COUNT therefore cannot be sampled uniformly without a barrier (measured: a count knob bounded
+  only new discoveries — 2,038,505 states where the closed population is 1,365). A RATE decides
+  per match, independently, with no population and no completeness requirement, so it applies
+  identically to a discovered and a forwarded match and needs no join. `TransitionRate` is that
+  sampler; thinning a branching process by a rate yields a branching process with the thinned
+  offspring distribution, so branching shape survives.
+- **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity
+  and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
+  count and on either device, and reproducible for a fixed seed.
+- **The spine.** A fixed rate is a knife-edge (below the branching factor the sampled evolution
+  goes extinct), so the minimum-keyed own-found transition of a state survives when none of its
+  own draws passed — every term key-deterministic.
+- **The per-state match-task join.** Matching one state is a tree of tasks, so no single task
+  sees all its matches; anything acting on them AS A SET needs to know when the tree drained.
+  Two monotone per-state counters — `pushed` incremented before a spawned task is visible,
+  `completed` after its effects are — and the task observing `pushed == completed` drains the
+  state. The CPU twin of the device's `TerminationDetector`, deliberately the same shape; a join
+  over one state's own tasks, not a barrier. The per-depth quiescence signal composes from it.
+- **Arrival-order caps** (`MaxStatesPerStep`, `MaxSuccessorStatesPerParent`,
+  `UniformRandom`+`MatchesPerStep`) bound work, not identity; above the cap, which states got in
+  is the schedule's.
+
+Gates: `SamplingReproducibility.*` (same states at every worker count; reproducible per seed;
+the drain fires once per state), `RuleWeights.*`.
+
 ## Validation
 
 Ground truth is `reference/MultiwayReference.wl`, cross-checked against the Wolfram

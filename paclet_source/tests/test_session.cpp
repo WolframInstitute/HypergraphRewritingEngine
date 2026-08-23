@@ -2,7 +2,7 @@
 //
 // These assertions are the contract the verbs will be written against, so they are worth having
 // while the slot is still small enough to read in one sitting. Each names the decision it comes
-// from; see docs/FFI_INTERFACE_DESIGN.
+// from; see docs/ARCHITECTURE.md, Sessions.
 
 #include <gtest/gtest.h>
 

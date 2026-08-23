@@ -624,7 +624,7 @@ private:
     static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
     ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
 
-    // Per-state match-task join. See docs/ASYNC_SAMPLING_DESIGN.md §5.
+    // Per-state match-task join. See docs/ARCHITECTURE.md, Sampling.
     //
     // Matching one state is a tree of MATCH/SCAN/EXPAND tasks, so no single task sees all of
     // that state's matches. Anything that has to act on the state's matches AS A SET needs to
@@ -844,7 +844,7 @@ public:
     // shape and variance survive. It also needs no population and no completion, which is why
     // it is eager, needs no join, and applies identically to a match this state discovered and
     // one forwarded to it from an ancestor -- the two failures that a per-state count could not
-    // survive (docs/ASYNC_SAMPLING_DESIGN.md §3a).
+    // survive (docs/ARCHITECTURE.md, Sampling: the population is not local under forwarding).
     //
     // The draw is keyed on the transition's identity rather than on a worker's RNG, so it does
     // not depend on WHICH thread drew or on the order matches arrived. It does still depend on

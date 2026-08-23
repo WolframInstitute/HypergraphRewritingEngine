@@ -13,7 +13,7 @@ using namespace hypergraph;
 // The sampling and pruning surface, which is otherwise reached only through the paclet FFI.
 //
 // Everything here runs on the ONE evolve(): sampling has no scheduler of its own, because a
-// sample needs no barrier once it is a rate rather than a count (docs/ASYNC_SAMPLING_DESIGN.md).
+// sample needs no barrier once it is a rate rather than a count (docs/ARCHITECTURE.md, Sampling).
 //
 // The contract these pin down is that a sampled run is a SUBGRAPH OF THE FULL ONE that can be
 // reproduced: the same seed selects the same subgraph at any worker count, in either
@@ -338,7 +338,7 @@ TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
 
 // The per-state match join: a state's drain must fire exactly once, and strictly after that
 // state's last match. It is what lets anything be keyed on "the matches of one state" AS A SET
-// -- a reservoir first of all -- without a step barrier (docs/ASYNC_SAMPLING_DESIGN.md §5).
+// -- a reservoir first of all -- without a step barrier (docs/ARCHITECTURE.md, Sampling).
 //
 // Both halves are load-bearing and fail differently. Firing twice would finalise a population
 // twice and rewrite the second sample on top of the first. Firing early would finalise over

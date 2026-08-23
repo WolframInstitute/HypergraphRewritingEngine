@@ -10,7 +10,7 @@
 // defect this project spent a day removing from the canonicalizer, the causal DP and the replay.
 // So the holder is an interface from the start and the slot never names a device.
 //
-// THE DECISIONS THIS ENCODES, from docs/FFI_INTERFACE_DESIGN:
+// THE DECISIONS THIS ENCODES (docs/ARCHITECTURE.md, Sessions):
 //   D7  ONE SESSION AT A TIME. Not a map: a single slot. A second Open while one is live is an
 //       error, not an eviction -- evicting would discard a caller's exploration silently.
 //   D11 THE HANDLE IS AN OPAQUE uint64, minted by a per-worker counter, with 0 reserved for
