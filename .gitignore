@@ -32,3 +32,8 @@ evidence/
 /paper/*.out
 /paper/*.pdf
 /paper/*.toc
+
+# Reports written by tools/dev/source_map.py and tools/dev/source_audit.py (libclang over the
+# tree); regenerated on demand, never hand-edited.
+/SOURCE_MAP.md
+/SOURCE_AUDIT.md
