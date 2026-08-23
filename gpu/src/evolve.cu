@@ -933,6 +933,12 @@ GpuSession::~GpuSession() = default;
 
 SessionView* GpuSession::view() { return &impl_->view; }
 uint32_t GpuSession::frontier_size() const { return impl_->state.frontier_size(); }
+void GpuSession::frontier_host(std::vector<StateId>& ids, std::vector<uint32_t>& steps) const {
+    impl_->state.frontier_host(ids, steps);
+}
+void GpuSession::set_frontier_host(const StateId* ids, const uint32_t* steps, uint32_t n) {
+    impl_->state.set_frontier_host(ids, steps, n);
+}
 
 PersistentEvolver::PersistentEvolver()  = default;
 PersistentEvolver::~PersistentEvolver() = default;

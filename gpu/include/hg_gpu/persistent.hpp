@@ -143,7 +143,14 @@ struct SessionView {
     // Boundary states, appended when the budget refuses expansion. `count` may exceed `cap`
     // under a race; readers take min(count, cap), which is the same discipline the counted root
     // seeder uses.
+    //
+    // `frontier_step` carries EACH entry's depth, because a steered Step puts the unselected
+    // entries back: after it, entries stranded by different budgets sit on the frontier
+    // together, and seeding them at one uniform depth would give the retained ones a subtree
+    // truncated by steps they never took. This is the device twin of the host's deferred
+    // entries carrying their own `step`.
     StateId*  frontier      = nullptr;
+    uint32_t* frontier_step = nullptr;
     uint32_t* frontier_count = nullptr;
     uint32_t  frontier_cap  = 0;
     uint32_t  enabled       = 0;
@@ -160,12 +167,22 @@ public:
 
     uint32_t frontier_size() const;
 
+    // Frontier readback and replacement, for the steered Step. Both cross the host-device
+    // boundary BETWEEN launches, which is where the boundary rule permits it: readback after a
+    // run gives the caller ids it can steer by, and replacement before one narrows the seed to
+    // the caller's selection (and, after it, restores the entries the selection retained).
+    void frontier_host(std::vector<StateId>& ids, std::vector<uint32_t>& steps) const;
+    // `n` beyond the capacity is refused by clamping, the same partial-result discipline the
+    // device append uses; the caller compares sizes to see the drop.
+    void set_frontier_host(const StateId* ids, const uint32_t* steps, uint32_t n);
+
     SessionView view();
 
 private:
     DedupMap  states_;
     DedupMap  events_;
     StateId*  frontier_ = nullptr;
+    uint32_t* step_     = nullptr;
     uint32_t* count_    = nullptr;
     uint32_t  cap_      = 0;
 };

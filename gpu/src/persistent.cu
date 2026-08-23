@@ -72,16 +72,19 @@ __global__ void k_seed_match_queue_counted(
 // states are already known and already deduplicated, and consulting dedup here is exactly what
 // makes an extend reach nothing (measured: 5 states where one run gives 7).
 __global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView queue,
-                                const StateId* ids, const uint32_t* count, uint32_t cap,
-                                uint32_t num_rules, uint32_t step,
+                                const StateId* ids, const uint32_t* steps,
+                                const uint32_t* count, uint32_t cap,
+                                uint32_t num_rules,
                                 typename TerminationDetector::DeviceView term) {
     const uint32_t live = min(*count, cap);
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= live * num_rules) return;
     MatchWorkItem item;
+    // Depth is PER ENTRY: after a steered Step the frontier mixes entries stranded by
+    // different budgets, and each resumes at its own recorded depth.
     item.state_id = ids[tid / num_rules];
     item.rule_id  = tid - (tid / num_rules) * num_rules;
-    item.step     = step;
+    item.step     = steps[tid / num_rules];
     term.mark_pushed(kRoleMatch);
     queue.try_push(item);
 }
@@ -781,8 +784,10 @@ __global__ void k_persistent_evolve(
                                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device>
                                     fc(*sess.frontier_count);
                                 const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
-                                if (at < sess.frontier_cap) sess.frontier[at] = child_sid;
-                                else ds.errors.record(ErrorKind::kFrontierCapFull);
+                                if (at < sess.frontier_cap) {
+                                    sess.frontier[at]      = child_sid;
+                                    sess.frontier_step[at] = child_step;
+                                } else ds.errors.record(ErrorKind::kFrontierCapFull);
                             }
                             expand_child = false;
                         } else {
@@ -1168,7 +1173,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     arena.reset();
     // CONTINUING rather than starting: the frontier already holds hashed, deduplicated states,
-    // so it is seeded straight into the queue at the depth the previous budget stopped at. The
+    // so it is seeded straight into the queue at each entry's own recorded depth. The
     // root path would re-hash them and, worse, consult dedup -- which they already satisfy, so
     // nothing would expand.
     if (start_step > 0 && session) {
@@ -1177,8 +1182,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const uint32_t seed_grid = (items + block - 1) / block;
         if (seed_grid) {
             k_seed_frontier<<<seed_grid, block>>>(
-                match_q.view(), sess_v.frontier, sess_v.frontier_count, sess_v.frontier_cap,
-                num_rules, start_step, term.view());
+                match_q.view(), sess_v.frontier, sess_v.frontier_step, sess_v.frontier_count,
+                sess_v.frontier_cap, num_rules, term.view());
         }
         // THE FRONTIER IS CONSUMED, NOT ACCUMULATED. The states it held are being expanded now,
         // and this run's own boundary takes their place -- so the counter is reset between the
@@ -1275,6 +1280,7 @@ SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(ma
         states_.clear();
         events_.clear();
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
+        HG_CUDA_CHECK(cudaMalloc(&step_, sizeof(uint32_t) * cap_), "session frontier step alloc");
         HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
         HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)),
                       "session frontier count clear");
@@ -1282,6 +1288,7 @@ SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(ma
 
 SessionState::~SessionState() {
         if (frontier_) cudaFree(frontier_);
+        if (step_)     cudaFree(step_);
         if (count_)    cudaFree(count_);
     }
 
@@ -1292,11 +1299,40 @@ uint32_t SessionState::frontier_size() const {
         return n < cap_ ? n : cap_;
     }
 
+void SessionState::frontier_host(std::vector<StateId>& ids,
+                                 std::vector<uint32_t>& steps) const {
+        const uint32_t n = frontier_size();
+        ids.resize(n);
+        steps.resize(n);
+        if (n == 0) return;
+        HG_CUDA_CHECK(cudaMemcpy(ids.data(), frontier_, sizeof(StateId) * n,
+                                 cudaMemcpyDeviceToHost),
+                      "session frontier read");
+        HG_CUDA_CHECK(cudaMemcpy(steps.data(), step_, sizeof(uint32_t) * n,
+                                 cudaMemcpyDeviceToHost),
+                      "session frontier step read");
+    }
+
+void SessionState::set_frontier_host(const StateId* ids, const uint32_t* steps, uint32_t n) {
+        if (n > cap_) n = cap_;
+        if (n) {
+            HG_CUDA_CHECK(cudaMemcpy(frontier_, ids, sizeof(StateId) * n,
+                                     cudaMemcpyHostToDevice),
+                          "session frontier write");
+            HG_CUDA_CHECK(cudaMemcpy(step_, steps, sizeof(uint32_t) * n,
+                                     cudaMemcpyHostToDevice),
+                          "session frontier step write");
+        }
+        HG_CUDA_CHECK(cudaMemcpy(count_, &n, sizeof(uint32_t), cudaMemcpyHostToDevice),
+                      "session frontier count write");
+    }
+
 SessionView SessionState::view() {
         SessionView v;
         v.states         = states_.view();
         v.events         = events_.view();
         v.frontier       = frontier_;
+        v.frontier_step  = step_;
         v.frontier_count = count_;
         v.frontier_cap   = cap_;
         v.enabled        = 1;

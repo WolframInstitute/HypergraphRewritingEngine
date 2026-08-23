@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -197,6 +198,14 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         std::unique_ptr<hg_gpu::GpuSession> state;
         hg_gpu::EvolveInput  input;
         hg_gpu::EvolveResult last;
+        // Host mirror of the device frontier, read back after every run. A steered Step is
+        // resolved against `by_eff` -- built when the frontier was last REPORTED, so the ids it
+        // reads are the ids the caller read. One entry per effective id, first wins: on the
+        // device each frontier entry is its own dedup class under the run's mode, so the map is
+        // 1:1; keeping the host's emplace discipline anyway means the two resolvers stay twins.
+        std::vector<hg_gpu::StateId>          frontier_ids;
+        std::vector<uint32_t>                 frontier_steps;
+        std::unordered_map<int64_t, size_t>   frontier_by_eff;
         uint32_t steps_done = 0;
         uint64_t handle     = 0;
     };
@@ -238,19 +247,33 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             held.steps_done = 0;
             held.handle = next_handle++;
         }
-        // STEERING A DEVICE SESSION IS NOT IMPLEMENTED, and it is refused rather than ignored.
-        // The device's frontier lives in `SessionState` as a flat array of child state ids with
-        // no host-visible identity attached, so there is nothing here to match a caller's
-        // effective ids against; running the step unsteered would explore the branches the
-        // caller asked to leave alone and return a graph that looks like a correct answer to a
-        // different question.
+        // A STEERED STEP: the caller's effective ids are resolved against the frontier as it
+        // was last REPORTED, the selected entries are written down as the whole device
+        // frontier, and the unselected ones are PUT BACK after the run -- so a later Step can
+        // still resume them, exactly the host's retention contract. Resolving against the
+        // frontier rather than every state is what makes an id that is not on it an ERROR
+        // rather than a silent no-op.
+        std::vector<hg_gpu::StateId> retained_ids;
+        std::vector<uint32_t>        retained_steps;
         if (is_step && !job.session_from.empty()) {
-            throw std::runtime_error(
-                "Step with a frontier subset is not implemented on the GPU. The device session "
-                "carries its frontier as device state ids with no host-visible identity, so "
-                "the selection cannot be resolved; running unsteered would explore the branches "
-                "you asked to leave alone. Use TargetDevice -> \"CPU\" for a steered "
-                "continuation.");
+            std::vector<char> take(held.frontier_ids.size(), 0);
+            for (int64_t want : job.session_from) {
+                auto it = held.frontier_by_eff.find(want);
+                if (it == held.frontier_by_eff.end())
+                    throw std::runtime_error(
+                        "Step: state " + std::to_string(want) + " is not on this session's "
+                        "frontier, so there is nothing to continue from it. The frontier is "
+                        "reported as \"Frontier\" in every session reply.");
+                take[it->second] = 1;
+            }
+            std::vector<hg_gpu::StateId> sel_ids;
+            std::vector<uint32_t>        sel_steps;
+            for (size_t i = 0; i < take.size(); ++i) {
+                (take[i] ? sel_ids : retained_ids).push_back(held.frontier_ids[i]);
+                (take[i] ? sel_steps : retained_steps).push_back(held.frontier_steps[i]);
+            }
+            held.state->set_frontier_host(sel_ids.data(), sel_steps.data(),
+                                          static_cast<uint32_t>(sel_ids.size()));
         }
         // A Step's budget is the TOTAL depth, and start_step is where the last call stopped --
         // the frontier is seeded at that depth rather than the roots at zero.
@@ -264,6 +287,27 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         }
         held.steps_done = held.input.num_steps;
         held.last = std::move(sr.result);
+        // The run consumed the selection and appended its own boundary; the retained entries
+        // rejoin it now, at the depths they were stranded at. Entries past the session's
+        // capacity are dropped with the same warning kind the device append records.
+        held.state->frontier_host(held.frontier_ids, held.frontier_steps);
+        if (!retained_ids.empty()) {
+            held.frontier_ids.insert(held.frontier_ids.end(),
+                                     retained_ids.begin(), retained_ids.end());
+            held.frontier_steps.insert(held.frontier_steps.end(),
+                                       retained_steps.begin(), retained_steps.end());
+            held.state->set_frontier_host(held.frontier_ids.data(), held.frontier_steps.data(),
+                                          static_cast<uint32_t>(held.frontier_ids.size()));
+            const uint32_t kept = held.state->frontier_size();
+            if (kept < held.frontier_ids.size()) {
+                held.last.warnings.push_back(
+                    {hg_gpu::ErrorKind::kFrontierCapFull,
+                     static_cast<uint32_t>(held.frontier_ids.size()) - kept,
+                     "steered Step put-back"});
+                held.frontier_ids.resize(kept);
+                held.frontier_steps.resize(kept);
+            }
+        }
         result = held.last;
     } else if (is_query) {
         result = held.last;
@@ -890,6 +934,21 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // A session's result names the session, so the caller can Step it. Same key the CPU emits,
     // because a caller cannot tell which device answered and must not have to.
     if (held.handle != 0 && (is_open || is_step || is_query)) {
+        // THE FRONTIER, in every reply a session gives -- the same contract the CPU serves: a
+        // caller cannot steer a continuation toward states it cannot name. Effective ids, the
+        // identity every other field uses, deduplicated because several device states of one
+        // class can sit on the frontier together while the caller sees one id. The resolution
+        // map is rebuilt HERE, where the ids are minted, so a later steered Step reads exactly
+        // the identity this reply reported.
+        held.frontier_by_eff.clear();
+        std::set<int64_t> seen;
+        wxf::WXFValueList frontier;
+        for (size_t i = 0; i < held.frontier_ids.size(); ++i) {
+            const int64_t eff = rep_of(held.frontier_ids[i]);
+            held.frontier_by_eff.emplace(eff, i);
+            if (seen.insert(eff).second) frontier.push_back(wxf::WXFValue(eff));
+        }
+        full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(frontier)});
         full_result.push_back({wxf::WXFValue("Session"),
                                wxf::WXFValue(static_cast<int64_t>(held.handle))});
     }

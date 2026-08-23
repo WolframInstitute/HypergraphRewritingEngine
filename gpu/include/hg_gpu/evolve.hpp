@@ -433,6 +433,13 @@ public:
     // Boundary states the last call's budget refused, so a caller can tell a converged run from
     // one that stopped at its budget.
     uint32_t frontier_size() const;
+    // The frontier's entries (device state ids) with each entry's recorded depth, read between
+    // launches so a caller can resolve a steered continuation against them.
+    void frontier_host(std::vector<StateId>& ids, std::vector<uint32_t>& steps) const;
+    // Replaces the frontier: a steered Step writes the selected subset before the run, and the
+    // merge of the new boundary with the retained entries after it. Entries beyond the session's
+    // capacity are dropped, the same partial-result discipline the device append uses.
+    void set_frontier_host(const StateId* ids, const uint32_t* steps, uint32_t n);
 
 private:
     struct Impl;

@@ -457,7 +457,7 @@ which reaches 7 states where an unsteered step of the same depth reaches 10.
 
 **The unselected branches are retained, not discarded.** They stay on the frontier and a later step resumes them, so a steered detour costs nothing in what remains reachable: continuing the session above without a selection lands on 34 states, exactly what `HGEvolve[rules, {{1, 2}}, 4, "NumStates"]` gives. Steering narrows what runs *next*, never what is *reachable*.
 
-Naming a state that is not on the frontier is an error rather than a step that quietly does nothing, since a caller steering toward a state the exploration has already passed would otherwise get an unexplained empty result. Steered continuation is CPU-only: a device session carries its frontier as device state ids with no host-visible identity, so the selection cannot be resolved there, and `TargetDevice -> "GPU"` reports that rather than running unsteered.
+Naming a state that is not on the frontier is an error rather than a step that quietly does nothing, since a caller steering toward a state the exploration has already passed would otherwise get an unexplained empty result. Both devices serve the same contract: under `TargetDevice -> "GPU"` the worker resolves the selection against the frontier it last reported and puts the unselected entries back after the step, each at the depth it was stranded at.
 
 ### Sending only what a step added
 

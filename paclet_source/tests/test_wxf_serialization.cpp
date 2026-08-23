@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -685,9 +686,9 @@ TEST(WxfSerializationPin, StepContinuesTheHeldExplorationAndQueryOnlyReportsIt) 
                  std::runtime_error);
 }
 
-// A Step naming frontier states continues from those and no others. The device refuses this
-// verb because it holds its frontier as device ids a caller cannot name; the host resolves the
-// selection against the frontier, so here it must be ANSWERED, and answered narrowly.
+// A Step naming frontier states continues from those and no others, on BOTH devices: the
+// selection is resolved against the frontier as it was last reported, and the unselected
+// entries are put back so a later Step can still resume them.
 TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly) {
     HostBridge host;
 
@@ -696,23 +697,6 @@ TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly)
     ASSERT_NE(handle, 0);
 
     const std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
-
-#ifdef HG_GPU_BACKEND
-    // The device session carries its frontier as device state ids with no host-visible identity,
-    // so it names none of them and resolves no selection. Both halves are asserted: reporting a
-    // frontier the caller could not steer by would be as wrong as answering the steered Step.
-    EXPECT_TRUE(frontier.empty())
-        << "the device named " << frontier.size() << " frontier states, so a caller can steer by "
-           "an id the device cannot resolve";
-    EXPECT_THROW(run_rewriting_core(
-                     build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{0}),
-                     host),
-                 std::runtime_error);
-    EXPECT_NO_THROW(run_rewriting_core(
-        build_input_with_op(0, "Query", handle, /*with_rules=*/false), host))
-        << "the refused Step took the session with it";
-    ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
-#else
     ASSERT_GE(frontier.size(), 2u)
         << "this seed reaches a single frontier state, so steering cannot exclude anything and "
            "the comparison below would hold for a selection that was never read";
@@ -731,6 +715,13 @@ TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly)
 
     const auto steered = run_rewriting_core(
         build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{frontier[0]}), host);
+    // RETENTION: the entries the selection excluded are put back, not dropped -- a later Step
+    // can still resume them. The excluded id was not expanded, so it is still on the frontier
+    // the steered reply reports.
+    const std::vector<int64_t> after = read_int_list_key(steered, "Frontier");
+    EXPECT_NE(std::find(after.begin(), after.end(), frontier[1]), after.end())
+        << "steering by state " << frontier[0] << " dropped unselected state " << frontier[1]
+        << " from the frontier, so \"explore this branch\" meant \"abandon the others\"";
     ASSERT_NO_THROW(run_rewriting_core(build_input_with_op(0, "Close", handle), host));
 
     // The same continuation again, naming nothing. A second session rather than the same one,
@@ -748,7 +739,6 @@ TEST(WxfSerializationPin, AStepNamingPartOfTheFrontierContinuesFromThatPartOnly)
     EXPECT_LT(read_int_key(steered, "NumStates"), read_int_key(unsteered, "NumStates"))
         << "naming one of " << frontier.size() << " frontier states reached as many states as "
            "continuing from all of them, so the selection was not applied";
-#endif
 }
 
 // Counts the warnings in a reply. Returns -1 when the key is absent, which is distinct from a
@@ -1429,28 +1419,26 @@ TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
     EXPECT_EQ(read_int_key(q, "NumStates"), ref_states)
         << "Query must report what the session holds and extend it by nothing";
 
-    // A STEERED STEP IS REFUSED ON THE DEVICE, and refusal is the only correct answer: the
-    // device session holds its frontier as device state ids with no host-visible identity, so a
-    // caller's selection cannot be resolved there. Running it unsteered would explore the
-    // branches the caller asked to leave alone and return a graph that is a correct answer to a
-    // DIFFERENT question -- indistinguishable, at the wire, from the right one.
-    //
-    // The check is that the worker ERRORS the job (an empty reply) rather than answering it.
-    // Asserting on the resulting state count instead would pass on a device that happened to
-    // converge, which is the case a steered run is least likely to be asked about.
-    const auto steered = worker_call(
-        w, build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{0}));
-    EXPECT_TRUE(steered.empty())
-        << "a Step naming a frontier subset was ANSWERED by the GPU worker; the device cannot "
-           "resolve the selection, so answering it means the branches the caller excluded were "
-           "explored anyway";
-
-    // The refusal must not take the session with it: the worker is alive and the session is
-    // still the one that was opened.
+    // A STEERED STEP THROUGH THE WIRE. An id that is not on the frontier ERRORS the job (an
+    // empty reply), and the error must not take the session with it. A member of the reported
+    // frontier is ANSWERED: the worker resolves the selection against the frontier it last
+    // reported, the same contract the host serves.
+    const auto bad = worker_call(
+        w, build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{1000000}));
+    EXPECT_TRUE(bad.empty())
+        << "a Step naming a state that is not on the frontier was answered rather than errored";
     const auto after = worker_call(w, build_input_with_op(0, "Query", handle, /*with_rules=*/false));
-    EXPECT_FALSE(after.empty()) << "the refused Step killed the session it refused";
+    EXPECT_FALSE(after.empty()) << "the errored Step killed the session it refused";
     EXPECT_EQ(read_int_key(after, "NumStates"), ref_states)
-        << "the refused Step changed what the session holds";
+        << "the errored Step changed what the session holds";
+
+    const std::vector<int64_t> fr = read_int_list_key(q, "Frontier");
+    ASSERT_FALSE(fr.empty())
+        << "this workload grows at every depth, so a depth-3 session must report a frontier";
+    const auto steered = worker_call(
+        w, build_input_with_op(1, "Step", handle, /*with_rules=*/false, /*from=*/{fr[0]}));
+    EXPECT_FALSE(steered.empty())
+        << "a Step naming a frontier subset was refused by the GPU worker";
 
     const auto c = worker_call(w, build_input_with_op(0, "Close", handle, /*with_rules=*/false));
     EXPECT_FALSE(c.empty()) << "Close errored";
