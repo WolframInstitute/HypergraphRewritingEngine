@@ -1,50 +1,51 @@
-# Rewriting the Universe - Paper
+# Rewriting the Universe — paper
 
-LaTeX source for the paper "Rewriting the Universe: High-Performance Hypergraph Evolution for the Wolfram Physics Project"
+LaTeX source for "Rewriting the Universe: High-Performance Hypergraph Evolution for the Wolfram
+Physics Project".
 
 ## Building
 
 ```bash
-make        # Full build with bibliography
-make quick  # Single pass (no bibliography)
-make clean  # Remove auxiliary files
-make arxiv  # Create arxiv submission tarball
+make        # full build with bibliography
+make quick  # single pass, no bibliography
+make clean  # remove auxiliary files
+make arxiv  # arXiv submission tarball
 ```
 
-## Structure
+## Layout
 
-- `main.tex` - Main paper source
-- `references.bib` - BibTeX bibliography
-- `figures/` - Figures and plots (to be generated from benchmarks)
+- `main.tex` — the paper
+- `references.bib` — bibliography
+- `tables/` — every table, figure fragment and numeric macro the paper includes. **All of them
+  are generated**: each file's first line names the generator and its second line records the
+  commit, the machine the numbers were measured on, the load at the start of the run and the
+  core set the workers were pinned to. Edit the generator, not the file.
 
-## Sections Overview
+## Regenerating the numbers
 
-1. **Introduction** - Motivation and contributions
-2. **Background** - Hypergraph rewriting, multiway evolution, related work
-3. **Canonicalization** - Uniqueness trees, WL hashing, incremental computation
-4. **Pattern Matching** - Signature indexing, task-based matching, match forwarding
-5. **Architecture** - Unified storage, lock-free data structures, memory model
-6. **GPU** - Megakernel design, parallel algorithms
-7. **Benchmarks** - CPU/GPU performance, scaling, strategy comparison
-8. **Visualization** - Interactive exploration tools
-9. **Conclusion** - Summary and future work
+```bash
+python3 -u tools/dev/paper_tables.py --gpu --wolfram --authority-depth 7 --steps 7 \
+        --cpus <homogeneous core set> --thread-sweep <counts within it>
+python3 -u tools/dev/scaling_sweep.py --sections cpu,shapes,memory,gpu
+cd paper && touch main.tex && make
+```
 
-## TODO
+`--cpus` pins the engine's workers to the named logical CPUs so a speedup column divides by a
+homogeneous quantity of compute; on a hybrid CPU an unpinned thread count is not one. A table
+generated on a machine carrying other load is stamped `*** CONTENDED` and is not for publication.
+Two passages are prose about the data and are re-read by hand after regeneration: the C/R caption
+and every sentence quoting T2's ratios.
 
-- [ ] Generate actual benchmark data and plots
-- [ ] Add visualization screenshots
-- [ ] Create architecture diagrams (TikZ)
-- [ ] Fill in placeholder URLs
-- [ ] Verify all citations
-- [ ] Proofread and polish
+## Sections
 
-## Figures Needed
+1. Introduction
+2. Background and Related Work
+3. Graph Canonicalization
+4. Pattern Matching
+5. System Architecture
+6. GPU Acceleration
+7. Verification of the Concurrent Surface
+8. Experimental Evaluation
+9. Conclusion and Future Work
 
-1. CPU performance vs Wolfram Language (line plot)
-2. GPU throughput by graph size (line plot)
-3. Thread scaling efficiency (line plot)
-4. Architecture diagram (storage, indices, data flow)
-5. Megakernel architecture diagram
-6. Uniqueness tree construction example
-7. Pattern matching workflow
-8. Interactive visualization screenshot(s)
+Appendices: Complexity Analysis Details; Data Structure Specifications.
