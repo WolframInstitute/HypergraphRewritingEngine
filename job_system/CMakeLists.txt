@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 add_library(job_system STATIC
     src/job_pool.cpp
+    src/affinity.cpp
     src/park.cpp
     src/capacity.cpp
 )

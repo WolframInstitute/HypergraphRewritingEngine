@@ -6,6 +6,11 @@
 #include <random>
 #include <thread>
 #include <hgcommon/park.hpp>
+#include <hgcommon/affinity.hpp>
+#if defined(__linux__)
+#  include <pthread.h>
+#  include <sched.h>
+#endif
 #include <mutex>
 #include <iostream>
 #include <future>
@@ -636,5 +641,65 @@ TEST(JobSystemErrors, AnOrdinaryExceptionIsStillAGenericException) {
                                     TestJobType::PHYSICS));
     js.wait_for_completion();
     EXPECT_EQ(js.get_error_type(), ErrorType::Exception);
+    js.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Worker affinity
+// ---------------------------------------------------------------------------
+
+// A pin that does not bind is the failure worth catching, because it is silent: the run still
+// produces the right answer and the timing it was taken for is quietly measured on whatever core
+// the scheduler chose. So this asserts the BINDING, not just that the jobs finished.
+TEST(JobSystemAffinity, PinningBindsEveryWorkerOrSaysItCouldNot) {
+    job_system::JobSystem<TestJobType> js(4);
+    js.set_worker_cpus({0});          // every worker onto one CPU: the easiest binding to verify
+    js.start();
+
+    std::atomic<int> ran{0};
+    // Each worker reports the affinity it is actually running under, from inside a job, which is
+    // the only place the binding can be observed.
+    std::atomic<int> wrong_mask{0};
+    for (int i = 0; i < 64; ++i) {
+        js.submit(job_system::make_job([&] {
+            ++ran;
+#if defined(__linux__)
+            cpu_set_t got;
+            CPU_ZERO(&got);
+            if (pthread_getaffinity_np(pthread_self(), sizeof(got), &got) != 0 ||
+                CPU_COUNT(&got) != 1 || !CPU_ISSET(0, &got)) {
+                ++wrong_mask;
+            }
+#endif
+        }, TestJobType::GRAPHICS));
+    }
+    js.wait_for_completion();
+
+    EXPECT_EQ(ran.load(), 64) << "pinning must not change which work runs";
+
+    if (hgcommon::affinity_supported()) {
+        EXPECT_EQ(js.pin_failures(), 0u)
+            << "every worker asked to bind and " << js.pin_failures() << " were refused";
+        EXPECT_EQ(wrong_mask.load(), 0)
+            << "a worker ran outside the CPU set it was pinned to, so the binding did not take";
+    } else {
+        // The contract on a platform without the API is to REPORT the refusal, not to pretend.
+        EXPECT_EQ(js.pin_failures(), js.get_num_workers())
+            << "no affinity API exists here, so every worker must report a refused binding";
+    }
+    js.shutdown();
+}
+
+// The default must stay exactly what it was: nothing pinned, placement left to the OS.
+TEST(JobSystemAffinity, NothingIsPinnedUnlessAsked) {
+    job_system::JobSystem<TestJobType> js(4);
+    js.start();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 32; ++i)
+        js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+    EXPECT_EQ(ran.load(), 32);
+    EXPECT_TRUE(js.worker_cpus().empty());
+    EXPECT_EQ(js.pin_failures(), 0u) << "a system that never asked to pin cannot have failed to";
     js.shutdown();
 }

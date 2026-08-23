@@ -5,6 +5,7 @@
 #include <job_system/work_stealing_deque.hpp>
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
+#include <hgcommon/affinity.hpp>
 #include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
 #include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
 #include <thread>
@@ -66,6 +67,9 @@ private:
     // Serial execution: no workers; wait_for_completion() drains the injector inline
     // on the calling thread (see the constructor comment).
     bool serial_ = false;
+    // Logical CPUs the workers bind to, empty meaning the operating system places them.
+    std::vector<unsigned> worker_cpus_;
+    std::atomic<size_t> pin_failures_{0};
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -282,6 +286,14 @@ private:
     void worker_loop(WorkerData* data, size_t index) {
         t_sys_ = this;
         t_worker_ = data;
+        // Bind this worker if the caller named a core set. Worker i takes the i-th CPU in that
+        // set; more workers than CPUs means they share, which is the caller's choice to make
+        // rather than this loop's to refuse. Empty set: placement stays the operating system's.
+        if (!worker_cpus_.empty()) {
+            const unsigned cpu = worker_cpus_[index % worker_cpus_.size()];
+            if (!hgcommon::pin_this_thread_to_cpu(cpu))
+                pin_failures_.fetch_add(1, std::memory_order_relaxed);
+        }
         uint64_t rng = static_cast<uint64_t>(index) * 2654435761ull + 1ull;
 
         while (true) {
@@ -397,6 +409,21 @@ public:
     // Register a callback run on the worker thread after EACH job completes (after
     // execute(), even on error). Used to reset per-worker scratch between tasks.
     void set_on_job_complete(std::function<void()> cb) { on_job_complete_ = std::move(cb); }
+
+    // Bind each worker to a logical CPU, before start(). Worker i takes cpus[i % cpus.size()].
+    //
+    // THIS IS FOR MEASUREMENT AND FOR HETEROGENEOUS PARTS, and it is off unless asked for. A
+    // speedup curve taken across cores of different speeds has no honest denominator -- one
+    // E-core of a 14900K does in 30.370 ms what a P-core does in 18.042 ms -- so a caller that
+    // wants a curve that means something names a homogeneous set. An empty vector restores the
+    // default, which is that the operating system places every worker.
+    //
+    // Whether a binding took effect is NOT assumed: pin_failures() counts workers that asked and
+    // were refused, which is every worker on macOS (no such API) and any CPU index the platform
+    // cannot express. A caller reporting a pinned measurement checks it is zero.
+    void set_worker_cpus(std::vector<unsigned> cpus) { worker_cpus_ = std::move(cpus); }
+    const std::vector<unsigned>& worker_cpus() const { return worker_cpus_; }
+    size_t pin_failures() const { return pin_failures_.load(std::memory_order_relaxed); }
 
     void start() {
         if (is_running_.load()) return;
