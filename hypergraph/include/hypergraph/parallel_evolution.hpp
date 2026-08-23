@@ -740,8 +740,18 @@ private:
 public:
     ParallelEvolutionEngine();
 
+    // `worker_cpus` binds each worker to a logical CPU, worker i taking the i-th of them; empty,
+    // the default, leaves placement to the operating system. It is a CONSTRUCTOR parameter
+    // because the job system spawns and starts its workers here, so there is no later moment at
+    // which a binding could still apply to them.
+    //
+    // A caller that pins is almost always measuring, and on a heterogeneous part it has to: an
+    // E-core of a 14900K does in 30.370 ms what a P-core does in 18.042 ms, so a thread count is
+    // not a quantity of compute unless the cores behind it are the same. worker_pin_failures()
+    // reports bindings that were refused, and a measurement that pins checks it is zero.
     explicit ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads = 0,
-                                     ExecutionMode mode = ExecutionMode::Parallel);
+                                     ExecutionMode mode = ExecutionMode::Parallel,
+                                     std::vector<unsigned> worker_cpus = {});
 
     ~ParallelEvolutionEngine();
 
@@ -1068,6 +1078,8 @@ public:
     // Job system diagnostics
     size_t pending_jobs() const;
     size_t job_system_park_waits() const;
+    // Workers that asked to bind to a CPU and were refused. Zero when nothing was pinned.
+    size_t worker_pin_failures() const;
     size_t executing_jobs() const;
 
     // Error state - check after evolution completes

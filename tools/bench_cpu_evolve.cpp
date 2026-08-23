@@ -34,18 +34,27 @@ using namespace hypergraph;
 // half and reports the ratio there as if it were the answer. Any count above the host's
 // hardware_concurrency is dropped rather than run, because oversubscription measures the
 // scheduler.
+// One comma-list parser, used by the thread sweep and by the CPU set. Both take the same
+// spelling ("1,2,4") and neither wants a second copy of the loop.
+static std::vector<int> parse_int_list(const char* spec, bool positive_only) {
+    std::vector<int> out;
+    if (!spec || !*spec) return out;
+    const std::string s(spec);
+    size_t pos = 0;
+    while (pos < s.size()) {
+        const size_t comma = s.find(',', pos);
+        const int t = std::atoi(s.substr(pos, comma - pos).c_str());
+        if (t > 0 || (!positive_only && t == 0)) out.push_back(t);
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
 static std::vector<int> thread_sweep(const char* spec) {
     std::vector<int> out;
     if (spec && *spec) {
-        const std::string s(spec);
-        size_t pos = 0;
-        while (pos < s.size()) {
-            const size_t comma = s.find(',', pos);
-            const int t = std::atoi(s.substr(pos, comma - pos).c_str());
-            if (t > 0) out.push_back(t);
-            if (comma == std::string::npos) break;
-            pos = comma + 1;
-        }
+        out = parse_int_list(spec, /*positive_only=*/true);
     } else {
         const int hw = static_cast<int>(std::thread::hardware_concurrency());
         for (int t : {1, 2, 4, 8, 16, 24, 32, 48, 64})
@@ -94,6 +103,16 @@ int main(int argc, char** argv) {
     const int iters = argc > 2 ? std::atoi(argv[2]) : 20;
     const std::vector<int> sweep = thread_sweep(argc > 3 ? argv[3] : nullptr);
     const char* want = argc > 4 ? argv[4] : "wpp";
+    // argv[5]: logical CPUs to bind the workers to, e.g. "0,2,4,6,8,10,12,14". Empty leaves
+    // placement to the operating system, which is the default and what every earlier run used.
+    //
+    // A THREAD COUNT IS NOT A QUANTITY OF COMPUTE UNLESS THE CORES ARE THE SAME. On a
+    // heterogeneous part the nth thread may be a core that does 0.59 of the work the first one
+    // does, so a speedup column taken across the mix divides by a number that means nothing.
+    // Naming a homogeneous set is how this bench produces a curve that can be published.
+    std::vector<unsigned> worker_cpus;
+    for (int c : parse_int_list(argc > 5 ? argv[5] : nullptr, /*positive_only=*/false))
+        worker_cpus.push_back(static_cast<unsigned>(c));
     const auto all = workloads();
     if (std::strcmp(want, "list") == 0) {
         for (const auto& w : all) std::printf("%s\n", w.name);
@@ -137,7 +156,7 @@ int main(int argc, char** argv) {
                 hgcommon::RecordSet rs;
                 rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
                 g.set_record_set(rs);
-                ParallelEvolutionEngine e(&g, 8);
+                ParallelEvolutionEngine e(&g, 8, ParallelEvolutionEngine::ExecutionMode::Parallel, worker_cpus);
                 // Default on: expanding one representative per isomorphism class is the whole
             // point of canonical exploration. The knob exists because that restriction
             // interacts with the depth budget -- a class first claimed at one depth and later
@@ -187,7 +206,7 @@ int main(int argc, char** argv) {
                 if (const char* v = std::getenv("HG_BENCH_RAWEVENTS")) rs.raw_events = v[0] != '0';
                 g.set_record_set(rs);
             }
-            ParallelEvolutionEngine e(&g, threads);
+            ParallelEvolutionEngine e(&g, threads, ParallelEvolutionEngine::ExecutionMode::Parallel, worker_cpus);
             e.set_explore_from_canonical_states_only(true);
             for (const auto& r : sel->rules) e.add_rule(r);
             const auto t0 = std::chrono::steady_clock::now();
@@ -202,6 +221,12 @@ int main(int argc, char** argv) {
             // to do with the engine's concurrency. Every warning is printed, once per run.
             for (const std::string& w : e.warnings())
                 std::printf("  WARNING: %s\n", w.c_str());
+            // A REFUSED BINDING IS NOT A PINNED RUN. The work still completes and the timing
+            // still prints, so nothing else here would reveal that the cores were the
+            // scheduler's choice after all.
+            if (!worker_cpus.empty() && e.worker_pin_failures() != 0)
+                std::printf("  WARNING: %zu worker(s) could not bind to the requested CPU set; "
+                            "this run is NOT pinned\n", e.worker_pin_failures());
             // Twin of the device bench's line: the reconstruction's size, so the two engines can
             // be compared on work done and not only on time.
             // S1: the quotient branchial fan-out. visits/scans is the mean applications per

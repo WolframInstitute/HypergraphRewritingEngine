@@ -24,7 +24,8 @@ namespace engine {
 // =============================================================================
 
 ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_threads,
-                                                 ExecutionMode mode)
+                                                 ExecutionMode mode,
+                                                 std::vector<unsigned> worker_cpus)
     : hg_(hg)
     , rewriter_(hg)
     // Serial reports one thread of execution -- the caller's. Reporting the hardware count
@@ -54,6 +55,8 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     // Recycle each worker's scratch arena after every job — temporaries allocated
     // during a task are reclaimed in bulk, keeping malloc off the hot path.
     job_system_->set_on_job_complete([] { worker_scratch().reset(); });
+    // Before start(): the workers read this as they enter their loop, and none exists yet.
+    job_system_->set_worker_cpus(std::move(worker_cpus));
     job_system_->start();
 }
 
@@ -2552,6 +2555,10 @@ size_t ParallelEvolutionEngine::total_rewrites() const { return total_rewrites_.
 size_t ParallelEvolutionEngine::pending_jobs() const { return job_system_ ? job_system_->get_pending_count() : 0; }
 
 size_t ParallelEvolutionEngine::job_system_park_waits() const { return job_system_ ? job_system_->park_waits() : 0; }
+
+size_t ParallelEvolutionEngine::worker_pin_failures() const {
+    return job_system_ ? job_system_->pin_failures() : 0;
+}
 
 size_t ParallelEvolutionEngine::executing_jobs() const { return job_system_ ? job_system_->get_executing_count() : 0; }
 
