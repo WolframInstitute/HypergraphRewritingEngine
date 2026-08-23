@@ -58,7 +58,7 @@ are the edges its id list names, and two states sharing an edge name the same id
 | Option | Default | |
 |---|---|---|
 | `"CanonicalizeStates"` | `None` | the identity states are merged by: `None` (every provenance distinct), `Automatic` (equal contents), or `Full` (equal up to isomorphism) |
-| `"CanonicalizeEvents"` | `None` | merge equivalent events: `None`, `Automatic`, `Full`, or a list of keys |
+| `"CanonicalizeEvents"` | `None` | merge equivalent events: `None`, `Full`, `Automatic`, `Positional`, or a list of keys |
 | `"CausalTransitiveReduction"` | `True` | remove redundant transitive causal edges |
 | `"ExploreFromCanonicalStatesOnly"` | `False` | quotient exploration: expand each canonical state once, at its shortest depth (off by default, so every provenance is explored) |
 | `"QuotientInitialStates"` | `False` | collapse isomorphic initial states to a single canonical root (requires `"ExploreFromCanonicalStatesOnly"`); off keeps each initial state a distinct entry point |
@@ -264,7 +264,17 @@ respected; choose `Full` when they are arbitrary and only the shape matters.
 
 ### "CanonicalizeEvents"
 
-Event canonicalization merges equivalent update events. Compare the event structure with it off and on:
+Event canonicalization merges equivalent update events. `None` (the default) keeps every
+application as its own event. `Full` identifies two applications when their canonical input and
+output states agree. `Automatic` also distinguishes which edges were consumed and produced and at
+which step, resolving edges by their canonical positions — the identity is a property of the
+event, not of the schedule that produced it. `Positional` uses the same components but resolves
+edge positions in each raw state's own labeling, reproducing the upstream `MultiwaySystem`
+convention (reproducible for a fixed input order, not isomorphism-invariant); it is incompatible
+with `"ExploreFromCanonicalStatesOnly"`, which it disables with a warning. A list such as
+`{"InputState", "OutputState", "Rule"}` selects a custom identity from the components
+`"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"`.
+Compare the event structure with it off and on:
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};

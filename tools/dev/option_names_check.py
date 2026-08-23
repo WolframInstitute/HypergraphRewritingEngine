@@ -32,6 +32,7 @@ DOCS = [
     "docs/CODEMAP.md",
     "docs/DATAFLOW.md",
     "docs/QUICKSTART.md",
+    "docs/SPEC.md",
 ]
 DOC_GLOBS = ["paclet/Documentation/Source/*.md"]
 
