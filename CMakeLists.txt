@@ -703,28 +703,27 @@ set_tests_properties(quotient_twin_check PROPERTIES TIMEOUT 60)
 # THE TIMEOUT IS MEASURED, NOT GUESSED, and it has to be: a model-checking gate that is cut off
 # mid-enumeration reports a failure indistinguishable from a real violation, and one set below
 # what the suite costs is a gate that can only ever fail. Per-harness wall clock, measured
-# 2026-08-23 on this box, exhaustive runs at each harness's own recorded bound:
+# 2026-08-23 on this box at each harness's own recorded bound, box load 4-8:
 #
-#   concurrent_map_double_growth_3t   442.97 s   (78,397 executions -- the count its header cites)
-#   concurrent_map_double_growth_2t   238.39 s
-#   concurrent_map_repeated_offer     227.64 s
+#   concurrent_map_double_growth_3t   140.58 s   (26,573 executions, --sc, four-context bound)
+#   concurrent_map_repeated_offer      88.57 s
 #   key_set_exactly_once_3t            80.86 s
-#   concurrent_map_resize              20.34 s
-#   the remaining fourteen             ~13 s combined
+#   concurrent_map_double_growth_2t    68.14 s   (34,485 executions, RC11, no bound)
+#   concurrent_map_resize              37.76 s
+#   the remaining fourteen             ~15 s combined
 #
-# ~1,023 s of enumeration plus a clang compile per harness, against a budget that was 900. The
-# four expensive ones are three-worker shapes across a table growth, and they are expensive
-# because that is where the defects are: every double-claim this project has found needed a
-# growth concurrent with two claimants.
+# About 430 s of enumeration plus a clang compile per harness. The expensive ones are the
+# three-worker shapes across a table growth, which is where the defects are: every double-claim
+# this project has found needed a growth concurrent with two claimants.
 #
-# REDUCING THEM IS NOT AVAILABLE, and this was tested rather than assumed. Dropping
-# concurrent_map_double_growth_3t from --bound=4 to --bound=3 makes it finish in 112.76 s and
-# STOP DETECTING THE DEFECT: with insert_if_absent's confirmation deleted it reports no violation
-# in 21,041 executions, where at --bound=4 it reports one. Shrinking the table instead
-# (working_capacity 16 -> 4) does not help, since the cost is the three-thread interleaving space
-# and not the table width. So the budget is stated honestly instead.
+# REDUCING THEM IS NOT AVAILABLE, tested rather than assumed. Dropping a three-worker harness
+# from --bound=4 to --bound=3 makes it finish sooner and STOP DETECTING its defect: with the
+# guard it exists for deleted, it reports no violation in 21,041 executions at three, where at
+# four it reports one. Shrinking the table instead (working_capacity 16 -> 4) does not help,
+# since the cost is the three-thread interleaving space and not the table width. So the budget
+# is stated from the measurement, with room for a loaded box.
 add_test(NAME genmc_harnesses
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/genmc/run.sh all)
 set_tests_properties(genmc_harnesses PROPERTIES
-                     TIMEOUT 2400
+                     TIMEOUT 1500
                      SKIP_RETURN_CODE 2)
