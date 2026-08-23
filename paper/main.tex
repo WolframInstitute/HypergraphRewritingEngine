@@ -573,12 +573,17 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 
 \item[ConcurrentKeySet$\langle$K$\rangle$:] A set, for membership rather than mapping. Presence and
 ownership are decided by one compare-exchange from the empty sentinel to the key, so none of the
-map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight,
-no rescan of the superseded-table chain to keep one key from being claimed twice. Growth carries
+map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight.
+An insert scans the superseded-table chain for a settled copy of its key before claiming at the
+head, and a claim that lands in a table which is no longer the head is reported stale and
+re-driven rather than counted---the two halves of keeping one key from ever being claimed twice.
+Growth carries
 each key into the new table and then seals the slot it came from with a second reserved key, so a
 key reachable through two tables is enumerated once, and a table whose slots are all sealed is
 skipped rather than probed---without which a retired table is scanned in full on every operation,
-because sealing removes the empty slot linear probing stops at. The quotient reconstruction's
+because sealing removes the empty slot linear probing stops at. Membership queries walk the chain
+oldest table first, which is what Section~\ref{sec:verification}'s reader-visibility harness
+checks. The quotient reconstruction's
 membership marks use it (Section~\ref{sec:quotient}).
 
 \item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
@@ -731,8 +736,11 @@ options. It does not depend on the number of worker threads, on the order in whi
 happens to execute tasks, or on whether quotient exploration is enabled. Identifiers assigned to
 states and events are allocated in arrival order and therefore do vary between runs; every
 observable defined above is stated over canonical identities and is invariant. This property is
-checked by a determinism gate that compares the expanded state set and the (input, output, rule)
-transition multiset across thread counts and seeds.
+checked by a determinism gate that fingerprints the expanded state set, the (input, output, rule)
+transition multiset, and the causal and branchial relations across thread counts and seeds, and on
+a divergence reports which component moved and under which configuration. The causal component is
+what caught the reader-visibility defect of Section~\ref{sec:verification} in the field: one
+sixteen-thread run on four cores with one causal edge missing and everything else identical.
 
 The capping options are outside it, and the reason is the same one that shapes the sampling
 design. \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
@@ -1271,7 +1279,17 @@ index. For the key set: that two
 threads inserting one key while a third insertion forces a growth beneath them produce exactly one
 reported insertion, and that enumeration emits each key once across that growth---two properties
 that failed independently in earlier designs of the same structure, which is why they are checked
-by separate harnesses rather than by one. For the scheduler: that a worker
+by separate harnesses rather than by one. A third property class covers \emph{readers} racing a
+growth: a membership query for a key that settled before the query began must answer present in
+every execution, even mid-carry, when the key's slot in the retiring table is already sealed and
+its copy has just landed in the successor. This one was found in the field before it was checked:
+a continuous-integration run on an oversubscribed ARM64 machine produced a full-capture evolution
+with one causal edge missing---states, events and branchial identical---which minimised to a
+newest-first chain walk visiting each table on the wrong side of the carry hand-off. The
+twenty-execution counterexample, and the oldest-first walk that closes it, are both in the
+harness; the same read-order condition recurs in the map's drained-table skip, where the
+calibrated break is reading a table's skip flag only when the walk arrives at it. For the
+scheduler: that a worker
 which parks is always woken, which is a liveness property and is checked as one---removing either
 of the two sequentially consistent fences in the submit/park protocol makes the checker report a
 non-terminating spin loop.
