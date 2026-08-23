@@ -1,7 +1,7 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 // Device-resident scheduling: workers that PULL work from a queue, instead of being launched
-// once per phase per step. See docs/GPU_PERSISTENT_DESIGN.md.
+// once per phase per step. See gpu/ARCHITECTURE.md sec 2.
 //
 // Three entry points, each adding one thing to the one before, so a failure lands in the stage
 // that introduced it rather than in the whole model at once. run_persistent_evolve is the

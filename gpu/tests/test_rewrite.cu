@@ -672,7 +672,7 @@ TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
 //
 // Both halves of that are false here. There is no 1-WL fallback on this path, deliberately: a
 // fallback key MERGES non-isomorphic states, so the design records a capacity overflow and
-// returns partial work instead (docs/GPU_PERSISTENT_DESIGN.md sec 3a). And the arena IS
+// returns partial work instead (gpu/ARCHITECTURE.md sec 3). And the arena IS
 // config-controlled, so growing recovers it. A run that could have completed returned a partial
 // result and called the cause unfixable.
 //

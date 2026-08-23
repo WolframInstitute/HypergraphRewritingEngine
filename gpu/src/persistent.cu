@@ -1,7 +1,7 @@
 #include "hgcommon/namespace.hpp"
 // Device-resident scheduling: workers that pull work from a queue rather than being launched
 // once per phase per step. See gpu/include/hg_gpu/persistent.hpp and
-// docs/GPU_PERSISTENT_DESIGN.md.
+// gpu/ARCHITECTURE.md sec 2.
 //
 // Its own translation unit, not appended to match.cu, and that is a memory decision rather
 // than a stylistic one: match.cu already costs several GB to compile, and adding one more

@@ -225,7 +225,7 @@ struct MatchJoinCtx {
 // It sits outside the anonymous namespace for that reason alone. The alternative -- putting
 // the other scheduler in THIS file -- was measured and rejected: match.cu already costs about
 // 5 GB to compile on its own, and adding one more kernel took a single nvcc to 8 GB.
-// See docs/GPU_PERSISTENT_DESIGN.md.
+// See gpu/ARCHITECTURE.md sec 2.
 // THE PER-(state, rule) CAP'S DECISION FOR ONE COMPLETED MATCH, deliberately NOT inlined.
 //
 // It is called from the join's innermost completion callback, which is instantiated per rule

@@ -246,7 +246,7 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
 // Returns the state it created AND the event it wrote, or a default-constructed AppliedMatch
 // when a capacity claim failed. A scheduler that finishes the work itself needs both: the state
 // to hash and re-enqueue, the event to stamp an identity onto once that hash exists.
-// See docs/GPU_PERSISTENT_DESIGN.md.
+// See gpu/ARCHITECTURE.md sec 3.
 __device__ AppliedMatch apply_one_match(DeviceState       ds,
                                         const DeviceRule* rules,
                                         const MatchRecord& m,

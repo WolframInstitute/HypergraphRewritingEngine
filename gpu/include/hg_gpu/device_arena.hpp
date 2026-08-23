@@ -4,7 +4,7 @@
 // hand.
 //
 // It exists because of one constraint: no host-device communication during evolution
-// (docs/GPU_PERSISTENT_DESIGN.md). Sizing the IR scratch slot by measuring the largest state
+// (gpu/ARCHITECTURE.md sec 3). Sizing the IR scratch slot by measuring the largest state
 // on the host needs batches to measure; the evolution has none -- states arrive continuously
 // and the largest is not knowable before the run starts. Sizing from a configured maximum instead would reintroduce the wrong-dedup-key
 // exposure that fixing that measurement closed: above the bound, states fall back to 1-WL,
