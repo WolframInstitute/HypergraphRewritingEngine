@@ -46,29 +46,11 @@ _BASELINE_LOAD = None
 _PINNED_CPUS = ""
 
 
-def _host_is_virtualised():
-    """Whether this kernel runs on a hypervisor that owns physical CPU placement.
-
-    It matters only in combination with pinning. Under WSL the affinity call succeeds and binds
-    the thread to a VIRTUAL cpu, while which physical core backs it stays the host's decision --
-    and the topology on offer is the hypervisor's flattened view, which for a 14900K reports 16
-    cores x 2 threads, neither its 24 physical cores nor its 32 logical ones. So a pinned run
-    there is repeatable but not homogeneous, and a speedup column still divides by a baseline
-    that could have been taken on any kind of core.
-    """
-    try:
-        with open("/proc/sys/kernel/osrelease") as f:
-            rel = f.read().lower()
-        return "microsoft" in rel or "wsl" in rel
-    except OSError:
-        return False
-
-
 def _pinned_note():
     if not _PINNED_CPUS:
         return ""
     note = " | workers pinned to cpus %s" % _PINNED_CPUS
-    if _host_is_virtualised():
+    if procstat.topology_is_virtualised():
         note += " (VIRTUAL cpus: this kernel is on a hypervisor, so physical core placement is " \
                 "the host's and these cores are NOT known to be identical)"
     return note

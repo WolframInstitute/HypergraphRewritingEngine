@@ -278,8 +278,19 @@ def rule_shape_scaling(build, shapes, iters):
         f.append(r"\addlegendentry{%s}" % labels.get(r, r))
     # The dotted rule marks this host's physical core count, which is a property of the machine
     # rather than of the measurement, so it is written from the same place the sweep reads it.
-    f.append(r"\addplot[gray, dotted, thick, forget plot] coordinates {(%d,0)(%d,1.25)};"
-             % (physical_cores(), physical_cores()))
+    #
+    # NO RULE RATHER THAN A RULE IN THE WRONG PLACE. procstat returns None when the topology on
+    # offer is a hypervisor's, because the flattened view of a hybrid part is not the machine --
+    # an i9-14900K reports as 16 cores x 2 threads against its real 24 physical and 32 logical.
+    # A reader takes that rule as the point where cores run out and reads the curve against it,
+    # so drawing it at a count this host does not have misstates the figure's whole argument.
+    cores = physical_cores()
+    if cores:
+        f.append(r"\addplot[gray, dotted, thick, forget plot] coordinates {(%d,0)(%d,1.25)};"
+                 % (cores, cores))
+    else:
+        f.append(r"%% no physical-core rule: this topology is a hypervisor's, so the count "
+                 r"cannot be stated for this hardware")
     pt.write_raw("f_efficiency.tex", "\n".join(f) + "\n")
     return rows
 

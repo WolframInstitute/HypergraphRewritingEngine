@@ -121,15 +121,40 @@ def machine():
     return "%s, %s GB RAM, %s %s" % (cpu_name(), ram_gb(), platform.system(), platform.release())
 
 
-def physical_cores():
-    """Physical cores on this host, counted rather than assumed.
+def topology_is_virtualised():
+    """Whether the CPU topology on offer is a hypervisor's rather than the hardware's.
 
-    The efficiency figure marks this count, and it is the point the two series are read against,
-    so writing it as a literal would state a property of one machine in a document generated on
-    another. A (physical id, core id) pair identifies a core on Linux; hyperthreads share one.
-    Windows answers the same question through GetLogicalProcessorInformation, counting the
-    entries that describe a core rather than a cache or a package.
+    It decides whether a core COUNT can be believed. Under WSL /proc/cpuinfo is the flattened
+    view the hypervisor presents, and on a hybrid part that view is not the machine: an i9-14900K
+    is 8 P-cores plus 16 E-cores, 24 physical and 32 logical, and reports here as 16 cores x 2
+    threads. Counting (physical id, core id) pairs then yields 16, which is neither number.
     """
+    if IS_WINDOWS:
+        return False
+    try:
+        with open("/proc/sys/kernel/osrelease") as f:
+            rel = f.read().lower()
+        return "microsoft" in rel or "wsl" in rel
+    except OSError:
+        return False
+
+
+def physical_cores():
+    """Physical cores on this host, or None when the topology cannot be believed.
+
+    The efficiency figure MARKS this count, so it is a claim about the machine and not a
+    convenience: drawing the rule at a number this host does not have is worse than not drawing
+    it. A (physical id, core id) pair identifies a core on Linux; hyperthreads share one. Windows
+    answers the same question through GetLogicalProcessorInformation, counting the entries that
+    describe a core rather than a cache or a package.
+
+    None means the count is unavailable rather than zero, and the caller is expected to say so
+    rather than substitute a number. That happens under a hypervisor that flattens topology, and
+    on a hybrid CPU the flattened count is wrong in both directions at once -- see
+    topology_is_virtualised().
+    """
+    if topology_is_virtualised():
+        return None
     if IS_WINDOWS:
         n = _windows_physical_cores()
         if n:
